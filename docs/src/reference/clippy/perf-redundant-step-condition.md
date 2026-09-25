@@ -1,6 +1,6 @@
 <!-- description: The `perf.redundant_step_condition` advisory rule, level `warn`, scope workflow: consecutive steps repeat one condition that none of them can change; a task. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-09-25 -->
 
 # `perf.redundant_step_condition`
 
@@ -15,7 +15,7 @@ warn[perf.redundant_step_condition] consecutive steps repeat one condition that 
 
 ## Description
 
-Consecutive steps in one list with a byte-identical condition that none of them can change. No step in the run writes a path the condition reads, and the condition has no computed, scoped or nondeterministic part. A task group would evaluate it once.
+Consecutive steps in one list with a byte-identical condition that none of them can change. No step in the run writes a path the condition reads, and the condition has no computed, scoped or nondeterministic part. A `for_each` task writes its `collect` and `into` paths as well as its function's own. A task group would evaluate it once.
 
 The rule is silent when the condition reads `metadata.progress`. The engine overwrites that path after every task, so each step in the run changes what the next one's condition sees.
 

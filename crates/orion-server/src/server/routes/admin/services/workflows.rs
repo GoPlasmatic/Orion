@@ -1,7 +1,6 @@
 //! Workflow activation gates.
 
 use crate::errors::OrionError;
-use serde_json::Value;
 
 /// R5 / F52: every connector a workflow's tasks reference must exist, be of a
 /// type the referencing function can actually use, and carry the extra keys
@@ -18,7 +17,7 @@ pub(crate) async fn ensure_connectors_exist(
     workflow: &crate::storage::models::Workflow,
     functions: &crate::engine::FunctionRegistry,
 ) -> Result<(), OrionError> {
-    let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
+    let Some((tasks, loop_config)) = workflow.parsed_steps() else {
         return Ok(()); // unparseable tasks are caught elsewhere
     };
 
@@ -27,7 +26,7 @@ pub(crate) async fn ensure_connectors_exist(
     // with the offline set check (`definitions::check`).
     let mut facts: std::collections::HashMap<String, crate::engine::ConnectorFacts> =
         std::collections::HashMap::new();
-    for r in crate::engine::connector_refs(&tasks, functions) {
+    for r in crate::engine::connector_refs(&tasks, loop_config.as_ref(), functions) {
         if facts.contains_key(r.connector) {
             continue;
         }
@@ -45,7 +44,9 @@ pub(crate) async fn ensure_connectors_exist(
     let mut missing: Vec<String> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
     for problem in
-        crate::engine::check_connector_refs(&tasks, functions, |name| facts.get(name).copied())
+        crate::engine::check_connector_refs(&tasks, loop_config.as_ref(), functions, |name| {
+            facts.get(name).copied()
+        })
     {
         match problem {
             crate::engine::RefProblem::Missing { connector } => {

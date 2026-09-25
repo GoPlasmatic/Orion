@@ -74,7 +74,11 @@ pub struct WorkflowFacts {
     pub has_loop: bool,
     /// `temp_data.<counter>` when a loop declares a counter.
     pub loop_counter: Option<String>,
-    /// Every step in document (pre-)order: a group precedes its members.
+    /// A loop's `over`, evaluated once, after its `setup`.
+    pub loop_over: Option<Expr>,
+    /// Every step in the order the engine runs them — a loop's `setup` list
+    /// (`list` = `loop.setup`), then the body — each in document
+    /// (pre-)order: a group precedes its members.
     pub steps: Vec<StepFacts>,
 }
 
@@ -104,6 +108,8 @@ pub struct StepFacts {
     /// The expressions the engine evaluates in this step's input, by path
     /// relative to `function.input`.
     pub expressions: Vec<(String, Expr)>,
+    /// A fan-out's `over`, evaluated once after the condition.
+    pub for_each_over: Option<Expr>,
     /// Context paths this step writes (a task), or all its members write (a
     /// group).
     pub writes: Vec<String>,
@@ -124,6 +130,7 @@ impl StepFacts {
         for expr in self
             .condition
             .iter()
+            .chain(self.for_each_over.iter())
             .chain(self.expressions.iter().map(|(_, e)| e))
         {
             out.paths.extend(expr.reads.paths.iter().cloned());
@@ -226,7 +233,25 @@ fn workflow_facts(
         .and_then(|l| l.get("counter"))
         .and_then(Value::as_str)
         .map(|c| format!("temp_data.{c}"));
+    let loop_over = loop_config
+        .and_then(|l| l.get("over"))
+        .map(|over| evaluator.expr(over));
     let mut steps = Vec::new();
+    // Setup first: it runs once, before the first sweep, in the same grammar
+    // as the body, and a rule that walked the body alone would pass anything
+    // placed there (#351). Its own list, so no rule reasons across the two as
+    // if they were one run of consecutive steps.
+    if let Some(setup) = loop_config.and_then(|l| l.get("setup")) {
+        walk(
+            setup,
+            "loop.setup",
+            None,
+            true,
+            evaluator,
+            functions,
+            &mut steps,
+        );
+    }
     if let Some(tasks) = doc.get("tasks") {
         walk(tasks, "tasks", None, true, evaluator, functions, &mut steps);
     }
@@ -244,6 +269,7 @@ fn workflow_facts(
         condition,
         has_loop: loop_config.is_some(),
         loop_counter,
+        loop_over,
         steps,
     }
 }
@@ -293,6 +319,10 @@ fn walk(
                 .collect(),
             _ => Vec::new(),
         };
+        let for_each_over = node
+            .get("for_each")
+            .and_then(|f| f.get("over"))
+            .map(|over| evaluator.expr(over));
         let (writes, writes_uncertain) = match kind {
             StepKind::Task => {
                 let facts = dataflow::task_write_facts(node, functions);
@@ -314,6 +344,7 @@ fn walk(
             certain,
             function,
             expressions,
+            for_each_over,
             writes,
             writes_uncertain,
         });

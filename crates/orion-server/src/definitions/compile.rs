@@ -256,15 +256,34 @@ impl Pass for Fragments {
         let mut out = Vec::new();
         // `root == "tasks"` says the caller already stepped through the key
         // and is holding the array itself.
+        let under = |key: &str| {
+            if root.is_empty() {
+                key.to_string()
+            } else {
+                format!("{root}.{key}")
+            }
+        };
         if root == "tasks" {
             steps(doc, root, &mut out);
-        } else if let Some(tasks) = doc.get("tasks") {
-            let at = if root.is_empty() {
-                "tasks".to_string()
-            } else {
-                format!("{root}.tasks")
-            };
-            steps(tasks, &at, &mut out);
+        } else if root == "loop" {
+            // Likewise holding a loop object, as the admin API does.
+            if super::expand::is_step_holder(doc)
+                && let Some(setup) = doc.get("setup")
+            {
+                steps(setup, "loop.setup", &mut out);
+            }
+        } else {
+            if let Some(tasks) = doc.get("tasks") {
+                steps(tasks, &under("tasks"), &mut out);
+            }
+            // A loop's `setup` is a step list to the expander too, unless the
+            // loop is itself a value the sugar replaces.
+            if let Some(loop_config) = doc.get("loop")
+                && super::expand::is_step_holder(loop_config)
+                && let Some(setup) = loop_config.get("setup")
+            {
+                steps(setup, &under("loop.setup"), &mut out);
+            }
         }
         value_sugar(doc, root, &mut out);
         out
@@ -824,6 +843,55 @@ mod tests {
                 "tasks[2].tasks[1].function.input.mappings[0].logic",
             ],
             "the admin API holds `tasks` alone and must get the same coordinates"
+        );
+    }
+
+    /// #351: a loop's `setup` is a step list to the expander, so a `use`
+    /// there is expanded, and reported wherever the document is held: whole,
+    /// or as the loop object the admin API checks on its own.
+    #[test]
+    fn a_use_in_loop_setup_is_expanded_and_reported() {
+        let doc = json!({
+            "name": "w",
+            "loop": { "max": 2, "setup": [
+                { "id": "_g", "use": "guard" },
+                { "id": "g", "condition": true, "tasks": [ { "id": "_g2", "use": "guard" } ] }
+            ]},
+            "tasks": [ { "id": "t", "name": "T", "function": { "name": "log",
+                "input": { "message": "x" } } } ]
+        });
+        let paths = |found: Vec<Residue>| found.into_iter().map(|r| r.path).collect::<Vec<_>>();
+        assert_eq!(
+            paths(residue(&doc, "")),
+            vec!["loop.setup[0]", "loop.setup[1].tasks[0]"]
+        );
+        assert_eq!(
+            paths(residue(&doc["loop"], "loop")),
+            vec!["loop.setup[0]", "loop.setup[1].tasks[0]"]
+        );
+
+        let shared = catalog();
+        let mut compiled = doc.clone();
+        let mut findings = Vec::new();
+        let applied = compile(
+            &mut compiled,
+            &Cx::detached(&shared, "wf.json"),
+            &mut findings,
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+        assert_eq!(applied, vec!["shared.fragments"]);
+        assert_eq!(residue(&compiled, ""), vec![]);
+        assert_eq!(compiled["loop"]["setup"][0]["id"], "_g.deny");
+
+        // A loop that is itself a value fragment is expanded as a value, and
+        // its setup, if any, is whatever the fragment supplies.
+        let as_value = json!({ "loop": { "$use": "some_loop" } });
+        assert_eq!(
+            residue(&as_value, "")
+                .iter()
+                .map(|r| r.key)
+                .collect::<Vec<_>>(),
+            vec!["$use"]
         );
     }
 

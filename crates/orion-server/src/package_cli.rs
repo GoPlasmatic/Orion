@@ -775,7 +775,7 @@ pub(crate) async fn run_plan(
             return false;
         };
         let mut saw_one = false;
-        for task in orion::engine::leaf_tasks(tasks) {
+        for task in orion::engine::leaf_tasks(tasks, item.get("loop")) {
             let Some(name) = task
                 .get("function")
                 .and_then(|f| f.get("name"))

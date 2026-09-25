@@ -190,8 +190,28 @@ pub fn task_writes(task: &Value, functions: &FunctionRegistry) -> Vec<String> {
     task_write_facts(task, functions).paths
 }
 
-/// Where a task writes, with the certainty flag.
+/// Where a task writes, with the certainty flag: its function's
+/// destinations, and a `for_each`'s.
 pub fn task_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
+    let mut out = function_write_facts(task, functions);
+    // A fan-out folds each call's writes back onto the message, so the
+    // function's own destinations stand, and adds two of its own: `collect`,
+    // the slot each call writes its result to (left holding the last
+    // element's), and `into`, the array the results land in (#351). The
+    // element bindings live only in each call's copy and are not writes.
+    if let Some(for_each) = task.get("for_each") {
+        for key in ["collect", "into"] {
+            match for_each.get(key) {
+                None | Some(Value::Null) => {}
+                Some(Value::String(path)) => out.paths.push(path.clone()),
+                Some(_) => out.computed = true,
+            }
+        }
+    }
+    out
+}
+
+fn function_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
     let Some(function) = task.get("function") else {
         return Writes::default();
     };

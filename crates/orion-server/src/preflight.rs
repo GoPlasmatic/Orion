@@ -385,7 +385,7 @@ pub fn check_workflow_tasks(
     // next edit is refused — which is precisely the shape of break this
     // command exists to find before an operator hits it from a pipeline.
     findings.extend(
-        crate::validation::secret_reference_errors(&tasks, functions)
+        crate::validation::secret_reference_errors(&tasks, loop_config.as_ref(), functions)
             .into_iter()
             .map(|(path, message)| Diagnostic::error(
             "14",
@@ -414,7 +414,7 @@ pub fn check_workflow_tasks(
     // same reason `lint` gives them one — `[14]` would send an operator to the
     // data-dialect row, which has nothing to do with either finding.
     findings.extend(
-        crate::validation::engine_advisories(&tasks, functions)
+        crate::validation::engine_advisories(&tasks, loop_config.as_ref(), functions)
             .into_iter()
             .map(|advisory| {
                 let entity = format!("workflow '{name}' {}", advisory.path);
@@ -441,6 +441,7 @@ pub fn check_workflow_tasks(
     findings.extend(
         crate::validation::tensor_operator_key_advisories(
             &tasks,
+            loop_config.as_ref(),
             functions,
             crate::validation::TensorKeyScope::Dynamic,
         )
@@ -453,7 +454,7 @@ pub fn check_workflow_tasks(
         }),
     );
 
-    findings.extend(check_dialect_schemas(name, &tasks));
+    findings.extend(check_dialect_schemas(name, &tasks, loop_config.as_ref()));
 
     // `$sql` became a reserved key when statements could live in `.sql`
     // files: an object with a string `$sql` is a reference only `compile`
@@ -534,13 +535,17 @@ fn tensor_key_diagnostic(entity: String, message: String) -> Diagnostic {
 /// violation — `schema` is a genuinely optional input, and a task can legally
 /// omit it by opting into `identity` explicitly. It is a *migration* question,
 /// which is what this module is for.
-fn check_dialect_schemas(workflow: &str, tasks: &Value) -> Vec<Diagnostic> {
+fn check_dialect_schemas(
+    workflow: &str,
+    tasks: &Value,
+    loop_config: Option<&Value>,
+) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
     // Flattened, like every other walk over authored tasks: a dialect task
     // inside a guard clause is one the engine will run, and an upgrade scan
     // that skipped it would report the estate clean and let the request fail
     // in production — the failure this whole module exists to pre-empt.
-    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+    for (path, task) in crate::engine::walk_steps(tasks, loop_config).tasks {
         let Some(function) = task.get("function") else {
             continue;
         };

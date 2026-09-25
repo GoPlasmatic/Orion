@@ -3715,3 +3715,35 @@ fn a_dry_run_whose_workflow_does_not_match_says_so() {
     assert_eq!(out["matched"], false, "{out}");
     assert_eq!(out["tasks"], serde_json::json!([]));
 }
+
+/// #351: a directory lint walks a loop's `setup` steps like the body's. A
+/// connector used only there, and missing from the set, passed `lint` and
+/// failed at run time.
+#[test]
+fn a_set_lint_sees_a_connector_used_only_in_loop_setup() {
+    let scratch = suite_with(
+        r#"{
+        "workflow_id": "wf",
+        "name": "wf",
+        "loop": {"max": 2, "setup": [
+            {"id": "prime", "name": "Prime", "function": {"name": "http_call", "input": {
+                "connector": "ghost", "method": "GET", "path": "/p", "output": "data.p"}}}
+        ]},
+        "tasks": [{"id": "body", "name": "Body", "function": {"name": "log", "input": {"message": "x"}}}]
+    }"#,
+    );
+    let out = Command::new(orion_bin())
+        .args(["lint", scratch.path().to_str().unwrap()])
+        .output()
+        .expect("run lint");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "{combined}");
+    assert!(
+        combined.contains("[closure.connector]") && combined.contains("'ghost'"),
+        "{combined}"
+    );
+}

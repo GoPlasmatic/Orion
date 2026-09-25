@@ -159,3 +159,26 @@ fn json_output_carries_every_field() {
     assert_eq!(json["level"], "warning");
     assert_eq!(json["rule"], "style.terminal_on_last_step");
 }
+
+/// #351: a loop's `setup` steps, its `over`, and a task's `for_each.over`
+/// are all read by the engine, so a rule reading the workflow's expressions
+/// sees each at its own coordinate.
+#[test]
+fn a_loop_and_a_fan_out_are_read_like_any_step() {
+    let dir = Path::new(FIXTURES).join("correctness.metadata_var_undeclared/fires");
+    let paths: Vec<String> = run_over(&dir)
+        .into_iter()
+        .filter(|d| d.check == "correctness.metadata_var_undeclared")
+        .filter_map(|d| d.path)
+        .collect();
+    for expected in [
+        "loop.over",
+        "loop.setup[0].condition",
+        "tasks[0].for_each.over",
+    ] {
+        assert!(
+            paths.iter().any(|p| p == expected),
+            "{expected} not reported: {paths:?}"
+        );
+    }
+}

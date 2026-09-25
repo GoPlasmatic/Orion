@@ -167,8 +167,8 @@ impl Rule for RedundantStepCondition {
          each of them, and a task group with that condition would evaluate it once and \
          guard the run.\n\n\
          Proof: canonical-JSON equality of the conditions; every read is a literal path; the \
-         run's writes (`task_writes` and mapping paths, a group's members included) overlap \
-         none of them; no `now`/`random`/`secret`.\n\n\
+         run's writes (`task_writes` and mapping paths, a fan-out's `collect` and `into`, a \
+         group's members included) overlap none of them; no `now`/`random`/`secret`.\n\n\
          Silent when: the condition has a computed or element-scoped read, a nondeterministic \
          operator, or is already constant; any step in the run writes a path the condition \
          reads or anything inside or above it; the condition reads `metadata.progress`, which \

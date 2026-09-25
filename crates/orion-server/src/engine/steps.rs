@@ -1,5 +1,6 @@
-//! Walking a workflow's `tasks` array, which since dataflow-rs 3.6 holds
-//! **steps** rather than tasks.
+//! Walking a workflow's steps: its `tasks` array, which since dataflow-rs 3.6
+//! holds **steps** rather than tasks, and since 3.14 its loop's `setup` list,
+//! which holds steps too and runs first.
 //!
 //! An element carrying a `tasks` key is a *task group* — `{id, condition,
 //! terminal, tasks}` — stating one condition for a contiguous run of tasks
@@ -38,7 +39,7 @@
 //! Reading [`MAX_GROUP_DEPTH`] means the limit tracks the parser by
 //! construction.
 
-use dataflow_rs::{MAX_GROUP_DEPTH, StepKind, walk_authored_steps};
+use dataflow_rs::{MAX_GROUP_DEPTH, StepKind, walk_authored_steps, walk_authored_steps_at};
 use serde_json::Value;
 
 pub use dataflow_rs::is_group;
@@ -69,10 +70,31 @@ pub struct Steps<'a> {
     pub too_deep: Vec<String>,
 }
 
-/// Flatten a `tasks` array into its leaf tasks and its groups.
-pub fn walk_steps(tasks: &Value) -> Steps<'_> {
+/// Every step of a workflow, in the order the engine runs them: its loop's
+/// `setup` list, at `loop.setup[0]`…, then `tasks`.
+///
+/// Both halves, always. A loop's setup steps are tasks the engine resolves,
+/// validates and runs exactly as it does the body's (dataflow-rs 3.14), and a
+/// walk handed `tasks` alone passed an unknown function, a missing connector
+/// or a duplicate id placed there without a word (#351). Taking the loop in
+/// the signature is what makes that omission something a caller has to write
+/// out rather than fall into.
+fn authored_steps<'a>(
+    tasks: &'a Value,
+    loop_config: Option<&'a Value>,
+) -> impl Iterator<Item = dataflow_rs::AuthoredStep<'a>> {
+    let setup = loop_config.and_then(|l| l.get("setup"));
+    setup
+        .into_iter()
+        .flat_map(|setup| walk_authored_steps_at(setup, "loop.setup"))
+        .chain(walk_authored_steps(tasks))
+}
+
+/// Flatten a workflow's steps into its leaf tasks and its groups, setup
+/// first.
+pub fn walk_steps<'a>(tasks: &'a Value, loop_config: Option<&'a Value>) -> Steps<'a> {
     let mut out = Steps::default();
-    for step in walk_authored_steps(tasks) {
+    for step in authored_steps(tasks, loop_config) {
         match step.kind {
             StepKind::Leaf => out.tasks.push((step.path, step.node)),
             StepKind::Group => out.groups.push((step.path, step.node)),
@@ -82,15 +104,15 @@ pub fn walk_steps(tasks: &Value) -> Steps<'_> {
     out
 }
 
-/// Just the leaf tasks, for the walks that do not need paths.
+/// Just the leaf tasks, setup first, for the walks that do not need paths.
 ///
 /// The engine's walker formats a path for every node, so this no longer saves
 /// the allocation it once did — it saves the caller a `filter`/`map` and keeps
 /// "which tasks are in this workflow" a single spelling. The traversal is the
 /// same one [`walk_steps`] uses, which is the property that matters: the
 /// premise of this module is that every walk sees the same tasks.
-pub fn leaf_tasks(tasks: &Value) -> Vec<&Value> {
-    walk_authored_steps(tasks)
+pub fn leaf_tasks<'a>(tasks: &'a Value, loop_config: Option<&'a Value>) -> Vec<&'a Value> {
+    authored_steps(tasks, loop_config)
         .filter(|step| step.kind == StepKind::Leaf)
         .map(|step| step.node)
         .collect()
@@ -105,12 +127,36 @@ mod tests {
         json!({"id": id, "name": id, "function": {"name": "map", "input": {"mappings": []}}})
     }
 
+    /// #351: a loop's `setup` steps are steps the engine runs, first, and
+    /// every walk must see them, at the coordinate the author typed.
+    #[test]
+    fn a_loops_setup_steps_come_first_at_their_own_paths() {
+        let tasks = json!([task("body")]);
+        let loop_config = json!({"max": 2, "setup": [
+            task("prime"),
+            {"id": "g", "tasks": [task("inner")]}
+        ]});
+        let steps = walk_steps(&tasks, Some(&loop_config));
+        assert_eq!(
+            steps
+                .tasks
+                .iter()
+                .map(|(p, _)| p.as_str())
+                .collect::<Vec<_>>(),
+            ["loop.setup[0]", "loop.setup[1].tasks[0]", "tasks[0]"]
+        );
+        assert_eq!(steps.groups.len(), 1);
+        assert_eq!(leaf_tasks(&tasks, Some(&loop_config)).len(), 3);
+        // A loop without `setup` adds nothing.
+        assert_eq!(leaf_tasks(&tasks, Some(&json!({"max": 2}))).len(), 1);
+    }
+
     /// The flat case must be untouched: every workflow written before 3.6 is
     /// one, and this walk replaced the loops that handled them.
     #[test]
     fn a_flat_array_yields_its_tasks_in_order() {
         let tasks = json!([task("a"), task("b")]);
-        let steps = walk_steps(&tasks);
+        let steps = walk_steps(&tasks, None);
         assert!(steps.groups.is_empty());
         assert_eq!(
             steps
@@ -134,7 +180,7 @@ mod tests {
             ]},
             task("last")
         ]);
-        let steps = walk_steps(&tasks);
+        let steps = walk_steps(&tasks, None);
 
         assert_eq!(
             steps
@@ -161,7 +207,7 @@ mod tests {
                 {"id": "inner", "tasks": [task("deep")]}
             ]}
         ]);
-        let steps = walk_steps(&tasks);
+        let steps = walk_steps(&tasks, None);
         assert_eq!(steps.tasks.len(), 1);
         assert_eq!(steps.tasks[0].0, "tasks[0].tasks[0].tasks[0]");
         assert_eq!(steps.groups.len(), 2, "both levels are groups");
@@ -176,7 +222,7 @@ mod tests {
         for i in 0..MAX_STEP_DEPTH + 2 {
             inner = json!([{"id": format!("g{i}"), "tasks": inner}]);
         }
-        let steps = walk_steps(&inner);
+        let steps = walk_steps(&inner, None);
         assert!(
             !steps.too_deep.is_empty(),
             "a tree past the limit must be reported, not silently truncated"
@@ -194,7 +240,7 @@ mod tests {
             inner = json!([{"id": format!("g{i}"), "tasks": inner}]);
         }
         assert!(
-            walk_steps(&inner).too_deep.is_empty(),
+            walk_steps(&inner, None).too_deep.is_empty(),
             "{MAX_STEP_DEPTH} levels of nesting is what the parser accepts"
         );
         assert!(
@@ -212,7 +258,7 @@ mod tests {
     #[test]
     fn a_task_missing_its_function_is_still_a_task() {
         let tasks = json!([{"id": "broken", "name": "broken"}]);
-        let steps = walk_steps(&tasks);
+        let steps = walk_steps(&tasks, None);
         assert_eq!(steps.tasks.len(), 1);
         assert!(steps.groups.is_empty());
     }
@@ -236,12 +282,16 @@ mod tests {
             deep,
         ];
         for tasks in cases {
-            let expected: Vec<&Value> = walk_steps(&tasks)
+            let expected: Vec<&Value> = walk_steps(&tasks, None)
                 .tasks
                 .into_iter()
                 .map(|(_, t)| t)
                 .collect();
-            assert_eq!(leaf_tasks(&tasks), expected, "disagreement on {tasks}");
+            assert_eq!(
+                leaf_tasks(&tasks, None),
+                expected,
+                "disagreement on {tasks}"
+            );
         }
     }
 }

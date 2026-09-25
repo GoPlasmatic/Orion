@@ -1,6 +1,6 @@
 <!-- description: How a definition set says a thing once: $from splices a constant, use and $use expand fragments, $each repeats, and compile resolves them all. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-09-25 -->
 
 # Shared definitions
 
@@ -36,6 +36,8 @@ resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users
 ```json
 { "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
 ```
+
+A `use` step goes wherever a step goes: in a workflow's `tasks`, inside a task group, and in a loop's `setup` list.
 
 Expanded task ids are namespaced by the call-site id (`_session.check`). A fragment therefore cannot collide with the including workflow or with a second instance of itself. **Every** id the fragment contributes is prefixed, including those inside a task group, a group's own id and its members' alike. The prefix is flat rather than one segment per enclosing group, so `refused`/`deny` become `_session.refused` and `_session.deny`. A parameter with no `default` is required at every call site. A fragment may use another fragment, at any depth, and the inner ids carry both call sites: `_session.inner.check`.
 

@@ -1,6 +1,6 @@
 <!-- description: The Orion workflow object in full: fields, tasks, task groups, terminal steps, the shared data context, request metadata, loops, error handling and rollout. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-25 -->
 
 # Workflow definition
 
@@ -51,6 +51,7 @@ Each entry in `tasks` is a single step in the pipeline:
 | `continue_on_error` | bool | no | inherits the workflow | Per-task override: `true` lets the pipeline continue past **this** task's error or `5xx`. To stop on a `4xx`, use `halt_on` |
 | `terminal` | bool | no | `false` | End the workflow after this step runs. About **position, not outcome** — see [Terminal steps](#terminal-steps) |
 | `halt_on` | string | no | `"never"` | `"failure"` ends the workflow when *this task* failed. About **outcome, not position** — see [Halting on failure](#halting-on-failure). Tasks only; a group carrying it is refused |
+| `for_each` | object | no | — | Run the task's function once per element of an array — see [Fan-out](#fan-out) |
 
 The `function` object names a [built-in function](./functions/index.md) and supplies
 its `input`:
@@ -151,6 +152,45 @@ does not have to be found in production.
 `halt_on` belongs to a task. A group has no outcome of its own, so one carrying `halt_on` is refused at parse, loudly, rather than as a guard that never fires. `continue_on_error` on a group is the same mistake resolved the other way: it parses, the engine drops it, and `lint` reports `engine.group_continue_on_error`.
 
 **Since:** Orion 1.6. `halt_on` needs dataflow-rs 3.10, which Orion 1.6.0 ships.
+
+### Fan-out
+
+A task with `for_each` runs its function once per element of an array, and collects the results:
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `over` | JSONLogic | **yes** | — | Evaluated once, after the task's `condition`. Must yield an array; anything else, `null` included, fails the task. An empty array runs no call |
+| `as` | string | **yes** | — | `temp_data` field holding the element in each call's view. Its index is at `temp_data.<as>_index` |
+| `max_concurrency` | integer | no | `1` | Calls in flight at once. A timing knob only: the message comes out the same at every setting |
+| `collect` | string | no | — | Context path each call writes its result to. Requires `into` |
+| `into` | string | no | — | Context path that receives the results as an array, in element order. Requires `collect` |
+
+```json
+{
+  "id": "infer",
+  "name": "One move per participant",
+  "continue_on_error": true,
+  "for_each": {
+    "over": { "var": "data.participants" },
+    "as": "p",
+    "max_concurrency": 8,
+    "collect": "temp_data.move",
+    "into": "temp_data.moves"
+  },
+  "function": {
+    "name": "model_infer",
+    "input": { "model": { "var": "temp_data.p.model" }, "output": "temp_data.move" }
+  }
+}
+```
+
+Every call runs against its own copy of the message, taken before the first call, so no call sees another's writes. The calls' writes, errors and audit entries are then folded back in element order. The element bindings are not left behind. An element that failed, never ran, or wrote nothing at `collect` leaves `null` at its index in `into`.
+
+The task's `continue_on_error` applies per element. A call that fails the task stops new calls from starting, and the elements after it contribute nothing. `terminal` and `halt_on` apply once, after the whole fan-out.
+
+Any Orion function can fan out. The engine's inline built-ins (`map`, `validation`, `filter`, `log`, `parse_json`, `parse_xml`, `publish_json`, `publish_xml`) cannot: a per-element transform is JSONLogic's `map`. A key `for_each` does not define is refused at write time, because the engine would ignore it: `max_concurency` would otherwise run one call at a time without a word.
+
+**Since:** Orion 1.9.1, which ships dataflow-rs 3.14.
 
 ## The data context
 
@@ -316,6 +356,10 @@ A workflow with a `loop` runs its whole task list once per sweep instead of once
 | `counter` | string | no | — | `temp_data` field holding the count — `"i"` is `temp_data.i`, and dots nest (`"cursor.index"`). Omit to bound the loop without exposing the count |
 | `init` | integer | no | `0` | First counter value |
 | `increment` | integer | no | `1` | Added after each sweep. Must be at least `1`, so the counter always advances |
+| `over` | JSONLogic | no | — | An array to iterate. Evaluated once, after `setup`; see [Iterating an array](#iterating-an-array) |
+| `as` | string | no | — | `temp_data` field holding the current element of `over`. Requires `over` |
+| `scratch` | string | no | — | `temp_data` field reset to `{}` at the start of every sweep, before the condition, so per-element state cannot leak into the next sweep |
+| `setup` | array of steps | no | — | Steps run once, before the first sweep; see [Setup](#setup) |
 
 Per sweep, in order, the engine writes the counter, checks `counter < max`, re-evaluates the workflow `condition`, and runs the task list. The sweep happens only if both the bound and the condition hold.
 
@@ -370,6 +414,18 @@ The two bounds do different jobs. `max` is structural: the loop cannot outrun it
 `max` is capped by [`engine.max_loop_iterations`](./configuration/index.md) (default `10000`), and a workflow exceeding it is refused with `400` at write time rather than at activation. A sweep can call a connector, so an unbounded loop is a request that holds pool connections until the channel timeout fires.
 
 Each sweep's steps appear in the [execution trace](../operate/run/traces.md) tagged with the iteration they belong to. A trace of ten sweeps reads as ten groups rather than one flat list.
+
+A key `loop` does not define is refused at write time, because the engine would ignore it.
+
+### Setup
+
+`setup` is a list of steps run once, before the first sweep, in the same grammar as `tasks`: task groups are allowed, and a `terminal` step ends the workflow before any sweep. The workflow `condition` gates setup and the loop alike. Setup steps share the body's id namespace, so an id used in both is refused. Everything Orion checks about a step it checks about a setup step: its function and input at create, the connectors it names at activation and when a connector is renamed or deleted, and every `lint` and `clippy` rule.
+
+### Iterating an array
+
+With `over`, the counter indexes the array: sweep `k` holds `over[k]` at `temp_data.<as>`, and the loop stops at `max` or at the array's end, whichever comes first. `init` is then a starting offset, `increment` a stride, and `init` must be at least `0`. `over` must yield an array; anything else, `null` included, is a workflow error naming `loop.over`, and an empty array runs no sweep. `max` still applies.
+
+**Since:** Orion 1.9.1 for `setup`, `over`, `as` and `scratch`, which need dataflow-rs 3.14.
 
 ## Error handling
 

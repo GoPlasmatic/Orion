@@ -197,20 +197,31 @@ pub fn apply(
 /// form the engine will parse.
 pub fn fold_value(doc: &mut Value, fix: &Fix) -> Result<(), Refusal> {
     let Fix::FoldRun { members, group_id } = fix;
-    let ids = step_ids(doc.get("tasks").unwrap_or(&Value::Null));
-    if ids.contains(group_id.as_str()) {
+    // One id namespace across a loop's `setup` and the body, as the engine
+    // checks it.
+    let collides = STEP_LISTS
+        .iter()
+        .any(|at| step_ids(doc.pointer(at).unwrap_or(&Value::Null)).contains(group_id.as_str()));
+    if collides {
         return Err(Refusal::IdCollision {
             id: group_id.clone(),
         });
     }
-    let Some(tasks) = doc.get_mut("tasks") else {
-        return Err(Refusal::NotAuthoredHere {
-            members: members.clone(),
-        });
-    };
-    let (list, start) = locate_value(tasks, members).ok_or_else(|| Refusal::NotAuthoredHere {
+    let not_here = || Refusal::NotAuthoredHere {
         members: members.clone(),
-    })?;
+    };
+    // The list the run sits in, found without holding a borrow, then taken.
+    let at = STEP_LISTS
+        .iter()
+        .find(|at| {
+            doc.pointer(at)
+                .is_some_and(|list| locate_value(&mut list.clone(), members).is_some())
+        })
+        .ok_or_else(not_here)?;
+    let (list, start) = doc
+        .pointer_mut(at)
+        .and_then(|tasks| locate_value(tasks, members))
+        .ok_or_else(not_here)?;
     let run: Vec<Value> = list.drain(start..start + members.len()).collect();
     let condition = run[0].get("condition").cloned().unwrap_or(Value::Null);
     let steps = run
@@ -227,7 +238,7 @@ pub fn fold_value(doc: &mut Value, fix: &Fix) -> Result<(), Refusal> {
     group.insert("condition".to_string(), condition);
     group.insert("tasks".to_string(), Value::Array(steps));
     list.insert(start, Value::Object(group));
-    if !crate::engine::walk_steps(doc.get("tasks").unwrap_or(&Value::Null))
+    if !crate::engine::walk_steps(doc.get("tasks").unwrap_or(&Value::Null), doc.get("loop"))
         .too_deep
         .is_empty()
     {
@@ -235,6 +246,11 @@ pub fn fold_value(doc: &mut Value, fix: &Fix) -> Result<(), Refusal> {
     }
     Ok(())
 }
+
+/// The top-level step lists of a workflow, as JSON pointers: a loop's
+/// `setup`, which runs first, and the body. A run is folded in whichever it
+/// sits in.
+const STEP_LISTS: [&str; 2] = ["/loop/setup", "/tasks"];
 
 /// Every step id in a compiled step list, groups included.
 fn step_ids(tasks: &Value) -> BTreeSet<&str> {
@@ -297,14 +313,24 @@ fn find_run<'a>(ids: impl Iterator<Item = Option<&'a str>>, members: &[String]) 
 // ------------------------------------------------------------
 
 /// Fold the run in the source tree. A step list is searched only where the
-/// author wrote steps — the workflow's `tasks` and each group's — never
+/// author wrote steps — the workflow's `tasks`, its loop's `setup`, and each
+/// group's — never
 /// inside a `use` step, and a run holding a `use` or an `$each` is not one.
 pub fn fold_source(root: &mut Node, fix: &Fix) -> Result<(), Refusal> {
     let Fix::FoldRun { members, group_id } = fix;
     let not_here = || Refusal::NotAuthoredHere {
         members: members.clone(),
     };
-    let tasks = object_get_mut(root, "tasks").ok_or_else(not_here)?;
+    let in_setup = object_get_mut(root, "loop")
+        .and_then(|l| object_get_mut(l, "setup"))
+        .and_then(|setup| locate_node(setup, members))
+        .is_some();
+    let tasks = if in_setup {
+        object_get_mut(root, "loop").and_then(|l| object_get_mut(l, "setup"))
+    } else {
+        object_get_mut(root, "tasks")
+    }
+    .ok_or_else(not_here)?;
     let (list, start) = locate_node(tasks, members).ok_or_else(not_here)?;
     for step in &list[start..start + members.len()] {
         if step.node.get("condition").is_none() {
@@ -527,6 +553,28 @@ mod tests {
         );
     }
 
+    /// A loop's `setup` shares the body's id namespace, so a group id taken
+    /// there is taken.
+    #[test]
+    fn a_group_id_taken_in_loop_setup_is_a_collision() {
+        let wf = json!({
+            "loop": {"max": 2, "setup": [step("when_a", json!({}))]},
+            "tasks": [step("a", json!({})), step("b", json!({}))]
+        });
+        let out = apply(
+            Some(&doc(&wf.to_string())),
+            &wf,
+            &[fold(&["a", "b"], "when_a")],
+            &same,
+        );
+        assert_eq!(
+            out.refused[0].1,
+            Refusal::IdCollision {
+                id: "when_a".to_string()
+            }
+        );
+    }
+
     #[test]
     fn a_condition_arriving_through_a_splice_is_refused() {
         let compiled = json!({"tasks": [step("a", json!({})), step("b", json!({}))]});
@@ -567,7 +615,11 @@ mod tests {
             inner = json!([{"id": format!("g{depth}"), "condition": true, "tasks": inner}]);
         }
         let wf = json!({"tasks": inner});
-        assert!(crate::engine::walk_steps(&wf["tasks"]).too_deep.is_empty());
+        assert!(
+            crate::engine::walk_steps(&wf["tasks"], None)
+                .too_deep
+                .is_empty()
+        );
         let out = apply(
             Some(&doc(&wf.to_string())),
             &wf,

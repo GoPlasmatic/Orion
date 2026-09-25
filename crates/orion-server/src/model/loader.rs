@@ -422,13 +422,14 @@ fn compile_entry(
     })
 }
 
-/// Every `(task id, model id)` pair in `tasks` where a task calls
-/// `model_infer` with a literal `input.model`, through task groups. A
+/// Every `(task id, model id)` pair in a workflow's steps, its loop's
+/// `setup` included, where a task calls `model_infer` with a literal
+/// `input.model`, through task groups. A
 /// computed reference — an expression, a template — is not seen: the model
 /// it resolves to is decided per message. The task id falls back to the
 /// step path for a task without one.
-pub fn literal_references(tasks: &Value) -> Vec<(String, String)> {
-    crate::engine::walk_steps(tasks)
+pub fn literal_references(tasks: &Value, loop_config: Option<&Value>) -> Vec<(String, String)> {
+    crate::engine::walk_steps(tasks, loop_config)
         .tasks
         .into_iter()
         .filter_map(|(path, task)| {
@@ -763,12 +764,12 @@ mod tests {
                 "input": {"message": "ada.c4-tiny"}}},
         ]);
         assert_eq!(
-            literal_references(&tasks),
+            literal_references(&tasks, None),
             vec![
                 ("plain".to_string(), "ada.c4-tiny".to_string()),
                 ("nested".to_string(), "ada.other".to_string()),
             ]
         );
-        assert!(literal_references(&json!([])).is_empty());
+        assert!(literal_references(&json!([]), None).is_empty());
     }
 }

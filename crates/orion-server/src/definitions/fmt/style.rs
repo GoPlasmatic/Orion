@@ -60,8 +60,14 @@ pub const TASK_KEYS: &[&str] = &[
     "terminal",
     "halt_on",
     "continue_on_error",
+    "for_each",
     "function",
 ];
+
+/// A task's `for_each`, in the order the reference documents it: what it
+/// runs over and the name each element is bound to, then how many at once,
+/// then where the results go.
+pub const FOR_EACH_KEYS: &[&str] = &["over", "as", "max_concurrency", "collect", "into"];
 
 /// A task group: the step keys that apply to a group, then its members.
 pub const GROUP_KEYS: &[&str] = &[
@@ -82,8 +88,20 @@ pub const MAPPING_KEYS: &[&str] = &["path", "logic"];
 
 pub const VALIDATION_RULE_KEYS: &[&str] = &["logic", "message"];
 
-/// The `loop` object, in the order the reference documents it.
-pub const LOOP_KEYS: &[&str] = &["counter", "init", "max", "increment"];
+/// The `loop` object, in the order the reference documents it: the counter
+/// and its bounds, then what it iterates over, then the `setup` steps, last
+/// for the reason `tasks` is last on a workflow — a step list reads best
+/// after the scalars it runs under.
+pub const LOOP_KEYS: &[&str] = &[
+    "counter",
+    "init",
+    "max",
+    "increment",
+    "over",
+    "as",
+    "scratch",
+    "setup",
+];
 
 /// `CreateChannelRequest`, in reading order, plus `activate`.
 pub const CHANNEL_KEYS: &[&str] = &[
@@ -175,6 +193,7 @@ pub fn all_tables() -> &'static [(&'static str, &'static [&'static str])] {
         ("mapping", MAPPING_KEYS),
         ("validation_rule", VALIDATION_RULE_KEYS),
         ("loop", LOOP_KEYS),
+        ("for_each", FOR_EACH_KEYS),
         ("channel", CHANNEL_KEYS),
         ("connector", CONNECTOR_KEYS),
         ("shared_doc", SHARED_DOC_KEYS),

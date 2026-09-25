@@ -84,7 +84,7 @@ fn check_read_only_statements(def: &Definition, name: &str, findings: &mut Vec<D
     let Some(tasks) = def.doc.get("tasks") else {
         return;
     };
-    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+    for (path, task) in crate::engine::walk_steps(tasks, def.doc.get("loop")).tasks {
         let function = task.get("function");
         if function.and_then(|f| f.get("name")).and_then(Value::as_str) != Some("db_read") {
             continue;
@@ -261,14 +261,18 @@ fn quoted(names: &[String]) -> String {
         .join(", ")
 }
 
-/// Every `model_infer` task in `tasks`, through task groups: the ones naming
+/// Every `model_infer` task in a workflow's steps, its loop's `setup` and
+/// task groups included: the ones naming
 /// a model by literal id, and the ones whose `model` is computed. Each with
 /// the JSON path of the `model` field, so a finding points at what the
 /// author wrote.
-fn model_references(tasks: &Value) -> (Vec<(String, String)>, Vec<String>) {
+fn model_references(
+    tasks: &Value,
+    loop_config: Option<&Value>,
+) -> (Vec<(String, String)>, Vec<String>) {
     let mut literal = Vec::new();
     let mut dynamic = Vec::new();
-    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+    for (path, task) in crate::engine::walk_steps(tasks, loop_config).tasks {
         let Some(function) = task.get("function") else {
             continue;
         };
@@ -297,8 +301,8 @@ fn model_references(tasks: &Value) -> (Vec<(String, String)>, Vec<String>) {
 /// What the workflow pass learned.
 struct Workflows {
     ids: Vec<String>,
-    /// (id-or-origin, tasks) in set order.
-    tasks: Vec<(String, Value)>,
+    /// (id-or-origin, tasks, loop) in set order.
+    tasks: Vec<(String, Value, Option<Value>)>,
 }
 
 /// name → what the connector is, for the closure checks.
@@ -397,7 +401,7 @@ fn check_workflows(
         // validates it against the active plugin when the workflow arrives.
         let mut unverifiable: Vec<String> = Vec::new();
         let mut undeclared: Vec<(String, String, String)> = Vec::new();
-        for task in crate::engine::leaf_tasks(&req.tasks) {
+        for task in crate::engine::leaf_tasks(&req.tasks, req.loop_config.as_ref()) {
             let Some(name) = task
                 .get("function")
                 .and_then(|f| f.get("name"))
@@ -462,7 +466,11 @@ fn check_workflows(
         // separately from `schema.workflow` so a pipeline can see which of the
         // two refused the set. `validate_create_workflow` refuses the same
         // documents, so a set that passes here is one the admin API accepts.
-        for (path, message) in crate::validation::secret_reference_errors(&req.tasks, functions) {
+        for (path, message) in crate::validation::secret_reference_errors(
+            &req.tasks,
+            req.loop_config.as_ref(),
+            functions,
+        ) {
             findings.push(Diagnostic::error(
                 "env.unresolved",
                 format!("workflow '{}' {path}", req.name),
@@ -471,8 +479,11 @@ fn check_workflows(
         }
         // The advisory the single-file lint already emits, carried into set
         // mode so a directory gate is not weaker than the per-file one.
-        for (path, message) in crate::validation::unresolvable_logic_warnings(&req.tasks, functions)
-        {
+        for (path, message) in crate::validation::unresolvable_logic_warnings(
+            &req.tasks,
+            req.loop_config.as_ref(),
+            functions,
+        ) {
             findings.push(Diagnostic::warning(
                 "logic.unresolvable",
                 format!("workflow '{}' {path}", req.name),
@@ -483,7 +494,9 @@ fn check_workflows(
         // `$`-prefixed key that loses one `$` when it is emitted, a
         // `validation` whose failure changes nothing, and `continue_on_error`
         // on a group, which parses and is dropped.
-        for advisory in crate::validation::engine_advisories(&req.tasks, functions) {
+        for advisory in
+            crate::validation::engine_advisories(&req.tasks, req.loop_config.as_ref(), functions)
+        {
             findings.push(Diagnostic::warning(
                 advisory.check,
                 format!("workflow '{}' {}", req.name, advisory.path),
@@ -500,7 +513,7 @@ fn check_workflows(
                     ));
                 }
                 ids.push(id.clone());
-                tasks.push((id.clone(), req.tasks.clone()));
+                tasks.push((id.clone(), req.tasks.clone(), req.loop_config.clone()));
             }
             None if require_explicit_ids => findings.push(
                 Diagnostic::error(
@@ -513,7 +526,11 @@ fn check_workflows(
             ),
             // Authoring-time directory lint: an id-less workflow is still
             // worth checking, it just cannot be a `channel.workflow_id` target.
-            None => tasks.push((def.origin.clone(), req.tasks.clone())),
+            None => tasks.push((
+                def.origin.clone(),
+                req.tasks.clone(),
+                req.loop_config.clone(),
+            )),
         }
     }
     Workflows { ids, tasks }
@@ -731,7 +748,8 @@ fn check_closure(
     functions: &FunctionRegistry,
     findings: &mut Vec<Diagnostic>,
 ) {
-    for (workflow, tasks) in &workflows.tasks {
+    for (workflow, tasks, loop_config) in &workflows.tasks {
+        let loop_config = loop_config.as_ref();
         let entity = format!("workflow '{workflow}'");
 
         // A model named by literal id must have a manifest in the set (or be
@@ -740,7 +758,7 @@ fn check_closure(
         // this is that gate offline. The finding is a field error first —
         // `MODEL_UNKNOWN` at the `model` field's path — so it carries the
         // coordinate a loaded document can turn into `file:line:col`.
-        let (literal, dynamic) = model_references(tasks);
+        let (literal, dynamic) = model_references(tasks, loop_config);
         for (path, model) in literal {
             if set.model_of(&model).is_some() || boundary.allows_model(&model) {
                 continue;
@@ -776,7 +794,7 @@ fn check_closure(
         // activation gate the admin API runs (`admin::services::workflows`).
         // Only the lookup differs: there a live registry, here the set's own
         // connector definitions.
-        for problem in crate::engine::check_connector_refs(tasks, functions, |name| {
+        for problem in crate::engine::check_connector_refs(tasks, loop_config, functions, |name| {
             connectors.get(name).copied()
         }) {
             match problem {
@@ -823,7 +841,7 @@ fn check_closure(
             }
         }
 
-        let (targets, dynamic) = crate::engine::channel_call_targets(tasks);
+        let (targets, dynamic) = crate::engine::channel_call_targets(tasks, loop_config);
         for target in targets {
             if !channels.iter().any(|n| n == target) && !boundary.allows_channel(target) {
                 findings.push(Diagnostic::error(

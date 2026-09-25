@@ -275,9 +275,9 @@ pub(crate) async fn resolve(
     Ok((draft, keep))
 }
 
-/// Every function name a workflow's tasks call.
-pub(crate) fn called_functions(tasks: &Value) -> Vec<String> {
-    crate::engine::leaf_tasks(tasks)
+/// Every function name a workflow's steps call, its loop's `setup` included.
+pub(crate) fn called_functions(tasks: &Value, loop_config: Option<&Value>) -> Vec<String> {
+    crate::engine::leaf_tasks(tasks, loop_config)
         .into_iter()
         .filter_map(|t| t.get("function")?.get("name")?.as_str().map(str::to_string))
         .collect()
@@ -291,10 +291,10 @@ pub(crate) async fn active_workflows_naming(
 ) -> Result<Vec<String>, OrionError> {
     let mut users = Vec::new();
     for workflow in workflows.list_active().await? {
-        let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
+        let Some((tasks, loop_config)) = workflow.parsed_steps() else {
             continue;
         };
-        if called_functions(&tasks)
+        if called_functions(&tasks, loop_config.as_ref())
             .iter()
             .any(|f| functions.contains(f))
         {
@@ -338,10 +338,10 @@ pub(crate) fn ensure_functions_available(
     functions: &FunctionRegistry,
     workflow: &Workflow,
 ) -> Result<(), OrionError> {
-    let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
+    let Some((tasks, loop_config)) = workflow.parsed_steps() else {
         return Ok(()); // unparseable tasks are caught elsewhere
     };
-    let mut missing: Vec<String> = called_functions(&tasks)
+    let mut missing: Vec<String> = called_functions(&tasks, loop_config.as_ref())
         .into_iter()
         .filter(|f| !functions.contains(f))
         .collect();
@@ -399,10 +399,10 @@ pub(crate) async fn ensure_dependants_accept(
 
     let mut problems: Vec<String> = Vec::new();
     for workflow in workflows.list_active().await? {
-        let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
+        let Some((tasks, loop_config)) = workflow.parsed_steps() else {
             continue;
         };
-        for (path, task) in crate::engine::walk_steps(&tasks).tasks {
+        for (path, task) in crate::engine::walk_steps(&tasks, loop_config.as_ref()).tasks {
             let Some(function) = task.get("function") else {
                 continue;
             };

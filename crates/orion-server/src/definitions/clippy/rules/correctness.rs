@@ -192,8 +192,9 @@ impl Rule for UnreachableStep {
     }
     fn explain(&self) -> &'static str {
         "A `terminal: true` step ends the workflow. When that step is certain to be reached \
-         — no condition on it or on any enclosing group — everything after it in document \
-         order is dead.\n\n\
+         — no condition on it or on any enclosing group — everything after it in run order \
+         is dead. A loop's `setup` runs before the body, so a certain terminal step there \
+         ends the workflow before any sweep.\n\n\
          Proof: read from the dataflow-rs executor. A terminal *task* halts after it has \
          run, so it must be unconditional to be certain; a terminal *group* halts when its \
          span closes even if no member ran, so an unconditional group is certain whatever \
@@ -432,9 +433,15 @@ impl Rule for PayloadVar {
         for wf in &cx.workflows {
             let mut exprs: Vec<(String, &crate::definitions::analysis::Expr)> =
                 vec![("condition".to_string(), &wf.condition)];
+            if let Some(over) = &wf.loop_over {
+                exprs.push(("loop.over".to_string(), over));
+            }
             for step in &wf.steps {
                 if let Some(c) = &step.condition {
                     exprs.push((format!("{}.condition", step.path), c));
+                }
+                if let Some(over) = &step.for_each_over {
+                    exprs.push((format!("{}.for_each.over", step.path), over));
                 }
                 for (p, e) in &step.expressions {
                     exprs.push((format!("{}.function.input.{p}", step.path), e));
@@ -595,9 +602,15 @@ impl Rule for MetadataVarUndeclared {
         for wf in &cx.workflows {
             let mut exprs: Vec<(String, &crate::definitions::analysis::Expr)> =
                 vec![("condition".to_string(), &wf.condition)];
+            if let Some(over) = &wf.loop_over {
+                exprs.push(("loop.over".to_string(), over));
+            }
             for step in &wf.steps {
                 if let Some(c) = &step.condition {
                     exprs.push((format!("{}.condition", step.path), c));
+                }
+                if let Some(over) = &step.for_each_over {
+                    exprs.push((format!("{}.for_each.over", step.path), over));
                 }
                 for (p, e) in &step.expressions {
                     exprs.push((format!("{}.function.input.{p}", step.path), e));
@@ -1076,7 +1089,9 @@ impl Rule for MappingAlwaysNull {
          Silent when: the `logic` is not a compile-time constant. `{\"var\": \
          \"temp_data.maybe\"}` may be null only at run time, and `{\"if\": [c, x, null]}` \
          uses null on one branch to mean \"keep the current value\", which is a legitimate \
-         reading."
+         reading. Silent too for a mapping with `\"unset\": true`, and for one whose \
+         `on_null` is anything but `skip`: `on_null: \"unset\"` removes the path when the \
+         result is null, so an always-null `logic` there does write, on every message."
     }
 
     fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
@@ -1094,6 +1109,21 @@ impl Rule for MappingAlwaysNull {
                         continue;
                     };
                     if !expr.compiles || expr.constant != Some(Value::Null) {
+                        continue;
+                    }
+                    // Only the default `on_null: "skip"` turns a null result
+                    // into no write; the engine's own check draws the same line.
+                    let mapping = step
+                        .node
+                        .pointer(&format!("/function/input/mappings/{index}"));
+                    let unset = mapping
+                        .and_then(|m| m.get("unset"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let skips_null = mapping
+                        .and_then(|m| m.get("on_null"))
+                        .is_none_or(|on_null| on_null.as_str() == Some("skip"));
+                    if unset || !skips_null {
                         continue;
                     }
                     let destination = step
@@ -1118,7 +1148,8 @@ impl Rule for MappingAlwaysNull {
                             ),
                         )
                         .with_remedy(
-                            "write `false` to clear a slot later steps test, or remove the mapping",
+                            "to remove the path, write the mapping as `\"unset\": true`; \
+                             otherwise remove it",
                         ),
                     );
                 }

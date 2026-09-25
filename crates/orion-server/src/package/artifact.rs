@@ -415,11 +415,12 @@ pub fn package_members(artifact: &PackageArtifact) -> super::PackageMembers {
     )
 }
 
-/// The literal model ids a workflow entry's tasks name.
+/// The literal model ids a workflow entry's steps name, its loop's `setup`
+/// included.
 pub fn literal_model_ids(workflow: &Value) -> Vec<String> {
     workflow
         .get("tasks")
-        .map(crate::model::literal_references)
+        .map(|tasks| crate::model::literal_references(tasks, workflow.get("loop")))
         .unwrap_or_default()
         .into_iter()
         .map(|(_, model)| model)

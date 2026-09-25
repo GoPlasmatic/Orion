@@ -22,14 +22,19 @@ pub struct ConnectorRef<'a> {
     pub input: &'a Value,
 }
 
-/// Every connector a workflow's tasks reference, in task order.
+/// Every connector a workflow's steps reference, its loop's `setup` first,
+/// in task order.
 ///
 /// `functions` says which names take a connector — the serving generation's
 /// registry on the admin paths, the built-in one offline.
-pub fn connector_refs<'a>(tasks: &'a Value, functions: &FunctionRegistry) -> Vec<ConnectorRef<'a>> {
+pub fn connector_refs<'a>(
+    tasks: &'a Value,
+    loop_config: Option<&'a Value>,
+    functions: &FunctionRegistry,
+) -> Vec<ConnectorRef<'a>> {
     // Flattened: since 3.6 a `tasks` element may be a group, and a connector
     // referenced only from inside one would otherwise pass closure checking.
-    super::steps::leaf_tasks(tasks)
+    super::steps::leaf_tasks(tasks, loop_config)
         .into_iter()
         .filter_map(|task| {
             let function = task.get("function")?;
@@ -91,6 +96,7 @@ pub enum RefProblem<'a> {
 /// which the handler refuses at its first request.
 pub fn check_connector_refs<'a, F>(
     tasks: &'a Value,
+    loop_config: Option<&'a Value>,
     functions: &FunctionRegistry,
     facts: F,
 ) -> Vec<RefProblem<'a>>
@@ -98,7 +104,7 @@ where
     F: Fn(&str) -> Option<ConnectorFacts>,
 {
     let mut problems = Vec::new();
-    for r in connector_refs(tasks, functions) {
+    for r in connector_refs(tasks, loop_config, functions) {
         let Some(facts) = facts(r.connector) else {
             problems.push(RefProblem::Missing {
                 connector: r.connector,
@@ -155,10 +161,13 @@ where
 /// an expression that names nothing until a message is in hand. `channel_logic`
 /// is the pre-1.0 spelling of the same field and is read here for the same
 /// reason serde still accepts it.
-pub fn channel_call_targets(tasks: &Value) -> (Vec<&str>, bool) {
+pub fn channel_call_targets<'a>(
+    tasks: &'a Value,
+    loop_config: Option<&'a Value>,
+) -> (Vec<&'a str>, bool) {
     let mut targets = Vec::new();
     let mut dynamic = false;
-    for task in super::steps::leaf_tasks(tasks) {
+    for task in super::steps::leaf_tasks(tasks, loop_config) {
         let Some(input) = task
             .get("function")
             .filter(|f| f.get("name").and_then(|n| n.as_str()) == Some("channel_call"))

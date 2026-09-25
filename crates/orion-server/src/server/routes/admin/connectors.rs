@@ -98,7 +98,8 @@ fn slots_across(before: &str, after: &str) -> Vec<PoolSlot> {
     slots
 }
 
-/// Names of active workflows whose tasks reference `connector_name`.
+/// Names of active workflows whose steps, a loop's `setup` included,
+/// reference `connector_name`.
 ///
 /// F18: workflows address connectors by *name*, and nothing tied the two
 /// together — renaming a connector left every referencing workflow pointing at
@@ -112,10 +113,10 @@ async fn active_workflows_using(
     let mut users = Vec::new();
     let generation = state.runtime.load();
     for workflow in state.repos.workflows.list_active().await? {
-        let Ok(tasks) = serde_json::from_str::<serde_json::Value>(&workflow.tasks_json) else {
+        let Some((tasks, loop_config)) = workflow.parsed_steps() else {
             continue;
         };
-        if super::workflows::connector_refs(&tasks, &generation.functions)
+        if super::workflows::connector_refs(&tasks, loop_config.as_ref(), &generation.functions)
             .iter()
             .any(|t| t.connector == connector_name)
         {

@@ -1,6 +1,6 @@
 <!-- description: The one layout `orion-server fmt` writes: the numbers, the key order of every recognised shape, and the JSONLogic inlining rules — with nothing to configure. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-09-25 -->
 
 # Definition style (`fmt`)
 
@@ -62,14 +62,15 @@ Known keys of known shapes are written in the order in the table. Keys not in a 
 | Shape | Order |
 |---|---|
 | Workflow | `workflow_id`, `name`, `description`, `tags`, `priority`, `condition`, `loop`, `continue_on_error`, `activate`, `tasks` |
-| Task | `id`, `name`, `description`, `condition`, `terminal`, `halt_on`, `continue_on_error`, `function` |
+| Task | `id`, `name`, `description`, `condition`, `terminal`, `halt_on`, `continue_on_error`, `for_each`, `function` |
 | Task group | `id`, `name`, `description`, `condition`, `terminal`, `tasks` |
 | Fragment call site | `id`, `use`, `with` |
 | `function` | `name`, `input` |
 | `function.input` | The field order of the function's table on the [Functions reference](./functions/index.md) |
 | Mapping | `path`, `logic` |
 | Validation rule | `logic`, `message` |
-| `loop` | `counter`, `init`, `max`, `increment` |
+| `loop` | `counter`, `init`, `max`, `increment`, `over`, `as`, `scratch`, `setup` |
+| `for_each` | `over`, `as`, `max_concurrency`, `collect`, `into` |
 | Channel | `channel_id`, `name`, `description`, `tags`, `channel_type`, `protocol`, `methods`, `route_pattern`, `topic`, `consumer_group`, `priority`, `workflow_id`, `activate`, `transport_config`, `config` |
 | Connector | `id`, `name`, `connector_type`, `enabled`, `tags`, `config` |
 | Shared document | `package`, `constants`, `errors`, `fragments` |

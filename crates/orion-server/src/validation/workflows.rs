@@ -41,7 +41,7 @@ pub fn validate_create_workflow(
         req.loop_config.as_ref(),
         functions,
     ))?;
-    reject_stray_secret_references(&req.tasks, functions)
+    reject_stray_secret_references(&req.tasks, req.loop_config.as_ref(), functions)
 }
 
 /// Refuse a workflow whose steps [`validate_workflow_tasks_schema`] found
@@ -64,9 +64,10 @@ fn reject_task_errors(errors: Vec<FieldError>) -> Result<(), OrionError> {
 /// both spell the code and the summary once.
 fn reject_stray_secret_references(
     tasks: &Value,
+    loop_config: Option<&Value>,
     functions: &FunctionRegistry,
 ) -> Result<(), OrionError> {
-    let refs: Vec<FieldError> = secret_reference_errors(tasks, functions)
+    let refs: Vec<FieldError> = secret_reference_errors(tasks, loop_config, functions)
         .into_iter()
         .map(|(path, message)| FieldError::new(path, "UNRESOLVED_SECRET_REF", message))
         .collect();
@@ -139,12 +140,61 @@ pub fn validate_update_workflow(
                 loop_config,
                 functions,
             ))?;
+            reject_stray_secret_references(tasks, loop_config, functions)?;
         }
     }
-    if let Some(ref tasks) = req.tasks {
-        reject_stray_secret_references(tasks, functions)?;
-    }
     Ok(())
+}
+
+/// The keys dataflow-rs reads on a `loop` (3.14).
+const LOOP_FIELDS: &[&str] = &[
+    "counter",
+    "init",
+    "increment",
+    "max",
+    "over",
+    "as",
+    "scratch",
+    "setup",
+];
+
+/// The keys dataflow-rs reads on a task's `for_each` (3.14).
+const FOR_EACH_FIELDS: &[&str] = &["over", "as", "max_concurrency", "collect", "into"];
+
+/// A key the engine does not read, each as an `UNKNOWN_FIELD` at `at.<key>`.
+///
+/// dataflow-rs parses neither `loop` nor `for_each` with
+/// `deny_unknown_fields`, so a typo there is dropped without a word:
+/// `max_concurency: 8` runs one call at a time and `steup` runs no setup
+/// (#351). The engine's answer is to ignore it; an author's is almost always
+/// a misspelling, which is what the suggestion is for.
+fn unknown_keys(
+    obj: &serde_json::Map<String, Value>,
+    at: &str,
+    noun: &str,
+    known: &[&str],
+) -> Vec<FieldError> {
+    obj.keys()
+        .filter(|key| !known.contains(&key.as_str()))
+        .map(|key| {
+            let hint = known
+                .iter()
+                .map(|k| (crate::text::edit_distance(key, k), *k))
+                .filter(|(d, _)| *d <= 2)
+                .min()
+                .map(|(_, k)| format!(" Did you mean '{k}'?"))
+                .unwrap_or_default();
+            FieldError::new(
+                format!("{at}.{key}"),
+                "UNKNOWN_FIELD",
+                format!(
+                    "'{key}' is not a {noun} field, and the engine would ignore it.{hint} \
+                     Known fields: {}.",
+                    known.join(", ")
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Validate a workflow's `loop` object.
@@ -174,7 +224,7 @@ pub fn validate_workflow_loop_schema(
         )];
     };
 
-    let mut errors = Vec::new();
+    let mut errors = unknown_keys(obj, "loop", "loop", LOOP_FIELDS);
 
     // Read the three numbers up front: `max`'s rules are stated against
     // `init`, so a bad `init` has to be known before `max` is judged.
@@ -339,7 +389,7 @@ pub fn validate_workflow_tasks_schema(
     // and its members are tasks the engine will run. Validating only the top
     // level would accept a workflow whose guarded half was never checked, and
     // report the group itself as a task missing its `name` and `function`.
-    let steps = crate::engine::walk_steps(tasks);
+    let steps = crate::engine::walk_steps(tasks, loop_config.filter(|l| !l.is_null()));
 
     // Ids are one namespace across tasks and groups — both name a step, and
     // both surface in traces — so uniqueness is checked over the union.
@@ -382,6 +432,14 @@ pub fn validate_workflow_tasks_schema(
         // a task can be broken in both ways at once, and an author fixing one
         // error at a time is the thing structured field errors exist to avoid.
         check_step_id(task, path, &mut seen_ids, &mut errors);
+        if let Some(for_each) = task.get("for_each").and_then(Value::as_object) {
+            errors.extend(unknown_keys(
+                for_each,
+                &format!("{path}.for_each"),
+                "for_each",
+                FOR_EACH_FIELDS,
+            ));
+        }
 
         // Presence only, matching the parse: `Task::name` is a required
         // `String`, but an empty one deserializes and loads fine, so refusing
@@ -676,14 +734,22 @@ use serde_json::Value;
 /// and no secret store changes the answer, and the other issues such a builder
 /// reports — an unregistered function, an undeclared secret — belong to checks
 /// that own them and would be reported twice with worse wording.
-pub fn engine_advisories(tasks: &Value, functions: &FunctionRegistry) -> Vec<EngineAdvisory> {
-    // A synthetic wrapper like `validate_workflow_tasks_schema`'s. This
-    // function is given `tasks` alone, so it reports nothing about a loop's
-    // `setup` steps.
-    let synthetic = serde_json::json!({
+pub fn engine_advisories(
+    tasks: &Value,
+    loop_config: Option<&Value>,
+    functions: &FunctionRegistry,
+) -> Vec<EngineAdvisory> {
+    // The synthetic wrapper `validate_workflow_tasks_schema` uses, loop
+    // included: the engine reads a loop's `setup` steps and its `over` as it
+    // reads the body.
+    let loop_config = loop_config.filter(|l| !l.is_null());
+    let mut synthetic = serde_json::json!({
         "id": "__shape_check__", "name": "__shape_check__",
         "condition": true, "tasks": tasks,
     });
+    if let Some(loop_config) = loop_config {
+        synthetic["loop"] = loop_config.clone();
+    }
     let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
         // Unparseable tasks are reported with a better message by the schema
         // check; there is nothing to say about the shape of a document that is
@@ -706,7 +772,7 @@ pub fn engine_advisories(tasks: &Value, functions: &FunctionRegistry) -> Vec<Eng
         })
         .collect();
 
-    for_each_input_field(tasks, |function, field, path, value| {
+    for_each_input_field(tasks, loop_config, |function, field, path, value| {
         // Only for a name the engine treats as custom: a built-in's parameters
         // were already walked, and reporting them twice would be worse than
         // not reporting them at all.
@@ -734,6 +800,7 @@ pub fn engine_advisories(tasks: &Value, functions: &FunctionRegistry) -> Vec<Eng
     // have been.
     out.extend(tensor_operator_key_advisories(
         tasks,
+        loop_config,
         functions,
         TensorKeyScope::Constant,
     ));
@@ -863,11 +930,12 @@ pub enum TensorKeyScope {
 /// `http_call.body` and `map`'s mappings are walked by the same rule.
 pub fn tensor_operator_key_advisories(
     tasks: &Value,
+    loop_config: Option<&Value>,
     functions: &FunctionRegistry,
     scope: TensorKeyScope,
 ) -> Vec<EngineAdvisory> {
     let mut out = Vec::new();
-    for_each_input_field(tasks, |function, field, path, value| {
+    for_each_input_field(tasks, loop_config, |function, field, path, value| {
         if function == "map" {
             if field != "mappings" {
                 return;
@@ -1067,10 +1135,11 @@ fn is_accidental_escape(path: &str) -> bool {
 /// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
 pub fn unresolvable_logic_warnings(
     tasks: &Value,
+    loop_config: Option<&Value>,
     functions: &FunctionRegistry,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for_each_input_field(tasks, |function, field, path, value| {
+    for_each_input_field(tasks, loop_config, |function, field, path, value| {
         if functions.is_resolvable_field(function, field) {
             collect_unresolvable(value, path, function, &mut out);
         }
@@ -1086,8 +1155,13 @@ pub fn unresolvable_logic_warnings(
 /// — is the same for every check that reads task inputs, and getting it wrong
 /// is silent: a flat `tasks.as_array()` loop skips everything inside a task
 /// group. One copy, so `walk_steps` is reached from one place.
-fn for_each_input_field(tasks: &Value, mut visit: impl FnMut(&str, &str, &str, &Value)) {
-    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+fn for_each_input_field(
+    tasks: &Value,
+    loop_config: Option<&Value>,
+    mut visit: impl FnMut(&str, &str, &str, &Value),
+) {
+    for (path, task) in crate::engine::walk_steps(tasks, loop_config.filter(|l| !l.is_null())).tasks
+    {
         let Some(function) = task.get("function") else {
             continue;
         };
@@ -1134,10 +1208,11 @@ fn for_each_input_field(tasks: &Value, mut visit: impl FnMut(&str, &str, &str, &
 /// CLI both already consume.
 pub fn secret_reference_errors(
     tasks: &Value,
+    loop_config: Option<&Value>,
     functions: &FunctionRegistry,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for_each_input_field(tasks, |function, field, path, value| {
+    for_each_input_field(tasks, loop_config, |function, field, path, value| {
         let exempt = functions.secret_paths(function, field);
         // Whether a `{"secret": ..}` node in this field is a mistake — see the
         // branch it gates in [`collect_secret_references`]. Three cases, and
@@ -1378,10 +1453,10 @@ mod tests {
         super::validate_update_workflow(req, None, cap, registry())
     }
     fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
-        super::unresolvable_logic_warnings(tasks, registry())
+        super::unresolvable_logic_warnings(tasks, None, registry())
     }
     fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
-        super::secret_reference_errors(tasks, registry())
+        super::secret_reference_errors(tasks, None, registry())
     }
 
     /// A plugin never sees key material, so a `{"secret": ..}` node is
@@ -1442,6 +1517,7 @@ mod tests {
                     "output": "data.out"
                 }}
             }]),
+            None,
             &registry,
         );
         let mut paths: Vec<&str> = found.iter().map(|(p, _)| p.as_str()).collect();
@@ -1712,6 +1788,41 @@ mod tests {
         let stored = stored_draft(&serde_json::json!([log_step("t0")]), Some(&loop_config));
         let req = update_of(Some(serde_json::json!([log_step("t1")])), Some(Value::Null));
         assert!(super::validate_update_workflow(&req, Some(&stored), 10_000, registry()).is_ok());
+    }
+
+    /// #351: neither `loop` nor `for_each` is parsed strictly, so a typo in
+    /// either was dropped and the workflow ran without it.
+    #[test]
+    fn unknown_loop_and_for_each_keys_are_refused_with_a_suggestion() {
+        let req = create_with_loop(
+            serde_json::json!([{
+                "id": "fan", "name": "Fan",
+                "for_each": {"over": [1, 2], "as": "it", "max_concurency": 8},
+                "function": {"name": "crypto", "input": {
+                    "op": "hash", "data": {"var": "temp_data.it"}, "output": "temp_data.h"}}
+            }]),
+            serde_json::json!({"max": 2, "steup": []}),
+        );
+        let err = validate_create_workflow(&req, 10_000).expect_err("must be refused");
+        let (_, paths) = details(err);
+        assert_eq!(paths, vec!["loop.steup"], "the loop is checked first");
+
+        let req = create_with_loop(req.tasks.clone(), serde_json::json!({"max": 2}));
+        let err = validate_create_workflow(&req, 10_000).expect_err("must be refused");
+        let details = match err {
+            OrionError::Validation { details, .. } => details,
+            _ => Vec::new(),
+        };
+        assert_eq!(details.len(), 1, "{details:?}");
+        assert_eq!(details[0].path, "tasks[0].for_each.max_concurency");
+        assert_eq!(details[0].code, "UNKNOWN_FIELD");
+        assert!(
+            details[0]
+                .message
+                .contains("Did you mean 'max_concurrency'?"),
+            "{}",
+            details[0].message
+        );
     }
 
     /// Build a one-task workflow's `tasks` array around a `mongo_write` input.
@@ -2125,7 +2236,7 @@ mod tests {
 #[cfg(test)]
 mod engine_advisory_tests {
     fn engine_advisories(tasks: &serde_json::Value) -> Vec<super::EngineAdvisory> {
-        super::engine_advisories(tasks, crate::engine::FunctionRegistry::builtin())
+        super::engine_advisories(tasks, None, crate::engine::FunctionRegistry::builtin())
     }
     use serde_json::json;
 
@@ -2216,6 +2327,7 @@ mod tensor_operator_key_tests {
     fn constant(tasks: &Value) -> Vec<EngineAdvisory> {
         tensor_operator_key_advisories(
             tasks,
+            None,
             crate::engine::FunctionRegistry::builtin(),
             TensorKeyScope::Constant,
         )
@@ -2224,6 +2336,7 @@ mod tensor_operator_key_tests {
     fn dynamic(tasks: &Value) -> Vec<EngineAdvisory> {
         tensor_operator_key_advisories(
             tasks,
+            None,
             crate::engine::FunctionRegistry::builtin(),
             TensorKeyScope::Dynamic,
         )

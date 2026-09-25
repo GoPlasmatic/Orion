@@ -352,7 +352,8 @@ pub(crate) fn run_lint(
         .as_ref()
         .map(|c| c.plugins.as_slice())
         .unwrap_or(&[]);
-    let unverifiable = unverifiable_functions(&req.tasks, &registry, manifests);
+    let unverifiable =
+        unverifiable_functions(&req.tasks, req.loop_config.as_ref(), &registry, manifests);
     let registry = registry.with_entries(placeholder_entries(&unverifiable))?;
 
     // No config here: `lint` reads a file, not a server. The default ceiling
@@ -387,7 +388,7 @@ pub(crate) fn run_lint(
     // unverifiable everywhere.
     let manifests = catalog.as_ref().map(|c| c.models.as_slice()).unwrap_or(&[]);
     let mut model_errors = 0usize;
-    for finding in model_findings(&req.tasks, &req.name, manifests) {
+    for finding in model_findings(&req.tasks, req.loop_config.as_ref(), &req.name, manifests) {
         if finding.is_error() {
             model_errors += 1;
         }
@@ -409,21 +410,25 @@ pub(crate) fn run_lint(
     // rule. Printing it as a bare string here would leave the most-used entry
     // point — one file — as the one that cannot be selected against.
     let mut warnings: Vec<orion::definitions::Diagnostic> =
-        orion::validation::unresolvable_logic_warnings(&req.tasks, &registry)
-            .into_iter()
-            .map(|(path, message)| {
-                orion::definitions::Diagnostic::warning(
-                    "logic.unresolvable",
-                    format!("workflow '{}' {path}", req.name),
-                    message,
-                )
-            })
-            .collect();
+        orion::validation::unresolvable_logic_warnings(
+            &req.tasks,
+            req.loop_config.as_ref(),
+            &registry,
+        )
+        .into_iter()
+        .map(|(path, message)| {
+            orion::definitions::Diagnostic::warning(
+                "logic.unresolvable",
+                format!("workflow '{}' {path}", req.name),
+                message,
+            )
+        })
+        .collect();
     // The informational findings: a stripped `$`, and the two control-flow keys
     // that do nothing. `check_workflow` reports all three and `build` refuses
     // none, so this is the surface where an author still can act on one.
     warnings.extend(
-        orion::validation::engine_advisories(&req.tasks, &registry)
+        orion::validation::engine_advisories(&req.tasks, req.loop_config.as_ref(), &registry)
             .into_iter()
             .map(|advisory| {
                 orion::definitions::Diagnostic::warning(
@@ -807,11 +812,12 @@ fn offline_registry(
 /// check draws with `closure.plugin`.
 fn unverifiable_functions(
     tasks: &serde_json::Value,
+    loop_config: Option<&serde_json::Value>,
     registry: &orion::engine::FunctionRegistry,
     manifests: &[orion::definitions::PluginDefinition],
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for task in orion::engine::leaf_tasks(tasks) {
+    for task in orion::engine::leaf_tasks(tasks, loop_config) {
         let Some(name) = task
             .get("function")
             .and_then(|f| f.get("name"))
@@ -866,16 +872,20 @@ struct InferTask {
     model: Option<String>,
 }
 
-/// Every `model_infer` task in `tasks`, through task groups. The literal
+/// Every `model_infer` task in a workflow's steps, its loop's `setup` and
+/// task groups included. The literal
 /// ids are the engine's own [`literal_references`]; the computed ones are
 /// what that walk deliberately skips, listed here because an offline run
 /// has to say what it will do about them.
 ///
 /// [`literal_references`]: orion::model::literal_references
-fn model_infer_tasks(tasks: &serde_json::Value) -> Vec<InferTask> {
-    let literal = orion::model::literal_references(tasks);
+fn model_infer_tasks(
+    tasks: &serde_json::Value,
+    loop_config: Option<&serde_json::Value>,
+) -> Vec<InferTask> {
+    let literal = orion::model::literal_references(tasks, loop_config);
     let mut out = Vec::new();
-    for (path, task) in orion::engine::walk_steps(tasks).tasks {
+    for (path, task) in orion::engine::walk_steps(tasks, loop_config).tasks {
         let Some(function) = task.get("function") else {
             continue;
         };
@@ -909,6 +919,7 @@ fn model_infer_tasks(tasks: &serde_json::Value) -> Vec<InferTask> {
 /// `closure.model`, which is the authority when a directory is linted.
 fn model_findings(
     tasks: &serde_json::Value,
+    loop_config: Option<&serde_json::Value>,
     workflow: &str,
     manifests: &[orion::definitions::ModelDefinition],
 ) -> Vec<orion::definitions::Diagnostic> {
@@ -916,7 +927,7 @@ fn model_findings(
     let mut out = Vec::new();
     for InferTask {
         id: task, model, ..
-    } in model_infer_tasks(tasks)
+    } in model_infer_tasks(tasks, loop_config)
     {
         match model {
             Some(model) if manifests.iter().any(|m| m.manifest.name == model) => {}
@@ -2412,7 +2423,8 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // and is refused by name rather than reaching the engine as unknown.
     let registry = offline_registry(definitions)?;
     let manifests = definitions.map(|c| c.plugins.as_slice()).unwrap_or(&[]);
-    let unverifiable = unverifiable_functions(&req.tasks, &registry, manifests);
+    let unverifiable =
+        unverifiable_functions(&req.tasks, req.loop_config.as_ref(), &registry, manifests);
     if let Some(name) = unverifiable.first() {
         return Err(format!(
             "PLUGIN_ARTIFACT_UNAVAILABLE: '{workflow_path}' names plugin function '{name}', \
@@ -2454,7 +2466,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
             handlers,
             unavailable,
         } = catalog.plugin_handlers()?;
-        for task in orion::engine::leaf_tasks(&req.tasks) {
+        for task in orion::engine::leaf_tasks(&req.tasks, req.loop_config.as_ref()) {
             let Some(name) = task
                 .get("function")
                 .and_then(|f| f.get("name"))
@@ -2486,7 +2498,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // `model` resolves against the directory per message, as it would
     // against a node's generation.
     let stubs_model = stubs_name_model_infer;
-    let infer_tasks = model_infer_tasks(&req.tasks);
+    let infer_tasks = model_infer_tasks(&req.tasks, req.loop_config.as_ref());
     match definitions.filter(|c| !c.models.is_empty()) {
         Some(catalog) if !infer_tasks.is_empty() => {
             let (handler, unavailable) = catalog.model_handler();

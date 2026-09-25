@@ -1,0 +1,48 @@
+{
+  "workflow_id": "looping",
+  "name": "looping",
+  "loop": {
+    "max": 2,
+    "over": {
+      "var": "metadata.vars.over_list"
+    },
+    "as": "item",
+    "setup": [
+      {
+        "id": "prime",
+        "name": "Prime",
+        "condition": {
+          "var": "metadata.vars.setup_flag"
+        },
+        "function": {
+          "name": "log",
+          "input": {
+            "message": "x"
+          }
+        }
+      }
+    ]
+  },
+  "tasks": [
+    {
+      "id": "fan",
+      "name": "Fan",
+      "for_each": {
+        "over": {
+          "var": "metadata.vars.fan_list"
+        },
+        "as": "it"
+      },
+      "function": {
+        "name": "crypto",
+        "input": {
+          "op": "hash",
+          "data": {
+            "var": "temp_data.it"
+          },
+          "output": "temp_data.one"
+        }
+      }
+    }
+  ]
+}

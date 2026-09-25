@@ -439,10 +439,19 @@ pub(crate) async fn workflow_dependencies(
     let tasks: Value = serde_json::from_str(&workflow.tasks_json).map_err(|e| {
         OrionError::internal_from(format!("Corrupt JSON in workflow {id} tasks_json"), e)
     })?;
+    let loop_config: Option<Value> = workflow
+        .loop_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| {
+            OrionError::internal_from(format!("Corrupt JSON in workflow {id} loop_json"), e)
+        })?;
+    let loop_config = loop_config.as_ref();
 
     let generation = state.runtime.load();
     let mut connectors: Vec<ConnectorDependency> = Vec::new();
-    for r in connector_refs(&tasks, &generation.functions) {
+    for r in connector_refs(&tasks, loop_config, &generation.functions) {
         if !connectors
             .iter()
             .any(|c| c.connector == r.connector && c.function == r.function)
@@ -453,7 +462,7 @@ pub(crate) async fn workflow_dependencies(
             });
         }
     }
-    let (channels, has_dynamic_channel_calls) = channel_call_targets(&tasks);
+    let (channels, has_dynamic_channel_calls) = channel_call_targets(&tasks, loop_config);
 
     // The plugin closure, from the same registry the activation gate reads:
     // every function name the tasks call, resolved to the plugin version and
@@ -461,7 +470,7 @@ pub(crate) async fn workflow_dependencies(
     // kept, so a package records one requirement per plugin.
     let mut plugins: Vec<PluginDependency> = Vec::new();
     let mut unresolved_functions: Vec<String> = Vec::new();
-    for task in crate::engine::leaf_tasks(&tasks) {
+    for task in crate::engine::leaf_tasks(&tasks, loop_config) {
         let Some(name) = task
             .get("function")
             .and_then(|f| f.get("name"))
@@ -985,6 +994,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
 
     validate_tasks(
         &req.tasks,
+        req.loop_config.as_ref(),
         &dl,
         state,
         functions,
@@ -1002,9 +1012,13 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     // names overlap real field names, and a stored rule document is a legitimate
     // payload.
     warnings.extend(
-        crate::validation::unresolvable_logic_warnings(&req.tasks, functions)
-            .into_iter()
-            .map(|(field, message)| ValidationIssue { field, message }),
+        crate::validation::unresolvable_logic_warnings(
+            &req.tasks,
+            req.loop_config.as_ref(),
+            functions,
+        )
+        .into_iter()
+        .map(|(field, message)| ValidationIssue { field, message }),
     );
 
     // And what the engine reports about the same document and does not refuse:
@@ -1020,7 +1034,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     // the engine reports the offending *key* and the step id, and inventing a
     // coordinate from those would be a second walk that could disagree with it.
     warnings.extend(
-        crate::validation::engine_advisories(&req.tasks, functions)
+        crate::validation::engine_advisories(&req.tasks, req.loop_config.as_ref(), functions)
             .into_iter()
             .map(|advisory| ValidationIssue {
                 field: advisory.path,
@@ -1056,6 +1070,7 @@ fn validate_task_array_shape(req: &CreateWorkflowRequest, errors: &mut Vec<Valid
 /// `validate_workflow_tasks_schema`, which has already run above.
 async fn validate_tasks(
     tasks: &Value,
+    loop_config: Option<&Value>,
     dl: &datalogic_rs::Engine,
     state: &AppState,
     functions: &crate::engine::FunctionRegistry,
@@ -1065,7 +1080,7 @@ async fn validate_tasks(
     let mut seen_ids: HashSet<&str> = HashSet::new();
     let mut written: Vec<String> = Vec::new();
 
-    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+    for (path, task) in crate::engine::walk_steps(tasks, loop_config).tasks {
         let (task_errors, task_warnings) = errors_for_task(&path, task, dl, state, functions).await;
         errors.extend(task_errors);
         warnings.extend(task_warnings);

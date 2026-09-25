@@ -2232,6 +2232,105 @@ async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
     );
 }
 
+/// #351: a loop's `setup` steps are steps. Every check that asks what a
+/// workflow runs or references walked `tasks` alone, so a setup step was
+/// validated by nothing, and a connector used only there passed activation,
+/// was absent from `/dependencies`, and could be renamed out from under it.
+#[tokio::test]
+async fn a_loops_setup_steps_are_validated_and_referenced() {
+    let app = common::test_app().await;
+    let setup_step = |function: serde_json::Value| json!({ "max": 2, "setup": [{ "id": "prime", "name": "Prime", "function": function }] });
+
+    // An unknown function in setup is refused at create, at its coordinate.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(looping_workflow(
+                "Unknown In Setup",
+                setup_step(json!({ "name": "nosuch_fn", "input": {} })),
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(
+        body["error"]["details"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|e| e["path"] == "loop.setup[0].function.name")),
+        "{body}"
+    );
+
+    // A connector referenced only from setup.
+    let mut workflow = looping_workflow(
+        "Reads In Setup",
+        setup_step(json!({ "name": "db_read", "input": {
+            "connector": "setup-db", "query": "SELECT 1", "output": "data.r"
+        }})),
+    );
+    workflow["workflow_id"] = json!("reads-in-setup");
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(workflow),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let activate = || {
+        json_request(
+            "PATCH",
+            "/api/v1/admin/workflows/reads-in-setup/status",
+            Some(json!({"status": "active"})),
+        )
+    };
+    let resp = app.clone().oneshot(activate()).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "activation must refuse a missing connector used in setup"
+    );
+
+    let conn_id = common::create_connector(&app, common::db_connector("setup-db")).await;
+    let resp = app.clone().oneshot(activate()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/workflows/reads-in-setup/dependencies",
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["connectors"][0]["connector"], "setup-db",
+        "{body}"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            Some(json!({"name": "setup-db-v2"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "renaming a connector an active setup step uses must be refused"
+    );
+}
+
 /// The one that proves the feature rather than the plumbing: a looping
 /// workflow, executed, must run its task list once per sweep and stop where
 /// the break says. Storage round-trips and 400s would all still pass if

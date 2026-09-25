@@ -36,6 +36,15 @@ pub const MAX_EXPANSION_DEPTH: usize = 16;
 /// How many copies every `$each` in one document may produce, together.
 pub const MAX_EACH_COPIES: usize = 4096;
 
+/// Whether a `loop` object holds a step list of its own, rather than being
+/// a value the sugar replaces whole: a `{"$use": …}` or `{"$each": …}` loop
+/// is expanded as a value, and whatever it expands to is the author's.
+pub(super) fn is_step_holder(loop_config: &Value) -> bool {
+    loop_config
+        .as_object()
+        .is_some_and(|map| as_each(map).is_none() && as_value_use(map).is_none())
+}
+
 /// A step that includes a task fragment: a string `use`. Only a step-list
 /// element is one — a `use` key anywhere else is an ordinary field.
 pub(super) fn as_use_step(step: &Value) -> Option<&str> {
@@ -154,9 +163,9 @@ impl<'a, 'o> Expander<'a, 'o> {
         }
     }
 
-    /// Expand a whole authored document: its top-level `tasks` as a step
-    /// list, everything else — a condition, a loop, a connector's or a
-    /// channel's config — as values.
+    /// Expand a whole authored document: its top-level `tasks`, and its
+    /// loop's `setup`, as step lists, everything else — a condition, the rest
+    /// of a loop, a connector's or a channel's config — as values.
     pub(super) fn document(&mut self, doc: &mut Value) {
         let at = Coord {
             compiled: String::new(),
@@ -177,7 +186,28 @@ impl<'a, 'o> Expander<'a, 'o> {
                 Value::Array(items) if key == "tasks" => {
                     *items = self.list(std::mem::take(items), Mode::Steps, &scope, &child);
                 }
+                Value::Object(_) if key == "loop" && is_step_holder(member) => {
+                    self.loop_config(member, &scope, &child);
+                }
                 _ => self.value(member, &scope, &child),
+            }
+        }
+    }
+
+    /// A loop: its `setup` a step list, every other member a value. Since
+    /// dataflow-rs 3.14 setup steps are resolved and run like the body's, so
+    /// a `use` there names a fragment exactly as one in `tasks` does (#351).
+    fn loop_config(&mut self, loop_config: &mut Value, scope: &Scope, at: &Coord) {
+        let Value::Object(members) = loop_config else {
+            return;
+        };
+        for (key, member) in members.iter_mut() {
+            let child = at.key(key);
+            match member {
+                Value::Array(items) if key == "setup" => {
+                    *items = self.list(std::mem::take(items), Mode::Steps, scope, &child);
+                }
+                _ => self.value(member, scope, &child),
             }
         }
     }

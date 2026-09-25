@@ -30,8 +30,9 @@ pub struct SqlStatement<'a> {
 }
 
 /// Every `db_read`/`db_write` statement of the set's workflows, in file
-/// order, task groups included — through `engine::walk_steps`, never a flat
-/// loop over `tasks`, which would skip everything inside a group.
+/// order, a loop's `setup` and task groups included — through
+/// `engine::walk_steps`, never a flat loop over `tasks`, which would skip
+/// both.
 pub fn sql_statements(set: &DefinitionSet) -> Vec<SqlStatement<'_>> {
     let mut out = Vec::new();
     for def in set.iter(Entity::Workflow) {
@@ -43,7 +44,7 @@ pub fn sql_statements(set: &DefinitionSet) -> Vec<SqlStatement<'_>> {
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or(&def.origin);
-        for (path, task) in crate::engine::walk_steps(tasks).tasks {
+        for (path, task) in crate::engine::walk_steps(tasks, def.doc.get("loop")).tasks {
             let function = task.get("function");
             let function_name = match function.and_then(|f| f.get("name")).and_then(Value::as_str) {
                 Some("db_read") => "db_read",

@@ -63,10 +63,10 @@ pub fn load_issues(
         };
         let mut reasons: Vec<String> = Vec::new();
         for workflow in versions {
-            let Ok(tasks) = serde_json::from_str::<serde_json::Value>(&workflow.tasks_json) else {
+            let Some((tasks, loop_config)) = workflow.parsed_steps() else {
                 continue;
             };
-            for (task_id, model) in literal_references(&tasks) {
+            for (task_id, model) in literal_references(&tasks, loop_config.as_ref()) {
                 if set.get(&model).is_some() {
                     continue;
                 }
@@ -138,8 +138,8 @@ pub fn preload_targets(
         ModelPreload::All => generation.models.ids().map(str::to_string).collect(),
         ModelPreload::Referenced => workflows
             .iter()
-            .filter_map(|w| serde_json::from_str::<serde_json::Value>(&w.tasks_json).ok())
-            .flat_map(|tasks| literal_references(&tasks))
+            .filter_map(Workflow::parsed_steps)
+            .flat_map(|(tasks, loop_config)| literal_references(&tasks, loop_config.as_ref()))
             .map(|(_, model)| model)
             .filter(|model| generation.models.get(model).is_some())
             .collect(),

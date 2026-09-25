@@ -1,0 +1,34 @@
+{
+  "name": "w",
+  "loop": {
+    "counter": "i",
+    "max": 500,
+    "over": { "var": "data.items" },
+    "as": "item",
+    "scratch": "turn",
+    "setup": [
+      {
+        "id": "prime",
+        "name": "Prime",
+        "function": { "name": "log", "input": { "message": "x" } }
+      }
+    ]
+  },
+  "tasks": [
+    {
+      "id": "fan",
+      "name": "Fan",
+      "for_each": {
+        "over": { "var": "data.ids" },
+        "as": "it",
+        "max_concurrency": 4,
+        "collect": "temp_data.one",
+        "into": "temp_data.all"
+      },
+      "function": {
+        "name": "crypto",
+        "input": { "op": "hash", "data": { "var": "temp_data.it" }, "output": "temp_data.one" }
+      }
+    }
+  ]
+}

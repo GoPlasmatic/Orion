@@ -211,9 +211,13 @@ pub fn refusals(
             }
             "connectors" => {
                 let names = |workflow: &&Value| {
-                    crate::engine::connector_refs(&workflow["tasks"], functions)
-                        .iter()
-                        .any(|r| r.connector == removal.id)
+                    crate::engine::connector_refs(
+                        &workflow["tasks"],
+                        workflow.get("loop"),
+                        functions,
+                    )
+                    .iter()
+                    .any(|r| r.connector == removal.id)
                 };
                 for workflow in refs.carried_workflows.iter().filter(names) {
                     out.push(Refusal {

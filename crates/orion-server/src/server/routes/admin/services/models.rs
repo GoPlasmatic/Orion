@@ -289,8 +289,12 @@ pub(crate) struct ModelDependant {
 /// template — is not seen: the model it resolves to is decided per message.
 /// The walk itself is the loader's, so the dependants list and the
 /// quarantine read the same references.
-pub(crate) fn literal_references(tasks: &Value, model_id: &str) -> Vec<String> {
-    crate::model::literal_references(tasks)
+pub(crate) fn literal_references(
+    tasks: &Value,
+    loop_config: Option<&Value>,
+    model_id: &str,
+) -> Vec<String> {
+    crate::model::literal_references(tasks, loop_config)
         .into_iter()
         .filter_map(|(task_id, model)| (model == model_id).then_some(task_id))
         .collect()
@@ -304,10 +308,10 @@ pub(crate) async fn active_workflows_naming(
 ) -> Result<Vec<ModelDependant>, OrionError> {
     let mut users = Vec::new();
     for workflow in workflows.list_active().await? {
-        let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
+        let Some((tasks, loop_config)) = workflow.parsed_steps() else {
             continue;
         };
-        let task_ids = literal_references(&tasks, model_id);
+        let task_ids = literal_references(&tasks, loop_config.as_ref(), model_id);
         if !task_ids.is_empty() {
             users.push(ModelDependant {
                 workflow_id: workflow.workflow_id,
@@ -382,10 +386,10 @@ mod tests {
                 "input": {"message": "ada.c4-tiny"}}},
         ]);
         assert_eq!(
-            literal_references(&tasks, "ada.c4-tiny"),
+            literal_references(&tasks, None, "ada.c4-tiny"),
             vec!["plain".to_string(), "nested".to_string()]
         );
-        assert!(literal_references(&tasks, "ada.none").is_empty());
+        assert!(literal_references(&tasks, None, "ada.none").is_empty());
     }
 
     /// The shape checks report every missing field at once, and a bad digest

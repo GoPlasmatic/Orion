@@ -1,0 +1,56 @@
+{
+  "workflow_id": "fan-over",
+  "name": "fan-over",
+  "tasks": [
+    {
+      "id": "p",
+      "name": "Parse",
+      "function": {
+        "name": "parse_json",
+        "input": {
+          "source": "payload",
+          "target": "doc"
+        }
+      }
+    },
+    {
+      "id": "fan",
+      "name": "Fan",
+      "for_each": {
+        "over": {
+          "var": "data.doc.items"
+        },
+        "as": "it",
+        "collect": "temp_data.one",
+        "into": "temp_data.hashes"
+      },
+      "function": {
+        "name": "crypto",
+        "input": {
+          "op": "hash",
+          "data": {
+            "var": "temp_data.it"
+          },
+          "output": "temp_data.one"
+        }
+      }
+    },
+    {
+      "id": "clobber",
+      "name": "Clobber",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.doc",
+              "logic": {
+                "var": "temp_data.hashes"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

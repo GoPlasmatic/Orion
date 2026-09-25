@@ -52,6 +52,8 @@ pub enum Role {
     Mapping,
     ValidationRule,
     LoopObject,
+    /// A task's `for_each`.
+    ForEach,
     Operator(OperatorShape),
     /// The argument array of an operator node.
     OperatorArgs(OperatorShape),
@@ -175,6 +177,12 @@ pub fn child_role(parent: Role, key: Option<&str>, child: &Node, depth: usize) -
         }
         Role::Task => match key {
             Some("function") if child.as_object().is_some() => Role::FunctionHeader,
+            Some("for_each") if child.as_object().is_some() => Role::ForEach,
+            _ => generic_or_scalar_array(child),
+        },
+        // A loop's `setup` is a step list, in the same grammar as `tasks`.
+        Role::LoopObject => match key {
+            Some("setup") if child.as_array().is_some() => Role::TaskList,
             _ => generic_or_scalar_array(child),
         },
         Role::FunctionHeader => match key {
@@ -259,6 +267,7 @@ pub fn key_order(role: Role) -> Option<&'static [&'static str]> {
         Role::Mapping => style::MAPPING_KEYS,
         Role::ValidationRule => style::VALIDATION_RULE_KEYS,
         Role::LoopObject => style::LOOP_KEYS,
+        Role::ForEach => style::FOR_EACH_KEYS,
         Role::Channel => style::CHANNEL_KEYS,
         Role::Connector => style::CONNECTOR_KEYS,
         Role::SharedDoc => style::SHARED_DOC_KEYS,

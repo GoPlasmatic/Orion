@@ -52,6 +52,23 @@ pub struct Workflow {
     pub updated_at: NaiveDateTime,
 }
 
+impl Workflow {
+    /// The stored steps, parsed: `tasks`, and the `loop` whose `setup` runs
+    /// before them. Every walk over what a workflow runs needs both.
+    ///
+    /// `None` when `tasks_json` does not parse, which the load screen reports
+    /// by quarantining the workflow's channels. An unparseable `loop_json` is
+    /// likewise left to the screen and reads as no loop here.
+    pub fn parsed_steps(&self) -> Option<(serde_json::Value, Option<serde_json::Value>)> {
+        let tasks = serde_json::from_str(&self.tasks_json).ok()?;
+        let loop_config = self
+            .loop_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok());
+        Some((tasks, loop_config))
+    }
+}
+
 // ============================================================
 // Plugin
 // ============================================================

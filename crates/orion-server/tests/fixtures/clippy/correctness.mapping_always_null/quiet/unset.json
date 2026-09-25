@@ -1,0 +1,26 @@
+{
+  "workflow_id": "clears",
+  "name": "clears",
+  "tasks": [
+    {
+      "id": "a",
+      "name": "A",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.slot",
+              "logic": null,
+              "on_null": "unset"
+            },
+            {
+              "path": "temp_data.other",
+              "unset": true
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
