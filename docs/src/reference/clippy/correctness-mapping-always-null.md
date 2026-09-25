@@ -21,7 +21,7 @@ To remove the path, write the mapping as `"unset": true`, which dataflow-rs 3.14
 
 ## Caveats
 
-Silent when the `logic` is not a compile-time constant. `{"var": "temp_data.maybe"}` may be null only at run time. `{"if": [c, x, null]}` uses `null` on one branch to mean "keep the current value", which is a legitimate reading. Silent too for a mapping with `"unset": true`, and for one whose `on_null` is anything but `skip`: `on_null: "unset"` removes the path when the result is null, so an always-null `logic` there writes on every message. See [`map`](../functions/map.md) for the null rule itself.
+Silent when the `logic` is not a compile-time constant. `{"var": "temp_data.maybe"}` may be null only at run time. `{"if": [c, x, null]}` uses `null` on one branch to mean "keep the current value", which is a legitimate reading. Silent too for a mapping with `"unset": true`, and for one whose `on_null` is anything but `skip`. `on_null: "unset"` removes the path when the result is null, so an always-null `logic` there acts on every message. See [`map`](../functions/map.md) for the null rule itself.
 
 ## Related
 

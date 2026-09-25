@@ -38,7 +38,7 @@ A missing key counts as `0` and is created. On Redis the increment is `INCRBY`, 
 
 After the bump, no read computes the old key again. The old entries are never served and expire at their own TTL. A route that depends on several counters reads them in one round trip with [`cache_read`](./cache_read.md)'s `keys`.
 
-`ttl_secs` applies **only when this call creates the key**. Later bumps keep the expiry the key was created with, so a counter bumped on every write still ends a fixed time after it was first made. A key that holds something other than an integer fails the task. A value `cache_write` stored as a JSON number is an integer.
+`ttl_secs` applies **only when this call creates the key**. Later bumps keep the expiry the key was created with. A counter bumped on every write still ends a fixed time after it was first made. A key that holds something other than an integer fails the task. A value `cache_write` stored as a JSON number is an integer.
 
 A connector whose `write` [operation gate](../connectors/cache.md) is off refuses the call.
 

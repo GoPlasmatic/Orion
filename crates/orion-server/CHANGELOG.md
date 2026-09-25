@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-25
+
 ### Added
 
 - **`cache_delete`, `cache_incr`, and a multi-key `cache_read`** ([#354]).
@@ -49,6 +51,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waiters to run the workflow themselves. Off by default. New metric:
   `orion_response_cache_coalesced_total{channel}`.
 
+- **Cancel a cron occurrence and free its singleton slot** ([#352]).
+  `POST /api/v1/admin/cron/occurrences/{id}/cancel` settles a `pending`,
+  `claimed` or `running` occurrence `failed`, clears `claimed_by`, and
+  shortens its singleton hold to end two heartbeat intervals later, in one
+  transaction. It needs no knowledge of whether the holder is alive: a live
+  holder stops at its next heartbeat and writes nothing over the cancel. A
+  trace still marked `running` is marked `failed`. The call answers `404`
+  for an unknown occurrence and `409` once it has finished, and a cancelled
+  occurrence is retried like any failed one. Audited as `cancel` /
+  `cron_occurrence`.
+
+- **`dry-run --trace full|steps|none`** ([#353]). `full`, the default,
+  snapshots each step with only its own audit entry; `steps` drops the
+  snapshots; `none` records no trace and no capture. The output gains
+  `tasks`, the tasks that ran in the order they ran (once per loop sweep and
+  per `for_each` element).
+
+### Changed
+
+- **dataflow-rs 3.14's workflow syntax is supported** ([#351]). 1.9.1
+  shipped `loop.setup`, `loop.over`/`as`/`scratch`, a task's `for_each`, and
+  `map`'s `unset`/`on_null` as unsupported, because Orion's checks walked
+  `tasks` alone. Every walk over a workflow's steps now takes its loop too,
+  and walks `setup` first at `loop.setup[i]` coordinates: validation and
+  `/validate`, the advisories, `/dependencies` and the connector, plugin and
+  model gates, package plan and prune, the set lint, `sql check`,
+  `preflight`, and the offline helpers. `compile` expands a `use` in
+  `loop.setup`. `clippy` reads `loop.over` and `for_each.over` as reads and
+  `for_each.collect`/`into` as writes; `fmt` knows the new keys. The
+  workflow reference documents fan-out and the new loop fields.
+
+- **A key `loop` or `for_each` does not define is refused as
+  `UNKNOWN_FIELD`** ([#351]), with a suggestion. The engine parses neither
+  strictly, so `max_concurency: 8` ran one call at a time and `steup` ran no
+  setup.
+
+- **A running cron attempt holds its claim for `claim_lease_secs`, renewed
+  every heartbeat, whatever its timeout** ([#352]). The lease was
+  `max(claim_lease_secs, timeout + heartbeat)`, so a node that died, or was
+  drained past `shutdown_timeout_secs`, held its singleton slots for its
+  channel's whole timeout; a peer now recovers them one lease later. An
+  attempt that cannot renew stops itself before its lease runs out.
+  **Upgrade note:** a database outage longer than `claim_lease_secs` minus
+  one heartbeat (45 s at the defaults) now cancels running cron attempts,
+  which are attempted again once the database is back. Raise
+  `claim_lease_secs` to ride out longer ones. Holds taken by older binaries
+  keep their long leases until those nodes are replaced.
+
+- **`orion-server test` runs a case as a node runs an untraced message**
+  ([#353]): `process_message`, with no execution trace and no per-write
+  capture, unless an `expect` path is rooted at `audit_trail`.
+  `expect_tasks` reads an observer that records each dispatched task. The
+  default trace snapshotted the whole audit trail at every step, which is
+  quadratic in the steps: 800 sweeps of a two-task loop peaked at 2.5 GB. A
+  3000-sweep case now takes 0.07 s and 42 MB.
+
+- **`POST /api/v1/admin/workflows/{id}/test` bounds its trace** ([#353]) as
+  a `task_details` trace is bounded: each step snapshots only its own audit
+  entry, within `trace_queue.max_result_size_bytes`.
+
 ### Security
 
 - **A caller can no longer supply `metadata.auth` or `metadata.trigger`**
@@ -76,6 +138,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `orion-server preflight` reports such channels as `cache-key-precedence`,
   because the requests that share an entry change.
 
+- **A workflow whose loop the engine refuses quarantines its own channel
+  instead of failing the engine** ([#351]). A duplicate step id across
+  `loop.setup` and `tasks`, or a loop `as` that is not a plain key, reached
+  `Engine::build` unscreened: one such row failed every reload with a `500`
+  and stopped a node at boot, and the admin API accepted it with a `201`.
+  The serving screen now runs the engine's full `Workflow::validate()`,
+  create and update check the loop with the body (an update carrying one
+  half against the stored draft's other), and `preflight` checks stored
+  loops.
+
+- **`PUT {"loop": null}` clears a workflow's loop** ([#351]), as the field
+  documents. It was read as an absent key and left the loop in place.
+
+- **`dry-run`'s `matched` is "any task ran"** ([#353]), as documented. It
+  was true for a workflow whose condition was false.
+
+- **`clippy` false positives on 3.14 syntax** ([#351]).
+  `correctness.mapping_always_null` is silent for `unset` and a non-skip
+  `on_null` (and now suggests `"unset": true`),
+  `perf.parse_result_overwritten` no longer fires on a `for_each.over` read,
+  and `clippy --fix` no longer groups steps across a `for_each` write it
+  could not see.
+
+[#351]: https://github.com/GoPlasmatic/Orion/issues/351
+[#352]: https://github.com/GoPlasmatic/Orion/issues/352
+[#353]: https://github.com/GoPlasmatic/Orion/issues/353
 [#354]: https://github.com/GoPlasmatic/Orion/issues/354
 
 ## [1.9.1] - 2026-09-23
@@ -5912,7 +6000,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.9.1...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/GoPlasmatic/Orion/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/GoPlasmatic/Orion/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/GoPlasmatic/Orion/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/GoPlasmatic/Orion/compare/v1.8.1...v1.8.2

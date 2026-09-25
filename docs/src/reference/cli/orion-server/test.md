@@ -18,7 +18,7 @@ With `--definitions`, a set whose [`package` document](../shared-definitions.md#
 
 A case expects output values (`expect`), task-error codes (`expect_errors`), connector calls (`expect_calls`) and executed task ids (`expect_tasks`). See [Test a workflow offline](../../../guides/author/testing.md) for the case format.
 
-A case runs the way a node runs a message whose channel does not trace task details: no execution trace, and no per-write capture unless an `expect` path is rooted at `audit_trail`. A long looping workflow costs about what it costs on a node.
+A case runs the way a node runs a message whose channel does not trace task details. It records no execution trace, and no per-write capture unless an `expect` path is rooted at `audit_trail`. A long looping workflow costs about what it costs on a node.
 
 ## Options
 

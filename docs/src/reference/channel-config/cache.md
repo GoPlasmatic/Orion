@@ -1,4 +1,4 @@
-<!-- description: The cache block of a channel: serving repeated identical sync requests from a stored response, the cache key, key_logic, TTL, invalidation namespaces and the backing store. -->
+<!-- description: The cache block of a channel: serving repeated sync requests from a stored response, the cache key, key_logic, TTL, invalidation namespaces and the store. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
@@ -34,7 +34,7 @@
 
 `key_logic` is the general form. It reads `{"data": …, "metadata": …}`, the same metadata `validation_logic` reads, and **replaces** the payload-derived half of the key rather than adding to it. An expression that says what varies the response is a complete answer. Mixing it with a payload hash would put back the fields it was written to exclude. When both are declared, `key_logic` decides the key and `cache_key_fields` is ignored.
 
-A per-user cache keys on the verified subject. On a [`jwt`](./auth.md) channel the claims are at `metadata.auth.claims`, and a caller cannot supply that key, so a request without a verified token resolves the expression to `null` and bypasses the cache:
+A per-user cache keys on the verified subject. On a [`jwt`](./auth.md) channel the claims are at `metadata.auth.claims`, and a caller cannot supply that key. A request without a verified token resolves the expression to `null` and bypasses the cache:
 
 ```json
 "cache": {
@@ -59,7 +59,7 @@ Behaviour:
 
 ## Invalidation
 
-A TTL alone trades staleness against misses: a short one misses while the data sits unchanged, and a long one serves stale data after every write. `namespaces` lets a channel cache until the data changes:
+A TTL alone trades staleness against misses. A short one misses while the data sits unchanged; a long one serves stale data after every write. `namespaces` lets a channel cache until the data changes:
 
 ```json
 "cache": { "enabled": true, "ttl_secs": 3600, "namespaces": ["ladder"] }
@@ -79,7 +79,7 @@ Behaviour:
 - **The counter's key** is `orion:rc:ns:<namespace>`, in each store. `INCR` on it from outside Orion is an invalidation too.
 - A lookup that cannot read the counters, or finds one holding something other than an integer, bypasses the cache for that request and stores nothing.
 
-A namespaced entry is stored under a key prefix of its own, so an older binary never reads one as a response body. An older binary also refuses the `namespaces` field and quarantines the channel, so during a rolling upgrade such a channel is served only by nodes that understand it.
+A namespaced entry is stored under a key prefix of its own, so an older binary never reads one as a response body. An older binary also refuses the `namespaces` field and quarantines the channel. During a rolling upgrade, only nodes that understand the field serve such a channel.
 
 ## Coalescing misses
 

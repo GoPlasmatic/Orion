@@ -8,7 +8,7 @@ Orion is a single binary with an embedded database. This guide installs it, star
 
 ## Before you start
 
-Tested with Orion 1.9.1. Choose one installation method. Every method produces the same binary.
+Tested with Orion 1.10.0. Choose one installation method. Every method produces the same binary.
 
 | Method | Platforms | You need |
 |---|---|---|

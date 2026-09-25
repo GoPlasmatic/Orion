@@ -1,4 +1,4 @@
-<!-- description: The cron ledger endpoints: listing and reading occurrences, retrying one at the same scheduled instant, cancelling one that has not finished, the scheduler status, and manual triggers. -->
+<!-- description: The cron ledger endpoints: list and read occurrences, retry one at its scheduled instant, cancel one that has not finished, scheduler status and triggers. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
@@ -48,7 +48,7 @@ The status row reports the lock too. `concurrency_policy` is `allow` or `forbid`
 
 **Triggering is not a side door.** A manual occurrence goes through the same claim, singleton and execution path a scheduled one does. Triggering a `forbid` channel while its scheduled run is in flight is therefore recorded as `skipped_singleton`, not run alongside it. It is an admin mutation: authenticated, rate limited and audited as `trigger` / `channel`.
 
-**Cancel frees the slot.** A `running` occurrence whose node died keeps its singleton slot until the lease its node last renewed runs out, and a `forbid` channel skips every occurrence due in the meantime. Cancelling the occurrence settles it `failed`, names the instance that held it in `error_message`, marks its trace `failed` if the trace still says `running`, and ends its slot's hold two heartbeat intervals later (`cron.heartbeat_interval_secs`). Nothing needs to know whether the holder is dead. A live holder finds its claim gone at its next heartbeat and stops, and its own write of an outcome then matches nothing. A cancelled occurrence can be retried like any failed one. Audited as `cancel` / `cron_occurrence`.
+**Cancel frees the slot.** A `running` occurrence whose node died keeps its singleton slot until the lease its node last renewed runs out. A `forbid` channel skips every occurrence due in the meantime. Cancelling the occurrence settles it `failed` and names the instance that held it in `error_message`. It marks the trace `failed` if the trace still says `running`, and ends the slot's hold two heartbeat intervals later (`cron.heartbeat_interval_secs`). Nothing needs to know whether the holder is dead. A live holder finds its claim gone at its next heartbeat and stops, and its own write of an outcome then matches nothing. A cancelled occurrence can be retried like any failed one. Audited as `cancel` / `cron_occurrence`.
 
 **Failed occurrences are not retried automatically** and never enter the [trace DLQ](./trace-dlq.md). The next scheduled occurrence is the natural retry, and a deterministically failing job that retried itself would spin. What *is* automatic is crash recovery: an occurrence whose worker died is re-claimed once its lease expires, as a second attempt on the same row.
 

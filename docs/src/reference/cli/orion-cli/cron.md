@@ -1,4 +1,4 @@
-<!-- description: orion-cli cron shows what each cron channel has scheduled, lists and inspects durable occurrences, retries a failed or skipped one at its instant, and cancels one that has not finished. -->
+<!-- description: orion-cli cron shows each cron channel's schedule, lists and inspects occurrences, retries a failed or skipped one, and cancels one that has not finished. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
@@ -22,8 +22,8 @@ instant. `completed` occurrences are refused with a `409` for exactly that
 reason.
 
 `cancel` stops an occurrence that has not finished and frees its singleton
-slot within two heartbeat intervals, whether or not the node running it is
-still alive. It is how to release the slots of a node that died mid-run.
+slot within two heartbeat intervals. It works whether or not the node
+running it is still alive. It is how to release the slots of a node that died mid-run.
 
 ## Subcommands
 

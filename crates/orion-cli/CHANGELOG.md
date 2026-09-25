@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-09-25
+
 ### Added
 
 - **`cache invalidate <namespace>`** ([#354]). Bumps a channel
@@ -14,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so every channel whose `cache.namespaces` lists it misses on its next
   request.
 
+- **`cron cancel <id>`** ([#352]). Cancels a `pending`, `claimed` or
+  `running` occurrence through
+  `POST /api/v1/admin/cron/occurrences/{id}/cancel`, freeing the singleton
+  slot a dead node's run still held.
+
+[#352]: https://github.com/GoPlasmatic/Orion/issues/352
 [#354]: https://github.com/GoPlasmatic/Orion/issues/354
 
 ## [1.9.1] - 2026-09-23
@@ -396,7 +404,8 @@ Initial release.
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#282]: https://github.com/GoPlasmatic/Orion/issues/282
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.9.1...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/GoPlasmatic/Orion/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/GoPlasmatic/Orion/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/GoPlasmatic/Orion/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/GoPlasmatic/Orion/compare/v1.8.1...v1.8.2

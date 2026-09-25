@@ -23,7 +23,7 @@ Deletes exact keys from a cache connector, and reports how many existed.
 
 `cache_delete` is a connector function. It names a [connector](../connectors/index.md) for its credentials and endpoint. Orion validates its `input` when the workflow is saved, and the call runs through the connector's circuit breaker.
 
-It is the invalidation half of caching a read in a workflow: the workflow that changes the data deletes the entries it made stale, rather than waiting out their TTL. On Redis the keys go in one `DEL`. A key that is not present is not an error; it simply is not counted.
+It is the invalidation half of caching a read in a workflow. The workflow that changes the data deletes the entries it made stale, rather than waiting out their TTL. On Redis the keys go in one `DEL`. A key that is not present is not an error; it is not counted.
 
 Keys are exact. There is no prefix or pattern form, because on Redis one would be a `SCAN` over the whole keyspace. To retire a family of keys at once, embed a generation counter in each key and bump it with [`cache_incr`](./cache_incr.md). To invalidate a channel's response cache, use [`cache.namespaces`](../channel-config/cache.md#invalidation) and [`cache_invalidate`](./cache_invalidate.md).
 

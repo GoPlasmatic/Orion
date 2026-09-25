@@ -1,4 +1,4 @@
-<!-- description: The admin endpoints that are not an entity: engine status and reload, the function catalogue, audit logs, the trace DLQ, cron occurrences, backups and response-cache invalidation. -->
+<!-- description: The admin endpoints that are not an entity: engine status and reload, functions, audit logs, the trace DLQ, cron occurrences, backups and cache invalidation. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 

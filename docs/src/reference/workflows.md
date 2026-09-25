@@ -188,7 +188,7 @@ Every call runs against its own copy of the message, taken before the first call
 
 The task's `continue_on_error` applies per element. A call that fails the task stops new calls from starting, and the elements after it contribute nothing. `terminal` and `halt_on` apply once, after the whole fan-out.
 
-Any Orion function can fan out. The engine's inline built-ins (`map`, `validation`, `filter`, `log`, `parse_json`, `parse_xml`, `publish_json`, `publish_xml`) cannot: a per-element transform is JSONLogic's `map`. A key `for_each` does not define is refused at write time, because the engine would ignore it: `max_concurency` would otherwise run one call at a time without a word.
+Any Orion function can fan out. The engine's inline built-ins (`map`, `validation`, `filter`, `log`, `parse_json`, `parse_xml`, `publish_json`, `publish_xml`) cannot: a per-element transform is JSONLogic's `map`. A key `for_each` does not define is refused at write time, because the engine would ignore it. A misspelt `max_concurency` would otherwise run one call at a time without a word.
 
 **Since:** Orion 1.9.1, which ships dataflow-rs 3.14.
 
@@ -238,7 +238,7 @@ supplies one, then stamps its own keys on top:
 | `vars` | always, when the instance declares any | The [`[vars]`](./configuration/vars-and-secrets.md) config section verbatim. No `[vars]` → the key is stripped, so a caller cannot supply it |
 | `auth` | only when a [`jwt`](./channel-config/auth.md) token verified | `{"claims": …}`, the verified claims. No verified token → the key is stripped, so a caller cannot supply it |
 
-`oauth` (the [sign-in](./channel-config/oauth2_login.md) grant) and `trigger` (a [cron](./channel-config/cron.md) occurrence) are stripped from the caller's object the same way, and only their guard or the cron worker writes them.
+`oauth` (the [sign-in](./channel-config/oauth2_login.md) grant) and `trigger` (a [cron](./channel-config/cron.md) occurrence) are stripped from the caller's object the same way. Only their guard or the cron worker writes them.
 
 Orion stamps nothing else on the HTTP path: no client IP, no request path, no trace id. A channel in [`request.body_mode = "payload"`](./channel-config/request.md) takes no caller `metadata` at all; the object is server-stamped keys only.
 
@@ -272,7 +272,7 @@ Orion reserves these keys and no others:
 | `metadata._orion_call_chain` | context | Channel names traversed by nested `channel_call`s |
 | `metadata._orion_errors` | context | Codes of tasks that failed in this run — see [Branching on a failure](#branching-on-a-failure) |
 
-No other key or prefix in the context is reserved. Six plain metadata keys are still platform-owned and force-stamped or stripped at every ingress, so a caller cannot supply them: `channel`, `cookies`, `vars`, `auth`, `oauth` and `trigger` (see [Request metadata](#request-metadata)). `metadata.progress` is engine-owned too, but it belongs to dataflow-rs rather than Orion; see [Branching on a failure](#branching-on-a-failure).
+No other key or prefix in the context is reserved. Six plain metadata keys are still platform-owned, force-stamped or stripped at every ingress. A caller cannot supply `channel`, `cookies`, `vars`, `auth`, `oauth` or `trigger` (see [Request metadata](#request-metadata)). `metadata.progress` is engine-owned too, but it belongs to dataflow-rs rather than Orion; see [Branching on a failure](#branching-on-a-failure).
 
 ### Branching on a failure
 
@@ -419,11 +419,11 @@ A key `loop` does not define is refused at write time, because the engine would 
 
 ### Setup
 
-`setup` is a list of steps run once, before the first sweep, in the same grammar as `tasks`: task groups are allowed, and a `terminal` step ends the workflow before any sweep. The workflow `condition` gates setup and the loop alike. Setup steps share the body's id namespace, so an id used in both is refused. Everything Orion checks about a step it checks about a setup step: its function and input at create, the connectors it names at activation and when a connector is renamed or deleted, and every `lint` and `clippy` rule.
+`setup` is a list of steps run once, before the first sweep, in the same grammar as `tasks`. Task groups are allowed, and a `terminal` step ends the workflow before any sweep. The workflow `condition` gates setup and the loop alike. Setup steps share the body's id namespace, so an id used in both is refused. Everything Orion checks about a step it checks about a setup step. That covers its function and input at create, and the connectors it names at activation and on a connector rename or delete. Every `lint` and `clippy` rule applies too.
 
 ### Iterating an array
 
-With `over`, the counter indexes the array: sweep `k` holds `over[k]` at `temp_data.<as>`, and the loop stops at `max` or at the array's end, whichever comes first. `init` is then a starting offset, `increment` a stride, and `init` must be at least `0`. `over` must yield an array; anything else, `null` included, is a workflow error naming `loop.over`, and an empty array runs no sweep. `max` still applies.
+With `over`, the counter indexes the array: sweep `k` holds `over[k]` at `temp_data.<as>`. The loop stops at `max` or at the array's end, whichever comes first. `init` is then a starting offset, `increment` a stride, and `init` must be at least `0`. `over` must yield an array; anything else, `null` included, is a workflow error naming `loop.over`, and an empty array runs no sweep. `max` still applies.
 
 **Since:** Orion 1.9.1 for `setup`, `over`, `as` and `scratch`, which need dataflow-rs 3.14.
 

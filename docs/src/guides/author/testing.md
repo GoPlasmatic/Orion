@@ -96,7 +96,7 @@ orion-server dry-run -w workflow.json -i payload.json | jq '.output.order'
 
 It exits non-zero when the run fails, and prints the trace either way. A run that dies at task three still tells you what the first two did.
 
-Each step in `trace` snapshots the message after it, with only the audit entry that step wrote. A long looping workflow still records a snapshot per step, so for one `--trace steps` keeps each step's id, timing and changes without the snapshot, and `--trace none` runs it as a node runs an untraced message and reports only `tasks`.
+Each step in `trace` snapshots the message after it, with only the audit entry that step wrote. A long looping workflow still records a snapshot per step. For one, `--trace steps` keeps each step's id, timing and changes without the snapshot. `--trace none` runs it as a node runs an untraced message and reports only `tasks`.
 
 ## Stub the calls that leave the process
 

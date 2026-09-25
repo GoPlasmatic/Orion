@@ -15,7 +15,7 @@ deny[correctness.unreachable_step] steps after an unconditional terminal step ca
 
 ## Description
 
-Everything in run order after a terminal step that is certain to be reached. Certain means no condition on it or on any enclosing group. A loop's `setup` runs before the body, so a certain terminal step in `setup` ends the workflow before any sweep, and the whole body is unreachable. A terminal *task* halts after it ran, so it must be unconditional. A terminal *group* halts when its span closes, whatever its members did.
+Everything in run order after a terminal step that is certain to be reached. Certain means no condition on it or on any enclosing group. A loop's `setup` runs before the body. A certain terminal step in `setup` ends the workflow before any sweep, and the whole body is unreachable. A terminal *task* halts after it ran, so it must be unconditional. A terminal *group* halts when its span closes, whatever its members did.
 
 ## Related
 

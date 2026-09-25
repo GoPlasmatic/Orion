@@ -86,7 +86,7 @@ An unlisted provider is the explicit form — configuration, never code:
 
 One named non-goal: **Twilio**, whose base string needs the full public URL plus re-sorted form parameters — a per-provider algorithm, not a concatenation.
 
-**`jwt`** verifies a bearer token at ingress and exposes the **verified claims**, never the token, at `metadata.auth.claims.*`. `validation_logic`, `authorization_logic`, the [response cache](./cache.md) `key_logic`, and every workflow task can read them there. The key is platform-reserved: a caller-supplied `metadata.auth` is stripped at ingress on every channel, so without a verified token the key is absent rather than whatever the envelope said. That is the difference from fronting Orion with a gateway. A gateway can accept or reject, but it cannot give the workflow the identity (`sub`, roles) that per-user logic needs, except by forwarding spoofable headers.
+**`jwt`** verifies a bearer token at ingress and exposes the **verified claims**, never the token, at `metadata.auth.claims.*`. `validation_logic`, `authorization_logic`, the [response cache](./cache.md) `key_logic`, and every workflow task can read them there. The key is platform-reserved: a caller-supplied `metadata.auth` is stripped at ingress on every channel. Without a verified token, the key is absent rather than whatever the envelope said. That is the difference from fronting Orion with a gateway. A gateway can accept or reject, but it cannot give the workflow the identity (`sub`, roles) that per-user logic needs, except by forwarding spoofable headers.
 
 ```json
 {

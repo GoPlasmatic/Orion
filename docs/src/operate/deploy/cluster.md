@@ -101,7 +101,7 @@ The signal is on the node instead. `/health` carries a `config_propagation` comp
 
 ### Scheduled runs
 
-Cron channels coordinate entirely through three shared tables and need no leader. An occurrence's identity is `(channel_id, scheduled_for)`, so two reconcilers racing the same pass produce one row. Claims are leased against the database clock and renewed by a running attempt every heartbeat, so a node that dies has its work and its singleton slots recovered by a peer after one `cron.claim_lease_secs`. A `forbid` singleton is a row exactly one occurrence holds at a time, acquired in the same transaction that marks it running.
+Cron channels coordinate entirely through three shared tables and need no leader. An occurrence's identity is `(channel_id, scheduled_for)`, so two reconcilers racing the same pass produce one row. Claims are leased against the database clock, and a running attempt renews its claim every heartbeat. When a node dies, a peer recovers its work and its singleton slots after one `cron.claim_lease_secs`. A `forbid` singleton is a row exactly one occurrence holds at a time, acquired in the same transaction that marks it running.
 
 Every node should agree on `cron.enabled`. A node with it off quarantines the active cron channels rather than ignoring them. A mixed cluster is visible on `/health` rather than silently half-scheduling.
 

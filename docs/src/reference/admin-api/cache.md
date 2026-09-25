@@ -10,7 +10,7 @@ Invalidating a channel response-cache namespace by hand.
 |--------|------|-------------|
 | POST | `/api/v1/admin/cache/namespaces/{namespace}/invalidate` | Bump the namespace's version in every response-cache store. Every channel whose [`cache.namespaces`](../channel-config/cache.md#invalidation) lists it misses on its next request |
 
-It is the operator's form of the [`cache_invalidate`](../functions/cache_invalidate.md) function, for a change no workflow made: a board flipped by hand, a row fixed in the database.
+It is the operator's form of the [`cache_invalidate`](../functions/cache_invalidate.md) function. Use it for a change no workflow made, such as a board flipped by hand or a row fixed in the database.
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/admin/cache/namespaces/ladder/invalidate \

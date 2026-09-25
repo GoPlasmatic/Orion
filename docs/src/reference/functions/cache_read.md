@@ -1,4 +1,4 @@
-<!-- description: The cache_read task function: read one key, or several in one round trip, from a Redis or in-memory cache connector into the data context, with null for a key that is missing. -->
+<!-- description: The cache_read task function: read one key, or several in one round trip, from a Redis or in-memory cache connector, with null for a missing key. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
@@ -24,7 +24,7 @@ built-in in-memory backend). Missing keys yield `null`.
 
 `cache_read` is a connector function. It names a [connector](../connectors/index.md) for its credentials and endpoint. Orion validates its `input` when the workflow is saved, and the call runs through the connector's circuit breaker.
 
-`keys` in place of `key` reads several keys in one round trip (one `MGET` on Redis) and writes an array in the same order, with `null` for each miss. A route that depends on two [generation counters](./cache_incr.md) reads both before it looks up its entry, in one call. Exactly one of `key` and `keys` is required; the workflow is refused at save time otherwise.
+`keys` in place of `key` reads several keys in one round trip (one `MGET` on Redis). It writes an array in the same order, with `null` for each miss. A route that depends on two [generation counters](./cache_incr.md) reads both before it looks up its entry, in one call. Exactly one of `key` and `keys` is required; the workflow is refused at save time otherwise.
 
 **Retry safety:** `read`. See [Retry safety](./retry-safety.md) for what the answer costs.
 
