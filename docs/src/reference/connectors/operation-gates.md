@@ -14,7 +14,7 @@ Every connector type carries an `operations` block that limits what workflows ma
 | `db`, `es` | `insert`, `update`, `delete`, `upsert` | The matching `data_write` operation, and the matching `mongo_write` op (`insert_*` → `insert`, `update_*`/`replace_one` → `update` — or `upsert` when `"upsert": true` — `delete_*` → `delete`) |
 | `db`, `es` | `raw_write` | `db_write` — raw SQL cannot be classified per operation |
 | `cache` | `read` | `cache_read` |
-| `cache` | `write` | `cache_write`, plus channel stores backed by the connector — see [Cache write covers channel stores](#cache-write-covers-channel-stores) |
+| `cache` | `write` | `cache_write`, `cache_delete`, `cache_incr`, plus channel stores backed by the connector — see [Cache write covers channel stores](#cache-write-covers-channel-stores) |
 | `kafka` | `publish` | `publish_kafka` |
 | `http` | `methods` | Any method not on the allow-list — see [http gates by method](#http-gates-by-method) |
 | `storage` | `presign_get`, `presign_put`, `head` | The matching storage function/method |
@@ -35,7 +35,7 @@ An HTTP connector's operation *is* its method, so the gate is an allow-list. Emp
 
 ## Cache `write` covers channel stores
 
-A channel's [deduplication store and response cache](../channel-config/index.md) may name a cache connector, and both write through it. A write-gated connector is refused for those uses. In cluster mode the channel fails to load and says why; on a single node it falls back to process memory with a warning. `read` does not apply to them — the only keys either store reads back are ones Orion wrote. There is no cache `delete` gate, because no workflow function deletes a key.
+A channel's [deduplication store and response cache](../channel-config/index.md) may name a cache connector, and both write through it. A write-gated connector is refused for those uses. In cluster mode the channel fails to load and says why; on a single node it falls back to process memory with a warning. `read` does not apply to them — the only keys either store reads back are ones Orion wrote. There is no separate cache `delete` gate: `cache_delete` changes what later reads see exactly as `cache_write` does, so `write` covers it, and a read-only connector refuses both.
 
 An `operations` key the connector's type does not have is refused on create and update, naming the key and listing the ones that exist.
 

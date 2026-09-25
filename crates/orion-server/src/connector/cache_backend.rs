@@ -34,6 +34,53 @@ pub trait CacheBackend: Send + Sync {
     /// Delete `key`. Deleting a key that is not present is not an error.
     async fn remove(&self, key: &str) -> Result<(), OrionError>;
 
+    /// Read several keys at once, answering in the order asked, `None` for a
+    /// miss. One `MGET` on Redis.
+    ///
+    /// The default is a loop over [`Self::get`], for test doubles; both real
+    /// backends override it.
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, OrionError> {
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            out.push(self.get(key).await?);
+        }
+        Ok(out)
+    }
+
+    /// Delete several keys, answering how many of them existed. One `DEL` on
+    /// Redis.
+    ///
+    /// The default reads before it deletes, so its count is not atomic; it is
+    /// for test doubles, and both real backends override it.
+    async fn remove_many(&self, keys: &[String]) -> Result<u64, OrionError> {
+        let mut deleted = 0;
+        for key in keys {
+            if self.get(key).await?.is_some() {
+                deleted += 1;
+            }
+            self.remove(key).await?;
+        }
+        Ok(deleted)
+    }
+
+    /// Atomically add `by` to the integer at `key` and answer the new value.
+    ///
+    /// A missing (or expired) key counts as `0` and is created; `ttl_secs`
+    /// applies **only** then, so a counter bumped on every write still expires
+    /// a fixed time after it was first made rather than being kept alive
+    /// forever by its own bumps. A present value that is not an integer is an
+    /// error, as `INCRBY` makes it.
+    ///
+    /// No default: the whole point is atomicity, which a get-then-set loop
+    /// over the other methods cannot give.
+    async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, OrionError> {
+        let _ = (key, by, ttl_secs);
+        Err(OrionError::Internal {
+            context: "this cache backend does not support atomic increment".to_string(),
+            source: None,
+        })
+    }
+
     /// Atomically claim a deduplication key on behalf of `owner`.
     ///
     /// * `Ok(None)` — the key was free (or its window had expired) and is now
@@ -224,6 +271,73 @@ impl CacheBackend for MemoryCacheBackend {
         Ok(())
     }
 
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, OrionError> {
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            out.push(self.get(key).await?);
+        }
+        Ok(out)
+    }
+
+    async fn remove_many(&self, keys: &[String]) -> Result<u64, OrionError> {
+        let now = Instant::now();
+        let mut deleted = 0;
+        for key in keys {
+            // An entry past its expiry is gone as far as every reader is
+            // concerned, so removing it does not count as a deletion.
+            if let Some((_, entry)) = self.entries.remove(key.as_str())
+                && entry.expires_at.is_none_or(|exp| exp > now)
+            {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
+    async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, OrionError> {
+        use dashmap::mapref::entry::Entry;
+
+        let now = Instant::now();
+        let fresh = |value: i64| {
+            let expires_at = ttl_secs
+                .filter(|t| *t > 0)
+                .map(|t| now + Duration::from_secs(t));
+            self.new_entry(&value.to_string(), expires_at)
+        };
+        // The shard lock held by `entry` is what makes read-add-write atomic
+        // against every other caller on this map.
+        let value = match self.entries.entry(key.to_string()) {
+            Entry::Vacant(vacant) => {
+                vacant.insert(fresh(by));
+                by
+            }
+            Entry::Occupied(mut occupied) => {
+                if occupied.get().expires_at.is_some_and(|exp| now >= exp) {
+                    occupied.insert(fresh(by));
+                    by
+                } else {
+                    let current: i64 = occupied.get().value.trim().parse().map_err(|_| {
+                        OrionError::validation(format!(
+                            "cache key '{key}' does not hold an integer, so it cannot be \
+                             incremented"
+                        ))
+                    })?;
+                    let next = current.checked_add(by).ok_or_else(|| {
+                        OrionError::validation(format!(
+                            "incrementing cache key '{key}' by {by} overflows a 64-bit integer"
+                        ))
+                    })?;
+                    let entry = occupied.get_mut();
+                    entry.value = next.to_string();
+                    entry.last_access.store(self.tick(), Ordering::Relaxed);
+                    next
+                }
+            }
+        };
+        self.enforce_bound();
+        Ok(value)
+    }
+
     async fn claim_dedup_key(
         &self,
         key: &str,
@@ -263,6 +377,27 @@ impl CacheBackend for MemoryCacheBackend {
 // ============================================================
 // Redis backend
 // ============================================================
+
+/// `INCRBY`, with a TTL applied only when the call created the key.
+///
+/// A script because the two commands must be one step: `INCRBY` then a
+/// separate `EXPIRE` would let a concurrent first bump lose its TTL, and an
+/// unconditional `EXPIRE` would keep a counter alive for as long as something
+/// keeps bumping it. `EXPIRE … NX` would do it without a script, but only on
+/// Redis 7; `EVALSHA` works on every server the connector otherwise supports.
+static INCR_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
+    redis::Script::new(
+        r"
+local existed = redis.call('EXISTS', KEYS[1])
+local value = redis.call('INCRBY', KEYS[1], ARGV[1])
+local ttl = tonumber(ARGV[2])
+if existed == 0 and ttl > 0 then
+  redis.call('EXPIRE', KEYS[1], ttl)
+end
+return value
+",
+    )
+});
 
 pub struct RedisCacheBackend {
     conn: redis::aio::ConnectionManager,
@@ -314,6 +449,52 @@ impl CacheBackend for RedisCacheBackend {
             .await
             .map_err(|e| OrionError::Internal {
                 context: format!("Redis DEL failed for key '{key}'"),
+                source: Some(Box::new(e)),
+            })
+    }
+
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, OrionError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut conn = self.conn.clone();
+        // `MGET` rather than `AsyncCommands::mget`: the latter sends a bare
+        // `GET` for a one-key slice, whose reply is not an array.
+        redis::cmd("MGET")
+            .arg(keys)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| OrionError::Internal {
+                context: format!("Redis MGET failed for {} keys", keys.len()),
+                source: Some(Box::new(e)),
+            })
+    }
+
+    async fn remove_many(&self, keys: &[String]) -> Result<u64, OrionError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.conn.clone();
+        redis::cmd("DEL")
+            .arg(keys)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| OrionError::Internal {
+                context: format!("Redis DEL failed for {} keys", keys.len()),
+                source: Some(Box::new(e)),
+            })
+    }
+
+    async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, OrionError> {
+        let mut conn = self.conn.clone();
+        INCR_SCRIPT
+            .key(key)
+            .arg(by)
+            .arg(ttl_secs.unwrap_or(0))
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| OrionError::Internal {
+                context: format!("Redis INCRBY failed for key '{key}'"),
                 source: Some(Box::new(e)),
             })
     }
@@ -713,6 +894,87 @@ mod tests {
             "a fresh entry must not be evicted while expired ones remain"
         );
         assert!(backend.entries.len() <= 4);
+    }
+
+    // ---- #354: multi-key read, multi-key delete, atomic increment ----
+
+    #[tokio::test]
+    async fn get_many_answers_in_order_with_none_for_a_miss() {
+        let backend = MemoryCacheBackend::new(60, 0);
+        backend.set("a", "1").await.expect("test");
+        backend.set("c", "3").await.expect("test");
+        let keys = ["a", "b", "c"].map(String::from);
+        assert_eq!(
+            backend.get_many(&keys).await.expect("test"),
+            vec![Some("1".to_string()), None, Some("3".to_string())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn remove_many_counts_only_live_keys() {
+        let backend = MemoryCacheBackend::new(3600, 0);
+        backend.set("live", "v").await.expect("test");
+        backend.set_ex("expired", "v", 1).await.expect("test");
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let keys = ["live", "expired", "absent"].map(String::from);
+        assert_eq!(backend.remove_many(&keys).await.expect("test"), 1);
+        assert_eq!(backend.get("live").await.expect("test"), None);
+    }
+
+    /// The TTL is the creator's: a bump on an existing key keeps its expiry,
+    /// so a counter touched on every write still ends on schedule.
+    #[tokio::test(start_paused = true)]
+    async fn incr_applies_its_ttl_only_when_it_creates_the_key() {
+        let backend = MemoryCacheBackend::new(3600, 0);
+        assert_eq!(backend.incr_by("gen", 1, Some(10)).await.expect("test"), 1);
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert_eq!(backend.incr_by("gen", 1, Some(10)).await.expect("test"), 2);
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert_eq!(
+            backend.get("gen").await.expect("test"),
+            None,
+            "the second bump must not have extended the first one's TTL"
+        );
+        assert_eq!(backend.incr_by("gen", 5, None).await.expect("test"), 5);
+        assert_eq!(backend.incr_by("gen", -7, None).await.expect("test"), -2);
+    }
+
+    /// `cache_write` JSON-encodes, so an integer it wrote is a bare number an
+    /// increment can read; anything else is refused, as `INCRBY` refuses it.
+    #[tokio::test]
+    async fn incr_reads_a_written_integer_and_refuses_anything_else() {
+        let backend = MemoryCacheBackend::new(60, 0);
+        backend.set("n", "41").await.expect("test");
+        assert_eq!(backend.incr_by("n", 1, None).await.expect("test"), 42);
+        backend.set("s", "\"text\"").await.expect("test");
+        assert!(backend.incr_by("s", 1, None).await.is_err());
+        backend
+            .set("max", &i64::MAX.to_string())
+            .await
+            .expect("test");
+        assert!(backend.incr_by("max", 1, None).await.is_err());
+    }
+
+    /// Concurrent bumps each get a distinct value — the property a generation
+    /// counter is for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_increments_never_share_a_value() {
+        let backend = MemoryCacheBackend::new(60, 0);
+        let tasks: Vec<_> = (0..200)
+            .map(|_| {
+                let b = backend.clone();
+                tokio::spawn(async move { b.incr_by("gen", 1, None).await.expect("test") })
+            })
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        for t in tasks {
+            assert!(seen.insert(t.await.expect("join")));
+        }
+        assert_eq!(seen.len(), 200);
+        assert_eq!(
+            backend.get("gen").await.expect("test"),
+            Some("200".to_string())
+        );
     }
 
     #[tokio::test]

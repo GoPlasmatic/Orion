@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cache_delete`, `cache_incr`, and a multi-key `cache_read`** ([#354]).
+  A workflow can now cache a read until a write invalidates it.
+  - `cache_delete` deletes exact keys (one `DEL` on Redis) and can report
+    `{"deleted": n}`.
+  - `cache_incr` is an atomic `INCRBY` that returns the new value, applying
+    `ttl_secs` only when it creates the key. That makes a generation counter
+    safe under concurrent writers with no uniqueness trick.
+  - `cache_read` takes `keys: [...]` in place of `key` and answers an array
+    in the same order over one `MGET`, `null` for a miss.
+
+  `cache_delete` and `cache_incr` are gated by the connector's `write`
+  operation, and they record a result only when `output` is set.
+
 ### Security
 
 - **A caller can no longer supply `metadata.auth` or `metadata.trigger`**

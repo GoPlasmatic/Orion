@@ -227,7 +227,7 @@ pub fn build_custom_functions(
         },
     );
 
-    // Register cache handlers (cache_read, cache_write).
+    // Register cache handlers (cache_read, cache_write, cache_delete, cache_incr).
     // CachePool routes to the in-memory or Redis backend per connector config.
     // Wrapped: `Connector<H>` is what supplies the prologue → resolve →
     // gate → shell → output sequence, and an unwrapped handler is not an
@@ -242,6 +242,20 @@ pub fn build_custom_functions(
     register(
         &mut fns,
         functions::cache_write::CacheWriteHandler {
+            cache_pool: cache_pool.clone(),
+            registry: registry.clone(),
+        },
+    );
+    register(
+        &mut fns,
+        functions::cache_delete::CacheDeleteHandler {
+            cache_pool: cache_pool.clone(),
+            registry: registry.clone(),
+        },
+    );
+    register(
+        &mut fns,
+        functions::cache_incr::CacheIncrHandler {
             cache_pool,
             registry: registry.clone(),
         },

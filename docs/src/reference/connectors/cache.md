@@ -6,7 +6,7 @@
 
 The `config` fields of a `cache` connector, which backs Redis or in-process memory.
 
-Key-value storage for lookups, session state, and temporary data, through [`cache_read` / `cache_write`](../functions/cache_read.md).
+Key-value storage for lookups, session state, counters and temporary data, through [`cache_read`](../functions/cache_read.md), [`cache_write`](../functions/cache_write.md), [`cache_delete`](../functions/cache_delete.md) and [`cache_incr`](../functions/cache_incr.md).
 
 ```json
 {
@@ -25,7 +25,7 @@ Key-value storage for lookups, session state, and temporary data, through [`cach
 | `backend` | string | yes | — | `"redis"` or `"memory"` |
 | `url` | string | Redis only | — | Redis connection URL, carrying credentials when needed: `redis://user:pass@host:6379`. Ignored for `"memory"` |
 | `allow_private_urls` | boolean | no | `false` | Allow private and internal IP addresses (SSRF protection). Ignored for `"memory"`, which opens no socket |
-| `operations` | object | no | all allowed | `read` / `write` — see [Operation gates](./operation-gates.md) |
+| `operations` | object | no | all allowed | `read` / `write` — see [Operation gates](./operation-gates.md). `write` also gates `cache_delete` and `cache_incr` |
 
 TTL is set per write, through `cache_write`'s `ttl_secs`. There is no connector-level default.
 

@@ -338,6 +338,8 @@ pub struct FunctionSchema {
 // schema/handler divergence this audit found — F23's `channel_call` input, the
 // `method` casing, the Mongo `database` rule — was a table that drifted because
 // it was in a different file from the code it described.
+use super::cache_delete::CACHE_DELETE_FIELDS;
+use super::cache_incr::CACHE_INCR_FIELDS;
 use super::cache_read::CACHE_READ_FIELDS;
 use super::cache_write::CACHE_WRITE_FIELDS;
 use super::channel_call::CHANNEL_CALL_FIELDS;
@@ -368,7 +370,7 @@ const REGISTRY: &[FunctionSchema] = &[
         retry_safety: RetrySafety::Read,
         connector: ConnectorRule::of(&[ConnectorType::Cache]),
         deny_unknown: false,
-        validate_static: None,
+        validate_static: Some(super::cache_read::validate_static_input),
     },
     FunctionSchema {
         name: "cache_write",
@@ -377,6 +379,28 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: CACHE_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::IdempotentWrite,
+        connector: ConnectorRule::of(&[ConnectorType::Cache]),
+        deny_unknown: false,
+        validate_static: None,
+    },
+    FunctionSchema {
+        name: "cache_delete",
+        description: "Delete exact keys from a cache connector.",
+        category: "connector",
+        input_fields: CACHE_DELETE_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::IdempotentWrite,
+        connector: ConnectorRule::of(&[ConnectorType::Cache]),
+        deny_unknown: false,
+        validate_static: None,
+    },
+    FunctionSchema {
+        name: "cache_incr",
+        description: "Atomically increment an integer on a cache connector.",
+        category: "connector",
+        input_fields: CACHE_INCR_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::UnsafeWrite,
         connector: ConnectorRule::of(&[ConnectorType::Cache]),
         deny_unknown: false,
         validate_static: None,

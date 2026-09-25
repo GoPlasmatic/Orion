@@ -6,12 +6,14 @@ use serde_json::Value;
 
 use super::connector_handler::ConnectorHandler;
 use super::connector_helpers::{
-    ConnectorCall, require_op, resolve_required_str, to_connect_error, to_exec_error,
+    ConnectorCall, require_op, resolve_required_str, resolve_required_str_list, to_connect_error,
+    to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
+use dataflow_rs::engine::error::DataflowError;
 
 /// Workflow function handler for reading values from a cache backend.
 pub struct CacheReadHandler {
@@ -24,10 +26,10 @@ impl ConnectorHandler for CacheReadHandler {
     const NAME: &'static str = "cache_read";
     type Kind = crate::connector::kind::Cache;
     type Input = TemplatedInput;
-    /// The key, resolved against the message. `{"var": "data.id"}` is the
-    /// whole point of a per-request cache lookup, so it has to be folded
+    /// The key or keys, resolved against the message. `{"var": "data.id"}` is
+    /// the whole point of a per-request cache lookup, so it has to be folded
     /// before the body takes `ctx` mutably.
-    type Parsed = String;
+    type Parsed = CacheReadKeys;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
         &self.registry
@@ -39,11 +41,30 @@ impl ConnectorHandler for CacheReadHandler {
         input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, crate::engine::HandlerError> {
-        Ok(resolve_required_str(input, "key", call.name, ctx)?)
+        // Exactly one of the two; `validate_static_input` says so at authoring
+        // time, and this is the same rule for a hand-built input.
+        match (input.get("key").is_some(), input.get("keys").is_some()) {
+            (true, false) => Ok(CacheReadKeys::One(resolve_required_str(
+                input, "key", call.name, ctx,
+            )?)),
+            (false, true) => Ok(CacheReadKeys::Many(resolve_required_str_list(
+                input, "keys", call.name, ctx, MAX_KEYS,
+            )?)),
+            (true, true) => Err(DataflowError::Validation(format!(
+                "{} takes 'key' or 'keys', not both",
+                call.name
+            ))
+            .into()),
+            (false, false) => Err(DataflowError::Validation(format!(
+                "{} requires 'key' or 'keys'",
+                call.name
+            ))
+            .into()),
+        }
     }
 
     fn gate(
-        _key: &String,
+        _keys: &CacheReadKeys,
         conn: &crate::connector::CacheConnectorConfig,
         connector: &str,
     ) -> Result<(), crate::engine::HandlerError> {
@@ -53,7 +74,7 @@ impl ConnectorHandler for CacheReadHandler {
 
     async fn run(
         &self,
-        key: String,
+        keys: CacheReadKeys,
         conn: &crate::connector::CacheConnectorConfig,
         call: &ConnectorCall<'_>,
         _input: &TemplatedInput,
@@ -68,18 +89,64 @@ impl ConnectorHandler for CacheReadHandler {
             .await
             .map_err(to_connect_error)?;
 
-        let value = backend.get(&key).await.map_err(to_exec_error)?;
-
-        // `cache_write` JSON-encodes everything, so parsing is its exact
-        // inverse. The raw-string fallback is kept deliberately: a key written
-        // by something other than Orion may hold a bare string, and surfacing
-        // that as a string beats failing the task.
-        // A miss is a result — `null` at `output` — not an absence of one.
-        Ok(match value {
-            Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
-            None => Value::Null,
+        match keys {
+            CacheReadKeys::One(key) => {
+                let value = backend.get(&key).await.map_err(to_exec_error)?;
+                Ok(decode(value).into())
+            }
+            // One `MGET`: a route reading two generation counters pays one
+            // round trip, not two.
+            CacheReadKeys::Many(keys) => {
+                let values = backend.get_many(&keys).await.map_err(to_exec_error)?;
+                Ok(Value::Array(values.into_iter().map(decode).collect()).into())
+            }
         }
-        .into())
+    }
+}
+
+/// Most keys one `cache_read` or `cache_delete` may name.
+pub(super) const MAX_KEYS: usize = 1000;
+
+/// What a `cache_read` looks up: one `key`, answered as a value, or `keys`,
+/// answered as an array in the same order.
+pub enum CacheReadKeys {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// A stored string back to the value it was written as.
+///
+/// `cache_write` JSON-encodes everything, so parsing is its exact inverse. The
+/// raw-string fallback is kept deliberately: a key written by something other
+/// than Orion may hold a bare string, and surfacing that as a string beats
+/// failing the task. A miss is a result — `null` — not an absence of one.
+fn decode(value: Option<String>) -> Value {
+    match value {
+        Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
+        None => Value::Null,
+    }
+}
+
+// -- Authoring-time validation (shared with schema::validate_input) --
+
+/// `key` and `keys` are each optional in the field table, because either one
+/// does; exactly one of them is the rule.
+pub(super) fn validate_static_input(
+    obj: &serde_json::Map<String, Value>,
+) -> Vec<(&'static str, &'static str, String)> {
+    match (obj.contains_key("key"), obj.contains_key("keys")) {
+        (true, true) => vec![(
+            "keys",
+            "INVALID",
+            "cache_read takes 'key' (one value) or 'keys' (an array of values), not both"
+                .to_string(),
+        )],
+        (false, false) => vec![(
+            "key",
+            "REQUIRED",
+            "cache_read requires 'key', or 'keys' to read several at once".to_string(),
+        )],
+        _ => Vec::new(),
     }
 }
 
@@ -101,9 +168,15 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "key",
-        description: "Cache key to look up. JSONLogic: a literal, or an expression over the message.",
+        description: "Cache key to look up. JSONLogic: a literal, or an expression over the message. One of `key` and `keys` is required.",
         kind: FieldKind::String,
-        required: true,
+        template_at: &[""],
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
+        name: "keys",
+        description: "Several keys to look up in one round trip (at most 1000). The result is an array in the same order, null for a miss. JSONLogic: an array of literals or expressions, or an expression evaluating to one.",
+        kind: FieldKind::Array,
         template_at: &[""],
         ..FieldSchema::DEFAULT
     },
@@ -159,7 +232,7 @@ mod tests {
 
         let value = h
             .run(
-                "absent-key".to_string(),
+                CacheReadKeys::One("absent-key".to_string()),
                 &memory_connector(true),
                 &call,
                 &TemplatedInput::from(serde_json::json!({"connector": "c", "key": "absent-key"})),
@@ -180,7 +253,7 @@ mod tests {
     #[test]
     fn a_write_only_connector_refuses_a_read() {
         let err = <CacheReadHandler as ConnectorHandler>::gate(
-            &"k".to_string(),
+            &CacheReadKeys::One("k".to_string()),
             &memory_connector(false),
             "c",
         )

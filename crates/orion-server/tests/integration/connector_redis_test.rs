@@ -389,3 +389,71 @@ async fn align_to_fresh_window() {
     let into_window = u64::from(now.subsec_millis());
     tokio::time::sleep(std::time::Duration::from_millis(1000 - into_window + 60)).await;
 }
+
+/// #354's three operations against a real Redis: `MGET` in order with a nil
+/// for a miss, `DEL` counting what existed, and the increment script — TTL on
+/// creation only, and distinct values under concurrency.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
+async fn test_redis_multi_key_read_delete_and_increment() {
+    use orion::connector::cache_backend::{CacheBackend, RedisCacheBackend};
+
+    let (_redis, redis_url) = redis_container().await;
+    let client = redis::Client::open(redis_url.as_str()).expect("redis client");
+    let conn = client
+        .get_connection_manager()
+        .await
+        .expect("redis connection");
+    let backend = std::sync::Arc::new(RedisCacheBackend::new(conn.clone()));
+
+    backend.set("a", "1").await.expect("set");
+    backend.set("c", "3").await.expect("set");
+    let keys = ["a", "b", "c"].map(String::from);
+    assert_eq!(
+        backend.get_many(&keys).await.expect("mget"),
+        vec![Some("1".to_string()), None, Some("3".to_string())]
+    );
+    // A one-key slice must still come back as a one-element array.
+    assert_eq!(
+        backend.get_many(&["a".to_string()]).await.expect("mget"),
+        vec![Some("1".to_string())]
+    );
+    assert_eq!(backend.remove_many(&keys).await.expect("del"), 2);
+    assert_eq!(backend.get("a").await.expect("get"), None);
+
+    assert_eq!(backend.incr_by("gen", 1, Some(100)).await.expect("incr"), 1);
+    let mut raw = conn.clone();
+    let ttl: i64 = redis::cmd("TTL")
+        .arg("gen")
+        .query_async(&mut raw)
+        .await
+        .expect("ttl");
+    assert!(ttl > 0 && ttl <= 100, "created with a TTL: {ttl}");
+    redis::cmd("PERSIST")
+        .arg("gen")
+        .query_async::<()>(&mut raw)
+        .await
+        .expect("persist");
+    assert_eq!(backend.incr_by("gen", 4, Some(100)).await.expect("incr"), 5);
+    let ttl: i64 = redis::cmd("TTL")
+        .arg("gen")
+        .query_async(&mut raw)
+        .await
+        .expect("ttl");
+    assert_eq!(ttl, -1, "a bump on an existing key must not set a TTL");
+
+    backend.set("text", "\"x\"").await.expect("set");
+    assert!(backend.incr_by("text", 1, None).await.is_err());
+
+    let tasks: Vec<_> = (0..100)
+        .map(|_| {
+            let b = backend.clone();
+            tokio::spawn(async move { b.incr_by("race", 1, None).await.expect("incr") })
+        })
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    for t in tasks {
+        assert!(seen.insert(t.await.expect("join")));
+    }
+    assert_eq!(seen.len(), 100);
+}

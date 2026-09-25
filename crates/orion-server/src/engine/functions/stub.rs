@@ -410,6 +410,14 @@ impl StubHandler {
         if self.function == "cache_write" {
             return Ok(None);
         }
+        // `cache_delete` and `cache_incr` record their result only where the
+        // task names an `output`; without one their real handlers write
+        // nothing, so neither may their stubs.
+        if matches!(self.function, "cache_delete" | "cache_incr")
+            && input.get("output").is_none_or(serde_json::Value::is_null)
+        {
+            return Ok(None);
+        }
         let default_root = match crate::engine::FunctionRegistry::builtin()
             .get(self.function)
             .map(|entry| &entry.writes)
@@ -742,7 +750,7 @@ mod tests {
             count += 1;
         }
         assert_eq!(
-            count, 19,
+            count, 21,
             "every Orion handler is stubbable, and only those"
         );
     }
@@ -812,6 +820,15 @@ mod tests {
 
         // The one generic-stubbed function whose real handler writes nothing.
         assert_eq!(path(&stub("cache_write"), json!({})), None);
+        // The two that write only where told to.
+        for function in ["cache_delete", "cache_incr"] {
+            assert_eq!(path(&stub(function), json!({})), None, "{function}");
+            assert_eq!(
+                path(&stub(function), json!({"output": "data.n"})),
+                Some("data.n".to_string()),
+                "{function}"
+            );
+        }
     }
 
     /// The path validator and the lookup must agree about what a root is.

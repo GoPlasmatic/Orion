@@ -452,3 +452,92 @@ async fn test_cache_missing_connector_error() {
     let body = common::body_json(resp).await;
     assert_eq!(body["error"]["code"], "ENGINE_ERROR");
 }
+
+/// #354: the generation-counter pattern end to end. A write bumps the
+/// counter; a read embeds the generation it read in its own key and fetches
+/// several keys in one `cache_read`; `cache_delete` drops exact keys.
+#[tokio::test]
+async fn cache_incr_keys_and_delete_compose_a_generation_counter() {
+    let app = common::test_app().await;
+    common::create_connector(&app, common::cache_connector_memory("gen-cache")).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "gen-flow",
+        common::workflow_with_tasks(
+            "GenFlow",
+            json!([
+                {"id": "bump1", "name": "bump", "function": {"name": "cache_incr", "input": {
+                    "connector": "gen-cache", "key": "gen:ladder", "output": "data.g1"}}},
+                {"id": "bump2", "name": "bump by 5", "function": {"name": "cache_incr", "input": {
+                    "connector": "gen-cache", "key": "gen:ladder", "by": 5, "ttl_secs": 60,
+                    "output": "data.g2"}}},
+                {"id": "silent", "name": "bump, no output", "function": {"name": "cache_incr", "input": {
+                    "connector": "gen-cache", "key": "gen:season"}}},
+                {"id": "store", "name": "store entry", "function": {"name": "cache_write", "input": {
+                    "connector": "gen-cache",
+                    "key": {"cat": ["ladder:v", {"var": "data.g2"}]},
+                    "value": {"top": "ada"}}}},
+                {"id": "read", "name": "read several", "function": {"name": "cache_read", "input": {
+                    "connector": "gen-cache",
+                    "keys": ["gen:ladder", "gen:season", {"cat": ["ladder:v", {"var": "data.g2"}]}, "absent"],
+                    "output": "data.many"}}},
+                {"id": "del", "name": "drop", "function": {"name": "cache_delete", "input": {
+                    "connector": "gen-cache",
+                    "keys": [{"cat": ["ladder:v", {"var": "data.g2"}]}, "absent"],
+                    "output": "data.deleted"}}},
+                {"id": "reread", "name": "read after delete", "function": {"name": "cache_read", "input": {
+                    "connector": "gen-cache",
+                    "key": {"cat": ["ladder:v", {"var": "data.g2"}]},
+                    "output": "data.after"}}}
+            ]),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/gen-flow",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["data"]["g1"], 1);
+    assert_eq!(body["data"]["g2"], 6);
+    assert_eq!(body["data"]["many"], json!([6, 1, {"top": "ada"}, null]));
+    assert_eq!(body["data"]["deleted"], json!({"deleted": 1}));
+    assert!(body["data"]["after"].is_null());
+}
+
+/// `cache_read` takes `key` or `keys`, never both and never neither — refused
+/// when the workflow is created, not when a message reaches the task.
+#[tokio::test]
+async fn cache_read_requires_exactly_one_of_key_and_keys() {
+    let app = common::test_app().await;
+    common::create_connector(&app, common::cache_connector_memory("kk-cache")).await;
+    for (id, input) in [
+        (
+            "both",
+            json!({"connector": "kk-cache", "key": "a", "keys": ["b"]}),
+        ),
+        ("neither", json!({"connector": "kk-cache"})),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(common::workflow_with_tasks(
+                    id,
+                    json!([{"id": "t", "name": "t", "function": {"name": "cache_read", "input": input}}]),
+                )),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{id}");
+    }
+}

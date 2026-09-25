@@ -120,7 +120,7 @@ impl ConnectorHandler for CacheWriteHandler {
 /// Resolve `ttl_secs` to whole seconds. Absent or null means "no expiry"; a
 /// value that resolves to something uninterpretable is an error rather than a
 /// silent fall-through to a key that never expires.
-fn resolve_ttl_secs(
+pub(super) fn resolve_ttl_secs(
     input: &TemplatedInput,
     name: &str,
     ctx: &TaskContext<'_>,

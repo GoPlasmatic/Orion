@@ -145,6 +145,8 @@
   - [`db_write`](./reference/functions/db_write.md)
   - [`cache_read`](./reference/functions/cache_read.md)
   - [`cache_write`](./reference/functions/cache_write.md)
+  - [`cache_delete`](./reference/functions/cache_delete.md)
+  - [`cache_incr`](./reference/functions/cache_incr.md)
   - [`mongo_read`](./reference/functions/mongo_read.md)
   - [`mongo_write`](./reference/functions/mongo_write.md)
   - [`mongo_aggregate`](./reference/functions/mongo_aggregate.md)

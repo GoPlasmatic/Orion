@@ -1057,6 +1057,8 @@ mod registry_tests {
         assert_eq!(
             takes,
             [
+                "cache_delete",
+                "cache_incr",
                 "cache_read",
                 "cache_write",
                 "data_query",

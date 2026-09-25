@@ -1,6 +1,6 @@
 <!-- description: Every built-in Orion task function in one table, with its category, the connector it needs, its page, and whether a retry is safe. -->
 <!-- type: hub -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-25 -->
 
 # Task functions
 
@@ -25,8 +25,10 @@ Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmat
 | [`data_write`](./data_write.md) | Connector | SQL / MongoDB / ES | Portable, backend-neutral insert/update/delete/upsert |
 | [`db_read`](./db_read.md) | Connector | SQL | Run a raw `SELECT`, return rows as JSON |
 | [`db_write`](./db_write.md) | Connector | SQL | Run raw `INSERT`/`UPDATE`/`DELETE`, return affected count |
-| [`cache_read`](./cache_read.md) | Connector | Cache | Read a value from Redis or the in-memory cache |
+| [`cache_read`](./cache_read.md) | Connector | Cache | Read one value, or several in one round trip, from Redis or the in-memory cache |
 | [`cache_write`](./cache_write.md) | Connector | Cache | Write a value to cache with optional TTL |
+| [`cache_delete`](./cache_delete.md) | Connector | Cache | Delete exact keys, so a write can drop what it made stale |
+| [`cache_incr`](./cache_incr.md) | Connector | Cache | Atomically increment an integer — a generation counter |
 | [`mongo_read`](./mongo_read.md) | Connector | MongoDB | Run a raw `find()`, return documents as JSON |
 | [`mongo_write`](./mongo_write.md) | Connector | MongoDB | Insert/update/replace/delete documents, nested shapes included |
 | [`mongo_aggregate`](./mongo_aggregate.md) | Connector | MongoDB | Run a stage-allowlisted aggregation pipeline |

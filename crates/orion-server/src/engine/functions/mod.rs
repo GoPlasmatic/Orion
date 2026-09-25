@@ -10,6 +10,8 @@ pub mod secret_ref;
 pub mod stub;
 pub mod templated_input;
 
+pub mod cache_delete;
+pub mod cache_incr;
 pub mod cache_read;
 pub mod cache_write;
 pub mod crypto;

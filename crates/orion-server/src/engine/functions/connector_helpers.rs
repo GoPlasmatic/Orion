@@ -728,6 +728,53 @@ pub fn resolve_required_str(
     }
 }
 
+/// Resolve a field that names several keys — `cache_read.keys`,
+/// `cache_delete.keys` — to strings, in order.
+///
+/// The field is one expression, so it may be an array whose elements are
+/// expressions (`[{"cat": ["gen:", {"var": "data.game"}]}, "gen:ladder"]`) or a
+/// single expression that evaluates to an array. Each element converts the way
+/// [`resolve_required_str`] converts one key, and an element that is `null` or
+/// a document is an error rather than a key spelled `"null"`. `max` bounds one
+/// call, so a message cannot turn one task into an unbounded round trip.
+pub fn resolve_required_str_list(
+    input: &TemplatedInput,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+    max: usize,
+) -> Result<Vec<String>, DataflowError> {
+    let Some(value) = input.value_of(field, handler_name, ctx) else {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} requires '{field}' field"
+        )));
+    };
+    let Value::Array(items) = value? else {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} '{field}' must resolve to an array of keys"
+        )));
+    };
+    if items.len() > max {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} '{field}' resolved to {} keys; at most {max} are allowed in one call",
+            items.len()
+        )));
+    }
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| match item {
+            Value::String(s) => Ok(s),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Bool(b) => Ok(b.to_string()),
+            other => Err(DataflowError::Validation(format!(
+                "{handler_name} '{field}[{i}]' must resolve to a string or number, got {}",
+                json_type_name(&other)
+            ))),
+        })
+        .collect()
+}
+
 /// `"900"`-less duration spelling: `<n>` followed by one of `s m h d`.
 pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
     let s = s.trim();
