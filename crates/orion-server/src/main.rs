@@ -266,6 +266,12 @@ enum Command {
         /// function is answered from --stubs. Repeatable.
         #[arg(long = "model-dir", value_name = "DIR")]
         model_dirs: Vec<String>,
+        /// How much of the run to record: `full` (every step with a message
+        /// snapshot and its changes), `steps` (ids, timing and changes, no
+        /// snapshots) or `none` (no trace and no per-write capture, as a node
+        /// runs an untraced message). `tasks` lists what ran in every mode.
+        #[arg(long, value_enum, default_value = "full")]
+        trace: cli::DryRunTrace,
     },
     /// Run a directory of workflow test cases (A6).
     ///
@@ -763,6 +769,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             definitions,
             plugin_dirs,
             model_dirs,
+            trace,
         }) => {
             return cli::run_dry_run(cli::DryRunRequest {
                 workflow: &workflow,
@@ -773,6 +780,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 definitions: definitions.as_deref(),
                 plugin_dirs: &plugin_dirs,
                 model_dirs: &model_dirs,
+                trace,
             })
             .await;
         }

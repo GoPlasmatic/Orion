@@ -2355,6 +2355,42 @@ pub(crate) struct OfflineRun {
     /// already labelled with the task that made it, since dataflow-rs 3.7
     /// carries the task id into the handler.
     pub log: std::sync::Arc<orion::engine::functions::stub::CallLog>,
+    /// The tasks the run dispatched, in order.
+    pub tasks: std::sync::Arc<TaskRecorder>,
+}
+
+/// The ids of the tasks an offline run dispatched, in dispatch order: once per
+/// sweep of a loop and once per `for_each` element.
+///
+/// An engine observer rather than the execution trace, so a run can say which
+/// tasks ran without the trace's cost. A trace snapshots the message at every
+/// step; a long loop made that tens of gigabytes where this is one id per
+/// task run (#353). It also sees what the trace misses: a task that returns
+/// `Err` is reported before the error propagates, where the trace records a
+/// step only after the result is handled. A task whose condition is false is
+/// not dispatched and is not reported, like a workflow whose condition is
+/// false.
+#[derive(Default)]
+pub(crate) struct TaskRecorder {
+    tasks: std::sync::Mutex<Vec<String>>,
+}
+
+impl TaskRecorder {
+    /// The ids recorded so far, leaving the recorder empty.
+    pub fn take(&self) -> Vec<String> {
+        self.tasks
+            .lock()
+            .map(|mut tasks| std::mem::take(&mut *tasks))
+            .unwrap_or_default()
+    }
+}
+
+impl dataflow_rs::ExecutionObserver for TaskRecorder {
+    fn task_finished(&self, event: &dataflow_rs::TaskEvent<'_>) {
+        if let Ok(mut tasks) = self.tasks.lock() {
+            tasks.push(event.task_id.to_string());
+        }
+    }
 }
 
 /// [`build_dry_run_engine`] over an already-parsed stub table, for the `test`
@@ -2533,8 +2569,10 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // table is the handler set it will run against.
     // Unbounded: an offline run has no `[engine]` config to read a budget
     // from, and a definition is not refused for being expensive here.
-    let engine = orion::engine::build_single(df_workflow, functions, secrets, 0)?;
-    Ok(OfflineRun { engine, log })
+    let tasks = std::sync::Arc::new(TaskRecorder::default());
+    let engine = orion::engine::build_single(df_workflow, functions, secrets, 0)?
+        .with_observer(tasks.clone());
+    Ok(OfflineRun { engine, log, tasks })
 }
 
 /// Dry-run a workflow against an input JSON file.
@@ -2544,6 +2582,40 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 /// naming the stub that would satisfy it. Nothing reaches a real backend
 /// either way — this is the offline counterpart to
 /// `POST /workflows/{id}/test`, which runs against live connectors.
+/// How much of a run `dry-run` records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum DryRunTrace {
+    /// Every step, with a snapshot of the message after it and the changes it
+    /// made. Each snapshot carries only its own step's audit entry, so the
+    /// trace grows with the steps rather than with their square.
+    Full,
+    /// Every step's id, result, timing and changes, with no snapshots.
+    Steps,
+    /// No trace: the run as a node runs an untraced message, with no
+    /// per-write capture. `tasks` still lists what ran.
+    #[value(name = "none")]
+    Off,
+}
+
+impl DryRunTrace {
+    /// The trace to record, or `None` for none.
+    fn options(self) -> Option<dataflow_rs::TraceOptions> {
+        match self {
+            // The default `TraceOptions` snapshots the whole audit trail at
+            // every step, which is quadratic in the steps: a two-turn run of a
+            // looping workflow printed 1.5 GB (#353). `Own` keeps the one
+            // entry each step wrote, and `changes` is the diff it made.
+            Self::Full => Some(dataflow_rs::TraceOptions {
+                changes: true,
+                snapshot_audit_trail: dataflow_rs::AuditTrailScope::Own,
+                ..Default::default()
+            }),
+            Self::Steps => Some(dataflow_rs::TraceOptions::timings_only()),
+            Self::Off => None,
+        }
+    }
+}
+
 pub(crate) struct DryRunRequest<'a> {
     pub(crate) workflow: &'a str,
     pub(crate) input: &'a str,
@@ -2553,6 +2625,7 @@ pub(crate) struct DryRunRequest<'a> {
     pub(crate) definitions: Option<&'a str>,
     pub(crate) plugin_dirs: &'a [String],
     pub(crate) model_dirs: &'a [String],
+    pub(crate) trace: DryRunTrace,
 }
 
 pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn std::error::Error>> {
@@ -2565,6 +2638,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
         definitions,
         plugin_dirs,
         model_dirs,
+        trace: trace_mode,
     } = req;
     let input_raw = std::fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read input '{input_path}': {e}"))?;
@@ -2598,31 +2672,45 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
 
     let catalog = Catalog::load_opt(definitions, plugin_dirs, model_dirs)?;
     let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref(), &secrets)?;
+    // Per-write capture is what a trace's `changes` and the audit trail's
+    // `changes` report; without a trace the run is a node's untraced run.
+    let trace_options = trace_mode.options();
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&input)
         .metadata_json(&metadata)
+        .capture_changes(trace_options.is_some())
         .build();
 
     // Own the trace so a hard failure still prints the steps that ran. A dry
     // run that dies on task three and reports nothing is the least useful
     // possible answer to "what does this workflow do?".
-    let mut trace = dataflow_rs::ExecutionTrace::new();
-    let run_error = run
-        .engine
-        .process_message_tracing(&mut message, &mut trace)
-        .await
-        .err();
+    let (trace, run_error) = match trace_options {
+        Some(options) => {
+            let mut trace = dataflow_rs::ExecutionTrace::with_options(options);
+            let run_error = run
+                .engine
+                .process_message_tracing(&mut message, &mut trace)
+                .await
+                .err();
+            (Some(trace), run_error)
+        }
+        None => (None, run.engine.process_message(&mut message).await.err()),
+    };
+    let tasks = run.tasks.take();
 
     // `output` is the data document under its historical name: CI `jq` filters
     // read it. The run's documents go in beside it under the names a case's
     // `expect` roots use, from the same builder the runner reads, so a path
     // lifted off a dry run addresses the same thing in a case.
     let mut output = serde_json::json!({
-        "matched": !trace.steps.is_empty(),
-        "trace": trace,
+        "matched": !tasks.is_empty(),
+        "tasks": tasks,
         "output": message.data(),
         "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     });
+    if let Some(trace) = trace {
+        output["trace"] = serde_json::to_value(trace)?;
+    }
     for (name, document) in orion::engine::functions::stub::run_documents(&message, &run.log) {
         output[name] = document;
     }
@@ -3057,16 +3145,24 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
         Err(e) => return fail(&name, e.to_string()),
     };
 
+    // Run the way a node runs an untraced message: no execution trace, and
+    // no per-write capture unless the case reads it. A trace snapshots the
+    // whole message at every step, each snapshot carrying the audit trail so
+    // far, so a looping workflow's test cost memory quadratic in its steps; a
+    // 1000-sweep case needed more than 80 GB (#353). Nothing a case asserts
+    // needs the trace: `expect_tasks` reads the recorder. Capture fills
+    // `audit_trail[i].changes`, the one document it feeds, and is linear in
+    // the writes, so it stays on for a case that roots a path there.
+    let capture = case
+        .expect
+        .keys()
+        .any(|path| orion::engine::functions::stub::path_root(path) == "audit_trail");
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&case.input)
         .metadata_json(&metadata)
+        .capture_changes(capture)
         .build();
-    let mut trace = dataflow_rs::ExecutionTrace::new();
-    let run_error = run
-        .engine
-        .process_message_tracing(&mut message, &mut trace)
-        .await
-        .err();
+    let run_error = run.engine.process_message(&mut message).await.err();
 
     let mut failures = Vec::new();
     if let Some(e) = run_error {
@@ -3107,7 +3203,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     failures.extend(check_expected_calls(&case.expect_calls, &run.log));
 
     if let Some(ref expected) = case.expect_tasks {
-        let actual = executed_task_ids(&trace, &message);
+        let actual = executed_task_ids(run.tasks.take(), &message);
         if &actual != expected {
             failures.push(format!("tasks: expected {expected:?}, ran {actual:?}"));
         }
@@ -3128,30 +3224,17 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     CaseResult { name, failures }
 }
 
-/// The ids of the tasks that ran, in step order.
+/// The ids of the tasks that ran, in dispatch order.
 ///
-/// Read from the execution trace rather than the audit trail: a
+/// From the [`TaskRecorder`] rather than the audit trail: a
 /// `TaskOutcome::Skip` returns before the audit entry is pushed, so the trail
-/// cannot tell "skipped by condition" from "not in the workflow" — and which
+/// cannot tell "skipped by condition" from "not in the workflow", and which
 /// branch ran is the whole question `expect_tasks` exists to answer.
 ///
-/// The message's errors are a second source because the trace alone answers
-/// that question wrongly for a failing task: the engine records a step only
-/// *after* the task's result is handled, so a task that halted the workflow
-/// never reaches the trace even though it ran. Its error names it, and it
-/// halted the run, so appending in error order puts it where it ran. A task
-/// that failed under `continue_on_error` is already in the trace and keeps its
-/// recorded position.
-fn executed_task_ids(
-    trace: &dataflow_rs::ExecutionTrace,
-    message: &dataflow_rs::Message,
-) -> Vec<String> {
-    let mut ids: Vec<String> = trace
-        .steps
-        .iter()
-        .filter(|step| matches!(step.result, dataflow_rs::StepResult::Executed))
-        .filter_map(|step| step.task_id.clone())
-        .collect();
+/// The message's errors are a second source, for an error that names a task
+/// the engine never dispatched. A task that was dispatched and failed is
+/// already recorded, in the position it ran.
+fn executed_task_ids(mut ids: Vec<String>, message: &dataflow_rs::Message) -> Vec<String> {
     for id in message.errors().iter().filter_map(|e| e.task_id.as_ref()) {
         if !ids.iter().any(|seen| seen == id) {
             ids.push(id.clone());

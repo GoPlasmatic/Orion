@@ -1,6 +1,6 @@
 <!-- description: orion-server dry-run executes a workflow offline against a JSON input with canned connector stubs, real plugin and model execution, and prints the trace. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-09-25 -->
 
 # `orion-server dry-run`
 
@@ -9,14 +9,16 @@ Executes a workflow against a JSON input in an in-process engine, then prints th
 ## Synopsis
 
 ```bash
-orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--metadata <metadata.json>] [--secrets <secrets.json>]
+orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--metadata <metadata.json>] [--secrets <secrets.json>] [--trace full|steps|none]
 ```
 
 ## Description
 
 With `--definitions`, a set whose [`package` document](../shared-definitions.md#the-package-document) declares a `requires.orion` range excluding this binary stops before anything runs. One line names the range and this version.
 
-The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and `calls`. Those are the same five documents, in the same shape, that a case's `expect` roots address. It also carries `output` (an alias of `data`, kept for existing `jq` filters), `trace`, `matched` and `errors`.
+The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and `calls`. Those are the same five documents, in the same shape, that a case's `expect` roots address. It also carries `output` (an alias of `data`, kept for existing `jq` filters), `tasks` (the ids of the tasks that ran, once per loop sweep and per `for_each` element), `matched` (whether any task ran), `errors`, and `trace` unless `--trace none`.
+
+Each step in the trace snapshots the message after it, carrying only the audit entry that step wrote, so the trace grows with the steps rather than with their square. For a long looping workflow, `--trace steps` drops the snapshots and `--trace none` runs the workflow as a node runs an untraced message.
 
 ## Options
 
@@ -29,6 +31,7 @@ The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and 
 | `--plugin-dir` | Directory of plugin manifests and their components. A plugin function runs **for real** in the sandbox — it is capability-free, like `crypto` — never stubbed. A workflow naming a plugin function whose manifest is given but whose component is not beside it fails as `PLUGIN_ARTIFACT_UNAVAILABLE`; one naming a function no manifest covers is refused by name. Repeatable. |
 | `--model-dir` | Directory of model manifests and their artifacts. With one, `model_infer` runs the model **for real** — the same handler a node registers, over the file beside the manifest, on the engine's own runtime — never stubbed: a workflow naming a model the directory does not hold, or holds without its artifact, is refused before it starts as `MODEL_ARTIFACT_UNAVAILABLE`, and a computed `model` resolves against the directory per message. Without one, `model_infer` is answered from `--stubs` by function name (`{"model_infer": {"*": <result>}}`), and a workflow that calls it with no stub either is refused with the same code. No admission runs offline: the digest is computed from the file, never claimed, and the bytes are trusted as the author's own. Repeatable. |
 | `-m, --metadata` | Path to a JSON file used as the message metadata — `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`, `vars`. Header keys are lowercased and credential headers masked, as at the HTTP ingress. |
+| `--trace` | How much of the run to record. `full` (the default): every step, with a snapshot of the message after it and the changes it made. `steps`: every step's id, result, timing and changes, with no snapshots. `none`: no trace and no per-write capture, as a node runs a message whose channel does not trace task details; `audit_trail` entries then carry no `changes`. |
 | `--secrets` | Path to a JSON object of stand-in values for the `{"secret": "name"}` references the workflow reads: `{"partner_hmac": "test-key"}`. Offline there is no `[secrets]` config to resolve, and an engine with no store refuses a workflow that names one. Values are used verbatim — use throwaway ones. |
 
 ## Examples

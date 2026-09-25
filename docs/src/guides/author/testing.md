@@ -76,12 +76,13 @@ orion-server dry-run -w workflow.json -i payload.json
 | Field | Holds |
 |---|---|
 | `matched` | Whether any task ran |
-| `trace` | The per-task execution path, including which tasks were skipped |
+| `tasks` | The ids of the tasks that ran, in order: once per loop sweep and once per `for_each` element |
+| `trace` | The per-task execution path, including which tasks were skipped. Absent with `--trace none` |
 | `output` | The final data document, under its historical name |
 | `data` | The same document, under the name a case's `expect` roots use |
 | `metadata` | The final metadata document |
 | `temp_data` | The final scratch document |
-| `audit_trail` | One entry per executed task, with its writes |
+| `audit_trail` | One entry per executed task, with its writes. With `--trace none` the entries carry no `changes` |
 | `calls` | Connector calls grouped by function, each with its resolved payload |
 | `errors` | Task errors, if any |
 
@@ -94,6 +95,8 @@ orion-server dry-run -w workflow.json -i payload.json | jq '.output.order'
 ```
 
 It exits non-zero when the run fails, and prints the trace either way. A run that dies at task three still tells you what the first two did.
+
+Each step in `trace` snapshots the message after it, with only the audit entry that step wrote. A long looping workflow still records a snapshot per step, so for one `--trace steps` keeps each step's id, timing and changes without the snapshot, and `--trace none` runs it as a node runs an untraced message and reports only `tasks`.
 
 ## Stub the calls that leave the process
 
@@ -204,7 +207,7 @@ Since Orion 1.2, every path names its root:
 | `metadata.` | The metadata document: request context, and whatever the workflow wrote there |
 | `temp_data.` | The scratch document tasks pass values through |
 | `calls.` | The connector calls the run made, grouped by function |
-| `audit_trail.` | One entry per executed task: `task_id`, `status`, `changes` |
+| `audit_trail.` | One entry per executed task: `task_id`, `status`, `changes`. A case with a path here records each write's changes; one without runs without that capture, as a node does |
 
 Array positions work either way: `calls.mongo_write[0]` and `calls.mongo_write.0` are the same path. An expected `null` matches an absent path as well as an explicit one. JSONLogic resolves a missing `var` to null, and that is already what the workflow sees.
 

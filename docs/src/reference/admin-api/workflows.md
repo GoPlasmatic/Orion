@@ -1,6 +1,6 @@
 <!-- description: The workflow endpoints: create, test, activate, roll out, version, import and export, plus the dependency read and the offline dry run. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-25 -->
 
 # Workflow endpoints
 
@@ -17,7 +17,7 @@ The endpoints that create, test, version and roll out a workflow.
 | GET | `/api/v1/admin/workflows/{id}/versions` | List workflow version history |
 | POST | `/api/v1/admin/workflows/{id}/versions` | Create new draft version from active workflow |
 | PATCH | `/api/v1/admin/workflows/{id}/rollout` | Update rollout percentage. `?reload=defer` commits without rebuilding the engine |
-| POST | `/api/v1/admin/workflows/{id}/test` | Dry-run on sample payload |
+| POST | `/api/v1/admin/workflows/{id}/test` | Dry-run on sample payload. The `trace` is bounded like a node's `task_details` trace: each step's snapshot carries only its own audit entry, and past `trace_queue.max_result_size_bytes` a step keeps its id, result and timing without a snapshot and the trace reports `truncated` |
 | GET | `/api/v1/admin/workflows/{id}/dependencies` | What the tasks reference: connector names (with the referencing function) and static `channel_call` targets, plus a flag when targets resolve dynamically. For closure tooling |
 | POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts). `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing id means |
 | GET | `/api/v1/admin/workflows/export` | Export workflows. Filter with `?tag=`, `?status=` |

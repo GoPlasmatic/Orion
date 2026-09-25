@@ -211,8 +211,13 @@ pub const RUN_DOCUMENTS: [&str; 5] = ["data", "metadata", "temp_data", "calls", 
 /// Reads the first segment, stopping at a `.` or a `[` so `calls[0]` and
 /// `calls.mongo_write` are both rooted at `calls`.
 pub fn is_rooted(path: &str) -> bool {
-    let head = path.split(['.', '[']).next().unwrap_or(path);
-    RUN_DOCUMENTS.contains(&head)
+    RUN_DOCUMENTS.contains(&path_root(path))
+}
+
+/// The first segment of an `expect` path: `audit_trail` for
+/// `audit_trail[1].changes`.
+pub fn path_root(path: &str) -> &str {
+    path.split(['.', '[']).next().unwrap_or(path)
 }
 
 /// Everything an offline run leaves behind, keyed by [`RUN_DOCUMENTS`].

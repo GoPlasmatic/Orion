@@ -716,7 +716,18 @@ pub(crate) async fn test_workflow(
     // returning a bare 5xx with no steps at all. A failed dry run is the case
     // it exists to explain, so it answers 200 with the partial trace and the
     // error rather than throwing both away.
-    let mut trace = dataflow_rs::ExecutionTrace::new();
+    //
+    // Bounded as a node bounds a `task_details` trace. The default options
+    // snapshot the whole audit trail so far at every step, which is quadratic
+    // in the steps, with no ceiling: one call on a long looping workflow could
+    // take the node's memory (#353). `Own` keeps the entry each step wrote,
+    // and past the budget a step keeps its id, result and timing and drops its
+    // snapshot, with `truncated` set on the trace.
+    let mut trace = dataflow_rs::ExecutionTrace::with_options(dataflow_rs::TraceOptions {
+        snapshot_audit_trail: dataflow_rs::AuditTrailScope::Own,
+        max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
+        ..Default::default()
+    });
     let run_error = test_engine
         .process_message_tracing(&mut message, &mut trace)
         .await
