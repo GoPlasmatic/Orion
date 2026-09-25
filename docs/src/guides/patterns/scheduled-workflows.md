@@ -131,6 +131,15 @@ orion-cli cron retry 01a070e1-5e6a-7552-99d3-66dd70c1feff
 
 A retry is another attempt at the work that was due *then*: same occurrence id, same `scheduled_for`, `attempt` incremented. Re-running finished work is a different thing, and is what `trigger` is for.
 
+If a node dies mid-run, its occurrences stay `running` and keep their slots until the lease the node last renewed runs out. Every occurrence of a `forbid` channel due in the meantime is skipped. Cancel them to free the slots:
+
+```bash
+orion-cli cron list --channel-id nightly-order-rollup --status running
+orion-cli cron cancel 01a070e1-5e6a-7552-99d3-66dd70c1feff
+```
+
+A cancelled occurrence is settled `failed` and its slot is free within two heartbeat intervals. If the node running it is still alive, the run stops at its next heartbeat. Retry it afterwards if the work should still happen.
+
 ## Verify
 
 Read the schedule's state and its ledger:

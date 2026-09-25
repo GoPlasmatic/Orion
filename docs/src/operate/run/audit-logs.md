@@ -57,6 +57,7 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `package_staged`, `package_applied` | `package` | `PUT /packages/{name}`, named for the receipt state |
 | `reload` | `engine` | `POST /engine/reload` |
 | `retry` | `cron_occurrence` | `POST /cron/occurrences/{id}/retry` |
+| `cancel` | `cron_occurrence` | `POST /cron/occurrences/{id}/cancel` |
 | `trigger` | `channel` | `POST /channels/{id}/trigger` — a manual run of a cron channel |
 
 Reads are not recorded: only mutations, and the two `test` calls that behave like one.

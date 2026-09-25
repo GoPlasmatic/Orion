@@ -110,6 +110,69 @@ pub(crate) async fn retry_occurrence(
 }
 
 #[utoipa::path(
+    post,
+    path = "/api/v1/admin/cron/occurrences/{id}/cancel",
+    tag = "Cron",
+    params(("id" = String, Path, description = "Occurrence id")),
+    responses(
+        (status = 200, description = "Occurrence settled `failed`. A running attempt stops at its \
+            next heartbeat, and its singleton slot is free within two heartbeat intervals, \
+            whether or not its node is still alive", body = DataEnvelope<CronOccurrenceResponse>),
+        (status = 404, description = "No such occurrence", body = crate::server::routes::openapi::ErrorResponse),
+        (status = 409, description = "The occurrence has already finished", body = crate::server::routes::openapi::ErrorResponse),
+    )
+)]
+#[tracing::instrument(skip(state, principal))]
+pub(crate) async fn cancel_occurrence(
+    State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, OrionError> {
+    // Read first only to name the holder in the record. The cancel itself is
+    // conditional on the status, so a run that settles in between is a 409,
+    // not a cancelled success.
+    let current = state.repos.cron.get_by_id(&id).await?;
+    let reason = match current.claimed_by.as_deref() {
+        Some(holder) => format!("cancelled by an operator; it was held by instance '{holder}'"),
+        None => "cancelled by an operator".to_string(),
+    };
+    // Two beats: a live holder finds its claim gone at its next heartbeat and
+    // stops, and the slot outlasts that by one more beat. A dead holder's slot
+    // is free when the grace ends.
+    let grace_secs = state.config.cron.heartbeat_interval_secs.saturating_mul(2);
+    let occurrence = state.repos.cron.cancel(&id, &reason, grace_secs).await?;
+    crate::metrics::record_cron_occurrence(status::FAILED);
+
+    // A running attempt's trace would otherwise say `running` forever: its
+    // holder, fenced, writes nothing more. Left alone if the holder already
+    // wrote its outcome.
+    if let Some(trace_id) = occurrence.trace_id.as_deref()
+        && let Ok(trace) = state.repos.traces.get_by_id(trace_id).await
+        && trace.status == crate::storage::models::TRACE_STATUS_RUNNING
+        && let Err(e) = state
+            .repos
+            .traces
+            .update_status(
+                trace_id,
+                crate::storage::models::TRACE_STATUS_FAILED,
+                Some(&reason),
+            )
+            .await
+    {
+        tracing::warn!(occurrence_id = %id, error = %e, "Could not mark a cancelled occurrence's trace failed");
+    }
+
+    audit_log(
+        &state.audit_queue,
+        &principal,
+        "cancel",
+        "cron_occurrence",
+        &id,
+    );
+    Ok(data_response(CronOccurrenceResponse::from(&occurrence)))
+}
+
+#[utoipa::path(
     get,
     path = "/api/v1/admin/cron/status",
     tag = "Cron",

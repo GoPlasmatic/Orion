@@ -179,6 +179,10 @@ pub fn cron_occurrence_retry(id: &str) -> String {
     format!("{CRON_OCCURRENCES}/{id}/retry")
 }
 
+pub fn cron_occurrence_cancel(id: &str) -> String {
+    format!("{CRON_OCCURRENCES}/{id}/cancel")
+}
+
 /// A manual run of a cron channel. On the *channel* route, not under `/cron`,
 /// because it names a channel and is audited as a channel mutation.
 pub fn channel_trigger(id: &str) -> String {

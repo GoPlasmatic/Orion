@@ -729,3 +729,82 @@ async fn mysql_cron_slots_admit_n_under_concurrency() {
         "at least one attempt starts: {results:?}"
     );
 }
+
+/// #352 on a real backend: a cancel ends a dead holder's hold on every slot
+/// it held, so the next occurrence of the key starts once the grace is over
+/// rather than when the lease its node last renewed runs out.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_cron_cancel_frees_a_dead_holders_slots() {
+    use orion::storage::repositories::cron::{
+        AttemptStart, ClaimRequest, CronRepository, NewOccurrence, SingletonRequest,
+        SqlCronRepository, status, trigger,
+    };
+
+    let (_container, pool) = mysql_pool().await;
+    let repo = SqlCronRepository::new(pool.clone());
+    let now = repo.db_now().await.expect("db now");
+    for (i, id) in ["held-0", "held-1", "waiting"].iter().enumerate() {
+        repo.insert_occurrence(NewOccurrence {
+            id,
+            channel_id: "ch",
+            channel_name: "matches",
+            channel_version: 1,
+            workflow_id: Some("wf"),
+            trigger: trigger::CRON,
+            scheduled_for: now - chrono::Duration::seconds(30 - i as i64),
+            status: status::PENDING,
+            error_message: None,
+        })
+        .await
+        .expect("insert");
+    }
+    let claimed = repo
+        .claim_due(ClaimRequest {
+            claimant: "node-a",
+            limit: 10,
+            lease_secs: 600,
+        })
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 3);
+
+    let start = |occurrence| {
+        repo.start_attempt(
+            occurrence,
+            "node-a",
+            1,
+            Some(SingletonRequest {
+                key: "match",
+                holder: "node-a",
+                lease_secs: 600,
+                slots: 2,
+            }),
+            600,
+        )
+    };
+    for occurrence in &claimed[..2] {
+        assert!(matches!(
+            start(occurrence).await.expect("start"),
+            AttemptStart::Started { held: Some(_) }
+        ));
+    }
+    assert_eq!(
+        start(&claimed[2]).await.expect("start"),
+        AttemptStart::SingletonBusy
+    );
+
+    for occurrence in &claimed[..2] {
+        let cancelled = repo
+            .cancel(&occurrence.id, "cancelled by an operator", 0)
+            .await
+            .expect("cancel");
+        assert_eq!(cancelled.status, status::FAILED);
+    }
+    // Leases compare against the database clock at one-second resolution.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(matches!(
+        start(&claimed[2]).await.expect("start"),
+        AttemptStart::Started { held: Some(_) }
+    ));
+}

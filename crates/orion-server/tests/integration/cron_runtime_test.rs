@@ -477,6 +477,99 @@ async fn retry_reuses_the_occurrence_and_refuses_a_completed_one() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+/// #352: cancelling a running occurrence frees its singleton slot within
+/// two heartbeats, rather than when its run or its lease ends. The run here
+/// would hold the key for thirty seconds; the next occurrence starts within a
+/// few. The holder is alive, so this is also the fencing path: it stops at its
+/// next heartbeat, and its record stays the cancel.
+#[tokio::test]
+async fn cancelling_a_running_occurrence_frees_its_slot() {
+    let addr = common::start_slow_server(std::time::Duration::from_secs(30)).await;
+    let app = common::test_app_with_config(fast_cron()).await;
+    common::create_http_connector(&app, "slow-endpoint", addr).await;
+    let mut workflow = slow_workflow("Held Work");
+    workflow["tasks"][0]["function"]["input"]["timeout_ms"] = json!(60_000);
+    activate_cron_channel(
+        &app,
+        "held-ch",
+        workflow,
+        json!({
+            "schedule": "* * * * * *",
+            "concurrency": {"policy": "forbid", "key": "held"},
+        }),
+    )
+    .await;
+
+    let rows = wait_for_occurrences(&app, "status=running&limit=10", |rows| !rows.is_empty()).await;
+    let held = rows[0]["id"].as_str().expect("id").to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/cron/occurrences/{held}/cancel"),
+            None,
+        ))
+        .await
+        .expect("cancel");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["status"], "failed", "{body}");
+    assert!(
+        body["data"]["error_message"]
+            .as_str()
+            .is_some_and(|m| m.contains("cancelled by an operator")),
+        "{body}"
+    );
+
+    // Another occurrence of the key runs long before the thirty-second call
+    // would have returned.
+    common::wait_for_body_within(
+        &app,
+        "/api/v1/admin/cron/occurrences?status=running&limit=10",
+        std::time::Duration::from_secs(10),
+        |body| {
+            body["data"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|r| r["id"] != held.as_str()))
+        },
+    )
+    .await;
+
+    // The fenced holder wrote nothing over the cancel, and its trace no
+    // longer claims to be running.
+    let body = common::wait_for_body(
+        &app,
+        &format!("/api/v1/admin/cron/occurrences/{held}"),
+        |_| true,
+    )
+    .await;
+    assert_eq!(body["data"]["status"], "failed", "{body}");
+    let trace_id = body["data"]["trace_id"].as_str().expect("trace id");
+    let trace =
+        common::wait_for_body(&app, &format!("/api/v1/admin/traces/{trace_id}"), |_| true).await;
+    assert_eq!(trace["data"]["status"], "failed", "{trace}");
+
+    // Finished is finished, and a missing id is a 404.
+    for (uri, expected) in [
+        (
+            format!("/api/v1/admin/cron/occurrences/{held}/cancel"),
+            StatusCode::CONFLICT,
+        ),
+        (
+            "/api/v1/admin/cron/occurrences/does-not-exist/cancel".to_string(),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", &uri, None))
+            .await
+            .expect("cancel");
+        assert_eq!(resp.status(), expected, "{uri}");
+    }
+}
+
 // ============================================================
 // Health
 // ============================================================

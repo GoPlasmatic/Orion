@@ -16,7 +16,9 @@ use orion_client::paths;
         'did last night's job run?' is a question with an answer, whatever\n\
         the trace-storage settings are.\n\n\
         'status' is the overview: what is scheduled and when it next fires.\n\
-        'list' is the history. 'retry' re-attempts one that failed.")]
+        'list' is the history. 'retry' re-attempts one that failed.\n\
+        'cancel' stops one that has not finished, and frees its singleton\n\
+        slot: the way to release the slots of a node that died mid-run.")]
 pub struct CronCmd {
     #[command(subcommand)]
     command: CronSubcommand,
@@ -53,6 +55,15 @@ enum CronSubcommand {
     /// attempt at the work that was due then, not a new piece of work. To run
     /// a schedule again now, use `orion-cli channels trigger` instead.
     Retry {
+        /// Occurrence id
+        id: String,
+    },
+    /// Stop an occurrence that has not finished, and free its singleton slot
+    ///
+    /// Settles it `failed`. A running attempt stops at its next heartbeat,
+    /// and its slot is free within two heartbeat intervals, whether or not
+    /// its node is still alive. Retry it afterwards like any failed one.
+    Cancel {
         /// Occurrence id
         id: String,
     },
@@ -130,6 +141,7 @@ impl CronCmd {
             }
             CronSubcommand::Get { id } => get(client, format, quiet, id).await,
             CronSubcommand::Retry { id } => retry(client, format, quiet, id).await,
+            CronSubcommand::Cancel { id } => cancel(client, format, quiet, id).await,
         }
     }
 }
@@ -270,6 +282,22 @@ async fn retry(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &st
         id,
         text(&resp["data"], "scheduled_for")
     );
+    Ok(0)
+}
+
+async fn cancel(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
+    let resp: Value = client
+        .post(&paths::cron_occurrence_cancel(id), &Value::Null)
+        .await?;
+    if quiet {
+        println!("{id}");
+        return Ok(0);
+    }
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+    println!("{} Occurrence {} cancelled", "✓".green(), id);
     Ok(0)
 }
 

@@ -1,6 +1,6 @@
-<!-- description: orion-cli cron shows what each cron channel has scheduled, lists and inspects durable occurrences, and retries a failed or skipped one at its instant. -->
+<!-- description: orion-cli cron shows what each cron channel has scheduled, lists and inspects durable occurrences, retries a failed or skipped one at its instant, and cancels one that has not finished. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-20 -->
+<!-- last_verified: 2026-09-25 -->
 
 # `orion-cli cron`
 
@@ -10,7 +10,7 @@ Inspects scheduled runs. Every scheduled instant of a
 ## Synopsis
 
 ```bash
-orion-cli cron <status|list|get|retry> [args] [flags]
+orion-cli cron <status|list|get|retry|cancel> [args] [flags]
 ```
 
 ## Description
@@ -21,6 +21,10 @@ orion-cli cron <status|list|get|retry> [args] [flags]
 instant. `completed` occurrences are refused with a `409` for exactly that
 reason.
 
+`cancel` stops an occurrence that has not finished and frees its singleton
+slot within two heartbeat intervals, whether or not the node running it is
+still alive. It is how to release the slots of a node that died mid-run.
+
 ## Subcommands
 
 | Subcommand | Description |
@@ -29,6 +33,7 @@ reason.
 | `list` | List occurrences, newest first; filter with `--channel-id` and `--status`. |
 | `get <id>` | Show one occurrence: both instants, the attempt, the singleton and slot it held, its trace, and why it failed. |
 | `retry <id>` | Attempt a `failed`, `skipped_misfire` or `skipped_singleton` occurrence again. |
+| `cancel <id>` | Stop a `pending`, `claimed` or `running` occurrence: settle it `failed` and free its singleton slot. |
 
 ## Examples
 

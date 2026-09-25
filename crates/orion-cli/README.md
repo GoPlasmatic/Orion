@@ -84,7 +84,7 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers, bulk import |
 | `plugins` | Manage WebAssembly plugins — create from a manifest, activate/archive, versioning, dependencies, import/export |
 | `models` | Manage ONNX models — register a manifest plus an object-storage reference, follow admission with `--wait`, activate/archive, versioning, dependencies, import/export |
-| `cron` | The scheduled-run ledger — status, list, get, retry an occurrence |
+| `cron` | The scheduled-run ledger — status, list, get, retry or cancel an occurrence |
 | `send` | Send data through channels (sync or async; `--profile` for timing breakdown) |
 | `traces` | View and monitor execution traces |
 | `engine` | View engine status and trigger reloads |
@@ -316,6 +316,7 @@ orion-cli cron status                      # what is scheduled, next fire, last 
 orion-cli cron list --status failed
 orion-cli cron get <OCCURRENCE_ID>
 orion-cli cron retry <OCCURRENCE_ID>       # same occurrence, same scheduled_for
+orion-cli cron cancel <OCCURRENCE_ID>      # stop one that has not finished, free its slot
 orion-cli channels trigger <CHANNEL_ID>    # a new manual occurrence, now
 ```
 

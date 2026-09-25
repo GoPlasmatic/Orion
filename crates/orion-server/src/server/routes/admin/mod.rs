@@ -1029,7 +1029,8 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .route("/status", get(cron::cron_status))
         .route("/occurrences", get(cron::list_occurrences))
         .route("/occurrences/{id}", get(cron::get_occurrence))
-        .route("/occurrences/{id}/retry", post(cron::retry_occurrence));
+        .route("/occurrences/{id}/retry", post(cron::retry_occurrence))
+        .route("/occurrences/{id}/cancel", post(cron::cancel_occurrence));
 
     let cache_routes = Router::new().route(
         "/namespaces/{namespace}/invalidate",

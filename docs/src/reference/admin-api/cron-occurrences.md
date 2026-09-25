@@ -1,6 +1,6 @@
-<!-- description: The cron ledger endpoints: listing and reading occurrences, retrying one at the same scheduled instant, the scheduler status, and manual triggers. -->
+<!-- description: The cron ledger endpoints: listing and reading occurrences, retrying one at the same scheduled instant, cancelling one that has not finished, the scheduler status, and manual triggers. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-20 -->
+<!-- last_verified: 2026-09-25 -->
 
 # Cron occurrence endpoints
 
@@ -13,6 +13,7 @@ Every scheduled instant of a [cron channel](../channel-config/cron.md) becomes a
 | GET | `/api/v1/admin/cron/occurrences` | List occurrences, newest first, paginated (`?limit=`, `?offset=`). Filter with `?channel_id=`, `?status=`, `?since=`, `?until=`. Summaries only |
 | GET | `/api/v1/admin/cron/occurrences/{id}` | One occurrence in full: the failure reason, the trace id, the executing version and the lease detail |
 | POST | `/api/v1/admin/cron/occurrences/{id}/retry` | Another attempt at the same occurrence. `409` unless it is `failed`, `skipped_misfire` or `skipped_singleton` |
+| POST | `/api/v1/admin/cron/occurrences/{id}/cancel` | Stop an occurrence that has not finished and free its singleton slot. Settles it `failed`. `409` once it is `completed`, `failed` or skipped |
 | GET | `/api/v1/admin/cron/status` | One row per active cron channel: its schedule, its next fire time, its last run, its backlog and its slots |
 | POST | `/api/v1/admin/channels/{id}/trigger` | Run an active cron channel now. `202` with the new occurrence |
 
@@ -26,6 +27,10 @@ curl http://localhost:8080/api/v1/admin/cron/status -H "x-api-key: $ORION_API_KE
 
 # Run it now, without waiting for the schedule.
 curl -X POST http://localhost:8080/api/v1/admin/channels/nightly-rollup/trigger \
+  -H "x-api-key: $ORION_API_KEY"
+
+# Stop a run that has not finished, and free its slot.
+curl -X POST http://localhost:8080/api/v1/admin/cron/occurrences/01a070e1-5e6a-7552-99d3-66dd70c1feff/cancel \
   -H "x-api-key: $ORION_API_KEY"
 ```
 
@@ -42,6 +47,8 @@ The status row reports the lock too. `concurrency_policy` is `allow` or `forbid`
 **Retry keeps the identity.** The occurrence id and its `scheduled_for` are unchanged and `attempt` increments, because a retry is another attempt at the work that was due *then*. That is what lets a workflow use `metadata.trigger.scheduled_for` as an idempotency key — two attempts at one occurrence agree on it. Re-running finished work is a different thing and has a different endpoint: trigger the channel, which mints a new occurrence at the current instant.
 
 **Triggering is not a side door.** A manual occurrence goes through the same claim, singleton and execution path a scheduled one does. Triggering a `forbid` channel while its scheduled run is in flight is therefore recorded as `skipped_singleton`, not run alongside it. It is an admin mutation: authenticated, rate limited and audited as `trigger` / `channel`.
+
+**Cancel frees the slot.** A `running` occurrence whose node died keeps its singleton slot until the lease its node last renewed runs out, and a `forbid` channel skips every occurrence due in the meantime. Cancelling the occurrence settles it `failed`, names the instance that held it in `error_message`, marks its trace `failed` if the trace still says `running`, and ends its slot's hold two heartbeat intervals later (`cron.heartbeat_interval_secs`). Nothing needs to know whether the holder is dead. A live holder finds its claim gone at its next heartbeat and stops, and its own write of an outcome then matches nothing. A cancelled occurrence can be retried like any failed one. Audited as `cancel` / `cron_occurrence`.
 
 **Failed occurrences are not retried automatically** and never enter the [trace DLQ](./trace-dlq.md). The next scheduled occurrence is the natural retry, and a deterministically failing job that retried itself would spin. What *is* automatic is crash recovery: an occurrence whose worker died is re-claimed once its lease expires, as a second attempt on the same row.
 

@@ -310,6 +310,24 @@ pub trait CronRepository: Send + Sync {
     /// identity and its `scheduled_for`.
     async fn requeue(&self, id: &str) -> Result<CronOccurrence, OrionError>;
 
+    /// Stop an occurrence that has not finished: settle it `failed` with
+    /// `reason`, take its claim away from whoever holds it, and shorten its
+    /// singleton hold to end `grace_secs` from now.
+    ///
+    /// Nothing here can tell a dead holder from a live one, and nothing needs
+    /// to. A live holder's next heartbeat finds its claim gone and cancels the
+    /// run, and its late settle matches nothing. A dead holder's slot is free
+    /// once the grace ends, rather than when the lease it last renewed ends.
+    /// The grace, rather than a delete, covers the live holder until its next
+    /// heartbeat: freed at once, the slot could admit a new attempt beside a
+    /// run still finishing its current step.
+    async fn cancel(
+        &self,
+        id: &str,
+        reason: &str,
+        grace_secs: u64,
+    ) -> Result<CronOccurrence, OrionError>;
+
     /// The newest occurrence for one channel, for the status endpoint.
     async fn latest_for_channel(
         &self,
@@ -1053,6 +1071,80 @@ impl CronRepository for SqlCronRepository {
                     status::RETRYABLE.join(", ")
                 )));
             }
+            self.get_by_id(id).await
+        })
+        .await
+    }
+
+    async fn cancel(
+        &self,
+        id: &str,
+        reason: &str,
+        grace_secs: u64,
+    ) -> Result<CronOccurrence, OrionError> {
+        crate::metrics::timed_db_op("cron.cancel", async {
+            let backend = self.pool.backend();
+            let now = helpers::sql_now(backend);
+            let grace_until = self.lease_until(grace_secs);
+            let mut tx = self
+                .pool
+                .begin_write_tx()
+                .await
+                .map_err(OrionError::Storage)?;
+
+            // `claimed_by` cleared is what fences the holder: `renew`,
+            // `start_attempt` and `settle` all match on it.
+            let (sql, values) = build_sqlx(
+                backend,
+                Query::update()
+                    .table(CronOccurrences::Table)
+                    .value(CronOccurrences::Status, status::FAILED)
+                    .value(CronOccurrences::ClaimedBy, Option::<String>::None)
+                    .value(CronOccurrences::ClaimedUntil, Option::<NaiveDateTime>::None)
+                    .value(CronOccurrences::CompletedAt, Expr::cust(now))
+                    .value(CronOccurrences::ErrorMessage, reason)
+                    .and_where(Expr::col(CronOccurrences::Id).eq(id))
+                    .and_where(Expr::col(CronOccurrences::Status).is_in(status::ACTIVE)),
+            );
+            if tx.execute_query(&sql, values).await? == 0 {
+                drop(tx);
+                let current = self.get_by_id(id).await?;
+                return Err(OrionError::Conflict(format!(
+                    "Cron occurrence '{id}' is '{}' and has already finished. Cancel \
+                     applies to {}.",
+                    current.status,
+                    status::ACTIVE.join(", ")
+                )));
+            }
+
+            // Shorten, never lengthen: a hold already ending sooner keeps its
+            // own end.
+            for mut update in [
+                Query::update()
+                    .table(CronSingletons::Table)
+                    .value(CronSingletons::LeaseUntil, Expr::cust(grace_until.clone()))
+                    .and_where(Expr::col(CronSingletons::OccurrenceId).eq(id))
+                    .and_where(
+                        Expr::col(CronSingletons::LeaseUntil).gt(Expr::cust(grace_until.clone())),
+                    )
+                    .to_owned(),
+                Query::update()
+                    .table(CronSingletonSlots::Table)
+                    .value(
+                        CronSingletonSlots::LeaseUntil,
+                        Expr::cust(grace_until.clone()),
+                    )
+                    .and_where(Expr::col(CronSingletonSlots::OccurrenceId).eq(id))
+                    .and_where(
+                        Expr::col(CronSingletonSlots::LeaseUntil)
+                            .gt(Expr::cust(grace_until.clone())),
+                    )
+                    .to_owned(),
+            ] {
+                let (sql, values) = build_sqlx(backend, &mut update);
+                tx.execute_query(&sql, values).await?;
+            }
+            tx.commit().await.map_err(OrionError::Storage)?;
             self.get_by_id(id).await
         })
         .await
@@ -1973,6 +2065,165 @@ mod tests {
         );
         let (count,): (i64,) = repo.pool.fetch_one_as(&sql, values).await.expect("count");
         count
+    }
+
+    /// The lease on each singleton row an occurrence holds, soonest first.
+    async fn slot_leases(repo: &SqlCronRepository, occurrence_id: &str) -> Vec<NaiveDateTime> {
+        let mut leases = Vec::new();
+        for (table, column) in [
+            ("cron_singletons", "occurrence_id"),
+            ("cron_singleton_slots", "occurrence_id"),
+        ] {
+            let (sql, values) = build_sqlx(
+                repo.pool.backend(),
+                Query::select()
+                    .column(sea_query::Alias::new("lease_until"))
+                    .from(sea_query::Alias::new(table))
+                    .and_where(Expr::col(sea_query::Alias::new(column)).eq(occurrence_id)),
+            );
+            let rows: Vec<(NaiveDateTime,)> =
+                repo.pool.fetch_all_as(&sql, values).await.expect("leases");
+            leases.extend(rows.into_iter().map(|(lease,)| lease));
+        }
+        leases.sort();
+        leases
+    }
+
+    /// #352: a node that died mid-run held its slots until the lease it last
+    /// renewed ran out, and nothing could release them sooner. A cancel ends
+    /// the hold at the grace, whichever slot it is in.
+    #[tokio::test]
+    async fn a_cancel_frees_a_dead_holders_slots_after_the_grace() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 3).await;
+        for (slot, occurrence) in claimed[..2].iter().enumerate() {
+            assert_eq!(
+                start_slots(&repo, occurrence, "node-a", Some("match"), 2).await,
+                held(slot as u32, 1)
+            );
+        }
+        assert_eq!(
+            start_slots(&repo, &claimed[2], "node-a", Some("match"), 2).await,
+            AttemptStart::SingletonBusy
+        );
+
+        let now = repo.db_now().await.expect("db now");
+        for occurrence in &claimed[..2] {
+            let cancelled = repo
+                .cancel(&occurrence.id, "cancelled by an operator", 0)
+                .await
+                .expect("cancel");
+            assert_eq!(cancelled.status, status::FAILED);
+            assert_eq!(cancelled.claimed_by, None);
+            assert_eq!(
+                cancelled.error_message.as_deref(),
+                Some("cancelled by an operator")
+            );
+            let leases = slot_leases(&repo, &occurrence.id).await;
+            assert_eq!(leases.len(), 1, "one slot per occurrence");
+            assert!(leases[0] <= now + Duration::seconds(1), "{leases:?}");
+        }
+
+        // SQLite's clock has one-second granularity, and a lease ending at
+        // `now` is live for the rest of that second.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        // `SingletonBusy` rolled back without settling, so its claim stands
+        // and the attempt can start again.
+        let started = start_slots(&repo, &claimed[2], "node-a", Some("match"), 2).await;
+        assert!(
+            matches!(started, AttemptStart::Started { held: Some(_) }),
+            "{started:?}"
+        );
+    }
+
+    /// A live holder is fenced rather than raced: its heartbeat and its settle
+    /// both match nothing, so it stops at its next beat and writes nothing.
+    #[tokio::test]
+    async fn a_cancelled_holder_can_neither_renew_nor_settle() {
+        let repo = test_repo().await;
+        let occurrence = claimed_n(&repo, 1).await.remove(0);
+        let held = match start(&repo, &occurrence, "node-a", Some("match")).await {
+            AttemptStart::Started { held } => held,
+            _ => None,
+        }
+        .expect("must start holding a slot");
+
+        repo.cancel(&occurrence.id, "cancelled", 30)
+            .await
+            .expect("cancel");
+
+        assert!(
+            !repo
+                .renew(&occurrence.id, "node-a", Some(held), 60)
+                .await
+                .expect("renew")
+        );
+        assert!(
+            !repo
+                .settle(Settlement {
+                    occurrence_id: &occurrence.id,
+                    claimant: "node-a",
+                    status: status::COMPLETED,
+                    error_message: None,
+                    trace_id: None,
+                })
+                .await
+                .expect("settle")
+        );
+        assert_eq!(
+            repo.get_by_id(&occurrence.id).await.expect("get").status,
+            status::FAILED,
+            "the cancel stands"
+        );
+        // Its cleanup still releases the slot it held.
+        assert!(
+            repo.release_singleton("match", &occurrence.id, held)
+                .await
+                .expect("release")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_occurrence_cannot_be_cancelled() {
+        let repo = test_repo().await;
+        let occurrence = claimed_n(&repo, 1).await.remove(0);
+        start(&repo, &occurrence, "node-a", None).await;
+        repo.settle(Settlement {
+            occurrence_id: &occurrence.id,
+            claimant: "node-a",
+            status: status::COMPLETED,
+            error_message: None,
+            trace_id: None,
+        })
+        .await
+        .expect("settle");
+
+        assert!(matches!(
+            repo.cancel(&occurrence.id, "x", 30).await,
+            Err(OrionError::Conflict(_))
+        ));
+        assert!(matches!(
+            repo.cancel("no-such-occurrence", "x", 30).await,
+            Err(OrionError::NotFound(_))
+        ));
+    }
+
+    /// A pending occurrence holds nothing, so a cancel only settles it, and a
+    /// cancelled occurrence is retried like any failed one.
+    #[tokio::test]
+    async fn a_cancelled_occurrence_can_be_retried() {
+        let repo = test_repo().await;
+        seed_due(&repo, "occ-p", "ch").await;
+        let cancelled = repo
+            .cancel("occ-p", "not tonight", 30)
+            .await
+            .expect("cancel");
+        assert_eq!(cancelled.status, status::FAILED);
+        assert_eq!(count_rows(&repo, "cron_singletons").await, 0);
+
+        let retried = repo.requeue("occ-p").await.expect("requeue");
+        assert_eq!(retried.status, status::PENDING);
+        assert_eq!(retried.error_message, None);
     }
 
     /// The bound, at its narrowest: `n` slots admit `n` occurrences, each in
