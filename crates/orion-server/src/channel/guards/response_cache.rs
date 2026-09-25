@@ -121,7 +121,25 @@ pub(super) fn compute_cache_key(
     feed_object_sorted(&mut h, metadata.get("params"));
     feed_object_sorted(&mut h, metadata.get("query"));
 
-    if let Some(ref fields) = cache_cfg.cache_key_fields {
+    // `key_logic` first: it is the general form and the documented one to win
+    // when both are declared. The two branches used to be the other way round,
+    // so a channel declaring both keyed on the fields and never evaluated the
+    // expression its author wrote to say what varies the response (#354).
+    if let Some(compiled) = key_logic {
+        let context = serde_json::json!({ "data": data, "metadata": metadata });
+        // No usable key means bypass, exactly as an unresolvable
+        // `cache_key_fields` does: a key that cannot be computed must not
+        // collapse onto one shared entry and serve one caller's body to the
+        // next.
+        let key = datalogic
+            .session()
+            .eval_into::<Value, _>(compiled, &context)
+            .ok()?;
+        if key.is_null() {
+            return None;
+        }
+        feed(&mut h, &serde_json::to_vec(&key).unwrap_or_default());
+    } else if let Some(ref fields) = cache_cfg.cache_key_fields {
         // Hash selected fields directly — no intermediate Map or clones. An
         // absent field feeds its *name* and a marker byte rather than nothing,
         // so `{"a": 1}` and `{"b": 1}` under fields `["a", "b"]` cannot land on
@@ -141,20 +159,6 @@ pub(super) fn compute_cache_key(
         if resolved == 0 {
             return None;
         }
-    } else if let Some(compiled) = key_logic {
-        let context = serde_json::json!({ "data": data, "metadata": metadata });
-        // No usable key means bypass, exactly as an unresolvable
-        // `cache_key_fields` does: a key that cannot be computed must not
-        // collapse onto one shared entry and serve one caller's body to the
-        // next.
-        let key = datalogic
-            .session()
-            .eval_into::<Value, _>(compiled, &context)
-            .ok()?;
-        if key.is_null() {
-            return None;
-        }
-        feed(&mut h, &serde_json::to_vec(&key).unwrap_or_default());
     } else {
         feed(&mut h, &serde_json::to_vec(data).unwrap_or_default());
     };

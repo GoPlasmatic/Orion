@@ -629,15 +629,17 @@ pub struct ChannelCacheConfig {
     /// and takes precedence when both are set.
     #[serde(default)]
     pub cache_key_fields: Option<Vec<String>>,
-    /// JSONLogic computing the cache key, over the same context the rate
-    /// limiter's `key_logic` reads.
+    /// JSONLogic computing the cache key, over `{"data": …, "metadata": …}`.
     ///
     /// `cache_key_fields` can only name payload fields, so a key that depends
     /// on a header, the authenticated subject or a derived value was not
     /// expressible — and a response cache keyed on less than what varies the
-    /// response is how one caller's body reaches another. This is the same
-    /// vocabulary `rate_limit.key_logic` already uses, so one channel does not
-    /// key two of its guards two different ways.
+    /// response is how one caller's body reaches another. The metadata is the
+    /// view `validation_logic` reads: verified `jwt` claims are at
+    /// `metadata.auth.claims`, and a caller cannot supply that key, so
+    /// `{"var": "metadata.auth.claims.sub"}` keys on the verified subject and
+    /// resolves to `null` (bypassing the cache) when there is none. Takes
+    /// precedence over `cache_key_fields` when both are set.
     #[serde(default)]
     pub key_logic: Option<Value>,
     /// Optional cache connector name for the response cache backend.

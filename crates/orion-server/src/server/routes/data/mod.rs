@@ -630,6 +630,17 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
         // an access token, an `id_token`'s verified claims or a `return_to`
         // into an envelope and have a workflow trust them as Orion's.
         map.remove("oauth");
+        // #354: `metadata.auth` is platform-reserved the same way. The guard
+        // chain stamps it with the verified claims, but only when there *are*
+        // claims — a `jwt` channel with `required: false` called without a
+        // token, a party-level mode, or no `auth` at all leaves the key
+        // untouched. Left in place, a caller's `{"auth": {"claims": {"sub":
+        // "admin"}}}` read to the workflow as a verified identity, and to a
+        // response cache keyed on the subject as someone else's entry.
+        map.remove("auth");
+        // A cron occurrence's `trigger` is stamped only by the cron worker;
+        // an HTTP caller must not be able to make a run look scheduled.
+        map.remove(crate::engine::TRIGGER_KEY);
     }
     // F4: stamp the resolved channel name (overriding any caller-supplied
     // value) so circuit-breaker keys and connector metrics are labelled

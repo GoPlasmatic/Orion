@@ -240,6 +240,12 @@ pub fn check_channel_config(name: &str, config_json: &str) -> Vec<Diagnostic> {
             .as_ref()
             .and_then(|auth| check_channel_auth(name, auth))
             .into_iter()
+            .chain(
+                parsed
+                    .cache
+                    .as_ref()
+                    .and_then(|c| check_cache_key_precedence(name, c)),
+            )
             .collect(),
         Err(e) => vec![
             Diagnostic::error(
@@ -279,6 +285,35 @@ fn check_channel_auth(
             format!("its auth block no longer builds: {message}"),
         )
         .with_remedy(remedy.to_string()),
+    )
+}
+
+/// A response cache declaring both `cache_key_fields` and `key_logic`.
+///
+/// Before 1.9.2 the fields won, against the documentation; now `key_logic`
+/// does. The channel keeps serving either way, so this is an advisory — but
+/// the key it caches under changes, and which requests share an entry changes
+/// with it, which is what the operator has to check.
+fn check_cache_key_precedence(
+    name: &str,
+    cache: &crate::channel::ChannelCacheConfig,
+) -> Option<Diagnostic> {
+    if cache.cache_key_fields.is_none() || cache.key_logic.is_none() {
+        return None;
+    }
+    Some(
+        Diagnostic::warning(
+            "cache-key-precedence",
+            format!("channel '{name}'"),
+            "its response cache declares both `cache_key_fields` and `key_logic`; the cache \
+             now keys on `key_logic` alone, where it used to key on the fields"
+                .to_string(),
+        )
+        .with_remedy(
+            "check that `key_logic` names everything the response varies by, then remove \
+             `cache_key_fields`"
+                .to_string(),
+        ),
     )
 }
 
@@ -651,6 +686,25 @@ mod tests {
                 .contains("per replica"),
             "renaming alone is not the whole fix — the value changes meaning: {}",
             found[0].remedy.as_deref().unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn a_cache_declaring_both_key_forms_is_an_advisory() {
+        let found = check_channel_config(
+            "report",
+            r#"{"cache": {"enabled": true, "cache_key_fields": ["id"],
+                "key_logic": {"var": "data.id"}}}"#,
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].check, "cache-key-precedence");
+        assert_eq!(found[0].severity, crate::definitions::Severity::Warning);
+        assert!(
+            check_channel_config(
+                "report",
+                r#"{"cache": {"enabled": true, "key_logic": {"var": "data.id"}}}"#,
+            )
+            .is_empty()
         );
     }
 

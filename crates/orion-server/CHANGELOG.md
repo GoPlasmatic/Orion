@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A caller can no longer supply `metadata.auth` or `metadata.trigger`**
+  ([#354]). The HTTP ingress copied the caller's `metadata` object and
+  overwrote `auth` only when a `jwt` token verified. On a channel with no
+  `auth`, an `api_key` or `hmac` channel, or a `jwt` channel with
+  `required: false` called without a token, a workflow read a caller-written
+  `metadata.auth.claims` as verified claims. Both keys are now stripped at
+  ingress, like `oauth`, `cookies` and `vars`. A caller that relied on sending
+  its own `metadata.auth` loses it.
+
+- **The response cache's `key_logic` reads the verified claims** ([#354]). It
+  was evaluated before the claims merge, so a key on
+  `metadata.auth.claims.sub` read the request envelope: a caller holding a
+  valid token could store a response under another user's key and have it
+  served to that user. It now reads the same metadata `validation_logic`
+  does, and a request without a verified token resolves such a key to `null`
+  and bypasses the cache.
+
+### Fixed
+
+- **`cache.key_logic` takes precedence over `cache_key_fields`, as
+  documented** ([#354]). The code checked the fields first, so a channel
+  declaring both keyed on the fields and never evaluated the expression.
+  `orion-server preflight` reports such channels as `cache-key-precedence`,
+  because the requests that share an entry change.
+
+[#354]: https://github.com/GoPlasmatic/Orion/issues/354
+
 ## [1.9.1] - 2026-09-23
 
 ### Changed

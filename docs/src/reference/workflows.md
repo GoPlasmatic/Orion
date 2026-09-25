@@ -196,6 +196,9 @@ supplies one, then stamps its own keys on top:
 | `headers` | always | Every request header, names lowercased. Values of `authorization`, `cookie`, `proxy-authorization`, and `x-api-key` are masked |
 | `cookies` | always, when the channel opts in | The cookies named by [`request.cookies_to_metadata`](./channel-config/request.md#reading-request-cookies). Absent block → the key is stripped, so a caller cannot supply it |
 | `vars` | always, when the instance declares any | The [`[vars]`](./configuration/vars-and-secrets.md) config section verbatim. No `[vars]` → the key is stripped, so a caller cannot supply it |
+| `auth` | only when a [`jwt`](./channel-config/auth.md) token verified | `{"claims": …}`, the verified claims. No verified token → the key is stripped, so a caller cannot supply it |
+
+`oauth` (the [sign-in](./channel-config/oauth2_login.md) grant) and `trigger` (a [cron](./channel-config/cron.md) occurrence) are stripped from the caller's object the same way, and only their guard or the cron worker writes them.
 
 Orion stamps nothing else on the HTTP path: no client IP, no request path, no trace id. A channel in [`request.body_mode = "payload"`](./channel-config/request.md) takes no caller `metadata` at all; the object is server-stamped keys only.
 
@@ -229,7 +232,7 @@ Orion reserves these keys and no others:
 | `metadata._orion_call_chain` | context | Channel names traversed by nested `channel_call`s |
 | `metadata._orion_errors` | context | Codes of tasks that failed in this run — see [Branching on a failure](#branching-on-a-failure) |
 
-No other key or prefix in the context is reserved. Three plain metadata keys are still platform-owned and force-stamped at every ingress, so a caller cannot supply them: `channel`, `cookies` and `vars` (see [Request metadata](#request-metadata)). `metadata.progress` is engine-owned too, but it belongs to dataflow-rs rather than Orion; see [Branching on a failure](#branching-on-a-failure).
+No other key or prefix in the context is reserved. Six plain metadata keys are still platform-owned and force-stamped or stripped at every ingress, so a caller cannot supply them: `channel`, `cookies`, `vars`, `auth`, `oauth` and `trigger` (see [Request metadata](#request-metadata)). `metadata.progress` is engine-owned too, but it belongs to dataflow-rs rather than Orion; see [Branching on a failure](#branching-on-a-failure).
 
 ### Branching on a failure
 

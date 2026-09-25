@@ -1059,3 +1059,149 @@ async fn a_lockout_on_one_channel_does_not_reach_another() {
         "guessing at ch-a must not lock this client out of ch-b"
     );
 }
+
+/// #354: `metadata.auth` is platform-reserved. A caller's envelope used to
+/// survive wherever no claims were merged over it — a channel with no `auth`,
+/// a party-level mode, and a `jwt` channel with `required: false` called
+/// without a token — so a workflow read `metadata.auth.claims.sub` as a
+/// verified identity the caller had simply written.
+#[tokio::test]
+async fn a_caller_cannot_supply_metadata_auth() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "forge-optional",
+        claims_echo_workflow("forge-optional-wf"),
+        jwt_channel_config(json!({"required": false})),
+    )
+    .await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "forge-open",
+        claims_echo_workflow("forge-open-wf"),
+        json!({}),
+    )
+    .await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "forge-key",
+        claims_echo_workflow("forge-key-wf"),
+        api_key_config("k1"),
+    )
+    .await;
+
+    let forged = json!({"data": {}, "metadata": {"auth": {"claims": {"sub": "admin"}}}});
+    for uri in [
+        "/api/v1/data/forge-optional",
+        "/api/v1/data/forge-open",
+        "/api/v1/data/forge-open/async",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", uri, Some(forged.clone())))
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "{uri}: {}", resp.status());
+        if uri.ends_with("/async") {
+            continue;
+        }
+        let body = body_json(resp).await;
+        assert!(
+            body["data"]["whoami"].is_null(),
+            "{uri}: a forged envelope identity reached the workflow: {body}"
+        );
+    }
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/forge-key",
+            ("X-API-Key", "k1"),
+            forged.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_json(resp).await["data"]["whoami"].is_null());
+
+    // A verified token still wins, and the forged object does not merge
+    // into it.
+    let token = mint_jwt(json!({"sub": "alice", "exp": 4_102_444_800u64}));
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/forge-optional",
+            ("Authorization", &format!("Bearer {token}")),
+            forged,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["data"]["whoami"], "alice");
+}
+
+/// #354: the response cache keys on the verified subject. `key_logic` used to
+/// be evaluated over the metadata *before* the claims merge, so a key on
+/// `metadata.auth.claims.sub` read the caller's envelope: bob, holding a valid
+/// token of his own, could store his body under alice's key and alice was
+/// then served it.
+#[tokio::test]
+async fn the_response_cache_keys_on_the_verified_subject() {
+    let app = common::test_app().await;
+    let mut config = jwt_channel_config(json!({}));
+    config["cache"] = json!({
+        "enabled": true,
+        "ttl_secs": 60,
+        "key_logic": {"var": "metadata.auth.claims.sub"}
+    });
+    let workflow = json!({
+        "workflow_id": "per-user-wf", "name": "per-user-wf", "condition": true,
+        "tasks": [{
+            "id": "parse", "name": "parse",
+            "function": {"name": "parse_json", "input": {"source": "payload", "target": "input"}}
+        }, {
+            "id": "t1", "name": "who and what",
+            "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.whoami", "logic": {"var": "metadata.auth.claims.sub"}},
+                {"path": "data.seen", "logic": {"var": "data.input.n"}}
+            ]}}
+        }]
+    });
+    common::create_and_activate_channel_with_config(&app, "per-user", workflow, config).await;
+    let alice = mint_jwt(json!({"sub": "alice", "exp": 4_102_444_800u64}));
+    let bob = mint_jwt(json!({"sub": "bob", "exp": 4_102_444_800u64}));
+
+    let call = |token: &str, body: Value| {
+        let app = app.clone();
+        let auth = format!("Bearer {token}");
+        async move {
+            let resp = app
+                .oneshot(request_with_header(
+                    "/api/v1/data/per-user",
+                    ("Authorization", &auth),
+                    body,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let body = body_json(resp).await;
+            (body["data"]["whoami"].clone(), body["data"]["seen"].clone())
+        }
+    };
+    let spoof =
+        |n: u64| json!({"data": {"n": n}, "metadata": {"auth": {"claims": {"sub": "alice"}}}});
+
+    // bob claims to be alice in the envelope: his entry is keyed on "bob".
+    assert_eq!(call(&bob, spoof(1)).await, (json!("bob"), json!(1)));
+    // alice is not served bob's body; her own run is stored under "alice".
+    assert_eq!(call(&alice, spoof(2)).await, (json!("alice"), json!(2)));
+    // The key is the subject alone, so a different payload is a hit on each
+    // subject's own entry.
+    assert_eq!(
+        call(&bob, json!({"data": {"n": 3}})).await,
+        (json!("bob"), json!(1))
+    );
+    assert_eq!(
+        call(&alice, json!({"data": {"n": 4}})).await,
+        (json!("alice"), json!(2))
+    );
+}

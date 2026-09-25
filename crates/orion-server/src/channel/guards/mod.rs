@@ -515,17 +515,23 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     if set.origin_allow_list {
         check_allowed_origin(req.channel, req.runtime, req.origin)?;
     }
+    // Verified claims join the metadata the channel's own logic sees, so
+    // "claim vs request" checks are one-line JSONLogic. Built once, for both
+    // readers below: `validation_logic` and the response cache's `key_logic`.
+    // The cache key must read this view and never `req.metadata` — keyed on
+    // the subject before the merge, it read whatever the caller wrote at
+    // `metadata.auth` and stored one caller's body under another's key (#354).
+    let metadata_with_auth = auth_claims
+        .as_ref()
+        .filter(|_| set.validation || set.response_cache)
+        .map(|claims| merge_auth_claims(req.metadata.clone(), claims.clone()));
+    let guard_metadata = metadata_with_auth.as_ref().unwrap_or(req.metadata);
     if set.validation {
-        // Verified claims join the metadata the channel's own logic sees, so
-        // "claim vs request" checks are one-line JSONLogic.
-        let metadata_with_auth = auth_claims
-            .as_ref()
-            .map(|claims| merge_auth_claims(req.metadata.clone(), claims.clone()));
         validate_input(
             req.channel,
             req.runtime,
             req.data,
-            metadata_with_auth.as_ref().unwrap_or(req.metadata),
+            guard_metadata,
             req.datalogic,
         )?;
     }
@@ -545,7 +551,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         match check_response_cache(
             req.channel,
             req.data,
-            req.metadata,
+            guard_metadata,
             req.runtime,
             req.datalogic,
         )
@@ -2771,6 +2777,33 @@ mod tests {
                 &cache_cfg(fields.clone())
             ),
             key("c", &serde_json::json!({"b": 1}), &m, &cache_cfg(fields))
+        );
+    }
+
+    /// With both declared, `key_logic` decides the key and `cache_key_fields`
+    /// is ignored — the documented precedence, which the branches used to
+    /// invert (#354).
+    #[test]
+    fn key_logic_takes_precedence_over_cache_key_fields() {
+        let engine = datalogic_rs::Engine::new();
+        let logic = engine
+            .compile(&serde_json::json!({"var": "data.b"}))
+            .expect("compiles");
+        let m = meta("POST", serde_json::json!({}), serde_json::json!({}));
+        let cfg = cache_cfg(Some(vec!["a".to_string()]));
+        let k = |data: serde_json::Value| {
+            super::response_cache::compute_cache_key("c", &data, &m, &cfg, Some(&logic), &engine)
+                .expect("key_logic resolves")
+        };
+        assert_ne!(
+            k(serde_json::json!({"a": 1, "b": 1})),
+            k(serde_json::json!({"a": 1, "b": 2})),
+            "a differing key_logic value must yield a differing key"
+        );
+        assert_eq!(
+            k(serde_json::json!({"a": 1, "b": 1})),
+            k(serde_json::json!({"a": 2, "b": 1})),
+            "cache_key_fields must not contribute once key_logic is declared"
         );
     }
 
