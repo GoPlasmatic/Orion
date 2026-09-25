@@ -121,8 +121,21 @@ pub(crate) async fn update_workflow(
     OrionJson(req): OrionJson<UpdateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let generation = state.runtime.load();
+    // An update carrying one of `tasks` and `loop` is checked against the
+    // stored other half: the two share one step-id namespace. A missing or
+    // non-draft row is `update_draft`'s to refuse, with its own message.
+    let stored = if req.tasks.is_some() != req.loop_config.is_some() {
+        match state.repos.workflows.get_by_id(&id).await {
+            Ok(w) if w.status == crate::storage::models::EntityStatus::Draft.as_str() => Some(w),
+            Ok(_) | Err(OrionError::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        }
+    } else {
+        None
+    };
     crate::validation::validate_update_workflow(
         &req,
+        stored.as_ref(),
         state.config.engine.max_loop_iterations,
         &generation.functions,
     )?;

@@ -154,6 +154,12 @@ fn screen_workflow(
     workflow: &dataflow_rs::Workflow,
     screen: &dyn HandlerScreen,
 ) -> Result<(), String> {
+    // `check_workflow` asks about handlers, not structure: it never runs
+    // `Workflow::validate()`, which `build` runs on every workflow and fails
+    // on the first refusal. Unscreened, a duplicate step id across
+    // `loop.setup` and `tasks`, or a loop `as` that is not a plain key, failed
+    // every reload and stopped a node at boot.
+    workflow.validate().map_err(|e| e.to_string())?;
     let issues = screen.check_workflow(workflow);
     let (advisories, issues): (Vec<_>, Vec<_>) = issues
         .into_iter()
@@ -485,6 +491,28 @@ mod tests {
                 "{code:?} must not quarantine"
             );
         }
+    }
+
+    /// `check_workflow` does not run `Workflow::validate()`; `build` does, and
+    /// fails the whole engine on the first refusal. The screen must catch what
+    /// `validate()` refuses, or one row takes every channel down.
+    #[test]
+    fn a_workflow_validate_refuses_is_screened() {
+        let workflow = dataflow_rs::Workflow::from_json(
+            r#"{"id":"w","name":"w","condition":true,
+                "loop":{"max":2,"setup":[
+                  {"id":"t","name":"s","function":{"name":"log","input":{"message":"x"}}}]},
+                "tasks":[
+                  {"id":"t","name":"t","function":{"name":"log","input":{"message":"x"}}}]}"#,
+        )
+        .expect("a duplicate id still parses");
+
+        assert!(
+            screen().check_workflow(&workflow).is_empty(),
+            "if check_workflow starts reporting this, the validate() call can go"
+        );
+        let err = screen_workflow(&workflow, &screen()).expect_err("must be screened");
+        assert!(err.contains("Duplicate"), "{err}");
     }
 
     #[test]

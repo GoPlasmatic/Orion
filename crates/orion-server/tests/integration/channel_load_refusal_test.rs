@@ -503,7 +503,15 @@ async fn insert_raw_active_workflow_and_channel(
         .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
         .await
         .expect("raw workflow insert");
+    insert_raw_active_channel_for(state, name, &wf).await;
+}
 
+/// An `active` channel named `name` bound to workflow `wf`, straight to the DB.
+async fn insert_raw_active_channel_for(
+    state: &orion::server::state::AppState,
+    name: &str,
+    wf: &str,
+) {
     let sql = format!(
         "INSERT INTO channels (channel_id, version, name, channel_type, protocol, \
          transport_config_json, config_json, status, priority, workflow_id) \
@@ -599,4 +607,97 @@ async fn channel_call_with_a_wrongly_typed_field_quarantines_only_its_channel() 
             && serves_ok(&app, "healthy-neighbour").await,
         "one unusable row must not take its neighbours down"
     );
+}
+
+/// A stored workflow whose `loop` the engine build refuses must quarantine its
+/// own channel, not fail the build for every channel on the node.
+///
+/// `Engine::check_workflow` does not run `Workflow::validate()`; only `build`
+/// does, and it fails on the first refusal. With nothing screening it, a
+/// duplicate step id across `loop.setup` and `tasks` failed every reload, and
+/// at boot stopped the process.
+#[tokio::test]
+async fn a_loop_the_engine_refuses_quarantines_only_its_channel() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    common::create_and_activate_channel(
+        &app,
+        "loop-neighbour",
+        common::simple_log_workflow("Loop Neighbour"),
+    )
+    .await;
+
+    let log = r#"{"name":"log","input":{"message":"x"}}"#;
+    let cases = [
+        // A setup step shares the body's id namespace.
+        (
+            "loop-dup-id",
+            format!(r#"{{"max":2,"setup":[{{"id":"t1","name":"s","function":{log}}}]}}"#),
+            "Duplicate",
+        ),
+        // Two setup steps with one id.
+        (
+            "loop-dup-setup",
+            format!(
+                r#"{{"max":2,"setup":[{{"id":"s","name":"s","function":{log}}},{{"id":"s","name":"s","function":{log}}}]}}"#
+            ),
+            "Duplicate",
+        ),
+        // `as` names a `temp_data` slot and must be a plain key.
+        (
+            "loop-bad-as",
+            r#"{"max":2,"over":{"var":"data.items"},"as":"a..b"}"#.to_string(),
+            "as",
+        ),
+    ];
+
+    for (name, loop_json, _) in &cases {
+        let tasks = format!(r#"[{{"id":"t1","name":"body","function":{log}}}]"#);
+        insert_raw_active_workflow_with_loop(&state, name, &tasks, loop_json).await;
+    }
+
+    let (status, body) = reload_engine(&app).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "one unbuildable loop must not fail the reload: {body}"
+    );
+
+    for (name, _, fragment) in &cases {
+        let reason = quarantine_reason(&app, name)
+            .await
+            .unwrap_or_else(|| panic!("{name} must be quarantined"));
+        assert!(
+            reason.contains(fragment),
+            "{name}: the reason must say why, got {reason}"
+        );
+    }
+    assert!(
+        quarantine_reason(&app, "loop-neighbour").await.is_none()
+            && serves_ok(&app, "loop-neighbour").await,
+        "an unbuildable loop must not take its neighbours down"
+    );
+}
+
+/// [`insert_raw_active_workflow_and_channel`] with a `loop_json` column. The
+/// loop goes in with the insert: an active row is immutable.
+async fn insert_raw_active_workflow_with_loop(
+    state: &orion::server::state::AppState,
+    name: &str,
+    tasks_json: &str,
+    loop_json: &str,
+) {
+    let wf = format!("wf_{name}");
+    let sql = format!(
+        "INSERT INTO workflows (workflow_id, version, name, priority, status, \
+         rollout_percentage, condition_json, tasks_json, tags_json, loop_json) \
+         VALUES ('{wf}', 1, '{name}', 0, 'active', 100, 'true', '{tasks_json}', '[]', '{loop_json}')"
+    );
+    state
+        .db_pool
+        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
+        .await
+        .expect("raw workflow insert");
+    insert_raw_active_channel_for(state, name, &wf).await;
 }

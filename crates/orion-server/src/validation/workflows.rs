@@ -27,14 +27,6 @@ pub fn validate_create_workflow(
     if !source.is_empty() {
         return Err(uncompiled(source));
     }
-    let task_errors = validate_workflow_tasks_schema(&req.tasks, functions);
-    if !task_errors.is_empty() {
-        return Err(validation_with_details(
-            "Workflow tasks contain invalid function inputs",
-            task_errors,
-        ));
-    }
-    reject_stray_secret_references(&req.tasks, functions)?;
     if let Some(loop_config) = &req.loop_config {
         let loop_errors = validate_workflow_loop_schema(loop_config, max_loop_iterations);
         if !loop_errors.is_empty() {
@@ -44,7 +36,27 @@ pub fn validate_create_workflow(
             ));
         }
     }
-    Ok(())
+    reject_task_errors(validate_workflow_tasks_schema(
+        &req.tasks,
+        req.loop_config.as_ref(),
+        functions,
+    ))?;
+    reject_stray_secret_references(&req.tasks, functions)
+}
+
+/// Refuse a workflow whose steps [`validate_workflow_tasks_schema`] found
+/// fault with, summarised by where the faults are: the loop's own fields and
+/// its `setup` steps, or the body.
+fn reject_task_errors(errors: Vec<FieldError>) -> Result<(), OrionError> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let summary = if errors.iter().all(|e| e.path.starts_with("loop")) {
+        "Workflow loop is invalid"
+    } else {
+        "Workflow tasks contain invalid function inputs"
+    };
+    Err(validation_with_details(summary, errors))
 }
 
 /// Refuse a workflow carrying a secret reference in a field that resolves
@@ -67,8 +79,15 @@ fn reject_stray_secret_references(
     ))
 }
 
+/// `stored` is the draft the update applies to, when the caller has it. An
+/// update carrying only one of `tasks` and `loop` keeps the stored other half,
+/// and the two share one step-id namespace, so each is checked against the
+/// other as it will be written: a new body step can collide with a stored
+/// setup step and the reverse. Without `stored`, only the request's own half
+/// is checked.
 pub fn validate_update_workflow(
     req: &UpdateWorkflowRequest,
+    stored: Option<&crate::storage::models::Workflow>,
     max_loop_iterations: i64,
     functions: &FunctionRegistry,
 ) -> Result<(), OrionError> {
@@ -86,16 +105,6 @@ pub fn validate_update_workflow(
     if !source.is_empty() {
         return Err(uncompiled(source));
     }
-    if let Some(ref tasks) = req.tasks {
-        let task_errors = validate_workflow_tasks_schema(tasks, functions);
-        if !task_errors.is_empty() {
-            return Err(validation_with_details(
-                "Workflow tasks contain invalid function inputs",
-                task_errors,
-            ));
-        }
-        reject_stray_secret_references(tasks, functions)?;
-    }
     // `null` clears the loop and needs no checking; anything else is a config
     // that has to hold up.
     if let Some(loop_config) = &req.loop_config
@@ -108,6 +117,32 @@ pub fn validate_update_workflow(
                 loop_errors,
             ));
         }
+    }
+    let loop_changed = matches!(&req.loop_config, Some(l) if !l.is_null());
+    if req.tasks.is_some() || loop_changed {
+        // The steps as they will be written: the request's half where it
+        // carries one, the stored draft's otherwise. With no body to check a
+        // new loop against (no stored draft given), the loop's own fields
+        // above are all this request can speak for.
+        let stored_tasks = stored.and_then(|w| serde_json::from_str::<Value>(&w.tasks_json).ok());
+        let stored_loop = stored
+            .and_then(|w| w.loop_json.as_deref())
+            .and_then(|json| serde_json::from_str::<Value>(json).ok());
+        let loop_config = match &req.loop_config {
+            Some(l) if l.is_null() => None,
+            Some(l) => Some(l),
+            None => stored_loop.as_ref(),
+        };
+        if let Some(tasks) = req.tasks.as_ref().or(stored_tasks.as_ref()) {
+            reject_task_errors(validate_workflow_tasks_schema(
+                tasks,
+                loop_config,
+                functions,
+            ))?;
+        }
+    }
+    if let Some(ref tasks) = req.tasks {
+        reject_stray_secret_references(tasks, functions)?;
     }
     Ok(())
 }
@@ -270,10 +305,16 @@ pub fn validate_workflow_loop_schema(
 /// | two tasks sharing an `id` | `201` | `500` on activate; **the whole engine reload fails**, and at boot `Engine::new` aborts the process |
 /// | `"tasks": []` | `201` | same as the duplicate case — `Workflow::validate()` refuses a workflow with no tasks, and it is the engine *build* that runs it |
 ///
-/// The duplicate case is the worst of the three because it is not contained by
-/// the per-channel quarantine: `LogicCompiler::compile_workflows` calls
-/// `Workflow::validate()`, so one repeated id takes down every channel on every
-/// node rather than its own.
+/// The duplicate case was the worst of the three because the per-channel
+/// quarantine did not contain it: `LogicCompiler::compile_workflows` calls
+/// `Workflow::validate()`, so one repeated id took down every channel on every
+/// node rather than its own. The load screen now runs `validate()` as well, so
+/// a stored row carrying one is quarantined; refusing it here is still the
+/// better answer.
+///
+/// `loop_config` is checked with the body, as `build` checks it: its `setup`
+/// steps share the body's step-id namespace, and its own fields carry rules
+/// the engine enforces.
 ///
 /// **These track dataflow-rs's parsing rules rather than tightening them**, so
 /// that "Orion accepts it" and "the engine can load it" stay the same
@@ -287,6 +328,7 @@ pub fn validate_workflow_loop_schema(
 /// Orion inventing a rule the engine does not have.
 pub fn validate_workflow_tasks_schema(
     tasks: &serde_json::Value,
+    loop_config: Option<&serde_json::Value>,
     functions: &FunctionRegistry,
 ) -> Vec<FieldError> {
     if tasks.as_array().is_none() {
@@ -417,14 +459,20 @@ pub fn validate_workflow_tasks_schema(
     // fails `validate()`, is now refused at create instead of taken down the
     // whole reload on activation.
     //
-    // The workflow-level fields are synthesized: this function is given
-    // `tasks` alone, and `workflow.id` / `workflow.name` are validated by
-    // their own callers with their own messages.
+    // The workflow-level fields are synthesized: `workflow.id` /
+    // `workflow.name` are validated by their own callers with their own
+    // messages. `loop` goes in whole, because `build` validates it whole:
+    // its `setup` steps share the body's step-id namespace, and `as`,
+    // `scratch` and `over` carry rules of their own. A synthetic document
+    // without it accepted a workflow whose loop then failed every reload.
     if errors.is_empty() {
-        let synthetic = serde_json::json!({
+        let mut synthetic = serde_json::json!({
             "id": "__shape_check__", "name": "__shape_check__",
             "condition": true, "tasks": tasks,
         });
+        if let Some(loop_config) = loop_config.filter(|l| !l.is_null()) {
+            synthetic["loop"] = loop_config.clone();
+        }
         errors.extend(
             dataflow_rs::Workflow::validate_authored(&synthetic)
                 .into_iter()
@@ -629,8 +677,9 @@ use serde_json::Value;
 /// reports — an unregistered function, an undeclared secret — belong to checks
 /// that own them and would be reported twice with worse wording.
 pub fn engine_advisories(tasks: &Value, functions: &FunctionRegistry) -> Vec<EngineAdvisory> {
-    // The synthetic wrapper `validate_workflow_tasks_schema` uses, for the same
-    // reason: this function is given `tasks` alone.
+    // A synthetic wrapper like `validate_workflow_tasks_schema`'s. This
+    // function is given `tasks` alone, so it reports nothing about a loop's
+    // `setup` steps.
     let synthetic = serde_json::json!({
         "id": "__shape_check__", "name": "__shape_check__",
         "condition": true, "tasks": tasks,
@@ -1326,7 +1375,7 @@ mod tests {
         super::validate_create_workflow(req, cap, registry())
     }
     fn validate_update_workflow(req: &UpdateWorkflowRequest, cap: i64) -> Result<(), OrionError> {
-        super::validate_update_workflow(req, cap, registry())
+        super::validate_update_workflow(req, None, cap, registry())
     }
     fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
         super::unresolvable_logic_warnings(tasks, registry())
@@ -1520,6 +1569,149 @@ mod tests {
             continue_on_error: None,
         };
         assert!(validate_update_workflow(&req, 10_000).is_err());
+    }
+
+    /// One `log` step with this id.
+    fn log_step(id: &str) -> serde_json::Value {
+        serde_json::json!({"id": id, "name": id, "function": {"name": "log", "input": {"message": "x"}}})
+    }
+
+    fn create_with_loop(tasks: Value, loop_config: Value) -> CreateWorkflowRequest {
+        CreateWorkflowRequest {
+            workflow_id: None,
+            name: "Looping".to_string(),
+            description: None,
+            priority: 0,
+            condition: serde_json::json!(true),
+            tasks,
+            tags: vec![],
+            loop_config: Some(loop_config),
+            continue_on_error: false,
+        }
+    }
+
+    fn update_of(tasks: Option<Value>, loop_config: Option<Value>) -> UpdateWorkflowRequest {
+        UpdateWorkflowRequest {
+            name: None,
+            description: None,
+            priority: None,
+            condition: None,
+            tasks,
+            tags: None,
+            loop_config,
+            continue_on_error: None,
+        }
+    }
+
+    /// A stored draft carrying these halves.
+    fn stored_draft(
+        tasks: &Value,
+        loop_config: Option<&Value>,
+    ) -> crate::storage::models::Workflow {
+        crate::storage::models::Workflow {
+            workflow_id: "wf".to_string(),
+            version: 1,
+            name: "Looping".to_string(),
+            description: None,
+            priority: 0,
+            status: "draft".to_string(),
+            rollout_percentage: 100,
+            condition_json: "true".to_string(),
+            tasks_json: tasks.to_string(),
+            tags_json: "[]".to_string(),
+            loop_json: loop_config.map(Value::to_string),
+            continue_on_error: false,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        }
+    }
+
+    fn details(err: OrionError) -> (String, Vec<String>) {
+        match err {
+            OrionError::Validation {
+                message, details, ..
+            } => (message, details.into_iter().map(|d| d.path).collect()),
+            other => (other.to_string(), Vec::new()),
+        }
+    }
+
+    /// `Engine::build` validates the loop with the body: a setup step shares
+    /// the body's step-id namespace. The create check handed the engine the
+    /// body alone, so this was a `201` that then failed every reload.
+    #[test]
+    fn a_setup_step_colliding_with_a_body_step_is_refused_at_create() {
+        let req = create_with_loop(
+            serde_json::json!([log_step("t1")]),
+            serde_json::json!({"max": 2, "setup": [log_step("t1")]}),
+        );
+        let (_, paths) =
+            details(validate_create_workflow(&req, 10_000).expect_err("must be refused"));
+        assert!(!paths.is_empty(), "the collision must be reported");
+    }
+
+    /// A loop the engine refuses on its own account names the loop, not the
+    /// task list, in the summary.
+    #[test]
+    fn a_loop_as_that_is_not_a_plain_key_is_refused_as_a_loop_error() {
+        let req = create_with_loop(
+            serde_json::json!([log_step("t1")]),
+            serde_json::json!({"max": 2, "over": {"var": "data.items"}, "as": "a..b"}),
+        );
+        let (message, paths) =
+            details(validate_create_workflow(&req, 10_000).expect_err("must be refused"));
+        assert_eq!(message, "Workflow loop is invalid", "paths: {paths:?}");
+        assert!(paths.iter().all(|p| p.starts_with("loop")), "{paths:?}");
+    }
+
+    #[test]
+    fn a_loop_with_distinct_setup_ids_is_accepted() {
+        let req = create_with_loop(
+            serde_json::json!([log_step("t1")]),
+            serde_json::json!({"max": 2, "setup": [log_step("s1")]}),
+        );
+        assert!(validate_create_workflow(&req, 10_000).is_ok());
+    }
+
+    /// An update carrying only `tasks` keeps the stored loop, so the new body
+    /// is checked against the stored setup steps.
+    #[test]
+    fn an_update_of_tasks_is_checked_against_the_stored_loop() {
+        let loop_config = serde_json::json!({"max": 2, "setup": [log_step("s1")]});
+        let stored = stored_draft(&serde_json::json!([log_step("t1")]), Some(&loop_config));
+        let req = update_of(Some(serde_json::json!([log_step("s1")])), None);
+        assert!(super::validate_update_workflow(&req, Some(&stored), 10_000, registry()).is_err());
+        // Without the stored draft the request alone is consistent.
+        assert!(validate_update_workflow(&req, 10_000).is_ok());
+    }
+
+    /// And the reverse: a loop-only update is checked against the stored body.
+    #[test]
+    fn an_update_of_the_loop_is_checked_against_the_stored_tasks() {
+        let stored = stored_draft(&serde_json::json!([log_step("t1")]), None);
+        let colliding = update_of(
+            None,
+            Some(serde_json::json!({"max": 2, "setup": [log_step("t1")]})),
+        );
+        assert!(
+            super::validate_update_workflow(&colliding, Some(&stored), 10_000, registry()).is_err()
+        );
+        let distinct = update_of(
+            None,
+            Some(serde_json::json!({"max": 2, "setup": [log_step("s1")]})),
+        );
+        assert!(
+            super::validate_update_workflow(&distinct, Some(&stored), 10_000, registry()).is_ok()
+        );
+    }
+
+    /// `loop: null` removes the loop, so a stored setup step can no longer
+    /// collide with anything.
+    #[test]
+    fn clearing_the_loop_drops_its_setup_steps_from_the_check() {
+        let loop_config = serde_json::json!({"max": 2, "setup": [log_step("t1")]});
+        let stored = stored_draft(&serde_json::json!([log_step("t0")]), Some(&loop_config));
+        let req = update_of(Some(serde_json::json!([log_step("t1")])), Some(Value::Null));
+        assert!(super::validate_update_workflow(&req, Some(&stored), 10_000, registry()).is_ok());
     }
 
     /// Build a one-task workflow's `tasks` array around a `mongo_write` input.

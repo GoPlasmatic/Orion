@@ -75,9 +75,24 @@ pub struct UpdateWorkflowRequest {
     /// `Some(Value::Null)` clears the loop; `None` leaves it as stored. The
     /// distinction is why this is not `Option<Value>` collapsed to one level:
     /// "remove the loop" and "do not touch the loop" are different edits.
-    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    // Plain `Option<Value>` reads `null` as `None`, so a present key is read
+    // through `present`; `default` covers the absent one.
+    #[serde(
+        default,
+        rename = "loop",
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub loop_config: Option<serde_json::Value>,
     pub continue_on_error: Option<bool>,
+}
+
+/// A key that is present, `null` included, as `Some`.
+fn present<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]

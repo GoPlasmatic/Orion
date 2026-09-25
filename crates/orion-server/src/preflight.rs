@@ -189,6 +189,7 @@ async fn scan_workflows(
             findings.extend(check_workflow_tasks(
                 &workflow.name,
                 &workflow.tasks_json,
+                workflow.loop_json.as_deref(),
                 functions,
             ));
         }
@@ -341,6 +342,7 @@ fn pick_config_remedy(config_json: &str) -> String {
 pub fn check_workflow_tasks(
     name: &str,
     tasks_json: &str,
+    loop_json: Option<&str>,
     functions: &crate::engine::FunctionRegistry,
 ) -> Vec<Diagnostic> {
     let Ok(tasks) = serde_json::from_str::<Value>(tasks_json) else {
@@ -354,13 +356,19 @@ pub fn check_workflow_tasks(
         ];
     };
 
+    // An unparseable stored loop is not this check's to report: the load
+    // screen quarantines the workflow's channels with the parse error.
+    let loop_config = loop_json.and_then(|json| serde_json::from_str::<Value>(json).ok());
+
     // The chokepoint create, update, import, POST /validate and `lint` all
     // share — so preflight agrees with them by construction rather than by
     // re-implementing the rules. Covers missing/duplicate task ids, unknown
     // function names, and missing required inputs (including `write`, now that
     // the pre-1.0 flat envelope is gone).
     let mut findings: Vec<Diagnostic> = crate::validation::validate_workflow_tasks_schema(
-        &tasks, functions,
+        &tasks,
+        loop_config.as_ref(),
+        functions,
     )
     .into_iter()
     .map(|e| {
@@ -581,6 +589,7 @@ mod tests {
         let found = check_workflow_tasks(
             "orders-wf",
             &tasks.to_string(),
+            None,
             crate::engine::FunctionRegistry::builtin(),
         );
         assert_eq!(found.len(), 1, "got {found:?}");
@@ -614,6 +623,7 @@ mod tests {
             check_workflow_tasks(
                 "signer",
                 &tasks.to_string(),
+                None,
                 crate::engine::FunctionRegistry::builtin()
             )
             .is_empty()
@@ -767,6 +777,33 @@ mod tests {
         assert!(found[0].message.contains("not valid JSON"));
     }
 
+    /// A stored loop is checked with the body it runs beside: a setup step
+    /// colliding with a body step fails the engine build, so the upgrade must
+    /// hear about it before the node does.
+    #[test]
+    fn a_stored_setup_step_colliding_with_the_body_is_reported() {
+        let step = serde_json::json!({"id": "t", "name": "T",
+            "function": {"name": "log", "input": {"message": "x"}}});
+        let tasks = serde_json::json!([step]);
+        let loop_config = serde_json::json!({"max": 2, "setup": [step]});
+        let findings = check_workflow_tasks(
+            "w",
+            &tasks.to_string(),
+            Some(&loop_config.to_string()),
+            crate::engine::FunctionRegistry::builtin(),
+        );
+        assert!(findings.iter().any(|f| f.is_error()), "got {findings:?}");
+        assert!(
+            check_workflow_tasks(
+                "w",
+                &tasks.to_string(),
+                None,
+                crate::engine::FunctionRegistry::builtin(),
+            )
+            .is_empty()
+        );
+    }
+
     #[test]
     fn a_stored_sql_key_is_an_advisory() {
         let tasks = serde_json::json!([{"id": "t", "name": "T", "function": {"name": "map",
@@ -774,6 +811,7 @@ mod tests {
         let findings = check_workflow_tasks(
             "w",
             &tasks.to_string(),
+            None,
             crate::engine::FunctionRegistry::builtin(),
         );
         let advisory = findings
@@ -797,6 +835,7 @@ mod tests {
         let findings = check_workflow_tasks(
             "w",
             &tasks.to_string(),
+            None,
             crate::engine::FunctionRegistry::builtin(),
         );
         let advisories: Vec<_> = findings
@@ -818,6 +857,7 @@ mod tests {
         let found = check_workflow_tasks(
             "orders-wf",
             &tasks.to_string(),
+            None,
             crate::engine::FunctionRegistry::builtin(),
         );
         assert_eq!(found.len(), 1, "{found:?}");
@@ -849,6 +889,7 @@ mod tests {
             check_workflow_tasks(
                 "orders-wf",
                 &tasks.to_string(),
+                None,
                 crate::engine::FunctionRegistry::builtin()
             )
             .is_empty()
@@ -872,6 +913,7 @@ mod tests {
             check_workflow_tasks(
                 "orders-wf",
                 &tasks.to_string(),
+                None,
                 crate::engine::FunctionRegistry::builtin()
             )
             .is_empty()
@@ -901,6 +943,7 @@ mod tests {
         let found = check_workflow_tasks(
             "wf",
             &tasks.to_string(),
+            None,
             crate::engine::FunctionRegistry::builtin(),
         );
         assert!(found.is_empty(), "{found:?}");
@@ -917,6 +960,7 @@ mod tests {
         let found = check_workflow_tasks(
             "dupes",
             &tasks.to_string(),
+            None,
             crate::engine::FunctionRegistry::builtin(),
         );
         assert!(
@@ -943,6 +987,7 @@ mod tests {
         let found = check_workflow_tasks(
             "writer",
             &tasks.to_string(),
+            None,
             crate::engine::FunctionRegistry::builtin(),
         );
         assert!(

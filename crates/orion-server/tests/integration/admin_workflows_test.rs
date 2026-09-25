@@ -2137,6 +2137,101 @@ async fn an_invalid_loop_is_refused_at_write_time() {
     }
 }
 
+/// A loop's `setup` steps share the body's step-id namespace, and `build`
+/// checks the two together. Create and update checked the body alone, so each
+/// of these was accepted and then failed every reload once active.
+#[tokio::test]
+async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
+    let app = common::test_app().await;
+    let setup = |id: &str| {
+        json!({ "max": 2, "setup": [{
+            "id": id, "name": "Setup",
+            "function": { "name": "log", "input": { "message": "setup" } }
+        }]})
+    };
+
+    // Create: the body's `note` is the setup step's id too.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(looping_workflow("Colliding Loop", setup("note"))),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // A draft whose setup step is `prime`.
+    let mut workflow = looping_workflow("Setup Loop", setup("prime"));
+    workflow["workflow_id"] = json!("setup-loop");
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(workflow),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Update the body alone, onto the stored setup step's id.
+    let tasks = json!([{
+        "id": "prime", "name": "Body",
+        "function": { "name": "log", "input": { "message": "body" } }
+    }]);
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/workflows/setup-loop",
+            Some(json!({ "tasks": tasks })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "a body step colliding with the stored setup must be refused"
+    );
+
+    // Update the loop alone, onto the stored body step's id.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/workflows/setup-loop",
+            Some(json!({ "loop": setup("note") })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "a setup step colliding with the stored body must be refused"
+    );
+
+    // Clearing the loop leaves nothing to collide with. An explicit `null` is
+    // not an absent key: it removes the stored loop.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/workflows/setup-loop",
+            Some(json!({ "tasks": tasks, "loop": null })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body["data"].get("loop").is_none_or(|l| l.is_null()),
+        "`loop: null` must remove the loop, got {}",
+        body["data"]
+    );
+}
+
 /// The one that proves the feature rather than the plumbing: a looping
 /// workflow, executed, must run its task list once per sweep and stop where
 /// the break says. Storage round-trips and 400s would all still pass if
