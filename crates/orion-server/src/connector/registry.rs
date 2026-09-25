@@ -344,6 +344,17 @@ impl ConnectorRegistry {
         self.configs.read().await.get(name).cloned()
     }
 
+    /// Every loaded connector, by name. A snapshot: the lock is released
+    /// before the caller sees it.
+    pub async fn list_all(&self) -> Vec<(String, Arc<ConnectorConfig>)> {
+        self.configs
+            .read()
+            .await
+            .iter()
+            .map(|(name, cfg)| (name.clone(), cfg.clone()))
+            .collect()
+    }
+
     /// Reload all connectors from the repository.
     pub async fn reload(&self, repo: &dyn ConnectorRepository) -> Result<usize, OrionError> {
         self.load_from_repo(repo).await

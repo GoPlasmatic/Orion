@@ -1001,7 +1001,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Connector registry, shared HTTP client, runtime handle, cache pools,
     // custom function handlers, and the Kafka producer (see
     // `bootstrap::build_engine_components`).
-    let components = bootstrap::build_engine_components(&config, &repos).await?;
+    let components = bootstrap::build_engine_components(&config, &repos, &channel_loader).await?;
 
     // #268: hand the managed-OAuth2 token manager its runtime — the shared
     // client, the encrypted state store, and (in cluster mode) the refresh

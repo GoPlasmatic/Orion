@@ -38,6 +38,7 @@ Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmat
 | [`storage_head`](./storage_head.md) | Connector | Storage | Object metadata (exists/size/etag) |
 | [`channel_call`](./channel_call.md) | Composition | — | Invoke another channel's workflow in-process |
 | [`model_infer`](./model_infer.md) | Compute | — | Run an admitted ONNX model: the manifest's adapters in, tensors through, the result out |
+| [`cache_invalidate`](./cache_invalidate.md) | Utility | — | Invalidate channel response-cache namespaces on every store |
 | [`crypto`](./crypto.md) | Utility | — | Digests, HMAC compute/verify, password hashing |
 | [`jwt_sign`](./jwt_sign.md) | Utility | — | Mint a signed JWT (login, refresh, client assertions) |
 | [`jwt_verify`](./jwt_verify.md) | Utility | — | Verify a JWT against static keys or a JWKS |

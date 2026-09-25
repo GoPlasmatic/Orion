@@ -664,6 +664,7 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
     }
     if let Some(ref cache) = parsed.cache {
         validate_cache_key_fields(cache)?;
+        validate_cache_namespaces(cache)?;
     }
     if let Some(ref request) = parsed.request {
         validate_cookies_to_metadata(request)?;
@@ -866,6 +867,40 @@ fn validate_cache_key_fields(cache: &crate::channel::ChannelCacheConfig) -> Resu
                     "'{f}' has an empty path segment; use a literal payload key \
                      (`user_id`) or a dotted path (`user.id`)"
                 ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Structurally check `cache.namespaces`: 1 to 8 distinct names, each one
+/// `channel::cache_namespace::check_name` accepts. An empty list would declare
+/// a namespaced channel that no invalidation can reach.
+fn validate_cache_namespaces(cache: &crate::channel::ChannelCacheConfig) -> Result<(), OrionError> {
+    use crate::channel::cache_namespace::{MAX_NAMESPACES, check_name};
+    let Some(ref namespaces) = cache.namespaces else {
+        return Ok(());
+    };
+    const PATH: &str = "channel.config.cache.namespaces";
+    if namespaces.is_empty() || namespaces.len() > MAX_NAMESPACES {
+        return Err(OrionError::invalid_field(
+            PATH,
+            "INVALID",
+            format!(
+                "namespaces must name 1 to {MAX_NAMESPACES} namespaces; omit it for a cache \
+                 that only expires"
+            ),
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (i, ns) in namespaces.iter().enumerate() {
+        check_name(ns)
+            .map_err(|e| OrionError::invalid_field(format!("{PATH}[{i}]"), "INVALID", e))?;
+        if !seen.insert(ns.as_str()) {
+            return Err(OrionError::invalid_field(
+                format!("{PATH}[{i}]"),
+                "INVALID",
+                format!("namespace '{ns}' is declared twice"),
             ));
         }
     }

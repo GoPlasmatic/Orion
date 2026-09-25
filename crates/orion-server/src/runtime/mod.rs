@@ -90,6 +90,7 @@ pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::Ha
         query_config: &state.config.query,
         write_config: &state.config.write,
         cache_pool: state.caches.cache_pool.clone(),
+        channel_loader: state.channel_loader.clone(),
         sql_pool_cache: state.caches.sql_pool_cache.clone(),
         mongo_pool_cache: state.caches.mongo_pool_cache.clone(),
         smtp_pool_cache: state.caches.smtp_pool_cache.clone(),

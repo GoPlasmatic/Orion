@@ -724,6 +724,48 @@ impl ChannelLoader {
         }
     }
 
+    /// Every store a response-cache entry can be sitting in, for namespace
+    /// invalidation.
+    ///
+    /// The default store (the cluster Redis, or the built-in memory store on
+    /// one node), every in-memory response-cache store this process has made,
+    /// and a Redis backend for every cache connector that could back a
+    /// response cache (`write` on). The last is deliberately wider than the
+    /// connectors active channels use today: a channel archived with live
+    /// entries and reactivated later reads them against its own store's
+    /// counters, so an invalidation has to have reached that store too. A
+    /// Redis connector that cannot be reached is skipped with a warning.
+    pub async fn response_cache_targets(
+        &self,
+        connector_registry: &ConnectorRegistry,
+        cache_pool: &CachePool,
+    ) -> Vec<Arc<dyn CacheBackend>> {
+        let mut targets = cache_pool.memory_backends_for(CachePurpose::ResponseCache);
+        if let Some(shared) = self.cluster.as_ref().and_then(|c| c.default_cache.clone()) {
+            targets.push(shared);
+        }
+        for (name, config) in connector_registry.list_all().await {
+            let ConnectorConfig::Cache(cache_cfg) = config.as_ref() else {
+                continue;
+            };
+            if cache_cfg.backend != "redis" || !cache_cfg.operations.write {
+                continue;
+            }
+            match cache_pool
+                .get_backend(CachePurpose::ResponseCache, &name, cache_cfg)
+                .await
+            {
+                Ok(backend) => targets.push(backend),
+                Err(e) => tracing::warn!(
+                    connector = %name,
+                    error = %e,
+                    "Cache connector unreachable; its response-cache namespaces were not bumped"
+                ),
+            }
+        }
+        targets
+    }
+
     /// Build one channel's runtime config, or the [`ChannelLoadIssue`] that
     /// keeps it out of the registry.
     ///

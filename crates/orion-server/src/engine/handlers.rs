@@ -38,6 +38,9 @@ pub struct HandlerDeps<'a> {
     pub query_config: &'a crate::config::QueryConfig,
     pub write_config: &'a crate::config::WriteConfig,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
+    /// The channel loader, for `cache_invalidate`: it knows which stores a
+    /// response cache can resolve to, the cluster's shared one included.
+    pub channel_loader: Arc<crate::channel::ChannelLoader>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
@@ -87,6 +90,7 @@ pub fn build_custom_functions(
         query_config,
         write_config,
         cache_pool,
+        channel_loader,
         sql_pool_cache,
         mongo_pool_cache,
         smtp_pool_cache,
@@ -256,9 +260,17 @@ pub fn build_custom_functions(
     register(
         &mut fns,
         functions::cache_incr::CacheIncrHandler {
-            cache_pool,
+            cache_pool: cache_pool.clone(),
             registry: registry.clone(),
         },
+    );
+    fns.insert(
+        "cache_invalidate".to_string(),
+        Box::new(functions::cache_invalidate::CacheInvalidateHandler {
+            channel_loader,
+            registry: registry.clone(),
+            cache_pool,
+        }),
     );
 
     // Register the MongoDB trio (mongo_read, mongo_write, mongo_aggregate)

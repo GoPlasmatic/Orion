@@ -9,7 +9,7 @@ Orion ships two binaries. `orion-server` is the runtime, with diagnostic, author
 | Page | Holds |
 |---|---|
 | [orion-server](./orion-server/index.md) | Start the server; `validate-config`, `migrate`, `lint`, `compile`, `fmt`, `clippy`, `dry-run`, `test`, `test-connectivity`, `preflight`, `dump-openapi` and `package` |
-| [orion-cli](./orion-cli/index.md) | The global flags, and one command per entity kind plus `send`, `traces`, `engine`, `cron`, `dlq`, `audit-logs`, `backups`, `packages`, `metrics`, `functions`, `benchmark` and `completions` |
+| [orion-cli](./orion-cli/index.md) | The global flags, and one command per entity kind plus `send`, `traces`, `engine`, `cron`, `dlq`, `audit-logs`, `backups`, `cache`, `packages`, `metrics`, `functions`, `benchmark` and `completions` |
 | [Shared definitions](./shared-definitions.md) | `$from` and `use`, the two forms a definition set may use and `compile` resolves |
 
 ## Related

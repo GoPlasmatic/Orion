@@ -228,3 +228,19 @@ mod tests {
         assert!(EngineLoadIssues::default().is_empty());
     }
 }
+
+/// `POST /api/v1/admin/cache/namespaces/{namespace}/invalidate`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CacheInvalidatedResponse {
+    /// The namespace whose version was bumped.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub namespace: String,
+    /// How many response-cache stores the bump reached: the default store,
+    /// each in-memory store on the node that answered, and each Redis cache
+    /// connector. A shared Redis carries the bump to every node.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub stores: u64,
+}

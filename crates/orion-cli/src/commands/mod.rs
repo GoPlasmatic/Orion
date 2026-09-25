@@ -1,6 +1,7 @@
 pub mod audit_logs;
 pub mod backups;
 pub mod benchmark;
+pub mod cache;
 pub mod channels;
 pub mod completions;
 pub mod config;
@@ -78,6 +79,9 @@ pub enum Commands {
 
     /// Manage database backups (SQLite snapshots)
     Backups(backups::BackupsCmd),
+
+    /// Invalidate channel response-cache namespaces
+    Cache(cache::CacheCmd),
 
     /// Inspect package promotion receipts (staged/applied versions)
     #[command(alias = "pkg")]

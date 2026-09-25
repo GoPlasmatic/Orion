@@ -25,7 +25,7 @@ Deletes exact keys from a cache connector, and reports how many existed.
 
 It is the invalidation half of caching a read in a workflow: the workflow that changes the data deletes the entries it made stale, rather than waiting out their TTL. On Redis the keys go in one `DEL`. A key that is not present is not an error; it simply is not counted.
 
-Keys are exact. There is no prefix or pattern form, because on Redis one would be a `SCAN` over the whole keyspace. To retire a family of keys at once, embed a generation counter in each key and bump it with [`cache_incr`](./cache_incr.md).
+Keys are exact. There is no prefix or pattern form, because on Redis one would be a `SCAN` over the whole keyspace. To retire a family of keys at once, embed a generation counter in each key and bump it with [`cache_incr`](./cache_incr.md). To invalidate a channel's response cache, use [`cache.namespaces`](../channel-config/cache.md#invalidation) and [`cache_invalidate`](./cache_invalidate.md).
 
 A delete changes what later reads see, so a connector whose `write` [operation gate](../connectors/cache.md) is off refuses it, as it refuses `cache_write`. It reaches the same keyspace as `cache_read` and `cache_write`, never the channel deduplication store or response cache.
 

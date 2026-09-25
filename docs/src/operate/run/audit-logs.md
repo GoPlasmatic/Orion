@@ -52,6 +52,7 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `admit` | `model` | `POST /models/{id}/admit` — admission runs (or is queued) on the node that answered, and the verdict lands on the row |
 | `test` | `workflow`, `connector` | `POST /workflows/{id}/test`, `POST /connectors/{id}/test` — both reach live backends, so both are recorded |
 | `reset` | `circuit_breaker` | `POST /connectors/circuit-breakers/{key}` |
+| `invalidate` | `cache_namespace` | `POST /cache/namespaces/{namespace}/invalidate`. A workflow's `cache_invalidate` is not an admin action and writes no row |
 | `purge`, `requeue` | `trace_dlq` | The [trace DLQ](../../reference/admin-api/trace-dlq.md) endpoints |
 | `package_staged`, `package_applied` | `package` | `PUT /packages/{name}`, named for the receipt state |
 | `reload` | `engine` | `POST /engine/reload` |

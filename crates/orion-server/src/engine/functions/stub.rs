@@ -410,11 +410,13 @@ impl StubHandler {
         if self.function == "cache_write" {
             return Ok(None);
         }
-        // `cache_delete` and `cache_incr` record their result only where the
+        // `cache_delete`, `cache_incr` and `cache_invalidate` record their result only where the
         // task names an `output`; without one their real handlers write
         // nothing, so neither may their stubs.
-        if matches!(self.function, "cache_delete" | "cache_incr")
-            && input.get("output").is_none_or(serde_json::Value::is_null)
+        if matches!(
+            self.function,
+            "cache_delete" | "cache_incr" | "cache_invalidate"
+        ) && input.get("output").is_none_or(serde_json::Value::is_null)
         {
             return Ok(None);
         }
@@ -476,13 +478,23 @@ impl AsyncFunctionHandler for StubHandler {
         // Recorded before the stub is resolved, so a call that fails for want
         // of a stub still appears in the log — that is the run you most want to
         // see the payload of.
-        self.log.record(
-            ctx,
-            self.function,
-            target.map(str::to_string),
-            resolved_input(self.function, input, ctx),
-        );
-        let response = resolve(&self.stubs, self.function, target)?.clone();
+        let resolved = resolved_input(self.function, input, ctx);
+        let namespaces = resolved
+            .get("namespaces")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        self.log
+            .record(ctx, self.function, target.map(str::to_string), resolved);
+        let response = match resolve(&self.stubs, self.function, target) {
+            Ok(response) => response.clone(),
+            // Offline there is no response cache to invalidate, so the call
+            // has no effect to stand in for and needs no stub: it reaches no
+            // store. A stub, when given, still wins.
+            Err(_) if self.function == "cache_invalidate" => {
+                serde_json::json!({ "namespaces": namespaces, "stores": 0 })
+            }
+            Err(e) => return Err(e),
+        };
         if let Some(path) = output {
             apply_output(ctx, &path, response);
         }
@@ -750,7 +762,7 @@ mod tests {
             count += 1;
         }
         assert_eq!(
-            count, 21,
+            count, 22,
             "every Orion handler is stubbable, and only those"
         );
     }
@@ -821,7 +833,7 @@ mod tests {
         // The one generic-stubbed function whose real handler writes nothing.
         assert_eq!(path(&stub("cache_write"), json!({})), None);
         // The two that write only where told to.
-        for function in ["cache_delete", "cache_incr"] {
+        for function in ["cache_delete", "cache_incr", "cache_invalidate"] {
             assert_eq!(path(&stub(function), json!({})), None, "{function}");
             assert_eq!(
                 path(&stub(function), json!({"output": "data.n"})),

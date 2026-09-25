@@ -645,6 +645,16 @@ pub struct ChannelCacheConfig {
     /// Optional cache connector name for the response cache backend.
     #[serde(default)]
     pub connector: Option<String>,
+    /// Invalidation namespaces this channel's entries belong to.
+    ///
+    /// Each namespace has a version counter in the response-cache store, and
+    /// an entry records the versions current when its request was looked up.
+    /// `cache_invalidate` (or `POST /admin/cache/namespaces/{ns}/invalidate`)
+    /// bumps a counter, and every entry stored under an older version stops
+    /// matching: one `INCR`, no scan, no delete. The versions are read in the
+    /// same `MGET` as the entry, so a lookup still costs one round trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespaces: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

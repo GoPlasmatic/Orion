@@ -77,9 +77,17 @@ an appropriate cache backend and decide deliberately whether backend errors
 fail open or closed.
 
 Cache identity includes channel, method, route params, query, and all or selected
-payload fields. Headers are not part of the cache key. Do not cache a response
-that varies by identity held only in headers. Orion suppresses caching when a
-shaped response sets cookies.
+payload fields, or the result of `cache.key_logic` over `{data, metadata}` (which
+wins over `cache_key_fields`). For a per-user cache on a `jwt` channel, key on
+`metadata.auth.claims.sub`: those claims are verified, and a caller cannot supply
+`metadata.auth`. Headers are not part of the key unless `key_logic` reads them.
+Orion suppresses caching when a shaped response sets cookies.
+
+To cache until the data changes rather than for a fixed TTL, declare
+`cache.namespaces: ["ladder"]` and call `cache_invalidate` with
+`{"namespaces": ["ladder"]}` from the workflow that writes the data (or
+`POST /api/v1/admin/cache/namespaces/ladder/invalidate`). Keep `ttl_secs` as the
+staleness ceiling.
 
 ## Request body and metadata
 

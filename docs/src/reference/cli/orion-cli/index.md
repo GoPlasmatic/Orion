@@ -23,6 +23,7 @@
 | [`metrics`](./metrics.md) | Fetches `GET /metrics` from the server |
 | [`audit-logs`](./audit-logs.md) | `list` shows audit log entries of admin actions |
 | [`backups`](./backups.md) | Creates and lists database backups |
+| [`cache`](./cache.md) | Invalidates channel response-cache namespaces |
 | [`packages`](./packages.md) | Inspects package promotion receipts |
 | [`dlq`](./dlq.md) | Inspects and drains the trace dead-letter queue |
 | [`cron`](./cron.md) | Inspects scheduled runs |

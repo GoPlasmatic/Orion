@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod cache_namespace;
 pub mod config;
 pub mod cookies;
 pub mod cron;

@@ -191,6 +191,14 @@ pub const ENGINE_STATUS: &str = "/api/v1/admin/engine/status";
 pub const ENGINE_RELOAD: &str = "/api/v1/admin/engine/reload";
 pub const FUNCTIONS: &str = "/api/v1/admin/functions";
 
+// -- Admin: response-cache invalidation --
+pub fn cache_namespace_invalidate(namespace: &str) -> String {
+    format!(
+        "/api/v1/admin/cache/namespaces/{}/invalidate",
+        seg(namespace)
+    )
+}
+
 // -- Data plane --
 pub fn data(channel: &str) -> String {
     format!("/api/v1/data/{}", seg(channel))

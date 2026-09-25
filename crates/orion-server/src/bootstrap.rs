@@ -207,6 +207,7 @@ pub struct EngineComponents {
 pub async fn build_engine_components(
     config: &config::AppConfig,
     repos: &Repositories,
+    channel_loader: &Arc<crate::channel::ChannelLoader>,
 ) -> Result<EngineComponents, Box<dyn std::error::Error>> {
     // `[vars]` before the connectors that may reference them. Pure config —
     // no resolution, no I/O — so it costs nothing to have it early, and the
@@ -375,6 +376,7 @@ pub async fn build_engine_components(
         query_config: &config.query,
         write_config: &config.write,
         cache_pool: cache_pool.clone(),
+        channel_loader: channel_loader.clone(),
         sql_pool_cache: sql_pool_cache.clone(),
         mongo_pool_cache: mongo_pool_cache.clone(),
         smtp_pool_cache: smtp_pool_cache.clone(),

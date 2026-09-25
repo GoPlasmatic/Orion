@@ -252,6 +252,7 @@ validation failures.",
         (name = "Trace DLQ", description = "Dead-letter queue inspection, replay, and purge"),
         (name = "Cron", description = "Scheduled runs: the durable occurrence ledger, \
             per-schedule status, and manual triggers"),
+        (name = "Cache", description = "Channel response-cache invalidation by namespace"),
         (name = "Backups", description = "Database backup management (SQLite only)"),
         (name = "Packages", description = "Package receipts — what package versions are \
             staged or applied here (K14)"),
@@ -328,6 +329,8 @@ validation failures.",
         // Engine
         super::admin::engine::engine_status,
         super::admin::engine::engine_reload,
+        // Response-cache namespaces (#354)
+        super::admin::cache::invalidate_namespace,
         // Functions (A1: input-schema registry surfaced for tooling)
         super::admin::functions::list_functions,
         // Audit logs

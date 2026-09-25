@@ -1083,8 +1083,17 @@ mod tests {
                 cache_key_fields: None,
                 key_logic: None,
                 connector: None,
+                namespaces: None,
             });
             self.response_cache = Some(backend);
+            self
+        }
+
+        /// Declare `cache.namespaces` on a cache added by [`Self::cache`].
+        fn namespaces(mut self, names: &[&str]) -> Self {
+            if let Some(ref mut cache) = self.parsed_config.cache {
+                cache.namespaces = Some(names.iter().map(|n| n.to_string()).collect());
+            }
             self
         }
 
@@ -2474,6 +2483,85 @@ mod tests {
         }
     }
 
+    /// #354: a namespaced entry is judged against the namespace versions, and
+    /// is stored under the versions read at *lookup*. An invalidation landing
+    /// while the workflow runs must leave the entry that run stores stale.
+    #[tokio::test]
+    async fn a_namespaced_entry_is_retired_by_a_version_bump() {
+        use crate::channel::cache_namespace::{invalidate, version_key};
+        use crate::connector::cache_backend::MemoryCacheBackend;
+
+        let dl = engine();
+        let store: Arc<dyn CacheBackend> = MemoryCacheBackend::new(60, 0);
+        let runtime = Runtime::new()
+            .cache(store.clone())
+            .namespaces(&["ladder", "season"])
+            .build();
+        let (data, meta) = (json!({"q": 1}), json!({}));
+        let lookup = || async {
+            apply_guards(request(Transport::HttpSync, &runtime, &dl, &data, &meta))
+                .await
+                .expect("guards pass")
+        };
+        let ns = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+
+        // Miss, store, hit.
+        let ctx = admitted(lookup().await)
+            .and_then(|a| a.cache_store)
+            .expect("a miss carries a store context");
+        ctx.store("{\"v\":1}").await.expect("store");
+        assert!(matches!(lookup().await, GuardVerdict::CacheHit(ref b) if b == "{\"v\":1}"));
+
+        // Bumping one namespace of the two retires the entry.
+        invalidate(std::slice::from_ref(&store), &ns(&["season"]), "workflow")
+            .await
+            .expect("bump");
+        let ctx = admitted(lookup().await)
+            .and_then(|a| a.cache_store)
+            .expect("stale after the bump");
+
+        // An invalidation lands while this request's workflow runs: what the
+        // run stores carries the versions it looked up under, so it is stale
+        // on arrival rather than pinned under the new version.
+        invalidate(std::slice::from_ref(&store), &ns(&["ladder"]), "workflow")
+            .await
+            .expect("bump");
+        ctx.store("{\"v\":2}").await.expect("store");
+        assert!(
+            admitted(lookup().await).is_some(),
+            "an entry computed before an invalidation must not be served after it"
+        );
+        assert_eq!(
+            store.get(&version_key("ladder")).await.expect("get"),
+            Some("1".to_string())
+        );
+    }
+
+    /// A counter that is not an integer cannot judge an entry, so the request
+    /// bypasses the cache and nothing is stored.
+    #[tokio::test]
+    async fn a_foreign_namespace_counter_bypasses_the_cache() {
+        use crate::connector::cache_backend::MemoryCacheBackend;
+        let dl = engine();
+        let store: Arc<dyn CacheBackend> = MemoryCacheBackend::new(60, 0);
+        store
+            .set(
+                &crate::channel::cache_namespace::version_key("ladder"),
+                "\"x\"",
+            )
+            .await
+            .expect("set");
+        let runtime = Runtime::new().cache(store).namespaces(&["ladder"]).build();
+        let (data, meta) = (json!({}), json!({}));
+        let admission = admitted(
+            apply_guards(request(Transport::HttpSync, &runtime, &dl, &data, &meta))
+                .await
+                .expect("guards pass"),
+        )
+        .expect("admitted");
+        assert!(admission.cache_store.is_none());
+    }
+
     /// A duplicate is answered `409` before the cache is consulted: a
     /// replayed idempotency key must not be served a cached success.
     #[tokio::test]
@@ -2534,6 +2622,7 @@ mod tests {
             cache_key_fields: fields,
             key_logic: None,
             connector: None,
+            namespaces: None,
         }
     }
 

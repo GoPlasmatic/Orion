@@ -1,5 +1,6 @@
 pub(crate) mod audit;
 pub(crate) mod backups;
+pub(crate) mod cache;
 pub(crate) mod channels;
 pub(crate) mod connectors;
 pub(crate) mod cron;
@@ -1030,6 +1031,11 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .route("/occurrences/{id}", get(cron::get_occurrence))
         .route("/occurrences/{id}/retry", post(cron::retry_occurrence));
 
+    let cache_routes = Router::new().route(
+        "/namespaces/{namespace}/invalidate",
+        post(cache::invalidate_namespace),
+    );
+
     let audit_routes = Router::new().route("/", get(audit::list_audit_logs));
 
     let function_routes = Router::new().route("/", get(functions::list_functions));
@@ -1072,6 +1078,7 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .nest("/engine", engine_routes)
         .nest("/functions", function_routes)
         .nest("/cron", cron_routes)
+        .nest("/cache", cache_routes)
         .nest("/audit-logs", audit_routes)
         .nest("/traces", trace_routes)
         .nest("/trace-dlq", trace_dlq_routes)

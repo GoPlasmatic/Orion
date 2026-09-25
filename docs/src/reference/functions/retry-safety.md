@@ -44,6 +44,7 @@ happens, what does it cost?**
 | [`storage_head`](./storage_head.md) | `read` | Metadata only. |
 | [`jwt_verify`](./jwt_verify.md) | `read` | May fetch a JWKS document; the cache usually answers. |
 | [`cache_write`](./cache_write.md) | `idempotent_write` | The same key and value land the same entry. A `ttl` restarts from the retry. |
+| [`cache_invalidate`](./cache_invalidate.md) | `idempotent_write` | A second bump retires nothing more; each namespaced channel just misses once more. |
 | [`cache_delete`](./cache_delete.md) | `idempotent_write` | A second delete of the same keys leaves them deleted; only the reported count differs. |
 | [`cache_incr`](./cache_incr.md) | `unsafe_write` | A retry adds `by` again. Harmless for a generation counter (one extra miss); wrong for a count someone reads. |
 | [`send_email`](./send_email.md) | `unsafe_write` | A retry sends a second message. |

@@ -676,6 +676,22 @@ impl CachePool {
         self.memory_namespace(purpose.as_str())
     }
 
+    /// Every in-memory store this process has created for `purpose`: the
+    /// built-in one and each `(purpose, connector)` namespace.
+    ///
+    /// For response-cache invalidation, which must reach every store an entry
+    /// could be sitting in — including one whose channel has since been
+    /// archived, because these namespaces outlive reloads.
+    pub fn memory_backends_for(&self, purpose: CachePurpose) -> Vec<Arc<dyn CacheBackend>> {
+        let bare = purpose.as_str();
+        let scoped = format!("{bare}:");
+        self.memory
+            .iter()
+            .filter(|e| e.key() == bare || e.key().starts_with(&scoped))
+            .map(|e| e.value().clone() as Arc<dyn CacheBackend>)
+            .collect()
+    }
+
     /// Evict a cached Redis connection pool for the named connector.
     /// In-memory namespaces are deliberately left alone: the namespace key
     /// is stable, so a reloaded connector reattaches to its existing

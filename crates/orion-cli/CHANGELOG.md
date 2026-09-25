@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cache invalidate <namespace>`** ([#354]). Bumps a channel
+  response-cache namespace through `POST /api/v1/admin/cache/namespaces/{namespace}/invalidate`,
+  so every channel whose `cache.namespaces` lists it misses on its next
+  request.
+
+[#354]: https://github.com/GoPlasmatic/Orion/issues/354
+
 ## [1.9.1] - 2026-09-23
 
 ## [1.9.0] - 2026-09-20

@@ -729,6 +729,18 @@ pub fn record_cache_hit(channel: &str) {
     counter!("orion_response_cache_hits_total", "channel" => channel.to_owned()).increment(1);
 }
 
+/// Record response-cache namespace invalidations — one per namespace bumped.
+///
+/// Labelled by where the invalidation came from, never by namespace: a
+/// workflow computes the names it invalidates, so a namespace label would be
+/// unbounded.
+pub fn record_cache_invalidations(source: &'static str, namespaces: u64) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_response_cache_invalidations_total", "source" => source).increment(namespaces);
+}
+
 /// Record a response cache miss.
 pub fn record_cache_miss(channel: &str) {
     if !is_enabled() {

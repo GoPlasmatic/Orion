@@ -340,6 +340,7 @@ pub struct FunctionSchema {
 // it was in a different file from the code it described.
 use super::cache_delete::CACHE_DELETE_FIELDS;
 use super::cache_incr::CACHE_INCR_FIELDS;
+use super::cache_invalidate::CACHE_INVALIDATE_FIELDS;
 use super::cache_read::CACHE_READ_FIELDS;
 use super::cache_write::CACHE_WRITE_FIELDS;
 use super::channel_call::CHANNEL_CALL_FIELDS;
@@ -487,6 +488,17 @@ const REGISTRY: &[FunctionSchema] = &[
         connector: ConnectorRule::mongo(&[ConnectorType::Db]),
         deny_unknown: true,
         validate_static: Some(super::mongo_aggregate::validate_static_input),
+    },
+    FunctionSchema {
+        name: "cache_invalidate",
+        description: "Invalidate channel response-cache namespaces, on every store and every node.",
+        category: "utility",
+        input_fields: CACHE_INVALIDATE_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::IdempotentWrite,
+        connector: None,
+        deny_unknown: true,
+        validate_static: None,
     },
     FunctionSchema {
         name: "channel_call",

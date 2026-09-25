@@ -27,7 +27,8 @@ secret references, defaults, `source` (`builtin` or `plugin`), and
 | Portable database access | `data_query`, `data_write` |
 | Raw SQL escape hatch | `db_read`, `db_write` |
 | Native MongoDB | `mongo_read`, `mongo_write`, `mongo_aggregate` |
-| Cache | `cache_read`, `cache_write` |
+| Cache | `cache_read` (`keys` for several), `cache_write`, `cache_delete`, `cache_incr` (generation counters) |
+| Invalidate a channel response cache | `cache_invalidate` |
 | Kafka or email | `publish_kafka`, `send_email` |
 | Object metadata/presigning | `storage_head`, `storage_presign` |
 | Call another Orion service | `channel_call` |

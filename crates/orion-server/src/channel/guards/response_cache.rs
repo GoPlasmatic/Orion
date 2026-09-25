@@ -10,6 +10,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::ChannelRuntimeConfig;
+use crate::channel::cache_namespace;
 use crate::connector::cache_backend::CacheBackend;
 use crate::metrics;
 use sha2::{Digest, Sha256};
@@ -190,16 +191,45 @@ pub(super) fn feed_object_sorted(h: &mut Sha256, v: Option<&Value>) {
     }
 }
 
-/// Context carried from cache pre-check to post-success cache store:
-/// (cache key, backend, TTL seconds).
-pub type CacheStoreCtx = (String, Arc<dyn CacheBackend>, u64);
+/// Context carried from cache pre-check to post-success cache store.
+pub struct CacheStoreCtx {
+    key: String,
+    backend: Arc<dyn CacheBackend>,
+    ttl_secs: u64,
+    /// The namespace versions read at lookup, for a channel declaring
+    /// `cache.namespaces`; `None` otherwise. Captured before the workflow ran,
+    /// on purpose — see `channel::cache_namespace`.
+    versions: Option<Vec<i64>>,
+}
+
+impl CacheStoreCtx {
+    /// Store the response body this request produced.
+    pub async fn store(&self, body: &str) -> Result<(), crate::errors::OrionError> {
+        match &self.versions {
+            None => self.backend.set_ex(&self.key, body, self.ttl_secs).await,
+            Some(versions) => {
+                let envelope = cache_namespace::Envelope {
+                    v: versions.clone(),
+                    b: std::borrow::Cow::Borrowed(body),
+                };
+                let stored = serde_json::to_string(&envelope).map_err(|e| {
+                    crate::errors::OrionError::Internal {
+                        context: "serializing a namespaced cache entry".to_string(),
+                        source: Some(Box::new(e)),
+                    }
+                })?;
+                self.backend.set_ex(&self.key, &stored, self.ttl_secs).await
+            }
+        }
+    }
+}
 
 /// Outcome of the response-cache pre-check.
 pub(super) enum CacheLookup {
     /// Cache hit — carries the cached pre-serialized JSON body.
     Hit(String),
-    /// No cache hit. Carries the (key, backend, ttl) needed to store the
-    /// computed response on success, or `None` if caching is disabled.
+    /// No cache hit. Carries what is needed to store the computed response on
+    /// success, or `None` if nothing may be stored.
     Miss(Option<CacheStoreCtx>),
 }
 
@@ -246,18 +276,72 @@ pub(super) async fn check_response_cache(
         );
         return CacheLookup::Miss(None);
     };
-    match cache.get(&key).await {
-        Ok(Some(cached)) => {
-            metrics::record_cache_hit(channel);
-            CacheLookup::Hit(cached)
-        }
-        _ => {
-            metrics::record_cache_miss(channel);
-            CacheLookup::Miss(Some((
-                key,
-                cache.clone(),
-                cache_cfg.ttl_secs.unwrap_or(300),
-            )))
-        }
+    let ttl_secs = cache_cfg.ttl_secs.unwrap_or(300);
+
+    let namespaces = cache_cfg.namespaces.as_deref().unwrap_or(&[]);
+    if namespaces.is_empty() {
+        return match cache.get(&key).await {
+            Ok(Some(cached)) => {
+                metrics::record_cache_hit(channel);
+                CacheLookup::Hit(cached)
+            }
+            _ => {
+                metrics::record_cache_miss(channel);
+                CacheLookup::Miss(Some(CacheStoreCtx {
+                    key,
+                    backend: cache.clone(),
+                    ttl_secs,
+                    versions: None,
+                }))
+            }
+        };
     }
+
+    // One round trip: every namespace's version, then the entry.
+    let key = cache_namespace::entry_key(&key);
+    let mut keys: Vec<String> = namespaces
+        .iter()
+        .map(|ns| cache_namespace::version_key(ns))
+        .collect();
+    keys.push(key.clone());
+    let mut values = match cache.get_many(&keys).await {
+        Ok(values) if values.len() == keys.len() => values,
+        other => {
+            // Without the versions nothing can be judged fresh, and nothing
+            // stored could be tagged honestly: run the workflow, store nothing.
+            if let Err(e) = other {
+                tracing::debug!(channel = %channel, error = %e, "Response-cache lookup failed");
+            }
+            metrics::record_cache_miss(channel);
+            return CacheLookup::Miss(None);
+        }
+    };
+    let entry = values.pop().flatten();
+    let versions: Option<Vec<i64>> = values
+        .iter()
+        .map(|raw| cache_namespace::parse_version(raw.as_deref()))
+        .collect();
+    let Some(versions) = versions else {
+        tracing::warn!(
+            channel = %channel,
+            "A response-cache namespace counter holds something other than an integer; \
+             bypassing the response cache"
+        );
+        metrics::record_cache_miss(channel);
+        return CacheLookup::Miss(None);
+    };
+    if let Some(stored) = entry
+        && let Ok(envelope) = serde_json::from_str::<cache_namespace::Envelope<'_>>(&stored)
+        && envelope.v == versions
+    {
+        metrics::record_cache_hit(channel);
+        return CacheLookup::Hit(envelope.b.into_owned());
+    }
+    metrics::record_cache_miss(channel);
+    CacheLookup::Miss(Some(CacheStoreCtx {
+        key,
+        backend: cache.clone(),
+        ttl_secs,
+        versions: Some(versions),
+    }))
 }

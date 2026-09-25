@@ -457,3 +457,70 @@ async fn test_redis_multi_key_read_delete_and_increment() {
     }
     assert_eq!(seen.len(), 100);
 }
+
+/// #354 against a real Redis: a namespaced response cache backed by a Redis
+/// connector is retired by `cache_invalidate`, which has no connector input
+/// and must find that store itself.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
+async fn test_redis_response_cache_namespace_invalidation() {
+    let app = common::test_app().await;
+    let (_redis, redis_url) = redis_container().await;
+    common::create_connector(&app, common::cache_connector_redis("rc-redis", &redis_url)).await;
+
+    common::create_and_activate_channel_with_config(
+        &app,
+        "rc-board",
+        common::workflow_with_tasks(
+            "rc-board",
+            json!([{"id": "count", "name": "count", "function": {"name": "cache_incr",
+                "input": {"connector": "rc-redis", "key": "rc-runs", "output": "data.run"}}}]),
+        ),
+        json!({"cache": {"enabled": true, "ttl_secs": 3600, "connector": "rc-redis",
+            "namespaces": ["ladder"]}}),
+    )
+    .await;
+    common::create_and_activate_channel(
+        &app,
+        "rc-inv",
+        common::workflow_with_tasks(
+            "rc-inv",
+            json!([{"id": "inv", "name": "inv", "function": {"name": "cache_invalidate",
+                "input": {"namespaces": ["ladder"]}}}]),
+        ),
+    )
+    .await;
+
+    let call = |channel: &'static str| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(common::json_request(
+                    "POST",
+                    &format!("/api/v1/data/{channel}"),
+                    Some(json!({"data": {}})),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            common::body_json(resp).await["data"]["run"].clone()
+        }
+    };
+    assert_eq!(call("rc-board").await, 1);
+    assert_eq!(call("rc-board").await, 1);
+    call("rc-inv").await;
+    assert_eq!(call("rc-board").await, 2);
+
+    let client = redis::Client::open(redis_url.as_str()).expect("redis client");
+    let mut conn = client.get_connection_manager().await.expect("conn");
+    let version: Option<String> = redis::cmd("GET")
+        .arg("orion:rc:ns:ladder")
+        .query_async(&mut conn)
+        .await
+        .expect("get");
+    assert_eq!(
+        version.as_deref(),
+        Some("1"),
+        "the documented counter key moved"
+    );
+}

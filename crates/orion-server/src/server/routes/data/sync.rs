@@ -78,8 +78,8 @@ async fn persist_trace_and_cache(
         );
         return;
     }
-    if let Some((key, cache, ttl)) = cache_context
-        && let Err(e) = cache.set_ex(key, cache_body, *ttl).await
+    if let Some(ctx) = cache_context
+        && let Err(e) = ctx.store(cache_body).await
     {
         tracing::debug!(channel = trace.channel, error = %e, "Failed to cache response");
     }

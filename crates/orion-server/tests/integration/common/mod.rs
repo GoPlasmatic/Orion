@@ -171,7 +171,7 @@ async fn test_state_inner(
     } else {
         ChannelLoader::new()
     });
-    let components = orion::bootstrap::build_engine_components(&config, &repos)
+    let components = orion::bootstrap::build_engine_components(&config, &repos, &channel_loader)
         .await
         .expect("engine components");
     // #268: the managed-OAuth2 runtime, single-node shape (no lease) — what

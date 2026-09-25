@@ -68,6 +68,7 @@ E2E tests are shell-based (not `cargo test`). 17 test suites in `tests/e2e/suite
 | `metrics.rs` | Raw Prometheus metrics retrieval |
 | `audit_logs.rs` | List audit log entries, with the endpoint's full filter set (`--action`, `--resource-type`, `--resource-id`, `--principal`, `--start-time`, `--end-time`) |
 | `backups.rs` | Create and list database backups (SQLite) |
+| `cache.rs` | `invalidate <namespace>`: bump a channel response-cache namespace |
 | `packages.rs` | Package promotion receipts: list, get (v1.0) |
 | `plugins.rs` | WebAssembly plugins: list, get, create/update from a `plugin.toml` (the component read relative to it and sent as base64), delete, activate, archive, versions, dependencies, validate, export, import |
 | `models.rs` | ONNX models: the same verbs over a manifest (JSON) plus an artifact *reference* (`--connector`/`--key`/`--digest` — the bytes stay in object storage), and the two the asynchronous admission adds: `--wait` on `create`, and `admit` (run admission again). `--wait` polls `admission.state` out of `pending` and exits 0 passed / 1 failed / 2 timed out, the `traces wait` codes; `list` has an `--admission` filter and shows `stats.parameters` blank until admitted |

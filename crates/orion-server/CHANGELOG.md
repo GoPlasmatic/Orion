@@ -22,6 +22,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cache_delete` and `cache_incr` are gated by the connector's `write`
   operation, and they record a result only when `output` is set.
 
+- **Channel response-cache invalidation by namespace** ([#354]). A channel
+  declares `cache.namespaces: ["ladder"]`, and a workflow calls
+  `cache_invalidate` with `{"namespaces": ["ladder"]}` (or an operator calls
+  `POST /api/v1/admin/cache/namespaces/ladder/invalidate`, or
+  `orion-cli cache invalidate ladder`). Each namespace has a version counter
+  in the response-cache store, and an entry is served only while the
+  versions it was stored under are current.
+  - Invalidating costs one `INCR`, with no scan and no delete.
+  - The versions are read in the same `MGET` as the entry, so a lookup still
+    costs one round trip.
+  - An entry is tagged with the versions read at lookup, so an invalidation
+    that lands mid-run leaves that run's result stale on arrival.
+  - `cache_invalidate` takes no connector. It reaches every store an entry
+    could be in: the default store (the shared Redis in cluster mode), every
+    in-memory response-cache store, and every Redis cache connector.
+
+  `ttl_secs` stays the ceiling if a store cannot be reached. New metric:
+  `orion_response_cache_invalidations_total{source}`.
+
 ### Security
 
 - **A caller can no longer supply `metadata.auth` or `metadata.trigger`**
