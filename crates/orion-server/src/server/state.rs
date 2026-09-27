@@ -143,6 +143,10 @@ pub struct AppStateInner {
     /// and the `jwt_verify` task) share it, so a key set is fetched once per
     /// URL per instance and an issuer's rotation is seen by both at once.
     pub jwks: Arc<crate::jwt::jwks::JwksCache>,
+    /// The instance's OIDC discovery cache (#355), on the same pinned client.
+    /// Read by `oauth2_login` compile for a provider that names an `issuer`; a
+    /// reload passes it back through `ReloadDeps`.
+    pub oidc_discovery: Arc<crate::channel::oidc_discovery::DiscoveryCache>,
     pub rate_limit_state: Option<Arc<RateLimitState>>,
     /// Startup readiness flag — set to true after engine is fully loaded.
     pub ready: Arc<AtomicBool>,

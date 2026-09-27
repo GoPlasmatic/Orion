@@ -152,6 +152,10 @@ pub struct ServingComponents {
     /// The JWKS cache, built on `http_client` so key fetches ride the pinned
     /// resolver and the shared connection pool.
     pub jwks: Arc<crate::jwt::jwks::JwksCache>,
+    /// The OIDC discovery cache (#355), on the same client and address-checked
+    /// through the same `oauth2_login.allow_private_token_urls` gate as the token
+    /// exchange.
+    pub oidc_discovery: Arc<crate::channel::oidc_discovery::DiscoveryCache>,
     /// `[secrets]`, resolved once. Every engine built from here on carries it,
     /// including the ones the admin plane builds per request — a surface that
     /// built its engine without it would refuse a workflow the serving engine
@@ -266,6 +270,14 @@ pub async fn build_engine_components(
     let jwks = Arc::new(crate::jwt::jwks::JwksCache::new(
         http_client.clone(),
         config.jwt.allow_private_jwks_urls,
+    ));
+
+    // One OIDC discovery cache per instance, on the same pinned client (#355).
+    // Its egress is the same class as the token exchange — an authored issuer
+    // Orion fetches — so it shares that gate rather than inventing a new one.
+    let oidc_discovery = Arc::new(crate::channel::oidc_discovery::DiscoveryCache::new(
+        http_client.clone(),
+        config.oauth2_login.allow_private_token_urls,
     ));
 
     // Resolve `[secrets]` before anything builds an engine. A reference that
@@ -409,6 +421,7 @@ pub async fn build_engine_components(
             http_client,
             datalogic: datalogic_engine,
             jwks,
+            oidc_discovery,
             secrets,
             vars,
             runtime,
@@ -563,6 +576,7 @@ impl EngineComponents {
                     http_client: &serving.http_client,
                     allow_private_token_urls: config.oauth2_login.allow_private_token_urls,
                     instance_oauth_providers: &config.oauth2_login.providers,
+                    oidc_discovery: &serving.oidc_discovery,
                     global_trace_storage: &config.trace_storage,
                     cron_enabled: config.cron.enabled,
                 },
@@ -1065,6 +1079,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         http_client,
         datalogic,
         jwks,
+        oidc_discovery,
         secrets,
         vars,
         runtime,
@@ -1110,6 +1125,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         http_client,
         datalogic,
         jwks,
+        oidc_discovery,
         rate_limit_state,
         ready,
         reload_degraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),

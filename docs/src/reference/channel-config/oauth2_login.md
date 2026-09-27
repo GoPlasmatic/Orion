@@ -41,8 +41,9 @@ This is *establishment*, not verification, which is why it is a `config` block r
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `authorize_url` | string | yes | — | The provider's authorization endpoint. `https` only. Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load. |
-| `token_url` | string | yes | — | The provider's token endpoint. `https` only, and address-checked on every exchange unless [`oauth2_login.allow_private_token_urls`](../configuration/oauth2-login.md) is set. Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load. |
+| `issuer` | string | no | — | An OIDC issuer. Set it and omit the endpoints below to have Orion discover them and verify the `id_token` — see [OIDC discovery](#oidc-discovery). `https`; literal, `var://name`, or `env://NAME` / `vault://…`. |
+| `authorize_url` | string | cond. | — | The provider's authorization endpoint. `https` only. Required unless `issuer` is set (then discovered; an explicit value still wins). Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load. |
+| `token_url` | string | cond. | — | The provider's token endpoint. `https` only, and address-checked on every exchange unless [`oauth2_login.allow_private_token_urls`](../configuration/oauth2-login.md) is set. Required unless `issuer` is set (then discovered). Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load. |
 | `client_id` | string | yes | — | The OAuth2 client identifier. Literal, `var://name` for a per-environment value, or `env://NAME`. |
 | `client_secret` | string | yes | — | The client secret. `env://NAME` or `vault://…`; a literal works but puts the secret in the stored definition. |
 | `client_auth` | string | no | `basic` | How credentials are presented at the token endpoint: `basic` (RFC 6749 §2.3.1) or `body`. |
@@ -68,7 +69,26 @@ The fields are `name` (default `orion_oauth_state`), `secure` (default `true`), 
 
 The fields are `issuer` (required, accepted `iss` values), `jwks_url` (required, `https`), and `audience` (defaults to `[client_id]`, per OIDC Core §3.1.3.7). The rest are `algorithms` (default `["RS256"]`), `required` (default `true`), and `nonce` (default `true`).
 
-**Per-environment values.** Any value in the block may be `var://name`, substituted from the instance's `[vars]` when the channel loads. `env://NAME` and the vault schemes are resolved in `client_id`, `client_secret`, `state_secret`, `authorize_url`, `token_url` and `redirect_uri` only (including the per-provider copies of those fields). A secret reference anywhere else is refused at create, because nothing would resolve it and its text would reach the provider. Create-time validation checks what it can see and defers a reference it cannot. The `https` rule and the rest of the shape are applied to the resolved value at load. A value that fails them quarantines the channel rather than serving it.
+### OIDC discovery
+
+A provider that names an `issuer` and leaves `authorize_url`, `token_url` and the `id_token` block out is configured from `<issuer>/.well-known/openid-configuration` (OpenID Connect Discovery 1.0) at load:
+
+```json
+"oauth2_login": {
+  "issuer": "https://login.microsoftonline.com/<tenant>/v2.0",
+  "client_id": "var://entra_client_id",
+  "client_secret": "env://ENTRA_CLIENT_SECRET",
+  "redirect_uri": "https://app.example.com/v1/auth/entra/callback",
+  "callback_path": "/v1/auth/entra/callback",
+  "state_secret": "env://ORION_SECRET_OAUTH_STATE"
+}
+```
+
+- Orion reads `authorization_endpoint`, `token_endpoint` and `jwks_uri` from the document, and **verifies the `id_token`** against the issuer and those keys — naming an `issuer` is what makes a provider OIDC, so there is no `id_token` block to hand-write (the defaults apply: `RS256`, `required`, `nonce`, audience `[client_id]`). An explicit endpoint or `id_token` block still wins.
+- The document's own `issuer` must equal the configured one (OIDC §4.3), and every discovered endpoint must be `https` — a redirector at the well-known path cannot point Orion's key and token fetches elsewhere.
+- It is fetched **at load, not per request**, on the shared SSRF-pinned client, cached with a TTL, refreshed in the background, and served stale through a transient issuer outage. The same [`allow_private_token_urls`](../configuration/oauth2-login.md) gate the token exchange uses applies. A cold fetch that fails quarantines the channel (named on `/health`); a warm cache carries a reload through a blip.
+
+**Per-environment values.** Any value in the block may be `var://name`, substituted from the instance's `[vars]` when the channel loads. `env://NAME` and the vault schemes are resolved in `client_id`, `client_secret`, `state_secret`, `issuer`, `authorize_url`, `token_url` and `redirect_uri` only (including the per-provider copies of those fields). A secret reference anywhere else is refused at create, because nothing would resolve it and its text would reach the provider. Create-time validation checks what it can see and defers a reference it cannot. The `https` rule and the rest of the shape are applied to the resolved value at load. A value that fails them quarantines the channel rather than serving it.
 
 ### Several providers on one channel
 

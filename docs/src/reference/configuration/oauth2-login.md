@@ -13,10 +13,10 @@ Egress policy for a channel that completes a browser authorization-code grant, a
 allow_private_token_urls = false
 
 # A deployment-supplied provider, merged into any channel whose block sets
-# providers_from_instance = true.
+# providers_from_instance = true. An `issuer` alone is discovered (endpoints and
+# id_token verification); explicit authorize_url/token_url work too.
 [oauth2_login.providers.iitm]
-authorize_url = "https://login.microsoftonline.com/${IITM_TENANT}/oauth2/v2.0/authorize"
-token_url     = "https://login.microsoftonline.com/${IITM_TENANT}/oauth2/v2.0/token"
+issuer        = "https://login.microsoftonline.com/${IITM_TENANT}/v2.0"
 client_id     = "${IITM_CLIENT_ID}"
 client_secret = "env://IITM_CLIENT_SECRET"
 scopes        = ["openid", "profile"]
@@ -37,7 +37,7 @@ scopes        = ["openid", "profile"]
 
 *Which* identity providers exist differs per deployment — the public instance has one, a tenant's instance has its own directory as well — and that is a property of the deployment, not the promoted definition. `[vars]` holds literals, so it cannot add or remove a provider. `[oauth2_login.providers.<slug>]` can: a channel whose [`oauth2_login`](../channel-config/oauth2_login.md#several-providers-on-one-channel) block sets `providers_from_instance = true` merges these entries under its own `providers` map, and the definition's own entries win any slug clash. The definition then promotes between instances unchanged while each deployment supplies its own providers.
 
-Each entry takes the per-provider fields — `kind`, `authorize_url`, `token_url`, `client_id`, `client_secret`, `client_auth`, `redirect_uri`, `scopes`, `extra_authorize_params`.
+Each entry takes the per-provider fields — `kind`, `issuer`, `authorize_url`, `token_url`, `client_id`, `client_secret`, `client_auth`, `redirect_uri`, `scopes`, `extra_authorize_params`. A deployment-supplied OIDC directory (Entra, Keycloak, Google Workspace) is usually just an `issuer` plus the client credentials: Orion discovers the endpoints and verifies the `id_token` — see [OIDC discovery](../channel-config/oauth2_login.md#oidc-discovery). The example above uses `issuer` for exactly that.
 
 Two limits to know:
 

@@ -72,7 +72,7 @@ The normal production shape is a gateway at the edge with Orion behind it:
 
 ## What Orion cannot do here
 
-- **No OIDC flows and no mTLS termination.** Channels verify `api_key`, HMAC signatures and JWT bearer tokens themselves. The identity-provider dance (discovery, PKCE, userinfo) and client certificates need a proxy in front. See [Secure an instance](../../operate/run/security.md).
+- **Inbound sign-in is built in; mTLS termination is not.** Channels verify `api_key`, HMAC signatures and JWT bearer tokens themselves, and [`oauth2_login`](../../reference/channel-config/oauth2_login.md) completes a browser OAuth2/OIDC sign-in — the redirect, PKCE, `id_token` verification and OIDC discovery. Client-certificate termination still needs a proxy in front. See [Secure an instance](../../operate/run/security.md).
 - **No load balancing or health-based ejection across upstreams.** Orion is an upstream; something else spreads traffic across its replicas.
 - **No WAF, bot management or DDoS controls.**
 - **No plugin ecosystem.** Orion's [plugins](../../concepts/plugins.md) are WebAssembly task functions that transform a message and nothing else: no request filters, no Lua, no hooks into the transport. It extends [by configuration, and by pure code in a sandbox](../../concepts/how-orion-works.md#what-you-can-extend).

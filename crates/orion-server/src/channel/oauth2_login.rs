@@ -183,6 +183,10 @@ pub struct LoginDeps<'a> {
     /// with `providers_from_instance`. The definition's own entries win a slug
     /// clash. Empty when the deployment declares none.
     pub instance_providers: &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
+    /// The instance's OIDC discovery cache, for a provider that names an
+    /// `issuer` and no explicit endpoints (#355). Resolved at load, never per
+    /// request.
+    pub discovery: &'a std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache>,
 }
 
 /// One resolved identity provider: the endpoints, credentials and verifier a
@@ -286,6 +290,7 @@ impl CompiledOAuth2Login {
             let pfx = field_prefix(&slug);
             let resolved = ProviderConfig {
                 kind: p.kind.clone(),
+                issuer: resolve_opt(&p.issuer, &format!("oauth2_login.{pfx}issuer")).await?,
                 authorize_url: resolve_opt(&p.authorize_url, &format!("oauth2_login.{pfx}authorize_url"))
                     .await?,
                 token_url: resolve_opt(&p.token_url, &format!("oauth2_login.{pfx}token_url")).await?,
@@ -336,12 +341,20 @@ impl CompiledOAuth2Login {
             validations: std::sync::OnceLock::new(),
         };
 
-        // Build the compiled providers from the resolved values.
+        // Build the compiled providers from the resolved values, resolving OIDC
+        // discovery for any provider that named an `issuer` and left its
+        // endpoints out. Discovery is fetched here, at load — never per request.
         let mut providers = BTreeMap::new();
         for (slug, p) in &resolved_entries {
+            let discovered = match p.issuer.as_deref() {
+                Some(issuer) => Some(deps.discovery.resolve(issuer).await.map_err(|e| {
+                    format!("oauth2_login.{}issuer: {e}", field_prefix(slug))
+                })?),
+                None => None,
+            };
             providers.insert(
                 slug.clone(),
-                build_provider(slug, p, &shared_redirect, deps)?,
+                build_provider(slug, p, &shared_redirect, discovered.as_deref(), deps)?,
             );
         }
 
@@ -841,13 +854,14 @@ fn effective_redirect_uri(shared: &str, slug: &str, over: Option<&str>) -> Strin
     over.unwrap_or(shared).replace("{provider}", slug)
 }
 
-/// `"oidc"`, `"oauth2"`, or derived from whether an `id_token` is configured.
+/// `"oidc"`, `"oauth2"`, or derived from whether id_token verification applies
+/// (an explicit `id_token` block, or one auto-configured from discovery).
 /// `validate_shape` has already refused any other explicit spelling.
-fn effective_kind(p: &ProviderConfig) -> &'static str {
-    match p.kind.as_deref() {
+fn effective_kind(explicit: Option<&str>, has_id_token: bool) -> &'static str {
+    match explicit {
         Some("oidc") => "oidc",
         Some("oauth2") => "oauth2",
-        _ if p.id_token.is_some() => "oidc",
+        _ if has_id_token => "oidc",
         _ => "oauth2",
     }
 }
@@ -861,6 +875,7 @@ fn assemble_resolved(
 ) -> OAuth2LoginConfig {
     let mut base = OAuth2LoginConfig {
         kind: None,
+        issuer: None,
         authorize_url: None,
         token_url: None,
         client_id: None,
@@ -885,6 +900,7 @@ fn assemble_resolved(
         base.providers = Some(entries.iter().cloned().collect());
     } else if let Some((_, p)) = entries.first() {
         base.kind = p.kind.clone();
+        base.issuer = p.issuer.clone();
         base.authorize_url = p.authorize_url.clone();
         base.token_url = p.token_url.clone();
         base.client_id = p.client_id.clone();
@@ -933,6 +949,7 @@ pub const SECRET_RESOLVED_FIELDS: &[&str] = &[
     "client_id",
     "client_secret",
     "state_secret",
+    "issuer",
     "authorize_url",
     "token_url",
     "redirect_uri",
@@ -1169,21 +1186,44 @@ fn validate_provider(
         }
     }
 
+    // With an `issuer`, the endpoints are discovered at load, so they may be
+    // omitted here; an explicit one still has to be https. Without an issuer,
+    // both are required — an authorize/token URL has to come from somewhere.
+    let discovers = p.issuer.as_deref().is_some_and(|s| !s.trim().is_empty());
+    if let Some(issuer) = p.issuer.as_deref() {
+        let field = format!("{pfx}issuer");
+        if !deferred(mode, &field, issuer)? {
+            require_https(&field, issuer)?;
+        }
+    }
     for (name, value) in [
         ("authorize_url", &p.authorize_url),
         ("token_url", &p.token_url),
-        ("client_id", &p.client_id),
-        ("client_secret", &p.client_secret),
     ] {
         let field = format!("{pfx}{name}");
-        let present = value
+        match value.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(present) => {
+                if !deferred(mode, &field, present)? {
+                    require_https(&field, present)?;
+                }
+            }
+            None if discovers => {}
+            None => return Err(format!("oauth2_login.{field} is required")),
+        }
+    }
+    for name in ["client_id", "client_secret"] {
+        let value = if name == "client_id" {
+            &p.client_id
+        } else {
+            &p.client_secret
+        };
+        if value
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| format!("oauth2_login.{field} is required"))?;
-        // Only the URL fields carry an https rule; ids/secrets do not.
-        if matches!(name, "authorize_url" | "token_url") && !deferred(mode, &field, present)? {
-            require_https(&field, present)?;
+            .is_none()
+        {
+            return Err(format!("oauth2_login.{pfx}{name} is required"));
         }
     }
 
@@ -1300,27 +1340,62 @@ fn build_provider(
     slug: &str,
     resolved: &ProviderConfig,
     shared_redirect: &str,
+    discovered: Option<&crate::channel::oidc_discovery::Discovered>,
     deps: &LoginDeps<'_>,
 ) -> Result<CompiledProvider, String> {
     let pfx = field_prefix(slug);
-    let required = |v: &Option<String>, name: &str| -> Result<String, String> {
-        v.clone()
+    // Explicit endpoints win; discovery fills whatever the block left out.
+    let pick = |explicit: &Option<String>, from_discovery: Option<&str>, name: &str| {
+        explicit
+            .clone()
             .filter(|s| !s.trim().is_empty())
+            .or_else(|| from_discovery.map(str::to_string))
             .ok_or_else(|| format!("oauth2_login.{pfx}{name} is required"))
     };
-    let client_id = required(&resolved.client_id, "client_id")?;
-    let client_secret = required(&resolved.client_secret, "client_secret")?;
-    let authorize_url = required(&resolved.authorize_url, "authorize_url")?;
-    let token_url = required(&resolved.token_url, "token_url")?;
+    let client_id = resolved
+        .client_id
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| format!("oauth2_login.{pfx}client_id is required"))?;
+    let client_secret = resolved
+        .client_secret
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| format!("oauth2_login.{pfx}client_secret is required"))?;
+    let authorize_url = pick(
+        &resolved.authorize_url,
+        discovered.map(|d| d.authorize_url.as_str()),
+        "authorize_url",
+    )?;
+    let token_url = pick(
+        &resolved.token_url,
+        discovered.map(|d| d.token_url.as_str()),
+        "token_url",
+    )?;
     let redirect_uri = effective_redirect_uri(shared_redirect, slug, resolved.redirect_uri.as_deref());
 
-    let id_token_verifier = match resolved.id_token {
+    // OIDC id_token verification: an explicit `id_token` block wins; otherwise
+    // discovery auto-configures one, so naming an `issuer` alone means "verify
+    // the id_token" against the discovered keys — no block to hand-write.
+    let id_token: Option<IdTokenConfig> = match (&resolved.id_token, discovered) {
+        (Some(id), _) => Some(id.clone()),
+        (None, Some(d)) => Some(IdTokenConfig {
+            required: true,
+            issuer: vec![d.issuer.clone()],
+            audience: None,
+            jwks_url: d.jwks_url.clone(),
+            algorithms: vec!["RS256".to_string()],
+            nonce: true,
+        }),
+        (None, None) => None,
+    };
+    let id_token_verifier = match id_token {
         Some(ref id) => Some(build_id_token_verifier(&pfx, id, &client_id, deps)?),
         None => None,
     };
 
     Ok(CompiledProvider {
-        kind: effective_kind(resolved),
+        kind: effective_kind(resolved.kind.as_deref(), id_token.is_some()),
         client_id,
         client_secret,
         authorize_url,
@@ -1329,7 +1404,7 @@ fn build_provider(
         client_auth: resolved.client_auth.clone(),
         scopes: resolved.scopes.clone(),
         extra_authorize_params: resolved.extra_authorize_params.clone(),
-        id_token: resolved.id_token.clone(),
+        id_token,
         id_token_verifier,
     })
 }
@@ -1432,6 +1507,7 @@ mod tests {
     fn config() -> OAuth2LoginConfig {
         OAuth2LoginConfig {
             kind: None,
+            issuer: None,
             authorize_url: Some("https://idp.example.com/authorize".to_string()),
             token_url: Some("https://idp.example.com/token".to_string()),
             client_id: Some("client-123".to_string()),
@@ -1474,6 +1550,7 @@ mod tests {
         };
         OAuth2LoginConfig {
             kind: None,
+            issuer: None,
             authorize_url: None,
             token_url: None,
             client_id: None,
@@ -1502,6 +1579,20 @@ mod tests {
         static EMPTY: std::sync::LazyLock<BTreeMap<String, crate::config::InstanceProviderConfig>> =
             std::sync::LazyLock::new(BTreeMap::new);
         &EMPTY
+    }
+
+    /// A discovery cache the unit tests never reach over the network (no provider
+    /// here names an `issuer`).
+    fn no_discovery() -> &'static std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache> {
+        static CACHE: std::sync::LazyLock<
+            std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache>,
+        > = std::sync::LazyLock::new(|| {
+            std::sync::Arc::new(crate::channel::oidc_discovery::DiscoveryCache::new(
+                reqwest::Client::new(),
+                false,
+            ))
+        });
+        &CACHE
     }
 
     /// A single deployment-supplied provider keyed `iitm`, for the merge tests.
@@ -1535,6 +1626,7 @@ mod tests {
                 jwks: &jwks,
                 allow_private_token_urls: false,
                 instance_providers: instance,
+                discovery: no_discovery(),
             },
         )
         .await
@@ -1553,6 +1645,7 @@ mod tests {
                 jwks: &jwks,
                 allow_private_token_urls: false,
                 instance_providers: no_instance(),
+                discovery: no_discovery(),
             },
         )
         .await
@@ -1572,6 +1665,7 @@ mod tests {
                 jwks: &jwks,
                 allow_private_token_urls: false,
                 instance_providers: no_instance(),
+                discovery: no_discovery(),
             },
         )
         .await

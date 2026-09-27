@@ -753,6 +753,13 @@ pub struct ProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
 
+    /// The OIDC issuer. When set and the endpoints below are omitted, Orion
+    /// discovers `authorize_url`, `token_url` and the `id_token` JWKS from
+    /// `<issuer>/.well-known/openid-configuration` at load, and verifies the
+    /// `id_token` against this issuer (OIDC — no `id_token` block to hand-write).
+    /// Explicit endpoints, if given, win.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
     /// The IdP's authorization endpoint. See the flat field of the same name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorize_url: Option<String>,
@@ -792,6 +799,7 @@ impl From<&crate::config::InstanceProviderConfig> for ProviderConfig {
     fn from(i: &crate::config::InstanceProviderConfig) -> Self {
         ProviderConfig {
             kind: i.kind.clone(),
+            issuer: i.issuer.clone(),
             authorize_url: i.authorize_url.clone(),
             token_url: i.token_url.clone(),
             client_id: i.client_id.clone(),
@@ -812,6 +820,11 @@ pub struct OAuth2LoginConfig {
     /// [`ProviderConfig::kind`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+
+    /// The OIDC issuer, for the single-provider (flat) form. See
+    /// [`ProviderConfig::issuer`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
 
     /// The IdP's authorization endpoint. The browser is redirected here; Orion
     /// never fetches it, so SSRF does not apply — but it is an open-redirect
@@ -967,6 +980,7 @@ impl OAuth2LoginConfig {
     pub fn flat_provider(&self) -> ProviderConfig {
         ProviderConfig {
             kind: self.kind.clone(),
+            issuer: self.issuer.clone(),
             authorize_url: self.authorize_url.clone(),
             token_url: self.token_url.clone(),
             client_id: self.client_id.clone(),

@@ -49,7 +49,7 @@ Three modes are built in, all configured per channel:
 
 All three take `env://` references, mask their credential fields in API reads, and answer a uniform `401` that never reveals which part failed. The full contract, including why Kafka and `channel_call` are exempt, is [Authentication](../../reference/channel-config/auth.md).
 
-JWT verification is built in; OIDC flows and mTLS termination are not. The `jwt` auth mode verifies bearer tokens at ingress, from static keys or a JWKS, and exposes the verified claims at `metadata.auth.claims.*`. Identity reaches the workflow without a header-forwarding proxy whose stripping rules Orion cannot validate. What stays out of scope is the identity-provider half (discovery, PKCE, userinfo) and client-certificate termination. For those, front Orion with a gateway or service mesh, and let the `jwt` mode verify what it forwards.
+JWT verification and inbound OAuth2/OIDC sign-in are built in; mTLS termination is not. The `jwt` auth mode verifies bearer tokens at ingress, from static keys or a JWKS, and exposes the verified claims at `metadata.auth.claims.*`. Identity reaches the workflow without a header-forwarding proxy whose stripping rules Orion cannot validate. The [`oauth2_login`](../../reference/channel-config/oauth2_login.md) block completes a browser sign-in as the relying party — the redirect, PKCE, `id_token` verification and OIDC discovery. What stays out of scope is client-certificate termination. For that, front Orion with a gateway or service mesh, and let the `jwt` mode verify what it forwards.
 
 ## Terminate TLS
 

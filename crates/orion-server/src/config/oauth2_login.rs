@@ -68,9 +68,14 @@ pub struct OAuth2LoginConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct InstanceProviderConfig {
-    /// `oidc` or `oauth2`; absent derives from whether an `id_token` is set
-    /// (which, at instance level, it is not — so this is `oauth2` unless named).
+    /// `oidc` or `oauth2`; absent derives from whether OIDC applies (an
+    /// `issuer`, or — at channel level — an `id_token` block).
     pub kind: Option<String>,
+    /// The OIDC issuer. Set it (and omit the endpoints below) to have Orion
+    /// discover them from `<issuer>/.well-known/openid-configuration` and verify
+    /// the `id_token` — the usual shape for a deployment-supplied OIDC directory
+    /// (Entra, Keycloak, Google Workspace).
+    pub issuer: Option<String>,
     /// The provider's authorization endpoint (`https`).
     pub authorize_url: Option<String>,
     /// The provider's token endpoint (`https`).

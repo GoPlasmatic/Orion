@@ -6,6 +6,7 @@ pub mod cron;
 pub mod error_body;
 pub mod guards;
 pub mod oauth2_login;
+pub mod oidc_discovery;
 pub mod rate_limit_backend;
 pub mod registry;
 pub mod routing;

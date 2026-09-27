@@ -420,9 +420,10 @@
 # config while the definition promotes unchanged. File only — an individual provider cannot
 # be set via an ORION_* env var — but ${VAR} (pre-parse) and env://NAME (resolved at channel
 # load) both work inside. Read at startup, so a change here needs a restart, not a reload.
+# An `issuer` alone is discovered (endpoints + id_token verification); explicit
+# authorize_url/token_url work too.
 # [oauth2_login.providers.iitm]
-# authorize_url = "https://login.microsoftonline.com/${IITM_TENANT}/oauth2/v2.0/authorize"
-# token_url     = "https://login.microsoftonline.com/${IITM_TENANT}/oauth2/v2.0/token"
+# issuer        = "https://login.microsoftonline.com/${IITM_TENANT}/v2.0"
 # client_id     = "${IITM_CLIENT_ID}"
 # client_secret = "env://IITM_CLIENT_SECRET"
 # scopes        = ["openid", "profile"]

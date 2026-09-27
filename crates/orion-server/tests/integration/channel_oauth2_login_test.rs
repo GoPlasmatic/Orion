@@ -102,8 +102,35 @@ async fn start_idp(idp: Arc<Idp>) -> String {
         )
     }
 
+    // OIDC discovery (#355): the well-known document points every endpoint back
+    // at this server, built from the request's Host so the issuer matches the
+    // URL discovery was reached at. `jwks` is an empty (but valid) key set —
+    // enough to prove discovery filled the endpoints; a real id_token is not
+    // minted here.
+    async fn well_known(headers: axum::http::HeaderMap) -> axum::Json<Value> {
+        let host = headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("127.0.0.1");
+        let base = format!("http://{host}");
+        axum::Json(json!({
+            "issuer": base,
+            "authorization_endpoint": format!("{base}/authorize"),
+            "token_endpoint": format!("{base}/token"),
+            "jwks_uri": format!("{base}/jwks"),
+        }))
+    }
+    async fn jwks() -> axum::Json<Value> {
+        axum::Json(json!({ "keys": [] }))
+    }
+
     let app = axum::Router::new()
         .route("/token", axum::routing::post(token))
+        .route(
+            "/.well-known/openid-configuration",
+            axum::routing::get(well_known),
+        )
+        .route("/jwks", axum::routing::get(jwks))
         .with_state(idp);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1989,4 +2016,124 @@ async fn a_deployment_supplied_provider_serves_a_channel_that_opts_in() {
         .await
         .expect("authorize unknown");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// OIDC discovery (#355)
+// ---------------------------------------------------------------------------
+
+/// A single-provider block that names only an `issuer`: Orion discovers the
+/// authorize/token/JWKS endpoints and enables id_token verification.
+fn discovery_login_config(issuer: &str) -> Value {
+    json!({
+        "issuer": issuer,
+        "client_id": "disco-client",
+        "client_secret": "disco-secret",
+        "redirect_uri": "https://app.example.com/v1/auth/idp/callback",
+        "callback_path": "/v1/auth/idp/callback",
+        "state_secret": STATE_SECRET
+    })
+}
+
+/// An `issuer` alone fills the authorize endpoint from the discovery document.
+#[tokio::test]
+async fn discovery_fills_the_authorize_endpoint() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy(&app, discovery_login_config(&idp_url), echo_grant_workflow()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .await
+        .expect("authorize");
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    // The redirect points at the *discovered* authorization endpoint.
+    assert!(
+        location.starts_with(&format!("{idp_url}/authorize")),
+        "expected the discovered authorize endpoint, got {location}"
+    );
+    assert_eq!(query_param(&location, "client_id").as_deref(), Some("disco-client"));
+    // OIDC was auto-enabled: a nonce rides in the authorize request.
+    assert!(query_param(&location, "nonce").is_some(), "OIDC nonce is minted");
+}
+
+/// A discovery provider is OIDC: it exchanges the code at the discovered token
+/// endpoint and then requires an id_token — the mock issues none, so the sign-in
+/// is refused *after* the exchange, proving both endpoints were discovered.
+#[tokio::test]
+async fn a_discovery_provider_exchanges_then_requires_an_id_token() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy(&app, discovery_login_config(&idp_url), echo_grant_workflow()).await;
+
+    let (state, cookie) = begin(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("callback");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "id_token required");
+    assert_eq!(
+        idp.token_hits(),
+        1,
+        "the code was exchanged at the discovered token endpoint before the id_token check"
+    );
+}
+
+/// The discovery cache refuses a document whose `issuer` does not match the one
+/// requested — a redirector at the well-known path cannot point Orion's key and
+/// token fetches elsewhere.
+#[tokio::test]
+async fn discovery_refuses_an_issuer_mismatch() {
+    use orion::channel::oidc_discovery::DiscoveryCache;
+
+    async fn wrong_issuer() -> axum::Json<Value> {
+        axum::Json(json!({
+            "issuer": "https://evil.example",
+            "authorization_endpoint": "https://evil.example/authorize",
+            "token_endpoint": "https://evil.example/token",
+            "jwks_uri": "https://evil.example/jwks"
+        }))
+    }
+    let app = axum::Router::new().route(
+        "/.well-known/openid-configuration",
+        axum::routing::get(wrong_issuer),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+    let issuer = format!("http://127.0.0.1:{}", addr.port());
+
+    // allow_private = true so the loopback issuer passes the SSRF check; the
+    // mismatch is what must still refuse it.
+    let cache = DiscoveryCache::new(reqwest::Client::new(), true);
+    let err = cache.resolve(&issuer).await.expect_err("issuer mismatch");
+    assert!(err.contains("does not match"), "{err}");
+}
+
+/// Discovery to a private address is refused unless the instance opts in — the
+/// same gate the token exchange passes.
+#[tokio::test]
+async fn discovery_refuses_a_private_issuer_without_the_flag() {
+    use orion::channel::oidc_discovery::DiscoveryCache;
+    let cache = DiscoveryCache::new(reqwest::Client::new(), false);
+    let err = cache
+        .resolve("http://127.0.0.1:9/tenant")
+        .await
+        .expect_err("private address refused");
+    assert!(!err.is_empty(), "a private issuer is refused: {err}");
 }

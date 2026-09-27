@@ -535,6 +535,9 @@ pub struct ReloadDeps<'a> {
     /// once at boot, so a carried-over compiled block stays valid across reloads.
     pub instance_oauth_providers:
         &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
+    /// The instance's OIDC discovery cache, for an `oauth2_login` provider that
+    /// names an `issuer` (#355). A process singleton, like `jwks`.
+    pub oidc_discovery: &'a std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache>,
     pub global_trace_storage: &'a TraceStorageConfig,
     /// `[cron] enabled`. A cron channel loaded on a node with the scheduler off
     /// is quarantined rather than served as a schedule that never fires.
@@ -559,6 +562,7 @@ struct RuntimeDeps<'a> {
     allow_private_token_urls: bool,
     instance_oauth_providers:
         &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
+    oidc_discovery: &'a std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache>,
     global_trace_storage: &'a TraceStorageConfig,
     cluster_redis: Option<redis::aio::ConnectionManager>,
     cron_enabled: bool,
@@ -1151,6 +1155,7 @@ impl ChannelLoader {
                         jwks: deps.jwks,
                         allow_private_token_urls: deps.allow_private_token_urls,
                         instance_providers: deps.instance_oauth_providers,
+                        discovery: deps.oidc_discovery,
                     },
                 )
                 .await
@@ -1289,6 +1294,7 @@ impl ChannelLoader {
             http_client,
             allow_private_token_urls,
             instance_oauth_providers,
+            oidc_discovery,
             global_trace_storage,
             cron_enabled,
         } = deps;
@@ -1301,6 +1307,7 @@ impl ChannelLoader {
             http_client,
             allow_private_token_urls,
             instance_oauth_providers,
+            oidc_discovery,
             global_trace_storage,
             cluster_redis: self.cluster.as_ref().and_then(|c| c.redis.clone()),
             cron_enabled,
@@ -1722,6 +1729,12 @@ mod tests {
                         http_client: &self.http_client,
                         allow_private_token_urls: false,
                         instance_oauth_providers: &std::collections::BTreeMap::new(),
+                        oidc_discovery: &std::sync::Arc::new(
+                            crate::channel::oidc_discovery::DiscoveryCache::new(
+                                reqwest::Client::new(),
+                                false,
+                            ),
+                        ),
                         global_trace_storage: &self.trace_storage,
                         cron_enabled: self.cron_enabled,
                     },
@@ -1735,6 +1748,13 @@ mod tests {
     /// so nothing is ever fetched through it.
     fn test_jwks() -> std::sync::Arc<crate::jwt::jwks::JwksCache> {
         std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+            reqwest::Client::new(),
+            false,
+        ))
+    }
+
+    fn test_discovery() -> std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache> {
+        std::sync::Arc::new(crate::channel::oidc_discovery::DiscoveryCache::new(
             reqwest::Client::new(),
             false,
         ))
@@ -1813,6 +1833,7 @@ mod tests {
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
                     instance_oauth_providers: &std::collections::BTreeMap::new(),
+                    oidc_discovery: &test_discovery(),
                     global_trace_storage: &TraceStorageConfig::default(),
                     cron_enabled: true,
                 },
@@ -1851,6 +1872,7 @@ mod tests {
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
                     instance_oauth_providers: &std::collections::BTreeMap::new(),
+                    oidc_discovery: &test_discovery(),
                     global_trace_storage: &TraceStorageConfig::default(),
                     cron_enabled: true,
                 },
@@ -1887,6 +1909,7 @@ mod tests {
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
                     instance_oauth_providers: &std::collections::BTreeMap::new(),
+                    oidc_discovery: &test_discovery(),
                     global_trace_storage: &TraceStorageConfig::default(),
                     cron_enabled: true,
                 },
