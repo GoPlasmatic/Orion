@@ -190,10 +190,31 @@ pub fn spawn_preload(
         deps.registry.clone(),
         deps.client.clone(),
     );
+    // Hold the generation by `Weak`, never `Arc`: a detached warm-up must not
+    // pin a whole generation (engine + channel estate + model set) alive for
+    // the length of its loads. A reload that supersedes this generation frees
+    // it at once, and the loop below stops the moment it notices — so an epoch
+    // storm cannot strand one pinned generation per reload, each held for
+    // minutes (a single load is bounded only by `models.fetch_timeout_secs`).
+    let generation_id = generation.id;
+    let weak = Arc::downgrade(&generation);
+    drop(generation);
     tokio::spawn(async move {
         for id in targets {
-            let Some(entry) = generation.models.get(&id).cloned() else {
-                continue;
+            // Upgrade only for the lookup, then drop the strong ref so the
+            // load below pins nothing: `entry` carries its own `Arc`.
+            let entry = {
+                let Some(generation) = weak.upgrade() else {
+                    tracing::debug!(
+                        generation = generation_id,
+                        "Preload halted: its generation is no longer live"
+                    );
+                    break;
+                };
+                match generation.models.get(&id) {
+                    Some(entry) => entry.clone(),
+                    None => continue,
+                }
             };
             let (runtime, device) = match models
                 .runtimes

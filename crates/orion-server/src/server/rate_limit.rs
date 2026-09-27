@@ -59,6 +59,25 @@ impl RateLimitState {
             data_limiter,
         }
     }
+
+    /// Prune every platform limiter's keyed store. The default limiter lives
+    /// for the whole process and keys on client IP, so without a periodic
+    /// sweep it grows one entry per address ever seen — unbounded behind a
+    /// proxy that forwards a caller-influenced identity. Called from the
+    /// supervised limiter-prune task alongside the per-channel limiters.
+    pub fn prune(&self) {
+        for limiter in [
+            Some(&self.default_limiter),
+            self.admin_limiter.as_ref(),
+            self.data_limiter.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            limiter.retain_recent();
+            limiter.shrink_to_fit();
+        }
+    }
 }
 
 /// Resolve the client identity used as the rate-limit key (S8).
@@ -89,12 +108,14 @@ pub(crate) fn client_ip_from_parts(
     // IPv6 (`::ffff:1.2.3.4`), which would never match an IPv4 CIDR.
     match peer.map(|p| p.ip().to_canonical()) {
         Some(ip) if peer_is_trusted(&ip, trusted_proxies) => {
-            forwarded_client_ip(headers, trusted_proxies).unwrap_or_else(|| ip.to_string())
+            forwarded_client_ip(headers, trusted_proxies)
+                .unwrap_or(ip)
+                .to_string()
         }
         Some(ip) => ip.to_string(),
-        None => {
-            forwarded_client_ip(headers, trusted_proxies).unwrap_or_else(|| "unknown".to_string())
-        }
+        None => forwarded_client_ip(headers, trusted_proxies)
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
     }
 }
 
@@ -113,10 +134,17 @@ fn peer_is_trusted(peer: &IpAddr, trusted_proxies: &[IpNet]) -> bool {
 /// behind a real proxy mint a fresh rate-limit identity per request and
 /// plant a chosen IP in audit logs. Falls back to `X-Real-IP` — proxy-set,
 /// not appended-to — when no usable XFF hop exists.
+///
+/// Returns a parsed [`IpAddr`], never a raw header string: a hop that does not
+/// parse as an IP is not a usable identity, and letting it through would give
+/// a client behind a trusted proxy a way to mint unbounded rate-limit and
+/// failed-auth map entries with a spoofed header (a memory-growth vector, not
+/// only a metrics one). A malformed rightmost hop abandons the header, so the
+/// caller falls back to the peer address instead.
 fn forwarded_client_ip(
     headers: &axum::http::HeaderMap,
     trusted_proxies: &[IpNet],
-) -> Option<String> {
+) -> Option<IpAddr> {
     let xff_client = headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
@@ -128,25 +156,26 @@ fn forwarded_client_ip(
                 .filter(|h| !h.is_empty())
                 .rev()
             {
-                candidate = Some(hop);
-                let trusted = hop
-                    .parse::<IpAddr>()
-                    .is_ok_and(|ip| peer_is_trusted(&ip.to_canonical(), trusted_proxies));
-                if !trusted {
+                // Only an address that parses as an IP can be a client
+                // identity. A garbage hop is not a usable key, so stop trusting
+                // this header entirely and fall back to the peer below.
+                let ip = hop.parse::<IpAddr>().ok()?.to_canonical();
+                candidate = Some(ip);
+                if !peer_is_trusted(&ip, trusted_proxies) {
                     break;
                 }
             }
             candidate
         });
-    if let Some(hop) = xff_client {
-        return Some(hop.to_string());
+    if let Some(ip) = xff_client {
+        return Some(ip);
     }
     headers
         .get("x-real-ip")
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
+        .and_then(|v| v.parse::<IpAddr>().ok())
+        .map(|ip| ip.to_canonical())
 }
 
 /// Determine the route group from the matched path.
@@ -427,6 +456,55 @@ mod tests {
             .expect("test");
         let req = with_peer(req, "[fd00::1]:5000");
         assert_eq!(extract_client_ip(&req, &nets(&["fd00::/8"])), "2001:db8::1");
+    }
+
+    // -- Forwarded hops must parse as IPs (memory/cardinality backstop) --
+
+    /// A non-IP XFF hop behind a trusted proxy must not become the identity:
+    /// otherwise a client could mint unbounded rate-limit and failed-auth map
+    /// entries with a spoofed header. The malformed header is abandoned and
+    /// the peer identifies instead.
+    #[test]
+    fn test_trusted_peer_garbage_xff_falls_back_to_peer() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "not-an-ip")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "10.0.0.7:5000");
+        assert_eq!(extract_client_ip(&req, &nets(&["10.0.0.0/8"])), "10.0.0.7");
+    }
+
+    #[test]
+    fn test_trusted_peer_garbage_x_real_ip_falls_back_to_peer() {
+        let req = Request::builder()
+            .header("x-real-ip", "definitely-not-an-ip")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "10.0.0.7:5000");
+        assert_eq!(extract_client_ip(&req, &nets(&["10.0.0.0/8"])), "10.0.0.7");
+    }
+
+    /// Header-only path (no `ConnectInfo`): a garbage forwarded value is not a
+    /// usable identity, so it collapses to `unknown` rather than becoming a
+    /// caller-chosen key.
+    #[test]
+    fn test_garbage_forwarded_header_without_peer_is_unknown() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "junk")
+            .body(Body::empty())
+            .expect("test");
+        assert_eq!(extract_client_ip(&req, &[]), "unknown");
+    }
+
+    /// A v4-mapped IPv6 hop is canonicalised, so the same client cannot occupy
+    /// two keys by switching representation.
+    #[test]
+    fn test_forwarded_hop_is_canonicalised() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "::ffff:203.0.113.5")
+            .body(Body::empty())
+            .expect("test");
+        assert_eq!(extract_client_ip(&req, &[]), "203.0.113.5");
     }
 
     #[test]

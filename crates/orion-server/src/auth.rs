@@ -26,8 +26,19 @@ const LOCKOUT_BASE: Duration = Duration::from_millis(500);
 const LOCKOUT_MAX: Duration = Duration::from_secs(30);
 /// Idle period after which a client's failure record is forgotten.
 const FAILURE_TTL: Duration = Duration::from_secs(300);
-/// Map size that triggers a stale sweep before the next insert.
-const EVICT_THRESHOLD: usize = 10_000;
+/// Hard ceiling on the tracked-client map. Reaching it triggers a sweep: idle
+/// records first, then — because a distributed campaign or a spoofed forwarded
+/// header keeps every record recent, so the idle sweep frees nothing — the
+/// oldest records outright, down to `TRIM_TO`. This is what *bounds* the map:
+/// `record_failure` never refuses a fresh client, so without a hard cap an
+/// attacker cycling source identities grows it without limit. Evicting a
+/// record only forgives that address's count; at this size an attacker must
+/// still out-run every genuine failing client to be the one dropped.
+const MAX_TRACKED: usize = 50_000;
+/// Size the map is trimmed back to when it hits `MAX_TRACKED`, so the sweep
+/// runs about once per `MAX_TRACKED - TRIM_TO` inserts rather than an O(n)
+/// scan on every insert past the ceiling.
+const TRIM_TO: usize = 40_000;
 
 #[derive(Debug, Clone, Copy)]
 struct FailureRecord {
@@ -60,10 +71,11 @@ impl FailedAuthTracker {
     pub fn record_failure(&self, client: &str) -> Option<Duration> {
         let now = Instant::now();
         // An attacker cycling source addresses would otherwise grow the map
-        // without bound; sweeping on the way in keeps it proportional to the
-        // number of *recently* failing clients.
-        if self.clients.len() >= EVICT_THRESHOLD {
-            self.evict_stale();
+        // without bound. Sweeping at the ceiling keeps it proportional to the
+        // recently failing clients, and falls back to a hard cap when they are
+        // all recent.
+        if self.clients.len() >= MAX_TRACKED {
+            self.evict();
         }
         let mut entry = self
             .clients
@@ -98,12 +110,35 @@ impl FailedAuthTracker {
         self.clients.remove(client);
     }
 
-    /// Drop records that have been idle past their TTL. Called opportunistically
-    /// so an attacker cycling source addresses cannot grow the map without bound.
-    fn evict_stale(&self) {
+    /// Bring the map back under its ceiling. Idle records first — under normal
+    /// churn this alone keeps it small, and it never evicts an active client.
+    /// If that frees too little (the distributed-guessing case, where every
+    /// record is recent), the oldest `last_seen` records are dropped until the
+    /// map is at `TRIM_TO`, so it can never grow past `MAX_TRACKED`.
+    fn evict(&self) {
         let now = Instant::now();
         self.clients
             .retain(|_, rec| now.duration_since(rec.last_seen) <= FAILURE_TTL);
+        if self.clients.len() <= TRIM_TO {
+            return;
+        }
+        // Snapshot (age, key) with the shard guards released before any
+        // removal, so this never deadlocks against a concurrent insert; a key
+        // already gone by the time we remove it is a harmless no-op.
+        let mut by_age: Vec<(Instant, String)> = self
+            .clients
+            .iter()
+            .map(|entry| (entry.last_seen, entry.key().clone()))
+            .collect();
+        let cut = by_age.len().saturating_sub(TRIM_TO);
+        if cut == 0 {
+            return;
+        }
+        // Partition so the `cut` oldest records sit in `[..cut]`; drop them.
+        by_age.select_nth_unstable_by(cut - 1, |a, b| a.0.cmp(&b.0));
+        for (_, key) in &by_age[..cut] {
+            self.clients.remove(key);
+        }
     }
 }
 
@@ -168,6 +203,23 @@ mod tests {
         assert!(
             t.record_failure("1.2.3.4").is_none(),
             "the counter must restart after a success"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_map_is_hard_capped_against_identity_cycling() {
+        let t = FailedAuthTracker::default();
+        // Every client is distinct and, on the paused clock, equally recent —
+        // so the idle sweep can free nothing. This is the distributed-guessing
+        // / spoofed-header case, and the map must still stay under its ceiling
+        // rather than grow one entry per identity forever.
+        for i in 0..(MAX_TRACKED + 5_000) {
+            t.record_failure(&format!("client-{i}"));
+        }
+        assert!(
+            t.clients.len() <= MAX_TRACKED,
+            "map grew to {} past the {MAX_TRACKED} ceiling",
+            t.clients.len()
         );
     }
 }

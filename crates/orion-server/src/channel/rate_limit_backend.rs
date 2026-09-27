@@ -23,6 +23,14 @@ pub trait RateLimitBackend: Send + Sync {
     /// contract, it is the per-channel default. Takes the key by value:
     /// callers already own one, and governor's keyed store wants `&String`.
     async fn check(&self, key: String) -> Result<bool, OrionError>;
+
+    /// Drop keys whose limiter state has fully replenished and release the
+    /// slack their storage held. Governor's in-process keyed store only shrinks
+    /// when asked, so a channel keyed by client identity would otherwise grow
+    /// one entry per address (or header value) ever seen and never shrink. The
+    /// supervised limiter-prune task calls this periodically; a store that ages
+    /// its own keys out (Redis) leaves it a no-op.
+    fn prune(&self) {}
 }
 
 /// In-process governor limiter (today's behaviour; N replicas = N× the limit).
@@ -42,6 +50,13 @@ impl LocalRateLimitBackend {
 impl RateLimitBackend for LocalRateLimitBackend {
     async fn check(&self, key: String) -> Result<bool, OrionError> {
         Ok(self.limiter.check_key(&key).is_ok())
+    }
+
+    fn prune(&self) {
+        // `retain_recent` drops keys back at full capacity; `shrink_to_fit`
+        // then returns the map's spare capacity to the allocator.
+        self.limiter.retain_recent();
+        self.limiter.shrink_to_fit();
     }
 }
 
@@ -123,5 +138,21 @@ mod tests {
         assert!(!backend.check("ip-1".to_string()).await.expect("test"));
         // Independent key unaffected.
         assert!(backend.check("ip-2".to_string()).await.expect("test"));
+    }
+
+    #[tokio::test]
+    async fn test_local_backend_prune_is_safe_and_preserves_limiting() {
+        let backend = LocalRateLimitBackend::new(1, 2);
+        // Touch several distinct keys, then prune. A key at full capacity is
+        // dropped; the sweep must not panic or reset a key that is still
+        // limited.
+        for k in 0..100 {
+            let _ = backend.check(format!("ip-{k}")).await.expect("test");
+        }
+        backend.prune();
+        // A pruned-then-reused key still gets its full burst.
+        assert!(backend.check("ip-fresh".to_string()).await.expect("test"));
+        assert!(backend.check("ip-fresh".to_string()).await.expect("test"));
+        assert!(!backend.check("ip-fresh".to_string()).await.expect("test"));
     }
 }

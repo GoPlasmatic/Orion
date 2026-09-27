@@ -1135,6 +1135,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Cluster background tasks (epoch watcher). None when disabled.
     orion::cluster::start_cluster_tasks(&state);
 
+    // Rate-limiter prune: sweep governor's in-process keyed stores so they
+    // stay proportional to recently active client identities rather than
+    // growing one entry per identity ever seen. Optional — a node that stops
+    // pruning still serves correctly.
+    orion::runtime::limiter_prune::start(&tasks, state.clone());
+
     // `[packages] apply`: applied now that everything an apply needs is
     // running — the audit writer, the model admission worker, the epoch
     // watcher — and concurrently with serving, so `/healthz` answers during

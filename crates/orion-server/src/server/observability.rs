@@ -19,13 +19,22 @@ pub async fn http_metrics_middleware(
     // cheaper than the `to_string()` this used to do — and `as_str()` below
     // then costs nothing. Only an extension method allocates.
     let method = req.method().clone();
-    // Borrowed from `matched_path`, which outlives the response. Only the
-    // unmatched fallback allocates, and it has to: it reads from `req`, which
-    // moves into `next.run` below.
+    // The requested target, for the access-log line. Borrowed from
+    // `matched_path`, which outlives the response. Only the unmatched fallback
+    // allocates, and it has to: it reads from `req`, which moves into
+    // `next.run` below.
     let path: Cow<'_, str> = match matched_path.as_ref() {
         Some(m) => Cow::Borrowed(m.as_str()),
         None => Cow::Owned(req.uri().path().to_string()),
     };
+
+    // The metric label, distinct from the access-log `path` above. An
+    // unmatched request (a 404, a scanner probe) has no route template, and
+    // labelling the metric with the caller-chosen URL would mint a new
+    // Prometheus series per distinct path — series a recorder never drops, so
+    // an unauthenticated scanner could grow the registry without bound. Every
+    // unmatched request shares one `unmatched` series instead.
+    let metric_path: &str = matched_path.as_ref().map_or("unmatched", |m| m.as_str());
 
     // Request id set by SetRequestIdLayer (inner layer, runs before us).
     //
@@ -60,7 +69,7 @@ pub async fn http_metrics_middleware(
         "HTTP request"
     );
 
-    metrics::record_http_request(method.as_str(), &path, status, duration);
+    metrics::record_http_request(method.as_str(), metric_path, status, duration);
 
     response
 }

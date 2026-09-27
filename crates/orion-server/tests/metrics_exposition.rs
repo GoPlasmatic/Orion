@@ -35,6 +35,18 @@ async fn rendered_exposition_carries_the_advertised_families() {
         .await
         .expect("data request");
 
+    // Two requests to distinct paths that match no route at all, so both hit
+    // the global fallback (no `MatchedPath`). They must collapse into one
+    // `path="unmatched"` series — never a series named after the caller's URL,
+    // which an unauthenticated scanner could otherwise grow without bound.
+    for scan in ["/zzz-scan-alpha-9f2a", "/zzz-scan-beta-4c81"] {
+        let _ = app
+            .clone()
+            .oneshot(common::json_request("GET", scan, None))
+            .await
+            .expect("unmatched request");
+    }
+
     let resp = app
         .clone()
         .oneshot(common::json_request("GET", "/metrics", None))
@@ -57,6 +69,21 @@ async fn rendered_exposition_carries_the_advertised_families() {
         assert!(
             text.contains(family),
             "family `{family}` missing from the exposition:\n{text}"
+        );
+    }
+
+    // The two unmatched requests above share one series, labelled with the
+    // constant `unmatched` rather than either caller-chosen URL.
+    assert!(
+        text.contains(r#"path="unmatched""#),
+        "unmatched requests must render under a constant `path=\"unmatched\"` \
+         label:\n{text}"
+    );
+    for scan in ["zzz-scan-alpha-9f2a", "zzz-scan-beta-4c81"] {
+        assert!(
+            !text.contains(scan),
+            "the raw URL `{scan}` leaked into a metric label — every unmatched \
+             request must collapse into the `unmatched` series:\n{text}"
         );
     }
 }

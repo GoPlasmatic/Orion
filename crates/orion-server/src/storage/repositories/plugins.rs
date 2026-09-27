@@ -256,7 +256,7 @@ async fn insert_artifact_if_absent_tx(
             .and_where(Expr::col(PluginArtifacts::Digest).eq(digest)),
     );
     if tx
-        .fetch_optional_as::<DigestRow>(&sql, values)
+        .fetch_optional_as::<(String,)>(&sql, values)
         .await?
         .is_some()
     {
@@ -304,12 +304,6 @@ async fn sweep_orphan_artifacts_tx(tx: &mut DbTransaction) -> Result<u64, OrionE
             ),
     );
     Ok(tx.execute_query(&sql, values).await?)
-}
-
-#[derive(sqlx::FromRow)]
-struct DigestRow {
-    #[allow(dead_code)]
-    digest: String,
 }
 
 /// Write a draft row (INSERT or UPDATE) with its artifact in one transaction
@@ -611,7 +605,7 @@ impl PluginRepository for SqlPluginRepository {
         );
         Ok(self
             .pool
-            .fetch_optional_as::<DigestRow>(&sql, values)
+            .fetch_optional_as::<(String,)>(&sql, values)
             .await?
             .is_some())
     }

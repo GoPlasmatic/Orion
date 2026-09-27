@@ -1,7 +1,8 @@
 //! End-to-end tests for the `data_query` handler (Phase 1: scalar SQL, identity
 //! mode). Each test seeds an in-memory SQLite connector via `db_write`, then runs
 //! a portable `data_query` through the data route and asserts the returned rows —
-//! proving the sea-query → `AnyPool` execution path end-to-end.
+//! proving the sea-query execution path (against the backend's concrete pool
+//! since #309) end-to-end.
 
 use crate::common;
 use crate::common::dsl::{ddl, dq, is_rejection, post};

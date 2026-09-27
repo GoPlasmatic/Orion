@@ -36,6 +36,7 @@
 
 pub mod boot_packages;
 pub mod generation;
+pub mod limiter_prune;
 pub mod load_issues;
 pub mod model_admission;
 pub mod models;

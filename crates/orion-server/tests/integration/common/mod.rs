@@ -130,9 +130,6 @@ async fn test_state_inner(
     orion::bootstrap::TaskHandles,
     orion::storage::DbPool,
 ) {
-    // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
-    sqlx::any::install_default_drivers();
-
     // Divergence 1: in-memory SQLite fallback (see doc comment).
     let storage_config = if config.storage.url.is_empty()
         || config.storage.url == orion::config::StorageConfig::default().url

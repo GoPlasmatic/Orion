@@ -368,7 +368,6 @@ async fn the_stored_type_column_wins_over_an_inner_type() {
 /// had coverage.
 #[tokio::test]
 async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
-    sqlx::any::install_default_drivers();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,
@@ -432,7 +431,6 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
 /// old blanket removal notice, and a correctly-shaped row simply loads.
 #[tokio::test]
 async fn a_stored_0x_storage_connector_reports_its_missing_fields() {
-    sqlx::any::install_default_drivers();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,

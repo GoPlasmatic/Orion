@@ -74,7 +74,6 @@ impl TraceSink for FailFirstRunningWrite {
 
 #[tokio::test]
 async fn failed_running_write_routes_message_to_dlq() {
-    sqlx::any::install_default_drivers();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,
@@ -286,7 +285,6 @@ async fn run_one_message_to_terminal_status(
 /// FAILED with the retries message — not leave it running or lie completed.
 #[tokio::test]
 async fn persistent_set_result_failure_marks_trace_failed_after_retries() {
-    sqlx::any::install_default_drivers();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,
@@ -326,7 +324,6 @@ async fn persistent_set_result_failure_marks_trace_failed_after_retries() {
 /// size message instead of storing an oversized row (or lying completed).
 #[tokio::test]
 async fn oversized_result_marks_trace_failed_with_size_message() {
-    sqlx::any::install_default_drivers();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,
@@ -759,7 +756,6 @@ async fn a_panicking_trace_does_not_permanently_consume_queue_memory() {
     static METADATA: std::sync::LazyLock<serde_json::Value> =
         std::sync::LazyLock::new(|| serde_json::json!({}));
 
-    sqlx::any::install_default_drivers();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,

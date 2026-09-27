@@ -1,8 +1,8 @@
 //! End-to-end tests for the `data_write` handler (portable INSERT / UPDATE /
 //! DELETE / upsert). Each test drives an in-memory SQLite connector: raw
 //! `db_write` creates the table, `data_write` mutates it, and a `data_query`
-//! reads the result back — proving the sea-query write → `AnyPool` path and the
-//! safety guards end-to-end.
+//! reads the result back — proving the sea-query write path (against the
+//! backend's concrete pool since #309) and the safety guards end-to-end.
 
 use crate::common;
 use crate::common::dsl::{ddl, dq, dw, is_rejection, post};

@@ -96,9 +96,9 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # spell `uuid`, `jsonb`, `numeric` or an array — so a `SELECT *` over any
 # ordinary schema failed the task with a 500, and only when a row existed.
 # `chrono` was already on for the server's own store and covers the date/time
-# family. `any` stays: `sea-query-sqlx` still lists it, and dropping it is a
-# separate cleanup.
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "any", "sqlite", "postgres", "mysql"] }
+# family. The `Any` backend itself is unused (no `sqlx::Any` in the crate), so
+# the `any` feature here and `sqlx-any` on `sea-query-sqlx` are both dropped.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "sqlite", "postgres", "mysql"] }
 # Postgres NUMERIC is arbitrary precision and JSON has no equivalent. Decoding
 # through f64 would silently round a money column, so the value is read exactly
 # here and the lossy step is the one the author asks for (`numeric_as`).
@@ -114,7 +114,7 @@ sea-query = { version = "1.0", default-features = false, features = ["derive", "
 # expression (`Unlicense` is not in deny.toml's allowlist).
 # `default-features = false` on sea-query also opts out of 1.0's new `itoa`
 # (integer-formatting fast path) and `audit` defaults; neither is needed.
-sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
@@ -166,8 +166,10 @@ sha2 = "0.11"
 # pure Rust, no linkage to the system OpenSSL rdkafka vendors.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "getrandom"] }
 # Channel `auth.mode = "hmac"`: webhook signature verification over the raw
-# request body. Pinned to 0.12 to match `sha2` 0.10 — both track `digest` 0.10,
-# and hmac 0.13 would pull a second digest major into the tree.
+# request body. 0.13 tracks `digest` 0.11, the same major `sha2` 0.11 uses —
+# both are Orion's direct deps on one digest line. (`digest` 0.10 is already in
+# the tree transitively via `sha2` 0.10 under cranelift-codegen and sqlx-core,
+# so there is no second-major to avoid.)
 hmac = "0.13"
 hex = "0.4"
 # Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both

@@ -507,6 +507,24 @@ impl ChannelSnapshot {
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
+
+    /// Prune every per-channel rate limiter's in-process keyed store.
+    ///
+    /// A limiter keyed by client identity keeps one entry per address (or
+    /// `key_logic` header value) ever seen, and governor's store only shrinks
+    /// when asked — and per-channel limiters are carried across reloads by
+    /// `Arc`, so nothing else ever prompts it. The supervised limiter-prune
+    /// task calls this; a Redis-backed limiter is a no-op ([`RateLimitBackend::prune`]).
+    pub fn prune_rate_limiters(&self) {
+        for cfg in self.by_name.values() {
+            if let Some(limiter) = &cfg.rate_limiter {
+                limiter.prune();
+            }
+            if let Some(limiter) = &cfg.principal_rate_limiter {
+                limiter.prune();
+            }
+        }
+    }
 }
 
 /// Everything [`ChannelLoader::build`] needs beyond the channel rows.
