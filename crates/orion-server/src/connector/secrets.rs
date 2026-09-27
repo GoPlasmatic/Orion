@@ -187,6 +187,15 @@ pub struct VaultSecretResolver {
     client: reqwest::Client,
 }
 
+/// The most a Vault response body may be before it is refused. A KV secret is
+/// small JSON — a value or two plus KV v2's metadata envelope — so 256 KiB is
+/// generous headroom for any legitimate secret (a PEM bundle is a few KB)
+/// while bounding a compromised or misconfigured endpoint. The same magnitude
+/// as the JWKS cap, and enforced the same way: `http_body::read_bounded` hangs
+/// up on an oversized body mid-stream rather than reading it whole and then
+/// rejecting it.
+const MAX_VAULT_RESPONSE_BYTES: usize = 262_144;
+
 /// Where a [`VaultSecretResolver`] gets its address and token.
 ///
 /// The environment variant reads at resolution rather than at construction.
@@ -320,7 +329,17 @@ impl SecretResolver for VaultSecretResolver {
                 ),
             });
         }
-        let body: Value = response.json().await.map_err(|_| OrionError::Config {
+        // Bounded *while streaming* (`http_body`), like every other egress in
+        // the crate: `response.json()` reads to the end of the body first, so a
+        // Vault endpoint that omits `Content-Length` and streams without limit
+        // was read whole into memory at load time. The cap is enforced before
+        // each chunk lands, so an oversized body is refused mid-stream.
+        let bytes = crate::http_body::read_bounded(response, MAX_VAULT_RESPONSE_BYTES)
+            .await
+            .map_err(|e| OrionError::Config {
+                message: format!("vault://{path}: reading the Vault response failed: {e}"),
+            })?;
+        let body: Value = serde_json::from_slice(&bytes).map_err(|_| OrionError::Config {
             message: format!("vault://{path}: Vault response was not JSON"),
         })?;
 
@@ -1028,6 +1047,35 @@ mod vault_tests {
             .expect("resolves");
         assert_eq!(v["auth"]["password"], "hunter2");
         assert_eq!(v["url"], "https://db.example.com");
+    }
+
+    /// A Vault endpoint that streams an unbounded chunked body — no
+    /// `Content-Length`, the shape a read-then-measure cap cannot stop — is
+    /// refused *while streaming*, so the peer never hands over the whole body.
+    /// Before the `http_body` cap, `response.json()` read it whole into memory
+    /// at load time. The load-bearing assertion is on what the server managed
+    /// to write, not on the error: an unbounded read produces the same size
+    /// error, after buffering all 8 MiB.
+    #[tokio::test]
+    async fn an_oversized_vault_response_is_refused_while_streaming() {
+        const CHUNK: usize = 64 * 1024;
+        const CHUNKS: usize = 128; // 8 MiB if a reader lets it all through
+        let (url, server) = crate::http_body::flood_server(CHUNK, CHUNKS).await;
+        // `flood_server` answers any path, so the built `/v1/<path>` URL lands.
+        let r = VaultSecretResolver::new(url.trim_end_matches('/'), "t0ken");
+        let err = r
+            .resolve("secret/data/db#password")
+            .await
+            .expect_err("an unbounded body must be refused");
+        assert!(
+            err.to_string().contains("byte limit"),
+            "the refusal must be the size cap: {err}"
+        );
+        crate::http_body::assert_stopped_early(
+            server.await.expect("test server"),
+            CHUNK * CHUNKS,
+            "vault resolver",
+        );
     }
 }
 
