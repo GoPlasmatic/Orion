@@ -13,11 +13,14 @@
 //! least-recently-used to `models.max_cache_bytes`.
 //!
 //! Every byte that crosses the network goes through
-//! [`crate::http_body::read_bounded`], so `models.max_artifact_bytes` bounds
-//! the memory a fetch can be made to hold, not merely the result it returns.
+//! [`crate::http_body::stream_bounded`] straight to disk, hashed as it
+//! arrives, so `models.max_artifact_bytes` bounds the memory a fetch holds to
+//! one chunk — a half-gigabyte model is never buffered whole to be hashed and
+//! written.
 
 use std::collections::HashSet;
 use std::fmt;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -25,7 +28,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::connector::{StorageConnectorConfig, sigv4};
-use crate::http_body::{ReadError, read_bounded};
+use crate::http_body::{ReadError, StreamError, stream_bounded};
 
 /// Where a model version's bytes live, as a row stores it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,12 +202,14 @@ impl ArtifactStore {
 
     /// The bytes under `artifact.digest`, on disk and verified.
     ///
-    /// A cache hit is re-hashed once per process; a file that does not hash
-    /// to its name is removed and fetched again. A miss is a signed GET
-    /// streamed under `max_artifact_bytes`, hashed, compared with the claim
-    /// — a mismatch writes nothing — then written beside its final name and
-    /// renamed into place, after which the directory is swept to
-    /// `max_cache_bytes`.
+    /// A cache hit is verified once per process by streaming the file through
+    /// the hasher; a file that does not hash to its name is removed and
+    /// fetched again. A miss is a signed GET streamed straight to a temporary
+    /// file under `max_artifact_bytes`, hashed as it arrives, and — only if
+    /// the digest matches the claim — renamed into place, after which the
+    /// directory is swept to `max_cache_bytes`. A mismatch, an overrun or any
+    /// write failure leaves only a temporary file, which the next sweep reaps;
+    /// nothing is ever kept under a digest's name until it is verified.
     pub async fn fetch(
         &self,
         storage: &StorageConnectorConfig,
@@ -238,32 +243,64 @@ impl ArtifactStore {
         if !status.is_success() {
             return Err(FetchError::Fetch(format!("GET answered HTTP {status}")));
         }
-        let bytes = read_bounded(response, max_artifact_bytes)
-            .await
-            .map_err(|e| match e {
-                ReadError::TooLarge { limit, declared } => FetchError::Size { limit, declared },
-                ReadError::Transport(e) => FetchError::Fetch(if e.is_timeout() {
-                    "GET timed out".to_string()
-                } else {
-                    format!("GET failed: {}", e.without_url())
-                }),
-            })?;
 
-        let claimed = artifact.digest.clone();
-        let cache_dir = self.cache_dir.clone();
-        let final_path = path.clone();
-        // Hashing and writing hundreds of megabytes is blocking work; the
-        // task that admits a model must not hold an executor thread for it.
-        let written = tokio::task::spawn_blocking(move || {
-            let computed = crate::crypto::sha256_digest(&bytes);
-            if computed != claimed {
-                return Err(FetchError::DigestMismatch { claimed, computed });
+        // Stream the body to a temporary file, hashing every chunk as it
+        // lands, so the bytes are never held whole in memory. `stream_bounded`
+        // enforces `max_artifact_bytes` before each chunk reaches the file, as
+        // `read_bounded` did before appending, so an oversized object is hung
+        // up on mid-stream rather than written out and then rejected.
+        std::fs::create_dir_all(&self.cache_dir).map_err(|e| {
+            FetchError::Cache(format!("cannot create {}: {e}", self.cache_dir.display()))
+        })?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("artifact");
+        let temp = self
+            .cache_dir
+            .join(format!(".{name}.tmp-{}", uuid::Uuid::new_v4()));
+        let mut writer = HashingWriter::create(&temp)
+            .map_err(|e| FetchError::Cache(format!("cannot write {}: {e}", temp.display())))?;
+
+        let streamed =
+            stream_bounded(response, max_artifact_bytes, |chunk| writer.write(chunk)).await;
+        let computed = match streamed.and_then(|_| writer.finish().map_err(StreamError::Sink)) {
+            Ok(computed) => computed,
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                return Err(match e {
+                    StreamError::Read(ReadError::TooLarge { limit, declared }) => {
+                        FetchError::Size { limit, declared }
+                    }
+                    StreamError::Read(ReadError::Transport(e)) => {
+                        FetchError::Fetch(if e.is_timeout() {
+                            "GET timed out".to_string()
+                        } else {
+                            format!("GET failed: {}", e.without_url())
+                        })
+                    }
+                    StreamError::Sink(e) => {
+                        FetchError::Cache(format!("cannot write {}: {e}", temp.display()))
+                    }
+                });
             }
-            write_atomically(&cache_dir, &final_path, &bytes)
-        })
-        .await
-        .map_err(|e| FetchError::Cache(format!("the cache write task failed: {e}")))?;
-        written?;
+        };
+        if computed != artifact.digest {
+            let _ = std::fs::remove_file(&temp);
+            return Err(FetchError::DigestMismatch {
+                claimed: artifact.digest.clone(),
+                computed,
+            });
+        }
+        // Rename only after the digest matched: a reader never sees a partial
+        // or unverified file under a digest's name.
+        if let Err(e) = std::fs::rename(&temp, &path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(FetchError::Cache(format!(
+                "cannot write {}: {e}",
+                path.display()
+            )));
+        }
 
         self.verified
             .lock()
@@ -288,12 +325,13 @@ impl ArtifactStore {
             .contains(digest);
         if !already {
             let hash_path = path.to_path_buf();
-            let computed = tokio::task::spawn_blocking(move || {
-                std::fs::read(&hash_path).map(|bytes| crate::crypto::sha256_digest(&bytes))
-            })
-            .await
-            .map_err(|e| FetchError::Cache(format!("the cache hash task failed: {e}")))?
-            .map_err(|e| FetchError::Cache(format!("cannot read {}: {e}", path.display())))?;
+            // Streamed through the hasher rather than read whole: a cached
+            // artifact can be `max_artifact_bytes` large, and verifying what is
+            // already on disk must not spike memory to its size.
+            let computed = tokio::task::spawn_blocking(move || hash_file(&hash_path))
+                .await
+                .map_err(|e| FetchError::Cache(format!("the cache hash task failed: {e}")))?
+                .map_err(|e| FetchError::Cache(format!("cannot read {}: {e}", path.display())))?;
             if computed != digest {
                 tracing::warn!(
                     path = %path.display(),
@@ -405,23 +443,51 @@ async fn signed(
     Ok(request)
 }
 
-/// Write `bytes` beside `path` and rename into place, so a reader never sees
-/// a partial file under a digest's name.
-fn write_atomically(cache_dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
-    std::fs::create_dir_all(cache_dir)
-        .map_err(|e| FetchError::Cache(format!("cannot create {}: {e}", cache_dir.display())))?;
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("artifact");
-    let temp = cache_dir.join(format!(".{name}.tmp-{}", uuid::Uuid::new_v4()));
-    let result = std::fs::write(&temp, bytes)
-        .and_then(|()| std::fs::rename(&temp, path))
-        .map_err(|e| FetchError::Cache(format!("cannot write {}: {e}", path.display())));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
+/// A temp-file writer that folds every byte it is handed into a running
+/// digest, so a fetch has the artifact's hash ready the instant the last chunk
+/// lands — no second pass over the bytes, and none of them held in memory.
+struct HashingWriter {
+    writer: std::io::BufWriter<std::fs::File>,
+    hasher: crate::crypto::Sha256Stream,
+}
+
+impl HashingWriter {
+    fn create(path: &Path) -> std::io::Result<Self> {
+        Ok(Self {
+            // A megabyte of buffer keeps syscalls rare — roughly one per
+            // megabyte streamed, interleaved with the network reads the fetch
+            // waits on anyway.
+            writer: std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?),
+            hasher: crate::crypto::Sha256Stream::new(),
+        })
     }
-    result
+
+    fn write(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        self.hasher.update(chunk);
+        self.writer.write_all(chunk)
+    }
+
+    /// Flush the file and yield the digest of everything written.
+    fn finish(mut self) -> std::io::Result<String> {
+        self.writer.flush()?;
+        Ok(self.hasher.finish())
+    }
+}
+
+/// The `sha256:` digest of a file's bytes, read in chunks so a large artifact
+/// is never held whole in memory to verify it.
+fn hash_file(path: &Path) -> std::io::Result<String> {
+    let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut hasher = crate::crypto::Sha256Stream::new();
+    let mut buf = [0u8; 1 << 16];
+    loop {
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(hasher.finish())
 }
 
 /// Bump a cached file's modification time so the sweep sees it as recently
@@ -656,6 +722,51 @@ pub(crate) mod tests {
             .expect("refetched");
         assert_eq!(std::fs::read(&path).expect("rewritten"), body);
         assert_eq!(bucket.gets.load(Ordering::SeqCst), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A body larger than one network chunk streams to disk and hashes as it
+    /// goes, and a fresh process re-hashes it the same streaming way — proving
+    /// the fetch never holds the whole artifact in memory to write or verify
+    /// it.
+    #[tokio::test]
+    async fn a_large_body_streams_to_disk_across_chunks_and_verifies() {
+        let body = vec![0xABu8; 300 * 1024];
+        let bucket = spawn_bucket(body.clone(), None).await;
+        let storage = storage_config(bucket.addr);
+        let client = reqwest::Client::new();
+        let dir = temp_cache_dir();
+        let store = ArtifactStore::new(&dir, 1 << 30);
+        let artifact = artifact(&body);
+
+        let path = store
+            .fetch(
+                &storage,
+                &client,
+                &artifact,
+                1 << 20,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("fetches");
+        assert_eq!(std::fs::read(&path).expect("written"), body);
+        assert_eq!(store.cached_bytes(), body.len() as u64);
+        assert_eq!(names_in(&dir).len(), 1, "no temp file left behind");
+
+        // A fresh process re-hashes by streaming the file, recognises it, and
+        // does not fetch again.
+        let fresh = ArtifactStore::new(&dir, 1 << 30);
+        fresh
+            .fetch(
+                &storage,
+                &client,
+                &artifact,
+                1 << 20,
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("hit after a streaming re-hash");
+        assert_eq!(bucket.gets.load(Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

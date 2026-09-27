@@ -126,6 +126,69 @@ pub async fn read_bounded(
     Ok(body)
 }
 
+/// Why [`stream_bounded`] stopped early: the response could not be read under
+/// the cap, or the caller's sink refused a chunk.
+#[derive(Debug)]
+pub enum StreamError {
+    /// The response overran the cap or the transport failed — the same
+    /// distinction [`ReadError`] draws, unchanged.
+    Read(ReadError),
+    /// The sink the bytes were being written to failed (a full disk, say).
+    /// Kept apart from [`ReadError`] because it is the caller's fault, not the
+    /// peer's, and maps to a different error at the call site.
+    Sink(std::io::Error),
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(e) => e.fmt(f),
+            Self::Sink(e) => write!(f, "the sink failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for StreamError {}
+
+/// Stream the whole body under `limit`, handing each chunk to `sink` as it
+/// arrives — the streaming counterpart of [`read_bounded`] for a body a caller
+/// wants to write somewhere (a model artifact to its disk cache) rather than
+/// hold in memory.
+///
+/// The cap is enforced *before* each chunk reaches the sink, exactly as
+/// [`read_bounded`] enforces it before appending, so the sink never sees a
+/// byte past the limit and the peak memory is one chunk rather than the whole
+/// body. `sink` is where the caller writes and, if it likes, hashes; an error
+/// it returns ends the stream as [`StreamError::Sink`]. Returns the number of
+/// bytes streamed.
+pub async fn stream_bounded<F>(
+    mut response: reqwest::Response,
+    limit: usize,
+    mut sink: F,
+) -> Result<usize, StreamError>
+where
+    F: FnMut(&[u8]) -> std::io::Result<()>,
+{
+    check_declared_length(&response, limit).map_err(StreamError::Read)?;
+
+    let mut total = 0usize;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| StreamError::Read(ReadError::Transport(e)))?
+    {
+        if total + chunk.len() > limit {
+            return Err(StreamError::Read(ReadError::TooLarge {
+                limit,
+                declared: None,
+            }));
+        }
+        sink(&chunk).map_err(StreamError::Sink)?;
+        total += chunk.len();
+    }
+    Ok(total)
+}
+
 /// As much of a body as fits in `limit`, for putting in an error message.
 ///
 /// Never fails and never rejects: the caller has already decided this response
@@ -292,6 +355,79 @@ mod tests {
             CHUNK * CHUNKS,
             "read_bounded",
         );
+    }
+
+    /// [`stream_bounded`] refuses a chunked body over the cap while streaming,
+    /// exactly as [`read_bounded`] does, and no byte past the cap reaches the
+    /// sink — the property a fetch-to-disk relies on.
+    #[tokio::test]
+    async fn stream_bounded_refuses_over_the_cap_and_the_sink_sees_nothing_past_it() {
+        let (url, server) = flood_server(CHUNK, CHUNKS).await;
+
+        let response = reqwest::Client::new().get(url).send().await.expect("head");
+        let mut written = 0usize;
+        let err = stream_bounded(response, 1024, |chunk| {
+            written += chunk.len();
+            Ok(())
+        })
+        .await
+        .expect_err("must refuse");
+
+        assert!(
+            matches!(
+                err,
+                StreamError::Read(ReadError::TooLarge { declared: None, .. })
+            ),
+            "{err}"
+        );
+        assert!(
+            written <= 1024,
+            "the sink saw bytes past the cap: {written}"
+        );
+        assert_stopped_early(
+            server.await.expect("test server"),
+            CHUNK * CHUNKS,
+            "stream_bounded",
+        );
+    }
+
+    /// A body under the cap is handed to the sink whole, and the byte count is
+    /// what was streamed.
+    #[tokio::test]
+    async fn stream_bounded_hands_a_fitting_body_to_the_sink() {
+        let (url, server) = flood_server(512, 2).await;
+
+        let response = reqwest::Client::new().get(url).send().await.expect("head");
+        let mut sink = Vec::new();
+        let streamed = stream_bounded(response, 4096, |chunk| {
+            sink.extend_from_slice(chunk);
+            Ok(())
+        })
+        .await
+        .expect("accepted");
+
+        assert_eq!(streamed, 1024);
+        assert_eq!(sink.len(), 1024);
+        assert!(sink.iter().all(|b| *b == b'x'));
+        let _ = server.await;
+    }
+
+    /// A sink that fails ends the stream as `Sink`, distinct from a read error
+    /// so the caller can blame the disk rather than the peer.
+    #[tokio::test]
+    async fn stream_bounded_surfaces_a_sink_failure() {
+        let (url, server) = flood_server(512, 2).await;
+
+        let response = reqwest::Client::new().get(url).send().await.expect("head");
+        let err = stream_bounded(response, 4096, |_chunk| {
+            Err(std::io::Error::other("disk full"))
+        })
+        .await
+        .expect_err("the sink fails");
+
+        assert!(matches!(err, StreamError::Sink(_)), "{err}");
+        assert!(err.to_string().contains("disk full"), "{err}");
+        let _ = server.await;
     }
 
     /// An honest oversized `Content-Length` is refused before the body is

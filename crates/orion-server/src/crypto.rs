@@ -133,6 +133,33 @@ pub fn sha256_digest(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
+/// An incremental [`sha256_digest`]: fed the bytes as they arrive, it yields
+/// the same `sha256:<hex>` string at the end.
+///
+/// So a large artifact — a model file up to `models.max_artifact_bytes` — is
+/// hashed while it streams to disk rather than held whole in memory only to be
+/// hashed once. `Self::finish` produces exactly what `sha256_digest` would
+/// over the same bytes, so the two are interchangeable and a digest hashed one
+/// way verifies against one hashed the other.
+#[derive(Default)]
+pub struct Sha256Stream(Sha256);
+
+impl Sha256Stream {
+    pub fn new() -> Self {
+        Self(Sha256::new())
+    }
+
+    /// Fold `chunk` into the running digest.
+    pub fn update(&mut self, chunk: &[u8]) {
+        self.0.update(chunk);
+    }
+
+    /// The digest of everything fed so far, spelled as [`sha256_digest`] does.
+    pub fn finish(self) -> String {
+        format!("sha256:{}", hex::encode(self.0.finalize()))
+    }
+}
+
 /// Whether `s` has the shape [`sha256_digest`] produces: the `sha256:`
 /// prefix and exactly 64 lowercase hex characters.
 pub fn is_sha256_digest(s: &str) -> bool {
