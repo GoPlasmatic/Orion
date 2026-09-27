@@ -57,10 +57,11 @@ pub async fn resync_from_db(
             .await?;
         // Paired with the reload above, always: a pool dropped without its
         // connector being re-read is a pool rebuilt from config this node has
-        // not re-checked.
-        state.caches.sql_pool_cache.evict_all().await;
-        state.caches.mongo_pool_cache.evict_all().await;
-        state.caches.cache_pool.evict_all_pools().await;
+        // not re-checked. Every slot, through one exhaustive match, so a cache
+        // added later cannot be left out of the sweep — the SMTP cache was,
+        // which left a node serving through a stale transport after an SMTP
+        // connector changed elsewhere in the cluster.
+        state.caches.evict_all_pools().await;
     }
     reload_engine_with_opts(
         state,

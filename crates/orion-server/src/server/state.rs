@@ -45,6 +45,33 @@ pub struct Caches {
     pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
 }
 
+impl Caches {
+    /// Evict every cached connection pool — blanket, no connector name.
+    ///
+    /// The cluster resync path (`runtime::reload::resync_from_db`) reloads
+    /// every connector and so must drop every pool built from a config it has
+    /// not re-checked. It cannot narrow by name — it does not know which
+    /// connectors moved — so it evicts all of them.
+    ///
+    /// Routed through an exhaustive match on `PoolSlot::ALL` for the same
+    /// reason the per-connector `evict_connector_pools` is: a cache added
+    /// later is a new `PoolSlot` variant and a new variant is a compile error
+    /// here. Before this, the resync path listed the caches by hand and
+    /// silently omitted the SMTP one, which left a node serving through a
+    /// stale SMTP transport after an SMTP connector changed on another node.
+    pub async fn evict_all_pools(&self) {
+        use crate::connector::PoolSlot;
+        for slot in PoolSlot::ALL {
+            match slot {
+                PoolSlot::Sql => self.sql_pool_cache.evict_all().await,
+                PoolSlot::Mongo => self.mongo_pool_cache.evict_all().await,
+                PoolSlot::Cache => self.cache_pool.evict_all_pools().await,
+                PoolSlot::Smtp => self.smtp_pool_cache.evict_all().await,
+            }
+        }
+    }
+}
+
 /// Owned fields shared across all route handlers.
 ///
 /// Wrapped in an `Arc` (via the [`AppState`] type alias) so the per-request
