@@ -290,6 +290,26 @@ async fn run_async_worker(
     }
 }
 
+/// Flush when the buffered rows' payload reaches this, regardless of the row
+/// count. A trace row carries up to a 1 MB result plus a 1 MB task trace, so
+/// `batch_size` (1000) large rows would otherwise hold ~2 GB per worker before
+/// the row-count trigger fired. Tiny rows — the common case — never reach it,
+/// so `batch_size` still sets the drain rate (Q11). Public so a test can size
+/// its rows against the real bound.
+pub const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+/// The heavy fields of a completed-trace row, for the batch byte budget.
+fn completed_weight(row: &TraceCompletedRow) -> usize {
+    row.result_json.len()
+        + row.input_json.as_ref().map_or(0, String::len)
+        + row.task_trace_json.as_ref().map_or(0, String::len)
+}
+
+/// The heavy fields of a result row, for the batch byte budget.
+fn result_weight(row: &TraceResultRow) -> usize {
+    row.result_json.len() + row.task_trace_json.as_ref().map_or(0, String::len)
+}
+
 async fn run_batch_worker(
     mut rx: WorkerReceiver<TracePersistenceTask>,
     trace_repo: Arc<dyn TraceSink>,
@@ -298,6 +318,8 @@ async fn run_batch_worker(
 ) {
     let mut completed: Vec<TraceCompletedRow> = Vec::new();
     let mut results: Vec<TraceResultRow> = Vec::new();
+    // Running payload size of the two buffers, reset by `flush_batches`.
+    let mut batch_bytes: usize = 0;
     let mut deadline = Instant::now() + flush_interval;
 
     // Q11: what sets this worker's drain rate is `batch_size`, not anything in
@@ -314,8 +336,14 @@ async fn run_batch_worker(
         match rx.recv_timeout(until).await {
             Recv::Item(task) => {
                 match task {
-                    TracePersistenceTask::StoreCompleted(row) => completed.push(row),
-                    TracePersistenceTask::SetResult(row) => results.push(row),
+                    TracePersistenceTask::StoreCompleted(row) => {
+                        batch_bytes += completed_weight(&row);
+                        completed.push(row);
+                    }
+                    TracePersistenceTask::SetResult(row) => {
+                        batch_bytes += result_weight(&row);
+                        results.push(row);
+                    }
                     // UpdateStatus is rare and per-row by nature — flush directly.
                     TracePersistenceTask::UpdateStatus {
                         id,
@@ -330,19 +358,23 @@ async fn run_batch_worker(
                         }
                     }
                 }
-                if completed.len() >= batch_size || results.len() >= batch_size {
-                    flush_batches(&trace_repo, &mut completed, &mut results).await;
+                if completed.len() >= batch_size
+                    || results.len() >= batch_size
+                    || batch_bytes >= MAX_BATCH_BYTES
+                {
+                    flush_batches(&trace_repo, &mut completed, &mut results, &mut batch_bytes)
+                        .await;
                     deadline = Instant::now() + flush_interval;
                 }
             }
             Recv::Closed => {
                 // Channel closed: drain remaining batches and exit.
-                flush_batches(&trace_repo, &mut completed, &mut results).await;
+                flush_batches(&trace_repo, &mut completed, &mut results, &mut batch_bytes).await;
                 return;
             }
             Recv::Elapsed => {
                 // Deadline elapsed: flush whatever we have.
-                flush_batches(&trace_repo, &mut completed, &mut results).await;
+                flush_batches(&trace_repo, &mut completed, &mut results, &mut batch_bytes).await;
                 deadline = Instant::now() + flush_interval;
             }
         }
@@ -417,7 +449,11 @@ async fn flush_batches(
     trace_repo: &Arc<dyn TraceSink>,
     completed: &mut Vec<TraceCompletedRow>,
     results: &mut Vec<TraceResultRow>,
+    batch_bytes: &mut usize,
 ) {
+    // The buffers and their byte tally are emptied together, so every flush
+    // path resets the budget here rather than at each call site.
+    *batch_bytes = 0;
     // Each arm retries the whole batch (Q6) and clears it only afterwards —
     // success or exhausted retries — so the buffer cannot grow unbounded
     // while the DB is down. Exhaustion is a counted, logged drop.

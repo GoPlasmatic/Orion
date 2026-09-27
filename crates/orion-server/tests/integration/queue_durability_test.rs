@@ -680,6 +680,66 @@ async fn a_burst_of_traces_commits_as_a_single_batch() {
     );
 }
 
+/// A burst of large traces must flush on the byte budget, not hold
+/// `batch_size` of them in memory.
+///
+/// Q11's row-count trigger alone let ~2 GB accumulate per worker when rows
+/// carry MB-scale results. With `batch_size` and the flush interval both set
+/// far above the test's reach, the *only* trigger that can fire mid-burst is
+/// the byte ceiling — so an early, smaller flush is proof it fired.
+#[tokio::test]
+async fn a_burst_of_large_traces_flushes_on_the_byte_budget() {
+    // Two of these exceed the budget; the third starts a fresh batch.
+    let row_bytes = orion::queue::trace_persistence::MAX_BATCH_BYTES / 2 + 1;
+    let big = "x".repeat(row_bytes);
+
+    let flushes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let repo: Arc<dyn TraceSink> = Arc::new(BatchSizeProbeRepo {
+        flushes: flushes.clone(),
+    });
+
+    let config = orion::config::TraceStorageConfig {
+        mode: orion::config::TraceStorageMode::Batch,
+        batch_workers: 1,
+        batch_size: 1000,
+        batch_flush_interval_ms: 600_000,
+        ..Default::default()
+    };
+    let (queue, handle) =
+        orion::queue::trace_persistence::start(&orion::runtime::TaskRegistry::new(), &config, repo);
+
+    for _ in 0..3 {
+        assert!(
+            queue
+                .submit(orion::queue::TracePersistenceTask::StoreCompleted(
+                    TraceCompletedRow {
+                        channel: "probe".to_string(),
+                        channel_id: None,
+                        mode: "sync".to_string(),
+                        input_json: None,
+                        result_json: big.clone(),
+                        duration_ms: 1.0,
+                        task_trace_json: None,
+                    }
+                ))
+                .await
+        );
+    }
+    drop(queue);
+    handle.shutdown().await;
+
+    let flushes = flushes.lock().unwrap().clone();
+    assert_eq!(
+        flushes.iter().sum::<usize>(),
+        3,
+        "every trace is still persisted"
+    );
+    assert!(
+        flushes.len() >= 2 && flushes[0] < 3,
+        "the byte budget forced an early flush before all three rows buffered: {flushes:?}"
+    );
+}
+
 // ============================================================
 // Q6: a panicking trace must not permanently shrink the queue
 // ============================================================
