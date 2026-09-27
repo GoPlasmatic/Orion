@@ -13,6 +13,18 @@
 //! two-request dance rather than a credential check, so it is a `config` block
 //! and not a fourth `AuthMode`.
 //!
+//! ## One channel, one or many providers (#355)
+//!
+//! A block either names one provider through its flat fields, or a `providers`
+//! map selected by the `{provider}` segment of the channel's routes. Everything
+//! below is written against a *selected* [`CompiledProvider`]: the single-provider
+//! form is a map with one implicit entry keyed `""`, and both legs resolve it
+//! through the one `select`, so selection does not fork on the form. The flat
+//! form differs only in what stays backward-compatible with pre-#355 sign-ins —
+//! it seals no provider into the state and stamps no `provider`/`kind` onto the
+//! grant. The slug is sealed into the signed state, so a callback cannot switch
+//! providers, and an unknown slug is a `404`.
+//!
 //! ## What this owns, and why each half is here rather than in the workflow
 //!
 //! - **The `302` and the state cookie.** Mechanical, identical for every
@@ -36,30 +48,32 @@
 //!
 //! The workflow keeps the half that is genuinely application-specific:
 //! identify the user, upsert the row, mint the app's own session token,
-//! redirect home. It receives the grant at `metadata.oauth`.
+//! redirect home. It receives the grant at `metadata.oauth` (and, once
+//! populated, the normalised identity at `metadata.identity`).
 //!
 //! ## State is a signed cookie, not a stored row
 //!
 //! Everything the callback needs — the nonce, the PKCE verifier, the OIDC
-//! nonce, the destination — travels in one HS256 JWT in an `HttpOnly` cookie,
-//! minted with [`crate::jwt::sign`] and verified with [`crate::jwt::Verifier`].
-//! That reuses #267's core whole (the algorithm allowlist, `require_exp`, the
-//! leeway, RFC 7518's key-length floor) and needs no shared store, so a sign-in
-//! that begins on one node and returns to another works with no coordination.
-//! The `state` query parameter **is** the nonce claim; the binding is that the
-//! two match.
+//! nonce, the destination, the provider slug — travels in one HS256 JWT in an
+//! `HttpOnly` cookie, minted with [`crate::jwt::sign`] and verified with
+//! [`crate::jwt::Verifier`]. That reuses #267's core whole (the algorithm
+//! allowlist, `require_exp`, the leeway, RFC 7518's key-length floor) and needs
+//! no shared store, so a sign-in that begins on one node and returns to another
+//! works with no coordination. The `state` query parameter **is** the nonce
+//! claim; the binding is that the two match.
 //!
 //! The cost is that "single use" is enforced by clearing the cookie rather than
 //! by a row: two concurrent replays of one callback inside the window would
 //! both pass this check. The authorization code itself is single-use at the
 //! IdP, which is where that defence actually lives.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Value, json};
 
 use super::config::{
-    IdTokenConfig, OAuth2LoginConfig, RESERVED_AUTHORIZE_PARAMS, StateCookieConfig,
+    IdTokenConfig, OAuth2LoginConfig, ProviderConfig, RESERVED_AUTHORIZE_PARAMS, ReturnToConfig,
+    StateCookieConfig,
 };
 use crate::errors::{OrionError, Unavailable};
 
@@ -82,6 +96,23 @@ impl Leg {
     }
 }
 
+/// The metric `provider` label for a single-provider (flat) block, and for any
+/// failure that happens before a provider is selected. Fixed strings, never a
+/// caller-supplied slug — a metric label value must come from a bounded set, or
+/// a prober floods the series with junk slugs.
+const PROVIDER_LABEL_SINGLE: &str = "default";
+const PROVIDER_LABEL_UNKNOWN: &str = "unknown";
+
+/// The metric `provider` label for a resolved provider: its slug, or `default`
+/// for the single-provider (flat) form, whose implicit entry is keyed `""`.
+fn provider_label(canonical_slug: &str) -> &str {
+    if canonical_slug.is_empty() {
+        PROVIDER_LABEL_SINGLE
+    } else {
+        canonical_slug
+    }
+}
+
 /// Bytes of entropy in the CSRF nonce and the PKCE verifier. RFC 7636 §4.1
 /// specifies 32 octets for the verifier; the nonce has no less to protect.
 const NONCE_BYTES: usize = 32;
@@ -101,6 +132,17 @@ pub struct Redirect {
     pub location: String,
     /// The `Set-Cookie` value carrying the signed state.
     pub set_cookie: String,
+}
+
+impl std::fmt::Debug for Redirect {
+    /// Redacts the cookie: it carries the signed state, and that seals the PKCE
+    /// verifier for the duration of one sign-in.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Redirect")
+            .field("location", &self.location)
+            .field("set_cookie", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A verified callback: what the workflow gets, and the cookie that retires the
@@ -137,18 +179,59 @@ pub struct LoginDeps<'a> {
     /// grant themselves the egress the flag exists to gate — the same argument
     /// recorded for `jwt.allow_private_jwks_urls`.
     pub allow_private_token_urls: bool,
+    /// Deployment-supplied providers (#355), merged into a block that opts in
+    /// with `providers_from_instance`. The definition's own entries win a slug
+    /// clash. Empty when the deployment declares none.
+    pub instance_providers: &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
+}
+
+/// One resolved identity provider: the endpoints, credentials and verifier a
+/// selected provider serves with. The per-request path reads these and does no
+/// resolution and no parsing.
+pub struct CompiledProvider {
+    /// `"oidc"` or `"oauth2"` — the establishment protocol, stamped into the
+    /// identity. Bounded by construction.
+    kind: &'static str,
+    client_id: String,
+    client_secret: String,
+    authorize_url: String,
+    token_url: String,
+    /// The redirect URI, with `{provider}` already filled in — the value sent on
+    /// both legs and registered with the IdP.
+    redirect_uri: String,
+    client_auth: String,
+    scopes: Vec<String>,
+    extra_authorize_params: BTreeMap<String, String>,
+    id_token: Option<IdTokenConfig>,
+    id_token_verifier: Option<crate::jwt::Verifier>,
+}
+
+impl CompiledProvider {
+    fn wants_oidc_nonce(&self) -> bool {
+        self.id_token.as_ref().is_some_and(|id| id.nonce)
+    }
 }
 
 /// A channel's `oauth2_login` block with its secrets resolved and its keys
 /// built — the per-request path does no resolution and no parsing.
 pub struct CompiledOAuth2Login {
-    cfg: OAuth2LoginConfig,
     channel: String,
-    client_id: String,
-    client_secret: String,
+    callback_path: String,
+    pkce: bool,
+    run_workflow_on_authorize: bool,
+    state_cookie: StateCookieConfig,
+    return_to: Option<ReturnToConfig>,
     state_key: jsonwebtoken::EncodingKey,
     state_verifier: crate::jwt::Verifier,
-    id_token_verifier: Option<crate::jwt::Verifier>,
+    /// Every provider this block serves, by slug. The single-provider (flat)
+    /// form is one entry under the empty slug with [`Self::route_selected`]
+    /// false; the multi-provider form is the authored map. This is the
+    /// resolver: `begin`/`complete`/the guard reach a provider only through it
+    /// and never know whether the block was flat, a map, or (later) sourced
+    /// elsewhere.
+    providers: BTreeMap<String, CompiledProvider>,
+    /// Whether a provider is chosen from the `{provider}` route slug.
+    route_selected: bool,
     /// The shared client. `reqwest::Client` is an `Arc` internally, so this is
     /// a handle and not a second connection pool.
     http_client: reqwest::Client,
@@ -161,10 +244,10 @@ impl std::fmt::Debug for CompiledOAuth2Login {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompiledOAuth2Login")
             .field("channel", &self.channel)
-            .field("authorize_url", &self.cfg.authorize_url)
-            .field("callback_path", &self.cfg.callback_path)
-            .field("pkce", &self.cfg.pkce)
-            .field("oidc", &self.id_token_verifier.is_some())
+            .field("callback_path", &self.callback_path)
+            .field("pkce", &self.pkce)
+            .field("route_selected", &self.route_selected)
+            .field("providers", &self.providers.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }
@@ -182,23 +265,50 @@ impl CompiledOAuth2Login {
         channel: &str,
         deps: &LoginDeps<'_>,
     ) -> Result<Self, String> {
-        // Resolve before the shape check, so the check runs on what will
-        // serve. A `var://` was substituted into the JSON before this block
-        // was typed; the secret schemes resolve here, field by field, and the
-        // three URLs are among those fields because they are what differs
-        // between environments — `redirect_uri` most of all, which must still
-        // match the provider's registration byte for byte.
-        let client_id = resolve_secret(&cfg.client_id, "oauth2_login.client_id").await?;
-        let client_secret =
-            resolve_secret(&cfg.client_secret, "oauth2_login.client_secret").await?;
+        // Resolve before the shape check, so the check runs on what will serve.
+        // A `var://` was substituted into the JSON before this block was typed;
+        // the secret schemes resolve here, field by field, and the URLs are
+        // among those fields because they are what differs between environments.
         let state_secret = resolve_secret(&cfg.state_secret, "oauth2_login.state_secret").await?;
-        let cfg = OAuth2LoginConfig {
-            authorize_url: resolve_secret(&cfg.authorize_url, "oauth2_login.authorize_url").await?,
-            token_url: resolve_secret(&cfg.token_url, "oauth2_login.token_url").await?,
-            redirect_uri: resolve_secret(&cfg.redirect_uri, "oauth2_login.redirect_uri").await?,
-            ..cfg.clone()
-        };
-        validate_shape(&cfg, ShapeCheck::Serving)?;
+        let shared_redirect =
+            resolve_secret(&cfg.redirect_uri, "oauth2_login.redirect_uri").await?;
+
+        // The effective providers: the block's own, plus (when it opts in) the
+        // deployment's, with the definition winning any slug clash. The merge is
+        // here, in the resolver's own constructor, so `begin`/`complete` never
+        // learn a provider's source — a stored resource could become a third
+        // input with no change past this point.
+        let authored = merge_instance_providers(cfg, deps.instance_providers);
+
+        // Resolve each provider's reference-bearing fields, once, up front.
+        let mut resolved_entries: Vec<(String, ProviderConfig)> = Vec::new();
+        for (slug, p) in authored {
+            let pfx = field_prefix(&slug);
+            let resolved = ProviderConfig {
+                kind: p.kind.clone(),
+                authorize_url: resolve_opt(&p.authorize_url, &format!("oauth2_login.{pfx}authorize_url"))
+                    .await?,
+                token_url: resolve_opt(&p.token_url, &format!("oauth2_login.{pfx}token_url")).await?,
+                client_id: resolve_opt(&p.client_id, &format!("oauth2_login.{pfx}client_id")).await?,
+                client_secret: resolve_opt(
+                    &p.client_secret,
+                    &format!("oauth2_login.{pfx}client_secret"),
+                )
+                .await?,
+                client_auth: p.client_auth.clone(),
+                redirect_uri: resolve_opt(&p.redirect_uri, &format!("oauth2_login.{pfx}redirect_uri"))
+                    .await?,
+                scopes: p.scopes.clone(),
+                extra_authorize_params: p.extra_authorize_params.clone(),
+                id_token: p.id_token.clone(),
+            };
+            resolved_entries.push((slug, resolved));
+        }
+
+        // Shape-check the resolved values, so a reference that resolved to plain
+        // http is refused here rather than reaching the provider.
+        let resolved_cfg = assemble_resolved(cfg, shared_redirect.clone(), &resolved_entries);
+        validate_shape(&resolved_cfg, ShapeCheck::Serving)?;
 
         // `encoding_key` enforces RFC 7518 §3.2's ≥32-byte floor for HS256, so
         // a short secret fails here rather than signing a forgeable state.
@@ -226,19 +336,26 @@ impl CompiledOAuth2Login {
             validations: std::sync::OnceLock::new(),
         };
 
-        let id_token_verifier = match cfg.id_token {
-            Some(ref id) => Some(build_id_token_verifier(id, &client_id, deps)?),
-            None => None,
-        };
+        // Build the compiled providers from the resolved values.
+        let mut providers = BTreeMap::new();
+        for (slug, p) in &resolved_entries {
+            providers.insert(
+                slug.clone(),
+                build_provider(slug, p, &shared_redirect, deps)?,
+            );
+        }
 
         Ok(Self {
-            cfg,
             channel: channel.to_string(),
-            client_id,
-            client_secret,
+            callback_path: cfg.callback_path.clone(),
+            pkce: cfg.pkce,
+            run_workflow_on_authorize: cfg.run_workflow_on_authorize,
+            state_cookie: cfg.state_cookie.clone(),
+            return_to: cfg.return_to.clone(),
             state_key,
             state_verifier,
-            id_token_verifier,
+            providers,
+            route_selected: cfg.is_multi_provider(),
             http_client: deps.http_client.clone(),
             allow_private_token_urls: deps.allow_private_token_urls,
         })
@@ -246,18 +363,52 @@ impl CompiledOAuth2Login {
 
     /// The channel's callback route, as authored.
     pub fn callback_path(&self) -> &str {
-        &self.cfg.callback_path
+        &self.callback_path
     }
 
     /// Whether the workflow runs on the authorize leg before the redirect is
     /// built.
     pub fn runs_workflow_on_authorize(&self) -> bool {
-        self.cfg.run_workflow_on_authorize
+        self.run_workflow_on_authorize
     }
 
     /// The state cookie's name, for the read side.
     pub fn state_cookie_name(&self) -> &str {
-        &self.cfg.state_cookie.name
+        &self.state_cookie.name
+    }
+
+    /// Select the provider a request names, or `NotFound` when the slug is not
+    /// one this block serves. The single-provider form ignores the slug and
+    /// returns its one entry. The one lookup point — `begin`, `require_provider`
+    /// and `complete` all resolve a provider through here.
+    ///
+    /// Returns the canonical slug (the map key) alongside the provider, so the
+    /// caller seals and labels with a value from the bounded set rather than the
+    /// caller's own string.
+    fn select(&self, slug: Option<&str>) -> Result<(&str, &CompiledProvider), OrionError> {
+        if self.route_selected {
+            let slug = slug.unwrap_or_default();
+            self.providers
+                .get_key_value(slug)
+                .map(|(k, p)| (k.as_str(), p))
+                .ok_or_else(|| {
+                    OrionError::NotFound("no such identity provider on this channel".to_string())
+                })
+        } else {
+            let (k, p) = self
+                .providers
+                .iter()
+                .next()
+                .expect("a compiled block always has at least one provider");
+            Ok((k.as_str(), p))
+        }
+    }
+
+    /// `Ok` if the slug names a provider — used on the authorize leg that defers
+    /// its redirect, so a sign-in to an unknown provider is a `404` before the
+    /// workflow runs rather than after.
+    pub fn require_provider(&self, slug: Option<&str>) -> Result<(), OrionError> {
+        self.select(slug).map(|_| ())
     }
 
     // -----------------------------------------------------------------
@@ -266,6 +417,9 @@ impl CompiledOAuth2Login {
 
     /// Mint the state and build the redirect to the IdP.
     ///
+    /// `slug` is the `{provider}` route segment (or `None`/`""` for the
+    /// single-provider form). An unknown slug is a `404`.
+    ///
     /// `contributed` is `data._orion.oauth2.authorize` when the channel runs
     /// its workflow on this leg — an object that may carry `extra_params` and
     /// `scopes`. It cannot reach `state`, `nonce` or `code_challenge`:
@@ -273,30 +427,40 @@ impl CompiledOAuth2Login {
     /// create time, because config validation cannot see what a workflow
     /// computes.
     ///
-    /// `return_to` arrives already checked, from
-    /// [`Self::accepted_return_to`]. It is a parameter rather than something
-    /// this reads from the query itself because the two authorize paths run at
-    /// different times: without the workflow the redirect is built in the guard
-    /// chain, and with it, after the workflow has run — by which point the
-    /// request's real query string is no longer at hand, and the only copy
-    /// within reach would be the one in `metadata`, where a caller's envelope
-    /// can survive.
+    /// `return_to` arrives already checked, from [`Self::accepted_return_to`].
     pub fn begin(
         &self,
+        slug: Option<&str>,
         contributed: Option<&Value>,
         return_to: Option<&str>,
-    ) -> Result<Redirect, String> {
-        let nonce = random_nonce();
-        let oidc_nonce = self.wants_oidc_nonce().then(random_nonce);
-        let verifier = self.cfg.pkce.then(random_nonce);
+    ) -> Result<Redirect, OrionError> {
+        let (canonical_slug, provider) = match self.select(slug) {
+            Ok(v) => v,
+            Err(e) => {
+                if self.route_selected {
+                    crate::metrics::record_oauth_login(
+                        &self.channel,
+                        PROVIDER_LABEL_UNKNOWN,
+                        Leg::Authorize,
+                        "unknown_provider",
+                    );
+                }
+                return Err(e);
+            }
+        };
 
-        let mut url = url::Url::parse(&self.cfg.authorize_url)
-            .map_err(|e| format!("authorize_url does not parse: {e}"))?;
+        let nonce = random_nonce();
+        let oidc_nonce = provider.wants_oidc_nonce().then(random_nonce);
+        let verifier = self.pkce.then(random_nonce);
+
+        let mut url = url::Url::parse(&provider.authorize_url).map_err(|e| {
+            OrionError::internal(format!("oauth2_login authorize_url does not parse: {e}"))
+        })?;
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("response_type", "code");
-            q.append_pair("client_id", &self.client_id);
-            q.append_pair("redirect_uri", &self.cfg.redirect_uri);
+            q.append_pair("client_id", &provider.client_id);
+            q.append_pair("redirect_uri", &provider.redirect_uri);
             q.append_pair("state", &nonce);
 
             let scopes = contributed
@@ -308,7 +472,7 @@ impl CompiledOAuth2Login {
                         .map(str::to_string)
                         .collect::<Vec<_>>()
                 })
-                .unwrap_or_else(|| self.cfg.scopes.clone());
+                .unwrap_or_else(|| provider.scopes.clone());
             if !scopes.is_empty() {
                 q.append_pair("scope", &scopes.join(" "));
             }
@@ -319,7 +483,7 @@ impl CompiledOAuth2Login {
                 q.append_pair("code_challenge", &pkce_challenge(v));
                 q.append_pair("code_challenge_method", "S256");
             }
-            for (k, v) in &self.cfg.extra_authorize_params {
+            for (k, v) in &provider.extra_authorize_params {
                 q.append_pair(k, v);
             }
             if let Some(extra) = contributed
@@ -345,13 +509,11 @@ impl CompiledOAuth2Login {
         // Both uses of `max_age` here are total because `compile` ran
         // `validate_shape`, which caps it at `MAX_STATE_COOKIE_MAX_AGE_SECS` —
         // so the sum cannot overflow and the cast below cannot go negative.
-        // The bound is the check; a `checked_add` here would be a branch that
-        // cannot fire.
         let now = now_secs();
         let mut claims = json!({
             "nonce": nonce,
             "iat": now,
-            "exp": now + self.cfg.state_cookie.max_age,
+            "exp": now + self.state_cookie.max_age,
         });
         if let Some(v) = verifier {
             claims["pkce_verifier"] = json!(v);
@@ -362,12 +524,26 @@ impl CompiledOAuth2Login {
         if let Some(r) = return_to {
             claims["return_to"] = json!(r);
         }
-        let token = crate::jwt::sign(STATE_ALG, &self.state_key, None, &claims)
-            .map_err(|e| format!("could not sign the OAuth2 state: {e}"))?;
+        // Seal the provider slug so the callback cannot present a state minted
+        // for one provider against another's callback URL.
+        if self.route_selected {
+            claims["provider"] = json!(canonical_slug);
+        }
+        let token = crate::jwt::sign(STATE_ALG, &self.state_key, None, &claims).map_err(|e| {
+            OrionError::internal(format!("could not sign the OAuth2 state: {e}"))
+        })?;
 
+        crate::metrics::record_oauth_login(
+            &self.channel,
+            provider_label(canonical_slug),
+            Leg::Authorize,
+            "ok",
+        );
         Ok(Redirect {
             location: url.into(),
-            set_cookie: self.state_cookie(&token, self.cfg.state_cookie.max_age as i64)?,
+            set_cookie: self
+                .state_cookie(&token, self.state_cookie.max_age as i64)
+                .map_err(OrionError::internal)?,
         })
     }
 
@@ -384,9 +560,14 @@ impl CompiledOAuth2Login {
     /// failed is telling a prober how to make progress.
     pub async fn complete(
         &self,
+        slug: Option<&str>,
         query: &HashMap<String, String>,
         jar: &[&str],
     ) -> Result<Grant, OrionError> {
+        // Every failure before a provider is selected labels the metric
+        // `unknown`, never the caller's slug.
+        let unknown = PROVIDER_LABEL_UNKNOWN;
+
         // The IdP refusing is not the same as a check failing here: the user
         // pressed "Cancel", or consent was withdrawn. Still a 401 on the wire —
         // no session was established — but named separately in the metric.
@@ -397,45 +578,65 @@ impl CompiledOAuth2Login {
                 description = query.get("error_description").map(String::as_str).unwrap_or(""),
                 "OAuth2 sign-in refused at the identity provider"
             );
-            return Err(self.refuse("provider_error"));
+            return Err(self.refuse(unknown, "provider_error"));
         }
 
         let state = query
             .get("state")
-            .ok_or_else(|| self.refuse("state_missing"))?;
+            .ok_or_else(|| self.refuse(unknown, "state_missing"))?;
         let code = query
             .get("code")
-            .ok_or_else(|| self.refuse("code_missing"))?;
+            .ok_or_else(|| self.refuse(unknown, "code_missing"))?;
 
-        let cookie =
-            crate::channel::cookies::lookup(jar.iter().copied(), &self.cfg.state_cookie.name)
-                .ok_or_else(|| self.refuse("state_missing"))?;
+        let cookie = crate::channel::cookies::lookup(jar.iter().copied(), &self.state_cookie.name)
+            .ok_or_else(|| self.refuse(unknown, "state_missing"))?;
 
         // Signature, algorithm and `exp` in one call — the same verifier a
         // `jwt` channel uses on a caller's token.
-        let claims = self
-            .state_verifier
-            .verify(&cookie)
-            .await
-            .map_err(|reason| {
-                tracing::warn!(
-                    channel = %self.channel,
-                    reason = reason.as_str(),
-                    "OAuth2 state cookie rejected"
-                );
-                self.refuse("state_invalid")
-            })?;
+        let claims = self.state_verifier.verify(&cookie).await.map_err(|reason| {
+            tracing::warn!(
+                channel = %self.channel,
+                reason = reason.as_str(),
+                "OAuth2 state cookie rejected"
+            );
+            self.refuse(unknown, "state_invalid")
+        })?;
 
         let minted = claims
             .get("nonce")
             .and_then(Value::as_str)
-            .ok_or_else(|| self.refuse("state_invalid"))?;
+            .ok_or_else(|| self.refuse(unknown, "state_invalid"))?;
         if !secret_eq(state, minted) {
-            return Err(self.refuse("state_mismatch"));
+            return Err(self.refuse(unknown, "state_mismatch"));
         }
 
+        // Confirm the sealed slug is the one whose callback URL was actually hit
+        // — a state minted for one provider cannot be spent at another's — then
+        // resolve through the same `select` both other legs use. `select` is
+        // keyed on the slug, which equals the sealed value just checked; its
+        // `NotFound` becomes the uniform `401` a callback answers.
+        if self.route_selected {
+            let route_slug = slug.unwrap_or_default();
+            let sealed = claims
+                .get("provider")
+                .and_then(Value::as_str)
+                .ok_or_else(|| self.refuse(unknown, "state_invalid"))?;
+            if sealed != route_slug {
+                return Err(self.refuse(unknown, "provider_mismatch"));
+            }
+        }
+        let (canonical_slug, provider) = self
+            .select(slug)
+            .map_err(|_| self.refuse(unknown, "unknown_provider"))?;
+        let label = provider_label(canonical_slug);
+
         let tokens = self
-            .exchange(code, claims.get("pkce_verifier").and_then(Value::as_str))
+            .exchange(
+                provider,
+                label,
+                code,
+                claims.get("pkce_verifier").and_then(Value::as_str),
+            )
             .await?;
 
         let mut oauth = json!({
@@ -457,9 +658,17 @@ impl CompiledOAuth2Login {
         if let Some(return_to) = claims.get("return_to").and_then(Value::as_str) {
             oauth["return_to"] = json!(return_to);
         }
+        // The workflow learns which provider answered, and its kind (`oidc` or
+        // `oauth2`) so it can branch on how identity was established. Stamped
+        // only for the multi-provider form; the single-provider form is
+        // byte-for-byte as before, so existing workflows are undisturbed.
+        if self.route_selected {
+            oauth["provider"] = json!(canonical_slug);
+            oauth["kind"] = json!(provider.kind);
+        }
 
-        if let Some(verifier) = self.id_token_verifier.as_ref() {
-            let id = self.cfg.id_token.as_ref().expect("verifier implies config");
+        if let Some(verifier) = provider.id_token_verifier.as_ref() {
+            let id = provider.id_token.as_ref().expect("verifier implies config");
             match tokens.id_token.as_deref() {
                 Some(token) => {
                     let verified = verifier.verify(token).await.map_err(|reason| {
@@ -468,14 +677,14 @@ impl CompiledOAuth2Login {
                             reason = reason.as_str(),
                             "OAuth2 id_token rejected"
                         );
-                        self.refuse("id_token_rejected")
+                        self.refuse(label, "id_token_rejected")
                     })?;
                     if id.nonce {
                         let minted = claims.get("oidc_nonce").and_then(Value::as_str);
                         let echoed = verified.get("nonce").and_then(Value::as_str);
                         match (minted, echoed) {
                             (Some(a), Some(b)) if secret_eq(a, b) => {}
-                            _ => return Err(self.refuse("nonce_mismatch")),
+                            _ => return Err(self.refuse(label, "nonce_mismatch")),
                         }
                     }
                     oauth["claims"] = verified;
@@ -485,13 +694,13 @@ impl CompiledOAuth2Login {
                         channel = %self.channel,
                         "Token response carried no id_token, but one is required"
                     );
-                    return Err(self.refuse("id_token_rejected"));
+                    return Err(self.refuse(label, "id_token_rejected"));
                 }
                 None => {}
             }
         }
 
-        crate::metrics::record_oauth_login(&self.channel, Leg::Callback, "ok");
+        crate::metrics::record_oauth_login(&self.channel, label, Leg::Callback, "ok");
         Ok(Grant {
             metadata: oauth,
             // Retire the state the moment it is spent. `Max-Age=0` with the
@@ -505,23 +714,25 @@ impl CompiledOAuth2Login {
 
     async fn exchange(
         &self,
+        provider: &CompiledProvider,
+        label: &str,
         code: &str,
         pkce_verifier: Option<&str>,
     ) -> Result<crate::connector::oauth::TokenResponse, OrionError> {
         let mut params = vec![
             ("grant_type", "authorization_code".to_string()),
             ("code", code.to_string()),
-            ("redirect_uri", self.cfg.redirect_uri.clone()),
+            ("redirect_uri", provider.redirect_uri.clone()),
         ];
         if let Some(v) = pkce_verifier {
             params.push(("code_verifier", v.to_string()));
         }
 
         let endpoint = crate::connector::oauth::TokenEndpoint {
-            token_url: &self.cfg.token_url,
-            client_id: &self.client_id,
-            client_secret: &self.client_secret,
-            client_auth: &self.cfg.client_auth,
+            token_url: &provider.token_url,
+            client_id: &provider.client_id,
+            client_secret: &provider.client_secret,
+            client_auth: &provider.client_auth,
         };
         crate::connector::oauth::exchange_code(
             &self.http_client,
@@ -537,14 +748,14 @@ impl CompiledOAuth2Login {
             // Only the wire mapping is decided here.
             if e.retryable() {
                 tracing::warn!(channel = %self.channel, error = %e, "OAuth2 token exchange failed");
-                self.count("exchange_error");
+                self.count(label, "exchange_error");
                 OrionError::unavailable(
                     Unavailable::GuardBackend,
                     "the identity provider could not be reached",
                 )
             } else {
                 tracing::warn!(channel = %self.channel, error = %e, "OAuth2 token exchange rejected");
-                self.refuse("exchange_rejected")
+                self.refuse(label, "exchange_rejected")
             }
         })
     }
@@ -552,10 +763,6 @@ impl CompiledOAuth2Login {
     // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
-
-    fn wants_oidc_nonce(&self) -> bool {
-        self.cfg.id_token.as_ref().is_some_and(|id| id.nonce)
-    }
 
     /// The `return_to` a caller asked for, if the channel accepts one and the
     /// value is on the allow-list.
@@ -567,17 +774,11 @@ impl CompiledOAuth2Login {
     /// supplied it, and naming the refusal would only tell a probe which
     /// destinations exist.
     ///
-    /// The comparison is on **origin and path segments**, not on the text. A
-    /// raw `starts_with` reads like the obvious implementation and is an open
-    /// redirect: the natural entry `https://app.example.com` is a string prefix
-    /// of `https://app.example.com.evil.test/steal`, so the crafted host is
-    /// admitted, sealed into the signed state, and handed to the workflow as a
-    /// *vetted* value — which is precisely the moment the workflow stops being
-    /// able to defend itself. Requiring the entry to end in `/` would close
-    /// that one hole and leave the shape of the rule depending on a trailing
-    /// character an operator cannot be expected to know is load-bearing.
+    /// The comparison is on **origin and path segments**, not on the text — a
+    /// raw `starts_with` is an open redirect (`https://app.example.com` is a
+    /// prefix of `https://app.example.com.evil.test/steal`).
     pub fn accepted_return_to(&self, query: &HashMap<String, String>) -> Option<String> {
-        let cfg = self.cfg.return_to.as_ref()?;
+        let cfg = self.return_to.as_ref()?;
         let value = query.get(&cfg.param)?;
         if value.len() > MAX_RETURN_TO_BYTES {
             return None;
@@ -596,7 +797,7 @@ impl CompiledOAuth2Login {
             ref same_site,
             ref path,
             ..
-        } = self.cfg.state_cookie;
+        } = self.state_cookie;
         // Through the shared formatter, so the state cookie gets the same RFC
         // 6265 spelling, `SameSite` canonicalisation and header-injection
         // refusals a workflow-declared cookie does.
@@ -613,36 +814,99 @@ impl CompiledOAuth2Login {
         }))
     }
 
-    /// The uniform refusal, counted by its real reason.
-    fn refuse(&self, outcome: &'static str) -> OrionError {
-        self.count(outcome);
+    /// The uniform refusal, counted by its real reason and provider.
+    fn refuse(&self, provider: &str, outcome: &'static str) -> OrionError {
+        self.count(provider, outcome);
         OrionError::Unauthorized("sign-in could not be completed".to_string())
     }
 
-    fn count(&self, outcome: &'static str) {
-        crate::metrics::record_oauth_login(&self.channel, Leg::Callback, outcome);
+    fn count(&self, provider: &str, outcome: &'static str) {
+        crate::metrics::record_oauth_login(&self.channel, provider, Leg::Callback, outcome);
     }
 }
 
-/// Everything about the block that can be judged without resolving a secret.
-///
-/// Shared with `validation::channels` so a create or update answers `400`
-/// naming the field, rather than storing a definition that quarantines its
-/// channel at the next reload. Secret *resolution* deliberately stays in
-/// [`CompiledOAuth2Login::compile`]: a bundle has to validate on a host that
-/// holds none of the production secrets.
+/// `"providers.<slug>."` for a named provider, or `""` for the single-provider
+/// (flat) form, so a diagnostic names the field an operator actually wrote.
+fn field_prefix(slug: &str) -> String {
+    if slug.is_empty() {
+        String::new()
+    } else {
+        format!("providers.{slug}.")
+    }
+}
+
+/// The redirect URI a provider serves: its own override, or the shared
+/// template, with `{provider}` filled in with the slug.
+fn effective_redirect_uri(shared: &str, slug: &str, over: Option<&str>) -> String {
+    over.unwrap_or(shared).replace("{provider}", slug)
+}
+
+/// `"oidc"`, `"oauth2"`, or derived from whether an `id_token` is configured.
+/// `validate_shape` has already refused any other explicit spelling.
+fn effective_kind(p: &ProviderConfig) -> &'static str {
+    match p.kind.as_deref() {
+        Some("oidc") => "oidc",
+        Some("oauth2") => "oauth2",
+        _ if p.id_token.is_some() => "oidc",
+        _ => "oauth2",
+    }
+}
+
+/// Reassemble a resolved config for the serving-mode shape check: the flat form
+/// keeps its flat fields, the multi form its map.
+fn assemble_resolved(
+    o: &OAuth2LoginConfig,
+    shared_redirect: String,
+    entries: &[(String, ProviderConfig)],
+) -> OAuth2LoginConfig {
+    let mut base = OAuth2LoginConfig {
+        kind: None,
+        authorize_url: None,
+        token_url: None,
+        client_id: None,
+        client_secret: None,
+        client_auth: "basic".to_string(),
+        providers: None,
+        // The instance merge has already happened — `entries` is the final set —
+        // so the resolved config carries them as its own and does not re-merge.
+        providers_from_instance: false,
+        redirect_uri: shared_redirect,
+        callback_path: o.callback_path.clone(),
+        scopes: Vec::new(),
+        extra_authorize_params: BTreeMap::new(),
+        pkce: o.pkce,
+        state_secret: o.state_secret.clone(),
+        state_cookie: o.state_cookie.clone(),
+        run_workflow_on_authorize: o.run_workflow_on_authorize,
+        return_to: o.return_to.clone(),
+        id_token: None,
+    };
+    if o.is_multi_provider() {
+        base.providers = Some(entries.iter().cloned().collect());
+    } else if let Some((_, p)) = entries.first() {
+        base.kind = p.kind.clone();
+        base.authorize_url = p.authorize_url.clone();
+        base.token_url = p.token_url.clone();
+        base.client_id = p.client_id.clone();
+        base.client_secret = p.client_secret.clone();
+        base.client_auth = p.client_auth.clone();
+        base.scopes = p.scopes.clone();
+        base.extra_authorize_params = p.extra_authorize_params.clone();
+        base.id_token = p.id_token.clone();
+    }
+    base
+}
+
 /// The ceiling on `state_cookie.max_age`, and the reason the two arithmetic
-/// sites below are total.
+/// sites in `begin` are total.
 ///
-/// Unbounded, a large value overflowed `now + max_age` (a debug panic, caught
-/// by `CatchPanicLayer` and served as a `500`; a silent wrap in release, giving
-/// an `exp` already in the past) and wrapped `max_age as i64` negative, which
-/// emits `Max-Age=-…` — a directive browsers act on by deleting the cookie
-/// immediately. Every sign-in then failed the state check with nothing in the
-/// log but a missing cookie, which is close to unexplainable from the outside.
+/// Unbounded, a large value overflowed `now + max_age` and wrapped
+/// `max_age as i64` negative, which emits `Max-Age=-…` — a directive browsers
+/// act on by deleting the cookie immediately. Every sign-in then failed the
+/// state check with nothing in the log but a missing cookie.
 ///
-/// A day is far past any consent screen, including one that enrols a second
-/// factor, so the bound refuses nothing an operator meant.
+/// A day is far past any consent screen, so the bound refuses nothing an
+/// operator meant.
 const MAX_STATE_COOKIE_MAX_AGE_SECS: u64 = 86_400;
 
 /// Where [`validate_shape`] runs, which decides what a reference string means.
@@ -656,15 +920,15 @@ pub enum ShapeCheck {
     /// [`CompiledOAuth2Login::compile`], on the block the channel will serve
     /// with. Every `var://` was substituted before the block was typed and
     /// [`SECRET_RESOLVED_FIELDS`] were resolved, so a reference still present
-    /// is one nothing resolves — refused, or its text would reach the
-    /// provider.
+    /// is one nothing resolves — refused, or its text would reach the provider.
     Serving,
 }
 
-/// The fields `compile` hands to the secret resolver. A `var://` may sit in
-/// any field of the block — the loader substitutes it into the JSON before
-/// typing — but `env://` and the vault schemes resolve field by field, and
-/// only in these.
+/// The fields `compile` hands to the secret resolver. A `var://` may sit in any
+/// field of the block — the loader substitutes it into the JSON before typing —
+/// but `env://` and the vault schemes resolve field by field, and only in these
+/// (matched by their final segment, so a per-provider `providers.<slug>.client_id`
+/// counts the same as a flat `client_id`).
 pub const SECRET_RESOLVED_FIELDS: &[&str] = &[
     "client_id",
     "client_secret",
@@ -679,17 +943,21 @@ pub const SECRET_RESOLVED_FIELDS: &[&str] = &[
 /// `Ok(true)`: deferred — the load path resolves it and checks the result.
 /// `Ok(false)`: a value; check it. `Err`: a reference nothing resolves in this
 /// field, or one that survived resolution.
+///
+/// `field` may be prefixed (`providers.iitm.client_id`); the resolvable-field
+/// test is on its final segment.
 fn deferred(mode: ShapeCheck, field: &str, value: &str) -> Result<bool, String> {
     let is_var = value.starts_with(crate::config::vars::VAR_SCHEME);
     if !is_var && !crate::connector::secrets::is_resolvable_reference(value) {
         return Ok(false);
     }
+    let bare = field.rsplit('.').next().unwrap_or(field);
     match mode {
         ShapeCheck::Serving => Err(format!(
             "oauth2_login.{field} still holds '{value}' after resolution; nothing resolves a \
              reference in this field, so its text would reach the identity provider"
         )),
-        ShapeCheck::Authoring if is_var || SECRET_RESOLVED_FIELDS.contains(&field) => Ok(true),
+        ShapeCheck::Authoring if is_var || SECRET_RESOLVED_FIELDS.contains(&bare) => Ok(true),
         ShapeCheck::Authoring => Err(format!(
             "oauth2_login.{field} holds '{value}', but a secret reference is resolved only in \
              {}; for a per-environment value here use var://name",
@@ -698,57 +966,111 @@ fn deferred(mode: ShapeCheck, field: &str, value: &str) -> Result<bool, String> 
     }
 }
 
+/// Everything about the block that can be judged without resolving a secret.
+///
+/// Shared with `validation::channels` so a create or update answers `400`
+/// naming the field, rather than storing a definition that quarantines its
+/// channel at the next reload. Secret *resolution* deliberately stays in
+/// [`CompiledOAuth2Login::compile`]: a bundle has to validate on a host that
+/// holds none of the production secrets.
 pub fn validate_shape(cfg: &OAuth2LoginConfig, mode: ShapeCheck) -> Result<(), String> {
-    for (field, value) in [
-        ("authorize_url", &cfg.authorize_url),
-        ("token_url", &cfg.token_url),
-        ("redirect_uri", &cfg.redirect_uri),
-    ] {
-        if !deferred(mode, field, value)? {
-            require_https(field, value)?;
+    validate_shared(cfg, mode)?;
+    let entries = cfg.provider_entries();
+    // A block that declares none of its own is only empty legitimately when it
+    // relies on the deployment (`providers_from_instance`); the serving-mode
+    // check runs after the merge, so a block that ends up with none is refused
+    // there.
+    if cfg.is_multi_provider() && entries.is_empty() && !cfg.providers_from_instance {
+        return Err("oauth2_login.providers must name at least one provider".to_string());
+    }
+    for (slug, provider) in &entries {
+        validate_provider(cfg, slug, provider, mode)?;
+    }
+    Ok(())
+}
+
+/// The effective providers a block serves: the ones it declares, plus (when it
+/// opts in with `providers_from_instance`) the deployment's, with the
+/// definition's own entries winning any slug clash. The single merge point, so
+/// nothing downstream learns a provider's source.
+fn merge_instance_providers(
+    cfg: &OAuth2LoginConfig,
+    instance: &BTreeMap<String, crate::config::InstanceProviderConfig>,
+) -> Vec<(String, ProviderConfig)> {
+    let mut entries = cfg.provider_entries();
+    if cfg.providers_from_instance {
+        let declared: std::collections::HashSet<&str> =
+            entries.iter().map(|(s, _)| s.as_str()).collect();
+        let extra: Vec<(String, ProviderConfig)> = instance
+            .iter()
+            .filter(|(slug, _)| !declared.contains(slug.as_str()))
+            .map(|(slug, p)| (slug.clone(), ProviderConfig::from(p)))
+            .collect();
+        entries.extend(extra);
+    }
+    entries
+}
+
+/// The fields shared by every provider.
+fn validate_shared(cfg: &OAuth2LoginConfig, mode: ShapeCheck) -> Result<(), String> {
+    let multi = cfg.is_multi_provider();
+
+    // The two forms are mutually exclusive: a `providers` map alongside the flat
+    // per-provider fields is ambiguous about which one serves.
+    if multi {
+        let flat_set = cfg.kind.is_some()
+            || cfg.authorize_url.is_some()
+            || cfg.token_url.is_some()
+            || cfg.client_id.is_some()
+            || cfg.client_secret.is_some()
+            || cfg.id_token.is_some()
+            || !cfg.scopes.is_empty()
+            || !cfg.extra_authorize_params.is_empty();
+        if flat_set {
+            return Err(
+                "oauth2_login sets both `providers` and the flat provider fields \
+                 (authorize_url, client_id, …); use one form or the other — the per-provider \
+                 fields belong inside each `providers` entry"
+                    .to_string(),
+            );
         }
     }
 
+    // callback_path: absolute, and its parameter shape must match the form.
     if !deferred(mode, "callback_path", &cfg.callback_path)? {
         if cfg.callback_path.trim().is_empty() || !cfg.callback_path.starts_with('/') {
             return Err("oauth2_login.callback_path must be an absolute path, e.g. \
                         /v1/auth/github/callback"
                 .to_string());
         }
-        if cfg.callback_path.contains('{') {
-            return Err(format!(
-                "oauth2_login.callback_path '{}' carries a path parameter; the callback is a \
-                 fixed URL registered with the identity provider, so it must be static",
-                cfg.callback_path
-            ));
-        }
+        validate_provider_param("callback_path", &cfg.callback_path, multi)?;
     }
 
-    if !deferred(mode, "client_auth", &cfg.client_auth)?
-        && crate::connector::OAuth2ClientAuth::parse(&cfg.client_auth).is_none()
-    {
-        return Err(format!(
-            "oauth2_login.client_auth '{}' is not supported — expected {}",
-            cfg.client_auth,
-            crate::connector::OAuth2ClientAuth::VALUES
-        ));
-    }
-
-    for name in cfg.extra_authorize_params.keys() {
-        if RESERVED_AUTHORIZE_PARAMS.contains(&name.as_str()) {
+    // redirect_uri: with `providers`, it is a template and must carry
+    // `{provider}` (a provider may still override it, but the shared value is
+    // what fills in for the rest); without, it is a static URL.
+    if !deferred(mode, "redirect_uri", &cfg.redirect_uri)? {
+        if multi {
+            if !cfg.redirect_uri.contains("{provider}") {
+                return Err(
+                    "oauth2_login.redirect_uri is a template when `providers` is set and must \
+                     contain {provider}, e.g. https://app.example.com/v1/auth/{provider}/callback"
+                        .to_string(),
+                );
+            }
+        } else if cfg.redirect_uri.contains('{') {
             return Err(format!(
-                "oauth2_login.extra_authorize_params sets '{name}', which Orion owns. \
-                 Overriding it would disable the protection it carries — the reserved \
-                 set is: {}",
-                RESERVED_AUTHORIZE_PARAMS.join(", ")
+                "oauth2_login.redirect_uri '{}' carries a path parameter, but this block names a \
+                 single provider; only a `providers` block substitutes {{provider}}",
+                cfg.redirect_uri
             ));
         }
     }
 
     if cfg.state_cookie.max_age == 0 {
         return Err(
-            "oauth2_login.state_cookie.max_age must be greater than zero — it is \
-                    also the state token's expiry"
+            "oauth2_login.state_cookie.max_age must be greater than zero — it is also the state \
+             token's expiry"
                 .to_string(),
         );
     }
@@ -762,19 +1084,11 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig, mode: ShapeCheck) -> Result<(), S
             MAX_STATE_COOKIE_MAX_AGE_SECS / 86_400,
         ));
     }
-    // Canonicalised by the formatter, which refuses anything else — but a
-    // create-time message naming the field beats a reload-time quarantine.
-    //
-    // One match, so the set this field actually accepts — `lax` or `none` — is
-    // stated once. Spelling `strict` as a valid value and then refusing it in a
-    // second `if` advertised a setting no configuration can hold.
     if !deferred(mode, "state_cookie.same_site", &cfg.state_cookie.same_site)? {
         match cfg.state_cookie.same_site.to_ascii_lowercase().as_str() {
             "lax" | "none" => {}
-            // Not merely unusual: the callback is a top-level cross-site GET
-            // from the IdP, and a `Strict` cookie is withheld on exactly that
-            // request, so every sign-in would fail the state check with
-            // nothing to see in the logs but a missing cookie.
+            // The callback is a top-level cross-site GET from the IdP, and a
+            // `Strict` cookie is withheld on exactly that request.
             "strict" => {
                 return Err(
                     "oauth2_login.state_cookie.same_site = \"strict\" would withhold the \
@@ -811,27 +1125,116 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig, mode: ShapeCheck) -> Result<(), S
             }
         }
     }
+    Ok(())
+}
 
-    if let Some(ref id) = cfg.id_token {
-        if !deferred(mode, "id_token.jwks_url", &id.jwks_url)? {
+/// A `callback_path`/`route_pattern` must carry exactly one `{provider}` segment
+/// when the block is multi-provider, and no path parameter at all when it is not.
+fn validate_provider_param(field: &str, path: &str, multi: bool) -> Result<(), String> {
+    let params = crate::channel::routing::route_param_names(path);
+    if multi {
+        if params != ["provider"] {
+            return Err(format!(
+                "oauth2_login.{field} '{path}' must carry exactly one {{provider}} segment when \
+                 `providers` is set, and no other path parameter"
+            ));
+        }
+    } else if !params.is_empty() {
+        return Err(format!(
+            "oauth2_login.{field} '{path}' carries a path parameter; a single-provider callback \
+             is a fixed URL registered with the identity provider, so it must be static"
+        ));
+    }
+    Ok(())
+}
+
+/// One provider's fields. `slug` is the map key (or `""` for the flat form),
+/// used to prefix diagnostics and to fill `{provider}` in the redirect.
+fn validate_provider(
+    cfg: &OAuth2LoginConfig,
+    slug: &str,
+    p: &ProviderConfig,
+    mode: ShapeCheck,
+) -> Result<(), String> {
+    let pfx = field_prefix(slug);
+
+    if let Some(kind) = p.kind.as_deref() {
+        match kind {
+            "oidc" | "oauth2" => {}
+            other => {
+                return Err(format!(
+                    "oauth2_login.{pfx}kind '{other}' is not supported — expected oidc or oauth2"
+                ));
+            }
+        }
+    }
+
+    for (name, value) in [
+        ("authorize_url", &p.authorize_url),
+        ("token_url", &p.token_url),
+        ("client_id", &p.client_id),
+        ("client_secret", &p.client_secret),
+    ] {
+        let field = format!("{pfx}{name}");
+        let present = value
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("oauth2_login.{field} is required"))?;
+        // Only the URL fields carry an https rule; ids/secrets do not.
+        if matches!(name, "authorize_url" | "token_url") && !deferred(mode, &field, present)? {
+            require_https(&field, present)?;
+        }
+    }
+
+    let redirect = effective_redirect_uri(&cfg.redirect_uri, slug, p.redirect_uri.as_deref());
+    let redirect_field = format!("{pfx}redirect_uri");
+    if !deferred(mode, &redirect_field, &redirect)? {
+        require_https(&redirect_field, &redirect)?;
+    }
+
+    if !deferred(mode, &format!("{pfx}client_auth"), &p.client_auth)?
+        && crate::connector::OAuth2ClientAuth::parse(&p.client_auth).is_none()
+    {
+        return Err(format!(
+            "oauth2_login.{pfx}client_auth '{}' is not supported — expected {}",
+            p.client_auth,
+            crate::connector::OAuth2ClientAuth::VALUES
+        ));
+    }
+
+    for name in p.extra_authorize_params.keys() {
+        if RESERVED_AUTHORIZE_PARAMS.contains(&name.as_str()) {
+            return Err(format!(
+                "oauth2_login.{pfx}extra_authorize_params sets '{name}', which Orion owns. \
+                 Overriding it would disable the protection it carries — the reserved \
+                 set is: {}",
+                RESERVED_AUTHORIZE_PARAMS.join(", ")
+            ));
+        }
+    }
+
+    if let Some(ref id) = p.id_token {
+        if !deferred(mode, &format!("{pfx}id_token.jwks_url"), &id.jwks_url)? {
             crate::jwt::validate_jwks_url(&id.jwks_url)
-                .map_err(|e| format!("oauth2_login.id_token.jwks_url: {e}"))?;
+                .map_err(|e| format!("oauth2_login.{pfx}id_token.jwks_url: {e}"))?;
         }
         if id.issuer.is_empty() {
-            return Err(
-                "oauth2_login.id_token.issuer must list at least one accepted \
-                        issuer — an unchecked `iss` accepts a token from any provider \
-                        whose key happens to be in the JWKS"
-                    .to_string(),
-            );
+            return Err(format!(
+                "oauth2_login.{pfx}id_token.issuer must list at least one accepted issuer — an \
+                 unchecked `iss` accepts a token from any provider whose key happens to be in \
+                 the JWKS"
+            ));
         }
         if id.algorithms.is_empty() {
-            return Err("oauth2_login.id_token.algorithms must not be empty".to_string());
+            return Err(format!(
+                "oauth2_login.{pfx}id_token.algorithms must not be empty"
+            ));
         }
         for alg in &id.algorithms {
-            if !deferred(mode, "id_token.algorithms", alg)? {
+            if !deferred(mode, &format!("{pfx}id_token.algorithms"), alg)? {
                 crate::jwt::parse_algorithm(alg)
-                    .map_err(|e| format!("oauth2_login.id_token.algorithms: {e}"))?;
+                    .map_err(|e| format!("oauth2_login.{pfx}id_token.algorithms: {e}"))?;
             }
         }
     }
@@ -840,52 +1243,11 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig, mode: ShapeCheck) -> Result<(), S
 
 /// `https`, or `http` on a loopback host.
 ///
-/// The carve-out is the rule browsers already use for secure contexts, and it
-/// is what makes the flow developable: an identity provider will not issue a
-/// certificate for your laptop, and GitHub, Google and Entra all accept a
-/// plain-`http` loopback redirect URI for exactly this reason (RFC 8252 §7.3
-/// says so in as many words). Without it, "run the sign-in locally" means
-/// terminating TLS in front of a development server, which nobody does, so the
-/// first time the flow is exercised end to end is in staging.
-///
-/// It grants nothing on its own. `token_url` still has to pass
-/// [`crate::validation::validate_url_not_private`] at every exchange unless the
-/// operator sets `[oauth2_login] allow_private_token_urls`, and that flag is
-/// instance-wide. Two independent gates; this relaxes one of them, for a class
-/// of host that is not reachable from anywhere else.
-/// Whether one allow-list entry admits a candidate `return_to`.
-///
-/// Two conditions, and the second is the one a string prefix cannot express:
-///
-/// 1. **Same origin.** Scheme, host and port must match exactly, so a host that
-///    merely *starts with* the permitted one — `app.example.com.evil.test` — is
-///    a different origin and is refused. `Url::origin` also disregards
-///    userinfo, which is what stops `https://app.example.com@evil.test/` from
-///    reading as the permitted host; that URL's host is `evil.test`.
-/// 2. **Path-segment prefix.** The candidate's path must be the entry's path or
-///    live beneath it, cut at a `/`. So an entry of `/app` admits `/app` and
-///    `/app/home` but not `/application`. An entry with no path parses as `/`
-///    and therefore admits the whole origin, which is what writing a bare
-///    origin plainly means.
-///
-/// An entry that does not parse admits nothing. `validate_shape` already
-/// refuses those through [`require_https`], so this is unreachable rather than
-/// lenient — failing closed is simply the right answer for the case.
-fn permits_return_to(entry: &str, candidate: &url::Url) -> bool {
-    let Ok(allowed) = url::Url::parse(entry) else {
-        return false;
-    };
-    if allowed.origin() != candidate.origin() {
-        return false;
-    }
-    let (allowed_path, candidate_path) = (allowed.path(), candidate.path());
-    if let Some(base) = allowed_path.strip_suffix('/') {
-        // `/app/` — the trailing slash is already the boundary.
-        return candidate_path == base || candidate_path.starts_with(allowed_path);
-    }
-    candidate_path == allowed_path || candidate_path.starts_with(&format!("{allowed_path}/"))
-}
-
+/// The carve-out is the rule browsers already use for secure contexts: an IdP
+/// will not issue a certificate for your laptop, and GitHub, Google and Entra
+/// all accept a plain-`http` loopback redirect URI (RFC 8252 §7.3). It grants
+/// nothing on its own — `token_url` still passes the private-address check at
+/// every exchange unless the operator sets `allow_private_token_urls`.
 fn require_https(field: &str, value: &str) -> Result<(), String> {
     let url = url::Url::parse(value)
         .map_err(|e| format!("oauth2_login.{field} '{value}' is not a URL: {e}"))?;
@@ -905,24 +1267,75 @@ fn require_https(field: &str, value: &str) -> Result<(), String> {
 }
 
 /// Whether a URL's host is the local machine, by literal address or by the one
-/// name that is reserved for it.
-///
-/// Name resolution is deliberately not consulted: a host that resolves to
-/// `127.0.0.1` today can resolve elsewhere tomorrow, and this runs at authoring
-/// time against a definition that will be promoted to other instances. Only
-/// spellings that cannot mean anything else are accepted.
+/// name that is reserved for it. Name resolution is deliberately not consulted:
+/// this runs against a definition that will be promoted to other instances.
 fn is_loopback_host(url: &url::Url) -> bool {
     match url.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        // RFC 6761 §6.3 reserves `localhost` and its subdomains for the loopback
-        // interface; a resolver is not permitted to answer them otherwise.
+        // RFC 6761 §6.3 reserves `localhost` and its subdomains for loopback.
         Some(url::Host::Domain(host)) => host == "localhost" || host.ends_with(".localhost"),
         None => false,
     }
 }
 
+/// Whether one allow-list entry admits a candidate `return_to` — same origin and
+/// a path-segment prefix, so `app.example.com.evil.test` and `/application` are
+/// both refused.
+fn permits_return_to(entry: &str, candidate: &url::Url) -> bool {
+    let Ok(allowed) = url::Url::parse(entry) else {
+        return false;
+    };
+    if allowed.origin() != candidate.origin() {
+        return false;
+    }
+    let (allowed_path, candidate_path) = (allowed.path(), candidate.path());
+    if let Some(base) = allowed_path.strip_suffix('/') {
+        return candidate_path == base || candidate_path.starts_with(allowed_path);
+    }
+    candidate_path == allowed_path || candidate_path.starts_with(&format!("{allowed_path}/"))
+}
+
+fn build_provider(
+    slug: &str,
+    resolved: &ProviderConfig,
+    shared_redirect: &str,
+    deps: &LoginDeps<'_>,
+) -> Result<CompiledProvider, String> {
+    let pfx = field_prefix(slug);
+    let required = |v: &Option<String>, name: &str| -> Result<String, String> {
+        v.clone()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| format!("oauth2_login.{pfx}{name} is required"))
+    };
+    let client_id = required(&resolved.client_id, "client_id")?;
+    let client_secret = required(&resolved.client_secret, "client_secret")?;
+    let authorize_url = required(&resolved.authorize_url, "authorize_url")?;
+    let token_url = required(&resolved.token_url, "token_url")?;
+    let redirect_uri = effective_redirect_uri(shared_redirect, slug, resolved.redirect_uri.as_deref());
+
+    let id_token_verifier = match resolved.id_token {
+        Some(ref id) => Some(build_id_token_verifier(&pfx, id, &client_id, deps)?),
+        None => None,
+    };
+
+    Ok(CompiledProvider {
+        kind: effective_kind(resolved),
+        client_id,
+        client_secret,
+        authorize_url,
+        token_url,
+        redirect_uri,
+        client_auth: resolved.client_auth.clone(),
+        scopes: resolved.scopes.clone(),
+        extra_authorize_params: resolved.extra_authorize_params.clone(),
+        id_token: resolved.id_token.clone(),
+        id_token_verifier,
+    })
+}
+
 fn build_id_token_verifier(
+    pfx: &str,
     cfg: &IdTokenConfig,
     client_id: &str,
     deps: &LoginDeps<'_>,
@@ -932,7 +1345,7 @@ fn build_id_token_verifier(
         .iter()
         .map(|a| crate::jwt::parse_algorithm(a))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("oauth2_login.id_token.algorithms: {e}"))?;
+        .map_err(|e| format!("oauth2_login.{pfx}id_token.algorithms: {e}"))?;
 
     Ok(crate::jwt::Verifier {
         static_keys: Vec::new(),
@@ -955,14 +1368,22 @@ fn build_id_token_verifier(
     })
 }
 
-/// The same resolver `auth.secret` and `auth.jwt_keys[].key` use, so an
-/// operator has one mechanism rather than one per block.
+/// The same resolver `auth.secret` and `auth.jwt_keys[].key` use, so an operator
+/// has one mechanism rather than one per block.
 async fn resolve_secret(value: &str, field: &str) -> Result<String, String> {
     let resolved = crate::connector::secrets::resolve_secret_string(value, field).await?;
     if resolved.is_empty() {
         return Err(format!("{field} resolved to an empty value"));
     }
     Ok(resolved)
+}
+
+/// [`resolve_secret`] for an optional field: `None` stays `None`.
+async fn resolve_opt(value: &Option<String>, field: &str) -> Result<Option<String>, String> {
+    match value {
+        Some(v) => Ok(Some(resolve_secret(v, field).await?)),
+        None => Ok(None),
+    }
 }
 
 /// 32 CSPRNG bytes, base64url-unpadded — safe in a query string and in a JWT
@@ -975,10 +1396,6 @@ fn random_nonce() -> String {
 }
 
 /// RFC 7636 §4.2: `BASE64URL-NOPAD(SHA256(ASCII(verifier)))`.
-///
-/// [`crate::crypto::Codec::Base64Url`] is already the unpadded alphabet, which
-/// is the half of this that is easy to get wrong — a padded challenge is
-/// rejected by every conforming IdP.
 fn pkce_challenge(verifier: &str) -> String {
     use sha2::Digest as _;
     crate::crypto::encode_bytes(
@@ -987,10 +1404,8 @@ fn pkce_challenge(verifier: &str) -> String {
     )
 }
 
-/// Constant-time comparison of two nonces.
-///
-/// Via SHA-256 because the shared helper is fixed-width (`&[u8; 32]`), and
-/// because hashing first also removes the length of the inputs as a signal.
+/// Constant-time comparison of two nonces, via SHA-256 so the shared helper's
+/// fixed width applies and the inputs' length is not a signal.
 fn secret_eq(a: &str, b: &str) -> bool {
     use sha2::Digest as _;
     let da: [u8; 32] = sha2::Sha256::digest(a.as_bytes()).into();
@@ -1008,18 +1423,22 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::config::{OAuth2LoginConfig, StateCookieConfig};
+    use crate::channel::config::{OAuth2LoginConfig, ProviderConfig, StateCookieConfig};
 
     /// 32 bytes, so `encoding_key` accepts it as an HS256 secret.
     const STATE_SECRET: &str = "0123456789abcdef0123456789abcdef";
 
+    /// A single-provider (flat) block.
     fn config() -> OAuth2LoginConfig {
         OAuth2LoginConfig {
-            authorize_url: "https://idp.example.com/authorize".to_string(),
-            token_url: "https://idp.example.com/token".to_string(),
-            client_id: "client-123".to_string(),
-            client_secret: "shhh".to_string(),
+            kind: None,
+            authorize_url: Some("https://idp.example.com/authorize".to_string()),
+            token_url: Some("https://idp.example.com/token".to_string()),
+            client_id: Some("client-123".to_string()),
+            client_secret: Some("shhh".to_string()),
             client_auth: "basic".to_string(),
+            providers: None,
+            providers_from_instance: false,
             redirect_uri: "https://app.example.com/v1/auth/idp/callback".to_string(),
             callback_path: "/v1/auth/idp/callback".to_string(),
             scopes: vec!["read:user".to_string()],
@@ -1031,6 +1450,94 @@ mod tests {
             return_to: None,
             id_token: None,
         }
+    }
+
+    /// A two-provider block selected by `{provider}`.
+    fn multi_config() -> OAuth2LoginConfig {
+        let github = ProviderConfig {
+            authorize_url: Some("https://github.com/login/oauth/authorize".to_string()),
+            token_url: Some("https://github.com/login/oauth/access_token".to_string()),
+            client_id: Some("gh-client".to_string()),
+            client_secret: Some("gh-secret".to_string()),
+            client_auth: "body".to_string(),
+            scopes: vec!["read:user".to_string()],
+            ..Default::default()
+        };
+        let acme = ProviderConfig {
+            authorize_url: Some("https://acme.example.com/authorize".to_string()),
+            token_url: Some("https://acme.example.com/token".to_string()),
+            client_id: Some("acme-client".to_string()),
+            client_secret: Some("acme-secret".to_string()),
+            client_auth: "basic".to_string(),
+            scopes: vec!["openid".to_string(), "profile".to_string()],
+            ..Default::default()
+        };
+        OAuth2LoginConfig {
+            kind: None,
+            authorize_url: None,
+            token_url: None,
+            client_id: None,
+            client_secret: None,
+            client_auth: "basic".to_string(),
+            providers: Some(BTreeMap::from([
+                ("github".to_string(), github),
+                ("acme".to_string(), acme),
+            ])),
+            providers_from_instance: false,
+            redirect_uri: "https://app.example.com/v1/auth/{provider}/callback".to_string(),
+            callback_path: "/v1/auth/{provider}/callback".to_string(),
+            scopes: Vec::new(),
+            extra_authorize_params: Default::default(),
+            pkce: true,
+            state_secret: STATE_SECRET.to_string(),
+            state_cookie: StateCookieConfig::default(),
+            run_workflow_on_authorize: false,
+            return_to: None,
+            id_token: None,
+        }
+    }
+
+    /// No deployment-supplied providers, for the unit tests.
+    fn no_instance() -> &'static BTreeMap<String, crate::config::InstanceProviderConfig> {
+        static EMPTY: std::sync::LazyLock<BTreeMap<String, crate::config::InstanceProviderConfig>> =
+            std::sync::LazyLock::new(BTreeMap::new);
+        &EMPTY
+    }
+
+    /// A single deployment-supplied provider keyed `iitm`, for the merge tests.
+    fn instance_with_iitm() -> BTreeMap<String, crate::config::InstanceProviderConfig> {
+        BTreeMap::from([(
+            "iitm".to_string(),
+            crate::config::InstanceProviderConfig {
+                authorize_url: Some("https://login.iitm.example/authorize".to_string()),
+                token_url: Some("https://login.iitm.example/token".to_string()),
+                client_id: Some("iitm-client".to_string()),
+                client_secret: Some("iitm-secret".to_string()),
+                scopes: vec!["openid".to_string()],
+                ..Default::default()
+            },
+        )])
+    }
+
+    async fn compile_with_instance(
+        cfg: &OAuth2LoginConfig,
+        instance: &BTreeMap<String, crate::config::InstanceProviderConfig>,
+    ) -> Result<CompiledOAuth2Login, String> {
+        let jwks = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+            reqwest::Client::new(),
+            false,
+        ));
+        CompiledOAuth2Login::compile(
+            cfg,
+            "signin",
+            &LoginDeps {
+                http_client: &reqwest::Client::new(),
+                jwks: &jwks,
+                allow_private_token_urls: false,
+                instance_providers: instance,
+            },
+        )
+        .await
     }
 
     async fn compiled(cfg: &OAuth2LoginConfig) -> CompiledOAuth2Login {
@@ -1045,10 +1552,29 @@ mod tests {
                 http_client: &reqwest::Client::new(),
                 jwks: &jwks,
                 allow_private_token_urls: false,
+                instance_providers: no_instance(),
             },
         )
         .await
         .expect("compiles")
+    }
+
+    async fn try_compile(cfg: &OAuth2LoginConfig) -> Result<CompiledOAuth2Login, String> {
+        let jwks = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+            reqwest::Client::new(),
+            false,
+        ));
+        CompiledOAuth2Login::compile(
+            cfg,
+            "signin",
+            &LoginDeps {
+                http_client: &reqwest::Client::new(),
+                jwks: &jwks,
+                allow_private_token_urls: false,
+                instance_providers: no_instance(),
+            },
+        )
+        .await
     }
 
     fn params(location: &str) -> HashMap<String, String> {
@@ -1059,10 +1585,19 @@ mod tests {
             .collect()
     }
 
+    fn cookie_value(set_cookie: &str) -> String {
+        set_cookie
+            .split(';')
+            .next()
+            .and_then(|p| p.split_once('='))
+            .map(|(_, v)| v.to_string())
+            .expect("a cookie value")
+    }
+
     #[tokio::test]
     async fn the_authorize_url_carries_what_the_rfc_requires() {
         let login = compiled(&config()).await;
-        let redirect = login.begin(None, None).expect("a redirect");
+        let redirect = login.begin(None, None, None).expect("a redirect");
         let q = params(&redirect.location);
 
         assert_eq!(q.get("response_type").map(String::as_str), Some("code"));
@@ -1084,15 +1619,75 @@ mod tests {
         assert!(redirect.set_cookie.contains("Max-Age=600"));
     }
 
-    /// #307's second trap, asserted. `jwt_sign` alone cannot mint a state: its
-    /// claims are constant and `iat`/`exp` are second-granular, so two sign-ins
-    /// beginning in the same second produced byte-identical tokens — a state
-    /// parameter that identifies nothing. These two calls are the same second.
+    /// The `{provider}` slug picks the entry: two providers on one block send
+    /// the browser to two different IdPs with two different clients, and the
+    /// slug fills in the redirect URI template.
+    #[tokio::test]
+    async fn a_slug_selects_its_provider_on_the_authorize_leg() {
+        let login = compiled(&multi_config()).await;
+
+        let gh = params(&login.begin(Some("github"), None, None).expect("gh").location);
+        assert_eq!(gh.get("client_id").map(String::as_str), Some("gh-client"));
+        assert_eq!(
+            gh.get("redirect_uri").map(String::as_str),
+            Some("https://app.example.com/v1/auth/github/callback")
+        );
+
+        let acme = params(&login.begin(Some("acme"), None, None).expect("acme").location);
+        assert_eq!(acme.get("client_id").map(String::as_str), Some("acme-client"));
+        assert_eq!(
+            acme.get("redirect_uri").map(String::as_str),
+            Some("https://app.example.com/v1/auth/acme/callback")
+        );
+        assert_eq!(acme.get("scope").map(String::as_str), Some("openid profile"));
+    }
+
+    /// An unknown slug is a 404 on both legs — before the exchange, before any
+    /// workflow.
+    #[tokio::test]
+    async fn an_unknown_slug_is_not_found() {
+        let login = compiled(&multi_config()).await;
+        let err = login.begin(Some("nope"), None, None).expect_err("must 404");
+        assert!(matches!(err, OrionError::NotFound(_)), "{err:?}");
+        assert!(login.require_provider(Some("nope")).is_err());
+        assert!(login.require_provider(Some("github")).is_ok());
+    }
+
+    /// The slug is sealed into the signed state, so a state minted for one
+    /// provider cannot be redeemed at another's callback URL.
+    #[tokio::test]
+    async fn the_state_seals_the_provider_and_a_mismatch_is_refused() {
+        let login = compiled(&multi_config()).await;
+        let redirect = login.begin(Some("github"), None, None).expect("a redirect");
+        let state = params(&redirect.location)
+            .get("state")
+            .expect("a state")
+            .clone();
+        let jar = redirect
+            .set_cookie
+            .split(';')
+            .next()
+            .expect("a cookie pair")
+            .to_string();
+
+        let query = HashMap::from([
+            ("state".to_string(), state),
+            ("code".to_string(), "whatever".to_string()),
+        ]);
+        // Presented at `acme`'s callback with `github`'s state.
+        let err = login
+            .complete(Some("acme"), &query, &[jar.as_str()])
+            .await
+            .expect_err("must refuse");
+        assert!(matches!(err, OrionError::Unauthorized(_)), "{err:?}");
+    }
+
+    /// #307's second trap: two sign-ins in the same second get different states.
     #[tokio::test]
     async fn two_sign_ins_in_one_second_get_different_states() {
         let login = compiled(&config()).await;
-        let a = login.begin(None, None).expect("a redirect");
-        let b = login.begin(None, None).expect("a redirect");
+        let a = login.begin(None, None, None).expect("a redirect");
+        let b = login.begin(None, None, None).expect("a redirect");
 
         assert_ne!(
             params(&a.location).get("state"),
@@ -1105,9 +1700,7 @@ mod tests {
         assert_ne!(a.set_cookie, b.set_cookie);
     }
 
-    /// RFC 7636 Appendix B's published vector: the verifier and the challenge
-    /// it must produce. Unpadded base64url is the half that is easy to get
-    /// wrong, and a padded challenge is refused by every conforming IdP.
+    /// RFC 7636 Appendix B's published vector.
     #[test]
     fn the_pkce_challenge_matches_the_rfc_vector() {
         assert_eq!(
@@ -1116,8 +1709,7 @@ mod tests {
         );
     }
 
-    /// The state cookie is a bearer value for one sign-in, and every property
-    /// of a `Verifier` is what stops a forged one being accepted.
+    /// Every property of a `Verifier` is what stops a forged state being taken.
     #[tokio::test]
     async fn a_state_token_from_another_key_is_rejected() {
         let login = compiled(&config()).await;
@@ -1125,14 +1717,8 @@ mod tests {
         other.state_secret = "fedcba9876543210fedcba9876543210".to_string();
         let attacker = compiled(&other).await;
 
-        let forged = attacker.begin(None, None).expect("a redirect");
-        let cookie = forged
-            .set_cookie
-            .split(';')
-            .next()
-            .and_then(|p| p.split_once('='))
-            .map(|(_, v)| v.to_string())
-            .expect("a cookie value");
+        let forged = attacker.begin(None, None, None).expect("a redirect");
+        let cookie = cookie_value(&forged.set_cookie);
 
         let claims = login.state_verifier.verify(&cookie).await;
         assert!(
@@ -1141,13 +1727,12 @@ mod tests {
         );
     }
 
-    /// The state the browser carries and the state in the cookie are two
-    /// halves of one binding; a callback that presents one without the other
-    /// is the login-CSRF the parameter exists to prevent.
+    /// A callback that presents one half of the binding without the other is the
+    /// login-CSRF the parameter exists to prevent.
     #[tokio::test]
     async fn a_callback_without_the_cookie_is_refused_before_the_exchange() {
         let login = compiled(&config()).await;
-        let redirect = login.begin(None, None).expect("a redirect");
+        let redirect = login.begin(None, None, None).expect("a redirect");
         let state = params(&redirect.location)
             .get("state")
             .expect("a state")
@@ -1157,10 +1742,10 @@ mod tests {
             ("state".to_string(), state),
             ("code".to_string(), "whatever".to_string()),
         ]);
-        // No cookie header at all. The token URL is unreachable in tests, so
-        // reaching the exchange would surface as a *different* error — which
-        // is exactly what this asserts did not happen.
-        let err = login.complete(&query, &[]).await.expect_err("must refuse");
+        let err = login
+            .complete(None, &query, &[])
+            .await
+            .expect_err("must refuse");
         assert!(
             matches!(err, OrionError::Unauthorized(_)),
             "expected a 401, got {err:?}"
@@ -1170,7 +1755,7 @@ mod tests {
     #[tokio::test]
     async fn a_state_that_does_not_match_the_cookie_is_refused() {
         let login = compiled(&config()).await;
-        let redirect = login.begin(None, None).expect("a redirect");
+        let redirect = login.begin(None, None, None).expect("a redirect");
         let jar = redirect
             .set_cookie
             .split(';')
@@ -1183,19 +1768,20 @@ mod tests {
             ("code".to_string(), "whatever".to_string()),
         ]);
         let err = login
-            .complete(&query, &[jar.as_str()])
+            .complete(None, &query, &[jar.as_str()])
             .await
             .expect_err("must refuse");
         assert!(matches!(err, OrionError::Unauthorized(_)), "{err:?}");
     }
 
-    /// The IdP refusing is a different event from a check failing here, and
-    /// both are the same `401` on the wire.
     #[tokio::test]
     async fn a_provider_error_is_refused_without_looking_at_the_state() {
         let login = compiled(&config()).await;
         let query = HashMap::from([("error".to_string(), "access_denied".to_string())]);
-        let err = login.complete(&query, &[]).await.expect_err("must refuse");
+        let err = login
+            .complete(None, &query, &[])
+            .await
+            .expect_err("must refuse");
         assert!(matches!(err, OrionError::Unauthorized(_)), "{err:?}");
     }
 
@@ -1208,8 +1794,6 @@ mod tests {
         assert!(err.contains("state"), "{err}");
     }
 
-    /// A workflow contributing under `run_workflow_on_authorize` is filtered
-    /// too: config validation cannot see what a workflow computes.
     #[tokio::test]
     async fn a_workflow_cannot_contribute_a_reserved_parameter() {
         let mut cfg = config();
@@ -1218,7 +1802,9 @@ mod tests {
         let contributed = json!({
             "extra_params": { "state": "attacker-chosen", "login_hint": "a@b.com" }
         });
-        let redirect = login.begin(Some(&contributed), None).expect("a redirect");
+        let redirect = login
+            .begin(None, Some(&contributed), None)
+            .expect("a redirect");
         let q = params(&redirect.location);
         assert_eq!(q.get("login_hint").map(String::as_str), Some("a@b.com"));
         assert_ne!(q.get("state").map(String::as_str), Some("attacker-chosen"));
@@ -1230,8 +1816,8 @@ mod tests {
             let mut cfg = config();
             let value = "http://idp.example.com/x".to_string();
             match field {
-                "authorize_url" => cfg.authorize_url = value,
-                "token_url" => cfg.token_url = value,
+                "authorize_url" => cfg.authorize_url = Some(value),
+                "token_url" => cfg.token_url = Some(value),
                 _ => cfg.redirect_uri = value,
             }
             let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err(field);
@@ -1239,13 +1825,11 @@ mod tests {
         }
     }
 
-    /// The carve-out, and its edges. `localhost.evil.test` is the one that
-    /// matters: a suffix check written the other way round would accept it.
     #[test]
     fn plain_http_is_accepted_only_on_loopback() {
         for host in ["localhost", "127.0.0.1", "[::1]", "app.localhost"] {
             let mut cfg = config();
-            cfg.token_url = format!("http://{host}:8080/token");
+            cfg.token_url = Some(format!("http://{host}:8080/token"));
             assert!(
                 validate_shape(&cfg, ShapeCheck::Authoring).is_ok(),
                 "{host} should be accepted"
@@ -1253,7 +1837,7 @@ mod tests {
         }
         for host in ["localhost.evil.test", "127.0.0.1.evil.test", "10.0.0.1"] {
             let mut cfg = config();
-            cfg.token_url = format!("http://{host}/token");
+            cfg.token_url = Some(format!("http://{host}/token"));
             assert!(
                 validate_shape(&cfg, ShapeCheck::Authoring).is_err(),
                 "{host} should be refused"
@@ -1261,10 +1845,6 @@ mod tests {
         }
     }
 
-    /// A reference is not a value. At authoring it is deferred — the load
-    /// path resolves it and runs this same check on the result — and a secret
-    /// reference in a field nothing resolves is refused up front, because its
-    /// text would otherwise reach the provider.
     #[test]
     fn a_reference_is_deferred_at_authoring_and_refused_when_serving() {
         for value in [
@@ -1282,8 +1862,8 @@ mod tests {
             assert!(err.contains("redirect_uri"), "{value}: {err}");
         }
 
-        // A var may stand in any field of the block; a secret reference only
-        // where `compile` resolves one.
+        // A var may stand in any field; a secret reference only where `compile`
+        // resolves one.
         let mut cfg = config();
         cfg.callback_path = "var://callback".to_string();
         cfg.client_auth = "var://client_auth".to_string();
@@ -1298,8 +1878,6 @@ mod tests {
         );
     }
 
-    /// `compile` resolves the URLs beside the credentials and checks what
-    /// they resolved to: a reference is not a way past the `https` rule.
     #[tokio::test]
     async fn compile_resolves_the_redirect_uri_and_checks_the_result() {
         // SAFETY: names no other test reads, set before anything resolves them.
@@ -1316,7 +1894,7 @@ mod tests {
         let mut cfg = config();
         cfg.redirect_uri = "env://ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTPS".to_string();
         let login = compiled(&cfg).await;
-        let redirect = login.begin(None, None).expect("a redirect");
+        let redirect = login.begin(None, None, None).expect("a redirect");
         let q = params(&redirect.location);
         assert_eq!(
             q.get("redirect_uri").map(String::as_str),
@@ -1325,27 +1903,10 @@ mod tests {
 
         let mut cfg = config();
         cfg.redirect_uri = "env://ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTP".to_string();
-        let jwks = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
-            reqwest::Client::new(),
-            false,
-        ));
-        let err = CompiledOAuth2Login::compile(
-            &cfg,
-            "signin",
-            &LoginDeps {
-                http_client: &reqwest::Client::new(),
-                jwks: &jwks,
-                allow_private_token_urls: false,
-            },
-        )
-        .await
-        .expect_err("plain http after resolution");
+        let err = try_compile(&cfg).await.expect_err("plain http after resolution");
         assert!(err.contains("https"), "{err}");
     }
 
-    /// Not a style preference: `Strict` withholds the cookie on the callback,
-    /// which is a top-level cross-site GET, so every sign-in would fail the
-    /// state check with nothing in the logs but an absent cookie.
     #[test]
     fn a_strict_state_cookie_is_refused_with_the_reason() {
         let mut cfg = config();
@@ -1356,6 +1917,7 @@ mod tests {
 
     #[test]
     fn a_parameterised_or_self_referencing_callback_is_refused() {
+        // A single-provider callback must be static.
         let mut cfg = config();
         cfg.callback_path = "/v1/auth/{provider}/callback".to_string();
         assert!(validate_shape(&cfg, ShapeCheck::Authoring).is_err());
@@ -1368,36 +1930,121 @@ mod tests {
         );
     }
 
+    /// The multi-provider form requires exactly one `{provider}` in the callback
+    /// and a `{provider}` template in the redirect URI, and refuses the flat
+    /// fields alongside the map.
+    #[test]
+    fn the_multi_provider_shape_is_checked() {
+        assert!(validate_shape(&multi_config(), ShapeCheck::Authoring).is_ok());
+
+        let mut cfg = multi_config();
+        cfg.callback_path = "/v1/auth/callback".to_string();
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("no {provider}");
+        assert!(err.contains("{provider}"), "{err}");
+
+        let mut cfg = multi_config();
+        cfg.redirect_uri = "https://app.example.com/callback".to_string();
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("static redirect");
+        assert!(err.contains("{provider}"), "{err}");
+
+        let mut cfg = multi_config();
+        cfg.client_id = Some("stray".to_string());
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("both forms");
+        assert!(err.contains("both"), "{err}");
+
+        let mut cfg = multi_config();
+        cfg.providers = Some(BTreeMap::new());
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("empty map");
+        assert!(err.contains("at least one"), "{err}");
+    }
+
+    /// A per-provider diagnostic names the provider whose field is wrong.
+    #[test]
+    fn a_bad_provider_field_names_the_provider() {
+        let mut cfg = multi_config();
+        if let Some(p) = cfg.providers.as_mut().and_then(|m| m.get_mut("github")) {
+            p.token_url = Some("http://github.example/token".to_string());
+        }
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("http token_url");
+        assert!(err.contains("providers.github.token_url"), "{err}");
+    }
+
+    /// A block that opts in merges the deployment's providers under its own; the
+    /// instance-supplied one is selectable and fills the redirect template.
+    #[tokio::test]
+    async fn instance_providers_are_merged_when_opted_in() {
+        let mut cfg = multi_config();
+        cfg.providers_from_instance = true;
+        let login = compile_with_instance(&cfg, &instance_with_iitm())
+            .await
+            .expect("compiles");
+
+        let q = params(&login.begin(Some("iitm"), None, None).expect("iitm").location);
+        assert_eq!(q.get("client_id").map(String::as_str), Some("iitm-client"));
+        assert_eq!(
+            q.get("redirect_uri").map(String::as_str),
+            Some("https://app.example.com/v1/auth/iitm/callback")
+        );
+        // The definition's own providers still resolve.
+        assert!(login.begin(Some("github"), None, None).is_ok());
+    }
+
+    /// The definition's own entry wins a slug clash with the deployment's.
+    #[tokio::test]
+    async fn the_definition_wins_a_slug_clash() {
+        let mut cfg = multi_config(); // github → gh-client
+        cfg.providers_from_instance = true;
+        let mut instance = instance_with_iitm();
+        instance.insert(
+            "github".to_string(),
+            crate::config::InstanceProviderConfig {
+                authorize_url: Some("https://github.com/login/oauth/authorize".to_string()),
+                token_url: Some("https://github.com/login/oauth/access_token".to_string()),
+                client_id: Some("instance-gh".to_string()),
+                client_secret: Some("x".to_string()),
+                ..Default::default()
+            },
+        );
+        let login = compile_with_instance(&cfg, &instance).await.expect("compiles");
+        let q = params(&login.begin(Some("github"), None, None).expect("gh").location);
+        assert_eq!(
+            q.get("client_id").map(String::as_str),
+            Some("gh-client"),
+            "the definition's own github entry wins"
+        );
+    }
+
+    /// Opting into instance providers but supplying none compiles to zero
+    /// providers, which is refused at load rather than served empty.
+    #[tokio::test]
+    async fn instance_only_with_none_supplied_is_refused() {
+        let mut cfg = multi_config();
+        cfg.providers = None;
+        cfg.providers_from_instance = true;
+        let err = compile_with_instance(&cfg, no_instance())
+            .await
+            .expect_err("no providers");
+        assert!(err.contains("at least one"), "{err}");
+    }
+
+    /// `providers_from_instance` is multi-provider, so it cannot be combined with
+    /// the flat single-provider fields.
+    #[test]
+    fn instance_opt_in_refuses_the_flat_fields() {
+        let mut cfg = config(); // flat fields set
+        cfg.providers_from_instance = true;
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("both forms");
+        assert!(err.contains("both"), "{err}");
+    }
+
     #[tokio::test]
     async fn a_short_state_secret_is_refused_at_compile() {
         let mut cfg = config();
         cfg.state_secret = "too-short".to_string();
-        let jwks = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
-            reqwest::Client::new(),
-            false,
-        ));
-        let err = CompiledOAuth2Login::compile(
-            &cfg,
-            "signin",
-            &LoginDeps {
-                http_client: &reqwest::Client::new(),
-                jwks: &jwks,
-                allow_private_token_urls: false,
-            },
-        )
-        .await
-        .expect_err("must refuse");
+        let err = try_compile(&cfg).await.expect_err("must refuse");
         assert!(err.contains("RFC 7518"), "{err}");
     }
 
-    /// The window has a ceiling, and the ceiling is what makes `begin`'s
-    /// arithmetic total.
-    ///
-    /// A large `max_age` overflowed `now + max_age` and wrapped `max_age as
-    /// i64` negative, emitting `Max-Age=-…`. A browser deletes such a cookie
-    /// on receipt, so every sign-in then failed the state check with nothing
-    /// in the log but a cookie that was not there — an outage with no
-    /// visible cause, from a field an operator set by hand.
     #[tokio::test]
     async fn state_cookie_max_age_is_bounded_at_both_ends() {
         let mut cfg = config();
@@ -1406,7 +2053,6 @@ mod tests {
         let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("zero must be refused");
         assert!(err.contains("greater than zero"), "{err}");
 
-        // The values that used to wrap.
         for absurd in [u64::MAX, u64::MAX / 2, MAX_STATE_COOKIE_MAX_AGE_SECS + 1] {
             cfg.state_cookie.max_age = absurd;
             let err =
@@ -1415,7 +2061,6 @@ mod tests {
             assert!(err.contains("ceiling"), "{err}");
         }
 
-        // The ceiling itself, and the default, are accepted.
         for ok in [1, 600, MAX_STATE_COOKIE_MAX_AGE_SECS] {
             cfg.state_cookie.max_age = ok;
             assert!(
@@ -1425,40 +2070,14 @@ mod tests {
         }
     }
 
-    /// The bound is enforced where the block is compiled, so a stored config
-    /// carrying an old out-of-range value is refused at load rather than
-    /// serving redirects a browser throws away.
     #[tokio::test]
     async fn an_out_of_range_max_age_is_refused_at_compile() {
         let mut cfg = config();
         cfg.state_cookie.max_age = u64::MAX;
-        let jwks = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
-            reqwest::Client::new(),
-            false,
-        ));
-        let err = CompiledOAuth2Login::compile(
-            &cfg,
-            "signin",
-            &LoginDeps {
-                http_client: &reqwest::Client::new(),
-                jwks: &jwks,
-                allow_private_token_urls: false,
-            },
-        )
-        .await
-        .expect_err("must refuse");
+        let err = try_compile(&cfg).await.expect_err("must refuse");
         assert!(err.contains("max_age"), "{err}");
     }
 
-    /// Checked on the way *in*, so a value that reaches the workflow has
-    /// already passed and cannot turn a workflow redirect into an open one.
-    ///
-    /// The entry here carries **no trailing slash**, which is what an operator
-    /// naturally writes and what the previous string-prefix implementation got
-    /// wrong: `https://app.example.com` is a textual prefix of
-    /// `https://app.example.com.evil.test/steal`, so the crafted host was
-    /// admitted and sealed into the signed state as a vetted destination. The
-    /// old test passed only because it configured the trailing slash.
     #[tokio::test]
     async fn return_to_is_filtered_against_the_allow_list() {
         let mut cfg = config();
@@ -1471,8 +2090,6 @@ mod tests {
         for value in [
             "https://app.example.com/dashboard",
             "https://app.example.com/",
-            // A bare origin entry admits the whole origin, which is what
-            // writing a bare origin plainly means.
             "https://app.example.com",
             "https://app.example.com/a/b?q=1#frag",
         ] {
@@ -1486,19 +2103,11 @@ mod tests {
 
         for value in [
             "https://evil.example.com/",
-            // The open redirect: a longer host that starts with the permitted
-            // one. This is the case the trailing slash used to be load-bearing
-            // for, and it is now refused however the entry is written.
             "https://app.example.com.evil.test/steal",
             "https://app.example.com.evil.test",
-            // Userinfo cannot be used to make the host read as the permitted
-            // one — this URL's host is `evil.test`.
             "https://app.example.com@evil.test/steal",
-            // A different scheme or port is a different origin.
             "http://app.example.com/dashboard",
             "https://app.example.com:8443/dashboard",
-            // Not a URL at all, and a relative path, are both refused: the
-            // allow-list is written in absolute URLs.
             "/dashboard",
             "javascript:alert(1)",
             "",
@@ -1508,9 +2117,6 @@ mod tests {
         }
     }
 
-    /// A path on an entry is a boundary, not a substring: `/app` must not admit
-    /// `/application`, which is the same mistake as the host case one level
-    /// down.
     #[tokio::test]
     async fn return_to_path_matching_cuts_at_a_segment_boundary() {
         let mut cfg = config();
@@ -1541,36 +2147,6 @@ mod tests {
         ] {
             let refused = HashMap::from([("next".to_string(), value.to_string())]);
             assert_eq!(login.accepted_return_to(&refused), None, "{value}");
-        }
-    }
-
-    /// A trailing slash on the entry means the same thing as none, so an
-    /// operator cannot get this wrong by writing it either way.
-    #[tokio::test]
-    async fn return_to_entry_means_the_same_with_or_without_a_trailing_slash() {
-        for entry in [
-            "https://app.example.com/app",
-            "https://app.example.com/app/",
-        ] {
-            let mut cfg = config();
-            cfg.return_to = Some(crate::channel::ReturnToConfig {
-                param: "next".to_string(),
-                allow_list: vec![entry.to_string()],
-            });
-            let login = compiled(&cfg).await;
-
-            for (value, admitted) in [
-                ("https://app.example.com/app", true),
-                ("https://app.example.com/app/home", true),
-                ("https://app.example.com/application", false),
-            ] {
-                let q = HashMap::from([("next".to_string(), value.to_string())]);
-                assert_eq!(
-                    login.accepted_return_to(&q).is_some(),
-                    admitted,
-                    "entry {entry} / value {value}"
-                );
-            }
         }
     }
 

@@ -530,6 +530,11 @@ pub struct ReloadDeps<'a> {
     pub http_client: &'a reqwest::Client,
     /// `[oauth2_login] allow_private_token_urls`.
     pub allow_private_token_urls: bool,
+    /// `[oauth2_login.providers]` — deployment-supplied identity providers (#355),
+    /// merged into a channel that opts in with `providers_from_instance`. Read
+    /// once at boot, so a carried-over compiled block stays valid across reloads.
+    pub instance_oauth_providers:
+        &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
     pub global_trace_storage: &'a TraceStorageConfig,
     /// `[cron] enabled`. A cron channel loaded on a node with the scheduler off
     /// is quarantined rather than served as a schedule that never fires.
@@ -552,6 +557,8 @@ struct RuntimeDeps<'a> {
     /// to the one pool, not a second one.
     http_client: &'a reqwest::Client,
     allow_private_token_urls: bool,
+    instance_oauth_providers:
+        &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
     global_trace_storage: &'a TraceStorageConfig,
     cluster_redis: Option<redis::aio::ConnectionManager>,
     cron_enabled: bool,
@@ -1143,6 +1150,7 @@ impl ChannelLoader {
                         http_client: deps.http_client,
                         jwks: deps.jwks,
                         allow_private_token_urls: deps.allow_private_token_urls,
+                        instance_providers: deps.instance_oauth_providers,
                     },
                 )
                 .await
@@ -1280,6 +1288,7 @@ impl ChannelLoader {
             jwks,
             http_client,
             allow_private_token_urls,
+            instance_oauth_providers,
             global_trace_storage,
             cron_enabled,
         } = deps;
@@ -1291,6 +1300,7 @@ impl ChannelLoader {
             jwks,
             http_client,
             allow_private_token_urls,
+            instance_oauth_providers,
             global_trace_storage,
             cluster_redis: self.cluster.as_ref().and_then(|c| c.redis.clone()),
             cron_enabled,
@@ -1711,6 +1721,7 @@ mod tests {
                         jwks: &self.jwks,
                         http_client: &self.http_client,
                         allow_private_token_urls: false,
+                        instance_oauth_providers: &std::collections::BTreeMap::new(),
                         global_trace_storage: &self.trace_storage,
                         cron_enabled: self.cron_enabled,
                     },
@@ -1801,6 +1812,7 @@ mod tests {
                     jwks: &test_jwks(),
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
+                    instance_oauth_providers: &std::collections::BTreeMap::new(),
                     global_trace_storage: &TraceStorageConfig::default(),
                     cron_enabled: true,
                 },
@@ -1838,6 +1850,7 @@ mod tests {
                     jwks: &test_jwks(),
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
+                    instance_oauth_providers: &std::collections::BTreeMap::new(),
                     global_trace_storage: &TraceStorageConfig::default(),
                     cron_enabled: true,
                 },
@@ -1873,6 +1886,7 @@ mod tests {
                     jwks: &test_jwks(),
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
+                    instance_oauth_providers: &std::collections::BTreeMap::new(),
                     global_trace_storage: &TraceStorageConfig::default(),
                     cron_enabled: true,
                 },

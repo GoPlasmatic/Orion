@@ -234,6 +234,21 @@ pub fn methods_overlap(a: &[String], b: &[String]) -> bool {
         .any(|x| b.iter().any(|y| x.eq_ignore_ascii_case(y)))
 }
 
+/// The names of the `{param}` segments in a route pattern, in order.
+///
+/// The one place the `{param}` grammar lives, so a check on a route pattern —
+/// the `oauth2_login` callback/redirect shape (#355) and the activation gate —
+/// reads it the same way the router does, empty segments filtered and all.
+pub(crate) fn route_param_names(pattern: &str) -> Vec<String> {
+    parse_route_pattern(pattern)
+        .into_iter()
+        .filter_map(|seg| match seg {
+            RouteSegment::Param(name) => Some(name),
+            RouteSegment::Static(_) => None,
+        })
+        .collect()
+}
+
 /// Parse a route pattern like "/orders/{id}/items/{item_id}" into segments.
 fn parse_route_pattern(pattern: &str) -> Vec<RouteSegment> {
     pattern

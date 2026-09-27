@@ -731,41 +731,152 @@ pub struct DeduplicationConfig {
 /// `env://NAME` / `vault://…` through the same resolver `auth.secret` uses. A
 /// `{"secret": …}` node would not be evaluated here — nothing runs JSONLogic
 /// at load — so it would reach the IdP as its own literal text.
+/// One identity provider's settings — everything that differs between IdPs.
+///
+/// The *same shape* appears three ways (this is the single-shape discipline that
+/// keeps the design extensible): inline on a single-provider block through the
+/// flat fields of [`OAuth2LoginConfig`]; as an entry in
+/// [`OAuth2LoginConfig::providers`]; and (deployment-supplied) in instance
+/// config. A future stored provider resource reuses it verbatim. Validate,
+/// compile and mask it in one place so those forms cannot drift.
+///
+/// Fields that are *shared* by every provider — `callback_path`, `state_secret`,
+/// `state_cookie`, `return_to`, `pkce`, `run_workflow_on_authorize` and the
+/// `redirect_uri` template — live on [`OAuth2LoginConfig`], not here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderConfig {
+    /// The establishment protocol. `oidc` (an `id_token` is verified) or
+    /// `oauth2` (no `id_token`). Absent means "derive from whether `id_token`
+    /// is configured". Reserved so future kinds (SAML, device-code, …) slot in
+    /// behind the same selection and identity contract without a schema break.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
+    /// The IdP's authorization endpoint. See the flat field of the same name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorize_url: Option<String>,
+    /// The IdP's token endpoint. See the flat field of the same name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    /// The OAuth2 client identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    /// The OAuth2 client secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    /// How the client credentials are presented at the token endpoint.
+    #[serde(default = "default_client_auth")]
+    pub client_auth: String,
+    /// A per-provider redirect-URI override. When absent, the block's shared
+    /// `redirect_uri` template is used with `{provider}` filled in with this
+    /// provider's slug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_uri: Option<String>,
+    /// Scopes requested at the authorize endpoint, space-joined per RFC 6749.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// Extra authorize-URL parameters. May not name a reserved parameter.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra_authorize_params: std::collections::BTreeMap<String, String>,
+    /// OIDC `id_token` verification for this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<IdTokenConfig>,
+}
+
+impl From<&crate::config::InstanceProviderConfig> for ProviderConfig {
+    /// A deployment-supplied provider (#355) is the same shape, so it becomes the
+    /// one compiled/validated `ProviderConfig` at the merge point. Instance
+    /// providers carry no explicit `id_token` (OIDC comes via discovery), so it
+    /// is `None`; an absent `client_auth` takes the `basic` default.
+    fn from(i: &crate::config::InstanceProviderConfig) -> Self {
+        ProviderConfig {
+            kind: i.kind.clone(),
+            authorize_url: i.authorize_url.clone(),
+            token_url: i.token_url.clone(),
+            client_id: i.client_id.clone(),
+            client_secret: i.client_secret.clone(),
+            client_auth: i.client_auth.clone().unwrap_or_else(default_client_auth),
+            redirect_uri: i.redirect_uri.clone(),
+            scopes: i.scopes.clone(),
+            extra_authorize_params: i.extra_authorize_params.clone(),
+            id_token: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OAuth2LoginConfig {
+    /// The establishment protocol for the single-provider (flat) form. See
+    /// [`ProviderConfig::kind`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
     /// The IdP's authorization endpoint. The browser is redirected here; Orion
     /// never fetches it, so SSRF does not apply — but it is an open-redirect
     /// surface, so it must be `https`. Literal, `var://name`, or `env://NAME`
     /// / `vault://…` resolved at load; the rule applies to what it resolves to.
-    pub authorize_url: String,
+    ///
+    /// Part of the single-provider (flat) form; omitted when [`Self::providers`]
+    /// is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorize_url: Option<String>,
 
     /// The IdP's token endpoint. Orion POSTs the code here with the client
     /// secret, so this one *is* server-side egress: `https` only, and checked
     /// against the private-address ranges unless
     /// `[oauth2_login] allow_private_token_urls` is set instance-wide.
     /// Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load.
-    pub token_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
 
     /// The OAuth2 client identifier. Public by design — it travels in the
     /// authorize URL — so a literal is fine; `var://` keeps it per-environment.
-    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 
     /// The OAuth2 client secret. `env://NAME` or `vault://…`; a literal is
     /// accepted but means the secret is in the stored definition.
-    pub client_secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
 
     /// How the client credentials are presented at the token endpoint:
     /// `basic` (RFC 6749 §2.3.1, the default and the one the RFC prefers) or
-    /// `body`.
+    /// `body`. Single-provider (flat) form.
     #[serde(default = "default_client_auth")]
     pub client_auth: String,
+
+    /// Several identity providers on one channel, selected by the `{provider}`
+    /// segment of `route_pattern`/`callback_path`.
+    ///
+    /// Mutually exclusive with the flat per-provider fields above: a block sets
+    /// *either* the flat fields (one provider, no route parameter) *or* this
+    /// map. When present, `route_pattern` and `callback_path` must each carry a
+    /// single `{provider}` segment; the slug picks the entry on both legs and is
+    /// sealed into the signed state so a callback cannot switch providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub providers: Option<std::collections::BTreeMap<String, ProviderConfig>>,
+
+    /// Merge the deployment's `[oauth2_login.providers]` (instance config, #355)
+    /// under this block's own `providers` map, the definition's entries winning
+    /// any slug clash. Opting in lets a deployment add an identity provider by
+    /// config while the definition promotes unchanged. Implies multi-provider
+    /// mode: the routes must carry `{provider}`, even when the block declares no
+    /// providers of its own.
+    #[serde(default)]
+    pub providers_from_instance: bool,
 
     /// The absolute redirect URI registered with the IdP. Sent on both legs —
     /// the authorize request and the token exchange — because RFC 6749 §4.1.3
     /// requires the two to match. It is the one value that differs on every
     /// environment, so `var://name` (or `env://NAME` / `vault://…`, resolved
     /// at load) is the usual spelling; `https` is required of the result.
+    ///
+    /// With [`Self::providers`] this is a template: it must contain `{provider}`,
+    /// which is filled in with each provider's slug (so every provider gets its
+    /// own fixed URL to register). A provider may override it with its own
+    /// `redirect_uri`.
     pub redirect_uri: String,
 
     /// The path the IdP redirects back to, as a second route on this channel.
@@ -776,14 +887,15 @@ pub struct OAuth2LoginConfig {
     /// and splitting them across channels is what forced the flow to carry its
     /// state in the query string, where a PKCE verifier cannot go.
     ///
-    /// Must be a static path — no `{param}` segments — and must differ from
-    /// `route_pattern`. The path component of [`Self::redirect_uri`] should
-    /// resolve here once the server's mount prefix is applied.
+    /// Must differ from `route_pattern`. Static in the single-provider form (no
+    /// `{param}`); with [`Self::providers`] it carries exactly one `{provider}`
+    /// segment. The path component of [`Self::redirect_uri`] should resolve here
+    /// once the server's mount prefix is applied.
     pub callback_path: String,
 
     /// Scopes requested at the authorize endpoint, space-joined per RFC 6749
     /// §3.3. Empty sends no `scope` parameter at all, which is what an IdP
-    /// with a sensible default wants.
+    /// with a sensible default wants. Single-provider (flat) form.
     #[serde(default)]
     pub scopes: Vec<String>,
 
@@ -793,13 +905,13 @@ pub struct OAuth2LoginConfig {
     /// `nonce`, `code_challenge`, `code_challenge_method`) may not be
     /// overridden here; naming one is a create-time refusal rather than a
     /// silently-ignored key, because overriding `state` would disable the CSRF
-    /// binding this block exists to provide.
+    /// binding this block exists to provide. Single-provider (flat) form.
     #[serde(default)]
     pub extra_authorize_params: std::collections::BTreeMap<String, String>,
 
     /// PKCE (RFC 7636). On by default, and S256 only — `plain` is not
     /// representable, because a downgrade to it is the only thing PKCE has to
-    /// defend against.
+    /// defend against. Shared by every provider.
     ///
     /// Costs nothing against an IdP that ignores it, and is the difference
     /// between a stolen authorization code being usable and not.
@@ -807,14 +919,15 @@ pub struct OAuth2LoginConfig {
     pub pkce: bool,
 
     /// The key the state cookie is signed with (HS256). `env://NAME` or
-    /// `vault://…`; at least 32 bytes, per RFC 7518 §3.2.
+    /// `vault://…`; at least 32 bytes, per RFC 7518 §3.2. Shared by every
+    /// provider.
     ///
     /// It must be the same on every node and across restarts: a sign-in that
     /// begins on one node and returns to another has to verify, and a rolling
     /// deploy mid-flow must not invalidate every in-flight login.
     pub state_secret: String,
 
-    /// The cookie the signed state rides in.
+    /// The cookie the signed state rides in. Shared by every provider.
     #[serde(default)]
     pub state_cookie: StateCookieConfig,
 
@@ -827,7 +940,7 @@ pub struct OAuth2LoginConfig {
     /// `data._orion.oauth2.authorize` to contribute `extra_params` and
     /// `scopes` — a `login_hint` read from a cookie, say. Orion still mints the
     /// state, the nonce and the PKCE challenge either way; the workflow cannot
-    /// reach them and cannot replace them.
+    /// reach them and cannot replace them. Shared by every provider.
     #[serde(default)]
     pub run_workflow_on_authorize: bool,
 
@@ -836,14 +949,59 @@ pub struct OAuth2LoginConfig {
     /// Absent (the default) means no `return_to` is carried at all. This is the
     /// one thing the workflow cannot do for itself — it never sees the
     /// authorize request — which is why it is here and not left to the
-    /// application half.
+    /// application half. Shared by every provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_to: Option<ReturnToConfig>,
 
     /// OIDC `id_token` verification. Absent (the default) is plain OAuth2:
     /// GitHub issues no `id_token` and there is nothing to verify.
+    /// Single-provider (flat) form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id_token: Option<IdTokenConfig>,
+}
+
+impl OAuth2LoginConfig {
+    /// The flat per-provider fields projected as a [`ProviderConfig`], for the
+    /// single-provider form. Normalising both forms to one shape is what keeps
+    /// `compile` and `validate_shape` from special-casing.
+    pub fn flat_provider(&self) -> ProviderConfig {
+        ProviderConfig {
+            kind: self.kind.clone(),
+            authorize_url: self.authorize_url.clone(),
+            token_url: self.token_url.clone(),
+            client_id: self.client_id.clone(),
+            client_secret: self.client_secret.clone(),
+            client_auth: self.client_auth.clone(),
+            // The flat form has no per-provider override; it uses the shared
+            // `redirect_uri` directly.
+            redirect_uri: None,
+            scopes: self.scopes.clone(),
+            extra_authorize_params: self.extra_authorize_params.clone(),
+            id_token: self.id_token.clone(),
+        }
+    }
+
+    /// The provider entries this block *declares*, normalised — before any
+    /// instance-config merge. Either the `providers` map, or a single implicit
+    /// entry (empty slug) from the flat fields; empty when the block relies
+    /// entirely on `providers_from_instance`. The order is deterministic
+    /// (`BTreeMap`).
+    pub fn provider_entries(&self) -> Vec<(String, ProviderConfig)> {
+        match &self.providers {
+            Some(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            // Instance-only: the deployment supplies every provider, so the
+            // block authors none of its own.
+            None if self.providers_from_instance => Vec::new(),
+            None => vec![(String::new(), self.flat_provider())],
+        }
+    }
+
+    /// Whether the block selects a provider from a `{provider}` route segment —
+    /// because it declares a `providers` map, or opts into instance-supplied
+    /// ones.
+    pub fn is_multi_provider(&self) -> bool {
+        self.providers.is_some() || self.providers_from_instance
+    }
 }
 
 fn default_client_auth() -> String {

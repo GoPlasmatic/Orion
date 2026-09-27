@@ -239,6 +239,7 @@ pub async fn reload_engine_with_opts(
                     jwks: &state.jwks,
                     http_client: &state.http_client,
                     allow_private_token_urls: state.config.oauth2_login.allow_private_token_urls,
+                    instance_oauth_providers: &state.config.oauth2_login.providers,
                     global_trace_storage: &state.config.trace_storage,
                     cron_enabled: state.config.cron.enabled,
                 },

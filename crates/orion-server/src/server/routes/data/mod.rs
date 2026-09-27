@@ -345,6 +345,10 @@ pub(crate) async fn dynamic_handler(
         max_timeout_ms: None,
         oauth: oauth_ingress.as_ref().map(|leg| guards::OAuthIngress {
             leg: *leg,
+            // The `{provider}` route segment (#355), when the channel is
+            // multi-provider. A single-provider block declares no such segment,
+            // so this is absent and the guard uses the block's one entry.
+            provider: route_params.get("provider").map(String::as_str),
             query: &query_params,
             jar: headers
                 .get_all(axum::http::header::COOKIE)
@@ -630,6 +634,13 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
         // an access token, an `id_token`'s verified claims or a `return_to`
         // into an envelope and have a workflow trust them as Orion's.
         map.remove("oauth");
+        // #355: `metadata.identity` is the protocol-neutral normalised identity
+        // path. Reserved for the same reason `oauth` is — a caller must not be
+        // able to pre-seed an identity a workflow then upserts on — and cleared
+        // here unconditionally. The callback leg will populate it (the normalised
+        // identity lands in a later phase); reserving the key now fixes the
+        // workflow-facing contract before workflows depend on it.
+        map.remove("identity");
         // #354: `metadata.auth` is platform-reserved the same way. The guard
         // chain stamps it with the verified claims, but only when there *are*
         // claims — a `jwt` channel with `required: false` called without a

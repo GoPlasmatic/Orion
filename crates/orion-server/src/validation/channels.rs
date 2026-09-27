@@ -212,6 +212,32 @@ fn validate_oauth2_login_routing(
              authorize leg, the path a user is sent to in order to begin signing in",
         ));
     };
+    // #355: a multi-provider block picks the provider from a `{provider}` route
+    // segment, so the authorize route must carry one. Without it, the guard has
+    // no slug to resolve and every sign-in would 404. A block is multi-provider
+    // when it declares a `providers` map or opts into instance-supplied ones.
+    // (The callback's own `{provider}` requirement is checked by
+    // `oauth2_login::validate_shape`.)
+    let multi_provider = login.get("providers").is_some_and(|v| !v.is_null())
+        || login
+            .get("providers_from_instance")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+    if multi_provider
+        && !crate::channel::routing::route_param_names(pattern)
+            .iter()
+            .any(|p| p == "provider")
+    {
+        return Err(OrionError::invalid_field(
+            "channel.route_pattern",
+            "INVALID",
+            format!(
+                "a multi-provider oauth2_login channel selects the provider from a \
+                 {{provider}} route segment, but route_pattern '{pattern}' has none — add one, \
+                 e.g. /v1/auth/{{provider}}"
+            ),
+        ));
+    }
     // The two legs are two routes on one channel; the same path for both would
     // make the callback shadow the authorize leg (or the reverse, by priority),
     // and a sign-in would loop.

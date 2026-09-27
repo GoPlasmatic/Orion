@@ -380,6 +380,10 @@ pub struct Admission {
 pub struct OAuthIngress<'a> {
     /// Which of the channel's two routes matched.
     pub leg: crate::channel::OAuthLeg,
+    /// The `{provider}` route segment, when the channel is multi-provider
+    /// (#355). `None` for a single-provider block. It picks the entry on both
+    /// legs; an unknown slug is a `404`.
+    pub provider: Option<&'a str>,
     /// The request's query string, parsed. The authorize leg reads a
     /// `return_to`; the callback reads `state`, `code` and `error`.
     pub query: &'a std::collections::HashMap<String, String>,
@@ -400,6 +404,12 @@ pub struct OAuthAdmission {
     /// its workflow first (`run_workflow_on_authorize`). The redirect is built
     /// after the workflow, so the sync path needs the block.
     pub authorize: Option<std::sync::Arc<crate::channel::CompiledOAuth2Login>>,
+
+    /// The `{provider}` slug for the deferred authorize redirect (#355), carried
+    /// beside [`Self::authorize`] for the same reason [`Self::return_to`] is: it
+    /// is the request's own route parameter, gone by the time the workflow has
+    /// run.
+    pub provider: Option<String>,
 
     /// The caller's `return_to`, already checked against the channel's
     /// allow-list. Travels with [`Self::authorize`] because the check needs the
@@ -604,6 +614,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     // stored `302` carrying a spent state cookie, or replay one user's
     // callback to the next caller.
     let mut oauth_authorize = None;
+    let mut oauth_provider = None;
     let mut oauth_return_to = None;
     let mut response_cookies = Vec::new();
     let mut oauth_metadata = None;
@@ -614,14 +625,9 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         match ingress.leg {
             crate::channel::OAuthLeg::Authorize if !login.runs_workflow_on_authorize() => {
                 let return_to = login.accepted_return_to(ingress.query);
-                let redirect = match login.begin(None, return_to.as_deref()) {
+                let redirect = match login.begin(ingress.provider, None, return_to.as_deref()) {
                     Ok(redirect) => redirect,
                     Err(e) => {
-                        tracing::error!(
-                            channel = %req.channel,
-                            error = %e,
-                            "Could not build the OAuth2 authorize redirect"
-                        );
                         // Nothing ran, so hand the key back — the same rule the
                         // backpressure branch above states and for the same
                         // reason. A sign-in that could not even be started must
@@ -629,14 +635,19 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                         if let Some(claim) = dedup_claim {
                             claim.release().await;
                         }
+                        // An unknown provider is the caller's 404; anything else
+                        // (a URL that will not parse, a signing failure) is ours.
+                        if matches!(e, OrionError::NotFound(_)) {
+                            return Err(e);
+                        }
+                        tracing::error!(
+                            channel = %req.channel,
+                            error = %e,
+                            "Could not build the OAuth2 authorize redirect"
+                        );
                         return Err(OrionError::internal("could not begin the sign-in"));
                     }
                 };
-                crate::metrics::record_oauth_login(
-                    req.channel,
-                    crate::channel::OAuthLeg::Authorize,
-                    "ok",
-                );
                 // The permit and the claim both drop here. The claim standing
                 // is correct and matches `CacheHit`: the request *was*
                 // answered, so a replay of the key is a duplicate of a
@@ -654,13 +665,24 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                 }));
             }
             crate::channel::OAuthLeg::Authorize => {
+                // The redirect is built after the workflow, but an unknown
+                // provider must 404 before the workflow runs — a sign-in to a
+                // provider this channel does not serve should execute nothing.
+                if let Err(e) = login.require_provider(ingress.provider) {
+                    if let Some(claim) = dedup_claim {
+                        claim.release().await;
+                    }
+                    return Err(e);
+                }
                 // Checked here, where the request's own query string is, and
                 // carried to the redirect that is built after the workflow.
                 oauth_return_to = login.accepted_return_to(ingress.query);
+                oauth_provider = ingress.provider.map(str::to_string);
                 oauth_authorize = Some(std::sync::Arc::clone(login));
             }
             crate::channel::OAuthLeg::Callback => {
-                let grant = match login.complete(ingress.query, &ingress.jar).await {
+                let grant = match login.complete(ingress.provider, ingress.query, &ingress.jar).await
+                {
                     Ok(grant) => grant,
                     Err(e) => {
                         // Every failure here — a missing or mismatched state, a
@@ -686,6 +708,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         Box::new(OAuthAdmission {
             response_cookies,
             authorize: oauth_authorize,
+            provider: oauth_provider,
             return_to: oauth_return_to,
             grant: oauth_metadata,
         })

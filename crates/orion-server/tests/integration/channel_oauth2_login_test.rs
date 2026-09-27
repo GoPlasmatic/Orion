@@ -173,6 +173,17 @@ async fn deploy(app: &axum::Router, login: Value, workflow: Value) -> Value {
 /// `deduplication`, say, which create-time validation permits and which shares
 /// the callback's admission path.
 async fn deploy_with_config(app: &axum::Router, config: Value, workflow: Value) -> Value {
+    deploy_on_route(app, "/v1/auth/idp", config, workflow).await
+}
+
+/// The general form: deploy a `rest`/`GET` sign-in channel on `route_pattern`
+/// (which carries `{provider}` for a multi-provider block, #355).
+async fn deploy_on_route(
+    app: &axum::Router,
+    route_pattern: &str,
+    config: Value,
+    workflow: Value,
+) -> Value {
     let resp = app
         .clone()
         .oneshot(common::json_request(
@@ -211,7 +222,7 @@ async fn deploy_with_config(app: &axum::Router, config: Value, workflow: Value) 
                 "channel_type": "sync",
                 "protocol": "rest",
                 "methods": ["GET"],
-                "route_pattern": "/v1/auth/idp",
+                "route_pattern": route_pattern,
                 "workflow_id": workflow_id,
                 "config": config
             })),
@@ -1665,4 +1676,317 @@ async fn a_reference_that_resolves_to_plain_http_quarantines_the_channel() {
         entry.to_string().contains("https"),
         "the reason names the rule: {entry}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Several providers on one channel (#355)
+// ---------------------------------------------------------------------------
+
+/// A two-provider block — `github` and `acme` — both exchanging at the mock
+/// IdP's `/token` with their own client credentials, selected by `{provider}`.
+/// The redirect URI is a template the slug fills in.
+fn multi_login_config(idp: &str) -> Value {
+    json!({
+        "redirect_uri": "https://app.example.com/v1/auth/{provider}/callback",
+        "callback_path": "/v1/auth/{provider}/callback",
+        "state_secret": STATE_SECRET,
+        "providers": {
+            "github": {
+                "authorize_url": "https://github.com/login/oauth/authorize",
+                "token_url": format!("{idp}/token"),
+                "client_id": "gh-client",
+                "client_secret": "gh-secret",
+                "client_auth": "body",
+                "scopes": ["read:user"]
+            },
+            "acme": {
+                "authorize_url": "https://acme.example.com/authorize",
+                "token_url": format!("{idp}/token"),
+                "client_id": "acme-client",
+                "client_secret": "acme-secret",
+                "scopes": ["openid", "profile"]
+            }
+        }
+    })
+}
+
+/// Echoes the grant plus which provider answered and its kind.
+fn echo_provider_workflow() -> Value {
+    json!({
+        "name": "signin",
+        "description": "echo the grant and provider",
+        "condition": true,
+        "tasks": [{
+            "id": "echo",
+            "name": "Echo",
+            "function": { "name": "map", "input": { "mappings": [
+                { "path": "data.token", "logic": { "var": "metadata.oauth.access_token" } },
+                { "path": "data.provider", "logic": { "var": "metadata.oauth.provider" } },
+                { "path": "data.kind", "logic": { "var": "metadata.oauth.kind" } }
+            ] } }
+        }]
+    })
+}
+
+/// Begin a sign-in for `provider` and hand back `(state, cookie)`.
+async fn begin_provider(app: &axum::Router, provider: &str) -> (String, String) {
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/data/v1/auth/{provider}"), None))
+        .await
+        .expect("authorize");
+    assert_eq!(resp.status(), StatusCode::FOUND, "authorize {provider}");
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    let cookie = cookie_pair(&resp);
+    (query_param(&location, "state").expect("a state"), cookie)
+}
+
+/// The slug picks the provider on the authorize leg: each is sent to its own IdP
+/// with its own client, and the redirect URI template is filled in.
+#[tokio::test]
+async fn the_slug_selects_the_provider_on_the_authorize_leg() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy_multi(&app, multi_login_config(&idp_url), echo_provider_workflow()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/github", None))
+        .await
+        .expect("authorize github");
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    assert!(location.starts_with("https://github.com/login/oauth/authorize"));
+    assert_eq!(query_param(&location, "client_id").as_deref(), Some("gh-client"));
+    assert_eq!(
+        query_param(&location, "redirect_uri").as_deref(),
+        Some("https://app.example.com/v1/auth/github/callback")
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/acme", None))
+        .await
+        .expect("authorize acme");
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    assert!(location.starts_with("https://acme.example.com/authorize"));
+    assert_eq!(query_param(&location, "client_id").as_deref(), Some("acme-client"));
+    assert_eq!(query_param(&location, "scope").as_deref(), Some("openid profile"));
+}
+
+/// A callback to the selected provider exchanges the code with that provider's
+/// credentials, and the workflow learns which provider answered.
+#[tokio::test]
+async fn a_multi_provider_callback_exchanges_and_names_the_provider() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy_multi(&app, multi_login_config(&idp_url), echo_provider_workflow()).await;
+
+    let (state, cookie) = begin_provider(&app, "github").await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/github/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("callback");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["data"]["token"], "gho_the_access_token");
+    assert_eq!(body["data"]["provider"], "github");
+    assert_eq!(body["data"]["kind"], "oauth2");
+    // The exchange used github's client, presented in the body per its config.
+    assert_eq!(idp.form("client_id").as_deref(), Some("gh-client"));
+    assert_eq!(
+        idp.form("redirect_uri").as_deref(),
+        Some("https://app.example.com/v1/auth/github/callback")
+    );
+}
+
+/// An unknown slug is a 404 on the authorize leg, before anything runs.
+#[tokio::test]
+async fn an_unknown_provider_slug_is_not_found() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy_multi(&app, multi_login_config(&idp_url), echo_provider_workflow()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/nope", None))
+        .await
+        .expect("authorize unknown");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(idp.token_hits(), 0, "nothing was exchanged");
+}
+
+/// A state minted for one provider cannot be redeemed at another's callback: the
+/// slug is sealed into the signed state, so the mismatch is a 401 before the
+/// exchange.
+#[tokio::test]
+async fn a_state_cannot_be_redeemed_at_another_providers_callback() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy_multi(&app, multi_login_config(&idp_url), echo_provider_workflow()).await;
+
+    // Begin at github, present the state at acme's callback.
+    let (state, cookie) = begin_provider(&app, "github").await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/acme/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("cross callback");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(idp.token_hits(), 0, "the code was never exchanged");
+}
+
+/// A per-provider `client_secret` is masked on a channel read, like the flat one.
+#[tokio::test]
+async fn a_channel_read_masks_per_provider_secrets() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    let created = deploy_multi(&app, multi_login_config(&idp_url), echo_provider_workflow()).await;
+    let channel_id = created["channel_id"].as_str().expect("channel_id");
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "GET",
+            &format!("/api/v1/admin/channels/{channel_id}"),
+            None,
+        ))
+        .await
+        .expect("read channel");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    let providers = &body["data"]["config"]["oauth2_login"]["providers"];
+    for slug in ["github", "acme"] {
+        let secret = providers[slug]["client_secret"].as_str().unwrap_or_default();
+        assert_ne!(secret, "gh-secret", "github secret leaked");
+        assert_ne!(secret, "acme-secret", "acme secret leaked");
+        assert!(!secret.is_empty(), "the field is present but masked");
+    }
+    // client_id is not a secret and stays readable.
+    assert_eq!(providers["github"]["client_id"], "gh-client");
+}
+
+/// Deploy a multi-provider sign-in channel on `/v1/auth/{provider}`.
+async fn deploy_multi(app: &axum::Router, login: Value, workflow: Value) -> Value {
+    deploy_on_route(
+        app,
+        "/v1/auth/{provider}",
+        json!({ "oauth2_login": login }),
+        workflow,
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// Deployment-supplied providers (#355, instance config)
+// ---------------------------------------------------------------------------
+
+/// `app_config()` plus one deployment-supplied provider, `entra`, exchanging at
+/// the mock IdP's `/token` with its own client.
+fn app_config_with_instance_provider(idp: &str) -> orion::config::AppConfig {
+    let mut config = app_config();
+    config.oauth2_login.providers.insert(
+        "entra".to_string(),
+        orion::config::InstanceProviderConfig {
+            authorize_url: Some("https://login.microsoftonline.com/tenant/authorize".to_string()),
+            token_url: Some(format!("{idp}/token")),
+            client_id: Some("entra-client".to_string()),
+            client_secret: Some("entra-secret".to_string()),
+            // `body` so the client id lands in the token-request form the mock IdP
+            // records; the default `basic` would carry it in the Authorization header.
+            client_auth: Some("body".to_string()),
+            scopes: vec!["openid".to_string()],
+            ..Default::default()
+        },
+    );
+    config
+}
+
+/// A block that declares no providers of its own and takes them from the
+/// deployment.
+fn instance_opt_in_login_config() -> Value {
+    json!({
+        "redirect_uri": "https://app.example.com/v1/auth/{provider}/callback",
+        "callback_path": "/v1/auth/{provider}/callback",
+        "state_secret": STATE_SECRET,
+        "providers_from_instance": true
+    })
+}
+
+/// A channel that opts into instance providers serves one it declared nowhere in
+/// its own definition — the deployment supplied it — and the workflow names it.
+#[tokio::test]
+async fn a_deployment_supplied_provider_serves_a_channel_that_opts_in() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config_with_instance_provider(&idp_url)).await;
+    deploy_multi(&app, instance_opt_in_login_config(), echo_provider_workflow()).await;
+
+    // Authorize: the deployment's provider is selected and its client is used.
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/entra", None))
+        .await
+        .expect("authorize entra");
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    assert!(location.starts_with("https://login.microsoftonline.com/tenant/authorize"));
+    assert_eq!(query_param(&location, "client_id").as_deref(), Some("entra-client"));
+
+    // Callback: exchange at the instance provider's token endpoint; the workflow
+    // learns which provider answered.
+    let (state, cookie) = begin_provider(&app, "entra").await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/entra/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("callback");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["data"]["provider"], "entra");
+    assert_eq!(idp.form("client_id").as_deref(), Some("entra-client"));
+
+    // A slug the deployment did not supply is still a 404.
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/nope", None))
+        .await
+        .expect("authorize unknown");
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }

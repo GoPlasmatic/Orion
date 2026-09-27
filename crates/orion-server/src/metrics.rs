@@ -110,6 +110,12 @@ pub fn record_oauth_token_request(connector: &str, outcome: &'static str) {
 /// acting as the relying party for a browser, and its `channel` label is a
 /// channel rather than a connector.
 ///
+/// `provider` is the selected provider's slug on a multi-provider channel
+/// (#355), `default` for a single-provider block, and `unknown` for any failure
+/// that happens before a provider is resolved. It is always a value from that
+/// bounded set — never a caller-supplied slug — so a prober cannot flood the
+/// series by requesting arbitrary providers.
+///
 /// `outcome` carries what the wire deliberately does not. Every callback
 /// refusal is the same uniform `401` — naming the failing half would tell a
 /// prober which one to work on — so this counter is where an operator sees the
@@ -117,15 +123,21 @@ pub fn record_oauth_token_request(connector: &str, outcome: &'static str) {
 /// (`provider_error`), "someone is replaying callbacks" (`state_mismatch`) and
 /// "our client secret is wrong" (`exchange_rejected`). Bounded set:
 /// `ok`, `provider_error`, `state_missing`, `code_missing`, `state_invalid`,
-/// `state_mismatch`, `nonce_mismatch`, `exchange_rejected`, `exchange_error`,
-/// `id_token_rejected`.
-pub fn record_oauth_login(channel: &str, leg: crate::channel::OAuthLeg, outcome: &'static str) {
+/// `state_mismatch`, `provider_mismatch`, `unknown_provider`, `nonce_mismatch`,
+/// `exchange_rejected`, `exchange_error`, `id_token_rejected`.
+pub fn record_oauth_login(
+    channel: &str,
+    provider: &str,
+    leg: crate::channel::OAuthLeg,
+    outcome: &'static str,
+) {
     if !is_enabled() {
         return;
     }
     counter!(
         "orion_oauth_login_total",
         "channel" => channel.to_owned(),
+        "provider" => provider.to_owned(),
         "leg" => leg.as_str(),
         "outcome" => outcome
     )

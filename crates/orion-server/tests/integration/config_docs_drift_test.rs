@@ -80,6 +80,9 @@ const NO_DEFAULT: &[&str] = &[
     "kafka.extra_config",
     "kafka.topics.topic",
     "kafka.topics.channel",
+    // Free-form map keyed by an arbitrary provider slug (#355): deployment-supplied
+    // identity providers, documented with an illustrative entry.
+    "oauth2_login.providers",
     // The fields of the `[[plugins.overrides]]` array of tables: every one is
     // an `Option`, and `id` names the plugin the block is for.
     "plugins.overrides.id",
@@ -118,7 +121,9 @@ const SERDE_DEFAULT_DIFFERS: &[&str] = &[];
 const NONE_MARKER: &str = "—";
 
 fn is_no_default(path: &str) -> bool {
-    NO_DEFAULT.contains(&path) || path.starts_with("kafka.extra_config.")
+    NO_DEFAULT.contains(&path)
+        || path.starts_with("kafka.extra_config.")
+        || path.starts_with("oauth2_login.providers.")
 }
 
 // ---------------------------------------------------------------------------

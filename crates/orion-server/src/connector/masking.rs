@@ -259,6 +259,16 @@ pub fn mask_channel_config(config: &mut Value) {
                 mask_channel_secret_leaf(value);
             }
         }
+        // #355: a multi-provider block carries a `client_secret` inside each
+        // `providers.<slug>` entry — mask every one, or a channel read leaks the
+        // per-provider secrets the flat check above never sees.
+        if let Some(providers) = login.get_mut("providers").and_then(Value::as_object_mut) {
+            for provider in providers.values_mut() {
+                if let Some(value) = provider.get_mut("client_secret") {
+                    mask_channel_secret_leaf(value);
+                }
+            }
+        }
     }
     let Some(auth) = config.get_mut("auth") else {
         return;

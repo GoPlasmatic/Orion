@@ -562,6 +562,7 @@ impl EngineComponents {
                     jwks: &serving.jwks,
                     http_client: &serving.http_client,
                     allow_private_token_urls: config.oauth2_login.allow_private_token_urls,
+                    instance_oauth_providers: &config.oauth2_login.providers,
                     global_trace_storage: &config.trace_storage,
                     cron_enabled: config.cron.enabled,
                 },

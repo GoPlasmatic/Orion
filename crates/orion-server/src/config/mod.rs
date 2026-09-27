@@ -34,7 +34,7 @@ pub use jwt::JwtConfig;
 pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
 pub use models::{ModelOverride, ModelPreload, ModelRuntimeConfig, ModelTrustConfig, ModelsConfig};
-pub use oauth2_login::OAuth2LoginConfig;
+pub use oauth2_login::{InstanceProviderConfig, OAuth2LoginConfig};
 pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageConfig, TraceStorageMode, TracingConfig,
 };

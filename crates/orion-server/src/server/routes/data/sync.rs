@@ -577,9 +577,9 @@ pub(super) async fn process_sync_for_channel(
     // the browser until its own `exp`. Clearing that cookie is the *only*
     // single-use enforcement Orion performs (`oauth2_login.rs`), so the
     // outcomes where it was skipped are exactly the ones a replay would follow.
-    let (response_cookies, oauth_authorize, oauth_return_to) = match oauth {
-        Some(o) => (o.response_cookies, o.authorize, o.return_to),
-        None => (Vec::new(), None, None),
+    let (response_cookies, oauth_authorize, oauth_provider, oauth_return_to) = match oauth {
+        Some(o) => (o.response_cookies, o.authorize, o.provider, o.return_to),
+        None => (Vec::new(), None, None, None),
     };
 
     let result: Result<Response, OrionError> = async {
@@ -731,16 +731,17 @@ pub(super) async fn process_sync_for_channel(
                 if let Some(login) = oauth_authorize {
                     if shaped.is_none() {
                         let contributed = drain_authorize_contribution(&mut data_out);
+                        // `begin` records the authorize `ok` itself, with the
+                        // selected provider's label. The provider was confirmed
+                        // to exist at guard time (`require_provider`), so an error
+                        // here is Orion's, not a 404.
                         authorize_outcome = Some(
-                            match login.begin(contributed.as_ref(), oauth_return_to.as_deref()) {
-                                Ok(redirect) => {
-                                    crate::metrics::record_oauth_login(
-                                        channel,
-                                        crate::channel::OAuthLeg::Authorize,
-                                        "ok",
-                                    );
-                                    Ok(oauth_redirect_response(redirect))
-                                }
+                            match login.begin(
+                                oauth_provider.as_deref(),
+                                contributed.as_ref(),
+                                oauth_return_to.as_deref(),
+                            ) {
+                                Ok(redirect) => Ok(oauth_redirect_response(redirect)),
                                 Err(e) => {
                                     tracing::error!(
                                         channel = channel,

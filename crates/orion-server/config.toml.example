@@ -414,6 +414,19 @@
                                 # in-cluster issuer, or for a mock identity provider in a test
                                 # harness.
 
+# Deployment-supplied identity providers (#355). A channel whose oauth2_login block opts in
+# (the channel-level providers_from_instance flag) merges these under its own providers map,
+# the definition's own entries winning a slug clash — so a deployment adds a provider by
+# config while the definition promotes unchanged. File only — an individual provider cannot
+# be set via an ORION_* env var — but ${VAR} (pre-parse) and env://NAME (resolved at channel
+# load) both work inside. Read at startup, so a change here needs a restart, not a reload.
+# [oauth2_login.providers.iitm]
+# authorize_url = "https://login.microsoftonline.com/${IITM_TENANT}/oauth2/v2.0/authorize"
+# token_url     = "https://login.microsoftonline.com/${IITM_TENANT}/oauth2/v2.0/token"
+# client_id     = "${IITM_CLIENT_ID}"
+# client_secret = "env://IITM_CLIENT_SECRET"
+# scopes        = ["openid", "profile"]
+
 [cors]
 # allowed_origins = ["*"]       # Exactly ["*"] is permissive CORS. Rejected at startup when
                                 # environment starts with "prod" — list explicit origins
