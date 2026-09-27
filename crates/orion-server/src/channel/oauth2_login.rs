@@ -189,7 +189,8 @@ pub struct LoginDeps<'a> {
     /// Deployment-supplied providers (#355), merged into a block that opts in
     /// with `providers_from_instance`. The definition's own entries win a slug
     /// clash. Empty when the deployment declares none.
-    pub instance_providers: &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
+    pub instance_providers:
+        &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
     /// The instance's OIDC discovery cache, for a provider that names an
     /// `issuer` and no explicit endpoints (#355). Resolved at load, never per
     /// request.
@@ -362,23 +363,34 @@ impl CompiledOAuth2Login {
             let resolved = ProviderConfig {
                 kind: p.kind.clone(),
                 issuer: resolve_opt(&p.issuer, &format!("oauth2_login.{pfx}issuer")).await?,
-                authorize_url: resolve_opt(&p.authorize_url, &format!("oauth2_login.{pfx}authorize_url"))
+                authorize_url: resolve_opt(
+                    &p.authorize_url,
+                    &format!("oauth2_login.{pfx}authorize_url"),
+                )
+                .await?,
+                token_url: resolve_opt(&p.token_url, &format!("oauth2_login.{pfx}token_url"))
                     .await?,
-                token_url: resolve_opt(&p.token_url, &format!("oauth2_login.{pfx}token_url")).await?,
-                client_id: resolve_opt(&p.client_id, &format!("oauth2_login.{pfx}client_id")).await?,
+                client_id: resolve_opt(&p.client_id, &format!("oauth2_login.{pfx}client_id"))
+                    .await?,
                 client_secret: resolve_opt(
                     &p.client_secret,
                     &format!("oauth2_login.{pfx}client_secret"),
                 )
                 .await?,
                 client_auth: p.client_auth.clone(),
-                redirect_uri: resolve_opt(&p.redirect_uri, &format!("oauth2_login.{pfx}redirect_uri"))
-                    .await?,
+                redirect_uri: resolve_opt(
+                    &p.redirect_uri,
+                    &format!("oauth2_login.{pfx}redirect_uri"),
+                )
+                .await?,
                 scopes: p.scopes.clone(),
                 extra_authorize_params: p.extra_authorize_params.clone(),
                 id_token: p.id_token.clone(),
-                userinfo_url: resolve_opt(&p.userinfo_url, &format!("oauth2_login.{pfx}userinfo_url"))
-                    .await?,
+                userinfo_url: resolve_opt(
+                    &p.userinfo_url,
+                    &format!("oauth2_login.{pfx}userinfo_url"),
+                )
+                .await?,
                 identity: p.identity.clone(),
             };
             resolved_entries.push((slug, resolved));
@@ -421,9 +433,12 @@ impl CompiledOAuth2Login {
         let mut providers = BTreeMap::new();
         for (slug, p) in &resolved_entries {
             let discovered = match p.issuer.as_deref() {
-                Some(issuer) => Some(deps.discovery.resolve(issuer).await.map_err(|e| {
-                    format!("oauth2_login.{}issuer: {e}", field_prefix(slug))
-                })?),
+                Some(issuer) => Some(
+                    deps.discovery
+                        .resolve(issuer)
+                        .await
+                        .map_err(|e| format!("oauth2_login.{}issuer: {e}", field_prefix(slug)))?,
+                ),
                 None => None,
             };
             providers.insert(
@@ -616,9 +631,8 @@ impl CompiledOAuth2Login {
         if self.route_selected {
             claims["provider"] = json!(canonical_slug);
         }
-        let token = crate::jwt::sign(STATE_ALG, &self.state_key, None, &claims).map_err(|e| {
-            OrionError::internal(format!("could not sign the OAuth2 state: {e}"))
-        })?;
+        let token = crate::jwt::sign(STATE_ALG, &self.state_key, None, &claims)
+            .map_err(|e| OrionError::internal(format!("could not sign the OAuth2 state: {e}")))?;
 
         crate::metrics::record_oauth_login(
             &self.channel,
@@ -680,14 +694,18 @@ impl CompiledOAuth2Login {
 
         // Signature, algorithm and `exp` in one call — the same verifier a
         // `jwt` channel uses on a caller's token.
-        let claims = self.state_verifier.verify(&cookie).await.map_err(|reason| {
-            tracing::warn!(
-                channel = %self.channel,
-                reason = reason.as_str(),
-                "OAuth2 state cookie rejected"
-            );
-            self.refuse(unknown, "state_invalid")
-        })?;
+        let claims = self
+            .state_verifier
+            .verify(&cookie)
+            .await
+            .map_err(|reason| {
+                tracing::warn!(
+                    channel = %self.channel,
+                    reason = reason.as_str(),
+                    "OAuth2 state cookie rejected"
+                );
+                self.refuse(unknown, "state_invalid")
+            })?;
 
         let minted = claims
             .get("nonce")
@@ -788,7 +806,9 @@ impl CompiledOAuth2Login {
         // `(provider, subject)` whatever the provider. From the verified
         // `id_token` claims when there are any (signed, already in hand);
         // otherwise fetched from the userinfo endpoint with the access token.
-        let identity = self.resolve_identity(provider, canonical_slug, &oauth).await?;
+        let identity = self
+            .resolve_identity(provider, canonical_slug, &oauth)
+            .await?;
         if let Some(ref id) = identity {
             // Mirror it under `metadata.oauth` too, the shape #355 first named;
             // `metadata.identity` (below) is the protocol-neutral home workflows
@@ -1471,7 +1491,12 @@ fn validate_provider(
 
     // The userinfo endpoint is server-side egress like `token_url`: https, and
     // address-checked at fetch time under the same gate.
-    if let Some(userinfo) = p.userinfo_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(userinfo) = p
+        .userinfo_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let field = format!("{pfx}userinfo_url");
         if !deferred(mode, &field, userinfo)? {
             require_https(&field, userinfo)?;
@@ -1593,7 +1618,8 @@ fn build_provider(
         &resolved.userinfo_url,
         discovered.and_then(|d| d.userinfo_url.as_deref()),
     );
-    let redirect_uri = effective_redirect_uri(shared_redirect, slug, resolved.redirect_uri.as_deref());
+    let redirect_uri =
+        effective_redirect_uri(shared_redirect, slug, resolved.redirect_uri.as_deref());
 
     // OIDC id_token verification: an explicit `id_token` block wins; otherwise
     // discovery auto-configures one, so naming an `issuer` alone means "verify
@@ -1947,20 +1973,36 @@ mod tests {
     async fn a_slug_selects_its_provider_on_the_authorize_leg() {
         let login = compiled(&multi_config()).await;
 
-        let gh = params(&login.begin(Some("github"), None, None).expect("gh").location);
+        let gh = params(
+            &login
+                .begin(Some("github"), None, None)
+                .expect("gh")
+                .location,
+        );
         assert_eq!(gh.get("client_id").map(String::as_str), Some("gh-client"));
         assert_eq!(
             gh.get("redirect_uri").map(String::as_str),
             Some("https://app.example.com/v1/auth/github/callback")
         );
 
-        let acme = params(&login.begin(Some("acme"), None, None).expect("acme").location);
-        assert_eq!(acme.get("client_id").map(String::as_str), Some("acme-client"));
+        let acme = params(
+            &login
+                .begin(Some("acme"), None, None)
+                .expect("acme")
+                .location,
+        );
+        assert_eq!(
+            acme.get("client_id").map(String::as_str),
+            Some("acme-client")
+        );
         assert_eq!(
             acme.get("redirect_uri").map(String::as_str),
             Some("https://app.example.com/v1/auth/acme/callback")
         );
-        assert_eq!(acme.get("scope").map(String::as_str), Some("openid profile"));
+        assert_eq!(
+            acme.get("scope").map(String::as_str),
+            Some("openid profile")
+        );
     }
 
     /// An unknown slug is a 404 on both legs — before the exchange, before any
@@ -2224,7 +2266,9 @@ mod tests {
 
         let mut cfg = config();
         cfg.redirect_uri = "env://ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTP".to_string();
-        let err = try_compile(&cfg).await.expect_err("plain http after resolution");
+        let err = try_compile(&cfg)
+            .await
+            .expect_err("plain http after resolution");
         assert!(err.contains("https"), "{err}");
     }
 
@@ -2300,7 +2344,12 @@ mod tests {
             .await
             .expect("compiles");
 
-        let q = params(&login.begin(Some("iitm"), None, None).expect("iitm").location);
+        let q = params(
+            &login
+                .begin(Some("iitm"), None, None)
+                .expect("iitm")
+                .location,
+        );
         assert_eq!(q.get("client_id").map(String::as_str), Some("iitm-client"));
         assert_eq!(
             q.get("redirect_uri").map(String::as_str),
@@ -2326,8 +2375,15 @@ mod tests {
                 ..Default::default()
             },
         );
-        let login = compile_with_instance(&cfg, &instance).await.expect("compiles");
-        let q = params(&login.begin(Some("github"), None, None).expect("gh").location);
+        let login = compile_with_instance(&cfg, &instance)
+            .await
+            .expect("compiles");
+        let q = params(
+            &login
+                .begin(Some("github"), None, None)
+                .expect("gh")
+                .location,
+        );
         assert_eq!(
             q.get("client_id").map(String::as_str),
             Some("gh-client"),
@@ -2433,7 +2489,10 @@ mod tests {
         let mut cfg = config();
         cfg.userinfo_url = Some("http://api.example/user".to_string());
         let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("http userinfo");
-        assert!(err.contains("userinfo_url") && err.contains("https"), "{err}");
+        assert!(
+            err.contains("userinfo_url") && err.contains("https"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

@@ -686,7 +686,9 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                 oauth_authorize = Some(std::sync::Arc::clone(login));
             }
             crate::channel::OAuthLeg::Callback => {
-                let grant = match login.complete(ingress.provider, ingress.query, &ingress.jar).await
+                let grant = match login
+                    .complete(ingress.provider, ingress.query, &ingress.jar)
+                    .await
                 {
                     Ok(grant) => grant,
                     Err(e) => {

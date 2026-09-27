@@ -1806,7 +1806,10 @@ async fn the_slug_selects_the_provider_on_the_authorize_leg() {
         .expect("a Location")
         .to_string();
     assert!(location.starts_with("https://github.com/login/oauth/authorize"));
-    assert_eq!(query_param(&location, "client_id").as_deref(), Some("gh-client"));
+    assert_eq!(
+        query_param(&location, "client_id").as_deref(),
+        Some("gh-client")
+    );
     assert_eq!(
         query_param(&location, "redirect_uri").as_deref(),
         Some("https://app.example.com/v1/auth/github/callback")
@@ -1825,8 +1828,14 @@ async fn the_slug_selects_the_provider_on_the_authorize_leg() {
         .expect("a Location")
         .to_string();
     assert!(location.starts_with("https://acme.example.com/authorize"));
-    assert_eq!(query_param(&location, "client_id").as_deref(), Some("acme-client"));
-    assert_eq!(query_param(&location, "scope").as_deref(), Some("openid profile"));
+    assert_eq!(
+        query_param(&location, "client_id").as_deref(),
+        Some("acme-client")
+    );
+    assert_eq!(
+        query_param(&location, "scope").as_deref(),
+        Some("openid profile")
+    );
 }
 
 /// A callback to the selected provider exchanges the code with that provider's
@@ -1923,7 +1932,9 @@ async fn a_channel_read_masks_per_provider_secrets() {
     let body = common::body_json(resp).await;
     let providers = &body["data"]["config"]["oauth2_login"]["providers"];
     for slug in ["github", "acme"] {
-        let secret = providers[slug]["client_secret"].as_str().unwrap_or_default();
+        let secret = providers[slug]["client_secret"]
+            .as_str()
+            .unwrap_or_default();
         assert_ne!(secret, "gh-secret", "github secret leaked");
         assert_ne!(secret, "acme-secret", "acme secret leaked");
         assert!(!secret.is_empty(), "the field is present but masked");
@@ -1986,7 +1997,12 @@ async fn a_deployment_supplied_provider_serves_a_channel_that_opts_in() {
     let idp = Idp::new();
     let idp_url = start_idp(idp.clone()).await;
     let app = common::test_app_with_config(app_config_with_instance_provider(&idp_url)).await;
-    deploy_multi(&app, instance_opt_in_login_config(), echo_provider_workflow()).await;
+    deploy_multi(
+        &app,
+        instance_opt_in_login_config(),
+        echo_provider_workflow(),
+    )
+    .await;
 
     // Authorize: the deployment's provider is selected and its client is used.
     let resp = app
@@ -2002,7 +2018,10 @@ async fn a_deployment_supplied_provider_serves_a_channel_that_opts_in() {
         .expect("a Location")
         .to_string();
     assert!(location.starts_with("https://login.microsoftonline.com/tenant/authorize"));
-    assert_eq!(query_param(&location, "client_id").as_deref(), Some("entra-client"));
+    assert_eq!(
+        query_param(&location, "client_id").as_deref(),
+        Some("entra-client")
+    );
 
     // Callback: exchange at the instance provider's token endpoint; the workflow
     // learns which provider answered.
@@ -2052,7 +2071,12 @@ async fn discovery_fills_the_authorize_endpoint() {
     let idp = Idp::new();
     let idp_url = start_idp(idp.clone()).await;
     let app = common::test_app_with_config(app_config()).await;
-    deploy(&app, discovery_login_config(&idp_url), echo_grant_workflow()).await;
+    deploy(
+        &app,
+        discovery_login_config(&idp_url),
+        echo_grant_workflow(),
+    )
+    .await;
 
     let resp = app
         .clone()
@@ -2071,9 +2095,15 @@ async fn discovery_fills_the_authorize_endpoint() {
         location.starts_with(&format!("{idp_url}/authorize")),
         "expected the discovered authorize endpoint, got {location}"
     );
-    assert_eq!(query_param(&location, "client_id").as_deref(), Some("disco-client"));
+    assert_eq!(
+        query_param(&location, "client_id").as_deref(),
+        Some("disco-client")
+    );
     // OIDC was auto-enabled: a nonce rides in the authorize request.
-    assert!(query_param(&location, "nonce").is_some(), "OIDC nonce is minted");
+    assert!(
+        query_param(&location, "nonce").is_some(),
+        "OIDC nonce is minted"
+    );
 }
 
 /// A discovery provider is OIDC: it exchanges the code at the discovered token
@@ -2084,7 +2114,12 @@ async fn a_discovery_provider_exchanges_then_requires_an_id_token() {
     let idp = Idp::new();
     let idp_url = start_idp(idp.clone()).await;
     let app = common::test_app_with_config(app_config()).await;
-    deploy(&app, discovery_login_config(&idp_url), echo_grant_workflow()).await;
+    deploy(
+        &app,
+        discovery_login_config(&idp_url),
+        echo_grant_workflow(),
+    )
+    .await;
 
     let (state, cookie) = begin(&app).await;
     let resp = app
@@ -2195,7 +2230,12 @@ async fn a_userinfo_provider_stamps_a_normalised_identity() {
     let idp = Idp::new();
     let idp_url = start_idp(idp.clone()).await;
     let app = common::test_app_with_config(app_config()).await;
-    deploy(&app, userinfo_login_config(&idp_url), echo_identity_workflow()).await;
+    deploy(
+        &app,
+        userinfo_login_config(&idp_url),
+        echo_identity_workflow(),
+    )
+    .await;
 
     let (state, cookie) = begin(&app).await;
     let resp = app
@@ -2208,7 +2248,10 @@ async fn a_userinfo_provider_stamps_a_normalised_identity() {
         .expect("callback");
     assert_eq!(resp.status(), StatusCode::OK);
     let body = common::body_json(resp).await;
-    assert_eq!(body["data"]["subject"], "4210", "numeric id becomes a string");
+    assert_eq!(
+        body["data"]["subject"], "4210",
+        "numeric id becomes a string"
+    );
     assert_eq!(body["data"]["login"], "octocat");
     assert_eq!(body["data"]["name"], "The Octocat");
     assert_eq!(body["data"]["picture"], "https://github.example/a.png");
@@ -2220,7 +2263,12 @@ async fn a_caller_cannot_forge_the_identity() {
     let idp = Idp::new();
     let idp_url = start_idp(idp.clone()).await;
     let app = common::test_app_with_config(app_config()).await;
-    deploy(&app, userinfo_login_config(&idp_url), echo_identity_workflow()).await;
+    deploy(
+        &app,
+        userinfo_login_config(&idp_url),
+        echo_identity_workflow(),
+    )
+    .await;
 
     // Supply a forged identity in the request envelope on the authorize leg;
     // it must not survive to the workflow. (The authorize leg answers a 302, so
