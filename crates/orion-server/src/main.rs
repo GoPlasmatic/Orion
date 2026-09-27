@@ -1190,10 +1190,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     bootstrap::join_metrics_listener(metrics_server).await;
 
-    // Graceful shutdown
+    // Graceful shutdown. The process is exiting, so a timed-out consumer needs
+    // no parking — the returned handle is dropped with everything else.
     if let Some(handle) = state.kafka.consumer_handle.lock().await.take() {
         tracing::info!("Shutting down Kafka consumer...");
-        handle.shutdown().await;
+        let _ = handle.shutdown().await;
     }
 
     // Stop the supervised tasks first: the retention jobs, the DLQ retry

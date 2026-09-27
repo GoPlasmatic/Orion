@@ -409,7 +409,12 @@ async fn restart_kafka_consumer_if_needed(
     }
     if let Some(old_handle) = handle_guard.take() {
         tracing::info!("Shutting down Kafka consumer for topic refresh...");
-        old_handle.shutdown().await;
+        // A shutdown that times out (a hung broker) hands back the still-running
+        // task; park it so repeated reloads during an outage cannot accumulate
+        // rdkafka clients without bound.
+        if let Some(straggler) = old_handle.shutdown().await {
+            state.kafka.stragglers.park(straggler);
+        }
     }
 
     // K7: the old handle is gone. A start failure below must not leave that

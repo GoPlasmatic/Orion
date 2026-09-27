@@ -147,6 +147,61 @@ fn shutdown_deadline(processing_timeout_ms: u64) -> std::time::Duration {
     std::time::Duration::from_millis(processing_timeout_ms).saturating_add(SHUTDOWN_GRACE)
 }
 
+/// How many timed-out consumer tasks may be parked at once before the oldest
+/// is aborted. Small: a straggler is a broken-broker artifact, and more than a
+/// handful at once means the oldest have long outlived any in-flight work.
+pub const MAX_PARKED_STRAGGLERS: usize = 4;
+
+/// Consumers whose graceful shutdown timed out and were left running, bounded
+/// in number.
+///
+/// [`ConsumerHandle::shutdown`] leaves a task running rather than aborting it
+/// mid-dispatch when its deadline passes — but each straggler holds a
+/// `StreamConsumer`, an rdkafka client with its own poll threads, so a
+/// sustained broker outage across repeated reloads could pile them up without
+/// limit. Parking caps the count: when a new one arrives at the bound, the
+/// oldest is aborted. By then it has outlived several reloads, so its offset is
+/// moot — a live consumer has taken over its partitions and redelivers from the
+/// last commit.
+pub struct KafkaStragglers {
+    parked: std::sync::Mutex<std::collections::VecDeque<tokio::task::JoinHandle<()>>>,
+    max: usize,
+}
+
+impl KafkaStragglers {
+    pub fn new(max: usize) -> Arc<Self> {
+        Arc::new(Self {
+            parked: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            max: max.max(1),
+        })
+    }
+
+    /// Track a timed-out consumer task: drop the ones that have since finished,
+    /// abort the oldest while at the bound, then keep this one.
+    pub fn park(&self, handle: tokio::task::JoinHandle<()>) {
+        let mut parked = self.parked.lock().unwrap_or_else(|e| e.into_inner());
+        parked.retain(|h| !h.is_finished());
+        while parked.len() >= self.max {
+            match parked.pop_front() {
+                Some(oldest) => oldest.abort(),
+                None => break,
+            }
+        }
+        parked.push_back(handle);
+    }
+
+    /// Parked stragglers that have not yet finished — for tests and metrics.
+    pub fn len(&self) -> usize {
+        let mut parked = self.parked.lock().unwrap_or_else(|e| e.into_inner());
+        parked.retain(|h| !h.is_finished());
+        parked.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Handle for managing the Kafka consumer lifecycle.
 pub struct ConsumerHandle {
     shutdown_tx: watch::Sender<bool>,
@@ -170,28 +225,31 @@ impl ConsumerHandle {
     /// that hangs SIGTERM handling *and* an engine reload, which now shuts a
     /// consumer down while holding `AppStateInner::reload_lock`.
     ///
-    /// On timeout the task is left detached rather than aborted: it holds a
-    /// `StreamConsumer` whose drop leaves the consumer group, and cancelling
-    /// it mid-commit is how an offset is lost. It is already unsubscribed from
-    /// the caller's point of view — the handle is consumed here — so the worst
-    /// case is one lingering task that finishes its own commit and exits.
-    pub async fn shutdown(self) {
+    /// On timeout the task is left running rather than aborted: it holds a
+    /// `StreamConsumer` whose drop leaves the consumer group, and cancelling it
+    /// mid-dispatch cuts a bounded, in-flight message process short. The still-
+    /// running task is returned as `Some` so the caller can bound how many such
+    /// stragglers exist at once (see [`KafkaStragglers`]) rather than losing
+    /// track of it; a clean finish or a panic returns `None`.
+    pub async fn shutdown(mut self) -> Option<tokio::task::JoinHandle<()>> {
         if let Err(e) = self.shutdown_tx.send(true) {
             tracing::error!(error = %e, "Failed to send Kafka consumer shutdown signal");
         }
         let timeout = self.shutdown_timeout;
-        match tokio::time::timeout(timeout, self.join_handle).await {
-            Ok(Ok(())) => {}
+        match tokio::time::timeout(timeout, &mut self.join_handle).await {
+            Ok(Ok(())) => None,
             Ok(Err(e)) => {
                 tracing::error!(error = %e, "Kafka consumer task panicked during shutdown");
+                None
             }
             Err(_) => {
                 crate::metrics::record_error("kafka_shutdown_timeout");
                 tracing::warn!(
                     timeout_ms = timeout.as_millis() as u64,
                     "Kafka consumer did not stop within its shutdown deadline; \
-                     leaving it to finish in the background"
+                     parking it to finish in the background"
                 );
+                Some(self.join_handle)
             }
         }
     }
@@ -508,5 +566,27 @@ mod tests {
         );
 
         assert!(shutdown_deadline(u64::MAX) >= std::time::Duration::from_millis(u64::MAX));
+    }
+
+    /// Parking never holds more than the bound: the oldest is aborted (and so
+    /// finishes) as newer ones arrive, so a broker outage across many reloads
+    /// cannot pile up rdkafka clients.
+    #[tokio::test]
+    async fn parked_stragglers_are_bounded_and_the_oldest_is_aborted() {
+        let stragglers = KafkaStragglers::new(2);
+        for _ in 0..5 {
+            let h = tokio::spawn(async {
+                // A task that would never stop on its own — only an abort ends it.
+                std::future::pending::<()>().await;
+            });
+            stragglers.park(h);
+        }
+        // Let the aborts of the three oldest take effect.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            stragglers.len(),
+            2,
+            "at most `max` stragglers survive; the rest were aborted"
+        );
     }
 }

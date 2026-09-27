@@ -30,6 +30,11 @@ pub struct Kafka {
     /// fails, cleared once a consumer runs again. Reported as the `kafka`
     /// component of `/health` and `/readyz` (O10).
     pub ingest_status: Arc<crate::kafka::KafkaIngestStatus>,
+    /// Consumers whose graceful shutdown timed out, bounded in number so a
+    /// sustained broker outage across repeated reloads cannot pile up rdkafka
+    /// clients. A reload parks the old consumer here when it does not stop in
+    /// time; see [`crate::kafka::consumer::KafkaStragglers`].
+    pub stragglers: Arc<crate::kafka::consumer::KafkaStragglers>,
 }
 
 /// Shared cache and external connection-pool caches, grouped (R26).

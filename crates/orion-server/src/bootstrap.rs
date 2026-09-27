@@ -1134,6 +1134,9 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
             producers: kafka_producers,
             consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
             ingest_status: Arc::new(crate::kafka::KafkaIngestStatus::new()),
+            stragglers: crate::kafka::consumer::KafkaStragglers::new(
+                crate::kafka::consumer::MAX_PARKED_STRAGGLERS,
+            ),
         },
         trace_persistence_queue,
         cluster,
