@@ -87,31 +87,42 @@ impl DiscoveryCache {
         }
     }
 
+    /// A cached entry for `issuer` that is still within its TTL, if any.
+    async fn fresh(&self, issuer: &str) -> Option<Arc<Discovered>> {
+        self.entries
+            .read()
+            .await
+            .get(issuer)
+            .filter(|e| e.fetched_at.elapsed() < e.ttl)
+            .map(|e| Arc::clone(&e.doc))
+    }
+
     /// The endpoints for `issuer`, cached. On a refresh failure the last good
     /// copy is served; only a *cold* miss that also fails to fetch is an error.
     pub async fn resolve(&self, issuer: &str) -> Result<Arc<Discovered>, String> {
-        if let Some(entry) = self.entries.read().await.get(issuer).cloned()
-            && entry.fetched_at.elapsed() < entry.ttl
-        {
-            return Ok(Arc::clone(&entry.doc));
+        if let Some(doc) = self.fresh(issuer).await {
+            return Ok(doc);
         }
 
-        // Single-flight per issuer.
+        // Single-flight per issuer. `get` before `entry` so the hot path (an
+        // issuer already seen) does not allocate a `String` key. The map is not
+        // pruned: issuers are authored config — a small, bounded set — and this
+        // runs only at channel load, so it plateaus at the distinct-issuer count.
         let flight = {
             let mut flights = self.flights.lock().await;
-            Arc::clone(
-                flights
-                    .entry(issuer.to_string())
-                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-            )
+            if let Some(flight) = flights.get(issuer) {
+                Arc::clone(flight)
+            } else {
+                let flight = Arc::new(tokio::sync::Mutex::new(()));
+                flights.insert(issuer.to_string(), Arc::clone(&flight));
+                flight
+            }
         };
         let _guard = flight.lock().await;
 
         // Re-check: another task may have refreshed while we waited.
-        if let Some(entry) = self.entries.read().await.get(issuer).cloned()
-            && entry.fetched_at.elapsed() < entry.ttl
-        {
-            return Ok(Arc::clone(&entry.doc));
+        if let Some(doc) = self.fresh(issuer).await {
+            return Ok(doc);
         }
 
         match self.fetch(issuer).await {
@@ -217,21 +228,15 @@ fn well_known_url(issuer: &str) -> Result<String, String> {
     Ok(format!("{trimmed}/.well-known/openid-configuration"))
 }
 
-/// `https`, or `http` on a loopback host — the rule the hand-typed endpoints
-/// pass, shared with [`crate::channel::oauth2_login`].
+/// `https`, or `http` on a loopback host. The loopback rule is
+/// [`super::oauth2_login::is_loopback_host`], shared so the gate on the URLs
+/// Orion fetches has one definition.
 fn require_https(field: &str, value: &str) -> Result<(), String> {
     let url = url::Url::parse(value)
         .map_err(|e| format!("discovery {field} '{value}' is not a URL: {e}"))?;
-    if url.scheme() == "https" {
-        return Ok(());
-    }
-    let loopback = match url.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        Some(url::Host::Domain(h)) => h == "localhost" || h.ends_with(".localhost"),
-        None => false,
-    };
-    if url.scheme() == "http" && loopback {
+    if url.scheme() == "https"
+        || (url.scheme() == "http" && super::oauth2_login::is_loopback_host(&url))
+    {
         return Ok(());
     }
     Err(format!(

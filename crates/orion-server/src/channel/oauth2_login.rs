@@ -241,17 +241,17 @@ struct CompiledIdentityMap {
 impl CompiledIdentityMap {
     /// Apply the OIDC-claim-name defaults to an authored map.
     fn resolve(map: Option<&IdentityMap>) -> Self {
-        let pick = |f: Option<&Option<String>>, default: &str| {
-            f.and_then(|o| o.clone())
-                .filter(|s| !s.trim().is_empty())
+        let pick = |v: Option<&str>, default: &str| {
+            v.filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
                 .unwrap_or_else(|| default.to_string())
         };
         Self {
-            subject: pick(map.map(|m| &m.subject), "sub"),
-            login: pick(map.map(|m| &m.login), "preferred_username"),
-            name: pick(map.map(|m| &m.name), "name"),
-            email: pick(map.map(|m| &m.email), "email"),
-            picture: pick(map.map(|m| &m.picture), "picture"),
+            subject: pick(map.and_then(|m| m.subject.as_deref()), "sub"),
+            login: pick(map.and_then(|m| m.login.as_deref()), "preferred_username"),
+            name: pick(map.and_then(|m| m.name.as_deref()), "name"),
+            email: pick(map.and_then(|m| m.email.as_deref()), "email"),
+            picture: pick(map.and_then(|m| m.picture.as_deref()), "picture"),
         }
     }
 
@@ -749,10 +749,7 @@ impl CompiledOAuth2Login {
         // `oauth2`) so it can branch on how identity was established. Stamped
         // only for the multi-provider form; the single-provider form is
         // byte-for-byte as before, so existing workflows are undisturbed.
-        if self.route_selected {
-            oauth["provider"] = json!(canonical_slug);
-            oauth["kind"] = json!(provider.kind);
-        }
+        self.stamp_provenance(&mut oauth, canonical_slug, provider.kind);
 
         if let Some(verifier) = provider.id_token_verifier.as_ref() {
             let id = provider.id_token.as_ref().expect("verifier implies config");
@@ -837,11 +834,8 @@ impl CompiledOAuth2Login {
             None
         };
 
-        if let Some(identity) = base.as_mut().and_then(Value::as_object_mut) {
-            if self.route_selected {
-                identity.insert("provider".to_string(), json!(canonical_slug));
-                identity.insert("kind".to_string(), json!(provider.kind));
-            }
+        if let Some(identity) = base.as_mut() {
+            self.stamp_provenance(identity, canonical_slug, provider.kind);
         } else if provider.id_token_verifier.is_some() || provider.userinfo_url.is_some() {
             // A source was configured but yielded no `subject` — the mapping is
             // likely wrong. Not fatal (the workflow still has the grant), but
@@ -852,6 +846,18 @@ impl CompiledOAuth2Login {
             );
         }
         Ok(base)
+    }
+
+    /// Stamp which provider answered and its kind onto an object — for the
+    /// multi-provider form only, so `metadata.oauth` and `metadata.identity`
+    /// carry the provenance the same way.
+    fn stamp_provenance(&self, obj: &mut Value, canonical_slug: &str, kind: &str) {
+        if self.route_selected
+            && let Some(map) = obj.as_object_mut()
+        {
+            map.insert("provider".to_string(), json!(canonical_slug));
+            map.insert("kind".to_string(), json!(kind));
+        }
     }
 
     /// Fetch the userinfo endpoint with the access token. A new egress, so it
@@ -1521,7 +1527,11 @@ fn require_https(field: &str, value: &str) -> Result<(), String> {
 /// Whether a URL's host is the local machine, by literal address or by the one
 /// name that is reserved for it. Name resolution is deliberately not consulted:
 /// this runs against a definition that will be promoted to other instances.
-fn is_loopback_host(url: &url::Url) -> bool {
+///
+/// Shared with `oidc_discovery` so the "https, or http on loopback" gate on the
+/// URLs Orion fetches has one definition — the `localhost.evil.test` trap is
+/// exactly the sort of rule that must not be written twice.
+pub(super) fn is_loopback_host(url: &url::Url) -> bool {
     match url.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
@@ -1556,24 +1566,19 @@ fn build_provider(
     deps: &LoginDeps<'_>,
 ) -> Result<CompiledProvider, String> {
     let pfx = field_prefix(slug);
-    // Explicit endpoints win; discovery fills whatever the block left out.
-    let pick = |explicit: &Option<String>, from_discovery: Option<&str>, name: &str| {
+    // Explicit value wins; discovery fills whatever the block left out.
+    let merge_opt = |explicit: &Option<String>, from_discovery: Option<&str>| {
         explicit
             .clone()
             .filter(|s| !s.trim().is_empty())
             .or_else(|| from_discovery.map(str::to_string))
+    };
+    let pick = |explicit: &Option<String>, from_discovery: Option<&str>, name: &str| {
+        merge_opt(explicit, from_discovery)
             .ok_or_else(|| format!("oauth2_login.{pfx}{name} is required"))
     };
-    let client_id = resolved
-        .client_id
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| format!("oauth2_login.{pfx}client_id is required"))?;
-    let client_secret = resolved
-        .client_secret
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| format!("oauth2_login.{pfx}client_secret is required"))?;
+    let client_id = pick(&resolved.client_id, None, "client_id")?;
+    let client_secret = pick(&resolved.client_secret, None, "client_secret")?;
     let authorize_url = pick(
         &resolved.authorize_url,
         discovered.map(|d| d.authorize_url.as_str()),
@@ -1584,6 +1589,10 @@ fn build_provider(
         discovered.map(|d| d.token_url.as_str()),
         "token_url",
     )?;
+    let userinfo_url = merge_opt(
+        &resolved.userinfo_url,
+        discovered.and_then(|d| d.userinfo_url.as_deref()),
+    );
     let redirect_uri = effective_redirect_uri(shared_redirect, slug, resolved.redirect_uri.as_deref());
 
     // OIDC id_token verification: an explicit `id_token` block wins; otherwise
@@ -1605,12 +1614,6 @@ fn build_provider(
         Some(ref id) => Some(build_id_token_verifier(&pfx, id, &client_id, deps)?),
         None => None,
     };
-
-    let userinfo_url = resolved
-        .userinfo_url
-        .clone()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| discovered.and_then(|d| d.userinfo_url.clone()));
 
     Ok(CompiledProvider {
         kind: effective_kind(resolved.kind.as_deref(), id_token.is_some()),
