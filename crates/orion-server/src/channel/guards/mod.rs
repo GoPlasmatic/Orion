@@ -422,6 +422,10 @@ pub struct OAuthAdmission {
     /// reason `auth_claims` is: the metadata object belongs to the transport,
     /// so there is one merge point rather than one per ingress.
     pub grant: Option<Value>,
+
+    /// The normalised identity from a callback leg (#355), stamped at
+    /// `metadata.identity` by the ingress beside the grant.
+    pub identity: Option<Value>,
 }
 
 /// A complete response a guard built itself.
@@ -618,6 +622,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     let mut oauth_return_to = None;
     let mut response_cookies = Vec::new();
     let mut oauth_metadata = None;
+    let mut oauth_identity = None;
     if set.oauth2_login
         && let Some(ingress) = req.oauth.as_ref()
         && let Some(login) = req.runtime.as_ref().and_then(|rt| rt.oauth2_login.as_ref())
@@ -700,6 +705,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                 };
                 response_cookies.push(grant.clear_cookie);
                 oauth_metadata = Some(grant.metadata);
+                oauth_identity = grant.identity;
             }
         }
     }
@@ -709,6 +715,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
             response_cookies,
             authorize: oauth_authorize,
             provider: oauth_provider,
+            identity: oauth_identity,
             return_to: oauth_return_to,
             grant: oauth_metadata,
         })

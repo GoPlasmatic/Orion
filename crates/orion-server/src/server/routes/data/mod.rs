@@ -396,10 +396,17 @@ pub(crate) async fn dynamic_handler(
     // `build_request_metadata` always returns an object — it starts from
     // `json!({})` for a non-object base and then stamps `channel`, which would
     // itself panic otherwise — so `as_object_mut` here is total.
-    if let Some(grant) = admission.oauth.as_mut().and_then(|o| o.grant.take())
+    if let Some(oauth) = admission.oauth.as_mut()
         && let Some(map) = metadata.as_object_mut()
     {
-        map.insert("oauth".to_string(), grant);
+        if let Some(grant) = oauth.grant.take() {
+            map.insert("oauth".to_string(), grant);
+        }
+        // #355: the normalised identity, at the protocol-neutral path workflows
+        // key on. Stripped from caller input above, so this is Orion's.
+        if let Some(identity) = oauth.identity.take() {
+            map.insert("identity".to_string(), identity);
+        }
     }
     let metadata = match admission.auth_claims.take() {
         Some(claims) => guards::merge_auth_claims(metadata, claims),

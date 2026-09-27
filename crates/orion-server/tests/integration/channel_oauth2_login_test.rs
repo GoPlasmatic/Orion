@@ -123,6 +123,16 @@ async fn start_idp(idp: Arc<Idp>) -> String {
     async fn jwks() -> axum::Json<Value> {
         axum::Json(json!({ "keys": [] }))
     }
+    // A GitHub-shaped userinfo response (#355): a numeric `id`, and `avatar_url`
+    // rather than the OIDC `picture` — the case a custom identity map exists for.
+    async fn user() -> axum::Json<Value> {
+        axum::Json(json!({
+            "id": 4210,
+            "login": "octocat",
+            "name": "The Octocat",
+            "avatar_url": "https://github.example/a.png"
+        }))
+    }
 
     let app = axum::Router::new()
         .route("/token", axum::routing::post(token))
@@ -131,6 +141,7 @@ async fn start_idp(idp: Arc<Idp>) -> String {
             axum::routing::get(well_known),
         )
         .route("/jwks", axum::routing::get(jwks))
+        .route("/user", axum::routing::get(user))
         .with_state(idp);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -2136,4 +2147,101 @@ async fn discovery_refuses_a_private_issuer_without_the_flag() {
         .await
         .expect_err("private address refused");
     assert!(!err.is_empty(), "a private issuer is refused: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// Normalised identity (#355)
+// ---------------------------------------------------------------------------
+
+/// A GitHub-style provider: no id_token, a userinfo endpoint, and an identity
+/// map onto GitHub's field names.
+fn userinfo_login_config(idp: &str) -> Value {
+    json!({
+        "authorize_url": "https://github.com/login/oauth/authorize",
+        "token_url": format!("{idp}/token"),
+        "client_id": "gh-client",
+        "client_secret": "gh-secret",
+        "redirect_uri": "https://app.example.com/v1/auth/idp/callback",
+        "callback_path": "/v1/auth/idp/callback",
+        "userinfo_url": format!("{idp}/user"),
+        "identity": { "subject": "id", "login": "login", "name": "name", "picture": "avatar_url" },
+        "state_secret": STATE_SECRET
+    })
+}
+
+/// Echoes the normalised identity so a test can assert on it.
+fn echo_identity_workflow() -> Value {
+    json!({
+        "name": "signin",
+        "description": "echo the identity",
+        "condition": true,
+        "tasks": [{
+            "id": "echo",
+            "name": "Echo",
+            "function": { "name": "map", "input": { "mappings": [
+                { "path": "data.subject", "logic": { "var": "metadata.identity.subject" } },
+                { "path": "data.login", "logic": { "var": "metadata.identity.login" } },
+                { "path": "data.name", "logic": { "var": "metadata.identity.name" } },
+                { "path": "data.picture", "logic": { "var": "metadata.identity.picture" } }
+            ] } }
+        }]
+    })
+}
+
+/// A provider with a userinfo endpoint stamps a normalised identity the workflow
+/// reads at `metadata.identity`, with the numeric id coerced to a string.
+#[tokio::test]
+async fn a_userinfo_provider_stamps_a_normalised_identity() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy(&app, userinfo_login_config(&idp_url), echo_identity_workflow()).await;
+
+    let (state, cookie) = begin(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("callback");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["data"]["subject"], "4210", "numeric id becomes a string");
+    assert_eq!(body["data"]["login"], "octocat");
+    assert_eq!(body["data"]["name"], "The Octocat");
+    assert_eq!(body["data"]["picture"], "https://github.example/a.png");
+}
+
+/// `metadata.identity` is platform-reserved: a caller cannot pre-seed one.
+#[tokio::test]
+async fn a_caller_cannot_forge_the_identity() {
+    let idp = Idp::new();
+    let idp_url = start_idp(idp.clone()).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy(&app, userinfo_login_config(&idp_url), echo_identity_workflow()).await;
+
+    // Supply a forged identity in the request envelope on the authorize leg;
+    // it must not survive to the workflow. (The authorize leg answers a 302, so
+    // this just asserts the callback path stamps Orion's own identity.)
+    let (state, cookie) = begin(&app).await;
+    let forged = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"
+        ))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "metadata": { "identity": { "subject": "admin" } } }).to_string(),
+        ))
+        .expect("request");
+    let resp = app.clone().oneshot(forged).await.expect("callback");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        body["data"]["subject"], "4210",
+        "the forged subject was stripped; Orion's identity won"
+    );
 }

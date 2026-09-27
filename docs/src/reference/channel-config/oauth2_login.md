@@ -60,6 +60,8 @@ This is *establishment*, not verification, which is why it is a `config` block r
 | `run_workflow_on_authorize` | boolean | no | `false` | Run the workflow on the authorize leg before the redirect is built. Shared by every provider. |
 | `return_to` | object | no | — | `{param, allow_list}` — carry a pre-login destination through the flow. Shared by every provider. |
 | `id_token` | object | no | — | OIDC `id_token` verification. Absent is plain OAuth2. |
+| `userinfo_url` | string | no | — | Userinfo endpoint for a provider whose identity is not in an `id_token` (GitHub's `/user`). `https`; discovered from `issuer` when omitted. See [Normalised identity](#normalised-identity). |
+| `identity` | object | no | OIDC claim names | How to read the [normalised identity](#normalised-identity) — `{subject, login, name, email, picture}` naming the claim or userinfo key each reads. |
 
 ### `state_cookie`
 
@@ -88,7 +90,7 @@ A provider that names an `issuer` and leaves `authorize_url`, `token_url` and th
 - The document's own `issuer` must equal the configured one (OIDC §4.3), and every discovered endpoint must be `https` — a redirector at the well-known path cannot point Orion's key and token fetches elsewhere.
 - It is fetched **at load, not per request**, on the shared SSRF-pinned client, cached with a TTL, refreshed in the background, and served stale through a transient issuer outage. The same [`allow_private_token_urls`](../configuration/oauth2-login.md) gate the token exchange uses applies. A cold fetch that fails quarantines the channel (named on `/health`); a warm cache carries a reload through a blip.
 
-**Per-environment values.** Any value in the block may be `var://name`, substituted from the instance's `[vars]` when the channel loads. `env://NAME` and the vault schemes are resolved in `client_id`, `client_secret`, `state_secret`, `issuer`, `authorize_url`, `token_url` and `redirect_uri` only (including the per-provider copies of those fields). A secret reference anywhere else is refused at create, because nothing would resolve it and its text would reach the provider. Create-time validation checks what it can see and defers a reference it cannot. The `https` rule and the rest of the shape are applied to the resolved value at load. A value that fails them quarantines the channel rather than serving it.
+**Per-environment values.** Any value in the block may be `var://name`, substituted from the instance's `[vars]` when the channel loads. `env://NAME` and the vault schemes are resolved in `client_id`, `client_secret`, `state_secret`, `issuer`, `authorize_url`, `token_url`, `redirect_uri` and `userinfo_url` only (including the per-provider copies of those fields). A secret reference anywhere else is refused at create, because nothing would resolve it and its text would reach the provider. Create-time validation checks what it can see and defers a reference it cannot. The `https` rule and the rest of the shape are applied to the resolved value at load. A value that fails them quarantines the channel rather than serving it.
 
 ### Several providers on one channel
 
@@ -169,8 +171,25 @@ A block sets *either* `providers` *or* the flat provider fields, never both.
 | `metadata.oauth.return_to` | `return_to` is configured and the caller supplied a permitted value |
 | `metadata.oauth.provider` | the channel is [multi-provider](#several-providers-on-one-channel) — the selected slug |
 | `metadata.oauth.kind` | the channel is [multi-provider](#several-providers-on-one-channel) — `oidc` or `oauth2` |
+| `metadata.identity` | an identity could be resolved — see [Normalised identity](#normalised-identity) |
+| `metadata.oauth.identity` | the same object, mirrored under `metadata.oauth` |
 
-`metadata.oauth` is platform-reserved: it is stripped from every caller-supplied envelope and written only by Orion, so a workflow reading it is reading a verified grant. It is also excluded from persisted task-detail snapshots, so the tokens in it are not written to disk.
+`metadata.oauth` and `metadata.identity` are platform-reserved: both are stripped from every caller-supplied envelope and written only by Orion, so a workflow reading them is reading a verified grant. `metadata.oauth` is also excluded from persisted task-detail snapshots, so the tokens in it are not written to disk.
+
+### Normalised identity
+
+So one workflow can serve every provider — `upsert on (provider, subject)`, mint the session — Orion stamps a normalised identity at `metadata.identity`, protocol-agnostic in shape:
+
+```json
+{ "provider": "github", "kind": "oauth2", "subject": "4210", "login": "octocat", "name": "The Octocat", "picture": "https://…/a.png" }
+```
+
+- **Source.** From the verified `id_token` claims when there are any (OIDC); otherwise from a GET to `userinfo_url` with the access token. A provider that is neither OIDC nor has a `userinfo_url` gets no `metadata.identity` — the workflow reads `metadata.oauth.access_token` and calls the provider itself, as before.
+- **Mapping.** `identity` names the source key for each field; the defaults are the OIDC claim names (`subject: sub`, `login: preferred_username`, `name`, `email`, `picture`). GitHub overrides them: `{ "subject": "id", "login": "login", "picture": "avatar_url" }`. `subject` is always a string (a numeric `id` is coerced). A field the source omits is left out; if no `subject` resolves, no identity is stamped.
+- **`provider` and `kind`** are stamped on a [multi-provider](#several-providers-on-one-channel) channel, matching `metadata.oauth`.
+- The userinfo fetch is server-side egress: `https`, address-checked under [`allow_private_token_urls`](../configuration/oauth2-login.md), and byte-capped. An unreachable endpoint answers `503`; a rejected one, `401`.
+
+Key the upsert on `(metadata.identity.provider, metadata.identity.subject)` and the same workflow serves GitHub, an OIDC directory, and any provider added later.
 
 ### Reserved authorize parameters
 

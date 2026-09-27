@@ -72,8 +72,8 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::{Value, json};
 
 use super::config::{
-    IdTokenConfig, OAuth2LoginConfig, ProviderConfig, RESERVED_AUTHORIZE_PARAMS, ReturnToConfig,
-    StateCookieConfig,
+    IdTokenConfig, IdentityMap, OAuth2LoginConfig, ProviderConfig, RESERVED_AUTHORIZE_PARAMS,
+    ReturnToConfig, StateCookieConfig,
 };
 use crate::errors::{OrionError, Unavailable};
 
@@ -121,6 +121,10 @@ const NONCE_BYTES: usize = 32;
 /// capped at 4096 bytes for the whole jar entry.
 const MAX_RETURN_TO_BYTES: usize = 512;
 
+/// Cap on a userinfo response, read while streaming (#355). A profile document
+/// larger than this is not one Orion needs to map five fields out of.
+const MAX_USERINFO_BYTES: usize = 65_536;
+
 /// The state token's algorithm. Fixed rather than configurable: the key is
 /// Orion's own, it never leaves the instance, and nothing interoperates with
 /// it, so an algorithm choice here would be a knob with no right answer other
@@ -150,6 +154,9 @@ impl std::fmt::Debug for Redirect {
 pub struct Grant {
     /// The object stamped at `metadata.oauth`.
     pub metadata: Value,
+    /// The normalised identity stamped at `metadata.identity` (#355), when one
+    /// could be resolved from the verified claims or the userinfo response.
+    pub identity: Option<Value>,
     /// `Set-Cookie` clearing the state cookie, appended to whatever response
     /// the workflow shapes.
     pub clear_cookie: String,
@@ -208,11 +215,75 @@ pub struct CompiledProvider {
     extra_authorize_params: BTreeMap<String, String>,
     id_token: Option<IdTokenConfig>,
     id_token_verifier: Option<crate::jwt::Verifier>,
+    /// The userinfo endpoint (explicit or discovered), for a provider whose
+    /// identity is not carried in an `id_token`.
+    userinfo_url: Option<String>,
+    /// How to read the normalised identity, with defaults resolved.
+    identity: CompiledIdentityMap,
 }
 
 impl CompiledProvider {
     fn wants_oidc_nonce(&self) -> bool {
         self.id_token.as_ref().is_some_and(|id| id.nonce)
+    }
+}
+
+/// The normalised-identity source keys with defaults applied — the per-request
+/// form of [`IdentityMap`].
+struct CompiledIdentityMap {
+    subject: String,
+    login: String,
+    name: String,
+    email: String,
+    picture: String,
+}
+
+impl CompiledIdentityMap {
+    /// Apply the OIDC-claim-name defaults to an authored map.
+    fn resolve(map: Option<&IdentityMap>) -> Self {
+        let pick = |f: Option<&Option<String>>, default: &str| {
+            f.and_then(|o| o.clone())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        Self {
+            subject: pick(map.map(|m| &m.subject), "sub"),
+            login: pick(map.map(|m| &m.login), "preferred_username"),
+            name: pick(map.map(|m| &m.name), "name"),
+            email: pick(map.map(|m| &m.email), "email"),
+            picture: pick(map.map(|m| &m.picture), "picture"),
+        }
+    }
+
+    /// Read the normalised identity out of a claims or userinfo object. Returns
+    /// `None` when no `subject` is present — an identity without one cannot be
+    /// upserted on, so it is not worth stamping.
+    fn extract(&self, source: &Value) -> Option<Value> {
+        let subject = source.get(&self.subject).and_then(value_to_string)?;
+        let mut identity = json!({ "subject": subject });
+        for (out, key) in [
+            ("login", &self.login),
+            ("name", &self.name),
+            ("email", &self.email),
+            ("picture", &self.picture),
+        ] {
+            if let Some(v) = source.get(key).and_then(value_to_string) {
+                identity[out] = json!(v);
+            }
+        }
+        Some(identity)
+    }
+}
+
+/// A claim value as a string: a JSON string as-is, a number or bool stringified
+/// (GitHub's `id` is a number, and `subject` is stamped as a string), anything
+/// else (null, array, object) ignored.
+fn value_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
     }
 }
 
@@ -306,6 +377,9 @@ impl CompiledOAuth2Login {
                 scopes: p.scopes.clone(),
                 extra_authorize_params: p.extra_authorize_params.clone(),
                 id_token: p.id_token.clone(),
+                userinfo_url: resolve_opt(&p.userinfo_url, &format!("oauth2_login.{pfx}userinfo_url"))
+                    .await?,
+                identity: p.identity.clone(),
             };
             resolved_entries.push((slug, resolved));
         }
@@ -713,15 +787,120 @@ impl CompiledOAuth2Login {
             }
         }
 
+        // The normalised identity (#355), so one workflow upserts on
+        // `(provider, subject)` whatever the provider. From the verified
+        // `id_token` claims when there are any (signed, already in hand);
+        // otherwise fetched from the userinfo endpoint with the access token.
+        let identity = self.resolve_identity(provider, canonical_slug, &oauth).await?;
+        if let Some(ref id) = identity {
+            // Mirror it under `metadata.oauth` too, the shape #355 first named;
+            // `metadata.identity` (below) is the protocol-neutral home workflows
+            // should key on.
+            oauth["identity"] = id.clone();
+        }
+
         crate::metrics::record_oauth_login(&self.channel, label, Leg::Callback, "ok");
         Ok(Grant {
             metadata: oauth,
+            identity,
             // Retire the state the moment it is spent. `Max-Age=0` with the
             // same name, path and attributes, or the browser keeps the old one
             // alongside.
             clear_cookie: self.state_cookie("", 0).map_err(|e| {
                 OrionError::internal(format!("could not clear the state cookie: {e}"))
             })?,
+        })
+    }
+
+    /// Build the normalised identity for a completed sign-in: from the verified
+    /// `id_token` claims (`metadata.oauth.claims`) when present, else from a
+    /// userinfo fetch, else `None`. `provider` and `kind` are stamped for the
+    /// multi-provider form, matching `metadata.oauth`.
+    async fn resolve_identity(
+        &self,
+        provider: &CompiledProvider,
+        canonical_slug: &str,
+        oauth: &Value,
+    ) -> Result<Option<Value>, OrionError> {
+        let label = provider_label(canonical_slug);
+        // Prefer the signed claims; fall back to userinfo.
+        let mut base = if let Some(claims) = oauth.get("claims") {
+            provider.identity.extract(claims)
+        } else if let Some(url) = provider.userinfo_url.as_deref() {
+            let access_token = oauth
+                .get("access_token")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let userinfo = self.fetch_userinfo(url, access_token, label).await?;
+            provider.identity.extract(&userinfo)
+        } else {
+            None
+        };
+
+        if let Some(identity) = base.as_mut().and_then(Value::as_object_mut) {
+            if self.route_selected {
+                identity.insert("provider".to_string(), json!(canonical_slug));
+                identity.insert("kind".to_string(), json!(provider.kind));
+            }
+        } else if provider.id_token_verifier.is_some() || provider.userinfo_url.is_some() {
+            // A source was configured but yielded no `subject` — the mapping is
+            // likely wrong. Not fatal (the workflow still has the grant), but
+            // worth a line so it is not a silent absence.
+            tracing::warn!(
+                channel = %self.channel,
+                "OAuth2 sign-in resolved no identity subject; check the provider's identity mapping"
+            );
+        }
+        Ok(base)
+    }
+
+    /// Fetch the userinfo endpoint with the access token. A new egress, so it
+    /// passes the same address check and byte cap the token exchange does.
+    async fn fetch_userinfo(
+        &self,
+        url: &str,
+        access_token: &str,
+        label: &str,
+    ) -> Result<Value, OrionError> {
+        if !self.allow_private_token_urls
+            && let Err(msg) = crate::validation::validate_url_not_private(url).await
+        {
+            tracing::warn!(channel = %self.channel, error = %msg, "userinfo URL refused");
+            return Err(self.refuse(label, "userinfo_rejected"));
+        }
+        let response = self
+            .http_client
+            .get(url)
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!(channel = %self.channel, error = %e, "userinfo fetch failed");
+                self.count(label, "userinfo_error");
+                OrionError::unavailable(
+                    Unavailable::GuardBackend,
+                    "the identity provider could not be reached",
+                )
+            })?;
+        if !response.status().is_success() {
+            tracing::warn!(
+                channel = %self.channel,
+                status = %response.status(),
+                "userinfo fetch rejected"
+            );
+            return Err(self.refuse(label, "userinfo_rejected"));
+        }
+        let body = crate::http_body::read_bounded(response, MAX_USERINFO_BYTES)
+            .await
+            .map_err(|e| {
+                tracing::warn!(channel = %self.channel, error = %e, "userinfo body");
+                self.refuse(label, "userinfo_rejected")
+            })?;
+        serde_json::from_slice(&body).map_err(|e| {
+            tracing::warn!(channel = %self.channel, error = %e, "userinfo is not JSON");
+            self.refuse(label, "userinfo_rejected")
         })
     }
 
@@ -895,6 +1074,8 @@ fn assemble_resolved(
         run_workflow_on_authorize: o.run_workflow_on_authorize,
         return_to: o.return_to.clone(),
         id_token: None,
+        userinfo_url: None,
+        identity: None,
     };
     if o.is_multi_provider() {
         base.providers = Some(entries.iter().cloned().collect());
@@ -909,6 +1090,8 @@ fn assemble_resolved(
         base.scopes = p.scopes.clone();
         base.extra_authorize_params = p.extra_authorize_params.clone();
         base.id_token = p.id_token.clone();
+        base.userinfo_url = p.userinfo_url.clone();
+        base.identity = p.identity.clone();
     }
     base
 }
@@ -953,6 +1136,7 @@ pub const SECRET_RESOLVED_FIELDS: &[&str] = &[
     "authorize_url",
     "token_url",
     "redirect_uri",
+    "userinfo_url",
 ];
 
 /// Whether `value` is a reference rather than a value.
@@ -1278,6 +1462,34 @@ fn validate_provider(
             }
         }
     }
+
+    // The userinfo endpoint is server-side egress like `token_url`: https, and
+    // address-checked at fetch time under the same gate.
+    if let Some(userinfo) = p.userinfo_url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let field = format!("{pfx}userinfo_url");
+        if !deferred(mode, &field, userinfo)? {
+            require_https(&field, userinfo)?;
+        }
+    }
+
+    // An identity mapping names source keys; an empty one is a typo, not a
+    // default (the default is the whole map being absent).
+    if let Some(ref map) = p.identity {
+        for (label, value) in [
+            ("subject", &map.subject),
+            ("login", &map.login),
+            ("name", &map.name),
+            ("email", &map.email),
+            ("picture", &map.picture),
+        ] {
+            if value.as_deref().is_some_and(|s| s.trim().is_empty()) {
+                return Err(format!(
+                    "oauth2_login.{pfx}identity.{label} must not be empty — omit it to use the \
+                     default claim name"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1394,6 +1606,12 @@ fn build_provider(
         None => None,
     };
 
+    let userinfo_url = resolved
+        .userinfo_url
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| discovered.and_then(|d| d.userinfo_url.clone()));
+
     Ok(CompiledProvider {
         kind: effective_kind(resolved.kind.as_deref(), id_token.is_some()),
         client_id,
@@ -1406,6 +1624,8 @@ fn build_provider(
         extra_authorize_params: resolved.extra_authorize_params.clone(),
         id_token,
         id_token_verifier,
+        userinfo_url,
+        identity: CompiledIdentityMap::resolve(resolved.identity.as_ref()),
     })
 }
 
@@ -1525,6 +1745,8 @@ mod tests {
             run_workflow_on_authorize: false,
             return_to: None,
             id_token: None,
+            userinfo_url: None,
+            identity: None,
         }
     }
 
@@ -1571,6 +1793,8 @@ mod tests {
             run_workflow_on_authorize: false,
             return_to: None,
             id_token: None,
+            userinfo_url: None,
+            identity: None,
         }
     }
 
@@ -2129,6 +2353,84 @@ mod tests {
         cfg.providers_from_instance = true;
         let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("both forms");
         assert!(err.contains("both"), "{err}");
+    }
+
+    /// The defaults are OIDC claim names, and a subject is coerced to a string.
+    #[test]
+    fn identity_maps_oidc_claims_by_default() {
+        let map = CompiledIdentityMap::resolve(None);
+        let claims = json!({
+            "sub": "abc-123",
+            "preferred_username": "jdoe",
+            "name": "J. Doe",
+            "email": "j@doe.example",
+            "picture": "https://cdn/x.png",
+            "extra": "ignored"
+        });
+        let id = map.extract(&claims).expect("an identity");
+        assert_eq!(id["subject"], "abc-123");
+        assert_eq!(id["login"], "jdoe");
+        assert_eq!(id["name"], "J. Doe");
+        assert_eq!(id["email"], "j@doe.example");
+        assert_eq!(id["picture"], "https://cdn/x.png");
+    }
+
+    /// A provider like GitHub overrides the source keys, and a numeric `id`
+    /// becomes a string subject.
+    #[test]
+    fn identity_map_overrides_and_coerces_the_subject() {
+        let map = CompiledIdentityMap::resolve(Some(&IdentityMap {
+            subject: Some("id".to_string()),
+            login: Some("login".to_string()),
+            picture: Some("avatar_url".to_string()),
+            ..Default::default()
+        }));
+        let user = json!({ "id": 4210, "login": "octocat", "avatar_url": "https://gh/a.png" });
+        let id = map.extract(&user).expect("an identity");
+        assert_eq!(id["subject"], "4210", "a numeric id is stringified");
+        assert_eq!(id["login"], "octocat");
+        assert_eq!(id["picture"], "https://gh/a.png");
+        // Fields the source omits are left out, not null.
+        assert!(id.get("email").is_none());
+    }
+
+    /// No subject, no identity — an identity without one cannot be upserted on.
+    #[test]
+    fn identity_is_none_without_a_subject() {
+        let map = CompiledIdentityMap::resolve(None);
+        assert!(map.extract(&json!({ "name": "no sub here" })).is_none());
+    }
+
+    #[test]
+    fn value_to_string_coerces_scalars_only() {
+        assert_eq!(value_to_string(&json!("s")).as_deref(), Some("s"));
+        assert_eq!(value_to_string(&json!(42)).as_deref(), Some("42"));
+        assert_eq!(value_to_string(&json!(true)).as_deref(), Some("true"));
+        assert_eq!(value_to_string(&json!("")), None);
+        assert_eq!(value_to_string(&json!(null)), None);
+        assert_eq!(value_to_string(&json!([1, 2])), None);
+        assert_eq!(value_to_string(&json!({"a": 1})), None);
+    }
+
+    /// An empty identity source key is a typo, refused at authoring.
+    #[test]
+    fn an_empty_identity_key_is_refused() {
+        let mut cfg = config();
+        cfg.identity = Some(IdentityMap {
+            subject: Some("  ".to_string()),
+            ..Default::default()
+        });
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("empty key");
+        assert!(err.contains("identity.subject"), "{err}");
+    }
+
+    /// A userinfo URL is https, like the other endpoints.
+    #[test]
+    fn a_plain_http_userinfo_url_is_refused() {
+        let mut cfg = config();
+        cfg.userinfo_url = Some("http://api.example/user".to_string());
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("http userinfo");
+        assert!(err.contains("userinfo_url") && err.contains("https"), "{err}");
     }
 
     #[tokio::test]

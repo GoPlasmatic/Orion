@@ -789,6 +789,40 @@ pub struct ProviderConfig {
     /// OIDC `id_token` verification for this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id_token: Option<IdTokenConfig>,
+    /// The provider's userinfo endpoint, for a provider whose identity is not in
+    /// an `id_token` (GitHub's `/user`). When the `id_token` carries the identity
+    /// this is unused. Discovered from `issuer` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub userinfo_url: Option<String>,
+    /// How to read the normalised identity out of the verified claims or the
+    /// userinfo response. Defaults to the OIDC claim names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentityMap>,
+}
+
+/// The source keys for the normalised identity Orion stamps at
+/// `metadata.identity` (#355), so one workflow upserts on `(provider, subject)`
+/// whatever the provider. Each field names the claim or userinfo key to read;
+/// the defaults are the OIDC standard claim names, which a provider like GitHub
+/// overrides (`subject: "id"`, `login: "login"`, `picture: "avatar_url"`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityMap {
+    /// The stable per-provider identifier. Default `sub`; coerced to a string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// A human-facing handle. Default `preferred_username`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+    /// Display name. Default `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Email. Default `email`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Avatar URL. Default `picture`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
 }
 
 impl From<&crate::config::InstanceProviderConfig> for ProviderConfig {
@@ -809,6 +843,11 @@ impl From<&crate::config::InstanceProviderConfig> for ProviderConfig {
             scopes: i.scopes.clone(),
             extra_authorize_params: i.extra_authorize_params.clone(),
             id_token: None,
+            userinfo_url: i.userinfo_url.clone(),
+            // A custom identity map is channel-typed (layering keeps it out of
+            // `config`); a deployment-supplied provider uses the default OIDC
+            // claim mapping, which is what an `issuer`-discovered directory wants.
+            identity: None,
         }
     }
 }
@@ -971,6 +1010,16 @@ pub struct OAuth2LoginConfig {
     /// Single-provider (flat) form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id_token: Option<IdTokenConfig>,
+
+    /// The userinfo endpoint, for the single-provider (flat) form. See
+    /// [`ProviderConfig::userinfo_url`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub userinfo_url: Option<String>,
+
+    /// The normalised-identity mapping, for the single-provider (flat) form. See
+    /// [`ProviderConfig::identity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentityMap>,
 }
 
 impl OAuth2LoginConfig {
@@ -992,6 +1041,8 @@ impl OAuth2LoginConfig {
             scopes: self.scopes.clone(),
             extra_authorize_params: self.extra_authorize_params.clone(),
             id_token: self.id_token.clone(),
+            userinfo_url: self.userinfo_url.clone(),
+            identity: self.identity.clone(),
         }
     }
 

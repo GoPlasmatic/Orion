@@ -40,6 +40,10 @@ pub struct Discovered {
     pub authorize_url: String,
     pub token_url: String,
     pub jwks_url: String,
+    /// The OIDC userinfo endpoint, when the provider publishes one — used by the
+    /// normalised-identity fetch (#355) for a provider whose identity is not in
+    /// the `id_token`.
+    pub userinfo_url: Option<String>,
     /// The `issuer` the document declares — verified to equal the configured one.
     pub issuer: String,
 }
@@ -51,6 +55,8 @@ struct DiscoveryDoc {
     authorization_endpoint: String,
     token_endpoint: String,
     jwks_uri: String,
+    #[serde(default)]
+    userinfo_endpoint: Option<String>,
 }
 
 struct Entry {
@@ -183,12 +189,16 @@ impl DiscoveryCache {
         require_https("authorization_endpoint", &doc.authorization_endpoint)?;
         require_https("token_endpoint", &doc.token_endpoint)?;
         require_https("jwks_uri", &doc.jwks_uri)?;
+        if let Some(ref u) = doc.userinfo_endpoint {
+            require_https("userinfo_endpoint", u)?;
+        }
 
         Ok((
             Discovered {
                 authorize_url: doc.authorization_endpoint,
                 token_url: doc.token_endpoint,
                 jwks_url: doc.jwks_uri,
+                userinfo_url: doc.userinfo_endpoint,
                 issuer: doc.issuer,
             },
             ttl,

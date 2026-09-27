@@ -94,4 +94,8 @@ pub struct InstanceProviderConfig {
     pub scopes: Vec<String>,
     /// Extra authorize-URL parameters.
     pub extra_authorize_params: BTreeMap<String, String>,
+    /// The userinfo endpoint, for a non-OIDC deployment-supplied provider. A
+    /// deployment provider uses the default OIDC identity mapping; a custom
+    /// `identity` map is available only in the channel block.
+    pub userinfo_url: Option<String>,
 }
