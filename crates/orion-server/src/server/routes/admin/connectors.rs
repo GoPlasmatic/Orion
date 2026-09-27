@@ -369,6 +369,14 @@ pub(crate) async fn delete_connector(
         slots_for(&connector.connector_type),
     )
     .await;
+    // A delete is final, so also drop the connector's in-memory cache
+    // namespaces — which `evict_connector_pools` deliberately keeps on an
+    // update/reload so a reattaching connector reuses its entries. A no-op for
+    // a non-cache connector (no namespace matches its name).
+    state
+        .caches
+        .cache_pool
+        .evict_memory_namespaces(&connector.name);
     reload_connectors(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }

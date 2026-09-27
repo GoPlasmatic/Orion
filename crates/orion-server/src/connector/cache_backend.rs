@@ -578,6 +578,15 @@ pub enum CachePurpose {
 }
 
 impl CachePurpose {
+    /// Every purpose. A sweep that must reach each namespace a connector owns
+    /// (`CachePool::evict_memory_namespaces`) reads this rather than hard-coding
+    /// the list; `cache_purpose_all_is_complete` pins it to the variants.
+    pub const ALL: [CachePurpose; 3] = [
+        CachePurpose::Workflow,
+        CachePurpose::Dedup,
+        CachePurpose::ResponseCache,
+    ];
+
     /// Stable namespace segment. Purpose-only for the built-in default
     /// store, `purpose:connector` for a named connector — the two can never
     /// collide because connector names are non-empty.
@@ -706,6 +715,26 @@ impl CachePool {
     /// entries, exactly as the pre-S19 shared instance did.
     pub async fn evict_pool(&self, connector_name: &str) {
         self.redis.evict(connector_name).await;
+    }
+
+    /// Drop the in-memory namespaces a *deleted* connector owned, one per
+    /// purpose, releasing their entries and the sweep task each backend runs.
+    ///
+    /// Deliberately not part of [`Self::evict_pool`]: an update or a reload
+    /// keeps a connector's namespaces (the key is stable, so a reattaching
+    /// connector reuses its entries), but a delete is final. Without this, a
+    /// create/delete churn of uniquely named cache connectors stranded one
+    /// namespace — up to `max_memory_cache_entries` values plus a 60 s timer —
+    /// per name for the life of the process. The built-in default namespaces
+    /// (keyed by bare purpose, no connector) are never matched, so a delete
+    /// cannot disturb a channel that names no connector. The key is built in
+    /// full per purpose, so a connector name containing `:` is matched exactly
+    /// rather than by an ambiguous split.
+    pub fn evict_memory_namespaces(&self, connector_name: &str) {
+        for purpose in CachePurpose::ALL {
+            self.memory
+                .remove(&format!("{}:{connector_name}", purpose.as_str()));
+        }
     }
 
     /// Evict every cached Redis connection (epoch-driven resync — a remote
@@ -1098,6 +1127,53 @@ mod tests {
         assert_eq!(
             a2.get("shared-key").await.expect("test"),
             Some("\"from-a\"".to_string())
+        );
+    }
+
+    /// Adding a `CachePurpose` variant without adding it to `ALL` leaves a
+    /// namespace `evict_memory_namespaces` never reaches, so pin the two.
+    #[test]
+    fn cache_purpose_all_is_complete() {
+        for purpose in CachePurpose::ALL {
+            // Exhaustive: a new variant is a compile error here, which is the
+            // reminder to add it to ALL above.
+            match purpose {
+                CachePurpose::Workflow | CachePurpose::Dedup | CachePurpose::ResponseCache => {}
+            }
+        }
+        assert_eq!(CachePurpose::ALL.len(), 3);
+    }
+
+    /// A delete drops the connector's namespaces across every purpose, so its
+    /// entries do not outlive it — while the built-in default namespace, which
+    /// belongs to channels naming no connector, is untouched.
+    #[tokio::test]
+    async fn evict_memory_namespaces_drops_a_deleted_connectors_entries() {
+        let pool = CachePool::new(4, 60, 1000);
+        let wf = pool
+            .get_backend(CachePurpose::Workflow, "gone", &memory_connector())
+            .await
+            .expect("test");
+        wf.set("k", "\"v\"").await.expect("test");
+        let default_dedup = pool.default_memory(CachePurpose::Dedup);
+        default_dedup.set("keep", "\"v\"").await.expect("test");
+
+        pool.evict_memory_namespaces("gone");
+
+        // A fresh resolution of the same connector gets a new, empty namespace.
+        let wf2 = pool
+            .get_backend(CachePurpose::Workflow, "gone", &memory_connector())
+            .await
+            .expect("test");
+        assert!(
+            wf2.get("k").await.expect("test").is_none(),
+            "the deleted connector's namespace was dropped, not reattached"
+        );
+        // The built-in default namespace (no connector) survives the delete.
+        assert_eq!(
+            default_dedup.get("keep").await.expect("test"),
+            Some("\"v\"".to_string()),
+            "a delete must not touch the default namespaces"
         );
     }
 
