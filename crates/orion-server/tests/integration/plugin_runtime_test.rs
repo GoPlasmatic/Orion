@@ -159,6 +159,40 @@ fn a_component_loads_once_per_digest_and_a_non_component_does_not() {
     }
 }
 
+#[test]
+fn retain_keeps_named_digests_and_a_slack_of_recent_ones() {
+    use std::collections::HashSet;
+
+    let runtime = WasmRuntime::new(&config()).expect("engine");
+    let loaded = runtime.load_blocking(COMPONENT).expect("loads");
+    let digest = loaded.digest.clone();
+    assert!(runtime.cached(&digest).is_some());
+
+    // A digest a live generation names is kept, whatever the slack.
+    let keep: HashSet<&str> = [digest.as_str()].into_iter().collect();
+    assert_eq!(runtime.retain(&keep, 0), 0);
+    assert!(
+        runtime.cached(&digest).is_some(),
+        "a named digest survives a retain that names it"
+    );
+
+    // Not named, but within the slack (the upload-then-activate window): spared.
+    assert_eq!(runtime.retain(&HashSet::new(), 8), 0);
+    assert!(
+        runtime.cached(&digest).is_some(),
+        "the slack spares a recently compiled component no generation names"
+    );
+
+    // Not named and past the slack: evicted. This is the leak the sweep closes
+    // — a draft, self-test failure, superseded version or one-off `validate`
+    // that no active generation carries.
+    assert_eq!(runtime.retain(&HashSet::new(), 0), 1);
+    assert!(
+        runtime.cached(&digest).is_none(),
+        "an unnamed component past the slack is dropped"
+    );
+}
+
 #[tokio::test]
 async fn the_fixture_manifest_registers_beside_the_builtins() {
     let f = fixture(&config());

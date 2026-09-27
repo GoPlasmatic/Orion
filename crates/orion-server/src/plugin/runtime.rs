@@ -17,7 +17,7 @@
 //!   Fuel itself is a backstop, not a contract: its cost moves between
 //!   Wasmtime versions, so operators reason in `max_timeout_ms`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -102,12 +102,25 @@ impl std::fmt::Display for LoadError {
 
 impl std::error::Error for LoadError {}
 
+/// A cached compilation, with the order it entered the cache so [`retain`]
+/// can spare the most recently compiled entries no live generation names.
+///
+/// [`retain`]: WasmRuntime::retain
+struct CacheEntry {
+    component: Arc<LoadedComponent>,
+    seq: u64,
+}
+
 /// The engine, its linker, and the digest-keyed cache of loaded components.
 pub struct WasmRuntime {
     engine: Engine,
     linker: Linker<HostState>,
     max_component_bytes: usize,
-    cache: Mutex<HashMap<String, Arc<LoadedComponent>>>,
+    cache: Mutex<HashMap<String, CacheEntry>>,
+    /// Monotonic insertion counter for the cache, so [`WasmRuntime::retain`]
+    /// can keep the most recently compiled entries during the
+    /// upload-then-activate window.
+    cache_seq: AtomicU64,
     /// Instances alive right now, across every function.
     live: AtomicU64,
 }
@@ -150,6 +163,7 @@ impl WasmRuntime {
             linker,
             max_component_bytes: config.max_component_bytes,
             cache: Mutex::new(HashMap::new()),
+            cache_seq: AtomicU64::new(0),
             live: AtomicU64::new(0),
         }))
     }
@@ -174,13 +188,52 @@ impl WasmRuntime {
         self.live.load(Ordering::Relaxed)
     }
 
+    /// The most recently compiled components no active generation names that
+    /// [`Self::retain`] spares — the upload-then-activate window, where an
+    /// admin upload or `validate` compiles a component before any active row
+    /// names it. Small: a handful of pending drafts, not a second cache.
+    pub const RETAIN_SLACK: usize = 8;
+
     /// A component already compiled under `digest`, if any.
     pub fn cached(&self, digest: &str) -> Option<Arc<LoadedComponent>> {
         self.cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(digest)
-            .cloned()
+            .map(|entry| entry.component.clone())
+    }
+
+    /// Drop cached compilations no live generation needs.
+    ///
+    /// Called after a generation publish with the digests its `PluginSet`
+    /// names. The cache is a compile-time dedup only — a loaded plugin's
+    /// handler holds its own `Arc<LoadedComponent>`, so eviction never touches
+    /// an in-flight or active call, only what a future load would otherwise
+    /// reuse. Without it, every draft, self-test failure, superseded version,
+    /// deleted plugin and one-off `validate` stayed resident for the life of
+    /// the process — each up to `plugins.max_component_bytes` of Cranelift
+    /// output.
+    ///
+    /// `slack` spares that many of the most recently compiled entries `keep`
+    /// does not name (see [`Self::RETAIN_SLACK`]). Returns the number evicted.
+    pub fn retain(&self, keep: &HashSet<&str>, slack: usize) -> usize {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        // The entries `keep` does not name, newest first, capped at `slack`.
+        let mut unnamed: Vec<(&String, u64)> = cache
+            .iter()
+            .filter(|(digest, _)| !keep.contains(digest.as_str()))
+            .map(|(digest, entry)| (digest, entry.seq))
+            .collect();
+        unnamed.sort_unstable_by_key(|&(_, seq)| std::cmp::Reverse(seq));
+        let spared: HashSet<String> = unnamed
+            .into_iter()
+            .take(slack)
+            .map(|(digest, _)| digest.clone())
+            .collect();
+
+        let before = cache.len();
+        cache.retain(|digest, _| keep.contains(digest.as_str()) || spared.contains(digest));
+        before - cache.len()
     }
 
     /// Compile and link `bytes`, or return the cached result for the same
@@ -211,13 +264,18 @@ impl WasmRuntime {
             compile_time: started.elapsed(),
             pre,
         });
-        self.cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(digest)
-            .or_insert_with(|| loaded.clone())
-            .clone()
-            .pipe(Ok)
+        let component = {
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache
+                .entry(digest)
+                .or_insert_with(|| CacheEntry {
+                    component: loaded.clone(),
+                    seq: self.cache_seq.fetch_add(1, Ordering::Relaxed),
+                })
+                .component
+                .clone()
+        };
+        Ok(component)
     }
 
     /// [`Self::load_blocking`] on the blocking pool.
@@ -344,12 +402,3 @@ impl Invocation {
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").to_string()
 }
-
-/// `Result::Ok` as a method, for the one place the borrow checker wants the
-/// cache lock released before the value is returned.
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
-    }
-}
-impl<T> Pipe for T {}

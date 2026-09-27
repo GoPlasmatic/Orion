@@ -263,6 +263,29 @@ pub async fn reload_engine_with_opts(
         );
         let published = state.runtime.load();
 
+        // Sweep the plugin compile cache down to what this generation serves.
+        // The cache is a compile-time dedup keyed by digest that never shrank
+        // on its own, so drafts, self-test failures, superseded versions,
+        // deleted plugins and one-off `validate`s stayed resident until
+        // restart. A loaded plugin's handler holds its own component, so this
+        // cannot disturb serving; the slack spares recent uploads that are
+        // compiled but not yet activated.
+        if let Some(runtime) = state.plugins.as_ref() {
+            let keep: std::collections::HashSet<&str> = published
+                .plugins
+                .plugins
+                .iter()
+                .map(|p| p.digest.as_str())
+                .collect();
+            let evicted = runtime.retain(&keep, crate::plugin::WasmRuntime::RETAIN_SLACK);
+            if evicted > 0 {
+                tracing::debug!(
+                    evicted,
+                    "swept superseded plugin components from the compile cache"
+                );
+            }
+        }
+
         // Warm what `models.preload` selects, off the publish's critical
         // path: the generation serves now, and a request that arrives before
         // its model is resident shares the load in flight.
