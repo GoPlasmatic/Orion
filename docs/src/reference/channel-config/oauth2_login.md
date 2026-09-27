@@ -94,7 +94,7 @@ A provider that names an `issuer` and leaves `authorize_url`, `token_url` and th
 
 ### Several providers on one channel
 
-One channel can serve many identity providers, chosen by a `{provider}` segment in its routes. Set `providers` — a map of slug to a per-provider block — *instead of* the flat provider fields, and put the `{provider}` segment in both `route_pattern` and `callback_path`:
+One channel can serve many identity providers, chosen by a `{provider}` segment in its routes. Set `providers` — a map of slug to a per-provider block — *instead of* the flat provider fields. Put the `{provider}` segment in both `route_pattern` and `callback_path`:
 
 ```json
 {
@@ -174,7 +174,7 @@ A block sets *either* `providers` *or* the flat provider fields, never both.
 | `metadata.identity` | an identity could be resolved — see [Normalised identity](#normalised-identity) |
 | `metadata.oauth.identity` | the same object, mirrored under `metadata.oauth` |
 
-`metadata.oauth` and `metadata.identity` are platform-reserved: both are stripped from every caller-supplied envelope and written only by Orion, so a workflow reading them is reading a verified grant. `metadata.oauth` is also excluded from persisted task-detail snapshots, so the tokens in it are not written to disk.
+`metadata.oauth` and `metadata.identity` are platform-reserved: both are stripped from every caller-supplied envelope and written only by Orion. A workflow reading them is reading a verified grant. `metadata.oauth` is also excluded from persisted task-detail snapshots, so the tokens in it are not written to disk.
 
 ### Normalised identity
 

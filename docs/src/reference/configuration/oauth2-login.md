@@ -4,7 +4,7 @@
 
 # Inbound OAuth2 sign-in settings
 
-Egress policy for a channel that completes a browser authorization-code grant, and — the one exception — the **identity providers a deployment supplies** for a channel that opts in. Everything else describing an identity-provider relationship belongs to the channel's [`oauth2_login` block](../channel-config/oauth2_login.md), because it is part of the definition and is promoted with it: the endpoints, the client credentials, the scopes, PKCE and the state cookie.
+Egress policy for a channel that completes a browser authorization-code grant. The one exception is the **identity providers a deployment supplies** for a channel that opts in. Everything else about a provider belongs to the channel's [`oauth2_login` block](../channel-config/oauth2_login.md): the endpoints, the client credentials, the scopes, PKCE and the state cookie.
 
 ## Synopsis
 
@@ -35,9 +35,9 @@ scopes        = ["openid", "profile"]
 
 ## Deployment-supplied providers
 
-*Which* identity providers exist differs per deployment — the public instance has one, a tenant's instance has its own directory as well — and that is a property of the deployment, not the promoted definition. `[vars]` holds literals, so it cannot add or remove a provider. `[oauth2_login.providers.<slug>]` can: a channel whose [`oauth2_login`](../channel-config/oauth2_login.md#several-providers-on-one-channel) block sets `providers_from_instance = true` merges these entries under its own `providers` map, and the definition's own entries win any slug clash. The definition then promotes between instances unchanged while each deployment supplies its own providers.
+*Which* identity providers exist differs per deployment — the public instance has one, a tenant's instance has its own directory as well. That is a property of the deployment, not the promoted definition. `[vars]` holds literals, so it cannot add or remove a provider. `[oauth2_login.providers.<slug>]` can: a channel whose [`oauth2_login`](../channel-config/oauth2_login.md#several-providers-on-one-channel) block sets `providers_from_instance = true` merges these entries under its own `providers` map. The definition's own entries win any slug clash. The definition then promotes between instances unchanged while each deployment supplies its own providers.
 
-Each entry takes the per-provider fields — `kind`, `issuer`, `authorize_url`, `token_url`, `client_id`, `client_secret`, `client_auth`, `redirect_uri`, `scopes`, `extra_authorize_params`, `userinfo_url`. A custom `identity` map is channel-block-only, so a deployment-supplied provider uses the default OIDC identity mapping (its `id_token` claims). A deployment-supplied OIDC directory (Entra, Keycloak, Google Workspace) is usually just an `issuer` plus the client credentials: Orion discovers the endpoints and verifies the `id_token` — see [OIDC discovery](../channel-config/oauth2_login.md#oidc-discovery). The example above uses `issuer` for exactly that.
+Each entry takes the per-provider fields — `kind`, `issuer`, `authorize_url`, `token_url`, `client_id`, `client_secret`, `client_auth`, `redirect_uri`, `scopes`, `extra_authorize_params`, `userinfo_url`. A custom `identity` map is channel-block-only, so a deployment-supplied provider uses the default OIDC identity mapping (its `id_token` claims). A deployment-supplied OIDC directory (Entra, Keycloak, Google Workspace) is usually an `issuer` plus the client credentials. Orion discovers the endpoints and verifies the `id_token` — see [OIDC discovery](../channel-config/oauth2_login.md#oidc-discovery). The example above uses `issuer` for exactly that.
 
 Two limits to know:
 
