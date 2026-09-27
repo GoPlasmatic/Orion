@@ -284,11 +284,10 @@ where
         return observed_handler_named(fn_name, connector, channel, fut).await;
     }
 
-    // Same key shape as the pre-existing `http_call` path, so an operator's
-    // `channel:connector` keys keep meaning what they meant.
-    let breaker = registry
-        .get_or_create_breaker(&format!("{channel}:{connector}"))
-        .await;
+    // The registry composes the same `channel:connector` key shape as the
+    // pre-existing `http_call` path, so an operator's keys keep meaning what
+    // they meant; it also keeps the two parts for pruning on delete/archive.
+    let breaker = registry.get_or_create_breaker(channel, connector).await;
     if !breaker.check() {
         crate::metrics::record_circuit_breaker_rejection(connector, channel);
         return Err(crate::errors::circuit_open_dataflow_error(

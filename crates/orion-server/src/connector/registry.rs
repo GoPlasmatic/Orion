@@ -22,13 +22,23 @@ static CONNECTOR_GENERATION: AtomicU64 = AtomicU64::new(0);
 struct BreakerEntry {
     breaker: Arc<CircuitBreaker>,
     last_access: AtomicU64,
+    /// The channel and connector this breaker guards. The map is keyed by the
+    /// composite `"{channel}:{connector}"` — the shape the admin API and the
+    /// cluster reset broadcast (`job_leases.breaker_key`) both speak — which
+    /// cannot be parsed back because either name may contain `:`. Keeping the
+    /// two parts here lets [`ConnectorRegistry::prune_breakers`] drop entries
+    /// for a removed connector or archived channel without that parse.
+    channel: String,
+    connector: String,
 }
 
 impl BreakerEntry {
-    fn new(breaker: Arc<CircuitBreaker>) -> Self {
+    fn new(breaker: Arc<CircuitBreaker>, channel: &str, connector: &str) -> Self {
         Self {
             breaker,
             last_access: AtomicU64::new(BREAKER_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed)),
+            channel: channel.to_string(),
+            connector: connector.to_string(),
         }
     }
 
@@ -145,12 +155,23 @@ impl ConnectorRegistry {
         self.load_issues.read().await.clone()
     }
 
-    /// Get or create a circuit breaker for the given key (e.g. "channel:connector").
-    pub async fn get_or_create_breaker(&self, key: &str) -> Arc<CircuitBreaker> {
+    /// Get or create the circuit breaker for a `(channel, connector)` pairing.
+    ///
+    /// The map is keyed by the composite `"{channel}:{connector}"` — the shape
+    /// the admin API and the cluster reset broadcast speak — and the entry
+    /// keeps the two parts so [`Self::prune_breakers`] can drop it later.
+    pub async fn get_or_create_breaker(
+        &self,
+        channel: &str,
+        connector: &str,
+    ) -> Arc<CircuitBreaker> {
+        // The composite key is the API and cluster-broadcast identity; the
+        // entry additionally keeps `channel` and `connector` for pruning.
+        let key = format!("{channel}:{connector}");
         // Fast path: read lock
         {
             let breakers = self.circuit_breakers.read().await;
-            if let Some(entry) = breakers.get(key) {
+            if let Some(entry) = breakers.get(&key) {
                 entry.touch();
                 return entry.breaker.clone();
             }
@@ -158,7 +179,7 @@ impl ConnectorRegistry {
         // Slow path: write lock on miss
         let mut breakers = self.circuit_breakers.write().await;
         // Double-check after acquiring write lock
-        if let Some(entry) = breakers.get(key) {
+        if let Some(entry) = breakers.get(&key) {
             entry.touch();
             return entry.breaker.clone();
         }
@@ -206,9 +227,34 @@ impl ConnectorRegistry {
         }
 
         let breaker = Arc::new(CircuitBreaker::new(self.cb_config.clone()));
-        let entry = BreakerEntry::new(breaker.clone());
-        breakers.insert(key.to_string(), entry);
+        let entry = BreakerEntry::new(breaker.clone(), channel, connector);
+        breakers.insert(key, entry);
         breaker
+    }
+
+    /// Drop breakers whose channel or connector no longer exists.
+    ///
+    /// Called once per reload with the live channel set; the live connector
+    /// set is this registry's own loaded configs (an enabled, resolvable
+    /// connector). A breaker is keyed by the composite `"{channel}:{connector}"`
+    /// — what the admin API and the cluster reset broadcast speak — which
+    /// cannot be parsed back, so [`BreakerEntry`] keeps the two parts and this
+    /// filters on them. Without it, a deleted connector's or an archived
+    /// channel's breaker lingered until LRU pressure at `max_breakers` reclaimed
+    /// it, holding a slot a live pairing could use.
+    ///
+    /// A no-op when breakers are disabled (the map is then always empty).
+    pub async fn prune_breakers(&self, live_channels: &std::collections::HashSet<&str>) {
+        if !self.cb_config.enabled {
+            return;
+        }
+        let live_connectors: std::collections::HashSet<String> =
+            self.configs.read().await.keys().cloned().collect();
+        let mut breakers = self.circuit_breakers.write().await;
+        breakers.retain(|_, entry| {
+            live_connectors.contains(&entry.connector)
+                && live_channels.contains(entry.channel.as_str())
+        });
     }
 
     /// Return all circuit breaker states for admin/health introspection.
@@ -731,8 +777,8 @@ mod tests {
             ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
-        let b1 = registry.get_or_create_breaker("key1").await;
-        let b2 = registry.get_or_create_breaker("key1").await;
+        let b1 = registry.get_or_create_breaker("ch", "conn").await;
+        let b2 = registry.get_or_create_breaker("ch", "conn").await;
         // Should return the same breaker
         assert!(Arc::ptr_eq(&b1, &b2));
     }
@@ -746,10 +792,10 @@ mod tests {
             ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
-        let _ = registry.get_or_create_breaker("key1").await;
+        let _ = registry.get_or_create_breaker("ch", "conn").await;
         let states = registry.circuit_breaker_states().await;
         assert_eq!(states.len(), 1);
-        assert_eq!(states.get("key1").expect("test"), "closed");
+        assert_eq!(states.get("ch:conn").expect("test"), "closed");
     }
 
     #[tokio::test]
@@ -761,11 +807,11 @@ mod tests {
             ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
-        let breaker = registry.get_or_create_breaker("key1").await;
+        let breaker = registry.get_or_create_breaker("ch", "conn").await;
         breaker.record_failure(); // trips it
         assert!(!breaker.check()); // open
 
-        let found = registry.reset_circuit_breaker("key1").await;
+        let found = registry.reset_circuit_breaker("ch:conn").await;
         assert!(found);
         assert!(breaker.check()); // closed again
     }
@@ -787,26 +833,67 @@ mod tests {
         let registry = ConnectorRegistry::new(config);
 
         // Fill to capacity
-        let _b1 = registry.get_or_create_breaker("key1").await;
-        let _b2 = registry.get_or_create_breaker("key2").await;
-        let _b3 = registry.get_or_create_breaker("key3").await;
+        let _b1 = registry.get_or_create_breaker("ch", "key1").await;
+        let _b2 = registry.get_or_create_breaker("ch", "key2").await;
+        let _b3 = registry.get_or_create_breaker("ch", "key3").await;
 
         // Access key2 and key3 to make key1 the LRU
-        let _b2_again = registry.get_or_create_breaker("key2").await;
-        let _b3_again = registry.get_or_create_breaker("key3").await;
+        let _b2_again = registry.get_or_create_breaker("ch", "key2").await;
+        let _b3_again = registry.get_or_create_breaker("ch", "key3").await;
 
         // Adding a 4th should evict key1 (LRU)
-        let _b4 = registry.get_or_create_breaker("key4").await;
+        let _b4 = registry.get_or_create_breaker("ch", "key4").await;
 
         let states = registry.circuit_breaker_states().await;
         assert_eq!(states.len(), 3);
         assert!(
-            !states.contains_key("key1"),
+            !states.contains_key("ch:key1"),
             "key1 should have been evicted as LRU"
         );
-        assert!(states.contains_key("key2"));
-        assert!(states.contains_key("key3"));
-        assert!(states.contains_key("key4"));
+        assert!(states.contains_key("ch:key2"));
+        assert!(states.contains_key("ch:key3"));
+        assert!(states.contains_key("ch:key4"));
+    }
+
+    /// A reload prunes breakers whose channel was archived or whose connector
+    /// was deleted, keying off the components the entry stores rather than
+    /// parsing the composite key.
+    #[tokio::test]
+    async fn prune_breakers_drops_dead_channels_and_connectors() {
+        let repo = StubConnectorRepo::with(vec![(
+            "conn-live",
+            "cache",
+            r#"{"backend":"redis","url":"redis://localhost:6379"}"#,
+        )]);
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            recovery_timeout_secs: 30,
+            ..Default::default()
+        };
+        let registry = ConnectorRegistry::new(config);
+        registry.load_from_repo(&repo).await.expect("load");
+
+        registry.get_or_create_breaker("ch-live", "conn-live").await;
+        registry.get_or_create_breaker("ch-gone", "conn-live").await;
+        registry.get_or_create_breaker("ch-live", "conn-gone").await;
+
+        let live: std::collections::HashSet<&str> = ["ch-live"].into_iter().collect();
+        registry.prune_breakers(&live).await;
+
+        let states = registry.circuit_breaker_states().await;
+        assert!(
+            states.contains_key("ch-live:conn-live"),
+            "a live channel + live connector is kept"
+        );
+        assert!(
+            !states.contains_key("ch-gone:conn-live"),
+            "a breaker for an archived channel is pruned"
+        );
+        assert!(
+            !states.contains_key("ch-live:conn-gone"),
+            "a breaker for a deleted connector is pruned"
+        );
     }
 
     // ---- N17: the generation token tracks changes, not loads --------------

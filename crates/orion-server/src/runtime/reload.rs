@@ -286,6 +286,18 @@ pub async fn reload_engine_with_opts(
             }
         }
 
+        // Drop circuit breakers whose channel or connector this generation no
+        // longer carries — a deleted connector or an archived channel — so
+        // their entries do not sit in the map until LRU pressure reclaims them.
+        // Runs on every node (the reload does), keyed off this reload's live
+        // channels and the registry's live connectors.
+        let live_channels: std::collections::HashSet<&str> =
+            channels.iter().map(|c| c.channel_id.as_str()).collect();
+        state
+            .connector_registry
+            .prune_breakers(&live_channels)
+            .await;
+
         // Warm what `models.preload` selects, off the publish's critical
         // path: the generation serves now, and a request that arrives before
         // its model is resident shares the load in flight.
