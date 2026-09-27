@@ -94,6 +94,14 @@ pub struct ModelsConfig {
     /// Inferences that may run at once across every model. `0` means the
     /// host's available parallelism.
     pub max_concurrent_inferences: u32,
+    /// Cold model loads that may run at once across every model. A cold load
+    /// reads the artifact and parses it into a runtime session — up to
+    /// `max_artifact_bytes` in memory plus the parsed graph — so leaving it
+    /// unbounded lets a burst of distinct cold models (a warm-up, or several
+    /// first inferences at once) hold that many artifacts resident at the same
+    /// time. Small by default; `0` means unbounded. Loads of the *same* model
+    /// are already collapsed to one by the loaded-session cache.
+    pub max_concurrent_loads: u32,
     pub trust: ModelTrustConfig,
     /// The runtimes this node offers, by name. The names a build knows are
     /// `model::runtimes::NAMES`; each entry's `device` must be one that
@@ -236,6 +244,7 @@ impl Default for ModelsConfig {
             admission_timeout_secs: 900,
             max_concurrency_per_model: 16,
             max_concurrent_inferences: 0,
+            max_concurrent_loads: 2,
             trust: ModelTrustConfig::default(),
             runtimes: BTreeMap::from([(
                 DEFAULT_RUNTIME.to_string(),
@@ -271,9 +280,9 @@ impl ModelsConfig {
             u64::from(self.max_concurrency_per_model),
             "models.max_concurrency_per_model",
         )?;
-        // `max_parameters` and `max_concurrent_inferences` read `0` as
-        // "unbounded" and "available parallelism" respectively, so neither
-        // is checked here.
+        // `max_parameters` and `max_concurrent_loads` read `0` as "unbounded"
+        // and `max_concurrent_inferences` reads it as "available
+        // parallelism", so none of the three is checked here.
 
         // Every runtime named must be one this build knows, on a device that
         // runtime lists. Checked whether or not models are enabled: a config

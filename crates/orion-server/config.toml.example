@@ -596,6 +596,7 @@
 # admission_timeout_secs = 900       # One admission end to end; a row past it fails by stage
 # max_concurrency_per_model = 16     # Concurrent inferences of one model
 # max_concurrent_inferences = 0      # Across every model; 0 = available parallelism
+# max_concurrent_loads = 2           # Cold loads at once across every model; 0 = unbounded
 # overrides = []                     # Per-model ceilings; see [[models.overrides]] below
 
 # [models.trust]

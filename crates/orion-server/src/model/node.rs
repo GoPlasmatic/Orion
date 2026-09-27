@@ -47,6 +47,11 @@ pub struct ModelsRuntime {
     /// How many permits `inference_permits` was created with, for the live
     /// gauge.
     pub inference_slots: usize,
+    /// The process-wide cold-load slots — `models.max_concurrent_loads`, or
+    /// `None` when that is `0` (unbounded). A cold load holds an artifact and
+    /// its parsed graph in memory, so this bounds how many can at once; loads
+    /// of the same session are already collapsed by [`LoadedCache`].
+    pub load_permits: Option<Arc<Semaphore>>,
 }
 
 impl ModelsRuntime {
@@ -74,6 +79,7 @@ impl ModelsRuntime {
             loaded: Arc::new(LoadedCache::new(config.max_loaded_bytes)),
             inference_permits: Arc::new(Semaphore::new(inference_slots)),
             inference_slots,
+            load_permits: load_permits(config),
         })
     }
 
@@ -91,6 +97,14 @@ impl ModelsRuntime {
     pub fn queue_capacity(&self) -> usize {
         QUEUE_CAPACITY
     }
+}
+
+/// The cold-load semaphore `models.max_concurrent_loads` asks for: `None` when
+/// it is `0` (unbounded), otherwise a permit count. Shared by the node runtime
+/// and an offline host so the two bound loads the same way.
+pub(super) fn load_permits(config: &ModelsConfig) -> Option<Arc<Semaphore>> {
+    (config.max_concurrent_loads > 0)
+        .then(|| Arc::new(Semaphore::new(config.max_concurrent_loads as usize)))
 }
 
 /// The name a node records on its verdicts: the configured cluster instance
@@ -115,6 +129,26 @@ mod tests {
     fn the_configured_instance_id_names_the_node() {
         assert_eq!(node_name(" node-7 "), "node-7");
         assert!(!node_name("").is_empty());
+    }
+
+    #[test]
+    fn load_permits_bound_cold_loads_unless_zero() {
+        let bounded = ModelsConfig {
+            max_concurrent_loads: 3,
+            ..ModelsConfig::default()
+        };
+        assert_eq!(
+            load_permits(&bounded).expect("bounded").available_permits(),
+            3
+        );
+        let unbounded = ModelsConfig {
+            max_concurrent_loads: 0,
+            ..ModelsConfig::default()
+        };
+        assert!(
+            load_permits(&unbounded).is_none(),
+            "0 means unbounded, no semaphore"
+        );
     }
 
     #[test]

@@ -162,6 +162,10 @@ pub struct InferenceHost {
     pub loaded: Arc<LoadedCache>,
     pub inference_permits: Arc<Semaphore>,
     pub inference_slots: usize,
+    /// Cold-load slots, `None` when `models.max_concurrent_loads` is unbounded.
+    /// Held across the fetch and parse of a cold load, so a burst of distinct
+    /// cold models cannot hold more than this many artifacts resident at once.
+    pub load_permits: Option<Arc<Semaphore>>,
     pub artifacts: Arc<dyn ArtifactSource>,
 }
 
@@ -180,6 +184,7 @@ impl InferenceHost {
             loaded: models.loaded.clone(),
             inference_permits: models.inference_permits.clone(),
             inference_slots: models.inference_slots,
+            load_permits: models.load_permits.clone(),
             artifacts: Arc::new(NodeArtifacts {
                 store: models.store.clone(),
                 registry,
@@ -203,6 +208,7 @@ impl InferenceHost {
             loaded: Arc::new(LoadedCache::new(config.max_loaded_bytes)),
             inference_permits: Arc::new(Semaphore::new(inference_slots)),
             inference_slots,
+            load_permits: super::node::load_permits(config),
             artifacts,
         }
     }
@@ -933,6 +939,20 @@ async fn fetch_and_load(
     runtime: Arc<dyn ModelRuntime>,
     device: &str,
 ) -> Result<Arc<dyn LoadedModel>, LoadError> {
+    // One cold-load slot for the fetch and the parse together: both hold the
+    // artifact in memory, so the permit is what keeps K distinct cold models
+    // from holding K artifacts at once. Held until this function returns.
+    // `acquire` only errors if the semaphore is closed, which it never is —
+    // the host holds it for the life of the process.
+    let _load_slot = match &host.load_permits {
+        Some(permits) => Some(
+            permits
+                .acquire()
+                .await
+                .map_err(|e| LoadError::new("load", format!("the load slot is gone: {e}")))?,
+        ),
+        None => None,
+    };
     let bytes = host.artifacts.bytes(entry).await?;
     let entry = entry.clone();
     let device = device.to_string();
@@ -1063,6 +1083,129 @@ mod tests {
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&config.cache_dir);
+    }
+
+    /// Cold loads across distinct callers are bounded by
+    /// `models.max_concurrent_loads`: with one slot the fetch-and-parse that
+    /// holds an artifact in memory never overlaps; unbounded, it does.
+    #[tokio::test]
+    async fn cold_loads_are_bounded_by_the_load_semaphore() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Records how many loads hold the fetch-and-parse slot at once.
+        struct Counting {
+            live: AtomicUsize,
+            peak: AtomicUsize,
+        }
+        #[async_trait]
+        impl ArtifactSource for Counting {
+            async fn bytes(&self, _entry: &ModelEntry) -> Result<Vec<u8>, LoadError> {
+                let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(live, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                self.live.fetch_sub(1, Ordering::SeqCst);
+                Ok(vec![0u8; 4])
+            }
+        }
+
+        struct Loaded;
+        impl LoadedModel for Loaded {
+            fn digest(&self) -> &str {
+                "sha256:fake"
+            }
+            fn resident_bytes(&self) -> usize {
+                1
+            }
+            fn run(
+                &self,
+                _inputs: Vec<OwnedDataTensor>,
+            ) -> Result<Vec<OwnedDataTensor>, super::super::runtimes::RunError> {
+                Ok(Vec::new())
+            }
+        }
+        struct Stub;
+        impl ModelRuntime for Stub {
+            fn name(&self) -> &'static str {
+                "tract"
+            }
+            fn devices(&self) -> &'static [&'static str] {
+                &["cpu"]
+            }
+            fn formats(&self) -> &'static [&'static str] {
+                &["onnx"]
+            }
+            fn load(
+                &self,
+                _bytes: &[u8],
+                _binding: &super::super::runtimes::LoadBinding,
+                _device: &str,
+            ) -> Result<Arc<dyn LoadedModel>, LoadError> {
+                Ok(Arc::new(Loaded))
+            }
+        }
+
+        // One compiled entry, reused: fetch_and_load does not dedup (the cache
+        // single-flight does), so N concurrent calls each take a load slot —
+        // which is what we are measuring.
+        let cfg = config();
+        let handle = crate::runtime::generation::test_handle();
+        let generation = handle.load();
+        let set = ModelSet::from_manifests(
+            [super::super::loader::ManifestEntry {
+                manifest: fixture::manifest(),
+                artifact_path: std::path::PathBuf::from("x.onnx"),
+                digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+                stats: None,
+            }],
+            &cfg,
+            generation.engine.datalogic(),
+        );
+        let id = set.ids().next().expect("one entry compiled").to_string();
+        let entry = set.get(&id).expect("the entry").clone();
+
+        let peak_with = |slots: Option<usize>| {
+            let entry = entry.clone();
+            let cfg = cfg.clone();
+            async move {
+                let counting = Arc::new(Counting {
+                    live: AtomicUsize::new(0),
+                    peak: AtomicUsize::new(0),
+                });
+                let host = Arc::new(InferenceHost {
+                    runtimes: Arc::new(ModelRuntimes::builtin(&cfg)),
+                    loaded: Arc::new(LoadedCache::new(1 << 30)),
+                    inference_permits: Arc::new(Semaphore::new(1)),
+                    inference_slots: 1,
+                    load_permits: slots.map(|n| Arc::new(Semaphore::new(n))),
+                    artifacts: counting.clone(),
+                });
+                let runtime: Arc<dyn ModelRuntime> = Arc::new(Stub);
+                let mut tasks = Vec::new();
+                for _ in 0..4 {
+                    let host = host.clone();
+                    let entry = entry.clone();
+                    let runtime = runtime.clone();
+                    tasks.push(tokio::spawn(async move {
+                        fetch_and_load(&host, &entry, runtime, "cpu").await
+                    }));
+                }
+                for task in tasks {
+                    task.await.expect("join").expect("the load succeeds");
+                }
+                counting.peak.load(Ordering::SeqCst)
+            }
+        };
+
+        assert_eq!(
+            peak_with(Some(1)).await,
+            1,
+            "one slot serialises cold loads"
+        );
+        assert!(
+            peak_with(None).await >= 2,
+            "unbounded, distinct cold loads overlap"
+        );
     }
 
     /// The pieces of a message: a shape as `dtype[dims]`, a value's kind.
