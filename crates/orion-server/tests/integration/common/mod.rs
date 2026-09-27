@@ -20,8 +20,6 @@ use axum::http::Request;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use orion::channel::ChannelLoader;
-
 /// An empty serving generation: an engine with no workflows and an estate with
 /// no channels.
 ///
@@ -102,26 +100,33 @@ pub async fn test_state_with_kafka(config: AppConfig, brokers: &str) -> AppState
     test_state_inner(config, Some(brokers.to_string())).await.0
 }
 
-/// Build `AppState` through the REAL boot path — `orion::bootstrap`'s
-/// builders, in the same order as `main.rs::run()` — so wiring drift between
-/// tests and production startup is impossible.
+/// Build `AppState` through the REAL boot path — `orion::bootstrap::assemble`,
+/// the same ordered sequence `main.rs::run()` calls between an open pool and a
+/// wired state — so wiring drift between tests and production startup is
+/// impossible. Everything from the cluster runtime to `build_app_state` is
+/// `assemble`; the harness only supplies the two inputs it builds differently
+/// and sets the one config knob it must.
 ///
-/// Deliberate divergences from production bootstrap (everything else must go
-/// through `orion::bootstrap`):
+/// Deliberate divergences from production bootstrap:
 ///
 /// 1. **Storage**: an empty/default URL becomes in-memory SQLite with a pool
 ///    of >= 5, via `init_pool` (always migrates) instead of
 ///    `init_pool_for_startup` (tests must not trip the migration guard). The
 ///    override is NOT written back into `config` — `state.config` keeps what
 ///    the test passed (pool_exhaustion_test depends on that).
-/// 2. **Metrics**: `install_recorder()` with a no-op fallback — the recorder
-///    is process-global and only the first test app can install it. Never
-///    `init_metrics_handle`, and never `init_observability` (a global
-///    tracing subscriber would collide across tests).
+/// 2. **Metrics**: `init_metrics_with_instance` with first-caller-wins
+///    semantics — the recorder is process-global and only the first test app
+///    installs it. Never `init_metrics_handle`, and never `init_observability`
+///    (a global tracing subscriber would collide across tests).
 /// 3. **DLQ retry loop forced off**: a harness-owned 30 s DLQ poller would
 ///    steal claims from tests that drive retries themselves
 ///    (trace_dlq_poison_test, trace_dlq_admin_test). Tests that want the
 ///    loop call `orion::queue::start_dlq_retry` directly.
+///
+/// The state-dependent serving tasks `main` spawns after `assemble` (model
+/// admission, cluster tasks, limiter prune, `[packages] apply`) are the test's
+/// to start — the cluster harness spawns cluster tasks itself, and
+/// `boot_packages_test` drives `package::boot::run` directly.
 async fn test_state_inner(
     mut config: AppConfig,
     kafka_brokers: Option<String>,
@@ -158,71 +163,6 @@ async fn test_state_inner(
         config.kafka.brokers = vec![brokers];
     }
 
-    // From here on: the production startup sequence, same order as main::run.
-    let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool)
-        .await
-        .expect("cluster runtime");
-    let repos = orion::bootstrap::Repositories::new(&pool, &config.storage).expect("repositories");
-    let channel_loader = Arc::new(if config.cluster.enabled {
-        ChannelLoader::with_cluster((&*cluster).into())
-    } else {
-        ChannelLoader::new()
-    });
-    let components = orion::bootstrap::build_engine_components(&config, &repos, &channel_loader)
-        .await
-        .expect("engine components");
-    // #268: the managed-OAuth2 runtime, single-node shape (no lease) — what
-    // the probe and http_call paths need for oauth2 connectors under test.
-    components
-        .serving
-        .connector_registry
-        .oauth()
-        .init(orion::connector::oauth::OAuthRuntimeDeps {
-            http_client: components.serving.http_client.clone(),
-            repo: repos.connectors.clone(),
-            lease: None,
-        });
-    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (components, channels, active_workflow_count) = components
-        .load_channels_and_build_engine(&config, &repos, &channel_loader)
-        .await
-        .expect("load channels");
-    ready.store(true, std::sync::atomic::Ordering::Release);
-
-    let tasks = Arc::new(orion::runtime::TaskRegistry::new());
-    let cron_status = Arc::new(orion::cron::CronStatus::new());
-    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
-        orion::bootstrap::start_background_tasks(
-            &config,
-            &tasks,
-            components.runtime.clone(),
-            &repos,
-            &cluster,
-            orion::bootstrap::CronComponents {
-                datalogic: components.datalogic.clone(),
-                vars: components.vars.clone(),
-                status: cron_status.clone(),
-            },
-        );
-    // None unless the test's config carries `[kafka.topics]` mappings (the
-    // DB is empty at boot, so DB-driven topics never contribute); wired for
-    // parity with production either way.
-    let kafka_consumer_handle = orion::bootstrap::start_kafka_ingest(
-        &config.kafka,
-        &channels,
-        orion::bootstrap::IngestDeps {
-            runtime: components.runtime.clone(),
-            datalogic: components.datalogic.clone(),
-            vars: components.vars.clone(),
-            kafka_producer: components.kafka_producer.clone(),
-            instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
-            trace_repo: repos.traces.clone(),
-            persistence_queue: trace_persistence_queue.clone(),
-            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
-        },
-    )
-    .expect("kafka ingest");
-
     // Divergence 2: process-global metrics recorder (see doc comment).
     //
     // T37: through orion's own init rather than a raw `PrometheusBuilder` —
@@ -231,34 +171,24 @@ async fn test_state_inner(
     // and the rendered exposition was empty in *every* test app, first or
     // not (which is why `metrics_endpoint_test` could only assert status
     // codes). Same first-caller-wins semantics: later apps get a standalone
-    // handle from the fallback inside `init_metrics_with_instance`. Ordered
-    // before `set_active_workflows`, or the first app's gauge write lands
-    // before any recorder exists and is dropped.
+    // handle from the fallback inside `init_metrics_with_instance`. Installed
+    // before `assemble` (as production installs it before its sequence), so
+    // `set_active_workflows` inside `assemble` lands on a live recorder.
     let metrics_handle = orion::metrics::init_metrics_with_instance(None);
-    orion::metrics::set_active_workflows(active_workflow_count as f64);
-    let rate_limit_state = orion::bootstrap::build_rate_limit_state(&config);
 
     // Handed back so a test can close it — see `test_state_and_pool`.
     let pool_handle = pool.clone();
 
-    let state = orion::bootstrap::build_app_state(orion::bootstrap::AppStateParams {
+    // From here on the shared production sequence.
+    let assembled = orion::bootstrap::assemble(orion::bootstrap::AssembleParams {
         config: Arc::new(config),
         pool,
-        repos,
-        components,
-        channel_loader,
-        trace_queue,
-        trace_persistence_queue,
-        audit_queue,
-        rate_limit_state,
         metrics_handle,
-        ready,
-        kafka_consumer_handle,
-        cluster,
-        tasks,
-        cron_status,
-    });
-    (state, task_handles, pool_handle)
+    })
+    .await
+    .expect("assemble app state");
+
+    (assembled.state, assembled.task_handles, pool_handle)
 }
 
 pub fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {

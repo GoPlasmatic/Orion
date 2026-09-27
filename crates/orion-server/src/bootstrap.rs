@@ -1052,10 +1052,187 @@ pub struct AppStateParams {
     pub cron_status: Arc<crate::cron::CronStatus>,
 }
 
+/// The two inputs [`assemble`] does not build itself, because its callers
+/// build them differently on purpose:
+///
+/// - `pool`: production opens it with `init_pool_for_startup` (a stale schema
+///   is a hard error); the test harness uses in-memory SQLite through
+///   `init_pool` (always migrates). Handed in already open.
+/// - `metrics_handle`: production installs the global recorder through
+///   `init_metrics_handle`; the harness through `init_metrics_with_instance`
+///   with first-caller-wins semantics. Installed before `assemble`, so any
+///   metric the build sequence emits is recorded.
+///
+/// Everything else — the cluster runtime, the repositories, the channel
+/// loader, the OAuth2 runtime (with its cluster lease derived from the config),
+/// the plugin epoch ticker and the Kafka consumer — `assemble` builds the one
+/// way both paths must agree on. `config` is already shared.
+pub struct AssembleParams {
+    pub config: Arc<config::AppConfig>,
+    pub pool: crate::storage::DbPool,
+    pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
+}
+
+/// What [`assemble`] hands back: the wired `AppState` and the queue-drain
+/// handles that own the graceful-shutdown sequence. The caller keeps the
+/// handles so it, not `assemble`, decides when the drains run.
+pub struct Assembled {
+    pub state: crate::server::state::AppState,
+    pub task_handles: TaskHandles,
+}
+
+/// The ordered startup sequence from an open pool to a wired `AppState`:
+/// cluster runtime, repositories, channel loader, engine components, the
+/// managed-OAuth2 runtime, the first published generation, the background
+/// tasks, the plugin ticker and the Kafka consumer. `main.rs` and the
+/// integration-test harness (`tests/integration/common`) both call this so a
+/// step added here reaches both — the sequence used to be spelled twice and a
+/// step added to one ran untested in the other.
+///
+/// It stops at `AppState`: the caller then builds the router, spawns the
+/// state-dependent serving tasks (model admission, cluster tasks, limiter
+/// prune, `[packages] apply`) and runs the server, because those are where
+/// production and the harness diverge — the harness leaves them to the test
+/// that wants them.
+pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::error::Error>> {
+    let AssembleParams {
+        config,
+        pool,
+        metrics_handle,
+    } = params;
+
+    // Cluster runtime: instance identity + shared Redis (fails fast when
+    // enabled and Redis is unreachable).
+    let cluster = crate::cluster::init_cluster_runtime(&config.cluster, &pool).await?;
+    tracing::info!(
+        instance_id = %cluster.instance_id,
+        cluster_enabled = cluster.enabled,
+        "Instance identity"
+    );
+
+    let repos = Repositories::new(&pool, &config.storage)?;
+
+    // Builds the channel half of every generation. Cluster mode swaps in the
+    // strict backend matrix.
+    let channel_loader = Arc::new(if config.cluster.enabled {
+        crate::channel::ChannelLoader::with_cluster((&*cluster).into())
+    } else {
+        crate::channel::ChannelLoader::new()
+    });
+
+    // Connector registry, shared HTTP client, runtime handle, cache pools,
+    // custom function handlers, and the Kafka producer.
+    let components = build_engine_components(&config, &repos, &channel_loader).await?;
+
+    // #268: hand the managed-OAuth2 token manager its runtime — the shared
+    // client, the encrypted state store, and (in cluster mode) the refresh
+    // lease that keeps N nodes from rotating against each other. The lease is
+    // derived from the config here, so the harness wires it the same way a
+    // cluster node does rather than passing `None` by hand.
+    components
+        .serving
+        .connector_registry
+        .oauth()
+        .init(crate::connector::oauth::OAuthRuntimeDeps {
+            http_client: components.serving.http_client.clone(),
+            repo: repos.connectors.clone(),
+            lease: config.cluster.enabled.then(|| {
+                Arc::new(crate::cluster::JobLeaseGate::new(
+                    cluster.repo.clone(),
+                    cluster.instance_id.clone(),
+                ))
+            }),
+        });
+
+    // Readiness flag — set once the first generation is published.
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Load active channels and workflows, build both halves of the first
+    // generation, and publish it through the pre-created runtime handle.
+    // Consumes `components`: the handler map goes into the engine, and what
+    // comes back is the half that backs `AppState` (F55).
+    let (components, channels, active_workflow_count) = components
+        .load_channels_and_build_engine(&config, &repos, &channel_loader)
+        .await?;
+    ready.store(true, std::sync::atomic::Ordering::Release);
+
+    // One supervisor for every long-lived background task, so `/health` and
+    // `/readyz` can report their liveness; the scheduler's own status is
+    // shared too, for what its liveness does not say.
+    let tasks = Arc::new(crate::runtime::TaskRegistry::new());
+    let cron_status = Arc::new(crate::cron::CronStatus::new());
+    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) = start_background_tasks(
+        &config,
+        &tasks,
+        components.runtime.clone(),
+        &repos,
+        &cluster,
+        CronComponents {
+            datalogic: components.datalogic.clone(),
+            vars: components.vars.clone(),
+            status: cron_status.clone(),
+        },
+    );
+
+    // The plugin epoch ticker: the clock every plugin deadline is measured in,
+    // supervised as `Required` so a dead ticker degrades `/readyz` rather than
+    // silently disabling every deadline. Only when the sandbox exists.
+    if let Some(sandbox) = &components.plugins {
+        crate::plugin::ticker::start(&tasks, sandbox.clone());
+    }
+
+    // Kafka ingest starts after the background tasks: the consumer writes a
+    // `traces` row per message, so it needs the persistence queue that
+    // `start_background_tasks` returns.
+    let kafka_consumer_handle = start_kafka_ingest(
+        &config.kafka,
+        &channels,
+        IngestDeps {
+            runtime: components.runtime.clone(),
+            datalogic: components.datalogic.clone(),
+            vars: components.vars.clone(),
+            kafka_producer: components.kafka_producer.clone(),
+            instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
+            trace_repo: repos.traces.clone(),
+            persistence_queue: trace_persistence_queue.clone(),
+            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
+        },
+    )?;
+
+    // Initial active-workflows gauge. After the recorder is installed (the
+    // caller did that before `assemble`), or the write lands nowhere.
+    crate::metrics::set_active_workflows(active_workflow_count as f64);
+
+    let rate_limit_state = build_rate_limit_state(&config);
+
+    let state = build_app_state(AppStateParams {
+        config,
+        pool,
+        repos,
+        components,
+        channel_loader,
+        trace_queue,
+        trace_persistence_queue,
+        audit_queue,
+        rate_limit_state,
+        metrics_handle,
+        ready,
+        kafka_consumer_handle,
+        cluster,
+        tasks,
+        cron_status,
+    });
+
+    Ok(Assembled {
+        state,
+        task_handles,
+    })
+}
+
 /// Assemble `AppState` from the bootstrap products — the single place the
-/// [`Repositories`] / [`ServingComponents`] fields map onto `AppStateInner`,
-/// shared by `main.rs` and the integration-test harness so the two can never
-/// drift apart.
+/// [`Repositories`] / [`ServingComponents`] fields map onto `AppStateInner`.
+/// Called only by [`assemble`], which is the shared entry point `main.rs` and
+/// the test harness go through.
 pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState {
     let AppStateParams {
         config,

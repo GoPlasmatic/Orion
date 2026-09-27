@@ -986,143 +986,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Cluster runtime: instance identity + shared Redis (fails fast when
-    // enabled and Redis is unreachable).
-    let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool).await?;
-    tracing::info!(
-        instance_id = %cluster.instance_id,
-        cluster_enabled = cluster.enabled,
-        "Instance identity"
-    );
-
-    // Create repositories
-    let repos = bootstrap::Repositories::new(&pool, &config.storage)?;
-
-    // Builds the channel half of every generation. Cluster mode swaps in the
-    // strict backend matrix.
-    let channel_loader = Arc::new(if config.cluster.enabled {
-        orion::channel::ChannelLoader::with_cluster((&*cluster).into())
-    } else {
-        orion::channel::ChannelLoader::new()
-    });
-
-    // Connector registry, shared HTTP client, runtime handle, cache pools,
-    // custom function handlers, and the Kafka producer (see
-    // `bootstrap::build_engine_components`).
-    let components = bootstrap::build_engine_components(&config, &repos, &channel_loader).await?;
-
-    // #268: hand the managed-OAuth2 token manager its runtime — the shared
-    // client, the encrypted state store, and (in cluster mode) the refresh
-    // lease that keeps N nodes from rotating against each other.
-    components
-        .serving
-        .connector_registry
-        .oauth()
-        .init(orion::connector::oauth::OAuthRuntimeDeps {
-            http_client: components.serving.http_client.clone(),
-            repo: repos.connectors.clone(),
-            lease: config.cluster.enabled.then(|| {
-                std::sync::Arc::new(orion::cluster::JobLeaseGate::new(
-                    cluster.repo.clone(),
-                    cluster.instance_id.clone(),
-                ))
-            }),
-        });
-
-    // Readiness flag — set after engine is fully initialized
-    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Load active channels and workflows, build both halves of the first
-    // generation, and publish it through the pre-created runtime handle.
-    // Channels that fail to load are quarantined — refused at every ingress
-    // until fixed. Consumes `components`: the handler map goes into the
-    // engine, and what comes back is the half that backs `AppState` (F55).
-    let (components, channels, active_workflow_count) = components
-        .load_channels_and_build_engine(&config, &repos, &channel_loader)
-        .await?;
-
-    // Mark the service as ready now that the first generation is published
-    ready.store(true, std::sync::atomic::Ordering::Release);
-
-    // Start the background tasks: trace persistence queue, trace queue
-    // worker pool (with DLQ for failed async traces), trace + audit-log
-    // cleanup, and the DLQ retry consumer.
-    // One supervisor for every long-lived background task. It goes onto
-    // `AppState` so `/health` and `/readyz` can report their liveness, and
-    // `main` keeps its own handle so shutdown can stop them.
-    let tasks = Arc::new(orion::runtime::TaskRegistry::new());
-    // Shared with `AppState` so `/health` can report what the two scheduler
-    // loops are actually achieving, which their liveness does not say.
-    let cron_status = Arc::new(orion::cron::CronStatus::new());
-    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
-        bootstrap::start_background_tasks(
-            &config,
-            &tasks,
-            components.runtime.clone(),
-            &repos,
-            &cluster,
-            bootstrap::CronComponents {
-                datalogic: components.datalogic.clone(),
-                vars: components.vars.clone(),
-                status: cron_status.clone(),
-            },
-        );
-
-    // The plugin epoch ticker: the clock every plugin deadline is measured
-    // in, supervised as `Required` so a dead ticker degrades `/readyz`
-    // rather than silently disabling every deadline.
-    if let Some(sandbox) = &components.plugins {
-        orion::plugin::ticker::start(&tasks, sandbox.clone());
-    }
-
-    // Kafka ingest starts **after** the background tasks, not before.
-    //
-    // The consumer now writes a `traces` row per message, so it needs the
-    // persistence queue that `start_background_tasks` returns. Starting it
-    // first would also have meant a window in which records were consumed and
-    // dispatched with no trace sink behind them — the same reason the HTTP
-    // server is started last.
-    let kafka_consumer_handle = bootstrap::start_kafka_ingest(
-        &config.kafka,
-        &channels,
-        bootstrap::IngestDeps {
-            runtime: components.runtime.clone(),
-            datalogic: components.datalogic.clone(),
-            vars: components.vars.clone(),
-            kafka_producer: components.kafka_producer.clone(),
-            instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
-            trace_repo: repos.traces.clone(),
-            persistence_queue: trace_persistence_queue.clone(),
-            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
-        },
-    )?;
-
-    // Set initial active rules gauge
-    orion::metrics::set_active_workflows(active_workflow_count as f64);
-
-    // Build rate limiter (if enabled)
-    let rate_limit_state = bootstrap::build_rate_limit_state(&config);
-
-    // Build state and router
+    // The ordered startup sequence from the open pool to a wired `AppState`
+    // — cluster runtime, repositories, engine components, the managed-OAuth2
+    // runtime, the first published generation, the background tasks, the
+    // plugin ticker and the Kafka consumer. The integration-test harness calls
+    // the same `assemble`, so a step added there cannot silently skip either.
     let config = Arc::new(config);
-
-    let state = bootstrap::build_app_state(bootstrap::AppStateParams {
+    let bootstrap::Assembled {
+        state,
+        task_handles,
+    } = bootstrap::assemble(bootstrap::AssembleParams {
         config: config.clone(),
         pool,
-        repos,
-        components,
-        channel_loader,
-        trace_queue,
-        trace_persistence_queue,
-        audit_queue,
-        rate_limit_state,
         metrics_handle,
-        ready: ready.clone(),
-        kafka_consumer_handle,
-        cluster,
-        tasks: tasks.clone(),
-        cron_status: cron_status.clone(),
-    });
+    })
+    .await?;
+
+    // The readiness flag and the task supervisor live on `AppState`; keep the
+    // clones `run()` needs for the serve loop and graceful shutdown.
+    let ready = state.ready.clone();
+    let tasks = state.tasks.clone();
 
     // The model admission worker: drains the queue the model routes fill,
     // fetching and verifying each artifact and recording the verdict on the
