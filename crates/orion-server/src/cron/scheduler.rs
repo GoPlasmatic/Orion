@@ -331,6 +331,21 @@ mod tests {
             .expect("pass");
     }
 
+    /// A start instant `hours_back` hours ago, half past the hour.
+    ///
+    /// Both halves matter for a test that plans hourly instants. Mid-hour keeps
+    /// a pass out of the misfire grace around a boundary — run at 02:00:01 it
+    /// would materialise the 02:00 occurrence itself, correctly, and a count or
+    /// a cursor asserted against it would be off by one — and backdating keeps
+    /// every instant the passes plan in the past whatever the clock says.
+    async fn half_past(repo: &Arc<SqlCronRepository>, hours_back: i64) -> NaiveDateTime {
+        let now = repo.db_now().await.expect("db now");
+        now.date()
+            .and_hms_opt(now.hour(), 30, 0)
+            .expect("a valid wall-clock instant")
+            - Duration::hours(hours_back)
+    }
+
     async fn occurrence_count(repo: &Arc<SqlCronRepository>) -> i64 {
         repo.list_paginated(&CronOccurrenceFilter::default())
             .await
@@ -414,17 +429,7 @@ mod tests {
     async fn downtime_runs_the_newest_and_summarises_the_rest() {
         let repo = repo().await;
         let d = descriptor("ch", "0 0 * * * *"); // hourly
-        // Half past an hour, seven hours back. Both halves matter: mid-hour
-        // keeps the first pass out of the misfire grace around a boundary —
-        // run at 02:00:01 it would materialise the 02:00 occurrence itself,
-        // correctly, and the count below would be two — and backdating keeps
-        // every instant the passes plan in the past whatever the clock says.
-        let now = repo.db_now().await.expect("db now");
-        let start = now
-            .date()
-            .and_hms_opt(now.hour(), 30, 0)
-            .expect("a valid wall-clock instant")
-            - Duration::hours(7);
+        let start = half_past(&repo, 7).await;
         pass(&repo, &d, start).await;
 
         // Six hours later, having scheduled nothing in between.
@@ -489,7 +494,9 @@ mod tests {
     async fn an_unchanged_schedule_hash_keeps_the_cursor() {
         let repo = repo().await;
         let d = descriptor("ch", "0 0 * * * *");
-        let start = repo.db_now().await.expect("db now");
+        // Anchored: seeded from the clock at 16:59:59, the second pass a minute
+        // later lands past the top of the hour and advances the cursor for real.
+        let start = half_past(&repo, 1).await;
         pass(&repo, &d, start).await;
         let cursor = repo.schedule_states().await.expect("states")[0].next_fire_at;
 
