@@ -238,7 +238,7 @@ impl ConnectorRegistry {
     /// set is this registry's own loaded configs (an enabled, resolvable
     /// connector). A breaker is keyed by the composite `"{channel}:{connector}"`
     /// — what the admin API and the cluster reset broadcast speak — which
-    /// cannot be parsed back, so [`BreakerEntry`] keeps the two parts and this
+    /// cannot be parsed back, so each entry keeps the two parts and this
     /// filters on them. Without it, a deleted connector's or an archived
     /// channel's breaker lingered until LRU pressure at `max_breakers` reclaimed
     /// it, holding a slot a live pairing could use.
