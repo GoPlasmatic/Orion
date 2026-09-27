@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-09-27
+
+### Fixed
+
+- **Outbound requests identify themselves** ([#356]). The shared HTTP client
+  sent no `User-Agent`, because reqwest has no default one, so an API that
+  requires the header refused Orion's request. GitHub's REST API checks it
+  *before* the token and answers `403` ("Request forbidden by administrative
+  rules"), which made the `oauth2_login` userinfo fetch against
+  `api.github.com/user` — the provider the reference documents — fail every
+  sign-in with the callback's fixed `401` while the authorize leg and the code
+  exchange both succeeded. Every egress on that client now sends
+  `User-Agent: orion/<version>`: `http_call`, the OAuth2 token exchange, OIDC
+  discovery, the JWKS fetch and the userinfo fetch, as does the Vault secret
+  resolver on its own client. `orion-client` — the transport `orion-cli` and
+  `orion-server package plan/apply` speak — sends
+  `User-Agent: orion-client/<version>` for the same reason. A `user-agent` set
+  in an `http_call`'s `headers` or on its connector still wins.
+
+[#356]: https://github.com/GoPlasmatic/Orion/issues/356
+
+## [1.11.0] - 2026-09-27
+
+### Added
+
+- **Several OAuth2 providers on one sign-in channel** ([#355]). A channel
+  declares a `providers` map, and the callback path's slug selects which one
+  answers, so GitHub, Google and a corporate directory share one channel, one
+  workflow and one session mint. The single-provider (flat) form is unchanged.
+  Per-provider values come from instance config, so the same definition
+  deploys to every environment.
+
+- **OIDC discovery from an `issuer`** ([#355]). Given `issuer`, the channel
+  fetches the provider's `.well-known/openid-configuration` and fills
+  `authorize_url`, `token_url`, `jwks_uri` and `userinfo_url` from it, cached
+  per instance. A document whose `issuer` disagrees with the URL it was
+  fetched from is refused.
+
+- **A normalised identity at `metadata.identity`** ([#355]). One workflow
+  serves every provider: Orion stamps `{provider, kind, subject, login, name,
+  email, picture}` from the verified `id_token` claims, or from a GET to
+  `userinfo_url` with the access token for a provider that has no `id_token`.
+  `identity` maps the source keys, defaulting to the OIDC claim names, and
+  `subject` is always a string. The slot is platform-reserved: a caller cannot
+  pre-seed one.
+
+### Fixed
+
+- **Memory and resource lifecycle across reload and delete.** A sweep of the
+  places a long-lived process accumulated what it no longer served: circuit
+  breakers are pruned when a connector is deleted or a channel archived, a
+  deleted cache connector's in-memory namespaces are released, the plugin
+  compile cache is swept to the live plugin set, the SMTP pool is evicted on a
+  cluster resync, and the caller-keyed rate-limit maps and their metric series
+  are bounded. Model artifacts stream to disk rather than being buffered whole,
+  concurrent cold model loads are bounded, the batch trace worker is bounded by
+  bytes as well as rows, Kafka consumer shutdown no longer waits on
+  stragglers, and the Vault secret response is capped by bytes.
+
+[#355]: https://github.com/GoPlasmatic/Orion/issues/355
+
 ## [1.10.0] - 2026-09-25
 
 ### Added
@@ -6000,7 +6061,9 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/GoPlasmatic/Orion/compare/v1.11.0...v1.11.1
+[1.11.0]: https://github.com/GoPlasmatic/Orion/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/GoPlasmatic/Orion/compare/v1.9.1...v1.10.0
 [1.9.1]: https://github.com/GoPlasmatic/Orion/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/GoPlasmatic/Orion/compare/v1.8.2...v1.9.0
