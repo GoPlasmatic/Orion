@@ -243,6 +243,11 @@ impl ConnectorRegistry {
     /// channel's breaker lingered until LRU pressure at `max_breakers` reclaimed
     /// it, holding a slot a live pairing could use.
     ///
+    /// `live_channels` is the set of channel *names* — the routing identity
+    /// stamped into `metadata.channel` and composed into the breaker key — not
+    /// the `channel_id` storage PK; the entry's `channel` is that same name, so
+    /// the caller must pass names or every breaker is dropped.
+    ///
     /// A no-op when breakers are disabled (the map is then always empty).
     pub async fn prune_breakers(&self, live_channels: &std::collections::HashSet<&str>) {
         if !self.cb_config.enabled {

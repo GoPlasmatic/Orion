@@ -291,8 +291,16 @@ pub async fn reload_engine_with_opts(
         // their entries do not sit in the map until LRU pressure reclaims them.
         // Runs on every node (the reload does), keyed off this reload's live
         // channels and the registry's live connectors.
+        //
+        // A breaker's stored channel is the routing identity stamped into
+        // `metadata.channel` — the channel *name*, which is what `RouteTable`
+        // and `require_serviceable` key on and what the `"{channel}:{connector}"`
+        // breaker key is built from — not the `channel_id` storage PK (a UUID
+        // in general). Pruning against `channel_id` never matched a single
+        // breaker's channel, so every reload wiped the whole map — the exact
+        // fan-out the cluster breaker-reset test pins.
         let live_channels: std::collections::HashSet<&str> =
-            channels.iter().map(|c| c.channel_id.as_str()).collect();
+            channels.iter().map(|c| c.name.as_str()).collect();
         state
             .connector_registry
             .prune_breakers(&live_channels)

@@ -568,3 +568,72 @@ async fn an_open_breaker_is_named_in_the_errors_of_a_continue_on_error_workflow(
     );
     assert_eq!(body["errors"][0]["task_id"], json!("call"), "body: {body}");
 }
+
+// ---------------------------------------------------------------------------
+// Test: a breaker survives a reload of an unrelated part of the estate.
+//
+// `prune_breakers` runs on every reload and drops breakers whose channel or
+// connector the new generation no longer carries. A breaker's stored channel
+// is the routing identity (`metadata.channel` — the channel *name*), not the
+// `channel_id` storage PK. Wiring prune against `channel_id` — a UUID the
+// admin API auto-assigns — matched no breaker's channel, so every reload wiped
+// the whole map, silently defeating circuit breaking after the first
+// activate/archive/delete/rollout. This pins that a still-live pairing's
+// breaker is kept, without the container-gated cluster suite.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn breaker_survives_reload_of_a_live_pairing() {
+    let addr = start_failing_server().await;
+    let app = common::test_app_with_config(cb_config(2, 300)).await;
+
+    create_http_connector(&app, "survive-api", addr).await;
+    common::create_and_activate_channel(
+        &app,
+        "cb-survive",
+        failing_http_workflow("CB Survive Workflow", "survive-api"),
+    )
+    .await;
+
+    // Trip the breaker (threshold 2) so an entry exists and is open.
+    for _ in 0..2 {
+        let (status, _) = send_data_request(&app, "cb-survive").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    // The key is the routing name, not the UUID channel_id.
+    let key = "cb-survive:survive-api";
+    let breakers = |app: axum::Router| async move {
+        let resp = app
+            .oneshot(json_request(
+                "GET",
+                "/api/v1/admin/connectors/circuit-breakers",
+                None,
+            ))
+            .await
+            .unwrap();
+        body_json(resp).await
+    };
+    let body = breakers(app.clone()).await;
+    assert_eq!(
+        body["data"]["breakers"][key].as_str(),
+        Some("open"),
+        "the breaker must be open before the reload: {body}"
+    );
+
+    // Reload the engine. Nothing about `cb-survive` or `survive-api` changed,
+    // so its breaker must still be there afterwards.
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = breakers(app.clone()).await;
+    assert_eq!(
+        body["data"]["breakers"][key].as_str(),
+        Some("open"),
+        "a reload must not prune the breaker of a still-live channel + \
+         connector — prune keys off the channel name, not the channel_id: {body}"
+    );
+}
