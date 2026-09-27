@@ -280,6 +280,8 @@ fn vault_http_client() -> reqwest::Client {
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                // Separate for its SSRF policy, not to be anonymous (#356).
+                .user_agent(crate::version::USER_AGENT)
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
                 .expect("reqwest client with static config")

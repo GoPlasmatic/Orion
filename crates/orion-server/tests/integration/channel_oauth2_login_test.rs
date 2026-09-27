@@ -52,6 +52,20 @@ impl Idp {
     }
 }
 
+/// Every leg must identify itself: GitHub's REST API checks the `User-Agent`
+/// *before* the token and answers `403` ("Request forbidden by administrative
+/// rules") to a request that sends none, which made the userinfo fetch — and so
+/// every sign-in against the provider the reference documents — fail with the
+/// callback's fixed `401` (#356). reqwest sends no `User-Agent` of its own, so
+/// this is asserted on the wire, in every test that reaches either leg.
+fn assert_identified(leg: &str, headers: &axum::http::HeaderMap) {
+    assert_eq!(
+        headers.get("user-agent").and_then(|v| v.to_str().ok()),
+        Some(orion::version::USER_AGENT),
+        "the {leg} request must say who is calling"
+    );
+}
+
 /// Enough of RFC 6749 §4.1.3 to be worth testing against, including the two
 /// provider behaviours that broke the first implementation: GitHub answers
 /// `200` with an `error` body for a spent code, and needs `Accept:
@@ -63,6 +77,7 @@ async fn start_idp(idp: Arc<Idp>) -> String {
         body: String,
     ) -> (StatusCode, axum::Json<Value>) {
         idp.token_hits.fetch_add(1, Ordering::SeqCst);
+        assert_identified("token", &headers);
         let form: Vec<(String, String)> = url::form_urlencoded::parse(body.as_bytes())
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
@@ -125,7 +140,8 @@ async fn start_idp(idp: Arc<Idp>) -> String {
     }
     // A GitHub-shaped userinfo response (#355): a numeric `id`, and `avatar_url`
     // rather than the OIDC `picture` — the case a custom identity map exists for.
-    async fn user() -> axum::Json<Value> {
+    async fn user(headers: axum::http::HeaderMap) -> axum::Json<Value> {
+        assert_identified("userinfo", &headers);
         axum::Json(json!({
             "id": 4210,
             "login": "octocat",

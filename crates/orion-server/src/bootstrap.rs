@@ -253,8 +253,11 @@ pub async fn build_engine_components(
     // Create a shared HTTP client. Redirects are off: execute_request follows
     // them manually with per-hop SSRF validation. The pinned resolver connects
     // to the exact addresses SSRF validation vetted (no DNS rebinding between
-    // check and connect).
+    // check and connect). The `User-Agent` is set here rather than at each call
+    // site, so http_call, the OAuth2 token exchange, OIDC discovery, JWKS and
+    // the userinfo fetch all carry one (#356).
     let http_client = reqwest::Client::builder()
+        .user_agent(crate::version::USER_AGENT)
         .timeout(std::time::Duration::from_secs(
             config.engine.global_http_timeout_secs,
         ))

@@ -119,7 +119,7 @@ pub fn oauth_error_to_dataflow(e: crate::connector::oauth::OAuthError) -> Datafl
 }
 
 /// Redirect-hop cap for the manual follower in [`execute_request`]. The shared
-/// client is built with `redirect::Policy::none()` (see main.rs), so every hop
+/// client is built with `redirect::Policy::none()` (see `bootstrap`), so every hop
 /// returns here and passes SSRF validation before being followed.
 const MAX_REDIRECTS: usize = 5;
 
@@ -1027,8 +1027,9 @@ mod tests {
         assert!(result.expect_err("test").to_string().contains("failed"));
     }
 
-    /// Mirrors the production client (main.rs): the manual follower in
-    /// `execute_request` only sees 3xx responses when reqwest doesn't follow.
+    /// Mirrors the production client's redirect policy (`bootstrap`): the
+    /// manual follower in `execute_request` only sees 3xx responses when
+    /// reqwest doesn't follow.
     fn redirectless_client() -> reqwest::Client {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())

@@ -57,6 +57,8 @@ support. The connector supplies the base URL and auth.
 
 Every field above except `method` is JSONLogic. It may be written as a plain literal, which is what it evaluates to, or as an expression over the message. A literal is folded once when the engine is built and costs nothing per request; only a field that reads the message pays. `headers` is the one that changes what is expressible. A value can be computed, so a bearer token or a correlation id no longer has to be injected by the service layer.
 
+Every request carries `User-Agent: orion/<version>`, so an API that requires one (GitHub's REST API refuses a request without it) works without configuration. A `user-agent` set in `headers` or on the connector replaces it.
+
 ### Body formats
 
 `json` (the default) serializes the body as JSON. `form` URL-encodes an object's entries as `application/x-www-form-urlencoded` pairs, which is what OAuth 2.0 token endpoints and form-style APIs require. Scalars encode directly, and arrays of scalars become repeated keys (`to=a&to=b`). `null` entries are skipped, so one body shape with conditionally null entries expresses optional parameters. Nested values are rejected; a bracket path like `"metadata[order_id]"` is an ordinary key. `text` sends a string body verbatim, which with an explicit `content-type` header covers XML, CSV, or any other textual payload. Each format stamps its own `content-type` (`application/json`, `application/x-www-form-urlencoded`, `text/plain; charset=utf-8`). A `content-type` set in `headers` or on the connector replaces the stamp: it changes the label, never the bytes.

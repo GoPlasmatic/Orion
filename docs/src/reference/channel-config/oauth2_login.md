@@ -187,7 +187,7 @@ So one workflow can serve every provider — `upsert on (provider, subject)`, mi
 - **Source.** From the verified `id_token` claims when there are any (OIDC); otherwise from a GET to `userinfo_url` with the access token. A provider that is neither OIDC nor has a `userinfo_url` gets no `metadata.identity` — the workflow reads `metadata.oauth.access_token` and calls the provider itself, as before.
 - **Mapping.** `identity` names the source key for each field; the defaults are the OIDC claim names (`subject: sub`, `login: preferred_username`, `name`, `email`, `picture`). GitHub overrides them: `{ "subject": "id", "login": "login", "picture": "avatar_url" }`. `subject` is always a string (a numeric `id` is coerced). A field the source omits is left out; if no `subject` resolves, no identity is stamped.
 - **`provider` and `kind`** are stamped on a [multi-provider](#several-providers-on-one-channel) channel, matching `metadata.oauth`.
-- The userinfo fetch is server-side egress: `https`, address-checked under [`allow_private_token_urls`](../configuration/oauth2-login.md), and byte-capped. An unreachable endpoint answers `503`; a rejected one, `401`.
+- The userinfo fetch is server-side egress: `https`, address-checked under [`allow_private_token_urls`](../configuration/oauth2-login.md), byte-capped, and sent with `Accept: application/json` and `User-Agent: orion/<version>` — GitHub's REST API refuses a request without a `User-Agent`, before it looks at the token. An unreachable endpoint answers `503`; a rejected one, `401`.
 
 Key the upsert on `(metadata.identity.provider, metadata.identity.subject)` and the same workflow serves GitHub, an OIDC directory, and any provider added later.
 

@@ -11,6 +11,13 @@
 /// This build. One spelling for every surface that reports or compares it.
 pub const ORION_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// What Orion calls itself on an outbound request. reqwest sends none of its
+/// own, and an API that requires one refuses the request — GitHub's REST API
+/// answers `403` before it looks at the token (#356). Set on a client, where
+/// it covers every egress built on it and still yields to a request that sets
+/// its own `user-agent`.
+pub const USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
+
 /// A parsed `requires.orion` range.
 #[derive(Debug, Clone)]
 pub struct OrionRequirement {

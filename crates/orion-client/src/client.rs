@@ -31,7 +31,11 @@ impl OrionClient {
     /// (the server's package CLI keeps its historical no-timeout behaviour
     /// for long-running bulk imports).
     pub fn with_timeout(base_url: &str, timeout: Option<Duration>) -> Result<Self, ClientError> {
-        let mut builder = reqwest::Client::builder();
+        // Identify the caller: an API behind a proxy or WAF may refuse a
+        // request that sends no `User-Agent`, and this transport is what both
+        // `orion-cli` and the server's own `package plan/apply` speak (#356).
+        let mut builder = reqwest::Client::builder()
+            .user_agent(concat!("orion-client/", env!("CARGO_PKG_VERSION")));
         if let Some(timeout) = timeout {
             builder = builder.timeout(timeout);
         }
