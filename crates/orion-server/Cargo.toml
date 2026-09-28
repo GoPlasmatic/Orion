@@ -192,7 +192,7 @@ arc-swap = "1"
 # world imports nothing — and none of `wat`, `gc`, `debug`, `cache` or the
 # backtrace symbolisers, which are what a default build's size is made of.
 # Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
-wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
+wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 # The ONNX inference engine behind `model::runtimes::tract`, reached through
 # its stable facade only: `tract-onnx`, `tract-core` and the rest of the
