@@ -226,7 +226,7 @@ prost = "0.14"
 # rdkafka-sys bundles librdkafka >= 2.13.
 rdkafka = { version = "0.39", default-features = false, features = ["tokio", "ssl-vendored"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa-swagger-ui = { version = "10", features = ["axum"] }
 
 # External DB connectors
 mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
