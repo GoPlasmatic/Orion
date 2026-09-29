@@ -22,6 +22,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AWS's front end rewrites an incoming `Content-Length: 0` to an empty value and
   such a URL could never match its own signature.
 
+### Changed
+
+- **Wasmtime 48 → 49, and the OpenTelemetry family 0.32 → 0.33.** The sandbox
+  bump is source-compatible and changes nothing a plugin author or a deployment
+  sees; Wasmtime 49 asks for Rust 1.96, below Orion's floor, so the MSRV stays
+  at **1.98**. The four OpenTelemetry crates (`opentelemetry`,
+  `opentelemetry_sdk`, `opentelemetry-otlp`, and `tracing-opentelemetry` 0.33 →
+  0.34) move as one semver unit — they do not resolve apart — and the tracing
+  setup is unchanged.
+
+- **`utoipa` 5 → 6 and `utoipa-swagger-ui` 9 → 10.** `Response::content` now
+  holds a `RefOr<Content>`, so a response body may itself be a `$ref`; Orion's
+  injected error envelope writes that map directly and wraps its one entry.
+  utoipa 6 also emits the `oneOf` of a nullable optional with the `$ref` ahead
+  of `{"type": "null"}` rather than behind it, which moves 222 lines of
+  `docs/openapi.json`. `oneOf` is a set, so no published schema changed meaning
+  and no generated client should notice.
+
+- **`redis` 1.7.0 → 1.7.1**, plus the routine `windows-sys` and CI action
+  refreshes.
+
 [#367]: https://github.com/GoPlasmatic/Orion/issues/367
 
 ## [1.11.1] - 2026-09-27
