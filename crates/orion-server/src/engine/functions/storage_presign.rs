@@ -16,7 +16,7 @@ use serde_json::Value;
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
     ConnectorCall, parse_duration_secs, require_op, resolve_duration_secs, resolve_optional_str,
-    resolve_required_str,
+    resolve_optional_u64, resolve_required_str,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -46,6 +46,7 @@ pub struct Presign {
     response_content_type: Option<String>,
     response_content_disposition: Option<String>,
     content_type: Option<String>,
+    content_length: Option<u64>,
 }
 
 #[async_trait]
@@ -86,6 +87,7 @@ impl ConnectorHandler for StoragePresignHandler {
                 ctx,
             )?,
             content_type: resolve_optional_str(input, "content_type", call.name, ctx)?,
+            content_length: content_length(input, ctx)?,
         })
     }
 
@@ -115,8 +117,9 @@ impl ConnectorHandler for StoragePresignHandler {
             .address(Some(&presign.key))
             .map_err(DataflowError::Validation)?;
 
-        // Response overrides ride the signed query; a PUT content-type is a
-        // signed header the client must then send verbatim.
+        // Response overrides ride the signed query; a PUT's content-type and
+        // content-length are signed headers the client must then send
+        // verbatim.
         let mut extra_query: Vec<(String, String)> = Vec::new();
         if let Some(v) = &presign.response_content_type {
             extra_query.push(("response-content-type".to_string(), v.clone()));
@@ -127,6 +130,9 @@ impl ConnectorHandler for StoragePresignHandler {
         let mut extra_headers: Vec<(String, String)> = Vec::new();
         if let Some(v) = &presign.content_type {
             extra_headers.push(("content-type".to_string(), v.clone()));
+        }
+        if let Some(n) = presign.content_length {
+            extra_headers.push(("content-length".to_string(), n.to_string()));
         }
 
         let amz_date = sigv4::amz_date_now();
@@ -195,14 +201,19 @@ fn presign_method(input: &Value) -> Result<PresignMethod, HandlerError> {
 }
 
 /// The per-method field rules: response overrides are GET's, the upload
-/// content-type constraint is PUT's. Naming a field on the wrong method is a
-/// misunderstanding worth refusing, not ignoring.
+/// constraints (`content_type`, `content_length`) are PUT's. Naming a field on
+/// the wrong method is a misunderstanding worth refusing, not ignoring.
 fn check_method_fields(input: &Value, method: PresignMethod) -> Result<(), HandlerError> {
     let present = |field: &str| input.get(field).is_some_and(|v| !v.is_null());
     match method {
         PresignMethod::Get if present("content_type") => Err(validation(
             "'content_type' applies to PUT only — for GET use 'response_content_type'",
         )),
+        // No GET counterpart to redirect to: a download's length is the
+        // object's, and nothing about the request can constrain it.
+        PresignMethod::Get if present("content_length") => {
+            Err(validation("'content_length' applies to PUT only"))
+        }
         PresignMethod::Put
             if present("response_content_type") || present("response_content_disposition") =>
         {
@@ -230,6 +241,32 @@ fn expires_in(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<u64, Data
     }
     Ok(secs)
 }
+
+/// The exact upload size a PUT presign binds, signed as a `content-length`
+/// header so the store refuses any other length — the size bound the
+/// after-the-fact `storage_head` check cannot make, because by then the bytes
+/// have landed (#367).
+///
+/// Zero is refused rather than signed: AWS's front end rewrites an incoming
+/// `Content-Length: 0` to an empty value, so a URL signed for zero bytes can
+/// never match its own signature. That is a URL that fails with
+/// `SignatureDoesNotMatch` and no way to tell why, which is worse than
+/// refusing it here.
+fn content_length(
+    input: &TemplatedInput,
+    ctx: &TaskContext<'_>,
+) -> Result<Option<u64>, DataflowError> {
+    match resolve_optional_u64(input, "content_length", NAME, ctx)? {
+        Some(0) => Err(named(validation(ZERO_CONTENT_LENGTH))),
+        other => Ok(other),
+    }
+}
+
+/// The zero refusal, written once: the execution path and the authoring-time
+/// validator must give the same answer, and this is the sentence they share.
+const ZERO_CONTENT_LENGTH: &str = "'content_length' must be at least 1 — a signed \
+    'Content-Length: 0' is rewritten by S3's front end to an empty value, so the \
+    signature can never match";
 
 // -- Authoring-time validation (shared with schema::validate_input) --
 
@@ -286,6 +323,23 @@ pub(super) fn validate_static_input(
         },
         // A {"var": ..} node — checked at request time.
         Some(_) => {}
+    }
+
+    // Only a literal is judged here: absent is fine, and a `{"var": ..}` node
+    // is a request-time concern. A non-number literal is the field table's
+    // TYPE_MISMATCH, not this validator's.
+    if let Some(Value::Number(n)) = obj.get("content_length") {
+        match n.as_u64() {
+            Some(0) => {
+                errors.push(("content_length", "INVALID", ZERO_CONTENT_LENGTH.to_string()));
+            }
+            Some(_) => {}
+            None => errors.push((
+                "content_length",
+                "INVALID",
+                "'content_length' must be a whole number of bytes, at least 1".to_string(),
+            )),
+        }
     }
 
     errors
@@ -346,6 +400,15 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         description: "PUT only: the Content-Type the uploader must send — a signed \
                       header, so an upload with any other type is refused by the store.",
         kind: FieldKind::String,
+        template_at: &[""],
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
+        name: "content_length",
+        description: "PUT only: the exact number of bytes the uploader must send — a \
+                      signed header, so an upload of any other size is refused by the \
+                      store. At least 1; SigV4 can bind an exact length, not a range.",
+        kind: FieldKind::Number,
         template_at: &[""],
         ..FieldSchema::DEFAULT
     },
@@ -465,6 +528,47 @@ mod tests {
         );
     }
 
+    /// The size bound is the *signature*, not a field the store reads: two
+    /// lengths over otherwise identical inputs must sign differently, or the
+    /// header is decoration and a client could send any number of bytes.
+    ///
+    /// The half this cannot assert is the store's, so it was verified by hand
+    /// against a SigV4-verifying S3 implementation (SeaweedFS): a URL signed
+    /// for 64 bytes stored a 64-byte body and answered
+    /// `403 SignatureDoesNotMatch` to 65 bytes and to 4 KiB, while the same
+    /// URL signed without a length took every size.
+    #[tokio::test]
+    async fn put_signs_an_exact_content_length() {
+        let presign = |bytes: u64| async move {
+            let out = run(
+                json!({"connector": "media", "method": "PUT", "key": "up.mp4",
+                       "content_type": "video/mp4", "content_length": bytes,
+                       "expires_in": 900, "output": "data.url"}),
+                storage_config(false),
+            )
+            .await
+            .expect("test");
+            out["url"].as_str().expect("test").to_string()
+        };
+
+        let url = presign(1_048_576).await;
+        assert!(
+            url.contains("X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost"),
+            "{url}"
+        );
+        let signature = |u: &str| {
+            u.split("X-Amz-Signature=")
+                .nth(1)
+                .expect("test")
+                .to_string()
+        };
+        assert_ne!(
+            signature(&url),
+            signature(&presign(1_048_577).await),
+            "one byte's difference must change the signature"
+        );
+    }
+
     #[tokio::test]
     async fn argument_mistakes_are_named() {
         for (input, expected) in [
@@ -495,6 +599,21 @@ mod tests {
                 "apply to GET only",
             ),
             (json!({"connector": "media", "key": "k"}), "expires_in"),
+            (
+                json!({"connector": "media", "key": "k", "expires_in": 60,
+                       "content_length": 1024}),
+                "'content_length' applies to PUT only",
+            ),
+            (
+                json!({"connector": "media", "method": "PUT", "key": "k",
+                       "expires_in": 60, "content_length": 0}),
+                "must be at least 1",
+            ),
+            (
+                json!({"connector": "media", "method": "PUT", "key": "k",
+                       "expires_in": 60, "content_length": -1}),
+                "non-negative integer",
+            ),
         ] {
             let err = run(input.clone(), storage_config(false))
                 .await
@@ -523,6 +642,37 @@ mod tests {
 
         // A {"var"} expires_in is a request-time concern.
         let obj = json!({"connector": "m", "key": "k", "expires_in": {"var": "data.ttl"}});
+        let errs = validate_static_input(obj.as_object().expect("test"));
+        assert!(errs.is_empty(), "{errs:?}");
+
+        // A literal zero length is refused at authoring time, with the same
+        // sentence the execution path gives.
+        let obj = json!({"connector": "m", "method": "PUT", "key": "k",
+                         "expires_in": 60, "content_length": 0});
+        let errs = validate_static_input(obj.as_object().expect("test"));
+        assert!(
+            errs.iter().any(|(f, c, m)| *f == "content_length"
+                && *c == "INVALID"
+                && m == ZERO_CONTENT_LENGTH),
+            "{errs:?}"
+        );
+
+        let obj = json!({"connector": "m", "method": "PUT", "key": "k",
+                         "expires_in": 60, "content_length": 1.5});
+        let errs = validate_static_input(obj.as_object().expect("test"));
+        assert!(
+            errs.iter()
+                .any(|(f, c, _)| *f == "content_length" && *c == "INVALID"),
+            "{errs:?}"
+        );
+
+        // A {"var"} length, and a valid literal one, are both clean.
+        let obj = json!({"connector": "m", "method": "PUT", "key": "k", "expires_in": 60,
+                         "content_length": {"var": "temp_data.declared_bytes"}});
+        let errs = validate_static_input(obj.as_object().expect("test"));
+        assert!(errs.is_empty(), "{errs:?}");
+        let obj = json!({"connector": "m", "method": "PUT", "key": "k", "expires_in": 60,
+                         "content_length": 1});
         let errs = validate_static_input(obj.as_object().expect("test"));
         assert!(errs.is_empty(), "{errs:?}");
     }

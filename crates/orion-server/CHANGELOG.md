@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A presigned upload can be bound by size** ([#367]). `storage_presign` takes
+  a `content_length` on a PUT and signs it as a header, the way `content_type`
+  already is, so the store refuses an upload of any other size. Without it a
+  signed PUT URL commits to the bucket, the key and the expiry and nothing else:
+  the bytes land, and on a presign-and-head connector nothing in Orion can
+  delete them — the `storage_head` size check runs one round-trip too late to
+  prevent the write. SigV4 query-string auth signs a header's *value*, so the
+  bound is an exact byte count rather than a range (a range is S3's POST-policy
+  scheme, which Orion does not implement); the uploader must send that many
+  bytes with a real `Content-Length`. Zero is refused at authoring time, because
+  AWS's front end rewrites an incoming `Content-Length: 0` to an empty value and
+  such a URL could never match its own signature.
+
+[#367]: https://github.com/GoPlasmatic/Orion/issues/367
+
 ## [1.11.1] - 2026-09-27
 
 ### Fixed

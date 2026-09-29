@@ -1827,8 +1827,37 @@ async fn test_storage_presign_workflow_validation_at_create() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
+    // #367: a bounded upload — `content_length` beside `content_type`, both
+    // signed. `storage_presign` denies unknown keys, so accepting this draft
+    // is what says the field exists at all.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "Bounded upload URL",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1", "name": "Presign",
+                    "function": {"name": "storage_presign", "input": {
+                        "connector": "models",
+                        "method": "PUT",
+                        "key": {"var": "temp_data.artifact_key"},
+                        "content_type": "application/octet-stream",
+                        "content_length": {"var": "temp_data.declared_bytes"},
+                        "expires_in": "15m",
+                        "output": "temp_data.put_url"
+                    }}
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
     // Authoring-time refusals: over-cap TTL, unknown method, a PUT-only
-    // field on GET — each a named 400.
+    // field on GET, a zero-byte bound — each a named 400.
     for (input, expected) in [
         (
             json!({"connector": "m", "key": "k", "expires_in": "30d"}),
@@ -1842,6 +1871,16 @@ async fn test_storage_presign_workflow_validation_at_create() {
             json!({"connector": "m", "key": "k", "expires_in": 60,
                    "content_type": "video/mp4"}),
             "PUT only",
+        ),
+        (
+            json!({"connector": "m", "key": "k", "expires_in": 60,
+                   "content_length": 1024}),
+            "PUT only",
+        ),
+        (
+            json!({"connector": "m", "method": "PUT", "key": "k", "expires_in": 60,
+                   "content_length": 0}),
+            "at least 1",
         ),
     ] {
         let resp = app

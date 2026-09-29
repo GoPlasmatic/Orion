@@ -39,6 +39,11 @@ self-hosted Garage / SeaweedFS / RustFS (usually with `force_path_style`).
 | `timeout_ms` | integer | no | `10000` | `storage_head` timeout; presigning makes no network call |
 | `operations` | object | no | all allowed | `presign_get` / `presign_put` / `head` — `presign_put: false` makes a media connector read-only |
 
+`presign_put` is a whole-connector switch: whether a workflow may hand out a
+write URL at all. What one such URL permits is the task's to say — see
+[Bounding an upload](../functions/storage_presign.md#bounding-an-upload) for the
+size and type bounds `storage_presign` signs into it.
+
 `POST /api/v1/admin/connectors/{name}/test` performs one signed HEAD of the
 bucket. There is no retry field: presigning is local computation, and
 `storage_head` follows the estate rule that only `http` connectors retry.
