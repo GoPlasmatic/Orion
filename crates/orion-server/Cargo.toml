@@ -192,7 +192,7 @@ arc-swap = "1"
 # world imports nothing — and none of `wat`, `gc`, `debug`, `cache` or the
 # backtrace symbolisers, which are what a default build's size is made of.
 # Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
-wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
+wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 # The ONNX inference engine behind `model::runtimes::tract`, reached through
 # its stable facade only: `tract-onnx`, `tract-core` and the rest of the
@@ -225,8 +225,8 @@ prost = "0.14"
 # where the configure build cannot run; fold it back into one line once
 # rdkafka-sys bundles librdkafka >= 2.13.
 rdkafka = { version = "0.39", default-features = false, features = ["tokio", "ssl-vendored"] }
-utoipa = { version = "5", features = ["axum_extras", "chrono"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
+utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "10", features = ["axum"] }
 
 # External DB connectors
 mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
@@ -248,10 +248,10 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", 
 aws-lc-rs = "1"
 
 # OpenTelemetry
-opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["rt-tokio", "trace"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace"] }
-tracing-opentelemetry = { version = "0.33", default-features = false }
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 
 # TCP socket configuration
 socket2 = "0.6"

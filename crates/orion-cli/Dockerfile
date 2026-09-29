@@ -38,7 +38,7 @@ ENV GIT_HASH=${GIT_HASH}
 RUN cargo build --release --locked -p orion-cli
 
 # Runtime stage
-FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
 LABEL org.opencontainers.image.title="Orion CLI" \
       org.opencontainers.image.description="Command-line interface for the Orion declarative services runtime" \

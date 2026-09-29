@@ -102,7 +102,7 @@ fn fill_error_content(operation: &mut Operation) {
         {
             response
                 .content
-                .insert("application/json".to_string(), error_content());
+                .insert("application/json".to_string(), RefOr::T(error_content()));
         }
     }
 }

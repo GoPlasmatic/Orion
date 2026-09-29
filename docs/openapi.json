@@ -9195,11 +9195,11 @@
               "load_issues": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/EngineLoadIssues",
                     "description": "What that generation could not load. `None` from a server that\npredates the field."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -9242,11 +9242,11 @@
               "capabilities": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/EngineCapabilities",
                     "description": "What this node is configured to run. `None` from a server that\npredates the field."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -9266,11 +9266,11 @@
               "load_issues": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/EngineLoadIssues",
                     "description": "What that generation could not load. `None` from a server that\npredates the field."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -9452,11 +9452,11 @@
               "health": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/ModelHealth",
                     "description": "This node's residency for the version, on the single-entity read."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -9492,11 +9492,11 @@
               "stats": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/ModelStats",
                     "description": "Present as `null` until admission passes."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -9533,11 +9533,11 @@
               "current": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/PackageReceiptResponse",
                     "description": "The newest `applied` receipt — what this deployment currently runs.\n`null` while every receipt is still `staged`."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -9585,11 +9585,11 @@
               "inventory": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/PackageInventory",
                     "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -9705,11 +9705,11 @@
               "health": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/PluginHealth",
                     "description": "This node's load state for the version, on the single-entity read."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               },
@@ -10293,11 +10293,11 @@
                 "health": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/ModelHealth",
                       "description": "This node's residency for the version, on the single-entity read."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -10333,11 +10333,11 @@
                 "stats": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/ModelStats",
                       "description": "Present as `null` until admission passes."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -10408,11 +10408,11 @@
                 "health": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/PluginHealth",
                       "description": "This node's load state for the version, on the single-entity read."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -10797,11 +10797,11 @@
           "load_issues": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/EngineLoadIssues",
                 "description": "What that generation could not load. `None` from a server that\npredates the field."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -10835,11 +10835,11 @@
           "capabilities": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/EngineCapabilities",
                 "description": "What this node is configured to run. `None` from a server that\npredates the field."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -10859,11 +10859,11 @@
           "load_issues": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/EngineLoadIssues",
                 "description": "What that generation could not load. `None` from a server that\npredates the field."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11375,11 +11375,11 @@
           "health": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ModelHealth",
                 "description": "This node's residency for the version, on the single-entity read."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11415,11 +11415,11 @@
           "stats": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ModelStats",
                 "description": "Present as `null` until admission passes."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11524,11 +11524,11 @@
               "head": {
                 "oneOf": [
                   {
-                    "type": "null"
-                  },
-                  {
                     "$ref": "#/components/schemas/ArtifactHead",
                     "description": "Present when the reference resolved and the object answered a HEAD."
+                  },
+                  {
+                    "type": "null"
                   }
                 ]
               }
@@ -11548,11 +11548,11 @@
           "current": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/PackageReceiptResponse",
                 "description": "The newest `applied` receipt — what this deployment currently runs.\n`null` while every receipt is still `staged`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11627,11 +11627,11 @@
           "inventory": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/PackageInventory",
                 "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -12100,11 +12100,11 @@
                 "health": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/ModelHealth",
                       "description": "This node's residency for the version, on the single-entity read."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -12140,11 +12140,11 @@
                 "stats": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/ModelStats",
                       "description": "Present as `null` until admission passes."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -12212,11 +12212,11 @@
                 "inventory": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/PackageInventory",
                       "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -12310,11 +12310,11 @@
                 "health": {
                   "oneOf": [
                     {
-                      "type": "null"
-                    },
-                    {
                       "$ref": "#/components/schemas/PluginHealth",
                       "description": "This node's load state for the version, on the single-entity read."
+                    },
+                    {
+                      "type": "null"
                     }
                   ]
                 },
@@ -12691,11 +12691,11 @@
           "health": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/PluginHealth",
                 "description": "This node's load state for the version, on the single-entity read."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -12879,11 +12879,11 @@
           "inventory": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/PackageInventory",
                 "description": "What this version carries. Stored on insert and on a staged re-put;\non an applied version it only fills a receipt recorded without one,\nsince the hash is equal and so is what the version carried."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -13278,10 +13278,10 @@
           "connector_type": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ConnectorType"
               },
               {
-                "$ref": "#/components/schemas/ConnectorType"
+                "type": "null"
               }
             ]
           },
@@ -13315,10 +13315,10 @@
           "artifact": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ModelArtifactRef"
               },
               {
-                "$ref": "#/components/schemas/ModelArtifactRef"
+                "type": "null"
               }
             ]
           },
