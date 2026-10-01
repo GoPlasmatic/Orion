@@ -12,7 +12,8 @@ use super::connector_helpers::{
     to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::FieldSource;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::engine::HandlerError;
@@ -59,7 +60,7 @@ impl DbRead {
     pub(super) fn parse_statement(
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &(impl FieldSource + ?Sized),
     ) -> Result<Self, HandlerError> {
         Ok(Self {
             query: call.require_str(input, "query")?.to_string(),
@@ -111,7 +112,7 @@ impl ConnectorHandler for DbReadHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         DbRead::parse_read(call, input, ctx)
     }

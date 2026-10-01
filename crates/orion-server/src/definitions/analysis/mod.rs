@@ -120,13 +120,17 @@ pub struct StepFacts {
     ///
     /// [`Reads::uncertain`]: dataflow::Reads::uncertain
     pub writes_uncertain: bool,
+    /// Paths this step reads by keeping what is there: the targets of an
+    /// appending `map` mapping (`dataflow::task_kept_reads`).
+    pub kept: Reads,
 }
 
 impl StepFacts {
     /// Every read this step makes that the walk could name, with whether the
-    /// list is complete: the condition's and each input expression's.
+    /// list is complete: the condition's, each input expression's, and the
+    /// targets it appends to.
     pub fn reads(&self) -> Reads {
-        let mut out = Reads::default();
+        let mut out = self.kept.clone();
         for expr in self
             .condition
             .iter()
@@ -331,6 +335,10 @@ fn walk(
             // Filled in after the members are walked.
             StepKind::Group => (Vec::new(), false),
         };
+        let kept = match kind {
+            StepKind::Task => dataflow::task_kept_reads(node),
+            StepKind::Group => Reads::default(),
+        };
         let me = out.len();
         out.push(StepFacts {
             path: path.clone(),
@@ -347,6 +355,7 @@ fn walk(
             for_each_over,
             writes,
             writes_uncertain,
+            kept,
         });
         if kind == StepKind::Group
             && let Some(members) = node.get("tasks")

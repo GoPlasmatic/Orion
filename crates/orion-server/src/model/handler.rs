@@ -75,7 +75,7 @@ use super::runtimes::{LoadError, LoadedModel, ModelRuntime, ModelRuntimes};
 use crate::config::ModelsConfig;
 use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::engine::HandlerError;
-use crate::engine::functions::templated_input::TemplatedInput;
+use crate::engine::functions::templated_input::{TemplatedInput, with_scope};
 use crate::runtime::RuntimeHandle;
 
 /// This handler's name in metrics, profiles and error messages.
@@ -476,6 +476,16 @@ impl ModelInferHandler {
     async fn run(&self, ctx: &mut TaskContext<'_>, infer: &InferInput) -> Result<Labels, Refused> {
         let input = &infer.fields;
         let started = Instant::now();
+        // The three fields that read the message, against one view of it.
+        // Resolved together, consumed below in the order they always were,
+        // so the error a call reports for a bad field is unchanged.
+        let (model_field, timeout_field, root_field) = with_scope(ctx, |scope| {
+            (
+                input.resolve_owned("model", scope),
+                input.value_of("timeout_ms", NAME, scope),
+                input.resolve_owned("input", scope),
+            )
+        });
         // One set and one engine for this call: the entry, its adapters and
         // the engine they were compiled on, off one load of the generation
         // on a node, or the offline set on the engine that is running us.
@@ -503,7 +513,7 @@ impl ModelInferHandler {
         };
 
         // 1. The model.
-        let model_id = match input.resolve_owned("model", ctx) {
+        let model_id = match model_field {
             None => return Err(caller_input(None, "requires 'model' (string)".to_string())),
             Some(Err(e)) => return Err(field_refused("model", e)),
             Some(Ok(value)) => match value.as_str() {
@@ -573,7 +583,7 @@ impl ModelInferHandler {
         // has to divide it per message, so each call spends its own share
         // and times itself out rather than starving the ones behind it.
         // The rest of the task's own fields are read as written.
-        let timeout_ms = match input.value_of("timeout_ms", NAME, ctx) {
+        let timeout_ms = match timeout_field {
             None | Some(Ok(Value::Null)) => None,
             Some(Err(e)) => {
                 let mut refused = field_refused("timeout_ms", e);
@@ -635,7 +645,7 @@ impl ModelInferHandler {
 
         // 3. The adapters, on the generation's engine, before anything is
         // loaded: a message that does not marshal costs no cold load.
-        let root = match input.resolve_owned("input", ctx) {
+        let root = match root_field {
             None => {
                 return Err(caller_input(
                     Some(&labels),

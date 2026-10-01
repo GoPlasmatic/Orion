@@ -1,0 +1,20 @@
+{
+  "workflow_id": "append",
+  "name": "append",
+  "tasks": [
+    {
+      "id": "log",
+      "name": "Log",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.log", "logic": [] },
+            { "path": "data.log", "logic": { "var": "data.first" }, "mode": "append" },
+            { "path": "data.log", "logic": { "var": "data.rest" }, "mode": "extend" }
+          ]
+        }
+      }
+    }
+  ]
+}

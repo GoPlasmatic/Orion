@@ -134,18 +134,29 @@ pub async fn execute_admitted(
     metadata: &Value,
     opts: ExecOpts<'_>,
 ) -> Execution {
-    // Per-write capture is on only for a traced run. With it on, every write
-    // deep-copies its old and new value into the audit trail, and those copies
-    // stay on the message until the run returns — so a looping workflow holds
-    // sweeps × writes × value size (#350; about 65 bytes per number written).
-    // Nothing on this path reads `AuditTrail::changes`; the trace's per-step
-    // diff does, and `TraceOptions { changes: true }` only reports what was
-    // captured, it never turns capture on. The audit entries themselves are
-    // recorded either way.
+    // Per-write capture and the audit trail are kept only for a traced run.
+    // With capture on, every write deep-copies its old and new value into the
+    // audit trail, and those copies stay on the message until the run returns
+    // — so a looping workflow holds sweeps × writes × value size (#350; about
+    // 65 bytes per number written). The entries themselves cost one per task
+    // per sweep, and a `for_each` used to copy them into every element (#373).
+    //
+    // Nothing on this path reads `Message::audit_trail`. The trace's per-step
+    // diff does: it is read from each task's own entry, so a traced run keeps
+    // them all (`AuditMode::Full`), and `TraceOptions { changes: true }` only
+    // reports what was captured, it never turns capture on. An untraced run
+    // keeps none (`AuditMode::Off`); status classification, the error records,
+    // `metadata.progress` and halting do not depend on the trail.
+    let traced = opts.capture.is_some();
     let mut builder = dataflow_rs::Message::builder()
         .payload_json(data)
         .metadata_json(metadata)
-        .capture_changes(opts.capture.is_some());
+        .capture_changes(traced)
+        .audit_mode(if traced {
+            dataflow_rs::AuditMode::Full
+        } else {
+            dataflow_rs::AuditMode::Off
+        });
     if let Some(bucket) = opts.routing_bucket {
         builder = builder.routing_bucket(bucket);
     }
@@ -218,10 +229,10 @@ mod tests {
         );
     }
 
-    /// #350: a looping workflow run without a trace keeps one audit entry per
-    /// task per sweep but no value copies, so its memory does not grow with the
-    /// sweeps. A traced run still captures them — its per-step diff is built
-    /// from them.
+    /// #350, #373: a looping workflow run without a trace keeps no audit
+    /// entries and no value copies, so its memory does not grow with the
+    /// sweeps. A traced run still keeps both: its per-step diff is built from
+    /// them.
     #[tokio::test]
     async fn only_a_traced_run_captures_per_write_changes() {
         let workflow = dataflow_rs::Workflow::from_json(
@@ -240,11 +251,13 @@ mod tests {
 
         let untraced = execute_admitted(&engine, "c", &data, &metadata, ExecOpts::default()).await;
         assert!(untraced.outcome.is_ok());
-        let trail = untraced.message.audit_trail();
-        assert_eq!(trail.len(), 3, "one entry per sweep is still recorded");
         assert!(
-            trail.iter().all(|entry| entry.changes.is_empty()),
-            "an untraced run holds no value copies"
+            untraced.message.audit_trail().is_empty(),
+            "an untraced run keeps no audit entries, so a loop holds nothing per sweep"
+        );
+        assert!(
+            untraced.message.temp_data().get("seen").is_some(),
+            "the writes themselves still land"
         );
 
         let traced = execute_admitted(

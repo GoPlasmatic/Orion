@@ -35,6 +35,16 @@
 //! scalar fields have no such keys, so they carry the change and the documents
 //! do not.
 //!
+//! **One view of the message per call.** Resolving a template views the
+//! message context into the evaluation arena first, so a handler resolving
+//! k fields one at a time paid for k views. dataflow-rs 3.15 lets one view
+//! serve several resolutions ([`TaskContext::with_view`]). Every resolver
+//! here therefore takes a [`FieldSource`]: the [`TaskContext`] itself, which
+//! views per field as before, or a [`Scope`], which carries a view built once
+//! by [`with_scope`]. The `Connector` wrapper runs a handler's whole
+//! message-dependent prologue in one scope, so every connector handler gets
+//! this without asking for it.
+//!
 //! [`connector_helpers::resolve_value`]: super::connector_helpers::resolve_value
 //! [`FieldSchema::template_at`]: super::schema::FieldSchema::template_at
 
@@ -43,11 +53,76 @@ use std::collections::HashMap;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::{Template, TemplateCompiler};
+use dataflow_rs::{ContextView, Template, TemplateCompiler};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use super::registry::FieldSpec;
+
+/// Where a template field is resolved from.
+///
+/// The [`TaskContext`] resolves each template against a view of the message
+/// built for that one call; a [`Scope`] resolves against the view it was
+/// built with. The values and the errors are the same either way.
+pub trait FieldSource {
+    /// The task context the fields belong to, for the reads that are not
+    /// template evaluations: the `{"var": …}` fold of a `resolvable` field,
+    /// the channel, the message.
+    fn task(&self) -> &TaskContext<'_>;
+
+    /// `template`'s value for this message.
+    ///
+    /// # Errors
+    ///
+    /// As [`Template::resolve`].
+    fn resolve(&self, template: &Template) -> Result<OwnedDataValue, DataflowError>;
+}
+
+impl FieldSource for TaskContext<'_> {
+    fn task(&self) -> &TaskContext<'_> {
+        self
+    }
+
+    fn resolve(&self, template: &Template) -> Result<OwnedDataValue, DataflowError> {
+        template.resolve(self)
+    }
+}
+
+/// A task context with one view of its message, shared by every field
+/// resolved through it. Built by [`with_scope`]; it derefs to the
+/// [`TaskContext`], so code reading the message directly is unchanged.
+pub struct Scope<'s, 't> {
+    ctx: &'s TaskContext<'t>,
+    view: &'s ContextView<'s>,
+}
+
+impl<'t> std::ops::Deref for Scope<'_, 't> {
+    type Target = TaskContext<'t>;
+
+    fn deref(&self) -> &Self::Target {
+        self.ctx
+    }
+}
+
+impl FieldSource for Scope<'_, '_> {
+    fn task(&self) -> &TaskContext<'_> {
+        self.ctx
+    }
+
+    fn resolve(&self, template: &Template) -> Result<OwnedDataValue, DataflowError> {
+        template.resolve_in(self.view)
+    }
+}
+
+/// Run `f` with one view of `ctx`'s message, so every template it resolves
+/// through the [`Scope`] shares it.
+///
+/// Synchronous, like [`TaskContext::with_view`]: the view lives in the
+/// worker's evaluation arena and cannot cross an `.await`. Resolve inside,
+/// then do the I/O with what came out.
+pub fn with_scope<R>(ctx: &TaskContext<'_>, f: impl FnOnce(&Scope<'_, '_>) -> R) -> R {
+    ctx.with_view(|view| f(&Scope { ctx, view }))
+}
 
 /// A task's `input` as authored, plus one compiled [`Template`] per field the
 /// registry marks as an expression.
@@ -183,11 +258,11 @@ impl TemplatedInput {
     pub fn template_value(
         &self,
         field: &str,
-        ctx: &TaskContext<'_>,
+        ctx: &(impl FieldSource + ?Sized),
     ) -> Option<Result<Value, DataflowError>> {
         self.templates
             .get(field)
-            .map(|template| template.resolve(ctx).map(|v| Value::from(&v)))
+            .map(|template| ctx.resolve(template).map(|v| Value::from(&v)))
     }
 
     /// The authored value of one field, as written. Never evaluated — use
@@ -215,11 +290,11 @@ impl TemplatedInput {
     pub fn resolve_owned(
         &self,
         field: &str,
-        ctx: &TaskContext<'_>,
+        ctx: &(impl FieldSource + ?Sized),
     ) -> Option<Result<OwnedDataValue, DataflowError>> {
         let raw = self.raw.get(field)?;
         Some(match self.templates.get(field) {
-            Some(template) => template.resolve(ctx),
+            Some(template) => ctx.resolve(template),
             None => Ok(OwnedDataValue::from(raw)),
         })
     }
@@ -247,13 +322,16 @@ impl TemplatedInput {
         &self,
         field: &str,
         handler: &str,
-        ctx: &TaskContext<'_>,
+        ctx: &(impl FieldSource + ?Sized),
     ) -> Option<Result<Value, DataflowError>> {
         let raw = self.raw.get(field)?;
         Some(match self.templates.get(field) {
-            Some(template) => template.resolve(ctx).map(|v| Value::from(&v)),
+            Some(template) => ctx.resolve(template).map(|v| Value::from(&v)),
             None => Ok(super::connector_helpers::resolve_declared_field(
-                handler, field, raw, ctx,
+                handler,
+                field,
+                raw,
+                ctx.task(),
             )),
         })
     }
@@ -275,11 +353,11 @@ impl TemplatedInput {
         field: &str,
         member: &str,
         _handler: &str,
-        ctx: &TaskContext<'_>,
+        ctx: &(impl FieldSource + ?Sized),
     ) -> Option<Result<Value, DataflowError>> {
         let raw = self.raw.get(field)?.get(member)?;
         Some(match self.templates.get(&format!("{field}.{member}")) {
-            Some(template) => template.resolve(ctx).map(|v| Value::from(&v)),
+            Some(template) => ctx.resolve(template).map(|v| Value::from(&v)),
             // Never compiled — a hand-built input in a test. A literal is what
             // it would evaluate to.
             None => Ok(raw.clone()),

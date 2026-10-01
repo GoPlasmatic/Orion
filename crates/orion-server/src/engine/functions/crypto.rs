@@ -30,6 +30,7 @@ use sha2::{Digest, Sha256, Sha512};
 
 use super::connector_helpers::{apply_output, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::FieldSource;
 use super::templated_input::TemplatedInput;
 use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
 use crate::engine::{ErrorClass, HandlerError};
@@ -196,7 +197,10 @@ fn byte_codec(input: &Value, field: &str) -> Result<Option<Codec>, HandlerError>
 /// The byte model of #259, applied to `data`: strings per `input_encoding`
 /// (UTF-8 default), any other JSON value as its compact serialization — key
 /// order preserved — so "sign this payload" is first-class and deterministic.
-fn data_bytes(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
+fn data_bytes(
+    input: &TemplatedInput,
+    ctx: &(impl FieldSource + ?Sized),
+) -> Result<Vec<u8>, HandlerError> {
     let Some(data) = input.value_of("data", NAME, ctx) else {
         return Err(validation("this op requires 'data'"));
     };

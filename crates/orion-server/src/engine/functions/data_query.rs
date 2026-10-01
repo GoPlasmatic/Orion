@@ -23,7 +23,7 @@ use super::connector_helpers::{
     timed_query, to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
@@ -94,7 +94,7 @@ impl ConnectorHandler for DataQueryHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let query = input
             .get("query")

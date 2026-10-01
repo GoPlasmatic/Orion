@@ -11,7 +11,7 @@ use super::connector_helpers::{
     to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::engine::HandlerError;
@@ -44,7 +44,7 @@ impl ConnectorHandler for CacheDeleteHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         Ok(resolve_required_str_list(
             input, "keys", call.name, ctx, MAX_KEYS,

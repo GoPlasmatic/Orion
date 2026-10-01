@@ -10,7 +10,7 @@ use super::connector_helpers::{
     to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use dataflow_rs::engine::error::DataflowError;
@@ -39,7 +39,7 @@ impl ConnectorHandler for CacheReadHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, crate::engine::HandlerError> {
         // Exactly one of the two; `validate_static_input` says so at authoring
         // time, and this is the same rule for a hand-built input.

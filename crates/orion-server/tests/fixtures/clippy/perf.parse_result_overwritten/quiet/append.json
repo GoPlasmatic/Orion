@@ -1,0 +1,23 @@
+{
+  "workflow_id": "append",
+  "name": "append",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "log" } }
+    },
+    {
+      "id": "m",
+      "name": "M",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.log", "logic": { "var": "metadata.entry" }, "mode": "append" }
+          ]
+        }
+      }
+    }
+  ]
+}

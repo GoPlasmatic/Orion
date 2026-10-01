@@ -503,7 +503,8 @@ impl Rule for MappingOverwritten {
          mapping and of the overwriting one are literal paths that do not overlap the \
          written path (prefix in either direction).\n\n\
          Silent when: any mapping between them, or the overwriting one, reads the path or \
-         anything inside or above it, or has a computed or element-scoped read. \
+         anything inside or above it, or has a computed or element-scoped read. An \
+         `append` or `extend` mapping reads its own path, since it keeps what is there. \
          `data.x = 1` followed by `data.x = data.x + 1` is a pattern, not a mistake."
     }
 
@@ -524,9 +525,19 @@ impl Rule for MappingOverwritten {
                     .iter()
                     .map(|m| m.get("path").and_then(Value::as_str))
                     .collect();
+                // An appending mapping keeps what is at its path, so it reads
+                // it as surely as its logic reads anything.
                 let logic_reads: Vec<_> = mappings
                     .iter()
-                    .map(|m| m.get("logic").map(reads).unwrap_or_default())
+                    .map(|m| {
+                        let mut r = m.get("logic").map(reads).unwrap_or_default();
+                        if crate::definitions::analysis::dataflow::mapping_keeps_target(m)
+                            && let Some(path) = m.get("path").and_then(Value::as_str)
+                        {
+                            r.paths.push(path.to_string());
+                        }
+                        r
+                    })
                     .collect();
                 for i in 0..mappings.len() {
                     let Some(path) = paths[i] else {

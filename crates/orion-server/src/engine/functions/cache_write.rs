@@ -11,7 +11,7 @@ use super::connector_helpers::{
     to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::engine::HandlerError;
@@ -46,7 +46,7 @@ impl ConnectorHandler for CacheWriteHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let key = resolve_required_str(input, "key", call.name, ctx)?;
         let value = match input.get("value") {

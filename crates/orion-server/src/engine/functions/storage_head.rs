@@ -18,7 +18,7 @@ use serde_json::json;
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{ConnectorCall, require_op, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::{ConnectorRegistry, sigv4};
 use crate::engine::HandlerError;
 
@@ -45,7 +45,7 @@ impl ConnectorHandler for StorageHeadHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         Ok(resolve_required_str(input, "key", call.name, ctx)?)
     }

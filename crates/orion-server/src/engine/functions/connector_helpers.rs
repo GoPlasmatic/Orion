@@ -6,7 +6,7 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
-use super::templated_input::TemplatedInput;
+use super::templated_input::{FieldSource, TemplatedInput};
 use crate::connector::ConnectorTarget;
 use crate::connector::{
     ConnectorConfig, ConnectorRegistry, EsConnectorConfig, HttpOperationGates, OperationGates,
@@ -204,7 +204,7 @@ impl<'a> ConnectorCall<'a> {
     pub fn begin<I: super::connector_handler::ConnectorInput>(
         name: &'static str,
         input: &'a I,
-        ctx: &TaskContext<'_>,
+        ctx: &super::templated_input::Scope<'_, '_>,
     ) -> Result<Self, DataflowError> {
         Ok(Self {
             name,
@@ -363,7 +363,7 @@ where
 pub fn resolve_output_path(
     input: &TemplatedInput,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<String, DataflowError> {
     match input.value_of("output", handler_name, ctx) {
         None => Ok("data".to_string()),
@@ -692,7 +692,7 @@ pub fn resolve_declared_field(
 pub fn resolve_params(
     input: &TemplatedInput,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Map<String, Value> {
     match input.value_of("params", handler_name, ctx) {
         Some(Ok(Value::Object(map))) => map,
@@ -709,7 +709,7 @@ pub fn resolve_required_str(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<String, DataflowError> {
     let Some(value) = input.value_of(field, handler_name, ctx) else {
         return Err(DataflowError::Validation(format!(
@@ -756,7 +756,7 @@ pub fn resolve_required_str_list(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
     max: usize,
 ) -> Result<Vec<String>, DataflowError> {
     let Some(value) = input.value_of(field, handler_name, ctx) else {
@@ -819,7 +819,7 @@ pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
 /// applies it rather than being handed one.
 pub fn resolve_duration_secs(
     input: &TemplatedInput,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
     handler_name: &str,
     field: &str,
 ) -> Result<Option<u64>, DataflowError> {
@@ -854,7 +854,7 @@ pub fn resolve_optional_str(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<Option<String>, DataflowError> {
     match input.value_of(field, handler_name, ctx) {
         None => Ok(None),
@@ -880,7 +880,7 @@ pub fn resolve_bool_or(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
     default: bool,
 ) -> Result<bool, DataflowError> {
     match input.value_of(field, handler_name, ctx) {
@@ -905,7 +905,7 @@ pub fn resolve_bool(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<bool, DataflowError> {
     resolve_bool_or(input, field, handler_name, ctx, false)
 }
@@ -920,7 +920,7 @@ pub fn resolve_optional_u64(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<Option<u64>, DataflowError> {
     match input.value_of(field, handler_name, ctx) {
         None => Ok(None),
@@ -949,7 +949,7 @@ pub fn resolve_optional_i64(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<Option<i64>, DataflowError> {
     match input.value_of(field, handler_name, ctx) {
         None => Ok(None),
@@ -976,7 +976,7 @@ pub fn resolve_optional_i64(
 pub fn resolve_bind_params(
     input: &TemplatedInput,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<Vec<Value>, DataflowError> {
     match input.value_of("params", handler_name, ctx) {
         None => Ok(Vec::new()),
@@ -1040,7 +1040,7 @@ pub fn decode_failure(
 pub fn resolve_numeric_as(
     input: &TemplatedInput,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<crate::connector::sql_decode::NumericAs, DataflowError> {
     use crate::connector::sql_decode::NumericAs;
     match resolve_optional_str(input, "numeric_as", handler_name, ctx)? {
@@ -1063,7 +1063,7 @@ pub fn resolve_numeric_as(
 pub fn resolve_binary_as(
     input: &TemplatedInput,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<crate::connector::sql_decode::BinaryAs, DataflowError> {
     use crate::connector::sql_decode::BinaryAs;
     match resolve_optional_str(input, "binary_as", handler_name, ctx)? {

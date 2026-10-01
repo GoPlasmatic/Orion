@@ -88,7 +88,7 @@ harness = true
 # ceiling until `engine.ops_budget` is set; a ceiling crossed in a *condition*
 # fails closed to `false` with no error channel, which is why the setting is
 # documented next to that caveat rather than defaulted on.
-dataflow-rs = { version = "3.14.0", features = ["all-operators", "tensor", "budget"] }
+dataflow-rs = { version = "3.15.0", features = ["all-operators", "tensor", "budget"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went

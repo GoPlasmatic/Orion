@@ -29,7 +29,8 @@ use super::connector_helpers::{
     ConnectorCall, resolve_optional_str, resolve_value, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::FieldSource;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::smtp_pool::{PooledClient, SmtpPoolCache};
 use crate::connector::{ConnectorRegistry, SmtpConnectorConfig};
 use crate::engine::{ErrorClass, HandlerError};
@@ -91,7 +92,7 @@ impl ConnectorHandler for SendEmailHandler {
         &self,
         _call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         // The literal-field check first: no property of the message can change
         // whether `headers` names a protected header (F58).
@@ -428,7 +429,7 @@ fn check_headers_field(input: &Value) -> Result<(), HandlerError> {
 /// the caller chose.
 fn resolve_headers(
     input: &TemplatedInput,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<Vec<(String, String)>, HandlerError> {
     let Some(Value::Object(map)) = input.get("headers") else {
         return Ok(Vec::new());

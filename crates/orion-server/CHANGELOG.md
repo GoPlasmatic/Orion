@@ -72,6 +72,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **dataflow-rs 3.14 → 3.15, datalogic-rs 5.6 → 5.7.1, datavalue-rs 0.3 →
+  0.3.1.** The release carries the engine fixes Orion asked for from the
+  turn-loop profiling, and Orion takes each one up:
+
+  - **An untraced run keeps no audit trail.** `execute_admitted` builds every
+    serving message with `AuditMode::Off` unless the run is traced. Nothing on
+    the serving path reads `Message::audit_trail`, and a `loop` workflow no
+    longer holds one entry per task per sweep. A traced run keeps the full
+    trail, because its per-step diff is read from it, and the offline `test`
+    runner keeps it because a case file can assert on it.
+  - **A handler views the message once per call, not once per field.** Every
+    connector handler's prologue (`begin` and `parse`) now resolves its
+    expression fields against one view of the message (`TaskContext::with_view`),
+    through a new `templated_input::Scope`. So do a plugin function's declared
+    fields and `model_infer`'s `model`, `timeout_ms` and `input`. Upstream
+    measured five fields against a 2 MB context at 174 µs per call resolved
+    one by one and 36 µs in one view.
+  - **Evaluating against the message no longer copies its strings and
+    tensors.** Leaves are borrowed into the arena, only arrays and objects are
+    allocated, so a large tensor in the message no longer costs a copy per
+    condition or templated field.
+  - **`map` can append in place.** A mapping takes `"mode": "append"` or
+    `"extend"` to push onto the array at its `path`, costing the size of the
+    entry rather than the size of the array, where the `merge` idiom made a
+    log kept across a loop quadratic. The clippy analysis treats such a
+    mapping as reading its target, so `correctness.mapping_overwritten` and
+    `perf.parse_result_overwritten` do not call the value before it dead. The
+    [`map`](https://docs.goplasmatic.io/reference/functions/map.html) reference
+    now documents `mode`, `on_null` and `unset`.
+  - **A `for_each` element no longer copies the message's audit trail and
+    errors.**
+  - **`engine.ops_budget` counts are higher for collection and string
+    operators.** `merge`, `in`, `keys`/`values`/`entries`, `sort`,
+    `distinct`, `group_by`, `cat`, `split` and deep equality now charge per
+    item, or per 64 bytes of string, so a `merge` accumulator is priced for the
+    quadratic work it does. A ceiling sized tightly against an earlier release
+    on rules built from these operators may need re-measuring.
+  - **`{"var": [computed_path, default]}` returns its default when the path
+    misses.** The default was read as a second path segment when the path was
+    an expression, so such a `var` answered `null` either way.
+
 - **Wasmtime 48 → 49, and the OpenTelemetry family 0.32 → 0.33.** The sandbox
   bump is source-compatible and changes nothing a plugin author or a deployment
   sees; Wasmtime 49 asks for Rust 1.96, below Orion's floor, so the MSRV stays

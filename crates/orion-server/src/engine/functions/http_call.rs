@@ -10,6 +10,7 @@ use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{ConnectorCall, require_method_allowed};
 use super::http_common::{self, build_url};
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::Scope;
 use crate::connector::ConnectorRegistry;
 use crate::engine::HandlerError;
 
@@ -55,7 +56,7 @@ impl ConnectorHandler for HttpCallHandler {
         &self,
         _call: &ConnectorCall<'_>,
         input: &HttpCallConfig,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         // The format axes are values-as-data on dataflow-rs's config; this
         // parse is the value table that interprets them. Workflow validation

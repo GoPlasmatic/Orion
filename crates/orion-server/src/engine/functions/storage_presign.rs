@@ -19,7 +19,8 @@ use super::connector_helpers::{
     resolve_optional_u64, resolve_required_str,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::FieldSource;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::{ConnectorRegistry, sigv4};
 use crate::engine::{ErrorClass, HandlerError};
 
@@ -64,7 +65,7 @@ impl ConnectorHandler for StoragePresignHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         // Both read literal fields, and both are shared with the
         // authoring-time validator, which has only the authored JSON.
@@ -227,7 +228,10 @@ fn check_method_fields(input: &Value, method: PresignMethod) -> Result<(), Handl
 
 /// The TTL: integer seconds or a single-unit duration string, bounded by
 /// S3's own 7-day cap.
-fn expires_in(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<u64, DataflowError> {
+fn expires_in(
+    input: &TemplatedInput,
+    ctx: &(impl FieldSource + ?Sized),
+) -> Result<u64, DataflowError> {
     let Some(secs) = resolve_duration_secs(input, ctx, NAME, "expires_in")? else {
         return Err(named(validation(
             "requires 'expires_in' (seconds, or \"<n>s|m|h|d\")",
@@ -254,7 +258,7 @@ fn expires_in(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<u64, Data
 /// refusing it here.
 fn content_length(
     input: &TemplatedInput,
-    ctx: &TaskContext<'_>,
+    ctx: &(impl FieldSource + ?Sized),
 ) -> Result<Option<u64>, DataflowError> {
     match resolve_optional_u64(input, "content_length", NAME, ctx)? {
         Some(0) => Err(named(validation(ZERO_CONTENT_LENGTH))),

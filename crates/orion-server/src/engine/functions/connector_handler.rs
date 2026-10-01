@@ -50,7 +50,7 @@ use serde_json::Value;
 use super::connector_helpers::{
     ConnectorCall, apply_output, require_connector, require_str_field, resolve_output_path,
 };
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput, with_scope};
 use crate::connector::{ConnectorRegistry, ConnectorTarget};
 use crate::engine::HandlerError;
 
@@ -80,8 +80,7 @@ pub trait ConnectorInput: DeserializeOwned + Send + Sync + 'static {
     /// # Errors
     ///
     /// [`DataflowError`] when the expression fails to evaluate.
-    fn output(&self, handler: &'static str, ctx: &TaskContext<'_>)
-    -> Result<String, DataflowError>;
+    fn output(&self, handler: &'static str, ctx: &Scope<'_, '_>) -> Result<String, DataflowError>;
 
     /// Compile this input's expression fields, once at engine build.
     ///
@@ -108,11 +107,7 @@ impl ConnectorInput for TemplatedInput {
         require_str_field(self.raw(), "connector", handler)
     }
 
-    fn output(
-        &self,
-        handler: &'static str,
-        ctx: &TaskContext<'_>,
-    ) -> Result<String, DataflowError> {
+    fn output(&self, handler: &'static str, ctx: &Scope<'_, '_>) -> Result<String, DataflowError> {
         resolve_output_path(self, handler, ctx)
     }
 
@@ -128,11 +123,7 @@ impl ConnectorInput for dataflow_rs::engine::functions::HttpCallConfig {
         literal_connector(&self.connector, handler)
     }
 
-    fn output(
-        &self,
-        _handler: &'static str,
-        ctx: &TaskContext<'_>,
-    ) -> Result<String, DataflowError> {
+    fn output(&self, _handler: &'static str, ctx: &Scope<'_, '_>) -> Result<String, DataflowError> {
         // `response_path` is optional — omitting it discards the body — so the
         // default here is only ever consulted for a call that records nothing,
         // and the handler returns `Produced::nothing()` for those.
@@ -150,7 +141,7 @@ impl ConnectorInput for dataflow_rs::engine::functions::PublishKafkaConfig {
     fn output(
         &self,
         _handler: &'static str,
-        _ctx: &TaskContext<'_>,
+        _ctx: &Scope<'_, '_>,
     ) -> Result<String, DataflowError> {
         // A publish records nothing; this is never read.
         Ok("data".to_string())
@@ -260,15 +251,20 @@ pub trait ConnectorHandler: Send + Sync + 'static {
 
     /// Read the input, resolving anything message-dependent.
     ///
-    /// Runs with `&TaskContext` — before the body takes it mutably — and
+    /// Runs with the context shared — before the body takes it mutably — and
     /// **after** [`ConnectorCall::begin`] has checked that a connector was
     /// named at all. F58's ordering is structural here: there is no way to
     /// express "resolve `key` first", because `call` is already built.
+    ///
+    /// `ctx` is a [`Scope`]: one view of the message, built once for `begin`
+    /// and this together, so a handler resolving several expression fields
+    /// views the message once rather than once per field. It derefs to the
+    /// `TaskContext` for everything else.
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
         input: &Self::Input,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError>;
 
     /// Check the connector's operation gates.
@@ -359,14 +355,19 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        // The literal prologue: a task naming no connector says so before
-        // anything about the message is consulted (F58).
-        let call = ConnectorCall::begin(H::NAME, input, ctx)?;
-
-        // Message-dependent resolution, still with `&ctx`.
-        let parsed = self.0.parse(&call, input, ctx).map_err(|e| {
-            let e: dataflow_rs::DataflowError = e.into();
-            e
+        // The literal prologue, then the message-dependent resolution, in one
+        // view of the message: everything both read is resolved before the
+        // body takes `ctx` mutably, and a handler with several expression
+        // fields views the message once rather than once per field.
+        let (call, parsed) = with_scope(ctx, |scope| {
+            // A task naming no connector says so before anything about the
+            // message is consulted (F58).
+            let call = ConnectorCall::begin(H::NAME, input, scope)?;
+            let parsed = self
+                .0
+                .parse(&call, input, scope)
+                .map_err(dataflow_rs::DataflowError::from)?;
+            Ok::<_, dataflow_rs::DataflowError>((call, parsed))
         })?;
 
         let registry = self.0.registry();
@@ -415,7 +416,7 @@ mod tests {
             &self,
             call: &ConnectorCall<'_>,
             input: &TemplatedInput,
-            _ctx: &TaskContext<'_>,
+            _ctx: &Scope<'_, '_>,
         ) -> Result<Self::Parsed, HandlerError> {
             Ok(call.require_str(input, "key")?.to_string())
         }

@@ -36,7 +36,7 @@ use super::mongo_common::{
     update_envelope as build_update_envelope,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::config::WriteConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -174,7 +174,7 @@ impl ConnectorHandler for MongoWriteHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let database = call.require_str(input, "database")?.to_string();
         let collection = call.require_str(input, "collection")?.to_string();
@@ -994,8 +994,11 @@ mod tests {
             channel: "ch".to_string(),
             output: "data".to_string(),
         };
-        ConnectorHandler::parse(&handler, &call, &TemplatedInput::from(input), &ctx)
-            .expect("the task parses")
+        let input = TemplatedInput::from(input);
+        crate::engine::functions::templated_input::with_scope(&ctx, |scope| {
+            ConnectorHandler::parse(&handler, &call, &input, scope)
+        })
+        .expect("the task parses")
     }
 
     /// The gate `mongo_write` picks is not fixed: an update that upserts is

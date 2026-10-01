@@ -9,6 +9,7 @@ use serde_json::Value;
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{ConnectorCall, require_op};
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::Scope;
 use crate::connector::ConnectorRegistry;
 use crate::engine::HandlerError;
 
@@ -39,7 +40,7 @@ impl ConnectorHandler for PublishKafkaHandler {
         &self,
         _call: &ConnectorCall<'_>,
         input: &PublishKafkaConfig,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         Ok(input.resolve_topic(ctx)?)
     }

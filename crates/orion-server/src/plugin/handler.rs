@@ -33,7 +33,7 @@ use super::limits::Limits;
 use super::runtime::{LoadedComponent, WasmRuntime};
 use crate::engine::FunctionEntry;
 use crate::engine::functions::connector_helpers::{apply_output, resolve_value};
-use crate::engine::functions::templated_input::TemplatedInput;
+use crate::engine::functions::templated_input::{TemplatedInput, with_scope};
 use crate::plugin::manifest::OUTPUT_FIELD;
 
 /// One registered plugin function. Cheap to clone — every field is shared —
@@ -127,28 +127,33 @@ impl PluginFunctionHandler {
         // at load, in `compile_input_with`), a resolvable field is folded
         // against the message, and anything else is the literal it was
         // written as.
-        let mut guest = Map::new();
-        for field in self.entry.input_fields.as_deref().unwrap_or(&[]) {
-            if field.name == OUTPUT_FIELD {
-                continue;
-            }
-            let Some(value) = obj.get(&field.name) else {
-                continue;
-            };
-            let value = match input.template_value(&field.name, ctx) {
-                Some(Ok(evaluated)) => evaluated,
-                Some(Err(e)) => {
-                    return Err(Failure::host(
-                        Category::CallerInput,
-                        format!("'{}' did not evaluate: {e}", field.name),
-                    ));
+        //
+        // Every field resolves against one view of the message: a function
+        // declaring k expression fields views it once rather than k times.
+        let guest = with_scope(ctx, |scope| {
+            let mut guest = Map::new();
+            for field in self.entry.input_fields.as_deref().unwrap_or(&[]) {
+                if field.name == OUTPUT_FIELD {
+                    continue;
                 }
-                None if field.resolvable => resolve_value(value, ctx),
-                None => value.clone(),
-            };
-            guest.insert(field.name.clone(), value);
-        }
-        let guest = Value::Object(guest);
+                let Some(value) = obj.get(&field.name) else {
+                    continue;
+                };
+                let value = match input.template_value(&field.name, scope) {
+                    Some(Ok(evaluated)) => evaluated,
+                    Some(Err(e)) => {
+                        return Err(Failure::host(
+                            Category::CallerInput,
+                            format!("'{}' did not evaluate: {e}", field.name),
+                        ));
+                    }
+                    None if field.resolvable => resolve_value(value, scope),
+                    None => value.clone(),
+                };
+                guest.insert(field.name.clone(), value);
+            }
+            Ok(Value::Object(guest))
+        })?;
 
         // The schema again, over the resolved values and with every field
         // read as literal: an expression that evaluated to the wrong kind,

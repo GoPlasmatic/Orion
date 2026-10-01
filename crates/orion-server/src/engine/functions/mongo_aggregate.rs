@@ -26,7 +26,7 @@ use super::connector_helpers::{
 };
 use super::mongo_common::{docs_to_json, drain_capped, require_mongo_backend};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::config::QueryConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -114,7 +114,7 @@ impl ConnectorHandler for MongoAggregateHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let database = call.require_str(input, "database")?.to_string();
         let collection = call.require_str(input, "collection")?.to_string();
@@ -402,8 +402,11 @@ mod tests {
             "collection": "events",
             "pipeline": pipeline,
         });
-        ConnectorHandler::parse(&handler, &call, &TemplatedInput::from(input), &ctx)
-            .expect("the pipeline parses")
+        let input = TemplatedInput::from(input);
+        crate::engine::functions::templated_input::with_scope(&ctx, |scope| {
+            ConnectorHandler::parse(&handler, &call, &input, scope)
+        })
+        .expect("the pipeline parses")
     }
 
     /// The default-deny that had no test: `$out` and `$merge` write to a

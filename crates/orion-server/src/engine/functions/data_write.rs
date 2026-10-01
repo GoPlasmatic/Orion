@@ -15,7 +15,7 @@ use super::connector_helpers::{
 };
 use super::mongo_common::{delete_envelope, empty_insert_envelope, update_envelope};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
@@ -94,7 +94,7 @@ impl ConnectorHandler for DataWriteHandler {
         &self,
         _call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         // W7: the mutation envelope is nested under `write`, mirroring
         // `data_query`'s `query`. Before 1.0 it was flat, sharing a namespace

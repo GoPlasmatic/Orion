@@ -269,6 +269,43 @@ fn function_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
     out
 }
 
+/// Whether a `map` mapping keeps the value already at its `path`.
+///
+/// `"mode": "append"` and `"extend"` (dataflow-rs 3.15) push onto the array
+/// there instead of replacing it, so the mapping reads its target as well as
+/// writing it: a rule reasoning about overwrites must not call the value
+/// before it dead.
+pub fn mapping_keeps_target(mapping: &Value) -> bool {
+    matches!(
+        mapping.get("mode").and_then(Value::as_str),
+        Some("append" | "extend")
+    )
+}
+
+/// What a task reads by keeping it: the `path` of each of its `map`
+/// mappings that appends rather than replaces. A computed path names nothing
+/// until a message arrives, so it makes the reads uncertain.
+pub fn task_kept_reads(task: &Value) -> Reads {
+    let mut out = Reads::default();
+    let function = task.get("function");
+    if function.and_then(|f| f.get("name")).and_then(Value::as_str) != Some("map") {
+        return out;
+    }
+    let mappings = function
+        .and_then(|f| f.pointer("/input/mappings"))
+        .and_then(Value::as_array);
+    for mapping in mappings.into_iter().flatten() {
+        if !mapping_keeps_target(mapping) {
+            continue;
+        }
+        match mapping.get("path") {
+            Some(Value::String(path)) => out.paths.push(path.clone()),
+            _ => out.computed = true,
+        }
+    }
+    out
+}
+
 /// Whether `path` is covered by something already written, by prefix in
 /// either direction. A bare `data` write is the whole context and covers
 /// everything under it.
@@ -321,6 +358,23 @@ mod tests {
         let r = reads(&json!({"val": ["data", "items", {"val": ["temp_data", "i"]}]}));
         assert!(r.computed && r.uncertain());
         assert!(r.paths.is_empty());
+    }
+
+    /// An appending mapping reads the array it pushes onto; a replacing one
+    /// does not, and neither does any other function.
+    #[test]
+    fn an_appending_mapping_reads_its_target() {
+        let task = json!({"function": {"name": "map", "input": {"mappings": [
+            {"path": "data.log", "logic": 1, "mode": "append"},
+            {"path": "data.all", "logic": [1], "mode": "extend"},
+            {"path": "data.x", "logic": 2},
+            {"path": {"var": "temp_data.where"}, "logic": 3, "mode": "append"}
+        ]}}});
+        let kept = task_kept_reads(&task);
+        assert_eq!(kept.paths, ["data.log", "data.all"]);
+        assert!(kept.computed, "a computed appended path names nothing");
+        let parse = json!({"function": {"name": "parse_json", "input": {"source": "payload", "target": "log", "mode": "append"}}});
+        assert_eq!(task_kept_reads(&parse), Reads::default());
     }
 
     #[test]

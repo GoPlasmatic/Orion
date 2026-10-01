@@ -14,7 +14,7 @@ use super::mongo_common::{
     docs_to_json, drain_capped, require_mongo_backend, resolve_document, resolve_u64,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::config::QueryConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -63,7 +63,7 @@ impl ConnectorHandler for MongoReadHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let database = call.require_str(input, "database")?.to_string();
         let collection = call.require_str(input, "collection")?.to_string();

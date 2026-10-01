@@ -10,7 +10,7 @@ use super::connector_helpers::{
 };
 use super::db_read::DbRead;
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
+use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::engine::HandlerError;
@@ -40,7 +40,7 @@ impl ConnectorHandler for DbWriteHandler {
         &self,
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
+        ctx: &Scope<'_, '_>,
     ) -> Result<Self::Parsed, HandlerError> {
         DbRead::parse_statement(call, input, ctx)
     }
