@@ -273,6 +273,8 @@ where
     ov!(plugins.max_timeout_ms: u64);
     ov!(plugins.max_concurrency_per_function: u32);
     ov!(plugins.max_live_instances: u32);
+    ov!(plugins.linear_memory_keep_resident_bytes: usize);
+    ov!(plugins.table_keep_resident_bytes: usize);
     ov!(plugins.fuel_backstop: u64);
     ov_list!(plugins.trust.public_keys);
 

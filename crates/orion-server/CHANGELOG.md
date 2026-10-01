@@ -22,6 +22,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AWS's front end rewrites an incoming `Content-Length: 0` to an empty value and
   such a URL could never match its own signature.
 
+- **`model_infer` can reduce an output before it is written** ([#370]). A new
+  `select` field is an expression of the task's own, used in place of the
+  manifest's `result`. It is evaluated natively over the output tensors and
+  the call's `input` root, so it can `gather` at indices the message holds,
+  `argmax`, `crop` or `reshape`, and only what it picks lands in the message.
+  With `raw`, a whole output tensor was written and then copied by every later
+  step that evaluated against the message; a `[1,5,124,120]` head was 297 KB
+  per seat per turn. `select` and `raw` are exclusive, refused together when
+  the workflow is written.
+
+- **Plugin slots keep their hot pages between invocations** ([#376]).
+  `[plugins] linear_memory_keep_resident_bytes` (default 1 MiB) and
+  `table_keep_resident_bytes` (default 64 KiB) set how much of a returned
+  pooled instance stays mapped, reset with `memset` instead of released with
+  `madvise`, so the next call on that slot does not fault each page it touches
+  back in. Linux only; Wasmtime ignores both elsewhere. The resident cost is
+  at most that much per pooled memory that has been used.
+
+- **A named-axis model gets a plan per concrete shape where that is faster**
+  ([#369]). On the CPU, tract now prepares a plan for each size a call brings
+  (the eight most recently used are kept per loaded model) when the graph's
+  work is mostly in convolutions with a kernel wider than 1×1. Those run 1.3 to
+  1.6 times faster once H and W are known. A graph that is mostly 1×1
+  convolutions or matrix products keeps its one general plan, because a known
+  size makes tract lay those products out transposed, which measured about 5
+  times slower. The choice is read from the graph, never timed, so every node
+  runs the same plan for the same artifact and shape.
+
+### Fixed
+
+- **A cron run no longer pauses while its lease is renewed** ([#375]). The
+  heartbeat awaited the renewal inside the `select!` arm that polled the run,
+  so for the length of every renewal (two database writes, up to the fence
+  deadline under write contention) the run's own future was not polled. The
+  renewal is now its own branch, polled beside the work, with at most one in
+  flight.
+
+- **A saturated `forbid` channel no longer builds a `pending` backlog**
+  ([#377]). A tick that came due while every slot of its key was held was
+  queued `pending`. Only a worker with a free permit claims, and on a node whose
+  slots were all busy that meant only the spare workers, one claim per poll,
+  each of which could only skip the row. A schedule faster than that grew a
+  backlog that the cleanup correctly never removes, until the node went idle.
+  The reconciler now checks the slots when an occurrence comes due and writes
+  it `skipped_singleton` straight away if they are all held, which is what
+  `forbid` means. A row written already settled, this one or a misfire summary, now
+  carries `completed_at` like one a worker settles.
+
 ### Changed
 
 - **Wasmtime 48 → 49, and the OpenTelemetry family 0.32 → 0.33.** The sandbox
@@ -44,6 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refreshes.
 
 [#367]: https://github.com/GoPlasmatic/Orion/issues/367
+[#369]: https://github.com/GoPlasmatic/Orion/issues/369
+[#370]: https://github.com/GoPlasmatic/Orion/issues/370
+[#375]: https://github.com/GoPlasmatic/Orion/issues/375
+[#376]: https://github.com/GoPlasmatic/Orion/issues/376
+[#377]: https://github.com/GoPlasmatic/Orion/issues/377
 
 ## [1.11.1] - 2026-09-27
 

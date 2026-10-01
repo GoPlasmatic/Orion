@@ -234,6 +234,12 @@ impl Bindings {
         self.0.get(name).copied()
     }
 
+    /// Every name bound so far and its size, in name order — so two calls
+    /// that bound the same sizes produce the same sequence.
+    pub fn bound(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.0.iter().map(|(name, size)| (name.as_str(), *size))
+    }
+
     /// Check one tensor's `actual` shape against a `declared` one, binding
     /// any name met for the first time. `Err` is the reason, phrased for
     /// whoever supplied the tensor.

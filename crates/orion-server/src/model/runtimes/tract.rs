@@ -18,7 +18,7 @@
 //! its outputs, which is what makes the index mapping sound. The two readers
 //! are pinned to each other at load by their input and output counts.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ::tract::prelude::*;
 use dataflow_rs::datavalue::{DType, OwnedDataTensor};
@@ -76,6 +76,13 @@ impl ModelRuntime for TractRuntime {
         binding: &LoadBinding,
         device: &str,
     ) -> Result<Arc<dyn LoadedModel>, LoadError> {
+        Ok(Arc::new(Self::prepare(bytes, binding, device)?))
+    }
+}
+
+impl TractRuntime {
+    /// [`ModelRuntime::load`], answering the concrete model.
+    fn prepare(bytes: &[u8], binding: &LoadBinding, device: &str) -> Result<TractModel, LoadError> {
         // The device first: it is the cheapest check, and a graph parsed
         // for a device this build cannot run is work thrown away.
         let devices = Self::available_devices();
@@ -126,6 +133,16 @@ impl ModelRuntime for TractRuntime {
         let typed = model
             .into_model()
             .map_err(|e| LoadError::new("parse", format!("the graph could not be typed: {e:#}")))?;
+        // A named axis leaves the plan general: tract resolves the symbol on
+        // every run. Where [`specialising_pays`] says so, the typed graph is
+        // kept on the CPU and `run` prepares a plan for each concrete shape it
+        // is fed (`shaped`).
+        let reshapable = device == "cpu"
+            && inputs
+                .iter()
+                .any(|slot| slot.shape.iter().any(|dim| dim.fixed().is_none()))
+            && specialising_pays(bytes);
+        let typed_kept = reshapable.then(|| typed.clone());
         let runnable = if device == "cpu" {
             typed.into_runnable()
         } else {
@@ -138,13 +155,15 @@ impl ModelRuntime for TractRuntime {
             )
         })?;
 
-        Ok(Arc::new(TractModel {
+        Ok(TractModel {
             digest: crate::crypto::sha256_digest(bytes),
             runnable,
+            typed: typed_kept,
+            shaped: Mutex::new(Vec::new()),
             inputs,
             output_order,
             resident_bytes: bytes.len(),
-        }))
+        })
     }
 }
 
@@ -336,12 +355,119 @@ fn dtype_of(datum_type: DatumType) -> Result<DType, String> {
 /// report the same way.
 struct TractModel {
     digest: String,
+    /// The general plan, every named axis still a symbol.
     runnable: Runnable,
+    /// The typed graph, kept on the CPU when an input has a named axis and
+    /// [`specialising_pays`], from which a plan for one concrete shape is
+    /// prepared on first use.
+    typed: Option<Model>,
+    /// The plans prepared so far, keyed by what each named axis was bound
+    /// to. Bounded by [`MAX_SHAPED_PLANS`], least recently run out first.
+    shaped: Mutex<ShapedPlans>,
     /// Manifest order.
     inputs: Vec<InputSlot>,
     /// The graph output index of each manifest output, in manifest order.
     output_order: Vec<usize>,
     resident_bytes: usize,
+}
+
+/// How many concrete-shape plans one loaded model keeps. A plan is the
+/// weights again plus its buffers, so this is the bound on what a model with
+/// a named axis costs past its artifact. A caller cycling through more
+/// shapes than this pays a plan preparation for the one least recently run,
+/// and still runs the concrete plan: which plan runs is a function of the
+/// graph and the shape, never of what this node happened to see before.
+const MAX_SHAPED_PLANS: usize = 8;
+
+/// The plans prepared so far, keyed by what each named axis was bound to,
+/// most recently run last.
+type ShapedPlans = Vec<(Vec<(String, usize)>, Runnable)>;
+
+/// How much more of a graph's work must be in spatial convolutions than in
+/// plain matrix products for a plan per concrete shape to be prepared.
+///
+/// Once every axis is known, tract lays a matrix product out with its larger
+/// dimension first (`EinSumMatMul::codegen`, `m < n` transposes). A 1x1
+/// convolution is a matrix product whose larger dimension is the board, so
+/// specialising turns it around and writes its output transposed: about 5x
+/// slower (#369). A 3x3 convolution takes its own im2col path, which a
+/// known geometry makes 1.3x to 1.6x faster. Measured on graphs of both and
+/// of mixes (tract 0.23.8, one thread), specialising won from a spatial to
+/// pointwise ratio of about 7.5 up and lost below 1; eight leaves margin on
+/// the side of the plan every graph already had.
+const SPATIAL_TO_POINTWISE: u64 = 8;
+
+/// Whether a plan per concrete shape is worth preparing for the graph in
+/// `bytes`: decided from the graph alone, so every node makes the same
+/// choice for the same artifact. A graph whose work the reader cannot
+/// account for keeps its one general plan.
+fn specialising_pays(bytes: &[u8]) -> bool {
+    match crate::model::conv_work(bytes) {
+        Ok(Some(work)) => {
+            work.spatial > 0 && work.spatial >= work.pointwise.saturating_mul(SPATIAL_TO_POINTWISE)
+        }
+        Ok(None) | Err(_) => false,
+    }
+}
+
+impl TractModel {
+    /// The plan to run for the sizes `bindings` holds: the one prepared for
+    /// exactly those, preparing it on first use.
+    ///
+    /// The same graph with its symbols substituted computes the same
+    /// function; `a_concrete_shape_runs_on_its_own_plan_and_agrees` pins the
+    /// two plans' outputs against each other for the fixture. What changes is
+    /// the kernels tract can choose once the geometry is known.
+    fn plan_for(&self, bindings: &Bindings) -> Runnable {
+        let Some(typed) = &self.typed else {
+            return self.runnable.clone();
+        };
+        let key: Vec<(String, usize)> = bindings
+            .bound()
+            .map(|(name, size)| (name.to_string(), size))
+            .collect();
+        if let Some(plan) = Self::recall(&self.shaped, &key) {
+            return plan;
+        }
+        // Prepared outside the lock: it is the one slow step, and two calls
+        // racing on a new shape each prepare one and keep the first.
+        let mut graph = typed.clone();
+        let symbols = key.iter().fold(SetSymbols::new(), |set, (name, size)| {
+            set.value(name.clone(), i64::try_from(*size).unwrap_or(i64::MAX))
+        });
+        let Ok(plan) = graph
+            .transform(symbols)
+            .and_then(|()| graph.into_runnable())
+        else {
+            // A graph tract cannot specialise at this shape runs generally,
+            // at this shape, on every node alike.
+            return self.runnable.clone();
+        };
+        if let Some(existing) = Self::recall(&self.shaped, &key) {
+            return existing;
+        }
+        let mut shaped = self
+            .shaped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shaped.len() >= MAX_SHAPED_PLANS {
+            shaped.remove(0);
+        }
+        shaped.push((key, plan.clone()));
+        plan
+    }
+
+    /// The plan prepared for `key`, marked most recently run.
+    fn recall(shaped: &Mutex<ShapedPlans>, key: &[(String, usize)]) -> Option<Runnable> {
+        let mut shaped = shaped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = shaped.iter().position(|(k, _)| k.as_slice() == key)?;
+        let entry = shaped.remove(at);
+        let plan = entry.1.clone();
+        shaped.push(entry);
+        Some(plan)
+    }
 }
 
 impl LoadedModel for TractModel {
@@ -402,7 +528,7 @@ impl LoadedModel for TractModel {
         let graph_inputs: Vec<Tensor> = by_graph_index.into_iter().flatten().collect();
 
         let outputs = self
-            .runnable
+            .plan_for(&bindings)
             .run(graph_inputs)
             .map_err(|e| RunError::new("run", format!("{e:#}")))?;
 
@@ -721,6 +847,114 @@ mod tests {
         let err = loaded.run(vec![wrong]).expect_err("4 is not 3");
         assert_eq!(err.stage, "inputs");
         assert!(err.message.contains("f32[N, 3]"), "{}", err.message);
+    }
+
+    /// An i8 board of `[1, 7, h, w]`, filled deterministically.
+    fn board(h: usize, w: usize) -> (Vec<u8>, OwnedDataTensor) {
+        let bytes: Vec<u8> = (0..7 * h * w)
+            .map(|i| (((i * 31) % 7) as i8 - 3) as u8)
+            .collect();
+        let tensor =
+            OwnedDataTensor::from_bytes(DType::I8, vec![1, 7, h, w], &bytes).expect("a tensor");
+        (bytes, tensor)
+    }
+
+    /// A graph whose work is in 3x3 convolutions runs each board size on a
+    /// plan prepared for it, and that plan answers what the general plan
+    /// does. Past [`MAX_SHAPED_PLANS`] sizes the least recently run plan
+    /// makes room: the cache stays bounded, and a size is never served by
+    /// the general plan because of what came before it.
+    #[test]
+    fn a_concrete_shape_runs_on_its_own_plan_and_agrees() {
+        let manifest = crate::model::fixture::board();
+        let model = TractRuntime::prepare(
+            crate::model::fixture::BOARD_ONNX,
+            &LoadBinding::of(&manifest),
+            "cpu",
+        )
+        .expect("loads");
+        assert!(
+            model.typed.is_some(),
+            "a spatial graph with a named axis keeps its typed graph on the CPU"
+        );
+
+        let sizes: Vec<(usize, usize)> = (1..=MAX_SHAPED_PLANS + 3)
+            .map(|n| (n + 2, 2 * n + 1))
+            .collect();
+        for &(h, w) in sizes.iter().chain(&sizes) {
+            let (bytes, tensor) = board(h, w);
+            let out = model.run(vec![tensor]).expect("runs");
+            let general = model
+                .runnable
+                .run(vec![
+                    Tensor::from_bytes(DatumType::I8, &[1, 7, h, w], &bytes).expect("t"),
+                ])
+                .expect("the general plan runs");
+            let (_, _, want) = general[0].as_bytes().expect("bytes");
+            assert_eq!(out[0].data(), want, "{h}x{w}: the two plans disagree");
+            let shaped = model.shaped.lock().expect("unpoisoned");
+            assert_eq!(
+                shaped.last().map(|(key, _)| key.clone()),
+                Some(vec![("H".to_string(), h), ("W".to_string(), w)]),
+                "{h}x{w} ran on its own plan"
+            );
+        }
+        let shaped = model.shaped.lock().expect("unpoisoned");
+        assert_eq!(shaped.len(), MAX_SHAPED_PLANS, "bounded");
+    }
+
+    /// The same boundary with 1x1 layers only: specialising would lay each
+    /// matrix product out transposed and run slower, so the graph keeps its
+    /// one general plan (#369). So does a graph with no matrix product at
+    /// all, which has nothing to gain.
+    #[test]
+    fn a_pointwise_graph_keeps_its_general_plan() {
+        let manifest = crate::model::fixture::board();
+        let model = TractRuntime::prepare(
+            crate::model::fixture::ONE_BY_ONE_ONNX,
+            &LoadBinding::of(&manifest),
+            "cpu",
+        )
+        .expect("loads");
+        assert!(model.typed.is_none());
+        let (_, tensor) = board(5, 6);
+        assert_eq!(
+            model.run(vec![tensor]).expect("runs")[0].shape(),
+            [1, 5, 5, 6]
+        );
+
+        let manifest = crate::model::fixture::dynamic();
+        let model = TractRuntime::prepare(
+            crate::model::fixture::DYNAMIC_ONNX,
+            &LoadBinding::of(&manifest),
+            "cpu",
+        )
+        .expect("loads");
+        assert!(model.typed.is_none());
+    }
+
+    /// The decision is the graph's alone, and follows the work.
+    #[test]
+    fn specialising_pays_where_spatial_work_dominates() {
+        assert!(specialising_pays(crate::model::fixture::BOARD_ONNX));
+        assert!(!specialising_pays(crate::model::fixture::ONE_BY_ONE_ONNX));
+        assert!(!specialising_pays(crate::model::fixture::ONNX));
+        assert!(!specialising_pays(crate::model::fixture::AS_LIST_ONNX));
+        assert!(!specialising_pays(b"not a model"));
+    }
+
+    /// A graph with no named axis keeps no typed graph: its one plan is
+    /// already concrete.
+    #[test]
+    fn a_fixed_shape_keeps_only_its_one_plan() {
+        let manifest = crate::model::fixture::manifest();
+        let model = TractRuntime::prepare(
+            crate::model::fixture::ONNX,
+            &LoadBinding::of(&manifest),
+            "cpu",
+        )
+        .expect("loads");
+        assert!(model.typed.is_none());
     }
 
     /// A fact spec passes a named dimension through as its name, which is

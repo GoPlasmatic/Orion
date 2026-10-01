@@ -1,0 +1,23 @@
+{
+  "abi": "orion:model@1.0.0",
+  "name": "ada.board",
+  "version": "0.1.0",
+  "format": "onnx",
+  "artifact": "board.onnx",
+  "description": "A fully convolutional policy over an i8 [1, 7, H, W] board, producing a [1, 5, H, W] policy",
+  "inputs": [
+    {
+      "name": "x",
+      "dtype": "i8",
+      "shape": [1, 7, "H", "W"],
+      "adapter": { "tensor": [{ "var": "data.x" }, "i8"] }
+    }
+  ],
+  "outputs": [
+    { "name": "y", "dtype": "f32", "shape": [1, 5, "H", "W"] }
+  ],
+  "probe_dims": { "H": 3, "W": 4 },
+  "result": {
+    "y": { "to_list": [{ "var": "y" }] }
+  }
+}

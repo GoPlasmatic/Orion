@@ -26,8 +26,10 @@
 //!    permit (`permit` when none frees up in time), then the run on the
 //!    blocking pool (`run`; the deadline elapsing anywhere is `timeout`);
 //! 5. the outputs, checked against the manifest (`run` on a mismatch,
-//!    `output_size` over `max_output_elements`), then either written raw as
-//!    `{name: tensor}` or passed through the result expression (`adapter`).
+//!    `output_size` over `max_output_elements`), then written raw as
+//!    `{name: tensor}`, reduced by the task's own `select`, or passed
+//!    through the manifest's result expression (`adapter` when either
+//!    expression fails).
 //!
 //! Nothing is written on failure. Every category is one of
 //! [`Category`]'s, which is what the failure metric counts by, and the
@@ -78,6 +80,29 @@ use crate::runtime::RuntimeHandle;
 
 /// This handler's name in metrics, profiles and error messages.
 pub const NAME: &str = "model_infer";
+
+/// A `model_infer` task's input: the fields as authored, with the template
+/// fields compiled, and `select` compiled once as an expression over the
+/// outputs rather than evaluated against the message.
+#[derive(Debug, Default)]
+pub struct InferInput {
+    fields: TemplatedInput,
+    select: Option<Arc<datalogic::Logic>>,
+}
+
+impl<'de> serde::Deserialize<'de> for InferInput {
+    /// Any JSON, as [`TemplatedInput`] takes: the field table validates it.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self {
+            fields: TemplatedInput::deserialize(deserializer)?,
+            select: None,
+        })
+    }
+}
+
+/// The key the call's `input` root sits under in `select`'s context, beside
+/// the outputs.
+const SELECT_INPUT_KEY: &str = "input";
 
 /// Where the result lands when the task names no `output`.
 pub const DEFAULT_OUTPUT: &str = "temp_data.inference";
@@ -237,22 +262,32 @@ pub struct ModelInferHandler {
 
 #[async_trait]
 impl AsyncFunctionHandler for ModelInferHandler {
-    type Input = TemplatedInput;
+    type Input = InferInput;
 
     /// Compile the expression fields the table declares (`model`, `input`,
-    /// `timeout_ms`).
+    /// `timeout_ms`), and `select` as an expression of its own: it reads the
+    /// outputs, which do not exist until the model has run, so it is
+    /// compiled here and evaluated after the run, never templated against
+    /// the message.
     fn compile_input(
         input: &mut Self::Input,
         c: &dataflow_rs::engine::functions::TemplateCompiler,
     ) -> dataflow_rs::Result<()> {
-        input.compile(NAME, c)
+        input.fields.compile(NAME, c)?;
+        input.select = match input.fields.get("select") {
+            None | Some(Value::Null) => None,
+            Some(select) => Some(Arc::new(c.engine().compile(select).map_err(|e| {
+                DataflowError::Validation(format!("{NAME}: 'select' does not compile: {e}"))
+            })?)),
+        };
+        Ok(())
     }
 
     /// The shell: run the body, count the outcome, name the handler once.
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
+        input: &InferInput,
     ) -> dataflow_rs::Result<TaskOutcome> {
         let started = Instant::now();
         match self.run(ctx, input).await {
@@ -393,7 +428,7 @@ fn evaluate(
 }
 
 /// What one call's expressions charged: every input adapter and, unless the
-/// task asked for `raw`, the result.
+/// task asked for `raw`, the task's `select` or the manifest's result.
 ///
 /// Two numbers because they answer different questions. `total` is what the
 /// message cost. `peak` is what a ceiling has to clear, because
@@ -438,11 +473,8 @@ async fn acquire<'s>(
 }
 
 impl ModelInferHandler {
-    async fn run(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> Result<Labels, Refused> {
+    async fn run(&self, ctx: &mut TaskContext<'_>, infer: &InferInput) -> Result<Labels, Refused> {
+        let input = &infer.fields;
         let started = Instant::now();
         // One set and one engine for this call: the entry, its adapters and
         // the engine they were compiled on, off one load of the generation
@@ -572,6 +604,14 @@ impl ModelInferHandler {
                 ));
             }
         };
+        if raw && infer.select.is_some() {
+            return Err(caller_input(
+                Some(&labels),
+                "'raw' and 'select' are exclusive: 'raw' writes the outputs whole, 'select' \
+                 reduces them first"
+                    .to_string(),
+            ));
+        }
         let output = match input.get("output") {
             None | Some(Value::Null) => DEFAULT_OUTPUT,
             Some(Value::String(path)) if !path.is_empty() => path.as_str(),
@@ -811,18 +851,45 @@ impl ModelInferHandler {
                 ),
             ));
         }
-        let object = OwnedDataValue::Object(
-            entry
-                .manifest
-                .outputs
-                .iter()
-                .zip(outputs)
-                .map(|(decl, tensor)| (decl.name.clone(), OwnedDataValue::Tensor(Arc::new(tensor))))
-                .collect(),
-        );
+        let mut members: Vec<(String, OwnedDataValue)> = entry
+            .manifest
+            .outputs
+            .iter()
+            .zip(outputs)
+            .map(|(decl, tensor)| (decl.name.clone(), OwnedDataValue::Tensor(Arc::new(tensor))))
+            .collect();
         let value = if raw {
-            object
+            OwnedDataValue::Object(members)
+        } else if let Some(select) = &infer.select {
+            // The task's own reduction, over the outputs and the root the
+            // adapters read — which is how it reaches values from the
+            // message, such as the indices to gather — so only what it
+            // selects is written, and a whole output tensor never rides the
+            // rest of the workflow. Evaluated natively on the engine running
+            // this task, which is the one that compiled it.
+            if members.iter().any(|(name, _)| name == SELECT_INPUT_KEY) {
+                return Err(caller_input(
+                    Some(&labels),
+                    format!(
+                        "'select' reads the call's input as '{SELECT_INPUT_KEY}', and this \
+                         model has an output of that name; use the manifest's result or 'raw'"
+                    ),
+                ));
+            }
+            members.push((SELECT_INPUT_KEY.to_string(), root));
+            let (value, ops) = evaluate(ctx.datalogic(), select, &OwnedDataValue::Object(members))
+                .map_err(|e| {
+                    evaluation_refused(
+                        Some(&labels),
+                        Category::Adapter,
+                        "the select expression failed",
+                        &e,
+                    )
+                })?;
+            charged.add(ops);
+            value
         } else {
+            let object = OwnedDataValue::Object(members);
             let (value, ops) = evaluate(datalogic, &entry.result, &object).map_err(|e| {
                 evaluation_refused(
                     Some(&labels),

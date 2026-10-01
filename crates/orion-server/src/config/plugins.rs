@@ -43,6 +43,16 @@ pub struct PluginsConfig {
     /// function. Under-sizing it surfaces as instantiation failures under
     /// load, so it must be at least `max_concurrency_per_function`.
     pub max_live_instances: u32,
+    /// Bytes of each instance's linear memory the pooling allocator keeps
+    /// resident when the instance is returned, reset with `memset` rather
+    /// than released with `madvise`. The next invocation on that slot then
+    /// finds its low pages already mapped instead of faulting every page it
+    /// touches back in. Linux only (Wasmtime ignores it elsewhere). Costs up
+    /// to this much resident memory per pooled memory that has been used, so
+    /// at most `peak concurrent instances × 2 ×` this; `0` releases it all.
+    pub linear_memory_keep_resident_bytes: usize,
+    /// As [`Self::linear_memory_keep_resident_bytes`], for each instance's tables.
+    pub table_keep_resident_bytes: usize,
     /// Fuel per invocation — a backstop against a guest that spins without
     /// touching the clock, not a contract: fuel cost moves between Wasmtime
     /// versions, so operators reason in `max_timeout_ms`. Sized well above
@@ -88,6 +98,8 @@ impl Default for PluginsConfig {
             max_timeout_ms: 5_000,
             max_concurrency_per_function: 64,
             max_live_instances: 256,
+            linear_memory_keep_resident_bytes: 1024 * 1024,
+            table_keep_resident_bytes: 64 * 1024,
             fuel_backstop: 100_000_000_000,
             trust: PluginTrustConfig::default(),
             overrides: Vec::new(),
@@ -139,6 +151,16 @@ impl PluginsConfig {
                      plugins.max_concurrency_per_function ({}): one function alone could \
                      otherwise exhaust the instance pool",
                     self.max_live_instances, self.max_concurrency_per_function
+                ),
+            });
+        }
+        if self.linear_memory_keep_resident_bytes > self.max_memory_bytes {
+            return Err(OrionError::Config {
+                message: format!(
+                    "plugins.linear_memory_keep_resident_bytes ({}) must be at most \
+                     plugins.max_memory_bytes ({}): no memory grows past the ceiling, so \
+                     there is nothing more to keep",
+                    self.linear_memory_keep_resident_bytes, self.max_memory_bytes
                 ),
             });
         }
@@ -220,6 +242,20 @@ mod tests {
         };
         let err = c.validate().expect_err("pool");
         assert!(err.to_string().contains("max_live_instances"));
+    }
+
+    #[test]
+    fn keeping_more_resident_than_the_memory_ceiling_is_refused() {
+        let c = PluginsConfig {
+            max_memory_bytes: 1024 * 1024,
+            linear_memory_keep_resident_bytes: 2 * 1024 * 1024,
+            ..PluginsConfig::default()
+        };
+        let err = c.validate().expect_err("keep resident");
+        assert!(
+            err.to_string()
+                .contains("linear_memory_keep_resident_bytes")
+        );
     }
 
     #[test]

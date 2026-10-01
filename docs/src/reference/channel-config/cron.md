@@ -1,6 +1,6 @@
 <!-- description: The transport_config of a cron channel: the six-field schedule, time zone and DST rules, payload, misfire policies, concurrency, and what it may not declare. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-20 -->
+<!-- last_verified: 2026-09-30 -->
 
 # Cron transport
 
@@ -97,7 +97,7 @@ Whatever the policy, the misses are recorded as **one** occurrence row with stat
 
 ### Concurrency
 
-`policy: "forbid"` means at most `slots` occurrences for a `key` are admitted at a time. `slots` defaults to `1`: one at a time. A contending occurrence is recorded `skipped_singleton` — visible, not dropped. `policy: "allow"` lets occurrences overlap and takes no lock at all.
+`policy: "forbid"` means at most `slots` occurrences for a `key` are admitted at a time. `slots` defaults to `1`: one at a time. A contending occurrence is recorded `skipped_singleton` — visible, not dropped. The check is made when an occurrence comes due. If every slot is already held, the row is written `skipped_singleton` straight away rather than queued `pending`. A schedule that outruns its own work therefore never builds a backlog. An occurrence queued while a slot was free is checked again when a worker starts it. `policy: "allow"` lets occurrences overlap and takes no lock at all.
 
 The key defaults to the channel's `channel_id`, so `forbid` on its own means "one at a time, of this channel". Naming the same key on several channels deliberately shares its slots between them.
 

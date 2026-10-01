@@ -152,6 +152,10 @@ impl WasmRuntime {
         pool.total_tables(instances.saturating_mul(4));
         pool.total_stacks(instances);
         pool.max_memory_size(config.max_memory_bytes);
+        // A slot's hot pages survive its return, so the next invocation does
+        // not fault them in again (#376).
+        pool.linear_memory_keep_resident(config.linear_memory_keep_resident_bytes);
+        pool.table_keep_resident(config.table_keep_resident_bytes);
         c.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
 
         let engine = Engine::new(&c).map_err(|e| format!("wasmtime engine: {e}"))?;

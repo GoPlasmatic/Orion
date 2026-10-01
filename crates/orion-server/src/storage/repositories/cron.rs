@@ -99,9 +99,11 @@ pub struct NewOccurrence<'a> {
     pub workflow_id: Option<&'a str>,
     pub trigger: &'a str,
     pub scheduled_for: NaiveDateTime,
-    /// `pending` for work to run, `skipped_misfire` for a summary row.
+    /// `pending` for work to run, `skipped_misfire` for a summary row,
+    /// `skipped_singleton` for a `forbid` occurrence due while every slot of
+    /// its key was held.
     pub status: &'a str,
-    /// The summary text, for a `skipped_misfire` row.
+    /// Why the row is already settled, for either skipped status.
     pub error_message: Option<&'a str>,
 }
 
@@ -601,6 +603,14 @@ impl CronRepository for SqlCronRepository {
 
     async fn insert_occurrence(&self, occurrence: NewOccurrence<'_>) -> Result<bool, OrionError> {
         crate::metrics::timed_db_op("cron.insert_occurrence", async {
+            // A row written already settled — a misfire summary, a `forbid`
+            // tick that came due with every slot held — is settled as of now,
+            // like one a worker settles.
+            let completed_at = if occurrence.status == status::PENDING {
+                Expr::val(Option::<NaiveDateTime>::None)
+            } else {
+                Expr::cust(helpers::sql_now(self.pool.backend()))
+            };
             let insert = Query::insert()
                 .into_table(CronOccurrences::Table)
                 .columns([
@@ -613,6 +623,7 @@ impl CronRepository for SqlCronRepository {
                     CronOccurrences::ScheduledFor,
                     CronOccurrences::Status,
                     CronOccurrences::ErrorMessage,
+                    CronOccurrences::CompletedAt,
                 ])
                 .values_panic([
                     occurrence.id.into(),
@@ -624,6 +635,7 @@ impl CronRepository for SqlCronRepository {
                     occurrence.scheduled_for.into(),
                     occurrence.status.into(),
                     helpers::optional_string_value(occurrence.error_message).into(),
+                    completed_at,
                 ])
                 .to_owned();
             // The conflict is on `(channel_id, scheduled_for)`, not on the

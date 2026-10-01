@@ -112,6 +112,12 @@ struct FunctionProto {
 /// operator from anything called `LinearRegressor` elsewhere.
 #[derive(Clone, PartialEq, Message)]
 struct NodeProto {
+    /// What the node reads and writes, by value name: [`conv_work`] follows
+    /// a convolution's weight operand to the tensor that holds it.
+    #[prost(string, repeated, tag = "1")]
+    input: Vec<String>,
+    #[prost(string, repeated, tag = "2")]
+    output: Vec<String>,
     #[prost(string, tag = "4")]
     op_type: String,
     #[prost(string, tag = "7")]
@@ -336,6 +342,119 @@ pub fn read_stats(bytes: &[u8]) -> Result<GraphStats, String> {
     })
 }
 
+/// How a graph's multiply-accumulate work divides between convolutions
+/// with a spatial kernel and everything that is a plain matrix product, per
+/// output position: a runtime's choice of kernels can favour one and cost
+/// the other, and this is what lets it decide from the graph alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ConvWork {
+    /// Multiply-accumulates per output position in convolutions whose kernel
+    /// covers more than one position (3x3, 1x5, …): `out × in/group × kernel`.
+    pub spatial: u64,
+    /// The same for 1x1 convolutions and for `MatMul`/`Gemm` against a
+    /// stored weight: `out × in`, a matrix product whichever way it is
+    /// written.
+    pub pointwise: u64,
+}
+
+/// Where the weight operand of a matrix-product operator is, or `None` when
+/// the operator is not one this accounting knows.
+fn weight_operand(op: &str) -> Option<usize> {
+    match op {
+        "Conv" | "ConvInteger" | "MatMul" | "Gemm" | "MatMulInteger" => Some(1),
+        "QLinearConv" | "QLinearMatMul" => Some(3),
+        _ => None,
+    }
+}
+
+/// Every operator that multiplies two operands together as a matrix
+/// product. One of these whose weight this reader cannot find makes the
+/// graph's work unknown, rather than silently small.
+fn is_matrix_product(op: &str) -> bool {
+    weight_operand(op).is_some()
+        || matches!(op, "Einsum" | "ConvTranspose" | "FusedMatMul" | "Attention")
+}
+
+/// Read how `bytes`' convolution and matrix-product work divides, per output
+/// position. `None` when some matrix product's weight is not a tensor the
+/// document stores — an activation, a value computed at run time, an
+/// operator this accounting does not model — so the division is unknown and
+/// a caller deciding on it must take its conservative branch.
+///
+/// Read from the top-level graph, where the layers of a feed-forward
+/// network are; a matrix product inside a subgraph or a model-local
+/// function is not one this walks, so it makes the answer `None` too.
+pub fn conv_work(bytes: &[u8]) -> Result<Option<ConvWork>, String> {
+    let model = ModelProto::decode(bytes).map_err(|e| format!("not an ONNX model: {e}"))?;
+    let Some(graph) = model.graph.as_ref() else {
+        return Err("not an ONNX model: the document carries no graph".to_string());
+    };
+    let nested = |node: &NodeProto| {
+        node.attribute
+            .iter()
+            .any(|a| a.g.is_some() || !a.graphs.is_empty())
+    };
+    if graph.node.iter().any(nested)
+        || model
+            .functions
+            .iter()
+            .flat_map(|f| &f.node)
+            .any(|n| is_matrix_product(&n.operator()))
+    {
+        return Ok(None);
+    }
+
+    // The shape of every stored tensor, by the name a node reads it under:
+    // the initializers, and what a `Constant` node writes.
+    let mut stored: std::collections::HashMap<&str, &[i64]> = graph
+        .initializer
+        .iter()
+        .map(|t| (t.name.as_str(), t.dims.as_slice()))
+        .collect();
+    for node in &graph.node {
+        if node.operator() == "Constant"
+            && let (Some(out), Some(t)) = (
+                node.output.first(),
+                node.attribute.iter().find_map(|a| a.t.as_ref()),
+            )
+        {
+            stored.insert(out.as_str(), t.dims.as_slice());
+        }
+    }
+
+    let mut work = ConvWork::default();
+    for node in &graph.node {
+        let op = node.operator();
+        if !is_matrix_product(&op) {
+            continue;
+        }
+        let Some(dims) = weight_operand(&op)
+            .and_then(|at| node.input.get(at))
+            .and_then(|name| stored.get(name.as_str()))
+        else {
+            return Ok(None);
+        };
+        let product = |dims: &[i64]| {
+            dims.iter().try_fold(1u64, |n, d| {
+                u64::try_from(*d).ok().map(|d| n.saturating_mul(d))
+            })
+        };
+        let Some(total) = product(dims) else {
+            return Ok(None);
+        };
+        // A convolution's weight is [out, in/group, k1, k2, …]: more than
+        // one kernel position makes it spatial. A matrix product's is its
+        // [in, out] (or [out, in]) — pointwise by definition.
+        let spatial = op.contains("Conv") && dims.len() > 2 && product(&dims[2..]) > Some(1);
+        if spatial {
+            work.spatial = work.spatial.saturating_add(total);
+        } else {
+            work.pointwise = work.pointwise.saturating_add(total);
+        }
+    }
+    Ok(Some(work))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,8 +580,8 @@ mod tests {
         };
         let holding = |op_type: &str, attribute: AttributeProto| NodeProto {
             op_type: op_type.to_string(),
-            domain: String::new(),
             attribute: vec![attribute],
+            ..NodeProto::default()
         };
         let inner = GraphProto {
             initializer: vec![tensor(vec![4])],
@@ -533,6 +652,7 @@ mod tests {
                         t: Some(tensor(vec![7])),
                         ..AttributeProto::default()
                     }],
+                    ..NodeProto::default()
                 }],
             }],
         };
@@ -554,6 +674,85 @@ mod tests {
                 "Loop",
                 "ai.onnx.ml.LinearRegressor"
             ]
+        );
+    }
+
+    /// The board fixture: two 3x3 layers (7→8 and 8→8) and a 1x1 head
+    /// (8→5), each counted as out × in × kernel; the 1x1-only twin has no
+    /// spatial work at all.
+    #[test]
+    fn convolution_work_divides_by_kernel() {
+        assert_eq!(
+            conv_work(fixture::BOARD_ONNX).expect("decodes"),
+            Some(ConvWork {
+                spatial: 8 * 7 * 9 + 8 * 8 * 9,
+                pointwise: 5 * 8,
+            })
+        );
+        assert_eq!(
+            conv_work(fixture::ONE_BY_ONE_ONNX).expect("decodes"),
+            Some(ConvWork {
+                spatial: 0,
+                pointwise: 8 * 7 + 8 * 8 + 5 * 8,
+            })
+        );
+        // A `Gemm` against a stored weight is a matrix product.
+        assert_eq!(
+            conv_work(fixture::AS_INIT_ONNX).expect("decodes"),
+            Some(ConvWork {
+                spatial: 0,
+                pointwise: 12,
+            })
+        );
+        // So is one whose weight a `Constant` node writes.
+        assert_eq!(
+            conv_work(fixture::AS_CONST_ONNX).expect("decodes"),
+            Some(ConvWork {
+                spatial: 0,
+                pointwise: 12,
+            })
+        );
+    }
+
+    /// A matrix product whose weight is not stored — two activations
+    /// multiplied, or one computed at run time — leaves the work unknown
+    /// rather than counting it as nothing.
+    #[test]
+    fn an_unstored_weight_makes_the_work_unknown() {
+        let node = |op: &str, input: &[&str]| NodeProto {
+            input: input.iter().map(|s| s.to_string()).collect(),
+            op_type: op.to_string(),
+            ..NodeProto::default()
+        };
+        let model = |nodes: Vec<NodeProto>| {
+            ModelProto {
+                ir_version: 9,
+                graph: Some(GraphProto {
+                    node: nodes,
+                    initializer: vec![TensorProto {
+                        dims: vec![4, 3, 3, 3],
+                        name: "w".to_string(),
+                    }],
+                    ..GraphProto::default()
+                }),
+                ..ModelProto::default()
+            }
+            .encode_to_vec()
+        };
+        assert_eq!(
+            conv_work(&model(vec![node("Conv", &["x", "w"])])).expect("decodes"),
+            Some(ConvWork {
+                spatial: 108,
+                pointwise: 0,
+            })
+        );
+        assert_eq!(
+            conv_work(&model(vec![node("MatMul", &["x", "y"])])).expect("decodes"),
+            None
+        );
+        assert_eq!(
+            conv_work(&model(vec![node("Einsum", &["x", "w"])])).expect("decodes"),
+            None
         );
     }
 

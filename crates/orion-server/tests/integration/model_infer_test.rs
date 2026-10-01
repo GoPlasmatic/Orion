@@ -298,6 +298,91 @@ async fn raw_writes_the_tagged_tensor() {
     cleanup(&h);
 }
 
+/// `select` reduces the outputs before anything is written, reading the
+/// indices it gathers from the message through the call's `input` root: only
+/// the picked values land, and they are the values the whole output holds.
+#[tokio::test]
+async fn select_reduces_the_outputs_with_operands_from_the_message() {
+    let h = harness_preloading(orion::config::ModelPreload::None).await;
+    activate_fixture(&h).await;
+    let channel =
+        deploy(&h.app, "select", {
+            let mut t = tasks(
+                json!(FIXTURE_ID),
+                json!({
+                    "output": "data.picked",
+                    "select": {"to_list": [{"gather": [
+                        {"reshape": [{"var": "policy"}, [7]]},
+                        {"var": "input.data.cols"},
+                        0
+                    ]}]}
+                }),
+            );
+            let steps = t.as_array_mut().expect("tasks");
+            steps.insert(1, json!({
+            "id": "cols", "name": "cols", "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.cols", "logic": [3, 5]}
+            ]}}
+        }));
+            // The same call again, for the whole policy through the manifest's
+            // result, and once more for its argmax.
+            let mut full = steps[2].clone();
+            full["id"] = json!("full");
+            full["name"] = json!("full");
+            let input = full["function"]["input"].as_object_mut().expect("input");
+            input.remove("select");
+            input.insert("output".to_string(), json!("data.full"));
+            steps.push(full);
+            let mut best = steps[2].clone();
+            best["id"] = json!("best");
+            best["name"] = json!("best");
+            best["function"]["input"]["output"] = json!("data.best");
+            // `argmax` answers plain JSON already: an index is for comparing.
+            best["function"]["input"]["select"] = json!({"argmax": [{"var": "policy"}, 1]});
+            steps.push(best);
+            t
+        })
+        .await;
+    let (status, body) = call(&h.app, &channel, board()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let full: Vec<f64> = body["data"]["full"]["policy"][0]
+        .as_array()
+        .expect("the whole policy")
+        .iter()
+        .map(|v| v.as_f64().expect("a number"))
+        .collect();
+    assert_eq!(full.len(), 7, "{body}");
+    assert_eq!(body["data"]["picked"], json!([full[3], full[5]]), "{body}");
+    let argmax = full
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(i, _)| i)
+        .expect("seven values");
+    assert_eq!(body["data"]["best"], json!([argmax]), "{body}");
+    cleanup(&h);
+}
+
+/// `raw` and `select` cannot both apply, so a workflow asking for both is
+/// refused when it is written, not when a message arrives.
+#[tokio::test]
+async fn raw_and_select_together_are_refused_at_create_time() {
+    let h = harness_preloading(orion::config::ModelPreload::None).await;
+    let (status, body) = send(
+        &h.app,
+        "POST",
+        "/api/v1/admin/workflows",
+        Some(json!({"name": "both", "condition": true, "tasks": tasks(
+            json!(FIXTURE_ID),
+            json!({"raw": true, "select": {"var": "policy"}}),
+        )})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("select"), "{body}");
+    cleanup(&h);
+}
+
 /// A computed `model` routes per message: the id the message names runs,
 /// and one the node does not serve fails the task as unavailable.
 #[tokio::test]

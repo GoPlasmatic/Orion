@@ -56,6 +56,15 @@ pub(super) const MODEL_INFER_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
+        name: "select",
+        description: "JSONLogic in place of the manifest's `result`, evaluated natively over \
+                      the outputs by name and the call's `input` root as `input`, so a tensor \
+                      is reduced (`reshape`, `gather`, `argmax`, …) before anything is written. \
+                      Exclusive with `raw`.",
+        kind: FieldKind::Any,
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
         name: "timeout_ms",
         description: "Per-call deadline (JSONLogic), capped by `models.max_timeout_ms`; a cold \
                       load on first use is charged to it.",
@@ -122,6 +131,17 @@ pub(super) fn validate_static_input(
             "timeout_ms must be a positive integer (milliseconds)".to_string(),
         ));
     }
+    if obj.get("raw").and_then(Value::as_bool) == Some(true)
+        && obj.get("select").is_some_and(|v| !v.is_null())
+    {
+        errors.push((
+            "select",
+            "INVALID",
+            "'raw' and 'select' are exclusive: 'raw' writes the outputs whole, 'select' reduces \
+             them first"
+                .to_string(),
+        ));
+    }
     if let Some(Value::String(id)) = obj.get("model")
         && id.trim().is_empty()
     {
@@ -166,6 +186,7 @@ mod tests {
                 "runtime",
                 "output",
                 "raw",
+                "select",
                 "timeout_ms",
                 "stats_output"
             ]
@@ -182,6 +203,27 @@ mod tests {
                 "stats_output": "temp_data.stats"
             }))
             .is_empty()
+        );
+        // `select` alone passes; beside `raw: true` it cannot mean anything.
+        assert!(
+            errors_for(json!({
+                "model": "ada.c4-tiny",
+                "input": {"var": ""},
+                "select": {"argmax": [{"var": "policy"}, 1]}
+            }))
+            .is_empty()
+        );
+        assert_eq!(
+            errors_for(json!({
+                "model": "ada.c4-tiny",
+                "input": {"var": ""},
+                "raw": true,
+                "select": {"var": "policy"}
+            })),
+            [(
+                "tasks[0].function.input.select".to_string(),
+                "INVALID".to_string()
+            )]
         );
         // A computed model is JSONLogic, not a type error.
         assert!(

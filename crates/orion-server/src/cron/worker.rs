@@ -302,19 +302,7 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
                 .settle_skipped(
                     &occurrence.id,
                     &deps.instance_id,
-                    &if descriptor.singleton_slots > 1 {
-                        format!(
-                            "all {} slots of singleton key '{}' were held by running \
-                             occurrences (concurrency.policy = \"forbid\")",
-                            descriptor.singleton_slots, descriptor.singleton_key
-                        )
-                    } else {
-                        format!(
-                            "singleton key '{}' was held by another running occurrence \
-                             (concurrency.policy = \"forbid\")",
-                            descriptor.singleton_key
-                        )
-                    },
+                    &descriptor.singleton_busy_reason(),
                 )
                 .await;
             return Err(Abandoned::Settled);
@@ -744,6 +732,15 @@ fn fence_after(lease_secs: u64, heartbeat_secs: u64) -> std::time::Duration {
 /// is unreachable must stop its own work before a peer is entitled to start
 /// it. Each renewal is timed from when it was sent, which is no later than
 /// when the database wrote it, so every deadline here is early, never late.
+///
+/// A renewal runs *beside* the work, as its own branch of the select, never
+/// inside a branch's body: awaited there, it would stop the work being polled
+/// for as long as the database took to answer, which under write contention
+/// is a stall of up to the fence deadline in the middle of the run. At most
+/// one renewal is in flight; a beat that falls while one is still pending is
+/// not queued behind it. Work that finishes first drops a pending renewal,
+/// which is harmless: a renewal matches only a `running` row this node still
+/// claims, so one that lands after the settle changes nothing.
 async fn heartbeat<F, T, R, RF>(
     beat: std::time::Duration,
     fence_after: std::time::Duration,
@@ -760,27 +757,37 @@ where
     // The first tick is immediate: the steps between acquiring the lease and
     // starting the work (the trace row, the guards) renewed nothing.
     let mut ticker = tokio::time::interval(beat);
+    // A beat skipped while a renewal was pending is not made up in a burst.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut renewed = acquired;
+    // The renewal in flight, and when it was sent.
+    let mut pending: Option<(tokio::time::Instant, std::pin::Pin<Box<RF>>)> = None;
     tokio::pin!(work);
     loop {
         let deadline = renewed + fence_after;
         // In this order, so a race is decided the same way every time: work
         // that has finished is done, and past the deadline nothing more runs,
-        // even a renewal that might have landed.
+        // even a renewal that might have landed. The deadline arm is also what
+        // bounds a renewal hung on an unreachable database.
         tokio::select! {
             biased;
             result = &mut work => return Beat::Done(result),
             _ = tokio::time::sleep_until(deadline) => return Beat::Fenced,
-            _ = ticker.tick() => {
-                let sent = tokio::time::Instant::now();
-                // Bounded by the deadline: a renewal hung on an unreachable
-                // database must not hold the work past it.
-                match tokio::time::timeout_at(deadline, renew()).await {
-                    Ok(Ok(true)) => renewed = sent,
-                    Ok(Ok(false)) => return Beat::Lost,
-                    Ok(Err(e)) => on_error(&e),
-                    Err(_) => return Beat::Fenced,
+            answer = async {
+                match pending.as_mut() {
+                    Some((_, renewal)) => renewal.as_mut().await,
+                    None => std::future::pending().await,
                 }
+            }, if pending.is_some() => {
+                let (sent, _) = pending.take().expect("guarded by the branch condition");
+                match answer {
+                    Ok(true) => renewed = sent,
+                    Ok(false) => return Beat::Lost,
+                    Err(e) => on_error(&e),
+                }
+            }
+            _ = ticker.tick(), if pending.is_none() => {
+                pending = Some((tokio::time::Instant::now(), Box::pin(renew())));
             }
         }
     }
@@ -858,6 +865,71 @@ mod tests {
         )
         .await;
         assert_eq!(outcome, Beat::Done("done"));
+    }
+
+    /// A slow renewal runs beside the work rather than in front of it: work
+    /// made of twenty one-second steps takes twenty seconds however long each
+    /// renewal takes to answer.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_renewal_does_not_pause_the_work() {
+        let started = tokio::time::Instant::now();
+        let renewals = std::sync::atomic::AtomicUsize::new(0);
+        let work = async {
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            started.elapsed()
+        };
+        let outcome = heartbeat(
+            BEAT,
+            fence(),
+            started,
+            || {
+                renewals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    Ok(true)
+                }
+            },
+            |_| {},
+            work,
+        )
+        .await;
+        assert_eq!(outcome, Beat::Done(Duration::from_secs(20)));
+        assert_eq!(
+            renewals.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "the immediate beat and the one at 15s"
+        );
+    }
+
+    /// A renewal still pending at the next beat is not doubled up: one is in
+    /// flight at a time, and the one that answers renews from when it was sent.
+    #[tokio::test(start_paused = true)]
+    async fn a_pending_renewal_is_not_doubled_by_the_next_beat() {
+        let in_flight = std::sync::atomic::AtomicUsize::new(0);
+        let most = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = heartbeat(
+            BEAT,
+            fence(),
+            tokio::time::Instant::now(),
+            || {
+                let now = in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                most.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                let in_flight = &in_flight;
+                async move {
+                    // Longer than a beat, shorter than the fence.
+                    tokio::time::sleep(Duration::from_secs(20)).await;
+                    in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(true)
+                }
+            },
+            |_| {},
+            long_work(),
+        )
+        .await;
+        assert_eq!(outcome, Beat::Done("done"));
+        assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test(start_paused = true)]

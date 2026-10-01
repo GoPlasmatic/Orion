@@ -1,6 +1,6 @@
 <!-- description: The [plugins] settings: enabling the WebAssembly sandbox, the memory, size, time and concurrency ceilings, trust keys and per-plugin overrides. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-09-30 -->
 
 # Plugin settings
 
@@ -22,6 +22,8 @@ max_response_bytes = 1048576
 max_timeout_ms = 5000
 max_concurrency_per_function = 64
 max_live_instances = 256
+linear_memory_keep_resident_bytes = 1048576
+table_keep_resident_bytes = 65536
 fuel_backstop = 100000000000
 overrides = []
 
@@ -42,6 +44,8 @@ public_keys = []
 | `plugins.max_timeout_ms` | `5000` | `ORION_PLUGINS__MAX_TIMEOUT_MS` | Wall-clock ceiling per invocation; the task's own deadline applies too and the shorter wins. |
 | `plugins.max_concurrency_per_function` | `64` | `ORION_PLUGINS__MAX_CONCURRENCY_PER_FUNCTION` | Invocations of one function that may run at once; beyond it a task waits until its deadline and fails as a limit. |
 | `plugins.max_live_instances` | `256` | `ORION_PLUGINS__MAX_LIVE_INSTANCES` | The instance pool across every function. Must be at least `max_concurrency_per_function`; under-sizing surfaces as instantiation failures under load. |
+| `plugins.linear_memory_keep_resident_bytes` | `1048576` | `ORION_PLUGINS__LINEAR_MEMORY_KEEP_RESIDENT_BYTES` | How much of an instance's linear memory stays mapped when the instance is returned to the pool. The next invocation on that slot finds those pages already there instead of faulting each one in again. Linux only; other platforms ignore it. Raise it when a plugin is called often and touches more memory per call than this. Resident cost is at most this much per pooled memory that has been used. `0` releases it all. Must be at most `max_memory_bytes`. |
+| `plugins.table_keep_resident_bytes` | `65536` | `ORION_PLUGINS__TABLE_KEEP_RESIDENT_BYTES` | The same, for each instance's tables. |
 | `plugins.fuel_backstop` | `100000000000` | `ORION_PLUGINS__FUEL_BACKSTOP` | Instruction budget per invocation — a backstop against a guest that spins, not a contract, because fuel cost moves between Wasmtime versions. Reason in `max_timeout_ms`. |
 | `plugins.trust.public_keys` | `[]` | `ORION_PLUGINS__TRUST__PUBLIC_KEYS` | When set, an upload must carry a signature over the component digest by one of these keys, verified again at every load. [`orion-server plugin keygen`](../cli/orion-server/plugin.md) prints a new key's value. |
 | `plugins.overrides` | `[]` | — | Per-plugin ceilings; see [Overrides](#overrides). |

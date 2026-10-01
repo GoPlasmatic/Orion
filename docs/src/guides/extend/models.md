@@ -1,6 +1,6 @@
 <!-- description: Serve an ONNX model: write the manifest, check it offline, put the bytes in a bucket, register and admit it, and call it from a workflow with model_infer. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-09-30 -->
 
 # Serve a model
 
@@ -65,6 +65,8 @@ A dimension may be a **name** instead of a count, for a graph exported with a dy
 ```
 
 A name binds to whatever the call brings on its first occurrence. Every later occurrence — in another input, or in an output — must equal that binding. So `["N", 3]` on the output means *the same* N the input had, while the 3 stays exact: naming one axis costs nothing on the others. One session serves every size, so this is not the same as registering the model once per shape. What bounds a single call is `models.max_input_elements` rather than the declaration.
+
+On the CPU, some graphs also get a plan per concrete size. This applies when most of the work is in convolutions with a kernel wider than 1×1. The plan is prepared the first time a size arrives. The eight most recently used are kept per loaded model. For such graphs a plan built for a known board runs 1.3 to 1.6 times faster than one that resolves the name on every call. A graph that is mostly 1×1 convolutions or matrix products keeps its single general plan. Fixing its size makes tract lay those products out in a slower order. The choice is made from the graph alone, so every node runs the same plan for the same artifact and size.
 
 `probe_dims` is only for admission, which needs concrete tensors to run its five probe inferences. A name it leaves out is probed at 1. A graph needing more — a convolution with a kernel wider than its input — says so there. The binding is recorded in `stats.probe_dims`, because `probe_ms` over a variable axis means nothing without the size behind it.
 

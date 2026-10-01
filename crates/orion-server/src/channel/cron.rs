@@ -764,6 +764,26 @@ pub struct PassPlan {
 }
 
 impl CronDescriptor {
+    /// Why an occurrence of this channel was recorded `skipped_singleton`:
+    /// every slot of its key was held. One wording, whether the worker found
+    /// the slots full at claim or the reconciler found them full when the
+    /// occurrence came due.
+    pub fn singleton_busy_reason(&self) -> String {
+        if self.singleton_slots > 1 {
+            format!(
+                "all {} slots of singleton key '{}' were held by running \
+                 occurrences (concurrency.policy = \"forbid\")",
+                self.singleton_slots, self.singleton_key
+            )
+        } else {
+            format!(
+                "singleton key '{}' was held by another running occurrence \
+                 (concurrency.policy = \"forbid\")",
+                self.singleton_key
+            )
+        }
+    }
+
     /// Plan one reconciliation pass over `[cursor, now]`.
     ///
     /// Pure: same inputs, same plan. Everything durable — the inserts, the

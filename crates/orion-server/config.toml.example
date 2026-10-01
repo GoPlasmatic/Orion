@@ -556,6 +556,8 @@
 # max_timeout_ms = 5000              # Wall-clock ceiling per invocation
 # max_concurrency_per_function = 64  # Concurrent invocations of one function
 # max_live_instances = 256           # Instance pool across every function; at least the above
+# linear_memory_keep_resident_bytes = 1048576  # Memory kept mapped per returned slot (Linux)
+# table_keep_resident_bytes = 65536  # Tables kept mapped per returned slot (Linux)
 # overrides = []                     # Per-plugin ceilings; see [[plugins.overrides]] below
 # fuel_backstop = 100000000000       # Instruction budget backstop, not a contract
 

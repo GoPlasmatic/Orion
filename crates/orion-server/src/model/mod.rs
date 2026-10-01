@@ -71,7 +71,7 @@ pub use loader::{ManifestEntry, ModelEntry, ModelLoadIssue, ModelSet, literal_re
 pub use manifest::{ABI, ArtifactReference, InputDecl, Manifest, OutputDecl, is_model_manifest};
 pub use node::{ModelsRuntime, node_name};
 pub use offline::{LocalArtifacts, OfflineModels};
-pub use onnx::{GraphStats, read_stats};
+pub use onnx::{ConvWork, GraphStats, conv_work, read_stats};
 pub use runtimes::{
     BoundInput, LoadBinding, LoadError, LoadedModel, ModelRuntime, ModelRuntimes, RunError,
     TractRuntime,
@@ -112,6 +112,19 @@ pub(crate) mod fixture {
         include_bytes!("../../tests/fixtures/models/dynamic/scale.onnx");
     pub const DYNAMIC_MANIFEST: &str =
         include_str!("../../tests/fixtures/models/dynamic/model.json");
+
+    /// The `board` fixture: a fully convolutional policy over an i8
+    /// `[1, 7, H, W]` board — two 3x3 layers and a 1x1 head — and its twin
+    /// with 1x1 layers only, over the same boundary, so one manifest binds
+    /// both.
+    pub const BOARD_ONNX: &[u8] = include_bytes!("../../tests/fixtures/models/board/board.onnx");
+    pub const ONE_BY_ONE_ONNX: &[u8] =
+        include_bytes!("../../tests/fixtures/models/board/one-by-one.onnx");
+    pub const BOARD_MANIFEST: &str = include_str!("../../tests/fixtures/models/board/model.json");
+
+    pub fn board() -> super::Manifest {
+        super::Manifest::parse(BOARD_MANIFEST).expect("the board manifest is valid")
+    }
 
     pub fn dynamic() -> super::Manifest {
         super::Manifest::parse(DYNAMIC_MANIFEST).expect("the dynamic manifest is valid")

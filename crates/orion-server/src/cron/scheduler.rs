@@ -201,7 +201,32 @@ async fn reconcile_channel(
         config.max_catch_up,
     );
 
+    // `forbid` is decided when an occurrence comes due, not when a worker
+    // gets round to it. With every slot held, a `pending` row could only ever
+    // be claimed to be skipped, and only a worker with a free permit claims —
+    // on a node whose slots are all busy, that is the spare workers alone, one
+    // claim per poll each. A schedule faster than they drain would grow a
+    // backlog of rows that nothing can run and the cleanup (rightly) never
+    // removes, until the node went idle (#377). So the row is written already
+    // settled. A slot freed between this check and a claim changes nothing
+    // that matters: that tick found the key busy when it was due, which is
+    // what `forbid` skips on.
+    let slots_full = if descriptor.concurrency == crate::channel::ConcurrencyPolicy::Forbid
+        && !plan.materialise.is_empty()
+    {
+        let key = descriptor.singleton_key.as_str();
+        let holds = repo.singleton_holds(&[key]).await?;
+        holds.get(key).copied().unwrap_or(0) >= descriptor.singleton_slots
+    } else {
+        false
+    };
+    let busy_reason = slots_full.then(|| descriptor.singleton_busy_reason());
+
     for scheduled_for in &plan.materialise {
+        let (occurrence_status, error_message) = match busy_reason.as_deref() {
+            Some(reason) => (status::SKIPPED_SINGLETON, Some(reason)),
+            None => (status::PENDING, None),
+        };
         let created = repo
             .insert_occurrence(NewOccurrence {
                 id: &new_occurrence_id(),
@@ -211,17 +236,28 @@ async fn reconcile_channel(
                 workflow_id: descriptor.workflow_id.as_deref(),
                 trigger: trigger::CRON,
                 scheduled_for: *scheduled_for,
-                status: status::PENDING,
-                error_message: None,
+                status: occurrence_status,
+                error_message,
             })
             .await?;
         if created {
-            crate::metrics::record_cron_occurrence(status::PENDING);
-            tracing::debug!(
-                channel_id = %descriptor.channel_id,
-                scheduled_for = %scheduled_for,
-                "Materialised cron occurrence"
-            );
+            crate::metrics::record_cron_occurrence(occurrence_status);
+            if slots_full {
+                crate::metrics::record_cron_singleton_contention();
+                tracing::info!(
+                    channel_id = %descriptor.channel_id,
+                    scheduled_for = %scheduled_for,
+                    singleton_key = %descriptor.singleton_key,
+                    "Cron occurrence skipped when due: every slot of its singleton key \
+                     is held by a running attempt"
+                );
+            } else {
+                tracing::debug!(
+                    channel_id = %descriptor.channel_id,
+                    scheduled_for = %scheduled_for,
+                    "Materialised cron occurrence"
+                );
+            }
         }
     }
 
@@ -386,6 +422,131 @@ mod tests {
         // would refuse it anyway.
         pass(&repo, &d, cursor).await;
         assert_eq!(occurrence_count(&repo).await, 1);
+    }
+
+    async fn statuses(repo: &Arc<SqlCronRepository>) -> Vec<String> {
+        let mut rows = repo
+            .list_paginated(&CronOccurrenceFilter::default())
+            .await
+            .expect("list")
+            .data;
+        rows.sort_by_key(|o| o.scheduled_for);
+        rows.into_iter().map(|o| o.status).collect()
+    }
+
+    /// A `forbid` occurrence due while every slot of its key is held is
+    /// written already settled `skipped_singleton`, not queued `pending` for a
+    /// worker to claim only to skip it (#377). Once a slot is free, the next
+    /// due occurrence is queued as usual.
+    #[tokio::test]
+    async fn a_forbid_occurrence_due_with_every_slot_held_is_skipped_when_due() {
+        use crate::storage::repositories::cron::{AttemptStart, ClaimRequest, SingletonRequest};
+
+        let repo = repo().await;
+        let d = serde_json::from_value::<crate::channel::CronTransportConfig>(serde_json::json!({
+            "schedule": "* * * * * *",
+            "concurrency": { "policy": "forbid" },
+        }))
+        .expect("config")
+        .compile(crate::channel::CronIdentity {
+            channel_id: "ch".to_string(),
+            channel_name: "ch".to_string(),
+            version: 1,
+            workflow_id: Some("wf".to_string()),
+        })
+        .expect("compiles");
+        let now = repo.db_now().await.expect("db now");
+        pass(&repo, &d, now).await;
+
+        // One occurrence runs and holds the only slot: a manual one, already
+        // due, so it can be claimed now.
+        repo.insert_occurrence(NewOccurrence {
+            id: "holder",
+            channel_id: "ch",
+            channel_name: "ch",
+            channel_version: 1,
+            workflow_id: Some("wf"),
+            trigger: trigger::MANUAL,
+            scheduled_for: now - Duration::seconds(5),
+            status: status::PENDING,
+            error_message: None,
+        })
+        .await
+        .expect("insert");
+        let claimed = repo
+            .claim_due(ClaimRequest {
+                claimant: "node-a",
+                limit: 1,
+                lease_secs: 60,
+            })
+            .await
+            .expect("claim");
+        let singleton = SingletonRequest {
+            key: &d.singleton_key,
+            holder: "node-a",
+            lease_secs: 60,
+            slots: d.singleton_slots,
+        };
+        let started = repo
+            .start_attempt(&claimed[0], "node-a", 1, Some(singleton), 60)
+            .await
+            .expect("start");
+        let held = match started {
+            AttemptStart::Started { held } => {
+                held.expect("the first occurrence takes the free slot")
+            }
+            _ => unreachable!("the only slot is free"),
+        };
+
+        // The next scheduled tick comes due while it runs.
+        let second = repo.schedule_states().await.expect("states")[0].next_fire_at;
+        pass(&repo, &d, second).await;
+        assert_eq!(statuses(&repo).await, ["running", "skipped_singleton"]);
+        let skipped = repo
+            .list_paginated(&CronOccurrenceFilter {
+                status: Some("skipped_singleton".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("list")
+            .data
+            .remove(0);
+        assert!(
+            skipped.completed_at.is_some(),
+            "written settled, so it carries when"
+        );
+        assert!(
+            skipped
+                .error_message
+                .as_deref()
+                .is_some_and(|m| m.contains("singleton key 'ch'")),
+            "{:?}",
+            skipped.error_message
+        );
+        assert_eq!(repo.pending_count(None).await.expect("pending"), 0);
+
+        // The slot is released: the tick after is queued to run.
+        repo.release_singleton(&d.singleton_key, &claimed[0].id, held)
+            .await
+            .expect("release");
+        let third = repo.schedule_states().await.expect("states")[0].next_fire_at;
+        pass(&repo, &d, third).await;
+        assert_eq!(
+            statuses(&repo).await,
+            ["running", "skipped_singleton", "pending"]
+        );
+    }
+
+    /// `allow` takes no slot, so nothing is ever skipped when due.
+    #[tokio::test]
+    async fn an_allow_occurrence_is_always_queued() {
+        let repo = repo().await;
+        let d = descriptor("ch", "* * * * * *");
+        let now = repo.db_now().await.expect("db now");
+        pass(&repo, &d, now).await;
+        let cursor = repo.schedule_states().await.expect("states")[0].next_fire_at;
+        pass(&repo, &d, cursor).await;
+        assert_eq!(statuses(&repo).await, ["pending"]);
     }
 
     /// The crash window the ledger is designed around: the rows are written and

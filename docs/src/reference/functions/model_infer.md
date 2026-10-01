@@ -1,6 +1,6 @@
 <!-- description: The model_infer task function: run an admitted ONNX model through its manifest's adapters, with the runtime, deadline, failure categories and offline mode. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-30 -->
 
 # `model_infer`
 
@@ -19,6 +19,7 @@ Runs an admitted [model](../admin-api/models.md), an ONNX artifact this node has
     "runtime": "…",
     "output": "data.policy",
     "raw": false,
+    "select": "…",
     "timeout_ms": 0,
     "stats_output": "temp_data.inference"
   }
@@ -42,6 +43,7 @@ The task names the model, hands over the JSON root the adapters read, and says w
 | `runtime` | string | no | `[models.default_runtime]` for the model's format | Which runtime runs the graph: one of the compiled-in names (`tract`). A name this build does not know is refused when the workflow is written (`MODEL_RUNTIME_UNKNOWN`); a known one disabled on a node fails the call there |
 | `output` | string | no | `"temp_data.inference"` | Dotted result path |
 | `raw` | bool | no | `false` | Skip `result`; write `{name: tensor}` in wire form for chaining — `{"policy": {"tensor": {"dtype": "f32", "shape": [1, 7], "data": "<base64>"}}}` |
+| `select` | JSONLogic | no | the manifest's `result` | An expression of the task's own in place of the manifest's `result`, evaluated natively over the output tensors by name and the call's `input` root under `input`. Use it to reduce an output with the [tensor family](../expressions.md#tensors-tensor) (`reshape`, `gather`, `argmax`, `crop`, …) before anything is written, with operands taken from the message. Exclusive with `raw`; refused on a model with an output named `input` |
 | `timeout_ms` | number \| JSONLogic | no | the model's ceiling | Per-call deadline, capped by `models.max_timeout_ms` (or the model's `[[models.overrides]]` row); a cold load on first use is charged to it. JSONLogic here is what lets a workflow divide one wall-clock budget between several inferences. A value that is not a positive integer fails the call; the cap is the host's either way |
 | `stats_output` | string | no | not written | Path for `{id, version, digest, runtime, device, parameters, artifact_bytes, ops, peak_ops, queued_ms, inference_ms, cold_load}`. `ops` is what the manifest's expressions charged for this call and `peak_ops` the heaviest single one, which is the number [`engine.ops_budget`](../configuration/engine.md#ops_budget) is compared against |
 
@@ -56,7 +58,7 @@ failure, and every failure is one of these categories — the label
 | `caller_input` | `model` does not name a model, `input` is missing, or an adapter produced something other than the declared tensor — the wrong dtype or shape, or no tensor at all | `400`, the message names the input and the expected `dtype[shape]` |
 | `unavailable` | models are disabled on this node, the id has no active admitted version here, or the artifact could not be loaded into the runtime (the stage is named; the runtime's own text goes to the log) | `500` |
 | `runtime_unavailable` | the runtime named — or the default for the format — is not enabled on this node, or does not serve the format | `500` |
-| `adapter` | an adapter or the result expression failed to evaluate; an `engine.ops_budget` refusal keeps its `BUDGET_EXCEEDED` code | `400` |
+| `adapter` | an adapter, the result expression or `select` failed to evaluate; an `engine.ops_budget` refusal keeps its `BUDGET_EXCEEDED` code | `400` |
 | `input_size` / `output_size` | more elements than `models.max_input_elements` / `max_output_elements` | `400` |
 | `permit` | no inference slot freed up before the deadline (`models.max_concurrent_inferences`, `models.max_concurrency_per_model`) | `400` |
 | `timeout` | the deadline elapsed — loading, waiting or running | `504`-class, the one retryable category |
@@ -76,7 +78,7 @@ failure, and every failure is one of these categories — the label
 }
 ```
 
-Take the `c4-tiny` manifest: one input `board` (`f32[1,2,6,7]`, adapter `{"tensor": [{"var": "data.board"}, "f32"]}`), one output `policy` (`f32[1,7]`), and the result `{"policy": {"to_list": [{"var": "policy"}]}}`. A message whose `data.board` is the nested list of a board gets `data.policy.policy` back as one row of seven numbers. A computed `model` routes per message. The dependants list on `GET /models/{id}/dependencies` and the quarantine below see only literal ids.
+Take the `c4-tiny` manifest: one input `board` (`f32[1,2,6,7]`, adapter `{"tensor": [{"var": "data.board"}, "f32"]}`), one output `policy` (`f32[1,7]`), and the result `{"policy": {"to_list": [{"var": "policy"}]}}`. A message whose `data.board` is the nested list of a board gets `data.policy.policy` back as one row of seven numbers. When a workflow needs only part of an output, `select` reduces it before it is written. Every later step that evaluates against the message copies a tensor written there, so reducing first matters for a large output. With `data.cols` set to `[3, 5]` earlier in the workflow, `"select": {"to_list": [{"gather": [{"reshape": [{"var": "policy"}, [7]]}, {"var": "input.data.cols"}, 0]}]}` writes two numbers, and `"select": {"argmax": [{"var": "policy"}, 1]}` writes `[i]`, the index of the best move. A computed `model` routes per message. The dependants list on `GET /models/{id}/dependencies` and the quarantine below see only literal ids.
 
 ## Caveats
 

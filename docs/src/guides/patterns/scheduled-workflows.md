@@ -1,6 +1,6 @@
 <!-- description: Run a workflow on a schedule with a cron channel — the six-field expression, time zones and DST, misfire policies, non-overlapping runs, and seeing what ran. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-20 -->
+<!-- last_verified: 2026-09-30 -->
 
 # Run work on a schedule
 
@@ -87,7 +87,7 @@ By default occurrences may overlap: if the work takes eleven minutes and the sch
 { "transport_config": { "concurrency": { "policy": "forbid" } } }
 ```
 
-`forbid` admits at most one occurrence for a key at a time, across the whole cluster. A contending occurrence is recorded `skipped_singleton`: visible in the ledger, not silently dropped. A schedule that is consistently outrunning its own work shows up as a growing count rather than as mysterious load.
+`forbid` admits at most one occurrence for a key at a time, across the whole cluster. A contending occurrence is recorded `skipped_singleton`: visible in the ledger, not silently dropped. It is recorded when it comes due, not queued for a worker. A busy node therefore never builds a backlog of `pending` rows that could only ever be skipped. A schedule that is consistently outrunning its own work shows up as a growing count rather than as mysterious load.
 
 The key defaults to the channel's id. Naming the same key on several channels serializes them with each other:
 
