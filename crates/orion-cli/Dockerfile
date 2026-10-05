@@ -7,7 +7,7 @@
 #
 # Digest-pinned to the same base images as the server Dockerfile so a rebuild
 # months from now resolves the same layers; dependabot bumps the tag+digest.
-FROM rust:1.98-slim@sha256:bce1476d4be4d78b83705bc5f428b86d640eeeea33e9dadafbc037b5703a53bf AS chef
+FROM rust:1.98-slim@sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7 AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
