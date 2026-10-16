@@ -48,6 +48,11 @@ pub struct RuntimeGeneration {
     /// times this node has republished".
     pub id: u64,
     pub engine: Arc<dataflow_rs_v3::Engine>,
+    /// The dataflow-rs 4 engine built from the same rows, which
+    /// `channel_call`'s dataflow-rs 4 function runs its child on. `None`
+    /// until the building cutover fills it on every publish; the running
+    /// cutover makes it `engine` and this field goes.
+    pub engine4: Option<dataflow_rs::Engine>,
     pub channels: Arc<ChannelSnapshot>,
     /// Every function the engine above dispatches, and what each declares —
     /// what create-time validation and `GET /admin/functions` read, so a
@@ -108,6 +113,7 @@ impl RuntimeHandle {
             current: ArcSwap::from_pointee(RuntimeGeneration {
                 id: 0,
                 engine,
+                engine4: None,
                 channels,
                 functions,
                 plugins: Arc::new(PluginSet::empty()),
@@ -130,13 +136,14 @@ impl RuntimeHandle {
 
     /// Publish the next generation. Returns its id.
     ///
-    /// The engine, the channels, the function registry, the plugin set and
+    /// The engines, the channels, the function registry, the plugin set and
     /// the model set must be built from the same rows; taking them together
     /// is what makes that the only way to say it. Readers already holding a
     /// generation finish on it; every load after this returns the new one.
     pub fn publish(
         &self,
         engine: Arc<dataflow_rs_v3::Engine>,
+        engine4: Option<dataflow_rs::Engine>,
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
         plugins: Arc<PluginSet>,
@@ -146,6 +153,7 @@ impl RuntimeHandle {
         self.current.store(Arc::new(RuntimeGeneration {
             id,
             engine,
+            engine4,
             channels,
             functions,
             plugins,
@@ -212,6 +220,7 @@ mod tests {
         let next_engine = engine();
         handle.publish(
             next_engine.clone(),
+            None,
             Arc::new(ChannelSnapshot::empty()),
             FunctionRegistry::builtin().clone(),
             Arc::new(PluginSet::empty()),
@@ -242,6 +251,7 @@ mod tests {
         for expected in 1..=3 {
             let id = handle.publish(
                 engine(),
+                None,
                 Arc::new(ChannelSnapshot::empty()),
                 FunctionRegistry::builtin().clone(),
                 Arc::new(PluginSet::empty()),
@@ -251,5 +261,56 @@ mod tests {
             assert_eq!(handle.load().id, expected);
             assert_eq!(handle.published_count(), expected);
         }
+    }
+
+    /// The dataflow-rs 4 engine is one more half of the generation: the boot
+    /// generation has none, and a held generation keeps the one it was
+    /// published with across the next publish, as it keeps its dataflow-rs 3
+    /// engine. An `Engine` is an `Arc` inside, so the check is that the held
+    /// one runs the program it was published with.
+    #[test]
+    fn the_dataflow_rs_4_engine_travels_with_its_generation() {
+        let (handle, _) = handle();
+        assert!(
+            handle.load().engine4.is_none(),
+            "the boot generation has none"
+        );
+
+        let v4 = |id: &str| {
+            dataflow_rs::Engine::builder()
+                .workflow_json(&serde_json::json!({"id": id, "tasks": [
+                    {"id": "t", "function": {"name": "map", "input": {"mappings": []}}}
+                ]}))
+                .build()
+                .expect("a v4 engine builds")
+        };
+        let ids = |generation: &RuntimeGeneration| -> Vec<String> {
+            generation
+                .engine4
+                .as_ref()
+                .expect("an engine4")
+                .program()
+                .workflows()
+                .iter()
+                .map(|w| w.id.to_string())
+                .collect()
+        };
+        let publish = |engine4| {
+            handle.publish(
+                engine(),
+                engine4,
+                Arc::new(ChannelSnapshot::empty()),
+                FunctionRegistry::builtin().clone(),
+                Arc::new(PluginSet::empty()),
+                Arc::new(ModelSet::empty()),
+            )
+        };
+        publish(Some(v4("first")));
+        let held = handle.load();
+        publish(Some(v4("second")));
+        assert_eq!(ids(&held), ["first"], "a held generation keeps its engine4");
+        assert_eq!(ids(&handle.load()), ["second"]);
+        publish(None);
+        assert!(handle.load().engine4.is_none());
     }
 }

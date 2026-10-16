@@ -112,7 +112,7 @@ pub fn build_custom_functions(
     );
 
     fns.insert(
-        "channel_call".to_string(),
+        functions::channel_call::NAME.to_string(),
         Box::new(functions::channel_call::ChannelCallHandler {
             runtime: runtime.clone(),
             exprs,
@@ -319,16 +319,19 @@ pub fn build_custom_functions(
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::connector_handler::ConnectorHandler;
     use functions::{
-        cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, crypto, data_query,
-        data_write, db_read, db_write, http_call, jwt_sign, jwt_verify, mongo_aggregate,
-        mongo_read, mongo_write, publish_kafka, send_email, storage_head, storage_presign,
+        cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, channel_call, crypto,
+        data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify,
+        mongo_aggregate, mongo_read, mongo_write, publish_kafka, send_email, storage_head,
+        storage_presign,
     };
 
     let HandlerDeps {
         registry: connectors,
         client,
         runtime,
+        exprs,
         jwks,
+        engine_config,
         query_config,
         write_config,
         cache_pool,
@@ -338,7 +341,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         smtp_pool_cache,
         models,
         models_config,
-        ..
     } = deps;
 
     registry.register(
@@ -346,6 +348,17 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         http_call::HttpCallFunction {
             registry: connectors.clone(),
             client: client.clone(),
+        },
+    );
+    // The other function that dispatches back into the node: it runs its
+    // child on the serving generation's engine, under the target's guards.
+    registry.register(
+        channel_call::NAME,
+        channel_call::ChannelCallFunction {
+            runtime: runtime.clone(),
+            exprs,
+            max_call_depth: engine_config.max_channel_call_depth,
+            default_timeout_ms: engine_config.default_channel_call_timeout_ms,
         },
     );
     // The model set comes off one load of the serving generation per call,

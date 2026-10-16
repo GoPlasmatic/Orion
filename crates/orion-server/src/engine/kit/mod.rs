@@ -983,6 +983,7 @@ mod tests {
     /// The functions ported so far, in `build_custom_functions`' order.
     const PORTED: &[&str] = &[
         "http_call",
+        "channel_call",
         "model_infer",
         "crypto",
         "jwt_sign",

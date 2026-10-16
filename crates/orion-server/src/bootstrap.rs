@@ -602,6 +602,7 @@ impl EngineComponents {
         // there is only one way to publish.
         serving.runtime.publish(
             Arc::new(built_engine),
+            None,
             Arc::new(channels_snapshot),
             functions,
             plugins,

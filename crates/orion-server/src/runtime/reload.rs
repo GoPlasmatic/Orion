@@ -253,6 +253,7 @@ pub async fn reload_engine_with_opts(
         // two stores here could not avoid however they were ordered.
         let generation = state.runtime.publish(
             new_engine,
+            None,
             Arc::new(new_channels),
             functions,
             plugins,

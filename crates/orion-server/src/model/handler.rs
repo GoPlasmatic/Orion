@@ -1408,6 +1408,7 @@ mod tests {
         let set = ModelSet::load_active(&[row], &config, true, &crate::engine::kit::test_exprs());
         runtime.publish(
             generation.engine.clone(),
+            generation.engine4.clone(),
             generation.channels.clone(),
             generation.functions.clone(),
             generation.plugins.clone(),
@@ -1881,6 +1882,7 @@ mod tests {
         };
         runtime.publish(
             generation.engine.clone(),
+            generation.engine4.clone(),
             generation.channels.clone(),
             generation.functions.clone(),
             generation.plugins.clone(),
