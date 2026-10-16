@@ -174,10 +174,11 @@ pub struct JwtKey {
 /// algorithms, the keys, the JWKS URL and `require_exp` are literals, read
 /// as written; `token` and `leeway_secs` are expressions, read by
 /// `kit::read`'s twins of 1.12's readers; `issuer` and `audience` are key
-/// material lists, `string_or_vec`'s reading, K51 included. `output` is
-/// read as written ([`kit::written_output`]). A task missing `token` or
-/// `algorithms` is refused at load (I183), and its `check` is 1.12's
-/// authoring-time rules.
+/// material lists, `string_or_vec`'s reading, K51 included. A computed
+/// `output` is evaluated where 1.12 read `output`, before the token and any
+/// JWKS fetch, where 1.12 never evaluated it and wrote at `data` (a change
+/// O11b's CHANGELOG names). A task missing `token` or `algorithms` is
+/// refused at load (I183), and its `check` is 1.12's authoring-time rules.
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct JwtVerifyConfig {
@@ -241,21 +242,24 @@ impl Function for JwtVerifyFunction {
     // No `prepare`: the claims are an object, which any root takes.
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &JwtVerifyConfig) -> dataflow_rs::Result<Outcome> {
-        let claims = self.claims(ctx, cfg).await?;
-        ctx.set(
-            kit::written_output(&cfg.output),
-            OwnedDataValue::from(&claims),
-        )?;
+        let (output, claims) = self.claims(ctx, cfg).await?;
+        ctx.set(&output, OwnedDataValue::from(&claims))?;
         Ok(Outcome::Ok)
     }
 }
 
 impl JwtVerifyFunction {
-    /// The verified claims, read in `JwtVerifyHandler::execute`'s order:
-    /// the allowlist, the token, each static key, the JWKS URL, the issuer
-    /// and audience, the leeway, then the verification.
-    async fn claims(&self, ctx: &Ctx<'_>, cfg: &JwtVerifyConfig) -> Result<Value, HandlerError> {
+    /// Where the claims go and the verified claims, read in
+    /// `JwtVerifyHandler::execute`'s order: the allowlist, the output, the
+    /// token, each static key, the JWKS URL, the issuer and audience, the
+    /// leeway, then the verification.
+    async fn claims<'c>(
+        &self,
+        ctx: &Ctx<'_>,
+        cfg: &'c JwtVerifyConfig,
+    ) -> Result<(std::borrow::Cow<'c, dataflow_rs::Path>, Value), HandlerError> {
         let algorithms = algorithms_v4(&cfg.algorithms)?;
+        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
         let token = ctx.eval(&cfg.token)?;
         let token = read::required_str(Some(&token), "token", NAME)?.into_owned();
 
@@ -319,10 +323,11 @@ impl JwtVerifyFunction {
         };
         // A JWKS fetch inside the run's deadline: its 5 s timer is armed only
         // when that comes first (`jwks::fetch_timeout`).
-        verifier
+        let claims = verifier
             .verify_within(&token, ctx.deadline())
             .await
-            .map_err(rejected)
+            .map_err(rejected)?;
+        Ok((output, claims))
     }
 }
 
@@ -1671,26 +1676,64 @@ mod tests {
         assert_eq!(claims["aud"], json!("partner-app"));
     }
 
-    /// A computed `output` is written at `data`, as 1.12 wrote it: 1.12
-    /// read `output` as written, compiling the expression and never
-    /// evaluating it. The claims are an object, so the root takes them.
+    /// A computed `output` writes the claims where it evaluates, by 1.12's
+    /// `resolve_output_path` rule. 1.12 never evaluated `jwt_verify`'s
+    /// output: it wrote the claims at `data` whatever the expression said,
+    /// replacing the rest of `data`. Twinned against v3: the claims are the
+    /// same, only their place differs (a change O11b's CHANGELOG names). A
+    /// `null` result is `data` on both engines. A result that is no path is
+    /// refused in 1.12's words before the token is read or any key fetched.
     #[tokio::test]
-    async fn a_computed_output_is_written_at_data_as_1_12_wrote_it() {
+    async fn a_computed_output_writes_the_claims_where_it_evaluates() {
+        use std::sync::atomic::Ordering;
+        let sign = json!({"algorithm": "HS256", "key": HS_SECRET,
+                          "claims": {"sub": "u1", "iat": 1_700_000_000i64,
+                                     "exp": 1_900_000_000i64},
+                          "output": "temp_data.token"});
+        let verify = json!({"token": {"var": "temp_data.token"}, "algorithms": ["HS256"],
+                            "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
+                            "output": {"var": "data.where"}});
+        let claims = json!({"sub": "u1", "iat": 1_700_000_000i64, "exp": 1_900_000_000i64});
         let (v3, v4) = round_trip_both(
-            json!({"algorithm": "HS256", "key": HS_SECRET,
-                   "claims": {"sub": "u1", "iat": 1_700_000_000i64, "exp": 1_900_000_000i64},
-                   "output": "temp_data.token"}),
-            json!({"token": {"var": "temp_data.token"}, "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
-                   "output": {"cat": ["data", ".claims"]}}),
-            json!({"kept": false}),
+            sign.clone(),
+            verify.clone(),
+            json!({"where": "data.claims"}),
         )
         .await;
-        assert_eq!(v4, v3);
+        // 1.12: at `data`, whatever the expression said.
+        assert_eq!(v3.expect("verified on v3"), claims);
         assert_eq!(
-            v4.expect("verified"),
-            json!({"sub": "u1", "iat": 1_700_000_000i64, "exp": 1_900_000_000i64})
+            v4.expect("verified on v4"),
+            json!({"where": "data.claims", "claims": claims})
         );
+
+        let (v3, v4) = round_trip_both(sign, verify, json!({"kept": false})).await;
+        assert_eq!(v4, v3, "a null result is `data` on both");
+        assert_eq!(v4.expect("verified"), claims);
+
+        let jwks = https_jwks().await;
+        let input = json!({"token": {"var": "data.token"}, "algorithms": ["HS256"],
+                           "jwks_url": jwks.url, "output": {"var": "data.where"}});
+        for not_a_path in [json!(5), json!({"a": 1})] {
+            let data = json!({"token": hs_token("old"), "where": not_a_path});
+            let called = testing::call(
+                JwtVerifyFunction {
+                    jwks: cache(jwks.client.clone()),
+                },
+                input.clone(),
+            )
+            .exprs(exprs())
+            .name(NAME)
+            .message(dataflow_rs::Message::from_parts(
+                OwnedDataValue::Null,
+                OwnedDataValue::from(&data),
+                OwnedDataValue::Null,
+            ))
+            .await;
+            let failure = twin::seen(&called).expect_err("no path");
+            assert_eq!(failure, twin::output_refusal(not_a_path));
+        }
+        assert_eq!(jwks.hits.load(Ordering::SeqCst), 0, "no key was fetched");
     }
 
     /// A key read from the store signs and verifies, and is seen by nothing

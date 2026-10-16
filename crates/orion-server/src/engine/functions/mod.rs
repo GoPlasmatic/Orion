@@ -379,6 +379,27 @@ pub(crate) mod twin {
             detail: crate::errors::service::detail_of(e).map(str::to_string),
         }
     }
+
+    /// 1.12's refusal of an `output` that resolved to `value`, from its
+    /// `resolve_output_path`, as a task's record carries it: the failure a
+    /// dataflow-rs 4 function's computed output gives through
+    /// `kit::output_path`, for a function whose 1.12 handler never
+    /// evaluated its output and so has no twin to compute it from.
+    pub(crate) fn output_refusal(value: Value) -> Failure {
+        use dataflow_rs_v3::engine::task_context::TaskContext;
+        let input = super::templated_input::TemplatedInput::from(json!({ "output": value }));
+        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
+        let ctx = TaskContext::new(&mut message, &datalogic);
+        let e = super::connector_helpers::resolve_output_path(&input, "probe", &ctx)
+            .expect_err("not a path");
+        Failure {
+            code: dataflow_rs_v3::ErrorInfo::new(None, None, e.clone()).code,
+            message: e.to_string(),
+            retryable: e.retryable(),
+            detail: None,
+        }
+    }
 }
 
 #[cfg(test)]

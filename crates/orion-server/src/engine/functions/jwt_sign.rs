@@ -220,22 +220,17 @@ fn require_numeric_date(value: &Value, claim: &'static str) -> Result<(), Handle
 const ROOT_OUTPUT: &str = "`jwt_sign` writes a token string, and a context root takes only \
     an object (break 21): set `output` to a path below it, such as `data.token`";
 
-/// The same Defect for a computed `output`, which `jwt_sign` writes at
-/// `data` as 1.12 did ([`kit::written_output`]).
-const COMPUTED_OUTPUT: &str = "`jwt_sign` reads `output` as written, so a computed one is \
-    written at `data`, as 1.12 wrote it, and a context root takes only an object (break 21): \
-    set `output` to a literal path below a root, such as `data.token`";
-
 /// `jwt_sign`'s input on dataflow-rs 4, in its field table's order (I179),
 /// each field in the position 1.12 executed it in (I183). The algorithm and
 /// the key encoding are literals, read as written; the key is key
 /// material; `claims` and `audience` are documents of `var` holes, as 1.12
 /// folded them (`audience`'s table marks it a template, which 1.12 compiled
 /// and never evaluated); `expires_in`, `issuer`, `not_before` and `kid` are
-/// expressions, read by `kit::read`'s twins of 1.12's readers. `output` is
-/// read as written ([`kit::written_output`]). A task missing `algorithm` or
-/// `key` is refused at load (I183), and its `check` is 1.12's
-/// authoring-time rules.
+/// expressions, read by `kit::read`'s twins of 1.12's readers. A computed
+/// `output` is evaluated where 1.12 read `output`, where it never evaluated
+/// it and wrote at `data` (a change O11b's CHANGELOG names). A task missing
+/// `algorithm` or `key` is refused at load (I183), and its `check` is
+/// 1.12's authoring-time rules.
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct JwtSignConfig {
@@ -294,18 +289,15 @@ impl Function for JwtSignFunction {
     }
 
     /// I185: the token is never an object, so an `output` that is a literal
-    /// context root, the default `data` included, is a Defect at `output`,
-    /// and so is a computed one, which is written at `data`.
+    /// context root, the default `data` included, is a Defect at `output`.
+    /// A computed one is judged per call, when its path is known.
     fn prepare(&self, cfg: &mut JwtSignConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
-        kit::written_root_output_defect(&cfg.output, ROOT_OUTPUT, COMPUTED_OUTPUT)
+        kit::root_output_defect(&cfg.output, ROOT_OUTPUT)
     }
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &JwtSignConfig) -> dataflow_rs::Result<Outcome> {
-        let token = token(ctx, cfg).await?;
-        ctx.set(
-            kit::written_output(&cfg.output),
-            OwnedDataValue::String(token),
-        )?;
+        let (output, token) = token(ctx, cfg).await?;
+        ctx.set(&output, OwnedDataValue::String(token))?;
         Ok(Outcome::Ok)
     }
 }
@@ -331,10 +323,14 @@ fn duration_secs(
     read::duration_secs(value.as_deref(), name, NAME)
 }
 
-/// The token `JwtSignHandler::execute` mints for this call, read in its
-/// order: the literal prologue, the key's presence, the kid, the claims and
-/// their conveniences, the dates, then the key's material.
-async fn token(ctx: &Ctx<'_>, cfg: &JwtSignConfig) -> Result<String, HandlerError> {
+/// Where the token goes and the token `JwtSignHandler::execute` mints for
+/// this call, read in its order: the literal prologue, the key's presence,
+/// the kid, the output, the claims and their conveniences, the dates, then
+/// the key's material.
+async fn token<'c>(
+    ctx: &Ctx<'_>,
+    cfg: &'c JwtSignConfig,
+) -> Result<(Cow<'c, dataflow_rs::Path>, String), HandlerError> {
     let algorithm = crate::jwt::parse_algorithm(&cfg.algorithm).map_err(|e| invalid(&e))?;
     // Presence only: a `null` key, which 1.12 refused before reading
     // anything the message can change (F58).
@@ -346,6 +342,7 @@ async fn token(ctx: &Ctx<'_>, cfg: &JwtSignConfig) -> Result<String, HandlerErro
     }
     let key_encoding = cfg.key_encoding.as_deref();
     let kid = optional_str(ctx, &cfg.kid, "kid")?;
+    let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
 
     let mut claims = match &cfg.claims {
         None => Map::new(),
@@ -374,7 +371,10 @@ async fn token(ctx: &Ctx<'_>, cfg: &JwtSignConfig) -> Result<String, HandlerErro
     )?;
 
     let material = cfg.key.material(ctx, "key", NAME).await?;
-    mint(algorithm, &material, key_encoding, kid, claims)
+    Ok((
+        output,
+        mint(algorithm, &material, key_encoding, kid, claims)?,
+    ))
 }
 
 // -- Authoring-time validation (shared with schema::validate_input) --
@@ -574,7 +574,10 @@ mod tests {
             cfg.claims.as_ref().map(Interpolated::raw),
             Some(&json!({"sub": {"var": "data.user"}, "$role": "admin"}))
         );
-        assert_eq!(kit::written_output(&cfg.output).to_string(), "data.token");
+        assert_eq!(
+            cfg.output.constant().map(ToString::to_string).as_deref(),
+            Some("data.token")
+        );
 
         let cfg = config_v4(json!({"algorithm": "HS256", "key": null, "claims": null,
                                    "audience": null, "expires_in": 60}))
@@ -639,17 +642,16 @@ mod tests {
     }
 
     /// I185: the token is never an object, so a literal root `output` (the
-    /// default `data` included) is a Defect at `output`, and so is a
-    /// computed one, which `jwt_sign` writes at `data` as 1.12 did. A path
-    /// below a root is not.
+    /// default `data` included, and an expression that folds to one) is a
+    /// Defect at `output`. A path below a root is not.
     #[tokio::test]
-    async fn a_root_or_computed_output_is_i185s_defect() {
+    async fn a_literal_root_output_is_i185s_defect() {
         for (output, defect) in [
             (None, Some(ROOT_OUTPUT)),
             (Some(json!("data")), Some(ROOT_OUTPUT)),
             (Some(json!("temp_data")), Some(ROOT_OUTPUT)),
             (Some(Value::Null), Some(ROOT_OUTPUT)),
-            (Some(json!({"var": "data.where"})), Some(COMPUTED_OUTPUT)),
+            (Some(json!({"cat": ["temp_data"]})), Some(ROOT_OUTPUT)),
             (Some(json!("data.token")), None),
             (Some(json!("temp_data.jws")), None),
         ] {
@@ -683,6 +685,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A computed `output` is evaluated where 1.12 read `output` (after the
+    /// kid, before the claims), by 1.12's `resolve_output_path` rule, and
+    /// judged per call: a path below a root is written, a root or a `null`
+    /// result (which is `data`) is refused at the write (break 21,
+    /// `CONFIG_ERROR`), and a result that is no path is refused in 1.12's
+    /// words before the claims are read. 1.12 never evaluated `jwt_sign`'s
+    /// output: it wrote the token at `data` whatever the expression said (a
+    /// change O11b's CHANGELOG names).
+    #[tokio::test]
+    async fn a_computed_output_is_evaluated_after_the_kid_and_judged_per_call() {
+        let input = json!({"algorithm": "HS256", "key": HS_SECRET, "expires_in": 60,
+                           "kid": {"var": "data.kid"}, "claims": {"var": "data.claims"},
+                           "output": {"var": "data.where"}});
+        let out = twin::v4(
+            NAME,
+            JwtSignFunction,
+            input.clone(),
+            json!({"where": "data.token", "claims": {"sub": "u1"}}),
+        )
+        .await
+        .expect("written where it evaluates");
+        assert_eq!(claims_of(&out["token"])["sub"], "u1");
+        for at_a_root in [
+            json!({"where": "data"}),
+            json!({"where": "temp_data"}),
+            json!({}),
+        ] {
+            let mut data = at_a_root.clone();
+            data["claims"] = json!({"sub": "u1"});
+            let failure = twin::v4(NAME, JwtSignFunction, input.clone(), data)
+                .await
+                .expect_err("a root takes no string");
+            assert_eq!(failure.code, "CONFIG_ERROR", "{at_a_root}");
+        }
+        // A non-object `claims` would be refused next: the output's refusal
+        // comes first, and a bad kid's before it.
+        for not_a_path in [json!(5), json!(["data.token"])] {
+            let failure = twin::v4(
+                NAME,
+                JwtSignFunction,
+                input.clone(),
+                json!({"where": not_a_path, "claims": 7}),
+            )
+            .await
+            .expect_err("no path");
+            assert_eq!(failure, twin::output_refusal(not_a_path));
+        }
+        let failure = twin::v4(NAME, JwtSignFunction, input, json!({"where": 5, "kid": 7}))
+            .await
+            .expect_err("a bad kid");
+        assert!(failure.message.contains("'kid'"), "{failure:?}");
     }
 
     /// With every clock-dependent claim pinned, both engines mint the same

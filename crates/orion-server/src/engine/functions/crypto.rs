@@ -576,20 +576,15 @@ where
 const ROOT_OUTPUT: &str = "`crypto` writes a string or a boolean, and a context root takes \
     only an object (break 21): set `output` to a path below it, such as `data.digest`";
 
-/// The same Defect for a computed `output`, which `crypto` writes at `data`
-/// as 1.12 did ([`kit::written_output`]).
-const COMPUTED_OUTPUT: &str = "`crypto` reads `output` as written, so a computed one is \
-    written at `data`, as 1.12 wrote it, and a context root takes only an object (break 21): \
-    set `output` to a literal path below a root, such as `data.digest`";
-
 /// `crypto`'s input on dataflow-rs 4, in its field table's order (I179),
 /// each field in the position 1.12 executed it in (I183). The op, the
 /// algorithm, the three encodings and `params` are literals, read as
 /// written, as 1.12 read them; `data`, `signature`, `password` and `hash`
 /// are expressions, read by `kit::read`'s twin of `resolve_required_str`
-/// where 1.12 read them with it; `key` is key material. `output` is read as
-/// written ([`kit::written_output`]). A task missing `op` is refused at load
-/// (I183), and its `check` is 1.12's authoring-time rules.
+/// where 1.12 read them with it; `key` is key material. A computed `output`
+/// is evaluated before the op, where 1.12 never evaluated it and wrote at
+/// `data` (a change O11b's CHANGELOG names). A task missing `op` is refused
+/// at load (I183), and its `check` is 1.12's authoring-time rules.
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct CryptoConfig {
@@ -686,20 +681,19 @@ impl Function for CryptoFunction {
     }
 
     /// I185: no op's result is an object, so an `output` that is a literal
-    /// context root, the default `data` included, is a Defect at `output`,
-    /// and so is a computed one, which is written at `data`.
+    /// context root, the default `data` included, is a Defect at `output`.
+    /// A computed one is judged per call, when its path is known.
     fn prepare(&self, cfg: &mut CryptoConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
-        kit::written_root_output_defect(&cfg.output, ROOT_OUTPUT, COMPUTED_OUTPUT)
+        kit::root_output_defect(&cfg.output, ROOT_OUTPUT)
     }
 
-    /// The op, its refusals named once with the handler's name, as
-    /// `CryptoHandler::execute` names them; then the one write.
+    /// The output, where 1.12 read it, before the op; the op, its refusals
+    /// named once with the handler's name, as `CryptoHandler::execute`
+    /// names them; then the one write.
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &CryptoConfig) -> dataflow_rs::Result<Outcome> {
+        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
         let result = compute(ctx, cfg).await.map_err(|e| e.prefixed(NAME))?;
-        ctx.set(
-            kit::written_output(&cfg.output),
-            OwnedDataValue::from(&result),
-        )?;
+        ctx.set(&output, OwnedDataValue::from(&result))?;
         Ok(Outcome::Ok)
     }
 }
@@ -1366,18 +1360,19 @@ mod tests {
         assert_eq!(cfg.algorithm.as_deref(), Some("sha512"));
         assert!(matches!(&cfg.key, Some(KeyMaterial::Text(t)) if t == "env://K"));
         assert!(cfg.data.as_ref().is_some_and(|d| d.constant().is_none()));
-        assert_eq!(kit::written_output(&cfg.output).to_string(), "data.mac");
+        let literal = |cfg: &CryptoConfig| cfg.output.constant().map(ToString::to_string);
+        assert_eq!(literal(&cfg).as_deref(), Some("data.mac"));
 
         let cfg = config_v4(json!({"op": "hmac", "data": "x", "key": {"secret": "k"},
-                                   "output": {"cat": ["data", ".mac"]}}))
+                                   "output": {"var": "data.where"}}))
         .expect("compiles");
         assert!(matches!(&cfg.key, Some(KeyMaterial::Expr(_))));
-        // An expression `output`, folded or not, is `data`, as 1.12 read it.
-        assert_eq!(kit::written_output(&cfg.output).to_string(), "data");
+        // A computed output, evaluated per call.
+        assert_eq!(literal(&cfg), None);
         let cfg = config_v4(json!({"op": "password_hash", "password": "x", "params": null}))
             .expect("compiles");
         assert_eq!(cfg.params, Some(Value::Null));
-        assert_eq!(kit::written_output(&cfg.output).to_string(), "data");
+        assert_eq!(literal(&cfg).as_deref(), Some("data"));
         // A `null` expression is a value, which the check refuses where 1.12
         // refused it (`data` required): see `the_check_is_validate_static_input`.
 
@@ -1446,13 +1441,13 @@ mod tests {
     }
 
     /// I185: no op's result is an object, so a literal root `output` (the
-    /// default `data` included) is a Defect at `output`, reported by
-    /// `prepare`, which only a compile through the registry runs; so is a
-    /// computed one, which `crypto` writes at `data` as 1.12 did. A path
-    /// below a root is not. The call still runs, and a root's write is
-    /// refused (break 21), where 1.12 replaced the root with the result.
+    /// default `data` included, and an expression that folds to one) is a
+    /// Defect at `output`, reported by `prepare`, which only a compile
+    /// through the registry runs. A path below a root is not, folded or
+    /// written. The call still runs, and a root's write is refused (break
+    /// 21), where 1.12 replaced the root with the result.
     #[tokio::test]
-    async fn a_root_or_computed_output_is_i185s_defect() {
+    async fn a_literal_root_output_is_i185s_defect() {
         for op in [
             json!({"op": "hash", "data": "x"}),
             json!({"op": "hmac_verify", "data": "x", "key": "Jefe", "signature": "00"}),
@@ -1462,9 +1457,10 @@ mod tests {
                 (Some(json!("data")), Some(ROOT_OUTPUT)),
                 (Some(json!("temp_data")), Some(ROOT_OUTPUT)),
                 (Some(Value::Null), Some(ROOT_OUTPUT)),
-                (Some(json!({"cat": ["data", ".x"]})), Some(COMPUTED_OUTPUT)),
+                (Some(json!({"cat": ["data"]})), Some(ROOT_OUTPUT)),
                 (Some(json!("data.digest")), None),
                 (Some(json!("temp_data.d")), None),
+                (Some(json!({"cat": ["data", ".x"]})), None),
             ] {
                 let mut input = op.clone();
                 if let Some(output) = &output {
@@ -1496,6 +1492,66 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A computed `output` is evaluated before the op, by 1.12's
+    /// `resolve_output_path` rule, and judged per call: a path below a root
+    /// is written, a root or a `null` result (which is `data`) is refused
+    /// at the write (break 21, `CONFIG_ERROR`), and a result that is no path
+    /// is refused before the op runs, in 1.12's words. 1.12 never evaluated
+    /// `crypto`'s output: it wrote the result at `data` whatever the
+    /// expression said (a change O11b's CHANGELOG names).
+    #[tokio::test]
+    async fn a_computed_output_is_evaluated_before_the_op_and_judged_per_call() {
+        let input = json!({"op": "hash", "data": {"var": "data.payload"},
+                           "output": {"var": "data.where"}});
+        let expected = hex::encode(Sha256::digest(b"abc"));
+        let out = twin::v4(
+            NAME,
+            CryptoFunction,
+            input.clone(),
+            json!({"payload": "abc", "where": "data.digest"}),
+        )
+        .await
+        .expect("written where it evaluates");
+        assert_eq!(out["digest"], json!(expected));
+        for at_a_root in [
+            json!({"where": "data"}),
+            json!({"where": "temp_data"}),
+            json!({}),
+        ] {
+            let mut data = at_a_root.clone();
+            data["payload"] = json!("abc");
+            let called = testing::call(CryptoFunction, input.clone())
+                .exprs(kit::test_exprs())
+                .name(NAME)
+                .message(dataflow_rs::Message::from_parts(
+                    OwnedDataValue::Null,
+                    OwnedDataValue::from(&data),
+                    OwnedDataValue::Null,
+                ))
+                .await;
+            assert!(
+                called.issues.iter().all(|i| i.severity != Severity::Defect),
+                "{:?}",
+                called.issues
+            );
+            let error = called.outcome.expect_err("a root takes no string");
+            assert_eq!(error.code(), "CONFIG_ERROR", "{at_a_root}");
+        }
+        // No `payload`: the op would refuse its `null` data, and the
+        // output's refusal comes first.
+        for not_a_path in [json!(5), json!({"a": 1}), json!(["data.d"])] {
+            let failure = twin::v4(
+                NAME,
+                CryptoFunction,
+                input.clone(),
+                json!({"where": not_a_path}),
+            )
+            .await
+            .expect_err("no path");
+            assert_eq!(failure, twin::output_refusal(not_a_path), "{input}");
         }
     }
 
