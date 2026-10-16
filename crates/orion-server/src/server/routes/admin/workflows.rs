@@ -1007,6 +1007,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
 
     validate_workflow_condition(&req.condition, exprs, &mut errors);
     validate_dataflow_conversion(req, &mut errors);
+    warnings.extend(load_defects(req, &generation));
 
     // Advisory: JSONLogic in a connector-payload field that folds `{"var": ..}`
     // and nothing else, so the expression is stored or sent verbatim. A warning
@@ -1293,6 +1294,54 @@ fn validate_workflow_condition(
             message: format!("Invalid JSONLogic in workflow condition: {e}"),
         });
     }
+}
+
+/// What dataflow-rs 4 reports about the workflow at load and loads anyway: a
+/// Defect that does not quarantine its channel (I182), such as a
+/// `PAYLOAD_VAR`, a `var` rooted at `payload`, which reads nothing. The
+/// loader logs each at `warn`; this is where an author sees one before the
+/// workflow serves. Warnings, so `valid` keeps meaning what create accepts
+/// (R20). Compiled as the serving generation's loader compiles a row: its
+/// JSON, its aliases rewritten, on its dataflow-rs 4 compiler.
+fn load_defects(
+    req: &CreateWorkflowRequest,
+    generation: &crate::runtime::RuntimeGeneration,
+) -> Vec<ValidationIssue> {
+    use crate::storage::repositories::workflows::{synthetic_workflow, workflow_json};
+
+    let Some(engine4) = generation.engine4.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(row) = synthetic_workflow(req, "temp-validate") else {
+        return Vec::new();
+    };
+    // A row that is not JSON is `validate_dataflow_conversion`'s finding.
+    let Ok(mut json) = workflow_json(&row, "__validate__", "temp-validate", "active", None) else {
+        return Vec::new();
+    };
+    crate::engine::rewrite_aliases(&mut json, &generation.functions);
+    let issues = match crate::engine::compile_row(&engine4.compiler(), &json) {
+        Ok(compiled) => compiled.issues,
+        Err(issues) => issues,
+    };
+    issues
+        .iter()
+        .filter(|issue| {
+            issue.severity == dataflow_rs::program::Severity::Defect
+                && !crate::engine::quarantines(issue)
+        })
+        .map(|issue| {
+            let path = issue.path.to_string();
+            ValidationIssue {
+                field: if path.is_empty() {
+                    "(root)".to_string()
+                } else {
+                    path
+                },
+                message: format!("{}: {}", issue.code.as_str(), issue.message),
+            }
+        })
+        .collect()
 }
 
 /// Validate that the workflow can be converted to a dataflow-rs workflow.

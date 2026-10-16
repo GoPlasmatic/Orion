@@ -709,6 +709,48 @@ async fn validate_compiles_a_condition_as_the_serving_engine_does() {
     assert_eq!(body["data"]["valid"], true, "{body}");
 }
 
+/// I182, as refined: a Defect dataflow-rs 4 reports at load and does not
+/// quarantine on, a `PAYLOAD_VAR` above all, is surfaced by `/validate` as a
+/// warning at its path, so the author sees what the loader only logs. The
+/// workflow stays valid: create accepts it and the channel serves.
+#[tokio::test]
+async fn validate_warns_of_a_payload_var_defect_and_stays_valid() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/validate",
+            Some(json!({
+                "name": "Payload Read",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Copy",
+                    "function": {"name": "map", "input": {"mappings": [
+                        {"path": "data.copied", "logic": {"var": "payload.x"}}
+                    ]}}
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["valid"], true, "{body}");
+    let warnings = body["data"]["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings.iter().any(|w| {
+            w["field"] == "tasks[0].function.input.mappings[0].logic"
+                && w["message"]
+                    .as_str()
+                    .is_some_and(|m| m.starts_with("PAYLOAD_VAR: "))
+        }),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn test_validate_workflow_with_connector_warning() {
     let app = common::test_app().await;

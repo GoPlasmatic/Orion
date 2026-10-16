@@ -199,7 +199,11 @@ async fn test_channel_call_missing_target() {
                     "name": "channel_call",
                     "input": {
                         "channel": "nonexistent",
-                        "response_path": "result"
+                        // A path: `"result"` names no context root and is
+                        // refused at load (O10's named break, pinned by
+                        // `channel_load_refusal_test::
+                        // an_output_that_is_no_path_quarantines_its_channel`).
+                        "response_path": "data.result"
                     }
                 }
             }]
@@ -800,4 +804,134 @@ async fn channel_call_resolves_target_and_payload_from_logic() {
             "data_logic must build the payload per message, got: {body}"
         );
     }
+}
+
+// -- dataflow-rs 4's channel_call on the published generation (O11a) --
+
+/// What a caller's run left: the `data` it wrote, or its first error
+/// record's code and message.
+type Seen = Result<serde_json::Value, (String, String)>;
+
+/// `channel` run on the generation's dataflow-rs 3 engine, which serves.
+async fn seen_on_v3(generation: &orion::runtime::RuntimeGeneration, channel: &str) -> Seen {
+    let mut message = dataflow_rs_v3::Message::builder()
+        .payload_json(&json!({}))
+        .metadata_json(&json!({}))
+        .capture_changes(false)
+        .audit_mode(dataflow_rs_v3::AuditMode::Off)
+        .build();
+    let _ = generation
+        .engine
+        .process_message_for_channel(channel, &mut message)
+        .await;
+    match message.errors().first() {
+        Some(record) => Err((record.code.clone(), record.message.clone())),
+        None => Ok(serde_json::Value::from(message.data())),
+    }
+}
+
+/// `channel` run on the generation's dataflow-rs 4 engine, `engine4`.
+async fn seen_on_v4(generation: &orion::runtime::RuntimeGeneration, channel: &str) -> Seen {
+    use dataflow_rs::datavalue::OwnedDataValue;
+    let engine4 = generation
+        .engine4
+        .as_ref()
+        .expect("every published generation carries its dataflow-rs 4 engine");
+    let mut message = dataflow_rs::Message::from_parts(
+        OwnedDataValue::from(&json!({})),
+        OwnedDataValue::Null,
+        OwnedDataValue::from(&json!({})),
+    );
+    let options = dataflow_rs::RunOptions::default()
+        .channel(channel)
+        .capture_changes(false)
+        .audit(dataflow_rs::run::AuditMode::Off);
+    let _ = engine4.run_with(&mut message, &options).await;
+    match message.errors().first() {
+        Some(record) => Err((record.code.clone(), record.message.clone())),
+        None => Ok(serde_json::Value::from(message.context().data())),
+    }
+}
+
+/// Filling `engine4` turns `channel_call`'s dataflow-rs 4 path on in the
+/// generation (O10, O11a). Through the generation the real load publishes:
+///
+/// - a call into a channel dataflow-rs 4 accepted runs its target on
+///   `engine4`, and answers as dataflow-rs 3's call does;
+/// - a call into a channel dataflow-rs 4 quarantined (break 2, a typo'd
+///   key) is refused with the quarantine, as 1.12 refused a quarantined
+///   target (F35): the snapshot and `engine4` are built from one verdict;
+/// - a call into no channel is refused as not found or not active, as 1.12
+///   refused an inactive one.
+///
+/// Each expectation is the dataflow-rs 3 engine's, run on the same
+/// generation.
+#[tokio::test]
+async fn a_v4_channel_call_runs_on_the_generations_engine4() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+    let workflow = |name: &str, tasks: serde_json::Value| json!({"name": name, "condition": true, "tasks": tasks});
+    let call = |target: &str| {
+        json!([{"id": "c1", "name": "call", "function": {"name": "channel_call",
+            "input": {"channel": target, "data": {"x": 1}, "output": "data.child"}}}])
+    };
+    common::create_and_activate_channel(
+        &app,
+        "v4-target",
+        workflow(
+            "Target",
+            json!([{"id": "t1", "name": "greet", "function": {"name": "map", "input": {
+                "mappings": [{"path": "data.greeting", "logic": "hello"}]}}}]),
+        ),
+    )
+    .await;
+    // Break 2: `mesage` is a near miss of `log`'s `message`.
+    common::create_and_activate_channel(
+        &app,
+        "v4-broken",
+        workflow(
+            "Broken",
+            json!([{"id": "t1", "name": "log", "function": {"name": "log", "input": {
+                "message": "x", "mesage": "y"}}}]),
+        ),
+    )
+    .await;
+    for (caller, target) in [
+        ("v4-caller", "v4-target"),
+        ("v4-caller-broken", "v4-broken"),
+        ("v4-caller-missing", "v4-no-such-channel"),
+    ] {
+        common::create_and_activate_channel(&app, caller, workflow(caller, call(target))).await;
+    }
+
+    let generation = state.runtime.load();
+    assert!(
+        generation.channels.quarantine_reason("v4-broken").is_some(),
+        "dataflow-rs 4 quarantines the typo"
+    );
+
+    let served = seen_on_v4(&generation, "v4-caller").await;
+    assert_eq!(served, Ok(json!({"child": {"greeting": "hello"}})));
+    assert_eq!(served, seen_on_v3(&generation, "v4-caller").await);
+
+    let quarantined = seen_on_v4(&generation, "v4-caller-broken").await;
+    let (_, message) = quarantined
+        .as_ref()
+        .expect_err("a quarantined target is refused");
+    assert!(
+        message.contains("Channel 'v4-broken' failed to load and is not being served"),
+        "{message}"
+    );
+    assert_eq!(
+        quarantined,
+        seen_on_v3(&generation, "v4-caller-broken").await
+    );
+
+    let missing = seen_on_v4(&generation, "v4-caller-missing").await;
+    let (_, message) = missing.as_ref().expect_err("no target is refused");
+    assert!(
+        message.contains("channel not found or not active"),
+        "{message}"
+    );
+    assert_eq!(missing, seen_on_v3(&generation, "v4-caller-missing").await);
 }

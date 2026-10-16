@@ -511,6 +511,50 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     );
 }
 
+/// The dataflow-rs 4 `Registry` a generation compiles and runs on, before
+/// its plugins: every Orion function ([`register_functions`]), on the
+/// process's expression engine (I188, `deps.exprs`), with the real
+/// `publish_kafka` when Kafka is initialised ([`register_kafka_function`]),
+/// and the per-request profile as its one call layer
+/// ([`kit::ProfileLayer`](crate::engine::kit::ProfileLayer), I189).
+///
+/// The twin of [`build_custom_functions`] plus [`register_kafka_publisher`],
+/// which boot and a plugin-changing reload both assemble dataflow-rs 3's
+/// handlers from. The generation's plugin functions join it
+/// ([`register_plugin_functions`]) before anything compiles, since a
+/// workflow links only under the registry it compiled under.
+pub fn serving_registry(
+    deps: HandlerDeps<'_>,
+    producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
+) -> dataflow_rs::Registry {
+    let mut registry = dataflow_rs::Registry::new(deps.exprs.clone());
+    let connectors = deps.registry.clone();
+    register_functions(&mut registry, deps);
+    if let Some(producers) = producers {
+        register_kafka_function(&mut registry, connectors, producers);
+    }
+    registry.layer(crate::engine::kit::ProfileLayer);
+    registry
+}
+
+/// Register the real Kafka-backed `publish_kafka` on a dataflow-rs 4
+/// `Registry`: [`register_kafka_publisher`]'s twin, replacing the stub
+/// [`register_functions`] registers (`Registry::register` replaces a name).
+pub fn register_kafka_function(
+    registry: &mut dataflow_rs::Registry,
+    connectors: Arc<ConnectorRegistry>,
+    producers: Arc<crate::kafka::producer::KafkaProducerCache>,
+) {
+    use functions::connector_handler::ConnectorHandler;
+    registry.register(
+        <functions::publish_kafka::PublishKafkaHandler as ConnectorHandler>::NAME,
+        functions::publish_kafka::PublishKafkaFunction {
+            registry: connectors,
+            producers: Some(producers),
+        },
+    );
+}
+
 /// Register plugin functions on `registry`, each under the name its
 /// manifest gives it (`<plugin>.<label>`): the dataflow-rs 4 twin of adding
 /// [`PluginSet::handlers`](crate::plugin::PluginSet::handlers) to a

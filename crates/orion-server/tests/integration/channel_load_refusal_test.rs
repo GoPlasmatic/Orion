@@ -609,6 +609,164 @@ async fn channel_call_with_a_wrongly_typed_field_quarantines_only_its_channel() 
     );
 }
 
+/// I182, as refined: a Defect quarantines its channel only where
+/// dataflow-rs 4 would fail every message or the plan names it. A
+/// `PAYLOAD_VAR` (a `var` rooted at `payload`, which reads nothing) is
+/// neither: the channel loads and serves, as on 1.12, and the loader logs
+/// the Defect.
+#[tokio::test]
+async fn a_payload_var_defect_loads_and_serves() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    insert_raw_active_workflow_and_channel(
+        &state,
+        "payload-var",
+        r#"[{"id":"t1","name":"m","function":{"name":"map","input":{"mappings":[{"path":"data.copied","logic":{"var":"payload.x"}}]}}}]"#,
+    )
+    .await;
+
+    let (status, body) = reload_engine(&app).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(quarantine_reason(&app, "payload-var").await, None);
+    assert!(serves_ok(&app, "payload-var").await);
+    assert!(
+        state
+            .runtime
+            .load()
+            .engine4
+            .as_ref()
+            .expect("the generation carries its dataflow-rs 4 engine")
+            .program()
+            .workflows()
+            .iter()
+            .any(|w| w.channel == "payload-var"),
+        "dataflow-rs 4 loads it too"
+    );
+}
+
+/// Break 21 (I185): a function whose result is never an object, written at
+/// a literal context root, fails every message on dataflow-rs 4, so its
+/// Defect quarantines the channel, the code and path in the reason. 1.12
+/// loaded it and replaced `data` with the rows.
+#[tokio::test]
+async fn a_root_output_defect_quarantines_only_its_channel() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+    common::create_and_activate_channel(
+        &app,
+        "root-neighbour",
+        common::simple_log_workflow("Root Neighbour"),
+    )
+    .await;
+
+    insert_raw_active_workflow_and_channel(
+        &state,
+        "rows-at-root",
+        r#"[{"id":"t1","name":"read","function":{"name":"db_read","input":{"connector":"db","query":"SELECT 1","output":"data"}}}]"#,
+    )
+    .await;
+
+    let (status, body) = reload_engine(&app).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reason = quarantine_reason(&app, "rows-at-root")
+        .await
+        .expect("a db_read writing its rows at `data` is quarantined");
+    assert!(
+        reason.contains("task 't1': INPUT_PARSE at tasks[0].function.input.output")
+            && reason.contains("break 21"),
+        "{reason}"
+    );
+    assert!(
+        quarantine_reason(&app, "root-neighbour").await.is_none()
+            && serves_ok(&app, "root-neighbour").await
+    );
+}
+
+/// O3's and O10's named load break: an `output` written as a string that
+/// names no context root (`"result"`, `"response"`), where 1.12 wrote the
+/// answer at a key no response shows, is `INVALID_PATH` at load and
+/// quarantines its channel, written through its pre-1.0 alias too, which the
+/// loader rewrites first (I186). The create path still accepts it.
+#[tokio::test]
+async fn an_output_that_is_no_path_quarantines_its_channel() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+    common::create_http_connector(&app, "no-path-api", "127.0.0.1:1".parse().unwrap()).await;
+
+    let task = |function: &str, input: serde_json::Value| {
+        json!({"name": "No Path", "condition": true, "tasks": [
+            {"id": "t1", "name": "t1", "function": {"name": function, "input": input}}
+        ]})
+    };
+    common::create_and_activate_channel(
+        &app,
+        "cc-result",
+        task(
+            "channel_call",
+            json!({"channel": "nonexistent", "response_path": "result"}),
+        ),
+    )
+    .await;
+    common::create_and_activate_channel(
+        &app,
+        "http-response",
+        task(
+            "http_call",
+            json!({"connector": "no-path-api", "method": "POST", "path": "/x",
+                   "response_path": "response"}),
+        ),
+    )
+    .await;
+
+    for (channel, spelled) in [("cc-result", "result"), ("http-response", "response")] {
+        let reason = quarantine_reason(&app, channel)
+            .await
+            .unwrap_or_else(|| panic!("{channel} must be quarantined"));
+        assert!(
+            reason.contains("task 't1': INVALID_PATH at tasks[0].function.input.output")
+                && reason.contains(&format!("path `{spelled}` must start at `data`")),
+            "{channel}: {reason}"
+        );
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/data/{channel}"),
+                Some(json!({"data": {}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{channel}");
+    }
+}
+
+/// Break 2: a near miss of a known key is a `LIKELY_TYPO` Defect, and it
+/// quarantines: `conditon` would otherwise run the task unconditionally,
+/// which is what 1.12 did with it.
+#[tokio::test]
+async fn a_likely_typo_quarantines_its_channel() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    insert_raw_active_workflow_and_channel(
+        &state,
+        "typo",
+        r#"[{"id":"t1","name":"log","conditon":false,"function":{"name":"log","input":{"message":"x"}}}]"#,
+    )
+    .await;
+
+    let (status, body) = reload_engine(&app).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reason = quarantine_reason(&app, "typo")
+        .await
+        .expect("a typo'd task key is quarantined");
+    assert!(
+        reason.contains("LIKELY_TYPO at tasks[0].conditon"),
+        "{reason}"
+    );
+}
+
 /// A stored workflow whose `loop` the engine build refuses must quarantine its
 /// own channel, not fail the build for every channel on the node.
 ///
@@ -629,12 +787,15 @@ async fn a_loop_the_engine_refuses_quarantines_only_its_channel() {
     .await;
 
     let log = r#"{"name":"log","input":{"message":"x"}}"#;
+    // dataflow-rs 4's verdict decides which rows load, so each reason names
+    // its issue's code and path (I182), where it was dataflow-rs 3's
+    // `Workflow::validate` text ("Duplicate task id …").
     let cases = [
         // A setup step shares the body's id namespace.
         (
             "loop-dup-id",
             format!(r#"{{"max":2,"setup":[{{"id":"t1","name":"s","function":{log}}}]}}"#),
-            "Duplicate",
+            "DUPLICATE_STEP_ID at loop.setup[0].id",
         ),
         // Two setup steps with one id.
         (
@@ -642,13 +803,13 @@ async fn a_loop_the_engine_refuses_quarantines_only_its_channel() {
             format!(
                 r#"{{"max":2,"setup":[{{"id":"s","name":"s","function":{log}}},{{"id":"s","name":"s","function":{log}}}]}}"#
             ),
-            "Duplicate",
+            "DUPLICATE_STEP_ID at loop.setup[1].id",
         ),
         // `as` names a `temp_data` slot and must be a plain key.
         (
             "loop-bad-as",
             r#"{"max":2,"over":{"var":"data.items"},"as":"a..b"}"#.to_string(),
-            "as",
+            "at loop.as",
         ),
     ];
 

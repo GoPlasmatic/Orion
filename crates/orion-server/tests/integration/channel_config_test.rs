@@ -67,7 +67,11 @@ async fn test_channel_timeout_returns_504() {
                             "method": "POST",
                             "path": "/slow",
                             "body": {"test": true},
-                            "response_path": "response",
+                            // A path: `"response"` names no context root and
+                            // is refused at load (O3's named break, pinned by
+                            // `channel_load_refusal_test::
+                            // an_output_that_is_no_path_quarantines_its_channel`).
+                            "response_path": "data.response",
                             "timeout_ms": 5000
                         }
                     }

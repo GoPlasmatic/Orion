@@ -455,6 +455,84 @@ async fn a_reload_publishes_exactly_one_generation() {
     );
 }
 
+/// The building cutover (I182): a reload that keeps the plugin set compiles
+/// every row on the running dataflow-rs 4 engine's compiler and swaps with
+/// `Engine::with_program`, so the next generation runs on the same
+/// `Registry` (Orion's functions, the plugin functions and the profile
+/// layer), registered once at boot.
+///
+/// A workflow links only under the registry it compiled under
+/// (`Compiler::link` panics otherwise), so one compiled on the outgoing
+/// generation linking under the next is the proof; a registry assembled
+/// afresh, as a plugin change assembles one, refuses it. Each generation's
+/// `engine4` carries the workflows its `engine` serves.
+#[tokio::test]
+async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+    common::create_and_activate_channel(&app, "reuse-ch", common::echo_workflow("Reuse")).await;
+
+    let probe = |compiler: &dataflow_rs::program::Compiler| {
+        let json = serde_json::json!({"id": "probe", "tasks": [
+            {"id": "t", "function": {"name": "log", "input": {"message": "x"}}}
+        ]});
+        let def = dataflow_rs::def::parse(&json, dataflow_rs::def::ParseOptions::default())
+            .def
+            .expect("the probe parses");
+        compiler
+            .compile_one(&def)
+            .expect("the probe compiles")
+            .workflow
+    };
+    let before = state.runtime.load();
+    let compiled = probe(&before.engine4.as_ref().expect("an engine4").compiler());
+    let fresh = probe(&before.engine4.as_ref().expect("an engine4").compiler());
+
+    orion::runtime::reload_engine(&state)
+        .await
+        .expect("reload succeeds");
+
+    let after = state.runtime.load();
+    assert!(after.id > before.id);
+    let engine4 = after
+        .engine4
+        .as_ref()
+        .expect("the reload publishes an engine4");
+    let program = engine4.compiler().link([compiled]);
+    assert_eq!(
+        program.workflows().len(),
+        1,
+        "one registry across the reload"
+    );
+    let channels = |generation: &orion::runtime::RuntimeGeneration| -> Vec<String> {
+        generation
+            .engine4
+            .as_ref()
+            .expect("an engine4")
+            .program()
+            .workflows()
+            .iter()
+            .map(|w| w.channel.clone())
+            .collect()
+    };
+    let v3: Vec<String> = after
+        .engine
+        .workflows()
+        .iter()
+        .map(|w| w.channel.clone())
+        .collect();
+    assert_eq!(channels(&after), v3, "both engines load the same workflows");
+    assert!(v3.iter().any(|c| c == "reuse-ch"));
+
+    // The control: a registry assembled afresh from the node's components
+    // is another registry, which the outgoing generation's workflow does not
+    // link under.
+    let rebuilt = orion::runtime::build_registry(&state)
+        .compiler(dataflow_rs::program::CompileOptions::default());
+    let linked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rebuilt.link([fresh])));
+    assert!(linked.is_err(), "a fresh registry is not the generation's");
+}
+
 /// A channel is never routable before its workflow is runnable.
 ///
 /// The failure this pins is not a crash or an error code — it is a `200` that

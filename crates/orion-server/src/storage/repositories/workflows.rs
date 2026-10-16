@@ -965,41 +965,57 @@ pub fn synthetic_workflow(
     })
 }
 
-/// Shared body of the two converters below.
+/// The workflow definition `channel` serves `workflow` as: the JSON both
+/// engines read a stored row through (dataflow-rs 4's `def::parse` takes it
+/// as it is; [`workflow_to_dataflow`] reads it into dataflow-rs 3's type).
 ///
-/// `id` and `status` differ between them, and `rollout` is the half-open
-/// bucket range this version serves — `None` for a workflow that takes all of
-/// its channel's traffic.
+/// `id` and `status` are the row's own for a workflow taking all of its
+/// channel's traffic, and version-qualified for one version of a rollout;
+/// `rollout` is the half-open bucket range `(start, end)` the version serves,
+/// `None` for a workflow that takes all of its channel's traffic.
+///
+/// The `continue_on_error` column is written as dataflow-rs 4 spells it
+/// (I186): `"on_failure": "continue"` when it is set, and nothing when it is
+/// not, which is the default, so a stored row raises no `V3_SPELLING`
+/// Advisory on every load. A task's own `continue_on_error`, inside
+/// `tasks_json`, is the author's and is left as written.
 ///
 /// `http_call`'s destination path used to be rewritten here from Orion's
 /// `output` spelling to the upstream `response_path`, because
 /// `{"name": "http_call"}` deserializes into dataflow-rs's own
 /// `HttpCallConfig` and Orion could not annotate it. dataflow-rs 3.1 carries
 /// `alias = "output"` on the field, so the rewrite is gone and a storage
-/// repository no longer deep-walks task JSON to rename a function input.
-fn workflow_to_dataflow_inner(
+/// repository no longer deep-walks task JSON to rename a function input; the
+/// aliases dataflow-rs 4 has no spelling for are rewritten by the loader
+/// (`engine::loader::rewrite_aliases`), which leaves a stored row as it is.
+///
+/// # Errors
+///
+/// A row whose `tasks_json`, `condition_json`, `tags_json` or `loop_json`
+/// is not the JSON it must be.
+pub fn workflow_json(
     workflow: &Workflow,
-    channel_name: &str,
-    id: String,
+    channel: &str,
+    id: &str,
     status: &str,
-    rollout: Option<dataflow_rs_v3::Rollout>,
-) -> Result<DataflowWorkflow, OrionError> {
+    rollout: Option<(u8, u8)>,
+) -> Result<serde_json::Value, OrionError> {
     let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
     let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
-    // `null` rather than an omitted key: dataflow-rs defaults the field to
-    // `None` either way, and being explicit keeps the built JSON's shape the
-    // same for every workflow.
+    // `null` rather than an omitted key: both engines read it as no loop,
+    // and being explicit keeps the built JSON's shape the same for every
+    // workflow.
     let loop_config: serde_json::Value = match workflow.loop_json.as_deref() {
         Some(json) => serde_json::from_str(json)?,
         None => serde_json::Value::Null,
     };
 
-    let workflow_json = serde_json::json!({
+    let mut json = serde_json::json!({
         "id": id,
         "name": workflow.name,
         "description": workflow.description,
-        "channel": channel_name,
+        "channel": channel,
         "priority": workflow.priority,
         "version": workflow.version,
         "status": status,
@@ -1007,14 +1023,46 @@ fn workflow_to_dataflow_inner(
         "tasks": tasks,
         "tags": tags,
         "loop": loop_config,
-        "continue_on_error": workflow.continue_on_error,
-        "rollout": rollout.map(|dataflow_rs_v3::Rollout { bucket_start, bucket_end }| serde_json::json!({
+        "rollout": rollout.map(|(bucket_start, bucket_end)| serde_json::json!({
             "bucket_start": bucket_start,
             "bucket_end": bucket_end,
         })),
     });
+    if workflow.continue_on_error
+        && let Some(object) = json.as_object_mut()
+    {
+        object.insert(
+            "on_failure".to_string(),
+            serde_json::Value::String("continue".to_string()),
+        );
+    }
+    Ok(json)
+}
 
-    let df_workflow: DataflowWorkflow = serde_json::from_value(workflow_json)?;
+/// Shared body of the two dataflow-rs 3 converters below: [`workflow_json`],
+/// with the column spelled as dataflow-rs 3 reads it, `continue_on_error`.
+fn workflow_to_dataflow_inner(
+    workflow: &Workflow,
+    channel_name: &str,
+    id: String,
+    status: &str,
+    rollout: Option<dataflow_rs_v3::Rollout>,
+) -> Result<DataflowWorkflow, OrionError> {
+    let mut json = workflow_json(
+        workflow,
+        channel_name,
+        &id,
+        status,
+        rollout.map(|r| (r.bucket_start, r.bucket_end)),
+    )?;
+    if let Some(object) = json.as_object_mut() {
+        object.remove("on_failure");
+        object.insert(
+            "continue_on_error".to_string(),
+            serde_json::Value::Bool(workflow.continue_on_error),
+        );
+    }
+    let df_workflow: DataflowWorkflow = serde_json::from_value(json)?;
     Ok(df_workflow)
 }
 
@@ -1162,6 +1210,72 @@ mod tests {
         assert_eq!((rollout.bucket_start, rollout.bucket_end), (0, 50));
         assert!(rollout.accepts(0) && rollout.accepts(49));
         assert!(!rollout.accepts(50) && !rollout.accepts(99));
+    }
+
+    /// I186: the `continue_on_error` column is spelled as dataflow-rs 4
+    /// reads it, `"on_failure": "continue"` when set and absent when not
+    /// (the default), so no stored row raises a `V3_SPELLING` Advisory on
+    /// every load; dataflow-rs 3's converter still reads it as
+    /// `continue_on_error`. A task's own spelling is the author's and is
+    /// left as written.
+    #[test]
+    fn workflow_json_writes_on_failure_from_the_column() {
+        let mut workflow = Workflow {
+            workflow_id: "wf".to_string(),
+            name: "WF".to_string(),
+            description: None,
+            priority: 3,
+            version: 2,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 100,
+            condition_json: "true".to_string(),
+            tasks_json: r#"[{"id":"t","name":"t","continue_on_error":true,
+                "function":{"name":"log","input":{"message":"x"}}}]"#
+                .to_string(),
+            tags_json: r#"["a"]"#.to_string(),
+            loop_json: None,
+            continue_on_error: true,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        };
+
+        let json = workflow_json(&workflow, "orders", "wf", "active", None).expect("test");
+        assert_eq!(json["on_failure"], "continue");
+        assert!(json.get("continue_on_error").is_none(), "{json}");
+        assert_eq!(json["tasks"][0]["continue_on_error"], true);
+        assert_eq!(json["channel"], "orders");
+        assert_eq!(
+            (json["priority"].clone(), json["version"].clone()),
+            (3.into(), 2.into())
+        );
+        assert!(json["rollout"].is_null() && json["loop"].is_null());
+        assert!(
+            workflow_to_dataflow(&workflow, "orders")
+                .expect("test")
+                .continue_on_error
+        );
+
+        workflow.continue_on_error = false;
+        let json =
+            workflow_json(&workflow, "orders", "wf:v2", "active", Some((20, 70))).expect("test");
+        assert!(json.get("on_failure").is_none(), "{json}");
+        assert_eq!(json["id"], "wf:v2");
+        assert_eq!(
+            json["rollout"],
+            serde_json::json!({"bucket_start": 20, "bucket_end": 70})
+        );
+        assert!(
+            !workflow_to_dataflow(&workflow, "orders")
+                .expect("test")
+                .continue_on_error
+        );
+
+        // dataflow-rs 4 reads the row with nothing to report but the task's
+        // own v3 spelling.
+        let parsed = dataflow_rs::def::parse(&json, dataflow_rs::def::ParseOptions::default());
+        assert!(parsed.def.is_some(), "{:?}", parsed.issues);
+        let codes: Vec<_> = parsed.issues.iter().map(|i| i.path.to_string()).collect();
+        assert_eq!(codes, ["tasks[0].continue_on_error"]);
     }
 
     /// The plain converter must leave `rollout` unset — a workflow with no

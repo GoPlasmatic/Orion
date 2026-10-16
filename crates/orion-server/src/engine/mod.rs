@@ -7,7 +7,8 @@
 //!
 //! - [`handlers`] — the function-name vocabulary and the handler construction
 //!   behind Orion's own entries.
-//! - [`loader`] — stored channels + workflows → the dataflow-rs workflow set,
+//! - [`loader`] — stored channels + workflows → both engines' workflow sets,
+//!   dataflow-rs 4's verdict deciding which load (I182),
 //!   with the per-channel quarantine.
 //! - [`runner`] — running one channel, and the instrumented lock accessors.
 //! - [`observer`] — always-on per-task timing, including the sync built-ins no
@@ -167,9 +168,12 @@ pub use functions::registry::{
 pub use functions::schema::ConnectorRule;
 pub use handlers::{
     HandlerDeps, build_custom_functions, is_reserved_function_name, register_functions,
-    register_kafka_publisher, register_plugin_functions,
+    register_kafka_function, register_kafka_publisher, register_plugin_functions, serving_registry,
 };
-pub use loader::{HandlerScreen, build_engine_workflows, build_single, filter_channels};
+pub use loader::{
+    AliasRewrite, EngineLoad, HandlerScreen, LoadedWorkflows, build_engine_workflows, build_single,
+    compile_row, filter_channels, quarantines, rewrite_aliases, serving_engine,
+};
 pub use observer::MetricsObserver;
 pub use refs::{
     ConnectorFacts, ConnectorRef, RefProblem, channel_call_targets, check_connector_refs,

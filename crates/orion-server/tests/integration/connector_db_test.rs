@@ -579,10 +579,15 @@ async fn test_db_read_row_cap_enforced() {
 /// correct one did nothing.
 ///
 /// `db_write` is `deny_unknown: false` — Orion's own handlers take freeform
-/// inputs and ignore extra keys — so the right answer is that the key is
-/// ignored like any other stray, not that it is validated. The write proceeds.
+/// inputs and ignore extra keys — so 1.12 ignored the key like any other
+/// stray, and the write proceeded.
+///
+/// Break 2a: dataflow-rs 4's derived config refuses a key it does not
+/// declare, and its verdict decides which rows load (I182), so the channel
+/// is quarantined, the key's path in the reason, and nothing is written.
+/// The create path still accepts the key; the refusal is the load's.
 #[tokio::test]
-async fn db_write_ignores_a_numeric_as_it_cannot_act_on() {
+async fn db_write_with_a_numeric_as_it_cannot_act_on_quarantines_its_channel() {
     let app = common::test_app().await;
 
     common::create_connector(
@@ -634,21 +639,12 @@ async fn db_write_ignores_a_numeric_as_it_cannot_act_on() {
         ))
         .await
         .expect("request");
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = common::body_json(resp).await;
-
-    let rendered = body.to_string();
+    let message = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        !rendered.contains("numeric_as"),
-        "a field db_write does not have must not appear in an error: {body}"
-    );
-    assert!(
-        body["errors"].as_array().is_some_and(|a| a.is_empty()),
-        "the write must proceed: {body}"
-    );
-    assert_eq!(
-        body["data"]["inserted"]["rows_affected"],
-        json!(1),
+        message.contains("failed to load")
+            && message.contains("task 'ins': UNKNOWN_KEY at tasks[1].function.input.numeric_as"),
         "{body}"
     );
 }

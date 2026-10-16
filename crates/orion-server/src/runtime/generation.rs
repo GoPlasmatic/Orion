@@ -48,10 +48,13 @@ pub struct RuntimeGeneration {
     /// times this node has republished".
     pub id: u64,
     pub engine: Arc<dataflow_rs_v3::Engine>,
-    /// The dataflow-rs 4 engine built from the same rows, which
-    /// `channel_call`'s dataflow-rs 4 function runs its child on. `None`
-    /// until the building cutover fills it on every publish; the running
-    /// cutover makes it `engine` and this field goes.
+    /// The dataflow-rs 4 engine built from the same rows: every row compiled
+    /// on its `Registry`, whose verdict decided which channels load (I182),
+    /// so it holds exactly the workflows `engine` serves. `channel_call`'s
+    /// dataflow-rs 4 function runs its child on it, and a reload that keeps
+    /// the plugins compiles on its compiler. `None` only on the boot
+    /// generation, before the first publish; the running cutover makes it
+    /// `engine` and this field goes.
     pub engine4: Option<dataflow_rs::Engine>,
     pub channels: Arc<ChannelSnapshot>,
     /// Every function the engine above dispatches, and what each declares —

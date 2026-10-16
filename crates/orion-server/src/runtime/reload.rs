@@ -126,10 +126,19 @@ pub async fn reload_engine_with_opts(
         // was published first, this `?` could leave the node *permanently*
         // mixed: new guards over old workflows, until some later reload
         // happened to succeed.
+        //
+        // dataflow-rs 4 decides which rows load (I182): every row compiles on
+        // dataflow-rs 4 first, and the dataflow-rs 3 screen sees only the rows
+        // it accepted. Its half takes the same two paths. An unchanged plugin
+        // set compiles on the running engine's compiler and swaps with
+        // `with_program`, which keeps the `Registry` (its functions, the
+        // plugin functions and the profile layer) and the engine's config;
+        // a changed one registers the loaded plugin functions on a registry
+        // assembled afresh and builds a new engine.
         let plugin_rows = state.repos.plugins.list_active().await?;
         let plugins_changed =
             crate::plugin::PluginSet::fingerprint_of(&plugin_rows) != current.plugins.fingerprint();
-        let (new_engine, functions, plugins, engine_issues) = if plugins_changed {
+        let (new_engine, new_engine4, functions, plugins, engine_issues) = if plugins_changed {
             let plugins = Arc::new(
                 crate::plugin::load_active(
                     plugin_rows,
@@ -158,39 +167,62 @@ pub async fn reload_engine_with_opts(
                 state.config.engine.ops_budget,
             )
             .with_handlers(handlers);
-            let (workflows, mut engine_issues) =
-                crate::engine::build_engine_workflows(&channels, &active_workflows, &builder);
-            for issue in &mut engine_issues {
-                plugins.annotate(&mut issue.reason);
-            }
+            let compiler = plugin_compiler(state, &plugins);
+            let loaded = crate::engine::build_engine_workflows(
+                &channels,
+                &active_workflows,
+                &crate::engine::EngineLoad {
+                    compiler: &compiler,
+                    functions: &functions,
+                    plugins: &plugins,
+                    screen: &builder,
+                },
+            );
             let engine = Arc::new(
                 builder
-                    .with_workflows(workflows)
+                    .with_workflows(loaded.v3)
                     .build()
                     .map_err(crate::errors::OrionError::Engine)?
                     .with_observer(Arc::new(crate::engine::MetricsObserver)),
             );
-            (engine, functions, plugins, engine_issues)
+            let engine4 = crate::engine::serving_engine(compiler.link(loaded.v4));
+            (engine, engine4, functions, plugins, loaded.issues)
         } else {
-            let (workflows, mut engine_issues) = crate::engine::build_engine_workflows(
+            // The running engine's compiler: its registry, so a reload that
+            // keeps the plugins registers nothing. A generation published
+            // with no dataflow-rs 4 engine (none is, past boot) has nothing
+            // to carry, and its registry is assembled as for a changed set.
+            let compiler = match &current.engine4 {
+                Some(engine4) => engine4.compiler(),
+                None => plugin_compiler(state, &current.plugins),
+            };
+            let loaded = crate::engine::build_engine_workflows(
                 &channels,
                 &active_workflows,
-                &*current.engine,
+                &crate::engine::EngineLoad {
+                    compiler: &compiler,
+                    functions: &current.functions,
+                    plugins: &current.plugins,
+                    screen: &*current.engine,
+                },
             );
-            for issue in &mut engine_issues {
-                current.plugins.annotate(&mut issue.reason);
-            }
             let engine = Arc::new(
                 current
                     .engine
-                    .with_new_workflows(workflows)
+                    .with_new_workflows(loaded.v3)
                     .map_err(crate::errors::OrionError::Engine)?,
             );
+            let program = compiler.link(loaded.v4);
+            let engine4 = match &current.engine4 {
+                Some(engine4) => engine4.with_program(program),
+                None => crate::engine::serving_engine(program),
+            };
             (
                 engine,
+                engine4,
                 current.functions.clone(),
                 current.plugins.clone(),
-                engine_issues,
+                loaded.issues,
             )
         };
 
@@ -253,7 +285,7 @@ pub async fn reload_engine_with_opts(
         // two stores here could not avoid however they were ordered.
         let generation = state.runtime.publish(
             new_engine,
-            None,
+            Some(new_engine4),
             Arc::new(new_channels),
             functions,
             plugins,
@@ -360,6 +392,19 @@ pub async fn reload_engine_with_opts(
     }
 
     result
+}
+
+/// A dataflow-rs 4 compiler over a registry assembled afresh from this
+/// node's live components ([`super::build_registry`]) with `plugins`'
+/// functions registered: what a reload that changes the plugin set compiles
+/// on, as its dataflow-rs 3 half assembles its handlers afresh.
+fn plugin_compiler(
+    state: &AppState,
+    plugins: &crate::plugin::PluginSet,
+) -> dataflow_rs::program::Compiler {
+    let mut registry = super::build_registry(state);
+    crate::engine::register_plugin_functions(&mut registry, plugins.functions().cloned());
+    registry.compiler(dataflow_rs::program::CompileOptions::default())
 }
 
 /// Restart the Kafka consumer when async channel topic mappings have changed.

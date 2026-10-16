@@ -203,6 +203,11 @@ pub struct ServingComponents {
 pub struct EngineComponents {
     pub serving: ServingComponents,
     pub custom_functions: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
+    /// The same functions on dataflow-rs 4, the real `publish_kafka` and the
+    /// profile layer included ([`crate::engine::serving_registry`]): what the
+    /// first generation compiles every stored workflow on, its plugins
+    /// added. dataflow-rs 4's verdict decides which rows load (I182).
+    pub registry: dataflow_rs::Registry,
 }
 
 /// Build the [`EngineComponents`]: load the connector registry, create the
@@ -364,7 +369,9 @@ pub async fn build_engine_components(
     };
 
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
-    let mut custom_functions = crate::engine::build_custom_functions(crate::engine::HandlerDeps {
+    // The same dependencies twice, once per engine: the dataflow-rs 3
+    // handlers below and the dataflow-rs 4 registry after the producer.
+    let handler_deps = || crate::engine::HandlerDeps {
         registry: connector_registry.clone(),
         client: http_client.clone(),
         runtime: runtime.clone(),
@@ -380,7 +387,8 @@ pub async fn build_engine_components(
         smtp_pool_cache: smtp_pool_cache.clone(),
         models: models.clone(),
         models_config: &config.models,
-    });
+    };
+    let mut custom_functions = crate::engine::build_custom_functions(handler_deps());
 
     let (kafka_producer, kafka_producers) = setup_kafka_producer(
         &config.kafka,
@@ -388,6 +396,7 @@ pub async fn build_engine_components(
         connector_registry.clone(),
         config.engine.max_pool_cache_entries,
     )?;
+    let registry = crate::engine::serving_registry(handler_deps(), kafka_producers.clone());
 
     let plugins = if config.plugins.enabled {
         Some(
@@ -421,6 +430,7 @@ pub async fn build_engine_components(
             models,
         },
         custom_functions,
+        registry,
     })
 }
 
@@ -455,6 +465,7 @@ impl EngineComponents {
         let EngineComponents {
             serving,
             mut custom_functions,
+            mut registry,
         } = self;
         // Load active channels and workflows, build engine
         let channels = repos.channels.list_active().await?;
@@ -495,6 +506,11 @@ impl EngineComponents {
         for (name, handler) in plugins.handlers() {
             custom_functions.insert(name, handler);
         }
+        // The same plugin functions on dataflow-rs 4, before anything
+        // compiles on the registry: a workflow links only under the registry
+        // it compiled under.
+        crate::engine::register_plugin_functions(&mut registry, plugins.functions().cloned());
+        let compiler = registry.compiler(dataflow_rs::program::CompileOptions::default());
 
         // The handlers go on the builder *before* the workflows are converted,
         // because converting screens each one against them: a workflow naming
@@ -502,6 +518,9 @@ impl EngineComponents {
         // cannot parse, is quarantined per channel instead of aborting the
         // whole build. `with_handlers` is the only thing this borrow is for —
         // the workflows are added below, on the same builder.
+        //
+        // dataflow-rs 4 compiles every row first, and its verdict decides
+        // which load (I182); this builder screens only the rows it accepted.
         let builder = crate::engine::operators::with_ops_budget(
             crate::engine::operators::with_orion_engine_defaults(
                 dataflow_rs_v3::Engine::builder(),
@@ -510,11 +529,21 @@ impl EngineComponents {
             config.engine.ops_budget,
         )
         .with_handlers(custom_functions);
-        let (workflows, mut engine_issues) =
-            crate::engine::build_engine_workflows(&channels, &active_workflows, &builder);
-        for issue in &mut engine_issues {
-            plugins.annotate(&mut issue.reason);
-        }
+        let crate::engine::LoadedWorkflows {
+            v3: workflows,
+            v4: compiled,
+            issues: mut engine_issues,
+        } = crate::engine::build_engine_workflows(
+            &channels,
+            &active_workflows,
+            &crate::engine::EngineLoad {
+                compiler: &compiler,
+                functions: &functions,
+                plugins: &plugins,
+                screen: &builder,
+            },
+        );
+        let engine4 = crate::engine::serving_engine(compiler.link(compiled));
 
         let channel_names: std::collections::HashSet<&str> =
             workflows.iter().map(|w| w.channel.as_str()).collect();
@@ -602,7 +631,7 @@ impl EngineComponents {
         // there is only one way to publish.
         serving.runtime.publish(
             Arc::new(built_engine),
-            None,
+            Some(engine4),
             Arc::new(channels_snapshot),
             functions,
             plugins,

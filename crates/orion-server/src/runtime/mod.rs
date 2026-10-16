@@ -81,6 +81,15 @@ pub fn build_handlers(
     fns
 }
 
+/// [`build_handlers`]'s twin on dataflow-rs 4: the `Registry` a generation
+/// compiles on before its plugins, from this node's live components
+/// ([`crate::engine::serving_registry`]). What a reload that changes the
+/// plugin set starts from; a reload that keeps it compiles on the running
+/// engine's registry instead.
+pub fn build_registry(state: &crate::server::state::AppState) -> dataflow_rs::Registry {
+    crate::engine::serving_registry(handler_deps(state), state.kafka.producers.clone())
+}
+
 pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::HandlerDeps<'_> {
     crate::engine::HandlerDeps {
         registry: state.connector_registry.clone(),

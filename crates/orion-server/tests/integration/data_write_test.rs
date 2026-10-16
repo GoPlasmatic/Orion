@@ -502,9 +502,14 @@ async fn the_pre_1_0_flat_envelope_is_refused_at_create() {
 }
 
 /// A half-migrated task — envelope moved under `write`, stale flat keys left
-/// behind — runs the `write` envelope. The stale keys are inert.
+/// behind. 1.12 ran the `write` envelope and the stale keys were inert.
+///
+/// Break 2a: the stale keys are keys `data_write`'s dataflow-rs 4 config
+/// does not declare, and its verdict decides which rows load (I182), so the
+/// channel is quarantined with each key's path in the reason, and nothing is
+/// written. The create path still accepts them; the refusal is the load's.
 #[tokio::test]
-async fn nested_envelope_wins_when_both_shapes_are_present() {
+async fn stale_flat_keys_beside_the_envelope_quarantine_the_channel() {
     let app = sqlite_app("dw-both", "dw_both").await;
     common::create_and_activate_channel(
         &app,
@@ -538,12 +543,16 @@ async fn nested_envelope_wins_when_both_shapes_are_present() {
     .await;
 
     let (status, body) = post(&app, "ch-dw-both", json!({ "data": {} })).await;
-    assert_eq!(status, StatusCode::OK, "body = {body}");
-    assert_eq!(
-        body["data"]["result"],
-        json!([{ "id": 1, "name": "fresh" }]),
-        "body = {body}"
-    );
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body = {body}");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    for key in ["op", "target", "values"] {
+        assert!(
+            message.contains(&format!(
+                "task 'w': UNKNOWN_KEY at tasks[1].function.input.{key}"
+            )),
+            "body = {body}"
+        );
+    }
 }
 
 /// A task with neither shape is rejected at create time, naming `write`.
