@@ -319,8 +319,8 @@ pub fn build_custom_functions(
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::connector_handler::ConnectorHandler;
     use functions::{
-        data_query, data_write, db_read, db_write, http_call, publish_kafka, send_email,
-        storage_head, storage_presign,
+        data_query, data_write, db_read, db_write, http_call, mongo_aggregate, mongo_read,
+        mongo_write, publish_kafka, send_email, storage_head, storage_presign,
     };
 
     let HandlerDeps {
@@ -397,11 +397,35 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         <data_write::DataWriteHandler as ConnectorHandler>::NAME,
         data_write::DataWriteFunction {
             pool_cache: sql_pool_cache,
-            mongo_pool_cache,
+            mongo_pool_cache: mongo_pool_cache.clone(),
             http_client: client,
-            registry: connectors,
+            registry: connectors.clone(),
             write_config: write_config.clone(),
             max_returning: query_config.max_limit as usize,
+        },
+    );
+    registry.register(
+        <mongo_read::MongoReadHandler as ConnectorHandler>::NAME,
+        mongo_read::MongoReadFunction {
+            pool_cache: mongo_pool_cache.clone(),
+            registry: connectors.clone(),
+            limits: query_config.clone(),
+        },
+    );
+    registry.register(
+        <mongo_write::MongoWriteHandler as ConnectorHandler>::NAME,
+        mongo_write::MongoWriteFunction {
+            pool_cache: mongo_pool_cache.clone(),
+            registry: connectors.clone(),
+            write_config: write_config.clone(),
+        },
+    );
+    registry.register(
+        <mongo_aggregate::MongoAggregateHandler as ConnectorHandler>::NAME,
+        mongo_aggregate::MongoAggregateFunction {
+            pool_cache: mongo_pool_cache,
+            registry: connectors,
+            limits: query_config.clone(),
         },
     );
 }

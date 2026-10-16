@@ -318,8 +318,9 @@ pub struct DataWriteFunction {
     pub max_returning: usize,
 }
 
-/// A dataflow-rs 3 outcome of the shared write, as dataflow-rs 4's.
-fn outcome(outcome: TaskOutcome) -> Outcome {
+/// A dataflow-rs 3 outcome of the shared write, as dataflow-rs 4's. Shared
+/// with `mongo_write`, whose writes answer in the same outcomes.
+pub(super) fn outcome(outcome: TaskOutcome) -> Outcome {
     match outcome {
         TaskOutcome::Success => Outcome::Ok,
         TaskOutcome::Status(status) => Outcome::Status(status),

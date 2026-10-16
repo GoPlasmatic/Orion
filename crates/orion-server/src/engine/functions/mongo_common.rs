@@ -11,16 +11,26 @@
 //! `bson` serde bridge, so every BSON type with an extended-JSON spelling —
 //! `$oid`, `$date`, `$numberDecimal`, `$uuid`, … — works with no
 //! Orion-specific code, today and as `bson` grows.
+//!
+//! On dataflow-rs 4 a document is an `Interpolated` field, rendered for the
+//! call and serialized straight into BSON (`rendered_bson`): the same
+//! `var` holes 1.12 folded, the same bridge, and no JSON tree of its own
+//! unless the document is refused, when 1.12's reading of the folded JSON
+//! words the refusal.
 
+use dataflow_rs::Ctx;
+use dataflow_rs::expr::{CompileCx, Interpolated, Rendered};
+use dataflow_rs::program::IssueCode;
 use dataflow_rs_v3::engine::error::DataflowError;
 use dataflow_rs_v3::engine::task_context::TaskContext;
 use futures::TryStreamExt;
-use mongodb::bson::{self, Document};
+use mongodb::bson::{self, Bson, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{is_mongo, resolve_value};
 use super::templated_input::TemplatedInput;
 use crate::connector::DbConnectorConfig;
+use crate::engine::{ErrorClass, HandlerError};
 
 /// The MongoDB half of a `db` connector's identity.
 ///
@@ -53,18 +63,26 @@ pub(super) fn resolve_document(
 ) -> Result<Option<Document>, DataflowError> {
     match input.get(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(raw) => {
-            let resolved = resolve_value(raw, ctx);
-            if !resolved.is_object() {
-                return Err(DataflowError::Validation(format!(
-                    "{handler_name} '{field}' must resolve to an object"
-                )));
-            }
-            bson::to_document(&resolved).map(Some).map_err(|e| {
-                DataflowError::Validation(format!("{handler_name} '{field}' is not valid: {e}"))
-            })
-        }
+        Some(raw) => document_from_value(&resolve_value(raw, ctx), field, handler_name).map(Some),
     }
+}
+
+/// The half of [`resolve_document`] after the fold: the folded value as a
+/// BSON document, or the located refusal. Shared with the dataflow-rs 4
+/// functions, which reach it only for a document that is refused.
+pub(super) fn document_from_value(
+    resolved: &Value,
+    field: &str,
+    handler_name: &str,
+) -> Result<Document, DataflowError> {
+    if !resolved.is_object() {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} '{field}' must resolve to an object"
+        )));
+    }
+    bson::to_document(resolved).map_err(|e| {
+        DataflowError::Validation(format!("{handler_name} '{field}' is not valid: {e}"))
+    })
 }
 
 /// Convert already-resolved values into BSON documents, naming the index in
@@ -116,25 +134,134 @@ pub(super) fn resolve_document_array(
         None | Some(Value::Null) => return Ok(None),
         Some(raw) => raw,
     };
-    let resolved = resolve_value(raw, ctx);
+    document_array_from_value(&resolve_value(raw, ctx), field, handler_name).map(Some)
+}
+
+/// The half of [`resolve_document_array`] after the fold, shared as
+/// [`document_from_value`] is.
+pub(super) fn document_array_from_value(
+    resolved: &Value,
+    field: &str,
+    handler_name: &str,
+) -> Result<Vec<Document>, DataflowError> {
     let Value::Array(items) = resolved else {
         return Err(DataflowError::Validation(format!(
             "{handler_name} '{field}' must resolve to an array of objects"
         )));
     };
-    documents_from_values(items.iter(), field, handler_name).map(Some)
+    documents_from_values(items.iter(), field, handler_name)
 }
 
-/// [`resolve_document`] for a required field.
-pub(super) fn require_document(
-    input: &Value,
+/// `doc` rendered for this call and read by `direct`, straight from the
+/// rendered document into BSON with no tree of its own. When `direct` has no
+/// answer, `judge` reads the JSON 1.12 folded the field to
+/// (`resolve_value`'s fold of the same document), so a refusal is 1.12's,
+/// word for word, and only a refused call builds the tree.
+///
+/// The two readings agree on every document `direct` accepts: the rendered
+/// document makes the serializer calls the folded JSON makes (its literal
+/// parts are that JSON's, and a hole's value is the message's), so
+/// [`bson`] builds the same document from either.
+///
+/// # Errors
+///
+/// `judge`'s refusal; a [`ErrorClass::Backend`] error for a document that
+/// does not serialize to JSON, which a rendered document always does.
+pub(super) fn rendered_bson<T>(
+    ctx: &Ctx<'_>,
+    doc: &Interpolated,
+    direct: impl FnOnce(&Rendered<'_>) -> Option<T>,
+    judge: impl FnOnce(&Value) -> Result<T, DataflowError>,
+) -> Result<T, HandlerError> {
+    let rendered = ctx.render(doc);
+    if let Some(read) = direct(&rendered) {
+        return Ok(read);
+    }
+    let folded =
+        serde_json::to_value(&rendered).map_err(|e| HandlerError::new(ErrorClass::Backend, e))?;
+    Ok(judge(&folded)?)
+}
+
+/// [`resolve_document`] on dataflow-rs 4: an optional document field
+/// rendered for this call into BSON. Unset or authored `null` is `None`;
+/// anything rendering to a non-object is 1.12's located refusal.
+///
+/// # Errors
+///
+/// As [`document_from_value`].
+pub(super) fn rendered_document(
+    ctx: &Ctx<'_>,
+    doc: Option<&Interpolated>,
     field: &str,
     handler_name: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Document, DataflowError> {
-    resolve_document(input, field, handler_name, ctx)?.ok_or_else(|| {
-        DataflowError::Validation(format!("{handler_name} requires '{field}' field"))
-    })
+) -> Result<Option<Document>, HandlerError> {
+    let Some(doc) = doc.filter(|doc| !doc.raw().is_null()) else {
+        return Ok(None);
+    };
+    rendered_bson(
+        ctx,
+        doc,
+        |rendered| bson::to_document(rendered).ok(),
+        |folded| document_from_value(folded, field, handler_name),
+    )
+    .map(Some)
+}
+
+/// [`resolve_document_array`] on dataflow-rs 4: an optional array of
+/// documents rendered for this call into BSON, `None` when unset or authored
+/// `null`.
+///
+/// # Errors
+///
+/// As [`document_array_from_value`].
+pub(super) fn rendered_document_array(
+    ctx: &Ctx<'_>,
+    doc: Option<&Interpolated>,
+    field: &str,
+    handler_name: &str,
+) -> Result<Option<Vec<Document>>, HandlerError> {
+    let Some(doc) = doc.filter(|doc| !doc.raw().is_null()) else {
+        return Ok(None);
+    };
+    rendered_bson(
+        ctx,
+        doc,
+        |rendered| match bson::to_bson(rendered) {
+            Ok(Bson::Array(items)) => items
+                .into_iter()
+                .map(|item| match item {
+                    Bson::Document(doc) => Some(doc),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        },
+        |folded| document_array_from_value(folded, field, handler_name),
+    )
+    .map(Some)
+}
+
+/// A `validate_static_input`'s refusals as a dataflow-rs 4 config check's
+/// issues: each Rejected, `INPUT_PARSE`, at the field it names, with its
+/// message. 1.12's own code for each (`unknown_op`, `unknown_stage`, …) has
+/// no place on an `Issue`, whose codes are the engine's.
+pub(super) fn report_static(
+    refusals: Vec<(&'static str, &'static str, String)>,
+    cx: &mut CompileCx<'_>,
+) {
+    for (field, _code, message) in refusals {
+        if field.is_empty() {
+            cx.issue(IssueCode::InputParse, message);
+        } else {
+            cx.at(field, |cx| cx.issue(IssueCode::InputParse, message));
+        }
+    }
+}
+
+/// The refusal of a document field an op requires and the task leaves unset
+/// or `null`, in 1.12's words, on both engines.
+pub(super) fn requires(field: &str, handler_name: &str) -> DataflowError {
+    DataflowError::Validation(format!("{handler_name} requires '{field}' field"))
 }
 
 /// Resolve an optional non-negative integer field (`limit`, `skip`).
@@ -310,4 +437,48 @@ pub(super) fn all_duplicate_key(failed: &[(usize, Value)], what: &str) -> Option
         crate::errors::IntegrityKind::Unique,
         format!("{what} failed, no documents were written: {first}"),
     ))
+}
+
+/// Test-only: the connectors the Mongo trio's tests reach, and a pool cache
+/// as the pure tests build one. Nothing here reaches a server: `docs` names
+/// a closed loopback port, so a call that passes every gate waits in the
+/// driver's server selection until its connector's `query_timeout_ms`
+/// (100 ms) ends it with 1.12's `TIMEOUT_ERROR`.
+#[cfg(test)]
+pub(super) mod testkit {
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+
+    use crate::connector::ConnectorRegistry;
+    use crate::connector::mongo_pool::MongoPoolCache;
+
+    /// The registry the tests resolve through: `docs`, a MongoDB connector
+    /// to a closed port with `extra` merged in; `sql`, a `db` connector with
+    /// a SQL connection string; `api`, an HTTP connector.
+    pub(crate) async fn connectors(extra: Value) -> Arc<ConnectorRegistry> {
+        let mut docs = json!({
+            "type": "db",
+            "connection_string": "mongodb://127.0.0.1:1",
+            "allow_private_urls": true,
+            "query_timeout_ms": 100,
+        });
+        if let (Some(docs), Some(extra)) = (docs.as_object_mut(), extra.as_object()) {
+            docs.extend(extra.clone());
+        }
+        crate::engine::functions::twin::connectors(&[
+            ("docs", docs),
+            (
+                "sql",
+                json!({"type": "db", "connection_string": "postgres://127.0.0.1:1/app"}),
+            ),
+            ("api", json!({"type": "http", "url": "http://127.0.0.1:1"})),
+        ])
+        .await
+    }
+
+    /// A pool cache of its own.
+    pub(crate) fn pools() -> Arc<MongoPoolCache> {
+        Arc::new(MongoPoolCache::new(2))
+    }
 }

@@ -963,6 +963,9 @@ mod tests {
         "db_write",
         "data_query",
         "data_write",
+        "mongo_read",
+        "mongo_write",
+        "mongo_aggregate",
     ];
 
     /// Every function 1.12 registers can be built over the inert
