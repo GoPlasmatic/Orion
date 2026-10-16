@@ -587,6 +587,16 @@ pub fn channel_refused_dataflow_error(
     status: StatusCode,
     message: String,
 ) -> dataflow_rs_v3::DataflowError {
+    let (kind, retryable) = channel_refusal(status);
+    dataflow_rs_v3::DataflowError::service(kind, message)
+        .retryable(retryable)
+        .build()
+}
+
+/// A guard refusal's kind, and whether a retry may clear it: the one table
+/// behind both [`channel_refused_dataflow_error`] and
+/// [`service::channel_refused`].
+fn channel_refusal(status: StatusCode) -> (&'static str, bool) {
     let kind = match status.as_u16() {
         429 => kind::CHANNEL_RATE_LIMITED,
         403 => kind::CHANNEL_FORBIDDEN,
@@ -595,9 +605,7 @@ pub fn channel_refused_dataflow_error(
     };
     // Retryable: the caller is over a limit or the target is at capacity.
     // Neither is a server fault and both clear on their own.
-    dataflow_rs_v3::DataflowError::service(kind, message)
-        .retryable(!matches!(status.as_u16(), 403 | 409))
-        .build()
+    (kind, !matches!(status.as_u16(), 403 | 409))
 }
 
 /// Build the error an open breaker returns from a function handler.
@@ -613,7 +621,7 @@ pub fn circuit_open_dataflow_error(
 ) -> dataflow_rs_v3::DataflowError {
     dataflow_rs_v3::DataflowError::service(
         kind::CIRCUIT_OPEN,
-        format!("Circuit breaker open for connector '{connector}' on channel '{channel}'"),
+        circuit_open_message(connector, channel),
     )
     // Retryable: a shed dependency is transient, and the DLQ retry loop must
     // re-attempt it — by the time it does, the breaker may well have closed.
@@ -623,11 +631,19 @@ pub fn circuit_open_dataflow_error(
     .build()
 }
 
+/// What an open breaker tells the caller, for both error types.
+fn circuit_open_message(connector: &str, channel: &str) -> String {
+    format!("Circuit breaker open for connector '{connector}' on channel '{channel}'")
+}
+
+/// The caller-facing half of a [`kind::CONNECTOR_DETAIL`] refusal.
+const CONNECTOR_DETAIL_MESSAGE: &str = "Request validation failed";
+
 /// Build a refusal whose text names internal topology (G3).
 ///
 /// The caller gets `public`; `detail` is logged and kept on the trace.
 pub fn connector_detail_error(detail: impl std::fmt::Display) -> dataflow_rs_v3::DataflowError {
-    dataflow_rs_v3::DataflowError::service(kind::CONNECTOR_DETAIL, "Request validation failed")
+    dataflow_rs_v3::DataflowError::service(kind::CONNECTOR_DETAIL, CONNECTOR_DETAIL_MESSAGE)
         .detail(detail.to_string())
         .build()
 }
@@ -650,25 +666,103 @@ pub fn integrity_dataflow_error(
     integrity: IntegrityKind,
     detail: impl std::fmt::Display,
 ) -> dataflow_rs_v3::DataflowError {
-    let (kind, message) = match integrity {
-        IntegrityKind::Unique => (
-            kind::INTEGRITY_UNIQUE,
-            "The request conflicts with an existing record",
-        ),
-        IntegrityKind::ForeignKey => (
-            kind::INTEGRITY_FOREIGN_KEY,
-            "The request references a record that does not exist",
-        ),
-        IntegrityKind::NotNull => (kind::INTEGRITY_NOT_NULL, "A required value is missing"),
-        IntegrityKind::Check => (
-            kind::INTEGRITY_CHECK,
-            "A value in the request is not allowed",
-        ),
-    };
+    let (kind, message) = integrity.kind_and_message();
     dataflow_rs_v3::DataflowError::service(kind, message)
         .detail(detail.to_string())
         .retryable(false)
         .build()
+}
+
+impl IntegrityKind {
+    /// The service kind a workflow branches on, and the generic sentence the
+    /// caller gets in place of the driver's text: the one table behind both
+    /// [`integrity_dataflow_error`] and [`service::integrity`].
+    fn kind_and_message(self) -> (&'static str, &'static str) {
+        match self {
+            IntegrityKind::Unique => (
+                kind::INTEGRITY_UNIQUE,
+                "The request conflicts with an existing record",
+            ),
+            IntegrityKind::ForeignKey => (
+                kind::INTEGRITY_FOREIGN_KEY,
+                "The request references a record that does not exist",
+            ),
+            IntegrityKind::NotNull => (kind::INTEGRITY_NOT_NULL, "A required value is missing"),
+            IntegrityKind::Check => (
+                kind::INTEGRITY_CHECK,
+                "A value in the request is not allowed",
+            ),
+        }
+    }
+}
+
+/// The four service-classified failures above, built as dataflow-rs 4
+/// errors for the v4 functions.
+///
+/// Each is its dataflow-rs 3 twin's kind, caller-facing message and
+/// retryability, read from the same table, so the code a client sees does not
+/// depend on which engine ran the task. v4's `Error` has no `detail` field:
+/// the operator-only text rides as the error's [`source`](std::error::Error::source),
+/// a [`ServiceDetail`], which its JSON never carries.
+pub mod service {
+    use super::{IntegrityKind, StatusCode, kind};
+    use dataflow_rs::Error;
+
+    /// The operator-only text of a service error: logged and kept for the
+    /// operator, never shown to the caller. Carried as the error's source.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ServiceDetail(pub String);
+
+    impl std::fmt::Display for ServiceDetail {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for ServiceDetail {}
+
+    /// `error` carrying `detail` as its operator-only text.
+    pub fn with_detail(error: Error, detail: impl std::fmt::Display) -> Error {
+        error.with_source(ServiceDetail(detail.to_string()))
+    }
+
+    /// The operator-only text `error` carries, if its source is one.
+    pub fn detail_of(error: &Error) -> Option<&str> {
+        std::error::Error::source(error)?
+            .downcast_ref::<ServiceDetail>()
+            .map(|detail| detail.0.as_str())
+    }
+
+    /// [`super::channel_refused_dataflow_error`], as a v4 error.
+    pub fn channel_refused(status: StatusCode, message: String) -> Error {
+        let (kind, retryable) = super::channel_refusal(status);
+        Error::service(kind, message).with_retryable(retryable)
+    }
+
+    /// [`super::circuit_open_dataflow_error`], as a v4 error: retryable, for
+    /// the reason given there.
+    pub fn circuit_open(connector: &str, channel: &str) -> Error {
+        Error::service(
+            kind::CIRCUIT_OPEN,
+            super::circuit_open_message(connector, channel),
+        )
+        .with_retryable(true)
+    }
+
+    /// [`super::connector_detail_error`], as a v4 error: the caller gets the
+    /// generic message, and `detail` rides as the source.
+    pub fn connector_detail(detail: impl std::fmt::Display) -> Error {
+        with_detail(
+            Error::service(kind::CONNECTOR_DETAIL, super::CONNECTOR_DETAIL_MESSAGE),
+            detail,
+        )
+    }
+
+    /// [`super::integrity_dataflow_error`], as a v4 error: never retryable.
+    pub fn integrity(integrity: IntegrityKind, detail: impl std::fmt::Display) -> Error {
+        let (kind, message) = integrity.kind_and_message();
+        with_detail(Error::service(kind, message), detail)
+    }
 }
 
 /// Map DataflowError variants to appropriate HTTP status codes and sanitized messages.
@@ -1540,5 +1634,93 @@ mod tests {
             .await;
         let body = body_to_value(response).await;
         assert!(body["error"].get("request_id").is_none());
+    }
+}
+
+#[cfg(test)]
+mod service_twin_tests {
+    use super::*;
+
+    /// What a client could see of a dataflow-rs 3 error: its recorded code,
+    /// its caller-facing message, its retryability and its operator-only
+    /// detail.
+    fn v3_seen(e: dataflow_rs_v3::DataflowError) -> (String, String, bool, Option<String>) {
+        let retryable = e.retryable();
+        let detail = e.detail().map(str::to_string);
+        let message = e.to_string();
+        let code = dataflow_rs_v3::ErrorInfo::new(None, None, e).code;
+        (code, message, retryable, detail)
+    }
+
+    /// The same four facts of a dataflow-rs 4 error.
+    fn v4_seen(e: &dataflow_rs::Error) -> (String, String, bool, Option<String>) {
+        (
+            e.code().to_string(),
+            e.message().to_string(),
+            e.is_retryable(),
+            service::detail_of(e).map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn each_service_error_is_its_v3_twin() {
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::FORBIDDEN,
+            StatusCode::CONFLICT,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            assert_eq!(
+                v4_seen(&service::channel_refused(status, "refused".into())),
+                v3_seen(channel_refused_dataflow_error(status, "refused".into())),
+                "{status}"
+            );
+        }
+        assert_eq!(
+            v4_seen(&service::circuit_open("billing", "orders")),
+            v3_seen(circuit_open_dataflow_error("billing", "orders")),
+        );
+        assert_eq!(
+            v4_seen(&service::connector_detail("operation 'read' is disabled")),
+            v3_seen(connector_detail_error("operation 'read' is disabled")),
+        );
+        for integrity in [
+            IntegrityKind::Unique,
+            IntegrityKind::ForeignKey,
+            IntegrityKind::NotNull,
+            IntegrityKind::Check,
+        ] {
+            assert_eq!(
+                v4_seen(&service::integrity(integrity, "UNIQUE constraint failed")),
+                v3_seen(integrity_dataflow_error(
+                    integrity,
+                    "UNIQUE constraint failed"
+                )),
+                "{integrity:?}"
+            );
+        }
+    }
+
+    /// The operator-only text is the error's source and nothing a caller is
+    /// sent: v4's `Error` serializes its code, message and retryability only.
+    #[test]
+    fn a_service_errors_detail_is_its_source_and_absent_from_its_json() {
+        let e = service::connector_detail("connector 'prod-billing-db' is a cache");
+        let source = std::error::Error::source(&e).expect("the detail is the source");
+        assert_eq!(source.to_string(), "connector 'prod-billing-db' is a cache");
+        assert_eq!(
+            serde_json::to_value(&e).expect("serializes"),
+            serde_json::json!({
+                "code": "connector_detail",
+                "message": "Request validation failed",
+                "retryable": false
+            })
+        );
+        assert!(!e.to_string().contains("prod-billing-db"));
+        assert_eq!(
+            service::detail_of(&dataflow_rs::Error::service("X", "m")),
+            None
+        );
     }
 }
