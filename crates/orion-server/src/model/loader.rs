@@ -1,7 +1,7 @@
 //! From active model rows to what a generation carries: one entry per
 //! model that can serve on this node, with its adapters and result
-//! expression compiled on the generation's own expression engine, and the
-//! reasons anything did not load.
+//! expression compiled on the process's expression engine, and the reasons
+//! anything did not load.
 //!
 //! A load never aborts. A row a node cannot serve — models disabled here,
 //! an admission that has not passed, a stored manifest that no longer
@@ -11,23 +11,26 @@
 //! the shape a plugin that fails to load already takes. The node keeps
 //! serving everything else.
 //!
-//! The adapters are compiled **here and not at upload**: a `datalogic`
-//! program is bound to the engine that compiled it, and every generation
-//! builds a fresh one, so the set is rebuilt on every publish — cheap, a
-//! handful of expressions — and evaluated only on `generation.engine`'s.
-//! Nothing is loaded into a runtime at this point; that is the
-//! [`LoadedCache`]'s, on first use or at preload.
+//! The adapters are compiled **here and not at upload**, on the one
+//! [`ExprEngine`] the process evaluates with (I188), which both engines'
+//! `model_infer` evaluate them on. That engine outlives every generation, so
+//! a reload carries a model whose manifest has not changed with its compiled
+//! adapters ([`ModelSet::reload`]), and compiles only what is new. Nothing is
+//! loaded into a runtime at this point; that is the [`LoadedCache`]'s, on
+//! first use or at preload.
 //!
 //! The same compile serves an **offline** set ([`ModelSet::from_manifests`]):
 //! `dry-run` and `orion-server test` build one from the manifests a
-//! `--model-dir` holds, on the engine that will evaluate them, with no row
+//! `--model-dir` holds, on the engine the offline run gives it, with no row
 //! and no admission behind any entry — the bytes on disk are what the author
 //! is testing, and are trusted as such.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dataflow_rs_v3::datalogic_rs as datalogic;
+use dataflow_rs::Expr;
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::ExprEngine;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
@@ -61,13 +64,21 @@ pub struct ModelEntry {
     /// The row's tags. Empty for an offline set, which has no row — they
     /// are a property of the registration, not of the manifest.
     pub tags: Vec<String>,
-    /// One compiled adapter per manifest input, in manifest order.
-    pub adapters: Vec<(String, datalogic::Logic)>,
-    /// The compiled result expression, over `{output name: tensor}`.
-    pub result: datalogic::Logic,
+    /// The manifest's expressions, compiled on the set's engine: shared with
+    /// the previous generation's entry when the manifest is unchanged.
+    pub adapters: Arc<Adapters>,
     pub limits: Limits,
     /// `limits.max_concurrency` inference slots for this model on this node.
     pub permits: Arc<Semaphore>,
+}
+
+/// A manifest's expressions, compiled once on the process's expression
+/// engine (I188), and evaluated there by the call.
+pub struct Adapters {
+    /// One compiled adapter per manifest input, in manifest order.
+    pub inputs: Vec<(String, Expr<OwnedDataValue>)>,
+    /// The compiled result expression, over `{output name: tensor}`.
+    pub result: Expr<OwnedDataValue>,
 }
 
 /// Why a model version is not serving on this node.
@@ -81,25 +92,24 @@ pub struct ModelLoadIssue {
     pub reason: String,
 }
 
-/// The model half of a generation: what loaded, and what did not.
+/// The model half of a generation: what loaded, what did not, and the
+/// expression engine every entry's adapters were compiled on — the one a
+/// call evaluates them on, so the two are always a pair.
 ///
-/// Deliberately without an identity of its own, unlike [`PluginSet`]. That
-/// fingerprint exists so a reload can tell an unchanged plugin set from a
-/// changed one and skip rebuilding the engine; a model set has no such
-/// shortcut available to it, because **both** reload paths hand it a fresh
-/// expression engine — `Engine::with_new_workflows` compiles on one of its
-/// own, exactly as a full rebuild does — and a compiled `datalogic` program
-/// belongs to the engine that compiled it. A set carried across would hold
-/// adapters no generation evaluates on. One was here once, computed on
-/// every load and read by nothing, which is an invitation to write that
-/// bug; if a cheaper path is wanted, the thing to change is what a model
-/// set is compiled on, not what a reload compares.
+/// Deliberately without an identity of its own, unlike [`PluginSet`], whose
+/// fingerprint decides whether a reload rebuilds the engine. A model set
+/// needs no such shortcut: its adapters are compiled on the process's
+/// [`ExprEngine`], which no reload replaces (I188), so [`Self::reload`]
+/// carries each model whose manifest is unchanged with the adapters it
+/// already has and compiles only the rest. A set is cheap to rebuild around
+/// them; it is the compile that is worth keeping.
 ///
 /// [`PluginSet`]: crate::plugin::PluginSet
 #[derive(Default)]
 pub struct ModelSet {
     models: HashMap<String, Arc<ModelEntry>>,
     pub issues: Vec<ModelLoadIssue>,
+    exprs: ExprEngine,
 }
 
 impl ModelSet {
@@ -109,25 +119,64 @@ impl ModelSet {
         Self::default()
     }
 
-    /// Every active row, compiled on `datalogic` — the engine of the
-    /// generation this set will be published with. `enabled` is whether
-    /// this node has the model runtime at all; `false` makes every row a
-    /// `disabled` issue rather than an abort, so the estate stays observable
-    /// and the workflows naming those models are quarantined with the
-    /// reason. Never fails.
+    /// A set with nothing in it yet, over `exprs`.
+    fn on(exprs: &ExprEngine) -> Self {
+        Self {
+            models: HashMap::new(),
+            issues: Vec::new(),
+            exprs: exprs.clone(),
+        }
+    }
+
+    /// Every active row, compiled on `exprs` — the process's expression
+    /// engine. `enabled` is whether this node has the model runtime at all;
+    /// `false` makes every row a `disabled` issue rather than an abort, so
+    /// the estate stays observable and the workflows naming those models are
+    /// quarantined with the reason. Never fails.
     pub fn load_active(
         rows: &[Model],
         config: &ModelsConfig,
         enabled: bool,
-        datalogic: &datalogic::Engine,
+        exprs: &ExprEngine,
     ) -> Self {
-        let mut set = ModelSet::default();
+        Self::load_rows(rows, config, enabled, exprs, None)
+    }
+
+    /// [`Self::load_active`] for a reload, over the `previous` generation's
+    /// set: a model whose manifest is unchanged keeps `previous`'s compiled
+    /// adapters, the same `Arc`, and only a new or changed manifest is
+    /// compiled (I188). Everything else about an entry — its version, its
+    /// digest, its tags, its limits and its permits — is the row's and the
+    /// config's, as a fresh load makes it.
+    ///
+    /// `exprs` is the process's expression engine, the one `previous` was
+    /// compiled on: there is one per process, and a reload keeps it.
+    pub fn reload(
+        previous: &ModelSet,
+        rows: &[Model],
+        config: &ModelsConfig,
+        enabled: bool,
+        exprs: &ExprEngine,
+    ) -> Self {
+        Self::load_rows(rows, config, enabled, exprs, Some(previous))
+    }
+
+    fn load_rows(
+        rows: &[Model],
+        config: &ModelsConfig,
+        enabled: bool,
+        exprs: &ExprEngine,
+        previous: Option<&ModelSet>,
+    ) -> Self {
+        let mut set = ModelSet::on(exprs);
+        let mut carried = 0usize;
         for row in rows {
             let compiled = decode_row(row, enabled).and_then(|item| {
-                compile_entry(item, config, datalogic).map_err(|reason| ("adapter", reason))
+                compile_entry(item, config, exprs, previous).map_err(|reason| ("adapter", reason))
             });
             match compiled {
-                Ok(entry) => {
+                Ok((entry, kept)) => {
+                    carried += usize::from(kept);
                     // Per model at debug and the count at info: this runs
                     // on every generation build, so an estate of any size
                     // would otherwise put one line per model into the log
@@ -140,7 +189,8 @@ impl ModelSet {
                         version = row.version,
                         digest = %row.digest,
                         inputs = ?entry.manifest.input_names().collect::<Vec<_>>(),
-                        "Model ready: adapters compiled on this generation"
+                        carried = kept,
+                        "Model ready"
                     );
                     set.models.insert(row.model_id.clone(), Arc::new(entry));
                 }
@@ -166,6 +216,7 @@ impl ModelSet {
         if !rows.is_empty() {
             tracing::info!(
                 ready = set.models.len(),
+                carried,
                 unavailable = set.issues.len(),
                 "Model set compiled on this generation"
             );
@@ -173,9 +224,9 @@ impl ModelSet {
         set
     }
 
-    /// An offline set: one entry per manifest, compiled on `datalogic` — the
-    /// engine of the dry run that will evaluate them — with the digest and
-    /// stats the caller read off the file beside each manifest. No admission
+    /// An offline set: one entry per manifest, compiled on `exprs` — the
+    /// engine the offline run evaluates them on — with the digest and stats
+    /// the caller read off the file beside each manifest. No admission
     /// stands behind an entry: the bytes are the author's own, and what a
     /// serving node would verify at admission (the digest claim, the probe)
     /// is exactly what an offline run exists to try. A manifest whose
@@ -185,14 +236,12 @@ impl ModelSet {
     pub fn from_manifests(
         manifests: impl IntoIterator<Item = ManifestEntry>,
         config: &ModelsConfig,
-        datalogic: &datalogic::Engine,
+        exprs: &ExprEngine,
     ) -> Self {
-        let mut set = ModelSet::default();
-        let mut parts = Vec::new();
+        let mut set = ModelSet::on(exprs);
         for entry in manifests {
             let id = entry.manifest.name.clone();
             let digest = entry.digest.clone();
-            parts.push(format!("{id}@0:{digest}"));
             let item = CompileItem {
                 id: id.clone(),
                 version: 0,
@@ -212,8 +261,8 @@ impl ModelSet {
                 // tagged.
                 tags: Vec::new(),
             };
-            match compile_entry(item, config, datalogic) {
-                Ok(compiled) => {
+            match compile_entry(item, config, exprs, None) {
+                Ok((compiled, _)) => {
                     set.models.insert(id, Arc::new(compiled));
                 }
                 Err(reason) => set.issues.push(ModelLoadIssue {
@@ -226,6 +275,12 @@ impl ModelSet {
             }
         }
         set
+    }
+
+    /// The expression engine every entry's adapters were compiled on, and
+    /// the one a call evaluates them on.
+    pub fn exprs(&self) -> &ExprEngine {
+        &self.exprs
     }
 
     /// The entry serving `model_id` — the active version — if this node
@@ -386,40 +441,97 @@ fn decode_row(row: &Model, enabled: bool) -> Result<CompileItem, (&'static str, 
     })
 }
 
-/// The engine half: every adapter and the result compiled on `datalogic`,
-/// the limits from the config, the permits sized by them. `Err` is the
-/// reason the first expression that did not compile gave.
+/// The engine half: the adapters — `previous`'s entry's when its manifest
+/// is this one, compiled on `exprs` otherwise — the limits from the config,
+/// the permits sized by them. The flag says whether the adapters were
+/// carried. `Err` is the reason the first expression that did not compile
+/// gave.
 fn compile_entry(
     item: CompileItem,
     config: &ModelsConfig,
-    datalogic: &datalogic::Engine,
-) -> Result<ModelEntry, String> {
-    let mut adapters = Vec::with_capacity(item.manifest.inputs.len());
-    for input in &item.manifest.inputs {
-        let logic = datalogic
-            .compile(&item.manifest.adapter_for(input))
-            .map_err(|e| format!("adapter for input '{}' does not compile: {e}", input.name))?;
-        adapters.push((input.name.clone(), logic));
-    }
-    let result = datalogic
-        .compile(&item.manifest.result_logic())
-        .map_err(|e| format!("result expression does not compile: {e}"))?;
+    exprs: &ExprEngine,
+    previous: Option<&ModelSet>,
+) -> Result<(ModelEntry, bool), String> {
+    // The adapters are a function of the manifest alone, on the one engine.
+    let carried = previous
+        .and_then(|set| set.get(&item.id))
+        .filter(|entry| unchanged(entry, &item.manifest))
+        .map(|entry| Arc::clone(&entry.adapters));
+    let kept = carried.is_some();
+    let adapters = match carried {
+        Some(adapters) => adapters,
+        None => Arc::new(compile_adapters(&item.manifest, exprs)?),
+    };
 
     let limits = Limits::effective(config, &item.id);
-    Ok(ModelEntry {
-        id: item.id,
-        version: item.version,
-        digest: item.digest,
-        binding: Arc::new(LoadBinding::of(&item.manifest)),
-        manifest: item.manifest,
-        artifact: item.artifact,
-        stats: item.stats,
-        tags: item.tags,
-        adapters,
-        result,
-        limits,
-        permits: Arc::new(Semaphore::new(limits.max_concurrency as usize)),
-    })
+    Ok((
+        ModelEntry {
+            id: item.id,
+            version: item.version,
+            digest: item.digest,
+            binding: Arc::new(LoadBinding::of(&item.manifest)),
+            manifest: item.manifest,
+            artifact: item.artifact,
+            stats: item.stats,
+            tags: item.tags,
+            adapters,
+            limits,
+            permits: Arc::new(Semaphore::new(limits.max_concurrency as usize)),
+        },
+        kept,
+    ))
+}
+
+/// Whether `manifest` is `entry`'s, its expressions written as they were
+/// compiled: equal, and every object in an adapter or the result in the
+/// same key order, since a template's keys come out in the order it was
+/// compiled in, and `Value`'s own equality does not count it.
+fn unchanged(entry: &ModelEntry, manifest: &Manifest) -> bool {
+    entry.manifest == *manifest
+        && entry.adapters.inputs.len() == manifest.inputs.len()
+        && entry
+            .adapters
+            .inputs
+            .iter()
+            .zip(&manifest.inputs)
+            .all(|((_, adapter), input)| same(adapter.raw(), &manifest.adapter_for(input)))
+        && same(entry.adapters.result.raw(), &manifest.result_logic())
+}
+
+/// `a == b`, counting the order of every object's keys.
+fn same(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|((ka, va), (kb, vb))| ka == kb && same(va, vb))
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b))
+        }
+        _ => a == b,
+    }
+}
+
+/// Every adapter and the result of `manifest`, compiled on `exprs`, each
+/// refusal in the words 1.12 gave it.
+fn compile_adapters(manifest: &Manifest, exprs: &ExprEngine) -> Result<Adapters, String> {
+    let mut inputs = Vec::with_capacity(manifest.inputs.len());
+    for input in &manifest.inputs {
+        let adapter = exprs.compile(&manifest.adapter_for(input)).map_err(|e| {
+            format!(
+                "adapter for input '{}' does not compile: {}",
+                input.name,
+                e.message()
+            )
+        })?;
+        inputs.push((input.name.clone(), adapter));
+    }
+    let result = exprs
+        .compile(&manifest.result_logic())
+        .map_err(|e| format!("result expression does not compile: {}", e.message()))?;
+    Ok(Adapters { inputs, result })
 }
 
 /// Every `(task id, model id)` pair in a workflow's steps, its loop's
@@ -454,13 +566,21 @@ mod tests {
     use crate::model::fixture;
     use serde_json::json;
 
-    fn engine() -> datalogic::Engine {
-        crate::engine::operators::add_to_datalogic(
-            datalogic::Engine::builder()
-                .with_templating(true)
-                .with_template_key_escape('$'),
-        )
-        .build()
+    /// The process's expression engine, as a test builds it.
+    fn engine() -> ExprEngine {
+        crate::engine::kit::test_exprs()
+    }
+
+    /// An adapter nested past datalogic's compile ceiling (256 levels):
+    /// what an engine in templating mode refuses outright, which a stored
+    /// manifest cannot reach, since `serde_json` reads no document nested
+    /// past 128 levels.
+    fn too_deep() -> Value {
+        let mut adapter = json!({ "var": "data.board" });
+        for _ in 0..300 {
+            adapter = json!({ "+": [adapter] });
+        }
+        adapter
     }
 
     fn row(admission: Value, manifest_json: &str) -> Model {
@@ -502,9 +622,8 @@ mod tests {
         }
         fn run(
             &self,
-            _inputs: Vec<dataflow_rs_v3::datavalue::OwnedDataTensor>,
-        ) -> Result<Vec<dataflow_rs_v3::datavalue::OwnedDataTensor>, crate::model::RunError>
-        {
+            _inputs: Vec<dataflow_rs::datavalue::OwnedDataTensor>,
+        ) -> Result<Vec<dataflow_rs::datavalue::OwnedDataTensor>, crate::model::RunError> {
             Ok(Vec::new())
         }
     }
@@ -579,8 +698,8 @@ mod tests {
         let entry = set.get("ada.c4-tiny").expect("loaded");
         assert_eq!(entry.version, 3);
         assert_eq!(entry.digest, "sha256:abc");
-        assert_eq!(entry.adapters.len(), 1);
-        assert_eq!(entry.adapters[0].0, "board");
+        assert_eq!(entry.adapters.inputs.len(), 1);
+        assert_eq!(entry.adapters.inputs[0].0, "board");
         assert_eq!(entry.stats.as_ref().map(|s| s.parameters), Some(1479));
         assert_eq!(entry.limits, Limits::effective(&config, "ada.c4-tiny"));
         assert_eq!(
@@ -590,21 +709,20 @@ mod tests {
         assert_eq!(set.ids().collect::<Vec<_>>(), ["ada.c4-tiny"]);
         assert!(set.issue_for("ada.c4-tiny").is_none());
 
-        // The adapters evaluate on the engine they were compiled on, and
-        // produce the declared tensor from the fixture's `data.board` shape.
-        let engine = engine();
-        let set =
-            ModelSet::load_active(&[row(passed(), fixture::MANIFEST)], &config, true, &engine);
-        let entry = set.get("ada.c4-tiny").expect("loaded");
+        // The adapters evaluate on the engine the set holds, the one they
+        // were compiled on, and produce the declared tensor from the
+        // fixture's `data.board` shape.
         let board: Vec<Vec<Vec<f32>>> = vec![vec![vec![0.0; 7]; 6]; 2];
-        let root =
-            dataflow_rs_v3::datavalue::OwnedDataValue::from(&json!({"data": {"board": [board]}}));
-        let arena = datalogic::bumpalo::Bump::new();
-        let value = engine
-            .evaluate(&entry.adapters[0].1, &root, &arena)
-            .expect("evaluates")
-            .to_owned();
-        let tensor = value.as_tensor().expect("a tensor");
+        let root = OwnedDataValue::from(&json!({"data": {"board": [board]}}));
+        let value = set
+            .exprs()
+            .eval(&entry.adapters.inputs[0].1, &root)
+            .expect("evaluates");
+        assert!(
+            value.ops.is_some(),
+            "a budget build meters every evaluation"
+        );
+        let tensor = value.value.as_tensor().expect("a tensor");
         assert_eq!(tensor.shape(), [1, 2, 6, 7]);
         assert_eq!(tensor.dtype().name(), "f32");
     }
@@ -635,27 +753,14 @@ mod tests {
                 "at stage 'fetch': GET answered HTTP 503",
             ),
             ("manifest", row(passed(), "{not json"), "does not parse"),
-            // Compiled on the engine it is given: a serving engine runs in
-            // templating mode, where a multi-key object is an output
-            // template, so the refusal is exercised on a bare engine, where
-            // the same object is an unknown operator.
-            (
-                "adapter",
-                row(
-                    passed(),
-                    &fixture::MANIFEST.replace(
-                        r#"{ "tensor": [{ "var": "data.board" }, "f32"] }"#,
-                        r#"{ "tensor": [{ "var": "data.board" }, "f32"], "and": [1] }"#,
-                    ),
-                ),
-                "adapter for input 'board' does not compile",
-            ),
+            // The `adapter` stage is not here: a serving engine runs in
+            // templating mode, where only nesting past datalogic's ceiling
+            // fails to compile, and a stored manifest cannot be nested that
+            // deep (`too_deep`). The offline set exercises it.
         ];
-        let bare = datalogic::Engine::builder().build();
         for (stage, row, needle) in cases {
             let enabled = stage != "disabled";
-            let on = if stage == "adapter" { &bare } else { &engine };
-            let set = ModelSet::load_active(std::slice::from_ref(&row), &config, enabled, on);
+            let set = ModelSet::load_active(std::slice::from_ref(&row), &config, enabled, &engine);
             assert!(set.get("ada.c4-tiny").is_none(), "{stage}: must not serve");
             let issue = set.issue_for("ada.c4-tiny").expect(stage);
             assert_eq!(issue.stage, stage, "{}", issue.reason);
@@ -706,47 +811,22 @@ mod tests {
         assert_eq!(loaded.version, 0);
         assert_eq!(loaded.digest, "sha256:abc");
         assert_eq!(loaded.artifact.key, "c4-tiny.onnx");
-        assert_eq!(loaded.adapters.len(), 1);
+        assert_eq!(loaded.adapters.inputs.len(), 1);
 
-        let bare = datalogic::Engine::builder().build();
-        let set = ModelSet::from_manifests(
-            [entry(&fixture::MANIFEST.replace(
-                r#"{ "tensor": [{ "var": "data.board" }, "f32"] }"#,
-                r#"{ "tensor": [{ "var": "data.board" }, "f32"], "and": [1] }"#,
-            ))],
-            &config,
-            &bare,
-        );
+        let mut deep = entry(fixture::MANIFEST);
+        deep.manifest.inputs[0].adapter = Some(too_deep());
+        let set = ModelSet::from_manifests([deep], &config, &engine);
         assert!(set.get("ada.c4-tiny").is_none());
         let issue = set.issue_for("ada.c4-tiny").expect("an issue");
         assert_eq!(issue.stage, "adapter");
         assert_eq!(issue.version, 0);
-    }
-
-    /// Why a model set has no identity to compare, and why comparing one
-    /// would be a bug.
-    ///
-    /// A reload that leaves the plugins alone takes the cheap engine path,
-    /// `Engine::with_new_workflows`, and the tempting saving is to carry the
-    /// previous model set across when the rows have not changed — the
-    /// plugin half skips its rebuild on exactly that comparison. It is
-    /// unsound here, and this is the fact that makes it so: that path
-    /// compiles on a *fresh* expression engine, as a full rebuild does, and
-    /// a compiled program belongs to the engine that compiled it. A carried
-    /// set would hold adapters no generation evaluates on.
-    ///
-    /// If this ever fails, upstream has changed and the saving is worth
-    /// revisiting.
-    #[test]
-    fn a_reload_hands_the_model_set_a_new_expression_engine() {
-        let engine = dataflow_rs_v3::Engine::builder().build().expect("builds");
-        let next = engine.with_new_workflows(Vec::new()).expect("reloads");
         assert!(
-            !Arc::ptr_eq(engine.datalogic(), next.datalogic()),
-            "the cheap reload path reused its expression engine, so a model \
-             set could now be carried across one"
+            issue
+                .reason
+                .starts_with("adapter for input 'board' does not compile: "),
+            "{}",
+            issue.reason
         );
-        assert!(ModelSet::empty().is_empty());
     }
 
     /// Literal references are found through task groups; computed ones and

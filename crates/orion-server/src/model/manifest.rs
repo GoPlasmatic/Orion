@@ -14,8 +14,9 @@
 //!
 //! Validation reports every problem with a path in one pass, as the plugin
 //! manifest's does. Two rules are Orion's rather than the format's. Every
-//! expression must **compile** on the same operator vocabulary, in the same
-//! templating mode and with the same key escape as the serving engine, so
+//! expression must **compile** on the process's expression engine as an
+//! authoring surface builds it (I188) — the operator vocabulary, the
+//! templating mode and the key escape the adapters are evaluated with — so
 //! what the engine refuses outright is refused at upload rather than at the
 //! first inference. That is a narrow gate by design of the engine: in
 //! templating mode a multi-key object is an output template and an unknown
@@ -24,21 +25,23 @@
 //! wrong arity is not a compile error here and cannot be. And every
 //! expression is **screened**: an adapter may not read the secret store
 //! (`{"secret": …}` — a manifest is authored by whoever owns the model,
-//! which is not necessarily whoever owns the secrets), and may not call
-//! `now` or `random`, because a replay of a traced inference must reproduce
-//! the same tensors. The screen is structural — any single-key object under
-//! one of those keys — for the reason above: `secret` is registered on the
-//! serving engine alone, and to a bare engine an unknown key is data.
+//! which is not necessarily whoever owns the secrets), and may not call an
+//! operator that is not deterministic (`now`, `random`), because a replay of
+//! a traced inference must reproduce the same tensors. Which operators those
+//! are is read from the engine's own table — the `secret` family, and every
+//! operator not declared deterministic — and the screen is structural: any
+//! single-key object under one of those names, whatever its arguments, since
+//! that is a call on the engine the adapters run on.
 //!
-//! Compilation is checked here and not kept: the compiled adapters belong to
-//! the generation that runs them, which is built elsewhere with the engine
-//! that will evaluate them.
+//! Compilation is checked here and not kept: the model set compiles the
+//! adapters again, once per manifest, on the process's engine
+//! (`model::loader`).
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use dataflow_rs_v3::datalogic_rs as datalogic;
-use dataflow_rs_v3::datavalue::{DType, OwnedDataTensor};
+use dataflow_rs::datavalue::{DType, OwnedDataTensor, OwnedDataValue};
+use dataflow_rs::expr::{ExprEngine, Family};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -58,24 +61,53 @@ const ABI_FAMILY: &str = "orion:model@";
 /// what the runtimes this build knows load.
 const FORMAT_ONNX: &str = "onnx";
 
-/// The operator keys no adapter may use, each with the reason.
-const FORBIDDEN_OPERATORS: [(&str, &str); 3] = [
-    (
-        "secret",
-        "an adapter may not read the secret store: a manifest is authored by the model's \
-         owner, and the secrets are the deployment's",
-    ),
-    (
-        "now",
-        "an adapter may not read the clock: a replay of a traced inference must reproduce the \
-         same tensors",
-    ),
-    (
-        "random",
-        "an adapter may not draw randomness: a replay of a traced inference must reproduce the \
-         same tensors",
-    ),
-];
+/// Why an adapter may not read the secret store.
+const SECRET_REASON: &str = "an adapter may not read the secret store: a manifest is authored \
+     by the model's owner, and the secrets are the deployment's";
+
+/// Why an adapter may not call an operator that is not deterministic: the
+/// clock and randomness in the words 1.12 gave them, and any other in the
+/// same terms.
+fn nondeterministic_reason(name: &str) -> &'static str {
+    match name {
+        "now" => {
+            "an adapter may not read the clock: a replay of a traced inference must reproduce \
+             the same tensors"
+        }
+        "random" => {
+            "an adapter may not draw randomness: a replay of a traced inference must reproduce \
+             the same tensors"
+        }
+        _ => {
+            "an adapter may not call an operator that is not deterministic: a replay of a traced \
+             inference must reproduce the same tensors"
+        }
+    }
+}
+
+/// The operators no adapter may call, each with the reason, read from the
+/// compile engine's operator table: the `secret` family, and every operator
+/// not declared deterministic — `secret`, `now` and Orion's `random` in this
+/// build.
+fn forbidden_operators() -> &'static [(String, &'static str)] {
+    static FORBIDDEN: OnceLock<Vec<(String, &'static str)>> = OnceLock::new();
+    FORBIDDEN.get_or_init(|| {
+        compile_engine()
+            .operators()
+            .iter()
+            .filter_map(|op| {
+                let reason = if op.family == Family::Secret {
+                    SECRET_REASON
+                } else if !op.deterministic {
+                    nondeterministic_reason(&op.name)
+                } else {
+                    return None;
+                };
+                Some((op.name.to_string(), reason))
+            })
+            .collect()
+    })
+}
 
 /// Whether `value` is a model manifest at all — an object whose `abi` is in
 /// the `orion:model@` family. The version is checked by [`Manifest::validated`];
@@ -606,33 +638,29 @@ impl Manifest {
     }
 }
 
-/// The key escape the serving engine sets on every datalogic engine it
-/// builds, mirrored on the compile-check engine here so the two agree about
-/// what `{"$shape": …}` means. Asserted against dataflow-rs by the tests.
+/// The key escape of the expression engine the adapters run on, which a
+/// default result writes an operator-named output under, so the two agree
+/// about what `{"$shape": …}` means. Asserted against the engine by the
+/// tests.
 const TEMPLATE_KEY_ESCAPE: char = '$';
 
-/// The engine every adapter and result must compile on: Orion's operator
-/// vocabulary, in the templating mode every serving engine runs, with the
-/// serving engine's key escape. Built once; it holds no state.
-fn compile_engine() -> &'static datalogic::Engine {
-    static ENGINE: OnceLock<datalogic::Engine> = OnceLock::new();
-    ENGINE.get_or_init(|| {
-        crate::engine::operators::add_to_datalogic(
-            datalogic::Engine::builder()
-                .with_templating(true)
-                .with_template_key_escape(TEMPLATE_KEY_ESCAPE),
-        )
-        .build()
-    })
+/// The engine every adapter and result must compile on: the process's
+/// expression engine as an authoring surface builds it (I188) — Orion's
+/// operators, the templating mode and the key escape, with no secrets (an
+/// adapter may read none) and no budget (compiling charges nothing). Built
+/// once; it holds no state.
+fn compile_engine() -> &'static ExprEngine {
+    static ENGINE: OnceLock<ExprEngine> = OnceLock::new();
+    ENGINE.get_or_init(crate::engine::kit::test_exprs)
 }
 
 /// Compile `logic` and screen it, reporting under `path`.
 fn check_expression(path: &str, logic: &Value, out: &mut Vec<FieldError>) {
-    if let Err(e) = compile_engine().compile(logic) {
+    if let Err(e) = compile_engine().compile::<OwnedDataValue>(logic) {
         out.push(FieldError::new(
             path,
             "INVALID",
-            format!("does not compile: {e}"),
+            format!("does not compile: {}", e.message()),
         ));
     }
     screen(path, logic, out);
@@ -645,7 +673,7 @@ fn screen(path: &str, logic: &Value, out: &mut Vec<FieldError>) {
         Value::Object(map) => {
             if map.len() == 1 {
                 let key = map.keys().next().expect("one member");
-                if let Some((_, reason)) = FORBIDDEN_OPERATORS.iter().find(|(op, _)| op == key) {
+                if let Some((_, reason)) = forbidden_operators().iter().find(|(op, _)| op == key) {
                     out.push(FieldError::new(
                         path,
                         "INVALID",
@@ -1093,11 +1121,8 @@ mod tests {
     fn a_default_result_escapes_an_output_named_like_an_operator() {
         assert_eq!(
             TEMPLATE_KEY_ESCAPE,
-            dataflow_rs_v3::Engine::builder()
-                .build()
-                .expect("engine")
-                .template_key_escape(),
-            "the compile-check escape must be the serving engine's"
+            compile_engine().escape(),
+            "the default result's escape must be the adapters' engine's"
         );
         let outputs = vec![
             OutputDecl {
@@ -1377,6 +1402,29 @@ mod tests {
         let mut doc = good();
         doc["result"] = json!({ "secret": { "var": "policy" }, "now": { "var": "value" } });
         Manifest::validated(&doc).expect("two keys is a template, not an operator");
+    }
+
+    /// The screen's operators are the engine's: the `secret` family and
+    /// every operator not declared deterministic, which in this build is
+    /// exactly 1.12's list.
+    #[test]
+    fn the_screen_reads_its_operators_from_the_engines_table() {
+        let mut names: Vec<&str> = forbidden_operators()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["now", "random", "secret"]);
+        let reason = |name: &str| {
+            forbidden_operators()
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, reason)| *reason)
+                .expect("screened")
+        };
+        assert!(reason("secret").contains("secret store"));
+        assert!(reason("now").contains("clock"));
+        assert!(reason("random").contains("randomness"));
     }
 
     /// One pass reports every problem, so an author fixes a manifest in one

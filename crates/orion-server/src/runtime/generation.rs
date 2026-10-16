@@ -58,10 +58,11 @@ pub struct RuntimeGeneration {
     /// fingerprint to decide whether the engine must be rebuilt.
     pub plugins: Arc<PluginSet>,
     /// The models this generation can run — each with its adapters compiled
-    /// on `engine`'s own expression engine, which is why the set is rebuilt
-    /// with every generation and never carried across — and the reasons any
-    /// active row did not load. `model_infer` resolves through it; `/health`
-    /// and `GET /models/{id}` read it.
+    /// on the process's expression engine, which the set holds and every
+    /// reload keeps, so a model whose manifest is unchanged carries its
+    /// compiled adapters into the next generation (I188) — and the reasons
+    /// any active row did not load. `model_infer` resolves through it on
+    /// both engines; `/health` and `GET /models/{id}` read it.
     pub models: Arc<ModelSet>,
 }
 

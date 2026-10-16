@@ -6,6 +6,12 @@
 //! the node's live components to load through, which is why they sit here
 //! above `model/` and `channel/` rather than in either.
 //!
+//! **Reload.** A model set's adapters are compiled on the process's
+//! expression engine, which outlives every generation (I188), so a reload
+//! builds the next set over the outgoing one ([`ModelSet::reload`]): a model
+//! whose manifest is unchanged keeps its compiled adapters, and only a new
+//! or changed manifest is compiled.
+//!
 //! **Quarantine.** A workflow calling `model_infer` with a literal
 //! `input.model` the set does not hold cannot serve: every request would
 //! fail the task with `unavailable`. That is the plugin case exactly — a
@@ -240,7 +246,6 @@ pub fn spawn_preload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs_v3::datalogic_rs as datalogic;
     use serde_json::json;
 
     fn channel(name: &str, workflow_id: &str) -> Channel {
@@ -320,8 +325,12 @@ mod tests {
     }
 
     fn set(rows: &[crate::storage::models::Model]) -> ModelSet {
-        let engine = datalogic::Engine::builder().with_templating(true).build();
-        ModelSet::load_active(rows, &ModelsConfig::default(), true, &engine)
+        ModelSet::load_active(
+            rows,
+            &ModelsConfig::default(),
+            true,
+            &crate::engine::kit::test_exprs(),
+        )
     }
 
     /// A channel whose workflow names a served model is untouched; one
@@ -373,6 +382,95 @@ mod tests {
             "{}",
             issues[1].reason
         );
+    }
+
+    /// A reload keeps the compiled adapters of a model whose manifest is
+    /// unchanged — the same `Arc`, a new version or new tags beside it — and
+    /// compiles a changed manifest's afresh; every entry is the new row's,
+    /// and the carried adapters evaluate on the next set's engine.
+    #[test]
+    fn a_reload_keeps_the_compiled_adapters_of_an_unchanged_manifest() {
+        let exprs = crate::engine::kit::test_exprs();
+        let config = ModelsConfig::default();
+        let rows = [
+            model_row("ada.same", json!({"state": "passed"})),
+            model_row("ada.moved", json!({"state": "passed"})),
+        ];
+        let first = ModelSet::load_active(&rows, &config, true, &exprs);
+
+        // The same manifest under a new version and new tags; and a manifest
+        // whose result changed.
+        let mut same = tagged_row("ada.same", json!({"state": "passed"}), &["hot"]);
+        same.version = 2;
+        let mut moved = model_row("ada.moved", json!({"state": "passed"}));
+        moved.manifest_json = moved.manifest_json.replace(
+            r#""policy": { "to_list": [{ "var": "policy" }] }"#,
+            r#""best": { "argmax": [{ "var": "policy" }, 1] }"#,
+        );
+        assert_ne!(
+            moved.manifest_json, rows[1].manifest_json,
+            "the result moved"
+        );
+        let next = ModelSet::reload(&first, &[same, moved], &config, true, &exprs);
+        assert!(next.issues.is_empty(), "{:?}", next.issues);
+
+        let (before, after) = (
+            first.get("ada.same").expect("served"),
+            next.get("ada.same").expect("served"),
+        );
+        assert!(
+            Arc::ptr_eq(&before.adapters, &after.adapters),
+            "an unchanged manifest keeps its compiled adapters"
+        );
+        assert!(!Arc::ptr_eq(before, after), "the entry is the new row's");
+        assert_eq!(
+            (after.version, after.tags.as_slice()),
+            (2, &["hot".to_string()][..])
+        );
+        assert!(
+            !Arc::ptr_eq(
+                &first.get("ada.moved").expect("served").adapters,
+                &next.get("ada.moved").expect("served").adapters
+            ),
+            "a changed manifest is compiled again"
+        );
+
+        // The carried adapters evaluate on the next set's engine.
+        let board = vec![vec![vec![0.0f32; 7]; 6]; 2];
+        let root =
+            dataflow_rs::datavalue::OwnedDataValue::from(&json!({"data": {"board": [board]}}));
+        let tensor = next
+            .exprs()
+            .eval(&after.adapters.inputs[0].1, &root)
+            .expect("evaluates");
+        assert_eq!(
+            tensor.value.as_tensor().map(|t| t.shape().to_vec()),
+            Some(vec![1, 2, 6, 7])
+        );
+
+        // A result whose keys only moved is a change: a template writes its
+        // keys in the order it was compiled in.
+        let two = |first: &str, second: &str| {
+            let mut row = model_row("ada.two", json!({"state": "passed"}));
+            row.manifest_json = row.manifest_json.replace(
+                r#""policy": { "to_list": [{ "var": "policy" }] }"#,
+                &format!(
+                    r#""{first}": {{ "to_list": [{{ "var": "policy" }}] }}, "{second}": {{ "argmax": [{{ "var": "policy" }}, 1] }}"#
+                ),
+            );
+            row
+        };
+        let ordered = ModelSet::load_active(&[two("policy", "best")], &config, true, &exprs);
+        let same_order =
+            ModelSet::reload(&ordered, &[two("policy", "best")], &config, true, &exprs);
+        let reordered = ModelSet::reload(&ordered, &[two("best", "policy")], &config, true, &exprs);
+        let adapters = |set: &ModelSet| set.get("ada.two").expect("served").adapters.clone();
+        assert!(Arc::ptr_eq(&adapters(&ordered), &adapters(&same_order)));
+        assert!(!Arc::ptr_eq(&adapters(&ordered), &adapters(&reordered)));
+
+        // A model that leaves the estate leaves the set.
+        let gone = ModelSet::reload(&next, &[], &config, true, &exprs);
+        assert!(gone.is_empty());
     }
 
     /// `referenced` selects what active workflows name (and the set serves),

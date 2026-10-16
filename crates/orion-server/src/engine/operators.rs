@@ -710,8 +710,9 @@ pub fn with_ops_budget(
 /// secret name resolves to.
 ///
 /// What is left for this function is the bare engines with no store to offer:
-/// the authoring-time compile checks, and the model and analysis paths that
-/// have not moved to [`orion_exprs`] yet.
+/// the authoring-time compile checks, and the analysis paths that have not
+/// moved to [`orion_exprs`] yet. The model set has: its adapters compile on
+/// the process's engine (I188).
 pub fn add_to_datalogic(mut builder: datalogic::EngineBuilder) -> datalogic::EngineBuilder {
     for (name, op) in all() {
         builder = builder.add_operator(name, op);

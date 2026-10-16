@@ -327,6 +327,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     let HandlerDeps {
         registry: connectors,
         client,
+        runtime,
         jwks,
         query_config,
         write_config,
@@ -335,6 +336,8 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         sql_pool_cache,
         mongo_pool_cache,
         smtp_pool_cache,
+        models,
+        models_config,
         ..
     } = deps;
 
@@ -343,6 +346,25 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         http_call::HttpCallFunction {
             registry: connectors.clone(),
             client: client.clone(),
+        },
+    );
+    // The model set comes off one load of the serving generation per call,
+    // its adapters compiled on the process's expression engine; the loaded
+    // sessions and permits off the node, shared with dataflow-rs 3's handler.
+    let models_config = Arc::new(models_config.clone());
+    registry.register(
+        crate::model::handler::NAME,
+        crate::model::ModelInferFunction {
+            source: crate::model::ModelSource::Node(runtime),
+            host: models.map(|models| {
+                Arc::new(crate::model::InferenceHost::node(
+                    &models,
+                    models_config.clone(),
+                    connectors.clone(),
+                    client.clone(),
+                ))
+            }),
+            config: models_config,
         },
     );
     // Self-contained (no connector, no deps): digests, MACs, password

@@ -31,17 +31,19 @@
 //!   name its verdicts carry — built at boot when `models.enabled` and
 //!   absent otherwise.
 //! - [`loader`]: the model half of a generation — every active row that can
-//!   serve here, its adapters and result compiled on that generation's
-//!   engine, and the reasons any row did not load.
+//!   serve here, its adapters and result compiled on the process's
+//!   expression engine and carried across a reload while its manifest holds,
+//!   and the reasons any row did not load.
 //! - [`cache`]: the sessions resident in a runtime, process-wide,
 //!   single-flight per key and bounded by `models.max_loaded_bytes`.
-//! - [`handler`]: the `model_infer` task function, and the load path it
-//!   shares with the preload — over a [`handler::ModelSource`] that is the
-//!   serving generation on a node and a fixed manifest set offline, and an
-//!   [`handler::InferenceHost`] that says where a cold load gets its bytes.
+//! - [`handler`]: the `model_infer` task function, on dataflow-rs 3 and on
+//!   dataflow-rs 4, and the load path it shares with the preload — over a
+//!   [`handler::ModelSource`] that is the serving generation on a node and a
+//!   fixed manifest set offline, and an [`handler::InferenceHost`] that says
+//!   where a cold load gets its bytes.
 //! - [`offline`]: the manifest set `dry-run` and `orion-server test` run
-//!   against — compiled on the calling engine, bytes read from the file
-//!   beside each manifest, no admission.
+//!   against — compiled on the offline run's expression engine, bytes read
+//!   from the file beside each manifest, no admission.
 //! - [`limits`] and [`error`]: the effective ceilings for one model and the
 //!   categories an inference can fail in.
 
@@ -65,9 +67,13 @@ pub use admission::{
 pub use artifact::{ArtifactRef, ArtifactStore, FetchError, HeadInfo};
 pub use cache::{CacheKey, LoadedCache};
 pub use error::{Category, Failure};
-pub use handler::{ArtifactSource, InferenceHost, ModelInferHandler, ModelSource, load_model};
+pub use handler::{
+    ArtifactSource, InferenceHost, ModelInferFunction, ModelInferHandler, ModelSource, load_model,
+};
 pub use limits::Limits;
-pub use loader::{ManifestEntry, ModelEntry, ModelLoadIssue, ModelSet, literal_references};
+pub use loader::{
+    Adapters, ManifestEntry, ModelEntry, ModelLoadIssue, ModelSet, literal_references,
+};
 pub use manifest::{ABI, ArtifactReference, InputDecl, Manifest, OutputDecl, is_model_manifest};
 pub use node::{ModelsRuntime, node_name};
 pub use offline::{LocalArtifacts, OfflineModels};

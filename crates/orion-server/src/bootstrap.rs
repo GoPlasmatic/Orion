@@ -523,24 +523,25 @@ impl EngineComponents {
         // The observer is attached here rather than on generation 0's empty
         // engine at startup because `Engine::new` builds a fresh engine;
         // `with_new_workflows` carries it across every subsequent reload, so
-        // this is the only place it needs setting. Built before the channel estate because the model
-        // set below compiles its adapters on this engine's own expression
-        // engine, and a model that did not load quarantines channels.
+        // this is the only place it needs setting.
         let built_engine = builder
             .with_workflows(workflows)
             .build()?
             .with_observer(Arc::new(crate::engine::MetricsObserver));
 
-        // The active models, compiled on the engine they will be evaluated
-        // by — or every one a load issue on a node without the runtime, or
-        // whose admission has not passed. A workflow naming one the set does
-        // not serve is quarantined with the reason, as with a plugin.
+        // The active models, their adapters compiled on the process's
+        // expression engine, which evaluates them and which every reload
+        // keeps (I188) — or every one a load issue on a node without the
+        // runtime, or whose admission has not passed. A workflow naming one
+        // the set does not serve is quarantined with the reason, as with a
+        // plugin. Built before the channel estate, because a model that did
+        // not load quarantines channels.
         let model_rows = repos.models.list_active().await?;
         let models = Arc::new(crate::model::ModelSet::load_active(
             &model_rows,
             &config.models,
             serving.models.is_some(),
-            built_engine.datalogic(),
+            &serving.exprs,
         ));
         engine_issues.extend(crate::runtime::models::load_issues(
             &channels,

@@ -662,12 +662,13 @@ impl Catalog {
     /// The `model_infer` handler for one offline engine: every model whose
     /// artifact is on disk, run for real through the same handler a node
     /// registers, over the host this catalog shares between runs. The set
-    /// the handler resolves against is compiled on the engine that first
-    /// calls it — which is why this hands out a fresh [`OfflineModels`] per
-    /// engine and the handler must not outlive the engine it was built for.
-    /// The second value names the models whose manifest is here and whose
-    /// artifact is not, with the manifest's origin: a run naming one of
-    /// them is refused as `MODEL_ARTIFACT_UNAVAILABLE` rather than stubbed.
+    /// the handler resolves against ([`OfflineModels`]) is compiled, the
+    /// first time a task asks, on Orion's expressions as an offline run
+    /// builds them: no secrets, since an adapter may read none, and no
+    /// budget, as an offline engine has none. The second value names the
+    /// models whose manifest is here and whose artifact is not, with the
+    /// manifest's origin: a run naming one of them is refused as
+    /// `MODEL_ARTIFACT_UNAVAILABLE` rather than stubbed.
     ///
     /// [`OfflineModels`]: orion::model::OfflineModels
     pub(crate) fn model_handler(
@@ -682,8 +683,11 @@ impl Catalog {
             }
         }
         let config = std::sync::Arc::new(offline_models_config());
-        let offline =
-            std::sync::Arc::new(orion::model::OfflineModels::new(entries, config.clone()));
+        let offline = std::sync::Arc::new(orion::model::OfflineModels::new(
+            entries,
+            config.clone(),
+            orion::engine::kit::test_exprs(),
+        ));
         let artifacts: std::sync::Arc<dyn orion::model::ArtifactSource> =
             std::sync::Arc::new(offline.artifacts());
         let host = self

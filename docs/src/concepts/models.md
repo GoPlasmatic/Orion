@@ -34,7 +34,7 @@ A task then names the model, the JSON root the adapters read, and where the resu
 
 Both kinds of expression are ordinary JSONLogic over the [tensor family](../reference/expressions.md#tensors-tensor). Its twenty operators build a tensor from JSON, reshape it, and read it back out, with deliberately no arithmetic. Compute belongs in the graph. A manifest whose caller already speaks tensors declares neither, and the defaults apply: `{"tensor": [{"var": name}, dtype]}` in, a nested list per output out.
 
-The adapters and the result are compiled on the serving generation's own expression engine. That lets two host rules hold:
+The adapters and the result are compiled once, on the node's expression engine, the one its guards and every other expression outside a workflow run on, and a reload keeps them while the manifest is unchanged. That lets two host rules hold:
 
 - **The budget.** Every adapter is priced by [`engine.ops_budget`](../reference/configuration/engine.md) like any other expression, and every tensor operator's cost is proportional to the data it moves. A manifest is authored by whoever owns the model, which may be a competitor, a tenant, or a team that does not run the node. The budget is what bounds an expression the operator did not write.
 - **The isolation.** An adapter may not read the secret store, the clock or randomness. `{"secret": …}`, `now` and `random` are refused at registration, so a replay of a traced inference reproduces the same tensors, and a manifest cannot reach the deployment's credentials. The graph itself sees tensors and nothing else: no connectors, no context, no I/O.

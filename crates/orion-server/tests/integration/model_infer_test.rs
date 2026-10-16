@@ -648,6 +648,40 @@ async fn a_literal_reference_to_an_unserved_model_quarantines_the_channel() {
     cleanup(&h);
 }
 
+/// A reload keeps the compiled adapters of a model whose manifest has not
+/// changed (I188): they were compiled on the process's expression engine,
+/// which no reload replaces, so the next generation carries the same ones,
+/// and an inference over them answers as before.
+#[tokio::test]
+async fn a_reload_carries_the_compiled_adapters_of_an_unchanged_model() {
+    let h = harness_preloading(orion::config::ModelPreload::None).await;
+    activate_fixture(&h).await;
+    let before = h.state.runtime.load();
+    let adapters = before
+        .models
+        .get(FIXTURE_ID)
+        .expect("served")
+        .adapters
+        .clone();
+    // Deploying a workflow publishes a generation of its own.
+    let channel = deploy(&h.app, "carried", tasks(json!(FIXTURE_ID), json!({}))).await;
+    let after = h.state.runtime.load();
+    assert!(after.id > before.id, "the deploy published a generation");
+    let carried = after.models.get(FIXTURE_ID).expect("still served");
+    assert!(
+        std::sync::Arc::ptr_eq(&adapters, &carried.adapters),
+        "the reload compiled the unchanged manifest's adapters again"
+    );
+    let (status, body) = call(&h.app, &channel, board()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["policy"]["policy"][0].as_array().map(Vec::len),
+        Some(7),
+        "{body}"
+    );
+    cleanup(&h);
+}
+
 /// `models.preload = "referenced"` warms a model an active workflow names
 /// after the publish, so the first inference finds it resident.
 #[tokio::test]
