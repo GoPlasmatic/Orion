@@ -38,7 +38,28 @@ const MAX_JWKS_BYTES: usize = 262_144;
 /// Per-request deadline, applied on top of whatever the shared client's own
 /// timeout is: a key fetch sits in a request's critical path and must not
 /// inherit a connector-shaped budget.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The timer one fetch arms, inside the deadline of the run a `jwt_verify`
+/// call belongs to (`Ctx::deadline`): [`FETCH_TIMEOUT`], or none when the
+/// run's deadline comes first.
+///
+/// When the fetch timeout ends first, the fetch fails as it always has, and
+/// the verification with it (`keys_unavailable`, or the stale keys served).
+/// When the run's deadline ends first, no timer of the fetch's own is armed:
+/// dataflow-rs 4 races every host call against the run's deadline and drops
+/// the call when it passes, ending the run `TimedOut`, as 1.12's channel
+/// timeout dropped the run. A timer at the same instant would win that race
+/// (the engine polls the call first) and turn the run's timeout into the
+/// task's error, which is a different response. Decided per fetch, so a
+/// rotation's second fetch is judged against the time left when it starts.
+pub fn fetch_timeout(run: Option<Instant>) -> Option<Duration> {
+    let own = tokio::time::Instant::now() + FETCH_TIMEOUT;
+    match run.map(tokio::time::Instant::from_std) {
+        Some(run) if run <= own => None,
+        _ => Some(FETCH_TIMEOUT),
+    }
+}
 
 /// One cached key set: pre-parsed decoding keys with their routing facts.
 struct Entry {
@@ -124,7 +145,20 @@ impl JwksCache {
         kid: Option<&str>,
         alg: Algorithm,
     ) -> Result<Vec<Arc<DecodingKey>>, RejectReason> {
-        let entry = match self.fresh_entry(url, false).await {
+        self.decoding_keys_within(url, kid, alg, None).await
+    }
+
+    /// [`Self::decoding_keys`], inside the deadline of the run the caller
+    /// belongs to: each fetch arms [`fetch_timeout`]'s timer, none when the
+    /// run's deadline comes first.
+    pub async fn decoding_keys_within(
+        &self,
+        url: &str,
+        kid: Option<&str>,
+        alg: Algorithm,
+        run: Option<Instant>,
+    ) -> Result<Vec<Arc<DecodingKey>>, RejectReason> {
+        let entry = match self.fresh_entry(url, false, run).await {
             Some(entry) => entry,
             None => return Err(RejectReason::KeysUnavailable),
         };
@@ -135,7 +169,7 @@ impl JwksCache {
         // Unknown kid: the issuer may have rotated since we cached. One forced
         // refetch, floored, then the answer stands.
         if kid.is_some()
-            && let Some(entry) = self.fresh_entry(url, true).await
+            && let Some(entry) = self.fresh_entry(url, true, run).await
         {
             let matched = select(&entry, kid, alg);
             if !matched.is_empty() {
@@ -147,7 +181,12 @@ impl JwksCache {
 
     /// The cache entry for `url`, refreshed when expired (or when `force`d and
     /// the floor allows). Stale-serves on refresh failure.
-    async fn fresh_entry(&self, url: &str, force: bool) -> Option<Arc<Entry>> {
+    async fn fresh_entry(
+        &self,
+        url: &str,
+        force: bool,
+        run: Option<Instant>,
+    ) -> Option<Arc<Entry>> {
         let existing = self.entries.read().await.get(url).cloned();
         if !needs_fetch(existing.as_ref(), force) {
             return existing;
@@ -164,7 +203,7 @@ impl JwksCache {
             return current;
         }
 
-        match self.fetch(url).await {
+        match self.fetch(url, run).await {
             Ok((keys, ttl)) => {
                 let entry = Arc::new(Entry {
                     keys,
@@ -209,14 +248,20 @@ impl JwksCache {
     /// that resolves DNS to accept a channel is an admin API that hangs when
     /// the issuer is down, and a host that was public when the channel was
     /// stored can be private by the time it is dialled.
-    async fn fetch(&self, url: &str) -> Result<(FetchedKeys, Duration), String> {
+    async fn fetch(
+        &self,
+        url: &str,
+        run: Option<Instant>,
+    ) -> Result<(FetchedKeys, Duration), String> {
         if !self.allow_private {
             crate::validation::validate_url_not_private(url).await?;
         }
-        let response = self
-            .client
-            .get(url)
-            .timeout(FETCH_TIMEOUT)
+        let request = self.client.get(url);
+        let request = match fetch_timeout(run) {
+            Some(timeout) => request.timeout(timeout),
+            None => request,
+        };
+        let response = request
             .send()
             .await
             .map_err(|e| format!("fetch failed: {e}"))?;
@@ -312,6 +357,21 @@ fn ttl_from_cache_control(header: Option<&str>) -> Duration {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The earlier bound wins: with no run deadline, or one past the fetch
+    /// timeout, a fetch arms its 5 s; with a run deadline first, or already
+    /// passed, it arms nothing and the run's own race ends the call.
+    #[test]
+    fn a_fetch_arms_its_timeout_only_when_it_comes_first() {
+        let now = Instant::now();
+        assert_eq!(fetch_timeout(None), Some(FETCH_TIMEOUT));
+        assert_eq!(
+            fetch_timeout(Some(now + Duration::from_secs(60))),
+            Some(FETCH_TIMEOUT)
+        );
+        assert_eq!(fetch_timeout(Some(now + Duration::from_millis(300))), None);
+        assert_eq!(fetch_timeout(Some(now)), None);
+    }
 
     /// A JWKS mock on loopback, plus the count of requests it has served.
     async fn mock_jwks() -> (String, Arc<AtomicUsize>) {

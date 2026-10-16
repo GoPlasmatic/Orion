@@ -319,14 +319,15 @@ pub fn build_custom_functions(
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::connector_handler::ConnectorHandler;
     use functions::{
-        cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, data_query,
-        data_write, db_read, db_write, http_call, mongo_aggregate, mongo_read, mongo_write,
-        publish_kafka, send_email, storage_head, storage_presign,
+        cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, crypto, data_query,
+        data_write, db_read, db_write, http_call, jwt_sign, jwt_verify, mongo_aggregate,
+        mongo_read, mongo_write, publish_kafka, send_email, storage_head, storage_presign,
     };
 
     let HandlerDeps {
         registry: connectors,
         client,
+        jwks,
         query_config,
         write_config,
         cache_pool,
@@ -344,6 +345,12 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
             client: client.clone(),
         },
     );
+    // Self-contained (no connector, no deps): digests, MACs, password
+    // hashing; then the JWT pair, verification sharing the channel mode's
+    // JWKS cache.
+    registry.register(crypto::NAME, crypto::CryptoFunction);
+    registry.register(jwt_sign::NAME, jwt_sign::JwtSignFunction);
+    registry.register(jwt_verify::NAME, jwt_verify::JwtVerifyFunction { jwks });
     registry.register(
         <send_email::SendEmailHandler as ConnectorHandler>::NAME,
         send_email::SendEmailFunction {

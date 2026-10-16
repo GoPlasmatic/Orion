@@ -12,7 +12,9 @@
 //! - [`output_path`]: where a call's result goes, resolved before its work,
 //!   as 1.12's connector shell resolved it; [`root_output_defect`], I185's
 //!   Defect for a result no context root takes; and [`root_output_advisory`]
-//!   for one a root may not take.
+//!   for one a root may not take. [`written_output`] and
+//!   [`written_root_output_defect`] are the same for a function that reads
+//!   its `output` as written, as 1.12's self-contained three did.
 //! - [`rendered`]: a document field rendered for this call, as JSON.
 //! - [`ProfileLayer`]: the per-request profile, as one registry layer
 //!   around every host call.
@@ -26,7 +28,7 @@ pub mod fields;
 pub mod read;
 
 pub use fields::{
-    DetachedExpr, KeyMaterial, KeyMaterialList, Members, key_material, key_material_list,
+    DetachedExpr, KeyMaterial, KeyMaterialList, KeyRef, Members, key_material, key_material_list,
 };
 
 use std::borrow::Cow;
@@ -153,15 +155,51 @@ pub fn root_output_advisory(out: &Output, message: &str) -> Result<(), Vec<Issue
 /// One issue of `severity` at `output` when the output is a literal root.
 fn root_output_issue(out: &Output, message: &str, severity: Severity) -> Result<(), Vec<Issue>> {
     match out.constant() {
-        Some(path) if path.is_root() => {
-            let mut at = AuthoredPath::root();
-            at.push("output");
-            Err(vec![
-                Issue::new(IssueCode::InputParse, at, message).with_severity(severity),
-            ])
-        }
+        Some(path) if path.is_root() => Err(vec![output_issue(message, severity)]),
         _ => Ok(()),
     }
+}
+
+/// One issue of `severity` at `output`.
+fn output_issue(message: &str, severity: Severity) -> Issue {
+    let mut at = AuthoredPath::root();
+    at.push("output");
+    Issue::new(IssueCode::InputParse, at, message).with_severity(severity)
+}
+
+/// Where a function that reads its `output` as written puts its result
+/// (I183): 1.12's `crypto`, `jwt_sign` and `jwt_verify` read `output` with
+/// `as_str`, so a string is the path and anything else, an expression
+/// included, is `data`. 1.12 compiled an expression there, since the field
+/// table marks it a template, and never evaluated it; neither does this.
+/// The authored JSON decides, not the fold: `{"cat": ["data", ".x"]}` folds
+/// to a constant path, and 1.12 still wrote at `data`.
+pub fn written_output(out: &Output) -> &Path {
+    match out.constant() {
+        Some(path) if out.path().raw().is_string() => path,
+        _ => &DATA,
+    }
+}
+
+/// [`root_output_defect`] for a function that reads its `output` as written
+/// ([`written_output`]) and whose result is never an object: a string that
+/// is a root fails every call, the default `data` included, and so does an
+/// expression, which is written at `data`. `root` names the fix for the
+/// first, `computed` for the second.
+///
+/// # Errors
+///
+/// The one Defect, `INPUT_PARSE` at `output`, when the output is a root or
+/// not a string.
+pub fn written_root_output_defect(
+    out: &Output,
+    root: &str,
+    computed: &str,
+) -> Result<(), Vec<Issue>> {
+    if !out.path().raw().is_string() {
+        return Err(vec![output_issue(computed, Severity::Defect)]);
+    }
+    root_output_defect(out, root)
 }
 
 /// `doc` rendered for this call, serialized straight into the JSON a
@@ -975,6 +1013,9 @@ mod tests {
     /// The functions ported so far, in `build_custom_functions`' order.
     const PORTED: &[&str] = &[
         "http_call",
+        "crypto",
+        "jwt_sign",
+        "jwt_verify",
         "send_email",
         "storage_presign",
         "storage_head",

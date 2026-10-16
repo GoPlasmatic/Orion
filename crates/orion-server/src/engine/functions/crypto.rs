@@ -19,12 +19,16 @@
 //! this handler — never written to context, never quoted in an error.
 
 use async_trait::async_trait;
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::{CompileCx, Output};
+use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
+use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
 use dataflow_rs_v3::engine::task_context::TaskContext;
 use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use hmac::Hmac;
 use md5::Md5;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 
@@ -33,10 +37,11 @@ use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::FieldSource;
 use super::templated_input::TemplatedInput;
 use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
+use crate::engine::kit::{self, KeyMaterial, read};
 use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "crypto";
+pub const NAME: &str = "crypto";
 
 // -- Capability tables (op × algorithm) --
 //
@@ -159,7 +164,17 @@ fn algorithm<'i>(
     allowed: &[&str],
     default: &'i str,
 ) -> Result<&'i str, HandlerError> {
-    match literal_str(input, "algorithm")? {
+    algorithm_named(literal_str(input, "algorithm")?, allowed, default)
+}
+
+/// [`algorithm`] over the name the task gave, if any: shared by both
+/// engines' paths.
+fn algorithm_named<'i>(
+    name: Option<&'i str>,
+    allowed: &[&str],
+    default: &'i str,
+) -> Result<&'i str, HandlerError> {
+    match name {
         None => Ok(default),
         Some(a) if allowed.contains(&a) => Ok(a),
         Some(other) => Err(validation(&format!(
@@ -171,7 +186,12 @@ fn algorithm<'i>(
 
 /// The output `encoding` for `hash`/`hmac` results (default hex).
 fn output_codec(input: &Value) -> Result<Codec, HandlerError> {
-    match literal_str(input, "encoding")? {
+    codec_named(literal_str(input, "encoding")?)
+}
+
+/// [`output_codec`] over the name the task gave, if any.
+fn codec_named(name: Option<&str>) -> Result<Codec, HandlerError> {
+    match name {
         None => Ok(Codec::Hex),
         Some(name) => Codec::parse(name).ok_or_else(|| {
             validation(&format!(
@@ -184,7 +204,12 @@ fn output_codec(input: &Value) -> Result<Codec, HandlerError> {
 /// How a *string* value becomes bytes (`input_encoding` / `key_encoding`):
 /// UTF-8 by default, or decoded from hex/base64 for binary material.
 fn byte_codec(input: &Value, field: &str) -> Result<Option<Codec>, HandlerError> {
-    match literal_str(input, field)? {
+    byte_codec_named(literal_str(input, field)?, field)
+}
+
+/// [`byte_codec`] over the name the task gave, if any.
+fn byte_codec_named(name: Option<&str>, field: &str) -> Result<Option<Codec>, HandlerError> {
+    match name {
         None | Some("utf8") => Ok(None),
         Some("hex") => Ok(Some(Codec::Hex)),
         Some("base64") => Ok(Some(Codec::Base64)),
@@ -205,7 +230,13 @@ fn data_bytes(
         return Err(validation("this op requires 'data'"));
     };
     let codec = byte_codec(input.raw(), "input_encoding")?;
-    match data? {
+    bytes_of(data?, codec)
+}
+
+/// [`data_bytes`]'s byte model over the value `data` resolved to: shared by
+/// both engines' paths.
+fn bytes_of(data: Value, codec: Option<Codec>) -> Result<Vec<u8>, HandlerError> {
+    match data {
         Value::String(s) => match codec {
             None => Ok(s.into_bytes()),
             Some(c) => {
@@ -259,13 +290,44 @@ enum HmacMode {
 /// `key_encoding`. The resolved bytes never leave this call chain.
 async fn hmac_key(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
     let resolved = super::secret_ref::key_material_field(input, "key", NAME, ctx).await?;
+    key_bytes(resolved, byte_codec(input.raw(), "key_encoding"))
+}
+
+/// The resolved key's bytes, by its `key_encoding`'s codec: an empty key is
+/// refused before the codec is judged, as it always was. Shared by both
+/// engines' paths.
+fn key_bytes(
+    resolved: String,
+    codec: Result<Option<Codec>, HandlerError>,
+) -> Result<Vec<u8>, HandlerError> {
     if resolved.is_empty() {
         return Err(validation("'key' resolved to an empty value"));
     }
-    match byte_codec(input.raw(), "key_encoding")? {
+    match codec? {
         None => Ok(resolved.into_bytes()),
         Some(c) => decode_bytes(c, &resolved)
             .map_err(|e| validation(&format!("'key' does not decode per key_encoding: {e}"))),
+    }
+}
+
+/// The MAC of `data` under `key`, by a table algorithm.
+fn mac(algorithm: &str, key: &[u8], data: &[u8]) -> Vec<u8> {
+    match algorithm {
+        "sha256" => mac_compute::<Hmac<Sha256>>(key, data),
+        "sha512" => mac_compute::<Hmac<Sha512>>(key, data),
+        "sha1" => mac_compute::<Hmac<Sha1>>(key, data),
+        other => unreachable!("hmac algorithm '{other}' passed validation"),
+    }
+}
+
+/// Whether `signature` is the MAC of `data` under `key`, compared in
+/// constant time.
+fn mac_matches(algorithm: &str, key: &[u8], data: &[u8], signature: &[u8]) -> bool {
+    match algorithm {
+        "sha256" => mac_verify::<Hmac<Sha256>>(key, data, signature),
+        "sha512" => mac_verify::<Hmac<Sha512>>(key, data, signature),
+        "sha1" => mac_verify::<Hmac<Sha1>>(key, data, signature),
+        other => unreachable!("hmac algorithm '{other}' passed validation"),
     }
 }
 
@@ -294,24 +356,15 @@ async fn hmac_op(
     match mode {
         HmacMode::Compute => {
             let codec = output_codec(input.raw())?;
-            let mac = match algorithm {
-                "sha256" => mac_compute::<Hmac<Sha256>>(&key, &data),
-                "sha512" => mac_compute::<Hmac<Sha512>>(&key, &data),
-                "sha1" => mac_compute::<Hmac<Sha1>>(&key, &data),
-                other => unreachable!("hmac algorithm '{other}' passed validation"),
-            };
-            Ok(Value::String(encode_bytes(codec, &mac)))
+            Ok(Value::String(encode_bytes(
+                codec,
+                &mac(algorithm, &key, &data),
+            )))
         }
         HmacMode::Verify => {
             let signature = resolve_required_str(input, "signature", NAME, ctx)?;
             let signature = decode_presented_signature(&signature)?;
-            let ok = match algorithm {
-                "sha256" => mac_verify::<Hmac<Sha256>>(&key, &data, &signature),
-                "sha512" => mac_verify::<Hmac<Sha512>>(&key, &data, &signature),
-                "sha1" => mac_verify::<Hmac<Sha1>>(&key, &data, &signature),
-                other => unreachable!("hmac algorithm '{other}' passed validation"),
-            };
-            Ok(Value::Bool(ok))
+            Ok(Value::Bool(mac_matches(algorithm, &key, &data, &signature)))
         }
     }
 }
@@ -418,8 +471,13 @@ async fn password_hash_op(
 ) -> Result<Value, HandlerError> {
     let algorithm = algorithm(input.raw(), PASSWORD_ALGORITHMS, "argon2id")?;
     let password = resolve_required_str(input, "password", NAME, ctx)?;
+    hash_password(password_params(algorithm, input.get("params"))?, password).await
+}
 
-    match password_params(algorithm, input.get("params"))? {
+/// `password` hashed by the effective `params`, on the blocking pool: shared
+/// by both engines' paths.
+async fn hash_password(params: PasswordParams, password: String) -> Result<Value, HandlerError> {
+    match params {
         PasswordParams::Argon2id {
             memory_kib,
             iterations,
@@ -460,7 +518,12 @@ async fn password_verify_op(
 ) -> Result<Value, HandlerError> {
     let password = resolve_required_str(input, "password", NAME, ctx)?;
     let hash = resolve_required_str(input, "hash", NAME, ctx)?;
+    verify_password(password, hash).await
+}
 
+/// Whether `password` matches the stored `hash`, on the blocking pool:
+/// shared by both engines' paths.
+async fn verify_password(password: String, hash: String) -> Result<Value, HandlerError> {
     // Scheme auto-detected from the stored hash, which is what turns a
     // bcrypt → argon2id migration into a verify-then-rehash pair inside one
     // login workflow. Wrong password → false; a *malformed* stored hash is a
@@ -502,6 +565,233 @@ where
         .await
         .map_err(|e| HandlerError::new(ErrorClass::Backend, format!("hashing task failed: {e}")))?
         .map_err(|e| validation(&e))
+}
+
+// -- dataflow-rs 4 --
+
+/// I185's Defect for a literal root: no op's result is an object (a digest,
+/// a MAC or a password hash is a string; a verification is a boolean), so
+/// a context root, which takes only an object (break 21), refuses it on
+/// every call.
+const ROOT_OUTPUT: &str = "`crypto` writes a string or a boolean, and a context root takes \
+    only an object (break 21): set `output` to a path below it, such as `data.digest`";
+
+/// The same Defect for a computed `output`, which `crypto` writes at `data`
+/// as 1.12 did ([`kit::written_output`]).
+const COMPUTED_OUTPUT: &str = "`crypto` reads `output` as written, so a computed one is \
+    written at `data`, as 1.12 wrote it, and a context root takes only an object (break 21): \
+    set `output` to a literal path below a root, such as `data.digest`";
+
+/// `crypto`'s input on dataflow-rs 4, in its field table's order (I179),
+/// each field in the position 1.12 executed it in (I183). The op, the
+/// algorithm, the three encodings and `params` are literals, read as
+/// written, as 1.12 read them; `data`, `signature`, `password` and `hash`
+/// are expressions, read by `kit::read`'s twin of `resolve_required_str`
+/// where 1.12 read them with it; `key` is key material. `output` is read as
+/// written ([`kit::written_output`]). A task missing `op` is refused at load
+/// (I183), and its `check` is 1.12's authoring-time rules.
+#[derive(Debug, FunctionConfig)]
+#[config(check = check)]
+pub struct CryptoConfig {
+    /// The operation: hash, hmac, hmac_verify, password_hash or
+    /// password_verify.
+    op: String,
+    /// The algorithm within the op's capability table; per-op default.
+    algorithm: Option<String>,
+    /// The bytes digested: a string per `input_encoding`, anything else its
+    /// compact JSON.
+    data: Option<Expr<OwnedDataValue>>,
+    /// How a string `data` becomes bytes: utf8, hex or base64.
+    input_encoding: Option<String>,
+    /// The HMAC key.
+    key: Option<KeyMaterial>,
+    /// How the resolved key becomes bytes: utf8, hex or base64.
+    key_encoding: Option<String>,
+    /// The presented MAC an `hmac_verify` checks.
+    signature: Option<Expr<OwnedDataValue>>,
+    /// The submitted password.
+    password: Option<Expr<OwnedDataValue>>,
+    /// The stored password hash a `password_verify` checks against.
+    hash: Option<Expr<OwnedDataValue>>,
+    /// The encoding of a hash or MAC result: hex, base64 or base64url.
+    encoding: Option<String>,
+    /// A `password_hash`'s cost knobs.
+    params: Option<Value>,
+    /// Where the result is written.
+    #[output(default = "data")]
+    output: Output,
+}
+
+impl CryptoConfig {
+    /// The task's input as 1.12's authoring check judged it: every field
+    /// the task sets, as written, in the field table's order. A literal
+    /// `null` in a string field, 1.12's `TYPE_MISMATCH` at authoring, is
+    /// unset here, so it is not judged again.
+    fn authored(&self) -> Map<String, Value> {
+        let mut input = Map::new();
+        input.insert("op".to_string(), Value::String(self.op.clone()));
+        let mut text = |field: &str, value: &Option<String>| {
+            if let Some(value) = value {
+                input.insert(field.to_string(), Value::String(value.clone()));
+            }
+        };
+        text("algorithm", &self.algorithm);
+        text("input_encoding", &self.input_encoding);
+        text("key_encoding", &self.key_encoding);
+        text("encoding", &self.encoding);
+        for (field, expr) in [
+            ("data", &self.data),
+            ("signature", &self.signature),
+            ("password", &self.password),
+            ("hash", &self.hash),
+        ] {
+            if let Some(expr) = expr {
+                input.insert(field.to_string(), expr.raw().clone());
+            }
+        }
+        match &self.key {
+            Some(KeyMaterial::Text(text)) => {
+                input.insert("key".to_string(), Value::String(text.clone()));
+            }
+            Some(KeyMaterial::Expr(expr)) => {
+                input.insert("key".to_string(), expr.raw().clone());
+            }
+            None => {}
+        }
+        if let Some(params) = &self.params {
+            input.insert("params".to_string(), params.clone());
+        }
+        input
+    }
+}
+
+/// 1.12's authoring-time rules for `crypto` ([`validate_static_input`], by
+/// which create, update, import, validate and `lint` refused a task), on
+/// the config at load: the op's membership, its algorithm table, its
+/// required fields and the fields it does not take, the encodings and the
+/// `params` bounds, each refused at the field 1.12 named, in its words.
+fn check(cfg: &CryptoConfig, cx: &mut CompileCx<'_>) {
+    super::mongo_common::report_static(validate_static_input(&cfg.authored()), cx);
+}
+
+/// `crypto` as a dataflow-rs 4 function: the op `CryptoHandler` runs, each
+/// field read in the same order, the hashing on the blocking pool.
+pub struct CryptoFunction;
+
+impl Function for CryptoFunction {
+    type Config = CryptoConfig;
+
+    fn spec(&self) -> FunctionSpec {
+        kit::spec(NAME)
+    }
+
+    /// I185: no op's result is an object, so an `output` that is a literal
+    /// context root, the default `data` included, is a Defect at `output`,
+    /// and so is a computed one, which is written at `data`.
+    fn prepare(&self, cfg: &mut CryptoConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
+        kit::written_root_output_defect(&cfg.output, ROOT_OUTPUT, COMPUTED_OUTPUT)
+    }
+
+    /// The op, its refusals named once with the handler's name, as
+    /// `CryptoHandler::execute` names them; then the one write.
+    async fn call(&self, ctx: &mut Ctx<'_>, cfg: &CryptoConfig) -> dataflow_rs::Result<Outcome> {
+        let result = compute(ctx, cfg).await.map_err(|e| e.prefixed(NAME))?;
+        ctx.set(
+            kit::written_output(&cfg.output),
+            OwnedDataValue::from(&result),
+        )?;
+        Ok(Outcome::Ok)
+    }
+}
+
+/// The op's result, as `run` computes it.
+async fn compute(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
+    match cfg.op.as_str() {
+        "hash" => hash_v4(ctx, cfg),
+        "hmac" => hmac_v4(ctx, cfg, HmacMode::Compute).await,
+        "hmac_verify" => hmac_v4(ctx, cfg, HmacMode::Verify).await,
+        "password_hash" => password_hash_v4(ctx, cfg).await,
+        "password_verify" => password_verify_v4(ctx, cfg).await,
+        // Refused at load by the check; kept for the call's own guard.
+        other => Err(validation(&format!(
+            "unknown op '{other}' — expected one of {}",
+            OPS.join(", ")
+        ))),
+    }
+}
+
+/// A required string field for this call, by `resolve_required_str`'s
+/// reading.
+fn required_v4(
+    ctx: &Ctx<'_>,
+    field: &Option<Expr<OwnedDataValue>>,
+    name: &str,
+) -> Result<String, HandlerError> {
+    let value = field.as_ref().map(|expr| ctx.eval(expr)).transpose()?;
+    Ok(read::required_str(value.as_deref(), name, NAME)?.into_owned())
+}
+
+/// [`data_bytes`] for this call: `data` evaluated, then the codec judged,
+/// then the evaluation's error, in that order, as `value_of` then
+/// `byte_codec` then `data?` judged them.
+fn data_bytes_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Vec<u8>, HandlerError> {
+    let Some(expr) = &cfg.data else {
+        return Err(validation("this op requires 'data'"));
+    };
+    let data = ctx.eval(expr).map(|value| Value::from(&*value));
+    let codec = byte_codec_named(cfg.input_encoding.as_deref(), "input_encoding")?;
+    bytes_of(data?, codec)
+}
+
+/// [`hash_op`] for this call.
+fn hash_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
+    let algorithm = algorithm_named(cfg.algorithm.as_deref(), HASH_ALGORITHMS, "sha256")?;
+    let codec = codec_named(cfg.encoding.as_deref())?;
+    let data = data_bytes_v4(ctx, cfg)?;
+    Ok(Value::String(encode_bytes(
+        codec,
+        &digest_bytes(algorithm, &data),
+    )))
+}
+
+/// [`hmac_op`] for this call, in its order: the algorithm, the key, the
+/// data, then the encoding or the signature.
+async fn hmac_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig, mode: HmacMode) -> Result<Value, HandlerError> {
+    let algorithm = algorithm_named(cfg.algorithm.as_deref(), HMAC_ALGORITHMS, "sha256")?;
+    let resolved = kit::key_material(cfg.key.as_ref(), ctx, "key", NAME).await?;
+    let key = key_bytes(
+        resolved,
+        byte_codec_named(cfg.key_encoding.as_deref(), "key_encoding"),
+    )?;
+    let data = data_bytes_v4(ctx, cfg)?;
+    match mode {
+        HmacMode::Compute => {
+            let codec = codec_named(cfg.encoding.as_deref())?;
+            Ok(Value::String(encode_bytes(
+                codec,
+                &mac(algorithm, &key, &data),
+            )))
+        }
+        HmacMode::Verify => {
+            let signature = required_v4(ctx, &cfg.signature, "signature")?;
+            let signature = decode_presented_signature(&signature)?;
+            Ok(Value::Bool(mac_matches(algorithm, &key, &data, &signature)))
+        }
+    }
+}
+
+/// [`password_hash_op`] for this call.
+async fn password_hash_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
+    let algorithm = algorithm_named(cfg.algorithm.as_deref(), PASSWORD_ALGORITHMS, "argon2id")?;
+    let password = required_v4(ctx, &cfg.password, "password")?;
+    hash_password(password_params(algorithm, cfg.params.as_ref())?, password).await
+}
+
+/// [`password_verify_op`] for this call.
+async fn password_verify_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
+    let password = required_v4(ctx, &cfg.password, "password")?;
+    let hash = required_v4(ctx, &cfg.hash, "hash")?;
+    verify_password(password, hash).await
 }
 
 // -- Authoring-time validation (shared with schema::validate_input) --
@@ -753,6 +1043,9 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::functions::twin::{self, Seen};
+    use dataflow_rs::function::testing;
+    use dataflow_rs::program::{IssueCode, Severity};
     use serde_json::json;
 
     /// Build an engine with one crypto task and run one message through it.
@@ -1013,5 +1306,517 @@ mod tests {
                 .any(|(f, c, _)| *f == "encoding" && *c == "INVALID"),
             "{errs:?}"
         );
+    }
+
+    // -- dataflow-rs 4: the config, then each test above on both engines --
+
+    fn config_v4(input: Value) -> Result<CryptoConfig, Vec<dataflow_rs::Issue>> {
+        testing::config_with(&kit::test_exprs(), input)
+    }
+
+    /// The Rejected issues of a config that does not load, as
+    /// `(path, message)`.
+    fn refusals(input: Value) -> Vec<(String, String)> {
+        config_v4(input.clone())
+            .map(|_| ())
+            .expect_err(&format!("{input} is refused at load"))
+            .into_iter()
+            .filter(|i| i.severity == Severity::Rejected)
+            .map(|i| (i.path.to_string(), i.message))
+            .collect()
+    }
+
+    /// What 1.12's authoring check refused in `input`, as `(path, message)`.
+    fn authoring(input: &Value) -> Vec<(String, String)> {
+        validate_static_input(input.as_object().expect("an object"))
+            .into_iter()
+            .map(|(field, _code, message)| (field.to_string(), message))
+            .collect()
+    }
+
+    /// One task through each engine over the same input and `data`; the
+    /// two must agree, and dataflow-rs 4's answer is returned.
+    async fn agreed(input: Value, data: Value) -> Seen {
+        let v3 = twin::v3(NAME, Box::new(CryptoHandler), input.clone(), data.clone()).await;
+        let v4 = twin::v4(NAME, CryptoFunction, input.clone(), data).await;
+        assert_eq!(v4, v3, "{input}");
+        v4
+    }
+
+    /// Declaration order is the field table's (I179).
+    #[test]
+    fn the_config_declares_the_field_table_in_its_order() {
+        let fields: Vec<&str> = CryptoConfig::fields().iter().map(|f| &*f.name).collect();
+        let table: Vec<&str> = CRYPTO_FIELDS.iter().map(|f| f.name).collect();
+        assert_eq!(fields, table);
+    }
+
+    /// Each field compiles in the position 1.12 executed it in (I183): the
+    /// op required, the literals typed, key material as text or an
+    /// expression, a `null` expression a value, as 1.12 read it.
+    #[test]
+    fn the_fields_compile_in_1_12s_positions() {
+        let cfg = config_v4(json!({
+            "op": "hmac", "algorithm": "sha512", "data": {"var": "data.body"},
+            "key": "env://K", "key_encoding": "hex", "encoding": "base64",
+            "output": "data.mac"
+        }))
+        .expect("compiles");
+        assert_eq!(cfg.op, "hmac");
+        assert_eq!(cfg.algorithm.as_deref(), Some("sha512"));
+        assert!(matches!(&cfg.key, Some(KeyMaterial::Text(t)) if t == "env://K"));
+        assert!(cfg.data.as_ref().is_some_and(|d| d.constant().is_none()));
+        assert_eq!(kit::written_output(&cfg.output).to_string(), "data.mac");
+
+        let cfg = config_v4(json!({"op": "hmac", "data": "x", "key": {"secret": "k"},
+                                   "output": {"cat": ["data", ".mac"]}}))
+        .expect("compiles");
+        assert!(matches!(&cfg.key, Some(KeyMaterial::Expr(_))));
+        // An expression `output`, folded or not, is `data`, as 1.12 read it.
+        assert_eq!(kit::written_output(&cfg.output).to_string(), "data");
+        let cfg = config_v4(json!({"op": "password_hash", "password": "x", "params": null}))
+            .expect("compiles");
+        assert_eq!(cfg.params, Some(Value::Null));
+        assert_eq!(kit::written_output(&cfg.output).to_string(), "data");
+        // A `null` expression is a value, which the check refuses where 1.12
+        // refused it (`data` required): see `the_check_is_validate_static_input`.
+
+        // A missing op, and a non-string literal, which 1.12's field loop
+        // refused at authoring (TYPE_MISMATCH), are refused at load.
+        assert_eq!(refusals(json!({"data": "x"}))[0].0, "op");
+        for field in ["algorithm", "input_encoding", "key_encoding", "encoding"] {
+            let mut input = json!({"op": "hash", "data": "x"});
+            input[field] = json!(7);
+            assert_eq!(refusals(input)[0].0, field);
+        }
+        // `crypto` was `deny_unknown` in 1.12, so an unknown key stays
+        // refused.
+        let issues = config_v4(json!({"op": "hash", "data": "x", "outputs": "data.d"}))
+            .map(|_| ())
+            .expect_err("an unknown key");
+        assert_eq!(issues[0].path.to_string(), "outputs");
+        assert_eq!(issues[0].code, IssueCode::LikelyTypo);
+    }
+
+    /// The check is 1.12's authoring-time rules: each refusal at the field
+    /// and in the words `validate_static_input` gives, computed from it; an
+    /// input it accepts loads.
+    #[test]
+    fn the_check_is_validate_static_input() {
+        for input in [
+            json!({"op": "melt", "data": "x"}),
+            json!({"op": "hmac", "data": "x"}),
+            json!({"op": "hmac_verify", "data": "x", "key": "k"}),
+            json!({"op": "password_hash", "password": "x", "key": "why"}),
+            json!({"op": "hash", "data": "x", "encoding": "base32"}),
+            json!({"op": "hash", "data": "x", "algorithm": "argon2id"}),
+            json!({"op": "password_hash", "algorithm": "sha256", "password": "x"}),
+            json!({"op": "hash", "data": {"a": 1}, "input_encoding": "hex"}),
+            json!({"op": "hash", "data": "x", "input_encoding": "rot13"}),
+            json!({"op": "hmac", "data": "x", "key": "k", "key_encoding": "base32"}),
+            json!({"op": "hmac_verify", "data": "x", "key": "k", "signature": "s",
+                   "encoding": "hex"}),
+            json!({"op": "password_hash", "password": "x", "params": {"cost": 4}}),
+            json!({"op": "password_hash", "password": "x", "params": {"memory_mib": 64}}),
+            json!({"op": "password_hash", "algorithm": "bcrypt", "password": "x",
+                   "params": {"cost": 4}}),
+            json!({"op": "password_hash", "password": "x", "params": [1]}),
+            json!({"op": "password_verify", "password": "x", "hash": "h",
+                   "algorithm": "bcrypt"}),
+            json!({"op": "password_verify", "password": "x"}),
+            json!({"op": "hash", "data": null}),
+            json!({"op": "hmac", "data": "x", "key": null}),
+        ] {
+            let expected = authoring(&input);
+            assert!(!expected.is_empty(), "{input} is a refusal");
+            assert_eq!(refusals(input.clone()), expected, "{input}");
+        }
+        for input in [
+            json!({"op": "hash", "data": "x"}),
+            json!({"op": "hash", "data": {"var": "data.obj"}, "input_encoding": "hex"}),
+            json!({"op": "hmac_verify", "data": "x", "key": {"secret": "k"},
+                   "signature": {"var": "data.sig"}}),
+            json!({"op": "password_hash", "algorithm": "bcrypt", "password": "x",
+                   "params": {"cost": 10}}),
+            json!({"op": "password_verify", "password": "x", "hash": "h"}),
+        ] {
+            assert!(authoring(&input).is_empty(), "{input}");
+            assert!(config_v4(input.clone()).is_ok(), "{input}");
+        }
+    }
+
+    /// I185: no op's result is an object, so a literal root `output` (the
+    /// default `data` included) is a Defect at `output`, reported by
+    /// `prepare`, which only a compile through the registry runs; so is a
+    /// computed one, which `crypto` writes at `data` as 1.12 did. A path
+    /// below a root is not. The call still runs, and a root's write is
+    /// refused (break 21), where 1.12 replaced the root with the result.
+    #[tokio::test]
+    async fn a_root_or_computed_output_is_i185s_defect() {
+        for op in [
+            json!({"op": "hash", "data": "x"}),
+            json!({"op": "hmac_verify", "data": "x", "key": "Jefe", "signature": "00"}),
+        ] {
+            for (output, defect) in [
+                (None, Some(ROOT_OUTPUT)),
+                (Some(json!("data")), Some(ROOT_OUTPUT)),
+                (Some(json!("temp_data")), Some(ROOT_OUTPUT)),
+                (Some(Value::Null), Some(ROOT_OUTPUT)),
+                (Some(json!({"cat": ["data", ".x"]})), Some(COMPUTED_OUTPUT)),
+                (Some(json!("data.digest")), None),
+                (Some(json!("temp_data.d")), None),
+            ] {
+                let mut input = op.clone();
+                if let Some(output) = &output {
+                    input["output"] = output.clone();
+                }
+                let called = testing::call(CryptoFunction, input)
+                    .exprs(kit::test_exprs())
+                    .name(NAME)
+                    .await;
+                let defects: Vec<_> = called
+                    .issues
+                    .iter()
+                    .filter(|i| i.severity == Severity::Defect)
+                    .map(|i| (i.path.to_string(), i.code, i.message.as_str()))
+                    .collect();
+                match defect {
+                    Some(message) => {
+                        assert_eq!(
+                            defects,
+                            [("output".to_string(), IssueCode::InputParse, message)],
+                            "{op} at {output:?}"
+                        );
+                        let error = called.outcome.expect_err("no root takes the result");
+                        assert_eq!(error.code(), "CONFIG_ERROR", "{op} at {output:?}");
+                    }
+                    None => {
+                        assert!(defects.is_empty(), "{op} at {output:?}: {defects:?}");
+                        assert_eq!(called.outcome.expect("computed"), Outcome::Ok);
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hash_matches_the_nist_vectors_on_v4() {
+        for (algorithm, expected) in [
+            (
+                "sha256",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
+            (
+                "sha512",
+                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a\
+                 2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+            ),
+            ("sha1", "a9993e364706816aba3e25717850c26c9cd0d89d"),
+            ("md5", "900150983cd24fb0d6963f7d28e17f72"),
+        ] {
+            let out = agreed(
+                json!({"op": "hash", "algorithm": algorithm,
+                       "data": "abc", "output": "data.digest"}),
+                json!({}),
+            )
+            .await
+            .expect(algorithm);
+            assert_eq!(out["digest"], json!(expected), "{algorithm}");
+        }
+    }
+
+    #[tokio::test]
+    async fn hmac_matches_rfc_4231_and_rfc_2202_on_v4() {
+        for (algorithm, expected) in [
+            (
+                "sha256",
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            ),
+            (
+                "sha512",
+                "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea250554\
+                 9758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
+            ),
+            ("sha1", "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"),
+        ] {
+            let out = agreed(
+                json!({"op": "hmac", "algorithm": algorithm, "key": "Jefe",
+                       "data": {"var": "data.challenge"}, "output": "data.mac"}),
+                json!({"challenge": "what do ya want for nothing?"}),
+            )
+            .await
+            .expect(algorithm);
+            assert_eq!(out["mac"], json!(expected), "{algorithm}");
+        }
+    }
+
+    #[tokio::test]
+    async fn hmac_output_encodings_and_binary_key_on_v4() {
+        let expected_hex = "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7";
+        let out = agreed(
+            json!({"op": "hmac", "key": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+                   "key_encoding": "hex", "data": "Hi There",
+                   "encoding": "base64", "output": "data.mac"}),
+            json!({}),
+        )
+        .await
+        .expect("test");
+        let expected_b64 = crate::engine::operators::encode_bytes(
+            Codec::Base64,
+            &hex::decode(expected_hex).expect("test"),
+        );
+        assert_eq!(out["mac"], json!(expected_b64));
+    }
+
+    #[tokio::test]
+    async fn hmac_verify_is_a_boolean_with_auto_detected_encoding_on_v4() {
+        let mac_hex = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843";
+        let mac_b64 = crate::engine::operators::encode_bytes(
+            Codec::Base64,
+            &hex::decode(mac_hex).expect("test"),
+        );
+        for presented in [mac_hex.to_string(), mac_b64] {
+            let out = agreed(
+                json!({"op": "hmac_verify", "key": "Jefe",
+                       "data": "what do ya want for nothing?",
+                       "signature": {"var": "data.sig"}, "output": "data.ok"}),
+                json!({"sig": presented}),
+            )
+            .await
+            .expect("test");
+            assert_eq!(out["ok"], json!(true));
+        }
+        let out = agreed(
+            json!({"op": "hmac_verify", "key": "Jefe",
+                   "data": "what do ya want for nothing?",
+                   "signature": "00".repeat(32), "output": "data.ok"}),
+            json!({}),
+        )
+        .await
+        .expect("test");
+        assert_eq!(out["ok"], json!(false));
+        let err = agreed(
+            json!({"op": "hmac_verify", "key": "Jefe", "data": "x",
+                   "signature": "!!not-an-encoding!!", "output": "data.ok"}),
+            json!({}),
+        )
+        .await
+        .expect_err("test");
+        assert!(err.message.contains("signature"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn non_string_data_is_hashed_as_compact_json_on_v4() {
+        let out = agreed(
+            json!({"op": "hash", "data": {"var": "data.payload"}, "output": "data.digest"}),
+            json!({"payload": {"b": 1, "a": 2}}),
+        )
+        .await
+        .expect("test");
+        let expected = hex::encode(Sha256::digest(br#"{"b":1,"a":2}"#));
+        assert_eq!(out["digest"], json!(expected));
+    }
+
+    #[tokio::test]
+    async fn input_encoding_decodes_binary_payloads_on_v4() {
+        let out = agreed(
+            json!({"op": "hash", "data": "fffe", "input_encoding": "hex",
+                   "output": "data.digest"}),
+            json!({}),
+        )
+        .await
+        .expect("test");
+        assert_eq!(
+            out["digest"],
+            json!(hex::encode(Sha256::digest([0xffu8, 0xfe])))
+        );
+    }
+
+    /// A salted hash differs per call, so each engine verifies the other's:
+    /// argon2id from dataflow-rs 4 verifies on both, and so does 1.12's.
+    #[tokio::test]
+    async fn password_hash_and_verify_round_trip_on_v4() {
+        let hash = json!({"op": "password_hash",
+                          "params": {"memory_kib": 8192, "iterations": 1},
+                          "password": "correct horse", "output": "data.phc"});
+        let v4 = twin::v4(NAME, CryptoFunction, hash.clone(), json!({}))
+            .await
+            .expect("hashed on v4");
+        let v3 = run(hash, json!({})).await.expect("hashed on v3");
+        for phc in [&v4["phc"], &v3["phc"]] {
+            let phc = phc.as_str().expect("a PHC string");
+            assert!(phc.starts_with("$argon2id$"), "{phc}");
+            for (candidate, expected) in [("correct horse", true), ("battery staple", false)] {
+                let out = agreed(
+                    json!({"op": "password_verify", "password": candidate,
+                           "hash": {"var": "data.stored"}, "output": "data.ok"}),
+                    json!({"stored": phc}),
+                )
+                .await
+                .expect("test");
+                assert_eq!(out["ok"], json!(expected), "{candidate}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bcrypt_hashes_verify_and_support_rehash_detection_on_v4() {
+        let out = twin::v4(
+            NAME,
+            CryptoFunction,
+            json!({"op": "password_hash", "algorithm": "bcrypt",
+                   "params": {"cost": 10},
+                   "password": "legacy pw", "output": "data.hash"}),
+            json!({}),
+        )
+        .await
+        .expect("test");
+        let stored = out["hash"].as_str().expect("test").to_string();
+        assert!(stored.starts_with("$2"), "{stored}");
+        let out = agreed(
+            json!({"op": "password_verify", "password": "legacy pw",
+                   "hash": {"var": "data.stored"}, "output": "data.ok"}),
+            json!({"stored": stored}),
+        )
+        .await
+        .expect("test");
+        assert_eq!(out["ok"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn malformed_stored_hash_is_an_error_not_false_on_v4() {
+        let err = agreed(
+            json!({"op": "password_verify", "password": "x",
+                   "hash": "plainly-not-a-hash", "output": "data.ok"}),
+            json!({}),
+        )
+        .await
+        .expect_err("test");
+        assert!(err.message.contains("hash scheme"), "{err:?}");
+        assert_eq!(err.code, "VALIDATION_ERROR");
+    }
+
+    /// `table_violations_are_refused_at_execution_too`'s inputs: 1.12
+    /// refused each at authoring and at execution; dataflow-rs 4 refuses
+    /// each at load, in the authoring check's words, so none reaches a call.
+    #[tokio::test]
+    async fn table_violations_are_refused_at_load_on_v4() {
+        for input in [
+            json!({"op": "password_hash", "algorithm": "sha256", "password": "x"}),
+            json!({"op": "hash", "algorithm": "argon2id", "data": "x"}),
+            json!({"op": "melt", "data": "x"}),
+            json!({"op": "hmac", "data": "x"}),
+            json!({"op": "password_hash", "password": "x", "params": {"cost": 4}}),
+            json!({"op": "password_hash", "password": "x",
+                   "params": {"memory_mib": 64}}),
+        ] {
+            let v3 = run(input.clone(), json!({})).await.expect_err("test");
+            assert!(v3.contains("crypto"), "{input}: {v3}");
+            assert_eq!(refusals(input.clone()), authoring(&input), "{input}");
+            let called = testing::call(CryptoFunction, input.clone())
+                .exprs(kit::test_exprs())
+                .name(NAME)
+                .await;
+            let error = called.outcome.expect_err("refused before the call");
+            assert_eq!(
+                *error.kind(),
+                dataflow_rs::run::ErrorKind::Compile,
+                "{input}"
+            );
+        }
+    }
+
+    /// What reaches a call and is refused there keeps 1.12's code, text and
+    /// the handler's name, in 1.12's order of refusal.
+    #[tokio::test]
+    async fn call_time_refusals_keep_1_12s_text_and_name() {
+        let data = json!({"obj": {"a": 1}, "empty": "", "n": 5, "s": "ok"});
+        for input in [
+            json!({"op": "hash", "data": {"var": "data.missing"}, "output": "data.d"}),
+            json!({"op": "hash", "data": {"var": "data.obj"}, "input_encoding": "hex",
+                   "output": "data.d"}),
+            json!({"op": "hash", "data": "zz", "input_encoding": "hex", "output": "data.d"}),
+            json!({"op": "hash", "data": {"throw": "boom"}, "output": "data.d"}),
+            json!({"op": "hmac", "data": "x", "key": {"var": "data.empty"},
+                   "output": "data.d"}),
+            json!({"op": "hmac", "data": "x", "key": "zz", "key_encoding": "hex",
+                   "output": "data.d"}),
+            json!({"op": "hmac", "data": "x", "key": {"var": "data.n"}, "output": "data.d"}),
+            json!({"op": "hmac", "data": "x", "key": "env://ORION_CRYPTO_SURELY_UNSET_4K",
+                   "output": "data.d"}),
+            // The key is judged before the data, as 1.12 judged it (F58).
+            json!({"op": "hmac", "data": {"var": "data.missing"}, "key": {"var": "data.empty"},
+                   "output": "data.d"}),
+            json!({"op": "hmac_verify", "data": "x", "key": "Jefe",
+                   "signature": {"var": "data.obj"}, "output": "data.d"}),
+            json!({"op": "password_hash", "password": {"var": "data.obj"},
+                   "output": "data.d"}),
+            json!({"op": "password_verify", "password": {"var": "data.missing"},
+                   "hash": "$2b$10$x", "output": "data.d"}),
+            json!({"op": "password_verify", "password": "x", "hash": {"var": "data.n"},
+                   "output": "data.d"}),
+        ] {
+            let failure = agreed(input.clone(), data.clone())
+                .await
+                .expect_err(&format!("{input} is refused"));
+            assert!(failure.message.contains("crypto: "), "{input}: {failure:?}");
+        }
+    }
+
+    /// A key read from the store reaches the MAC and nothing else: the
+    /// input a layer reads writes it `null`, and the call's changes hold
+    /// the MAC alone.
+    #[tokio::test]
+    async fn a_key_from_the_store_never_reaches_the_input_or_the_changes() {
+        use dataflow_rs::function::{BoxFuture, CallLayer, Next};
+        use std::sync::{Arc, Mutex};
+
+        /// The input each call it wraps was given, as a layer reads it.
+        struct Inputs(Arc<Mutex<Vec<Value>>>);
+        impl CallLayer for Inputs {
+            fn call<'a>(
+                &'a self,
+                ctx: &'a mut Ctx<'_>,
+                next: Next<'a>,
+            ) -> BoxFuture<'a, dataflow_rs::Result<Outcome>> {
+                let input = ctx.input().map(|v| Value::from(&v)).expect("an input");
+                self.0.lock().expect("unpoisoned").push(input);
+                next.run(ctx)
+            }
+        }
+
+        const SIGNING: &str = "s3cr3t-hmac-key-from-the-store";
+        let mut values = Map::new();
+        values.insert("signing".into(), json!(SIGNING));
+        let exprs = crate::engine::operators::orion_exprs(
+            &crate::engine::ResolvedSecrets::from_values(values),
+            0,
+        )
+        .expect("Orion's expressions build");
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let called = testing::call(
+            CryptoFunction,
+            json!({"op": "hmac", "key": {"secret": "signing"}, "data": "abc",
+                   "output": "data.mac"}),
+        )
+        .exprs(exprs)
+        .name(NAME)
+        .layer(Inputs(Arc::clone(&inputs)))
+        .await;
+        assert!(called.issues.is_empty(), "{:?}", called.issues);
+        assert_eq!(called.outcome.expect("signed"), Outcome::Ok);
+        let literal = twin::v4(
+            NAME,
+            CryptoFunction,
+            json!({"op": "hmac", "key": SIGNING, "data": "abc", "output": "data.mac"}),
+            json!({}),
+        )
+        .await
+        .expect("signed");
+        assert_eq!(Value::from(called.message.context().data()), literal);
+        let inputs = inputs.lock().expect("unpoisoned");
+        assert_eq!(inputs[0]["key"], Value::Null, "{inputs:?}");
+        assert!(!inputs[0].to_string().contains(SIGNING));
+        assert!(!format!("{:?}", called.changes).contains(SIGNING));
     }
 }

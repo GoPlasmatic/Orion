@@ -158,6 +158,17 @@ impl Verifier {
     /// the module contract: size → header parse → allowlist → key routing →
     /// signature → temporal/identity claims.
     pub async fn verify(&self, token: &str) -> Result<Value, RejectReason> {
+        self.verify_within(token, None).await
+    }
+
+    /// [`Self::verify`], inside the deadline of the run the caller belongs
+    /// to (`jwt_verify`'s `Ctx::deadline`): a JWKS fetch arms its 5 s timer
+    /// only when that comes first ([`jwks::fetch_timeout`]).
+    pub async fn verify_within(
+        &self,
+        token: &str,
+        run: Option<std::time::Instant>,
+    ) -> Result<Value, RejectReason> {
         if token.is_empty() {
             return Err(RejectReason::Missing);
         }
@@ -203,7 +214,7 @@ impl Verifier {
         if let Some(source) = &self.jwks {
             let keys = source
                 .cache
-                .decoding_keys(&source.url, kid, header.alg)
+                .decoding_keys_within(&source.url, kid, header.alg, run)
                 .await?;
             for key in &keys {
                 saw_candidate = true;

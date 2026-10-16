@@ -1,6 +1,7 @@
-//! Orion's own config field types (I183): key material, a list of it, an
-//! expression a function evaluates over a root of its own, and a map that
-//! keeps its members in the order they were written.
+//! Orion's own config field types (I183): key material, a list of it, one
+//! value of it read as written, an expression a function evaluates over a
+//! root of its own, and a map that keeps its members in the order they were
+//! written.
 //!
 //! Each implements [`ConfigField`], so a derived config holds one as it holds
 //! an `Expr`: compiled once at build with every issue at its path, walked by
@@ -485,6 +486,117 @@ pub async fn key_material_list(
     match list {
         Some(list) => list.materials(ctx, field, handler).await,
         None => Ok(Vec::new()),
+    }
+}
+
+/// One key-material value read as written, with no expression around it:
+/// `jwt_verify`'s `keys[].key` (`secret_ref::key_material`'s rules, I183).
+///
+/// A string is [`Self::Text`], a literal or an `env://` / `vault://`
+/// reference resolved at call. A `{"secret": "name"}` node, or
+/// `{"secret": ["name"]}`, is [`Self::Secret`], read from the engine's
+/// store, a miss and a non-string refused in 1.12's words. Anything else,
+/// `null` and an expression included, is [`Self::Other`], refused at call as
+/// 1.12 refused it: the value is never evaluated, so a `{"var": …}` cannot
+/// hand the call key material from the message, where [`KeyMaterial`]
+/// would evaluate it.
+pub enum KeyRef {
+    /// A literal, or a secret reference resolved at call.
+    Text(String),
+    /// A `{"secret": …}` node with a literal name, boxed: its compiled
+    /// expression is large and rare beside the strings.
+    Secret(Box<SecretRef>),
+    /// Anything else, as authored, refused at call.
+    Other(Value),
+}
+
+/// A [`KeyRef::Secret`]: the node as authored, which `visit` reports, so the
+/// engine's secret checks see it and [`Ctx::input`] writes it `null`; the
+/// node compiled, for a resolve that reads secrets; and the name the store
+/// is read by.
+pub struct SecretRef {
+    raw: Value,
+    expr: Option<Expr<OwnedDataValue>>,
+    name: String,
+}
+
+impl std::fmt::Debug for KeyRef {
+    /// The spelling, never the material.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text(_) => f.write_str("KeyRef::Text(..)"),
+            Self::Secret(secret) => f.debug_tuple("KeyRef::Secret").field(&secret.raw).finish(),
+            Self::Other(raw) => f.debug_tuple("KeyRef::Other").field(raw).finish(),
+        }
+    }
+}
+
+impl ConfigField for KeyRef {
+    /// `null` is a value, refused at call ("is required") as 1.12 refused
+    /// it, not an unset field.
+    const NULL_IS_VALUE: bool = true;
+
+    fn compile(raw: &Value, cx: &mut CompileCx<'_>) -> Option<Self> {
+        Some(match raw {
+            Value::String(text) => Self::Text(text.clone()),
+            _ => match secret_name(raw) {
+                Some(name) => Self::Secret(Box::new(SecretRef {
+                    raw: raw.clone(),
+                    expr: cx.exprs().compile(raw).ok(),
+                    name: name.to_string(),
+                })),
+                None => Self::Other(raw.clone()),
+            },
+        })
+    }
+
+    fn visit(&self, v: &mut Visit<'_>) {
+        if let Self::Secret(secret) = self {
+            v.expr(&secret.raw);
+        }
+    }
+
+    /// The text as written, never resolved; a secret node's value, which
+    /// [`Ctx::input`] writes `null`; anything else as authored.
+    fn resolve(&self, r: &mut dyn Resolver) -> dataflow_rs::Result<Option<OwnedDataValue>> {
+        Ok(Some(match self {
+            Self::Text(text) => OwnedDataValue::String(text.clone()),
+            Self::Secret(secret) => match &secret.expr {
+                Some(expr) => r.eval(expr)?,
+                None => OwnedDataValue::Null,
+            },
+            Self::Other(raw) => OwnedDataValue::from(raw),
+        }))
+    }
+
+    /// A literal to the engine: a string, or a `{"secret": …}` node.
+    fn kind() -> FieldKind {
+        FieldKind::Literal(ValueKind::String)
+    }
+}
+
+impl KeyRef {
+    /// Whether the value is `null`, which its caller refuses in its own
+    /// words, as 1.12's did (`'keys[0].key' is required`).
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Other(Value::Null))
+    }
+
+    /// The material for this call, as `secret_ref::key_material` resolves
+    /// it, its errors naming `field`, and for a store miss the key, never a
+    /// value.
+    ///
+    /// # Errors
+    ///
+    /// A [`ErrorClass::CallerInput`] error when a reference does not
+    /// resolve, the store's value is not a string, or the value is neither a
+    /// string nor a `{"secret": …}` node.
+    pub async fn material(&self, ctx: &Ctx<'_>, field: &str) -> Result<String, HandlerError> {
+        match self {
+            Self::Text(text) => resolve_secret_string(text, field).await.map_err(refused),
+            Self::Secret(secret) => store(ctx, &secret.name, field),
+            Self::Other(_) => Err(not_material(field)),
+        }
     }
 }
 
@@ -1006,6 +1118,151 @@ mod tests {
             KeyMaterialList::kind(),
             FieldKind::Expr(ValueKind::Any)
         ));
+    }
+
+    // -- KeyRef -----------------------------------------------------------
+
+    /// `jwt_verify`'s `keys[].key`, read as 1.12 reads it: as written, with
+    /// `secret_ref::key_material`.
+    struct RefV3;
+
+    #[async_trait]
+    impl AsyncFunctionHandler for RefV3 {
+        type Input = TemplatedInput;
+
+        fn compile_input(
+            input: &mut Self::Input,
+            c: &TemplateCompiler,
+        ) -> dataflow_rs_v3::Result<()> {
+            input.compile("jwt_verify", c)
+        }
+
+        async fn execute(
+            &self,
+            ctx: &mut TaskContext<'_>,
+            input: &TemplatedInput,
+        ) -> dataflow_rs_v3::Result<TaskOutcome> {
+            let raw = input.get("key").cloned().unwrap_or(Value::Null);
+            let read =
+                crate::engine::functions::secret_ref::key_material(&raw, "jwt_verify.keys", ctx)
+                    .await;
+            let out = seen(read.map(Value::String).map_err(HandlerError::from));
+            ctx.set_json("data.out", &out);
+            Ok(TaskOutcome::Success)
+        }
+    }
+
+    #[derive(Debug, FunctionConfig)]
+    struct RefConfig {
+        key: KeyRef,
+    }
+
+    /// `jwt_verify`'s `keys[].key`, read through the kit.
+    struct RefV4;
+
+    impl Function for RefV4 {
+        type Config = RefConfig;
+
+        async fn call(&self, ctx: &mut Ctx<'_>, cfg: &RefConfig) -> dataflow_rs::Result<Outcome> {
+            let read = cfg.key.material(ctx, "jwt_verify.keys").await;
+            write(ctx, &seen(read.map(Value::String)))
+        }
+    }
+
+    /// Every spelling resolves as `key_material` resolves it: a string as a
+    /// literal or a reference, a secret node from the store, and anything
+    /// else refused, an expression included, which is never evaluated. The
+    /// input writes the field `null` exactly when it reads a secret, and
+    /// anything else as written.
+    #[tokio::test]
+    async fn key_ref_resolves_as_key_material_does() {
+        let cases = [
+            (json!("a-literal-key"), json!("a-literal-key")),
+            (json!("env://PATH"), json!("env://PATH")),
+            (
+                json!("env://ORION_KIT_SURELY_UNSET_7Q2"),
+                json!("env://ORION_KIT_SURELY_UNSET_7Q2"),
+            ),
+            (json!({"secret": "signing"}), Value::Null),
+            (json!({"secret": ["signing"]}), Value::Null),
+            (json!({"secret": "count"}), Value::Null),
+            // Not a literal name: refused, never folded.
+            (
+                json!({"secret": {"var": "data.secname"}}),
+                json!({"secret": {"var": "data.secname"}}),
+            ),
+            (
+                json!({"secret": "signing", "x": 1}),
+                json!({"secret": "signing", "x": 1}),
+            ),
+            // An expression is refused, not evaluated: no key from the
+            // message, where `KeyMaterial` would read one.
+            (json!({"var": "data.suffix"}), json!({"var": "data.suffix"})),
+            (
+                json!({"cat": ["k-", {"var": "data.suffix"}]}),
+                json!({"cat": ["k-", {"var": "data.suffix"}]}),
+            ),
+            (json!(7), json!(7)),
+            (json!(["k"]), json!(["k"])),
+            (Value::Null, Value::Null),
+        ];
+        for (value, in_input) in cases {
+            let expected = run_v3(RefV3, input("key", Some(&value))).await;
+            let (out, written) = run_v4(RefV4, input("key", Some(&value))).await;
+            assert_eq!(out, expected, "key = {value}");
+            assert_eq!(written["key"], in_input, "key = {value}");
+        }
+        // The material of the store's key, not merely the same as 1.12's.
+        let (out, _) = run_v4(RefV4, input("key", Some(&json!({"secret": "signing"})))).await;
+        assert_eq!(out, json!({"ok": "s3cr3t-signing-key"}));
+    }
+
+    /// A string is text and a secret node a secret, visited so the engine's
+    /// checks see it; anything else is held as written, visited by nothing.
+    #[test]
+    fn key_ref_compiles_a_secret_node_and_visits_only_it() {
+        /// Every reported expression's path.
+        struct Paths(Vec<String>);
+        impl ExprVisitor for Paths {
+            fn expr(&mut self, at: &AuthoredPath, _raw: &Value, _records: bool) {
+                self.0.push(at.to_string());
+            }
+        }
+        let compile = |raw: Value| {
+            testing::config_with::<RefConfig>(&exprs(), json!({"key": raw}))
+                .expect("compiles")
+                .key
+        };
+        assert!(matches!(compile(json!("plain")), KeyRef::Text(t) if t == "plain"));
+        assert!(matches!(
+            compile(json!({"secret": ["signing"]})),
+            KeyRef::Secret(_)
+        ));
+        assert!(matches!(
+            compile(json!({"var": "data.k"})),
+            KeyRef::Other(_)
+        ));
+        assert!(compile(Value::Null).is_null());
+        assert!(!compile(json!("")).is_null());
+        for (raw, visited) in [
+            (json!({"secret": "signing"}), vec!["key"]),
+            (json!({"var": "data.k"}), vec![]),
+            (json!({"cat": [{"secret": "signing"}]}), vec![]),
+            (json!("plain"), vec![]),
+        ] {
+            let cfg =
+                testing::config_with::<RefConfig>(&exprs(), json!({"key": raw})).expect("compiles");
+            let mut paths = Paths(Vec::new());
+            FunctionConfig::visit(&cfg, &mut paths);
+            assert_eq!(paths.0, visited, "{raw}");
+        }
+        assert!(matches!(
+            KeyRef::kind(),
+            FieldKind::Literal(ValueKind::String)
+        ));
+        let issues =
+            testing::config_with::<RefConfig>(&exprs(), json!({})).expect_err("a key is required");
+        assert_eq!(issues[0].path.to_string(), "key", "{issues:?}");
     }
 
     // -- DetachedExpr -----------------------------------------------------
