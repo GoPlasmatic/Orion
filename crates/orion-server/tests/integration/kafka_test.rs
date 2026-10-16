@@ -6,7 +6,7 @@
 //! Tests are marked #[ignore] by default to avoid CI failures when Docker is unavailable.
 //! Run explicitly with: `cargo test -- --ignored kafka`
 
-use dataflow_rs_v3::datalogic_rs;
+use dataflow_rs::expr::ExprEngine;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,9 +104,11 @@ fn test_trace_repo() -> Arc<dyn orion::storage::repositories::traces::TraceSink>
     Arc::new(NoopTraceRepo)
 }
 
-/// Shared datalogic engine for consumer tests.
-fn test_datalogic() -> Arc<datalogic_rs::Engine> {
-    Arc::new(datalogic_rs::Engine::new())
+/// The process's expression engine for consumer tests, as boot builds it
+/// with no secrets and no budget.
+fn test_exprs() -> ExprEngine {
+    orion::engine::operators::orion_exprs(&orion::engine::ResolvedSecrets::empty(), 0)
+        .expect("Orion's expression engine builds")
 }
 
 /// Build a test Kafka config for the given broker.
@@ -178,7 +180,7 @@ async fn test_consumer_starts_and_stops() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -215,7 +217,7 @@ async fn test_consumer_processes_valid_message() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -268,7 +270,7 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -446,7 +448,7 @@ async fn test_consumer_sends_invalid_utf8_to_dlq() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -525,7 +527,7 @@ async fn test_failed_message_redelivered_after_restart() {
         &config,
         consumer::ConsumerDeps {
             runtime: runtime.clone(),
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -572,7 +574,7 @@ async fn test_failed_message_redelivered_after_restart() {
         &config2,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -616,7 +618,7 @@ async fn test_consumer_metadata_injection() {
         crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:1")
             .await;
     let runtime = state.runtime.clone();
-    let datalogic = state.datalogic.clone();
+    let exprs = state.exprs.clone();
     let app = orion::server::build_router(state);
 
     crate::common::create_and_activate_channel_with_config(
@@ -637,7 +639,7 @@ async fn test_consumer_metadata_injection() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -692,7 +694,7 @@ async fn test_concurrent_producers_all_committed() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -759,7 +761,7 @@ async fn test_rapid_burst_all_committed() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -864,7 +866,7 @@ async fn test_consumer_multiple_topics() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -942,7 +944,7 @@ async fn test_consumer_partition_rebalance() {
         &config_a,
         consumer::ConsumerDeps {
             runtime: runtime.clone(),
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -986,7 +988,7 @@ async fn test_consumer_partition_rebalance() {
         &config_b,
         consumer::ConsumerDeps {
             runtime: runtime.clone(),
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -1123,7 +1125,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
                 &config,
                 consumer::ConsumerDeps {
                     runtime: runtime.clone(),
-                    datalogic: test_datalogic(),
+                    exprs: test_exprs(),
                     vars: None,
                     dlq_producer: None,
                     dlq_topic: None,
@@ -1247,7 +1249,7 @@ async fn test_consumer_broker_disconnect_recovery() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic: test_datalogic(),
+            exprs: test_exprs(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -1687,17 +1689,13 @@ async fn assert_no_commits_within(brokers: &str, group_id: &str, topic: &str, se
 /// registry (and with it the channel's in-process dedup store) outlives any
 /// number of consumers started from it, which is what lets a test restart the
 /// consumer without resetting the guard state under test.
-async fn guarded_consumer_app() -> (
-    axum::Router,
-    Arc<orion::runtime::RuntimeHandle>,
-    Arc<datalogic_rs::Engine>,
-) {
+async fn guarded_consumer_app() -> (axum::Router, Arc<orion::runtime::RuntimeHandle>, ExprEngine) {
     let state =
         crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:1")
             .await;
     let runtime = state.runtime.clone();
-    let datalogic = state.datalogic.clone();
-    (orion::server::build_router(state), runtime, datalogic)
+    let exprs = state.exprs.clone();
+    (orion::server::build_router(state), runtime, exprs)
 }
 
 /// An HTTP connector pointing at a closed port, so every workflow that runs
@@ -1768,7 +1766,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
     let channel = "n16-dedup-retry-ch";
     let group_id = format!("n16-dedup-retry-{}", uuid::Uuid::new_v4());
 
-    let (app, runtime, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, exprs) = guarded_consumer_app().await;
     dead_upstream_connector(&app, "n16-dead-retry").await;
     crate::common::create_and_activate_channel_with_config(
         &app,
@@ -1786,7 +1784,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
         &config,
         consumer::ConsumerDeps {
             runtime: runtime.clone(),
-            datalogic: datalogic.clone(),
+            exprs: exprs.clone(),
             vars: None,
             dlq_producer: None,
             dlq_topic: None,
@@ -1813,7 +1811,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
         &config2,
         consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -1852,7 +1850,7 @@ async fn a_rate_limited_record_is_throttled_not_discarded() {
     let channel = "n16-kafka-rl-ch";
     let group_id = format!("n16-kafka-rl-{}", uuid::Uuid::new_v4());
 
-    let (app, runtime, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, exprs) = guarded_consumer_app().await;
     crate::common::create_and_activate_channel_with_config(
         &app,
         channel,
@@ -1867,7 +1865,7 @@ async fn a_rate_limited_record_is_throttled_not_discarded() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -1920,7 +1918,7 @@ async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() 
     let channel = "n16-kafka-bp-ch";
     let group_id = format!("n16-kafka-bp-{}", uuid::Uuid::new_v4());
 
-    let (app, runtime, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, exprs) = guarded_consumer_app().await;
     crate::common::create_and_activate_channel_with_config(
         &app,
         channel,
@@ -1935,7 +1933,7 @@ async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() 
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -1975,7 +1973,7 @@ async fn a_duplicate_record_commits_without_a_dlq_write() {
     let channel = "n16-kafka-dup-ch";
     let group_id = format!("n16-kafka-dup-{}", uuid::Uuid::new_v4());
 
-    let (app, runtime, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, exprs) = guarded_consumer_app().await;
     dead_upstream_connector(&app, "n16-dead-dup").await;
     crate::common::create_and_activate_channel_with_config(
         &app,
@@ -1993,7 +1991,7 @@ async fn a_duplicate_record_commits_without_a_dlq_write() {
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -2053,7 +2051,7 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
     let channel = "n16-kafka-timeout-ch";
     let group_id = format!("n16-kafka-timeout-{}", uuid::Uuid::new_v4());
 
-    let (app, runtime, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, exprs) = guarded_consumer_app().await;
     crate::common::create_connector(
         &app,
         serde_json::json!({
@@ -2103,7 +2101,7 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
         &config,
         consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars: None,
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
@@ -2161,7 +2159,7 @@ async fn a_kafka_message_writes_a_trace_row() {
     let state = crate::common::test_state_with_kafka(config, "127.0.0.1:1").await;
     let traces = state.repos.traces.clone();
     let runtime = state.runtime.clone();
-    let datalogic = state.datalogic.clone();
+    let exprs = state.exprs.clone();
     let persistence_queue = state.trace_persistence_queue.clone();
     let app = orion::server::build_router(state);
 
@@ -2176,7 +2174,7 @@ async fn a_kafka_message_writes_a_trace_row() {
         &guarded_kafka_config(&brokers, topic, channel, &group_id, false),
         consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars: None,
             dlq_producer: None,
             dlq_topic: None,

@@ -12,8 +12,11 @@
 //! This type is deliberately hard to leak from. It implements neither
 //! `Serialize` nor `Clone`, its `Debug` prints names with the values masked,
 //! and the only accessor that yields values is `pub(crate)` and used at
-//! exactly one call site — the `EngineBuilder::with_secrets_json` in
-//! [`crate::engine::operators::with_orion_engine_defaults`].
+//! exactly two call sites, one per engine line: the `Secrets::new` in
+//! [`crate::engine::operators::orion_exprs`], for the process's expression
+//! engine, and the `EngineBuilder::with_secrets_json` in
+//! [`crate::engine::operators::with_orion_engine_defaults`], for the v3
+//! workflow engines.
 
 use std::fmt;
 
@@ -88,8 +91,8 @@ impl ResolvedSecrets {
             .map(|(name, _)| name.as_str())
     }
 
-    /// The one accessor that yields values, for the single hand-off to
-    /// `EngineBuilder::with_secrets_json`.
+    /// The one accessor that yields values, for the two hand-offs: v4's
+    /// `Secrets::new` and v3's `EngineBuilder::with_secrets_json`.
     pub(crate) fn as_json(&self) -> &Value {
         &self.root
     }

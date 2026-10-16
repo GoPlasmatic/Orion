@@ -65,9 +65,10 @@
 //! have no direct test at all, because a guard's contract is what the matrix
 //! does with it.
 
-use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::ExprEngine;
 use serde_json::Value;
 
 use super::ChannelRuntimeConfig;
@@ -274,8 +275,9 @@ pub struct GuardRequest<'a> {
     pub data: &'a Value,
     /// The message metadata, as `validation_logic` sees it.
     pub metadata: &'a Value,
-    /// Compiled-logic evaluator.
-    pub datalogic: &'a datalogic_rs::Engine,
+    /// The process's expression engine, which compiled the channel's
+    /// expressions and evaluates them (I188).
+    pub exprs: &'a ExprEngine,
     /// `Origin` header value, when the transport carries one.
     pub origin: Option<&'a str>,
     /// Default rate-limit bucket key, used when the channel declares no
@@ -486,7 +488,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         check_rate_limit(
             req.channel,
             req.runtime,
-            req.datalogic,
+            req.exprs,
             req.caller_identity,
             req.header,
         )
@@ -498,7 +500,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
             req.runtime,
             req.header,
             req.raw_body,
-            req.datalogic,
+            req.exprs,
             req.auth_backoff,
             req.caller_identity,
         )
@@ -519,7 +521,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         check_principal_rate_limit(
             req.channel,
             req.runtime,
-            req.datalogic,
+            req.exprs,
             req.caller_identity,
             req.header,
             auth_claims.as_ref(),
@@ -554,7 +556,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
             req.runtime,
             req.data,
             guard_metadata,
-            req.datalogic,
+            req.exprs,
         )?;
     }
     let dedup_claim = if set.deduplication {
@@ -575,7 +577,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
             req.data,
             guard_metadata,
             req.runtime,
-            req.datalogic,
+            req.exprs,
         )
         .await
         {
@@ -809,21 +811,30 @@ pub fn effective_timeout_ms(
 }
 
 /// JSONLogic truthiness: false, null, 0, "", and [] are falsy; everything else is truthy.
-pub(crate) fn is_truthy(val: &Value) -> bool {
+///
+/// Read off the evaluated value as 1.12 read the JSON it became
+/// ([`result_json`](crate::engine::operators::result_json)): a number JSON
+/// cannot spell — an infinity or a NaN — was `null` there and is falsy here,
+/// and a datetime, a duration or a tensor was an object and is truthy.
+pub(crate) fn is_truthy(val: &OwnedDataValue) -> bool {
     match val {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(_) => true,
+        OwnedDataValue::Null => false,
+        OwnedDataValue::Bool(b) => *b,
+        OwnedDataValue::Number(n) => {
+            let f = n.as_f64();
+            f.is_finite() && f != 0.0
+        }
+        OwnedDataValue::String(s) => !s.is_empty(),
+        OwnedDataValue::Array(a) => !a.is_empty(),
+        _ => true,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::key_logic_header_paths;
-    use dataflow_rs_v3::datalogic_rs;
+    use dataflow_rs::Expr;
+    use dataflow_rs::expr::ExprEngine;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -1008,11 +1019,11 @@ mod tests {
     struct Runtime {
         parsed_config: ChannelConfig,
         rate_limiter: Option<Arc<dyn crate::channel::RateLimitBackend>>,
-        rate_limit_key_logic: Option<datalogic_rs::Logic>,
+        rate_limit_key_logic: Option<Arc<Expr>>,
         rate_limit_key_headers: Option<Arc<[String]>>,
         principal_rate_limiter: Option<Arc<dyn crate::channel::RateLimitBackend>>,
-        principal_rate_limit_key_logic: Option<datalogic_rs::Logic>,
-        validation_logic: Option<datalogic_rs::Logic>,
+        principal_rate_limit_key_logic: Option<Arc<Expr>>,
+        validation_logic: Option<Arc<Expr>>,
         backpressure_semaphore: Option<Arc<tokio::sync::Semaphore>>,
         dedup_store: Option<Arc<dyn CacheBackend>>,
         response_cache: Option<Arc<dyn CacheBackend>>,
@@ -1072,7 +1083,7 @@ mod tests {
         /// The post-auth quota: its own backend and a required key.
         fn principal_limiter(
             mut self,
-            engine: &datalogic_rs::Engine,
+            engine: &ExprEngine,
             backend: Arc<dyn crate::channel::RateLimitBackend>,
             logic: serde_json::Value,
         ) -> Self {
@@ -1085,13 +1096,16 @@ mod tests {
                     on_backend_error: BackendErrorPolicy::default(),
                 });
             self.principal_rate_limiter = Some(backend);
-            self.principal_rate_limit_key_logic =
-                Some(engine.compile(&logic).expect("test logic compiles"));
+            self.principal_rate_limit_key_logic = Some(Arc::new(
+                engine.compile(&logic).expect("test logic compiles"),
+            ));
             self
         }
 
-        fn key_logic(mut self, engine: &datalogic_rs::Engine, logic: serde_json::Value) -> Self {
-            self.rate_limit_key_logic = Some(engine.compile(&logic).expect("test logic compiles"));
+        fn key_logic(mut self, engine: &ExprEngine, logic: serde_json::Value) -> Self {
+            self.rate_limit_key_logic = Some(Arc::new(
+                engine.compile(&logic).expect("test logic compiles"),
+            ));
             self
         }
 
@@ -1106,8 +1120,10 @@ mod tests {
             self
         }
 
-        fn validation(mut self, engine: &datalogic_rs::Engine, logic: serde_json::Value) -> Self {
-            self.validation_logic = Some(engine.compile(&logic).expect("test logic compiles"));
+        fn validation(mut self, engine: &ExprEngine, logic: serde_json::Value) -> Self {
+            self.validation_logic = Some(Arc::new(
+                engine.compile(&logic).expect("test logic compiles"),
+            ));
             self
         }
 
@@ -1247,8 +1263,81 @@ mod tests {
     const IDEMPOTENCY: HeaderLookup<'static> = &idempotency_lookup;
     const NO_HEADERS: HeaderLookup<'static> = &no_headers;
 
-    fn engine() -> datalogic_rs::Engine {
-        datalogic_rs::Engine::new()
+    /// The process's expression engine as boot builds it with no secrets and
+    /// no budget.
+    fn engine() -> ExprEngine {
+        crate::engine::operators::orion_exprs(&crate::engine::ResolvedSecrets::empty(), 0)
+            .expect("Orion's expression engine builds")
+    }
+
+    /// The two readers that moved off the JSON 1.12 evaluated into each give,
+    /// for every shape of result, what 1.12's reader gave for the JSON that
+    /// result became (`result_json`): `is_truthy` for `validation_logic` and
+    /// `authorization_logic`, `key_text` for both rate-limit keys. The shapes
+    /// the JSON changed are the point: a non-finite number was `null`, and a
+    /// datetime or a duration was a one-key object.
+    #[test]
+    fn the_readers_answer_as_they_did_over_json() {
+        use dataflow_rs::datavalue::{DataDateTime, DataDuration, NumberValue, OwnedDataValue};
+
+        fn truthy_1_12(val: &Value) -> bool {
+            match val {
+                Value::Null => false,
+                Value::Bool(b) => *b,
+                Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+                Value::String(s) => !s.is_empty(),
+                Value::Array(a) => !a.is_empty(),
+                Value::Object(_) => true,
+            }
+        }
+        fn key_1_12(val: Value) -> Result<String, &'static str> {
+            match val {
+                Value::Null => Err("expression resolved to null"),
+                Value::String(s) if s.trim().is_empty() => {
+                    Err("expression resolved to an empty string")
+                }
+                val => Ok(val
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| serde_json::to_string(&val).unwrap_or_default())),
+            }
+        }
+
+        let float = |f: f64| OwnedDataValue::Number(NumberValue::Float(f));
+        let from = |v: Value| OwnedDataValue::from(&v);
+        let values = [
+            OwnedDataValue::Null,
+            OwnedDataValue::Bool(true),
+            OwnedDataValue::Bool(false),
+            from(json!(0)),
+            from(json!(7)),
+            from(json!(-1)),
+            from(json!(u64::MAX)),
+            float(0.0),
+            float(-0.0),
+            float(2.5),
+            float(f64::NAN),
+            float(f64::INFINITY),
+            float(f64::NEG_INFINITY),
+            from(json!("")),
+            from(json!("  ")),
+            from(json!("tenant-a")),
+            from(json!([])),
+            from(json!([0])),
+            from(json!({})),
+            from(json!({"b": 1, "a": [1.5, null, "x"]})),
+            OwnedDataValue::DateTime(DataDateTime::parse("2024-01-15T12:30:45Z").expect("parses")),
+            OwnedDataValue::Duration(DataDuration::parse("3d:4h").expect("parses")),
+        ];
+        for value in values {
+            let json = crate::engine::operators::result_json(&value);
+            assert_eq!(super::is_truthy(&value), truthy_1_12(&json), "{value:?}");
+            assert_eq!(
+                super::rate_limit::key_text(value.clone()),
+                key_1_12(json),
+                "{value:?}"
+            );
+        }
     }
 
     /// One guard request with everything defaulted, so a test names only
@@ -1256,7 +1345,7 @@ mod tests {
     fn request<'a>(
         transport: Transport,
         runtime: &'a Option<Arc<ChannelRuntimeConfig>>,
-        datalogic: &'a datalogic_rs::Engine,
+        exprs: &'a ExprEngine,
         data: &'a Value,
         metadata: &'a Value,
     ) -> GuardRequest<'a> {
@@ -1266,7 +1355,7 @@ mod tests {
             runtime,
             data,
             metadata,
-            datalogic,
+            exprs,
             auth_backoff: None,
             origin: None,
             caller_identity: "10.0.0.1",
@@ -2772,15 +2861,8 @@ mod tests {
         metadata: &serde_json::Value,
         cfg: &crate::channel::ChannelCacheConfig,
     ) -> String {
-        super::response_cache::compute_cache_key(
-            channel,
-            data,
-            metadata,
-            cfg,
-            None,
-            &datalogic_rs::Engine::new(),
-        )
-        .expect("this request must have a cache key")
+        super::response_cache::compute_cache_key(channel, data, metadata, cfg, None, &engine())
+            .expect("this request must have a cache key")
     }
 
     fn meta(
@@ -2985,7 +3067,7 @@ mod tests {
                 &m,
                 &cache_cfg(fields),
                 None,
-                &datalogic_rs::Engine::new(),
+                &engine(),
             )
             .is_none()
         );
@@ -3013,8 +3095,8 @@ mod tests {
     /// invert (#354).
     #[test]
     fn key_logic_takes_precedence_over_cache_key_fields() {
-        let engine = datalogic_rs::Engine::new();
-        let logic = engine
+        let engine = engine();
+        let logic: Expr = engine
             .compile(&serde_json::json!({"var": "data.b"}))
             .expect("compiles");
         let m = meta("POST", serde_json::json!({}), serde_json::json!({}));

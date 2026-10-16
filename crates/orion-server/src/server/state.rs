@@ -1,8 +1,7 @@
-use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use datalogic_rs::Engine as DatalogicEngine;
+use dataflow_rs::expr::ExprEngine;
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::Mutex;
 
@@ -169,7 +168,12 @@ pub struct AppStateInner {
     pub start_time: chrono::DateTime<chrono::Utc>,
     pub metrics_handle: PrometheusHandle,
     pub http_client: reqwest::Client,
-    pub datalogic: Arc<DatalogicEngine>,
+    /// The process's one expression engine (I188): Orion's ten operators,
+    /// `[secrets]` and `engine.ops_budget`, built at boot and kept across
+    /// every reload. The channel guards, channel auth, the Kafka consumer, cron
+    /// and `/validate` compile and evaluate on it. Cheap to clone: a clone
+    /// shares the engine.
+    pub exprs: ExprEngine,
     /// The instance's JWKS cache, built on `http_client` — the client with
     /// `PinnedDnsResolver`. Both verify surfaces (the channel `jwt` auth mode
     /// and the `jwt_verify` task) share it, so a key set is fetched once per

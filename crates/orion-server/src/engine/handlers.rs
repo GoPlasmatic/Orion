@@ -31,6 +31,9 @@ pub struct HandlerDeps<'a> {
     /// into the node (`channel_call`): it needs the target channel's guards
     /// and an engine to run it on, and both come off one load.
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
+    /// The process's expression engine (I188), for `channel_call`: the
+    /// target channel's guards were compiled on it and evaluate on it.
+    pub exprs: dataflow_rs::expr::ExprEngine,
     /// The instance's JWKS cache — `jwt_verify`'s key source, shared with the
     /// channel `jwt` auth mode so both see one issuer rotation at once.
     pub jwks: Arc<crate::jwt::jwks::JwksCache>,
@@ -85,6 +88,7 @@ pub fn build_custom_functions(
         registry,
         client,
         runtime,
+        exprs,
         jwks,
         engine_config,
         query_config,
@@ -111,6 +115,7 @@ pub fn build_custom_functions(
         "channel_call".to_string(),
         Box::new(functions::channel_call::ChannelCallHandler {
             runtime: runtime.clone(),
+            exprs,
             max_call_depth: engine_config.max_channel_call_depth,
             default_timeout_ms: engine_config.default_channel_call_timeout_ms,
         }),

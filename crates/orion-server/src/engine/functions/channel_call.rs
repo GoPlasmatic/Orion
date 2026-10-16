@@ -69,6 +69,9 @@ pub struct ChannelCallHandler {
     /// mid-workflow is a config change the child is entitled to see, and both
     /// halves it does see agree with each other.
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
+    /// The process's expression engine, which compiled the target channel's
+    /// guards and evaluates them on this ingress as on every other (I188).
+    pub exprs: dataflow_rs::expr::ExprEngine,
     pub max_call_depth: u32,
     pub default_timeout_ms: u64,
 }
@@ -262,7 +265,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                 runtime: &target_runtime,
                 data: &call_data,
                 metadata: &child_meta,
-                datalogic: ctx.datalogic(),
+                exprs: &self.exprs,
                 origin: None,
                 caller_identity: &calling_channel,
                 header: &header_lookup,

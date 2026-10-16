@@ -1,7 +1,8 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use dataflow_rs_v3::datalogic_rs;
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::ExprEngine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -988,14 +989,15 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
 
     validate_task_array_shape(req, &mut errors);
 
-    // Orion's custom operators are registered so a condition using them
-    // compiles here exactly as it will on the serving engine.
-    let dl = crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build();
+    // The process's expression engine (I188): Orion's operators, `secret` and
+    // templating mode, as the serving engine has them, so a condition
+    // compiles here exactly as it will there.
+    let exprs = &state.exprs;
 
     validate_tasks(
         &req.tasks,
         req.loop_config.as_ref(),
-        &dl,
+        exprs,
         state,
         functions,
         &mut errors,
@@ -1003,7 +1005,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     )
     .await;
 
-    validate_workflow_condition(&req.condition, &dl, &mut errors);
+    validate_workflow_condition(&req.condition, exprs, &mut errors);
     validate_dataflow_conversion(req, &mut errors);
 
     // Advisory: JSONLogic in a connector-payload field that folds `{"var": ..}`
@@ -1071,7 +1073,7 @@ fn validate_task_array_shape(req: &CreateWorkflowRequest, errors: &mut Vec<Valid
 async fn validate_tasks(
     tasks: &Value,
     loop_config: Option<&Value>,
-    dl: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
     state: &AppState,
     functions: &crate::engine::FunctionRegistry,
     errors: &mut Vec<ValidationIssue>,
@@ -1081,7 +1083,8 @@ async fn validate_tasks(
     let mut written: Vec<String> = Vec::new();
 
     for (path, task) in crate::engine::walk_steps(tasks, loop_config).tasks {
-        let (task_errors, task_warnings) = errors_for_task(&path, task, dl, state, functions).await;
+        let (task_errors, task_warnings) =
+            errors_for_task(&path, task, exprs, state, functions).await;
         errors.extend(task_errors);
         warnings.extend(task_warnings);
 
@@ -1206,7 +1209,7 @@ use crate::definitions::analysis::dataflow::{data_reads, is_written, task_writes
 async fn errors_for_task(
     path_prefix: &str,
     task: &Value,
-    dl: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
     state: &AppState,
     functions: &crate::engine::FunctionRegistry,
 ) -> (Vec<ValidationIssue>, Vec<ValidationIssue>) {
@@ -1247,7 +1250,7 @@ async fn errors_for_task(
     }
 
     if let Some(condition) = task.get("condition")
-        && let Err(e) = dl.compile(condition)
+        && let Err(e) = exprs.compile::<OwnedDataValue>(condition)
     {
         errors.push(ValidationIssue {
             field: format!("{path_prefix}.condition"),
@@ -1281,10 +1284,10 @@ async fn errors_for_task(
 /// Validate workflow-level JSONLogic condition.
 fn validate_workflow_condition(
     condition: &Value,
-    dl: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
     errors: &mut Vec<ValidationIssue>,
 ) {
-    if let Err(e) = dl.compile(condition) {
+    if let Err(e) = exprs.compile::<OwnedDataValue>(condition) {
         errors.push(ValidationIssue {
             field: "condition".to_string(),
             message: format!("Invalid JSONLogic in workflow condition: {e}"),

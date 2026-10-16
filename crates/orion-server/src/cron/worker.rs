@@ -45,7 +45,8 @@ pub struct WorkerDeps {
     pub trace_repo: Arc<dyn TraceSink>,
     pub persistence_queue: crate::queue::TracePersistenceQueue,
     pub global_trace_storage: crate::config::TraceStorageConfig,
-    pub datalogic: Arc<dataflow_rs_v3::datalogic_rs::Engine>,
+    /// The process's expression engine, for the channel guards (I188).
+    pub exprs: dataflow_rs::expr::ExprEngine,
     pub vars: Option<Arc<serde_json::Value>>,
     /// This node's identity: the claimant and the singleton holder.
     pub instance_id: String,
@@ -453,7 +454,7 @@ async fn execute(
         runtime: &Some(runtime.clone()),
         data: &payload,
         metadata: &metadata,
-        datalogic: &deps.datalogic,
+        exprs: &deps.exprs,
         origin: None,
         // The bucket key if a channel somehow declared a rate limit — it
         // cannot, validation refuses it — so this is the stable identity rather

@@ -95,9 +95,9 @@ impl RuntimeHandle {
     /// The handle a node boots with, around generation 0.
     ///
     /// Created before the real engine exists, because the `channel_call`
-    /// handler is registered *on* that engine and holds this handle: the
-    /// placeholder engine bootstrap builds for its datalogic is the same one
-    /// that stands in here until the first real publish.
+    /// handler is registered *on* that engine and holds this handle: an empty
+    /// engine stands in here until the first real publish, which happens
+    /// before anything is served.
     pub fn new(
         engine: Arc<dataflow_rs_v3::Engine>,
         channels: Arc<ChannelSnapshot>,

@@ -236,7 +236,7 @@ pub async fn reload_engine_with_opts(
                     vars: state.vars.as_ref(),
                     connector_registry: &state.connector_registry,
                     cache_pool: &state.caches.cache_pool,
-                    datalogic: &state.datalogic,
+                    exprs: &state.exprs,
                     jwks: &state.jwks,
                     http_client: &state.http_client,
                     allow_private_token_urls: state.config.oauth2_login.allow_private_token_urls,
@@ -468,7 +468,7 @@ fn try_start_ingest(
         channels,
         crate::bootstrap::IngestDeps {
             runtime: state.runtime.clone(),
-            datalogic: state.datalogic.clone(),
+            exprs: state.exprs.clone(),
             vars: state.vars.clone(),
             kafka_producer: state.kafka.producer.clone(),
             instance_id: state

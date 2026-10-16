@@ -4,9 +4,10 @@
 //! and the more delicate one — what goes into the hash decides which requests
 //! are allowed to share an answer.
 
-use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
+use dataflow_rs::Expr;
+use dataflow_rs::expr::ExprEngine;
 use serde_json::Value;
 
 use super::ChannelRuntimeConfig;
@@ -89,8 +90,8 @@ pub(super) fn compute_cache_key(
     data: &Value,
     metadata: &Value,
     cache_cfg: &crate::channel::ChannelCacheConfig,
-    key_logic: Option<&datalogic_rs::Logic>,
-    datalogic: &datalogic_rs::Engine,
+    key_logic: Option<&Expr>,
+    exprs: &ExprEngine,
 ) -> Option<String> {
     // `key_logic` replaces the whole payload-derived half of the key rather
     // than adding to it: an expression that says what varies the response is a
@@ -131,11 +132,10 @@ pub(super) fn compute_cache_key(
         // No usable key means bypass, exactly as an unresolvable
         // `cache_key_fields` does: a key that cannot be computed must not
         // collapse onto one shared entry and serve one caller's body to the
-        // next.
-        let key = datalogic
-            .session()
-            .eval_into::<Value, _>(compiled, &context)
-            .ok()?;
+        // next. The key is hashed as the JSON 1.12 hashed (`result_json`), so
+        // every entry stored before this build is still found by its key.
+        let key = exprs.eval(compiled, &context).ok()?;
+        let key = crate::engine::operators::result_json(&key.value);
         if key.is_null() {
             return None;
         }
@@ -252,7 +252,7 @@ pub(super) async fn check_response_cache(
     data: &Value,
     metadata: &Value,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
-    datalogic: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
 ) -> CacheLookup {
     let Some(cfg) = channel_config else {
         return CacheLookup::Miss(None);
@@ -271,8 +271,8 @@ pub(super) async fn check_response_cache(
         data,
         metadata,
         cache_cfg,
-        cfg.cache_key_logic.as_ref(),
-        datalogic,
+        cfg.cache_key_logic.as_deref(),
+        exprs,
     ) else {
         // The key could not be computed — every declared field absent from this
         // payload, or a `key_logic` that produced nothing. Any key built anyway

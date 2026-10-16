@@ -676,6 +676,39 @@ async fn test_validate_workflow_with_task_condition() {
     assert_eq!(body["data"]["valid"], true);
 }
 
+/// I188: `/validate` compiles a condition on the process's expression engine,
+/// in templating mode as activation's engine is, where a multi-key object is a
+/// template emitting that object rather than an invalid expression. The bare
+/// engine it used before refused one ("Invalid JSONLogic in … condition") that
+/// activation compiled and ran, so `valid: false` named a condition the
+/// serving engine accepts.
+#[tokio::test]
+async fn validate_compiles_a_condition_as_the_serving_engine_does() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/validate",
+            Some(json!({
+                "name": "Templated Condition",
+                "condition": {"a": {"var": "data.amount"}, "b": 2},
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Task with a templated condition",
+                    "condition": {"!!": [{"a": 1, "b": 2}]},
+                    "function": {"name": "log", "input": {"message": "test"}}
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["valid"], true, "{body}");
+}
+
 #[tokio::test]
 async fn test_validate_workflow_with_connector_warning() {
     let app = common::test_app().await;

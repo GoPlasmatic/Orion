@@ -8,9 +8,11 @@
 //! expressions, so they compose inside conditions, `map` logic, `body_logic`
 //! — anywhere JSONLogic runs. They are Orion's
 //! vocabulary, not datalogic-rs's: the implementations live here and enter
-//! each engine through `dataflow_rs`'s `with_datalogic_operator` passthrough
-//! (or `datalogic_rs`'s own `add_operator` for the engines Orion builds
-//! directly). Built-in names always win over custom registrations, so these
+//! each engine through dataflow-rs 4's `ExprEngineBuilder` ([`orion_exprs`],
+//! the one expression engine the process builds at boot), through dataflow-rs
+//! 3's `with_datalogic_operator` passthrough for the v3 workflow engines still
+//! serving, or through `datalogic_rs`'s own `add_operator` for the bare engines
+//! Orion builds directly. Built-in names always win over custom registrations, so these
 //! live in namespaces no JSONLogic built-in uses; the operator vocabulary
 //! test pins each one against the live engine, which would also surface any
 //! future upstream collision.
@@ -36,43 +38,48 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::{ExprEngine, OperatorInfo, Secrets};
 use dataflow_rs_v3::datalogic_rs::operator::EvalContext;
 use dataflow_rs_v3::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
 
 /// Every JSONLogic operator this build evaluates — datalogic-rs's core and
 /// extension sets (reached through dataflow-rs's `all-operators` feature) plus
-/// Orion's own registrations above.
+/// Orion's own registrations above and the engine's `secret`.
 ///
 /// Authoring-time checks read this to tell an operator apart from a data key:
 /// the engine runs datalogic in templating mode, where an unknown operator is
 /// not an error but an object that echoes back as literal data, so membership
 /// here is the only thing separating a live call from inert JSON.
 ///
-/// This used to be a hand-maintained list of 75 names. dataflow-rs 3.7 asks a
-/// built engine instead, and 5.3 backs that with datalogic's own opcode table
+/// This used to be a hand-maintained list of 75 names. dataflow-rs 3.7 asked a
+/// built engine instead, and 5.3 backed that with datalogic's own opcode table
 /// — so the vocabulary is derived from what this build actually dispatches
 /// rather than from what someone remembered to type. The distinction is not
 /// academic: enabling an extension family turns names on, and any crate in the
 /// dependency graph enabling a family Orion exposes no feature for would make
 /// operators live that a typed list would have called typos.
 ///
-/// Built once and cached. The engine is constructed only for this question —
-/// no workflows, no handlers — and `with_orion_engine_defaults` is what puts
-/// Orion's own registrations in it, so the answer covers all three sources.
+/// Read from [`ExprEngine::operators`] on an [`orion_exprs`] engine, which
+/// lists the built-ins this build's datalogic reports, Orion's ten and
+/// `secret` — the same set dataflow-rs 3's `Engine::operator_names` gave
+/// (`operator_names_equal_the_v3_engines` holds the two together). The names
+/// do not depend on the secrets or the budget, so the engine asked is one with
+/// neither. Built once and cached.
 pub fn operator_names() -> &'static BTreeSet<String> {
     static NAMES: OnceLock<BTreeSet<String>> = OnceLock::new();
-    NAMES.get_or_init(|| {
-        match with_orion_engine_defaults(
-            dataflow_rs_v3::Engine::builder(),
-            &crate::engine::ResolvedSecrets::empty(),
-        )
-        .build()
-        {
-            Ok(engine) => engine.operator_names().map(String::from).collect(),
-            // Unreachable in practice — this builder has nothing to fail on —
-            // but a lint is the wrong place to panic. An empty vocabulary
-            // makes `is_operator` answer `false` throughout, which downgrades
-            // the advisory to silence rather than rejecting valid workflows.
+    NAMES.get_or_init(
+        || match orion_exprs(&crate::engine::ResolvedSecrets::empty(), 0) {
+            Ok(exprs) => exprs
+                .operators()
+                .iter()
+                .map(|op| op.name.to_string())
+                .collect(),
+            // Unreachable in practice — Orion's names are distinct and none is
+            // a built-in, which the tests below pin — but a lint is the wrong
+            // place to panic. An empty vocabulary makes `is_operator` answer
+            // `false` throughout, which downgrades the advisory to silence
+            // rather than rejecting valid workflows.
             Err(e) => {
                 tracing::error!(
                     error = %e,
@@ -81,8 +88,8 @@ pub fn operator_names() -> &'static BTreeSet<String> {
                 );
                 BTreeSet::new()
             }
-        }
-    })
+        },
+    )
 }
 
 /// The encoding table and the MAC helpers live in [`crate::crypto`] — a
@@ -102,8 +109,10 @@ pub fn is_operator(name: &str) -> bool {
 /// list is what the *upgrade* surfaces need: `preflight` and `lint` report a
 /// stored template key that names one of these (`logic.tensor_operator_key`),
 /// and that report has to say which names changed meaning in 1.8, not which
-/// names are operators. The unit test below pins every entry to the live
-/// engine, so the list cannot name an operator the build does not compile.
+/// names are operators. The unit tests below pin the list to the
+/// [`Family::Tensor`](dataflow_rs::expr::Family::Tensor) rows of
+/// [`orion_exprs`]'s [`ExprEngine::operators`], so it can neither name an
+/// operator the build does not compile nor miss one the family adds.
 ///
 /// A third of these are ordinary JSON keys — `shape`, `full`, `cast`, `pad`,
 /// `crop`, `concat`, `stack` — which is why the family is documented with the
@@ -553,6 +562,14 @@ enum OrionOperator {
     Join(Join),
 }
 
+impl OrionOperator {
+    /// Whether the same arguments always give the same result: every one but
+    /// `random`, whose whole job is a fresh value per evaluation (#260).
+    fn deterministic(&self) -> bool {
+        !matches!(self, OrionOperator::Random(_))
+    }
+}
+
 impl CustomOperator for OrionOperator {
     fn evaluate<'a>(
         &self,
@@ -600,6 +617,58 @@ pub fn with_orion_engine_defaults(
     builder.with_error_context_path(crate::engine::ERROR_CONTEXT_PATH)
 }
 
+/// The one expression engine the process evaluates with outside a workflow
+/// (I188): channel guards, channel auth, the Kafka consumer and the admin
+/// `/validate` endpoint compile and evaluate on it. Built once at boot, held on
+/// `AppState`, and kept across every reload.
+///
+/// It carries what [`with_orion_engine_defaults`] gives a dataflow-rs 3
+/// engine, so an expression means the same on either: Orion's ten operators,
+/// the nine pure ones declared deterministic and `random` left at the
+/// default (not deterministic), the engine's secret store, and the operation
+/// budget — `0` meaning none, as [`with_ops_budget`] reads it. The failed-task
+/// error context is a workflow engine's setting and has no place here.
+///
+/// # Errors
+///
+/// What [`ExprEngineBuilder::build`](dataflow_rs::expr::ExprEngineBuilder::build)
+/// refuses — an operator registered twice or named like a built-in, which the
+/// tests below rule out — and a store that is not an object, which
+/// [`ResolvedSecrets`](crate::engine::ResolvedSecrets) never is.
+pub fn orion_exprs(
+    secrets: &crate::engine::ResolvedSecrets,
+    ops_budget: u64,
+) -> dataflow_rs::Result<ExprEngine> {
+    let mut builder = ExprEngine::builder();
+    for (name, op) in all() {
+        builder = if op.deterministic() {
+            builder.operator_with(OperatorInfo::custom(name).deterministic(true), op)
+        } else {
+            builder.operator(name, op)
+        };
+    }
+    builder = builder.secrets(Secrets::new(OwnedDataValue::from(secrets.as_json()))?);
+    // `0` means "do not set a ceiling", for the reason `with_ops_budget` gives.
+    if ops_budget > 0 {
+        builder = builder.ops_budget(ops_budget);
+    }
+    builder.build()
+}
+
+/// An expression's result as the `serde_json::Value` dataflow-rs 3 handed back
+/// for it (`session().eval_into::<Value>()`), for the readers that act on that
+/// JSON: a rate-limit key's text and a response-cache key's bytes.
+///
+/// Built by datalogic's own conversion over the value's arena view, the one
+/// `eval_into` used, so it is that JSON exactly: a datetime is its
+/// `{"datetime": …}` sentinel and a non-finite number is `null`.
+pub(crate) fn result_json(value: &OwnedDataValue) -> serde_json::Value {
+    let arena = datalogic::bumpalo::Bump::new();
+    <serde_json::Value as datalogic::FromDataValue>::from_arena(&value.to_arena(&arena))
+        // Infallible for this output: the conversion only walks the tree.
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Bound every JSONLogic evaluation the engine performs to `ops_budget`
 /// operations, or leave it unbounded when `ops_budget` is `0`.
 ///
@@ -632,17 +701,17 @@ pub fn with_ops_budget(
 /// on the engines *it* builds, and its implementation is crate-private. So an
 /// engine built this way refuses `{"secret": …}` at compile.
 ///
-/// **This is no longer how the serving instance builds its channel-guard
-/// engine.** Secrets are start-time config, resolved before any channel loads,
-/// so there was no reason a `validation_logic` should see fewer of them than a
-/// workflow does — and the way to fix it was not to mirror the operator here
-/// but to borrow an engine that already has it: `bootstrap` builds a
-/// dataflow-rs engine over the real store and keeps its
-/// [`datalogic`](dataflow_rs_v3::Engine::datalogic). One implementation, so the
-/// two surfaces cannot disagree about what a secret name resolves to.
+/// **This is not how the serving instance builds its expression engine.**
+/// Secrets are start-time config, resolved before any channel loads, so there
+/// is no reason a `validation_logic` should see fewer of them than a workflow
+/// does: the guards, auth, the Kafka consumer and `/validate` run on
+/// [`orion_exprs`], whose `secret` is dataflow-rs's own operator over the real
+/// store. One implementation, so the surfaces cannot disagree about what a
+/// secret name resolves to.
 ///
-/// What is left for this function is the engines with no store to offer —
-/// the loader's compile parity check, and `operator_names`.
+/// What is left for this function is the bare engines with no store to offer:
+/// the authoring-time compile checks, and the model and analysis paths that
+/// have not moved to [`orion_exprs`] yet.
 pub fn add_to_datalogic(mut builder: datalogic::EngineBuilder) -> datalogic::EngineBuilder {
     for (name, op) in all() {
         builder = builder.add_operator(name, op);
@@ -885,6 +954,250 @@ mod tests {
     fn encoding_null_is_an_error_not_the_string_null() {
         let err = eval(json!({"base64_encode": [{"var": "data.absent"}]})).expect_err("test");
         assert!(err.contains("null"), "{err}");
+    }
+
+    // ---- The process's expression engine (I188) -------------------------
+
+    use crate::engine::ResolvedSecrets;
+    use dataflow_rs::expr::Family;
+
+    /// The ten names, in registration order: the table `all()` is.
+    const ORION_OPERATORS: [&str; 10] = [
+        "base64_encode",
+        "base64_decode",
+        "base64url_encode",
+        "base64url_decode",
+        "hex_encode",
+        "hex_decode",
+        "random",
+        "url_encode",
+        "url_decode",
+        "join",
+    ];
+
+    fn exprs() -> ExprEngine {
+        orion_exprs(&ResolvedSecrets::empty(), 0).expect("Orion's expression engine builds")
+    }
+
+    /// A dataflow-rs 3 engine as 1.12 built its placeholder: Orion's defaults
+    /// over `secrets`, then `ops_budget`.
+    fn v3_engine(secrets: &ResolvedSecrets, ops_budget: u64) -> dataflow_rs_v3::Engine {
+        with_ops_budget(
+            with_orion_engine_defaults(dataflow_rs_v3::Engine::builder(), secrets),
+            ops_budget,
+        )
+        .build()
+        .expect("an engine with no workflows builds")
+    }
+
+    /// `logic` over `context` on the process's engine, as the JSON 1.12 read.
+    fn on_v4(
+        exprs: &ExprEngine,
+        logic: &serde_json::Value,
+        context: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let expr = exprs
+            .compile::<OwnedDataValue>(logic)
+            .map_err(|e| e.to_string())?;
+        exprs
+            .eval(&expr, context)
+            .map(|evaluated| result_json(&evaluated.value))
+            .map_err(|e| e.to_string())
+    }
+
+    /// `logic` over `context` the way 1.12's guards evaluated it: on the v3
+    /// engine's datalogic, `compile` then `session().eval_into::<Value>()`.
+    fn on_v3(
+        engine: &dataflow_rs_v3::Engine,
+        logic: &serde_json::Value,
+        context: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let dl = engine.datalogic();
+        let compiled = dl.compile(logic).map_err(|e| e.to_string())?;
+        dl.session()
+            .eval_into::<serde_json::Value, _>(&compiled, context)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn orion_exprs_lists_the_ten_operators() {
+        let exprs = exprs();
+        let custom: Vec<&OperatorInfo> = exprs
+            .operators()
+            .iter()
+            .filter(|op| op.family == Family::Custom)
+            .collect();
+        let names: Vec<&str> = custom.iter().map(|op| &*op.name).collect();
+        assert_eq!(names, ORION_OPERATORS, "the ten, in registration order");
+        assert_eq!(
+            names,
+            all().map(|(name, _)| name).collect::<Vec<_>>(),
+            "and they are the table's"
+        );
+        for op in custom {
+            assert_eq!(
+                op.deterministic,
+                op.name != "random",
+                "`{}`: only `random` gives a fresh value per evaluation",
+                op.name
+            );
+            assert!(!op.scoping, "`{}` binds no element", op.name);
+        }
+    }
+
+    #[test]
+    fn operator_names_equal_the_v3_engines() {
+        let v3: BTreeSet<String> = v3_engine(&ResolvedSecrets::empty(), 0)
+            .operator_names()
+            .map(String::from)
+            .collect();
+        let exprs = exprs();
+        let v4: BTreeSet<String> = exprs
+            .operators()
+            .iter()
+            .map(|op| op.name.to_string())
+            .collect();
+        assert_eq!(exprs.operators().len(), v4.len(), "no name listed twice");
+        assert_eq!(v4, v3, "the vocabulary 1.12's placeholder engine reported");
+        assert_eq!(operator_names(), &v3, "and the one `operator_names` serves");
+    }
+
+    #[test]
+    fn tensor_operators_are_the_tensor_family() {
+        let exprs = exprs();
+        let family: BTreeSet<&str> = exprs
+            .operators()
+            .iter()
+            .filter(|op| op.family == Family::Tensor)
+            .map(|op| &*op.name)
+            .collect();
+        let listed: BTreeSet<&str> = TENSOR_OPERATORS.into_iter().collect();
+        assert_eq!(listed.len(), TENSOR_OPERATORS.len(), "no name listed twice");
+        assert_eq!(listed, family);
+    }
+
+    /// Each of the ten, over the same arguments, gives the same JSON or the
+    /// same error text on the process's engine as on a v3 engine through
+    /// `with_orion_engine_defaults`. `random` is held to its degenerate range
+    /// and its refusals, the only answers that do not draw.
+    #[test]
+    fn every_operator_evaluates_alike_on_both_engines() {
+        let context = json!({
+            "data": {"s": "Widget", "n": 4, "obj": {"a": 1, "b": "x"}, "xs": ["a", "", "b"]},
+            "metadata": {},
+            "temp_data": {},
+        });
+        let cases = [
+            json!({"base64_encode": ["hello world"]}),
+            json!({"base64_encode": [{"var": "data.s"}]}),
+            json!({"base64_encode": [42]}),
+            json!({"base64_encode": [{"var": "data.obj"}]}),
+            json!({"base64_encode": [{"var": "data.absent"}]}),
+            json!({"base64_encode": []}),
+            json!({"base64_decode": ["aGVsbG8gd29ybGQ="]}),
+            json!({"base64_decode": ["aGk"]}),
+            json!({"base64_decode": ["!!!"]}),
+            json!({"base64_decode": ["//4="]}),
+            json!({"base64_decode": [42]}),
+            json!({"base64url_encode": ["sign?me>"]}),
+            json!({"base64url_decode": ["c2lnbj9tZT4"]}),
+            json!({"base64url_decode": ["+/"]}),
+            json!({"hex_encode": [{"var": "data.s"}]}),
+            json!({"hex_decode": ["68656c6c6f"]}),
+            json!({"hex_decode": ["zz"]}),
+            json!({"url_encode": ["a b+c&d#e"]}),
+            json!({"url_encode": [{"var": "data.n"}]}),
+            json!({"url_encode": [{"var": "data.nope"}]}),
+            json!({"url_decode": ["a%20b+c"]}),
+            json!({"url_decode": ["%ZZ"]}),
+            json!({"join": [{"var": "data.xs"}, ", "]}),
+            json!({"join": [[1, null, true, {"k": 1}], "|"]}),
+            json!({"join": ["not-an-array", "-"]}),
+            json!({"join": [["a"]]}),
+            json!({"random": ["int", 5, 5]}),
+            json!({"random": ["melt"]}),
+            json!({"random": ["uuid", "v9"]}),
+            json!({"random": ["int", 9, 3]}),
+            json!({"random": ["digits", 0]}),
+            json!({"random": ["string", 8, "ABBA"]}),
+            json!({"random": []}),
+        ];
+        let covered: BTreeSet<&str> = cases
+            .iter()
+            .filter_map(|case| case.as_object()?.keys().next().map(String::as_str))
+            .collect();
+        assert_eq!(
+            covered,
+            ORION_OPERATORS.into_iter().collect::<BTreeSet<_>>(),
+            "every operator has a case"
+        );
+
+        let v4 = exprs();
+        let v3 = v3_engine(&ResolvedSecrets::empty(), 0);
+        let (mut answered, mut refused) = (0, 0);
+        for logic in &cases {
+            let got = on_v4(&v4, logic, &context);
+            if got.is_ok() {
+                answered += 1;
+            } else {
+                refused += 1;
+            }
+            assert_eq!(got, on_v3(&v3, logic, &context), "{logic}");
+        }
+        assert!(answered > 0 && refused > 0, "both arms are exercised");
+        assert_eq!(
+            on_v4(
+                &v4,
+                &json!({"base64_encode": [{"var": "data.s"}]}),
+                &context
+            ),
+            Ok(json!("V2lkZ2V0"))
+        );
+    }
+
+    /// The engine's store and its ceiling, each as a v3 engine built over the
+    /// same configuration reads them.
+    #[test]
+    fn orion_exprs_reads_its_secrets_and_holds_its_budget() {
+        let mut values = serde_json::Map::new();
+        values.insert("partner_hmac".into(), json!("hmac-value-1a2b"));
+        let secrets = ResolvedSecrets::from_values(values);
+        let v4 = orion_exprs(&secrets, 0).expect("builds");
+        let v3 = v3_engine(&secrets, 0);
+        let empty = json!({});
+        for logic in [
+            json!({"secret": "partner_hmac"}),
+            json!({"==": [{"secret": "partner_hmac"}, "hmac-value-1a2b"]}),
+            json!({"secret": "undeclared"}),
+            json!({"secret": ""}),
+            json!({"secret": 7}),
+        ] {
+            assert_eq!(
+                on_v4(&v4, &logic, &empty),
+                on_v3(&v3, &logic, &empty),
+                "{logic}"
+            );
+        }
+        assert_eq!(
+            on_v4(&v4, &json!({"secret": "partner_hmac"}), &empty),
+            Ok(json!("hmac-value-1a2b"))
+        );
+
+        let heavy = json!({"map": [{"var": "data.xs"}, {"+": [{"var": ""}, 1]}]});
+        let context = json!({"data": {"xs": (0..100).collect::<Vec<u32>>()}});
+        let bounded = orion_exprs(&ResolvedSecrets::empty(), 10).expect("builds");
+        let expr = bounded.compile::<OwnedDataValue>(&heavy).expect("compiles");
+        let err = bounded
+            .eval(&expr, &context)
+            .expect_err("crosses the ceiling");
+        assert_eq!(err.kind(), &dataflow_rs::run::ErrorKind::Budget);
+        assert_eq!(
+            Err(err.to_string()),
+            on_v3(&v3_engine(&ResolvedSecrets::empty(), 10), &heavy, &context),
+            "the same ceiling, crossed at the same operation"
+        );
+        // `0` sets none.
+        assert!(on_v4(&exprs(), &heavy, &context).is_ok());
     }
 }
 

@@ -319,7 +319,7 @@ pub(crate) async fn dynamic_handler(
         runtime: &channel_runtime,
         data: &req.data,
         metadata: &metadata,
-        datalogic: &state.datalogic,
+        exprs: &state.exprs,
         origin: headers.get("origin").and_then(|v| v.to_str().ok()),
         caller_identity: &client_ip,
         // The HTTP transports are the two that present a credential (S12).

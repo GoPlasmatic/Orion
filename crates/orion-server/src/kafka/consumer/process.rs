@@ -267,7 +267,7 @@ async fn process_one_kafka_message(
         runtime: &channel_runtime,
         data: &data,
         metadata: &metadata,
-        datalogic: &ctx.datalogic,
+        exprs: &ctx.exprs,
         origin: None,
         // A Kafka channel consumes one topic, so the topic is a stable,
         // bounded identity: a channel's limit is a throughput cap on its

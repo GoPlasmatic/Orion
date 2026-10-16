@@ -3,9 +3,10 @@
 //! Split out of `guards` as one concept: the limiter call and the key
 //! derivation change together and nothing else reads either.
 
-use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::ExprEngine;
 use serde_json::{Value, json};
 
 use super::ChannelRuntimeConfig;
@@ -28,7 +29,7 @@ use crate::metrics;
 pub(super) async fn check_rate_limit(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
-    datalogic: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
     caller_identity: &str,
     header: HeaderLookup<'_>,
 ) -> Result<(), OrionError> {
@@ -69,10 +70,7 @@ pub(super) async fn check_rate_limit(
             metrics::record_rate_limit_key_unavailable(channel);
             OrionError::RateLimitKeyUnavailable("Too many requests".to_string())
         };
-        match datalogic
-            .session()
-            .eval_into::<serde_json::Value, _>(compiled, &context)
-        {
+        match exprs.eval(compiled, &context) {
             // A missing path resolves to `null` in datalogic 5 rather than
             // erroring, and an absent header is exactly that. Serializing it
             // would make the key the literal string `"null"` for *every*
@@ -81,15 +79,8 @@ pub(super) async fn check_rate_limit(
             // nothing. A key that resolved to nothing has not been computed,
             // so it takes the same path as an evaluation error. An
             // all-whitespace string is the same collapse by a different route
-            // (a header present but empty).
-            Ok(Value::Null) => return Err(unavailable("expression resolved to null")),
-            Ok(Value::String(s)) if s.trim().is_empty() => {
-                return Err(unavailable("expression resolved to an empty string"));
-            }
-            Ok(val) => val
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| serde_json::to_string(&val).unwrap_or_default()),
+            // (a header present but empty). `key_text` reads both.
+            Ok(evaluated) => key_text(evaluated.value.into_owned()).map_err(unavailable)?,
             Err(e) => {
                 let err = unavailable(&format!("evaluation failed: {e}"));
                 return Err(err);
@@ -139,6 +130,24 @@ pub(super) async fn check_rate_limit(
                 }
             }
         }
+    }
+}
+
+/// The bucket key an evaluated `key_logic` names, read as 1.12 read the JSON
+/// the expression gave ([`result_json`](crate::engine::operators::result_json)):
+/// `null` — a number JSON cannot spell included, which it was — and an
+/// all-whitespace string are no key, and say which; a string is itself;
+/// anything else is its compact JSON.
+pub(super) fn key_text(value: OwnedDataValue) -> Result<String, &'static str> {
+    match value {
+        OwnedDataValue::String(s) if s.trim().is_empty() => {
+            Err("expression resolved to an empty string")
+        }
+        OwnedDataValue::String(s) => Ok(s),
+        other => match crate::engine::operators::result_json(&other) {
+            Value::Null => Err("expression resolved to null"),
+            json => Ok(serde_json::to_string(&json).unwrap_or_default()),
+        },
     }
 }
 
@@ -264,7 +273,7 @@ pub(crate) fn key_logic_header_paths(logic: &Value) -> Vec<String> {
 pub(super) async fn check_principal_rate_limit(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
-    datalogic: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
     caller_identity: &str,
     header: HeaderLookup<'_>,
     claims: Option<&Value>,
@@ -299,18 +308,8 @@ pub(super) async fn check_principal_rate_limit(
         metrics::record_rate_limit_key_unavailable(channel);
         OrionError::RateLimitKeyUnavailable("Too many requests".to_string())
     };
-    let key = match datalogic
-        .session()
-        .eval_into::<Value, _>(compiled, &context)
-    {
-        Ok(Value::Null) => return Err(unavailable("expression resolved to null")),
-        Ok(Value::String(s)) if s.trim().is_empty() => {
-            return Err(unavailable("expression resolved to an empty string"));
-        }
-        Ok(val) => val
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| serde_json::to_string(&val).unwrap_or_default()),
+    let key = match exprs.eval(compiled, &context) {
+        Ok(evaluated) => key_text(evaluated.value.into_owned()).map_err(unavailable)?,
         Err(e) => return Err(unavailable(&format!("evaluation failed: {e}"))),
     };
 

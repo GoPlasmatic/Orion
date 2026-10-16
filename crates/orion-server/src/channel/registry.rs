@@ -1,8 +1,8 @@
-use dataflow_rs_v3::datalogic_rs;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use datalogic_rs::{Engine as DatalogicEngine, Logic};
+use dataflow_rs::Expr;
+use dataflow_rs::expr::ExprEngine;
 use tokio::sync::Semaphore;
 
 use super::config::ChannelConfig;
@@ -140,23 +140,23 @@ pub struct ChannelRuntimeConfig {
     /// window in cluster mode.
     pub rate_limiter: Option<Arc<dyn RateLimitBackend>>,
     /// Pre-compiled JSONLogic expression for computing the rate limit key.
-    pub rate_limit_key_logic: Option<Logic>,
+    pub rate_limit_key_logic: Option<Arc<Expr>>,
     /// The post-authentication limiter, built from
     /// `parsed_config.principal_rate_limit`. A separate backend from
     /// [`Self::rate_limiter`] so the two counts never share a bucket.
     pub principal_rate_limiter: Option<Arc<dyn RateLimitBackend>>,
     /// Compiled `principal_rate_limit.key_logic`. Always `Some` when
     /// [`Self::principal_rate_limiter`] is — the key is required there.
-    pub principal_rate_limit_key_logic: Option<Logic>,
+    pub principal_rate_limit_key_logic: Option<Arc<Expr>>,
     /// Compiled `cache.key_logic`, when the channel sets one.
-    pub cache_key_logic: Option<Logic>,
+    pub cache_key_logic: Option<Arc<Expr>>,
     /// Extra header names `rate_limit.key_logic` may read, lowercased once at
     /// load so the request path never allocates to normalize them. `None` means
     /// the built-in set only.
     pub rate_limit_key_headers: Option<Arc<[String]>>,
     /// Pre-compiled JSONLogic expression for input validation.
     /// Evaluated against request data — truthy = pass, falsy = 400 reject.
-    pub validation_logic: Option<Logic>,
+    pub validation_logic: Option<Arc<Expr>>,
     /// Per-channel concurrency limiter for backpressure.
     /// Limits max in-flight requests — returns 503 when exhausted.
     pub backpressure_semaphore: Option<Arc<Semaphore>>,
@@ -288,9 +288,9 @@ impl ChannelRow {
 /// products of three of them. The three that are absent are absent
 /// deliberately:
 ///
-/// - **`datalogic`** — one `DatalogicEngine` is built at boot and lives on
+/// - **`exprs`** — one `ExprEngine` is built at boot and lives on
 ///   `AppState` for the life of the process. Nothing rebuilds or replaces it,
-///   so a compiled `Logic` carried over a reload was compiled by the same
+///   so a compiled `Expr` carried over a reload was compiled by the same
 ///   engine that would compile its replacement.
 /// - **`cache_pool`** — likewise a process singleton, and its mutations are
 ///   evictions (`evict_pool` / `evict_all_pools`), not replacements. An
@@ -308,7 +308,7 @@ impl ChannelRow {
 /// - **`cluster_redis`** — held by the registry itself, fixed at construction.
 ///
 /// So the obligation this key places on the rest of the process is: keep the
-/// datalogic engine and the cache pool process-singletons, and never evict a
+/// expression engine and the cache pool process-singletons, and never evict a
 /// pool without loading connectors.
 #[derive(Clone, PartialEq)]
 struct DepsFingerprint {
@@ -540,7 +540,9 @@ pub struct ReloadDeps<'a> {
     pub vars: Option<&'a std::sync::Arc<serde_json::Value>>,
     pub connector_registry: &'a ConnectorRegistry,
     pub cache_pool: &'a CachePool,
-    pub datalogic: &'a DatalogicEngine,
+    /// The process's expression engine, which compiles every channel
+    /// expression (I188).
+    pub exprs: &'a ExprEngine,
     /// The instance's JWKS cache, for `auth.mode = "jwt"` channels.
     pub jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
     /// The shared outbound client, for a channel's `oauth2_login` code
@@ -567,9 +569,9 @@ struct RuntimeDeps<'a> {
     vars: Option<&'a std::sync::Arc<serde_json::Value>>,
     connector_registry: &'a ConnectorRegistry,
     cache_pool: &'a CachePool,
-    datalogic: &'a DatalogicEngine,
+    exprs: &'a ExprEngine,
     /// The instance's JWKS cache, for `auth.mode = "jwt"` channels. Like
-    /// `datalogic` and `cache_pool` it is a process singleton, so a carried-over
+    /// `exprs` and `cache_pool` it is a process singleton, so a carried-over
     /// `ChannelRuntimeConfig` holding a compiled verifier built from it stays
     /// valid — see [`DepsFingerprint`].
     jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
@@ -954,7 +956,7 @@ impl ChannelLoader {
             .map(|logic| {
                 refuse_multi_key_object(logic, "rate_limit.key_logic")
                     .map_err(|e| issue(e.clone()))?;
-                deps.datalogic.compile(logic).map_err(|e| {
+                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
                         error = %e,
@@ -976,7 +978,7 @@ impl ChannelLoader {
             .map(|logic| {
                 refuse_multi_key_object(logic, "principal_rate_limit.key_logic")
                     .map_err(|e| issue(e.clone()))?;
-                deps.datalogic.compile(logic).map_err(|e| {
+                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
                         error = %e,
@@ -1006,7 +1008,7 @@ impl ChannelLoader {
             .and_then(|c| c.key_logic.as_ref())
             .map(|logic| {
                 refuse_multi_key_object(logic, "cache.key_logic").map_err(|e| issue(e.clone()))?;
-                deps.datalogic.compile(logic).map_err(|e| {
+                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
                         error = %e,
@@ -1074,7 +1076,7 @@ impl ChannelLoader {
             .as_ref()
             .map(|logic| {
                 refuse_multi_key_object(logic, "validation_logic").map_err(|e| issue(e.clone()))?;
-                deps.datalogic.compile(logic).map_err(|e| {
+                deps.exprs.compile(logic).map(Arc::new).map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
                         error = %e,
@@ -1141,20 +1143,16 @@ impl ChannelLoader {
         // worst possible reading of the operator's intent.
         let auth = match parsed_config.auth.as_ref() {
             Some(cfg) => Some(
-                crate::channel::auth::CompiledAuth::compile(
-                    cfg,
-                    Some(deps.datalogic),
-                    Some(deps.jwks),
-                )
-                .await
-                .map_err(|e| {
-                    tracing::error!(
-                        channel = %channel.name,
-                        error = %e,
-                        "Refusing to load channel: auth config cannot be compiled"
-                    );
-                    issue(format!("auth: {e}"))
-                })?,
+                crate::channel::auth::CompiledAuth::compile(cfg, Some(deps.exprs), Some(deps.jwks))
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            channel = %channel.name,
+                            error = %e,
+                            "Refusing to load channel: auth config cannot be compiled"
+                        );
+                        issue(format!("auth: {e}"))
+                    })?,
             ),
             None => None,
         };
@@ -1294,7 +1292,7 @@ impl ChannelLoader {
     /// tick on every node — so it is written to cost what *changed*, not what
     /// exists. A channel whose row and dependency fingerprint are unchanged
     /// keeps the exact `Arc<ChannelRuntimeConfig>` it had: no JSON parse, no
-    /// datalogic compilation, no backend resolution, no `Channel` clone. An
+    /// expression compilation, no backend resolution, no `Channel` clone. An
     /// unchanged serviceable set likewise keeps the built [`RouteTable`].
     pub async fn build(
         &self,
@@ -1307,7 +1305,7 @@ impl ChannelLoader {
             vars,
             connector_registry,
             cache_pool,
-            datalogic,
+            exprs,
             jwks,
             http_client,
             allow_private_token_urls,
@@ -1320,7 +1318,7 @@ impl ChannelLoader {
             vars,
             connector_registry,
             cache_pool,
-            datalogic,
+            exprs,
             jwks,
             http_client,
             allow_private_token_urls,
@@ -1697,7 +1695,7 @@ mod tests {
     struct TestDeps {
         connectors: ConnectorRegistry,
         cache_pool: CachePool,
-        datalogic: DatalogicEngine,
+        exprs: ExprEngine,
         jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
         http_client: reqwest::Client,
         trace_storage: TraceStorageConfig,
@@ -1713,7 +1711,7 @@ mod tests {
                     crate::config::EngineConfig::default().circuit_breaker,
                 ),
                 cache_pool: CachePool::new(4, 60, 1000),
-                datalogic: DatalogicEngine::new(),
+                exprs: test_exprs(),
                 jwks: test_jwks(),
                 http_client: reqwest::Client::new(),
                 trace_storage: TraceStorageConfig::default(),
@@ -1742,7 +1740,7 @@ mod tests {
                         vars: None,
                         connector_registry: &self.connectors,
                         cache_pool: &self.cache_pool,
-                        datalogic: &self.datalogic,
+                        exprs: &self.exprs,
                         jwks: &self.jwks,
                         http_client: &self.http_client,
                         allow_private_token_urls: false,
@@ -1760,6 +1758,13 @@ mod tests {
                 )
                 .await;
         }
+    }
+
+    /// The process's expression engine as boot builds it with no secrets and
+    /// no budget.
+    fn test_exprs() -> ExprEngine {
+        crate::engine::operators::orion_exprs(&crate::engine::ResolvedSecrets::empty(), 0)
+            .expect("Orion's expression engine builds")
     }
 
     /// A JWKS cache for tests: no channel config here sets `auth.jwks_url`,
@@ -1846,7 +1851,7 @@ mod tests {
                     vars: None,
                     connector_registry: &registry_with_cache("ro-cache", false).await,
                     cache_pool: &CachePool::new(4, 60, 1000),
-                    datalogic: &DatalogicEngine::new(),
+                    exprs: &test_exprs(),
                     jwks: &test_jwks(),
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
@@ -1885,7 +1890,7 @@ mod tests {
                     vars: None,
                     connector_registry: &registry_with_cache("rw-cache", true).await,
                     cache_pool: &CachePool::new(4, 60, 1000),
-                    datalogic: &DatalogicEngine::new(),
+                    exprs: &test_exprs(),
                     jwks: &test_jwks(),
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
@@ -1922,7 +1927,7 @@ mod tests {
                     vars: None,
                     connector_registry: &registry_with_cache("ro-cache", false).await,
                     cache_pool: &CachePool::new(4, 60, 1000),
-                    datalogic: &DatalogicEngine::new(),
+                    exprs: &test_exprs(),
                     jwks: &test_jwks(),
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
@@ -2005,8 +2010,8 @@ mod tests {
     /// input validation.
     #[tokio::test]
     async fn test_uncompilable_validation_logic_refuses_to_load_single_node() {
-        // Multi-key object: valid JSON, rejected by the datalogic compiler
-        // outside templating mode.
+        // Multi-key object: valid JSON, and a legal template on the engine
+        // (templating mode), so `refuse_multi_key_object` is what refuses it.
         let channel = test_channel(
             "bad-logic-ch",
             r#"{"validation_logic": {"==": [1, 1], "!=": [1, 2]}}"#,

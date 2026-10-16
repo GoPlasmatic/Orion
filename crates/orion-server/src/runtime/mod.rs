@@ -86,6 +86,7 @@ pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::Ha
         registry: state.connector_registry.clone(),
         client: state.http_client.clone(),
         runtime: state.runtime.clone(),
+        exprs: state.exprs.clone(),
         jwks: state.jwks.clone(),
         engine_config: &state.config.engine,
         query_config: &state.config.query,

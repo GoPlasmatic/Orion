@@ -27,7 +27,8 @@ use sha2::{Digest, Sha256, Sha512};
 use crate::channel::config::{AuthMode, ChannelAuthConfig, JwtSource};
 use crate::channel::guards::HeaderLookup;
 use crate::config::constant_time_eq;
-use dataflow_rs_v3::datalogic_rs::{Engine as DatalogicEngine, Logic};
+use dataflow_rs::Expr;
+use dataflow_rs::expr::ExprEngine;
 
 use crate::crypto::{Codec, decode_bytes, mac_verify};
 use crate::errors::OrionError;
@@ -67,9 +68,9 @@ pub struct CompiledJwt {
     source: JwtSource,
     claims_filter: Option<Vec<String>>,
     /// Compiled `authorization_logic`, evaluated over `{"claims": …}` after
-    /// verification with the guards' engine (the same instance that compiled
-    /// it); falsy → 403 `insufficient_scope`.
-    authorization: Option<std::sync::Arc<Logic>>,
+    /// verification with the guards' engine (the process's `ExprEngine`, which
+    /// compiled it); falsy → 403 `insufficient_scope`.
+    authorization: Option<std::sync::Arc<Expr>>,
 }
 
 impl std::fmt::Debug for CompiledJwt {
@@ -151,14 +152,14 @@ impl CompiledAuth {
     /// Resolve secrets and pre-hash keys. `Err` is a human-readable reason, and
     /// the caller turns it into a channel load issue: a channel whose auth
     /// cannot be built is quarantined rather than served without it (F35).
-    /// `datalogic` compiles `authorization_logic`; it must be the same engine
-    /// the guards evaluate with (bootstrap's shared instance). `None` is for
-    /// callers that cannot evaluate logic — compiling a config that carries
-    /// `authorization_logic` then fails loudly. `jwks` is the instance's key
-    /// cache and follows the same rule for `auth.jwks_url`.
+    /// `exprs` compiles `authorization_logic`; it must be the engine the
+    /// guards evaluate with (the process's `ExprEngine`, built at boot). `None`
+    /// is for callers that cannot evaluate logic — compiling a config that
+    /// carries `authorization_logic` then fails loudly. `jwks` is the
+    /// instance's key cache and follows the same rule for `auth.jwks_url`.
     pub async fn compile(
         cfg: &ChannelAuthConfig,
-        datalogic: Option<&DatalogicEngine>,
+        exprs: Option<&ExprEngine>,
         jwks: Option<&std::sync::Arc<crate::jwt::jwks::JwksCache>>,
     ) -> Result<Self, String> {
         match cfg.mode {
@@ -230,15 +231,15 @@ impl CompiledAuth {
                 let authorization = match &cfg.authorization_logic {
                     None => None,
                     Some(logic) => {
-                        let engine = datalogic.ok_or(
+                        let engine = exprs.ok_or(
                             "auth.authorization_logic needs the shared JSONLogic engine, \
                              which this caller cannot supply",
                         )?;
-                        Some(
+                        Some(std::sync::Arc::new(
                             engine
-                                .compile_arc(logic)
+                                .compile(logic)
                                 .map_err(|e| format!("auth.authorization_logic: {e}"))?,
-                        )
+                        ))
                     }
                 };
                 let jwks = match plan.jwks_url {
@@ -320,7 +321,7 @@ impl CompiledAuth {
     /// `raw_body` is the bytes exactly as received. HMAC is defined over them,
     /// so it must be checked before any parse: re-serializing parsed JSON
     /// reorders keys and normalises whitespace, and the signature would never
-    /// match again. `datalogic` evaluates `authorization_logic`; it is the
+    /// match again. `exprs` evaluates `authorization_logic`; it is the
     /// same engine that compiled it.
     /// Whether a failure of this mode is evidence of *guessing*, and so worth
     /// counting against a client's backoff budget.
@@ -339,7 +340,7 @@ impl CompiledAuth {
         &self,
         header: HeaderLookup<'_>,
         raw_body: Option<&[u8]>,
-        datalogic: &DatalogicEngine,
+        exprs: &ExprEngine,
     ) -> Result<AuthOutcome, OrionError> {
         match self {
             Self::ApiKey {
@@ -362,7 +363,7 @@ impl CompiledAuth {
             Self::Hmac(hmac) => hmac
                 .authenticate_at(header, raw_body, chrono::Utc::now().timestamp())
                 .map(|()| AuthOutcome::default()),
-            Self::Jwt(jwt) => jwt.authenticate(header, datalogic).await,
+            Self::Jwt(jwt) => jwt.authenticate(header, exprs).await,
         }
     }
 }
@@ -371,7 +372,7 @@ impl CompiledJwt {
     async fn authenticate(
         &self,
         header: HeaderLookup<'_>,
-        datalogic: &DatalogicEngine,
+        exprs: &ExprEngine,
     ) -> Result<AuthOutcome, OrionError> {
         use crate::jwt::RejectReason;
 
@@ -433,10 +434,9 @@ impl CompiledJwt {
             let mut context = serde_json::Map::with_capacity(1);
             context.insert("claims".to_string(), claims);
             let context = serde_json::Value::Object(context);
-            let allowed = datalogic
-                .session()
-                .eval_into::<serde_json::Value, _>(logic, &context)
-                .map(|v| super::guards::is_truthy(&v))
+            let allowed = exprs
+                .eval(logic, &context)
+                .map(|v| super::guards::is_truthy(&v.value))
                 .unwrap_or(false);
             if !allowed {
                 return Err(OrionError::Forbidden(
@@ -1137,8 +1137,11 @@ mod tests {
         }
     }
 
-    fn dl() -> DatalogicEngine {
-        crate::engine::operators::add_to_datalogic(DatalogicEngine::builder()).build()
+    /// The process's expression engine, as boot builds it with no secrets and
+    /// no budget: what `authorization_logic` compiles and evaluates on.
+    fn dl() -> ExprEngine {
+        crate::engine::operators::orion_exprs(&crate::engine::ResolvedSecrets::empty(), 0)
+            .expect("Orion's expression engine builds")
     }
 
     fn lookup<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
@@ -2096,10 +2099,13 @@ mod tests {
                 .is_ok()
         );
 
-        // An authorization expression that errors at evaluation (unknown
-        // operator) fails CLOSED: 403, never a silent allow.
+        // An authorization expression that errors at evaluation fails
+        // CLOSED: 403, never a silent allow. The error is a decoder refusing
+        // its input: the guards' engine runs in templating mode, where an
+        // unknown operator is not an error but a one-key object (the case
+        // used to name one, on a bare engine that is not the guards').
         let mut cfg = jwt_config(&["HS512"], HS_SECRET);
-        cfg.authorization_logic = Some(serde_json::json!({"bogus_op": [1]}));
+        cfg.authorization_logic = Some(serde_json::json!({"hex_decode": ["zz"]}));
         let auth = jwt_auth(&cfg).await;
         let token = mint(jsonwebtoken::Algorithm::HS512, HS_SECRET, admin);
         let headers = bearer(&token);
@@ -2199,10 +2205,11 @@ mod tests {
                 Box::new(|c: &mut ChannelAuthConfig| c.leeway_secs = Some(3600)),
                 "leeway_secs",
             ),
-            // Note: an *unknown operator* in authorization_logic compiles (the
-            // engine resolves operators at evaluation), so it is not a
-            // structural case — it fails CLOSED at request time instead,
-            // pinned in `jwt_authorization_logic_answers_403`.
+            // Note: an *unknown operator* in authorization_logic compiles —
+            // on the guards' engine, which runs in templating mode, it is a
+            // one-key object — so it is not a structural case. An expression
+            // that errors at request time fails CLOSED, pinned in
+            // `jwt_authorization_logic_answers_403`.
         ] {
             let mut cfg = base();
             mutate(&mut cfg);

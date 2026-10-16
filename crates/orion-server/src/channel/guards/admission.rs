@@ -5,9 +5,9 @@
 //! write or settle. A refusal is the whole result, and the only state any of
 //! them holds is the semaphore permit backpressure hands to the caller.
 
-use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
+use dataflow_rs::expr::ExprEngine;
 use serde_json::{Value, json};
 
 use super::ChannelRuntimeConfig;
@@ -33,7 +33,7 @@ pub(super) async fn check_auth(
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
     header: HeaderLookup<'_>,
     raw_body: Option<&[u8]>,
-    datalogic: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
     backoff: Option<&crate::auth::FailedAuthTracker>,
     client: &str,
 ) -> Result<Option<Value>, OrionError> {
@@ -74,7 +74,7 @@ pub(super) async fn check_auth(
     }
 
     let outcome = auth
-        .authenticate(header, raw_body, datalogic)
+        .authenticate(header, raw_body, exprs)
         .await
         .map(|outcome| outcome.claims)
         .inspect_err(|_| {
@@ -146,18 +146,15 @@ pub(super) fn validate_input(
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
     data: &Value,
     metadata: &Value,
-    datalogic: &datalogic_rs::Engine,
+    exprs: &ExprEngine,
 ) -> Result<(), OrionError> {
     if let Some(cfg) = channel_config
         && let Some(ref compiled) = cfg.validation_logic
     {
         let context = json!({ "data": data, "metadata": metadata });
-        match datalogic
-            .session()
-            .eval_into::<serde_json::Value, _>(compiled, &context)
-        {
+        match exprs.eval(compiled, &context) {
             Ok(result) => {
-                if !is_truthy(&result) {
+                if !is_truthy(&result.value) {
                     return Err(OrionError::validation(
                         "Input validation failed".to_string(),
                     ));

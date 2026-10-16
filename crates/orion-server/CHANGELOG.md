@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`POST /api/v1/admin/workflows/validate` compiles a condition as activation
+  does.** It compiled the workflow's and each task's `condition` on a bare
+  JSONLogic engine outside templating mode, which refused an object with more
+  than one key (`Invalid JSONLogic in workflow condition: Invalid operator:
+  Unknown Operator`) that activation compiles, as a template emitting that
+  object, and runs. It now compiles on the one expression engine the process
+  builds at boot, which the channel guards, channel auth and the Kafka consumer
+  also evaluate on, so `valid: false` names only a condition activation refuses
+  too.
+
 ## [1.12.0] - 2026-10-01
 
 ### Added

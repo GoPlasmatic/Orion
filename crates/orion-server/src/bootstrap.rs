@@ -2,7 +2,6 @@
 //! repository construction, and background-task lifecycle. `main.rs` stays
 //! the readable orchestration script and calls these phases in order.
 
-use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
@@ -148,7 +147,9 @@ type KafkaProducers = (
 pub struct ServingComponents {
     pub connector_registry: Arc<ConnectorRegistry>,
     pub http_client: reqwest::Client,
-    pub datalogic: Arc<datalogic_rs::Engine>,
+    /// The process's one expression engine (I188), built once here over
+    /// `[secrets]` and `engine.ops_budget`, and kept by every reload.
+    pub exprs: dataflow_rs::expr::ExprEngine,
     /// The JWKS cache, built on `http_client` so key fetches ride the pinned
     /// resolver and the shared connection pool.
     pub jwks: Arc<crate::jwt::jwks::JwksCache>,
@@ -170,8 +171,8 @@ pub struct ServingComponents {
     /// consumer is how two ingresses come to disagree about what a workflow
     /// reads.
     pub vars: Option<Arc<serde_json::Value>>,
-    /// The live serving generation. Pre-created around the boot placeholder
-    /// engine and an empty channel estate, so the `channel_call` handler —
+    /// The live serving generation. Pre-created around an empty engine and an
+    /// empty channel estate, so the `channel_call` handler —
     /// which is registered *on* the engine this handle will carry — has
     /// something to hold before either half exists.
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
@@ -196,7 +197,7 @@ pub struct ServingComponents {
 
 /// The engine's serving components, built in one pass by
 /// [`build_engine_components`]: connector registry (with the F16 fail-fast
-/// check), shared HTTP client, datalogic engine, the pre-created engine
+/// check), shared HTTP client, expression engine, the pre-created engine
 /// lock, cache + external connector pool caches, the custom function
 /// handlers, and the Kafka producer.
 pub struct EngineComponents {
@@ -205,7 +206,7 @@ pub struct EngineComponents {
 }
 
 /// Build the [`EngineComponents`]: load the connector registry, create the
-/// shared HTTP client, the datalogic engine, the runtime handle (pre-created
+/// shared HTTP client, the expression engine, the runtime handle (pre-created
 /// so the `channel_call` handler can reference it), the cache + external pool
 /// caches, the custom function handlers, and the Kafka producer.
 pub async fn build_engine_components(
@@ -291,44 +292,22 @@ pub async fn build_engine_components(
     // pointing back here.
     let secrets = Arc::new(crate::engine::ResolvedSecrets::resolve(&config.secrets).await?);
 
-    // Shared datalogic engine — used by handlers for template evaluation and
-    // by the channel loader to pre-compile per-channel JSONLogic
-    // (`validation_logic`, `authorization_logic`, the rate-limit and cache
-    // `key_logic`).
-    //
-    // Borrowed from a dataflow-rs engine rather than built directly, which is
-    // what lets a channel expression read `{"secret": …}`. The operator is
-    // dataflow-rs's and its implementation is crate-private — but an *engine*
-    // carrying it is not, so Orion takes one built over the same store the
-    // workflow engines get instead of mirroring the operator and risking two
-    // implementations that disagree. The engine has no workflows and no
-    // handlers; only its datalogic engine is kept.
+    // The process's one expression engine (I188): Orion's operators, the
+    // secret store resolved above and the operation budget. The channel loader
+    // compiles every channel expression on it (`validation_logic`,
+    // `authorization_logic`, the rate-limit and cache `key_logic`), and the
+    // guards, the Kafka consumer, cron and `/validate` evaluate on it. Nothing
+    // rebuilds it: every reload keeps it.
     //
     // Secrets are start-time config, resolved above, so there is no ordering
     // reason a channel guard should see fewer of them than a workflow does.
-    //
-    // One engine, not two: this is also the placeholder the runtime handle
-    // below is created around, until the first published generation replaces
-    // it.
-    // Building a second identical empty engine for that repeated nine operator
-    // registrations and the secret store at every boot.
-    let boot_engine = Arc::new(
-        crate::engine::operators::with_ops_budget(
-            crate::engine::operators::with_orion_engine_defaults(
-                dataflow_rs_v3::Engine::builder(),
-                &secrets,
-            ),
-            config.engine.ops_budget,
-        )
-        .build()
-        .map_err(|e| {
+    let exprs =
+        crate::engine::operators::orion_exprs(&secrets, config.engine.ops_budget).map_err(|e| {
             crate::errors::OrionError::internal_from(
                 "Failed to build the shared expression engine",
                 e,
             )
-        })?,
-    );
-    let datalogic_engine = Arc::clone(boot_engine.datalogic());
+        })?;
     if !secrets.is_empty() {
         tracing::info!(
             names = ?secrets.names().collect::<Vec<_>>(),
@@ -337,11 +316,14 @@ pub async fn build_engine_components(
     }
 
     // Create the runtime handle early so the `channel_call` handler can
-    // reference it. Generation 0 is the boot placeholder engine and an empty
-    // channel estate; `load_channels_and_build_engine` publishes the first
-    // real generation over it.
+    // reference it. Generation 0 is an empty engine and an empty channel
+    // estate; `load_channels_and_build_engine` publishes the first real
+    // generation over it before anything is served.
+    let empty_engine = dataflow_rs_v3::Engine::builder().build().map_err(|e| {
+        crate::errors::OrionError::internal_from("Failed to build the empty boot engine", e)
+    })?;
     let runtime: Arc<crate::runtime::RuntimeHandle> = Arc::new(crate::runtime::RuntimeHandle::new(
-        boot_engine,
+        Arc::new(empty_engine),
         Arc::new(crate::channel::ChannelSnapshot::empty()),
         crate::engine::FunctionRegistry::builtin().clone(),
     ));
@@ -386,6 +368,7 @@ pub async fn build_engine_components(
         registry: connector_registry.clone(),
         client: http_client.clone(),
         runtime: runtime.clone(),
+        exprs: exprs.clone(),
         jwks: jwks.clone(),
         engine_config: &config.engine,
         query_config: &config.query,
@@ -422,7 +405,7 @@ pub async fn build_engine_components(
         serving: ServingComponents {
             connector_registry,
             http_client,
-            datalogic: datalogic_engine,
+            exprs,
             jwks,
             oidc_discovery,
             secrets,
@@ -537,10 +520,10 @@ impl EngineComponents {
             workflows.iter().map(|w| w.channel.as_str()).collect();
         let channel_count = channel_names.len();
 
-        // The observer is attached here rather than on the placeholder at
-        // startup because `Engine::new` builds a fresh engine; `with_new_workflows`
-        // carries it across every subsequent reload, so this is the only place
-        // it needs setting. Built before the channel estate because the model
+        // The observer is attached here rather than on generation 0's empty
+        // engine at startup because `Engine::new` builds a fresh engine;
+        // `with_new_workflows` carries it across every subsequent reload, so
+        // this is the only place it needs setting. Built before the channel estate because the model
         // set below compiles its adapters on this engine's own expression
         // engine, and a model that did not load quarantines channels.
         let built_engine = builder
@@ -574,7 +557,7 @@ impl EngineComponents {
                     vars: serving.vars.as_ref(),
                     connector_registry: &serving.connector_registry,
                     cache_pool: &serving.cache_pool,
-                    datalogic: &serving.datalogic,
+                    exprs: &serving.exprs,
                     jwks: &serving.jwks,
                     http_client: &serving.http_client,
                     allow_private_token_urls: config.oauth2_login.allow_private_token_urls,
@@ -645,13 +628,14 @@ impl EngineComponents {
 ///
 /// Named fields rather than a positional list because three of the six are
 /// `Option` and the boot, test-harness and reload-restart paths all build the
-/// same set — `state.runtime`, `state.datalogic`, `state.vars`,
+/// same set — `state.runtime`, `state.exprs`, `state.vars`,
 /// `state.kafka.producer` on the reload side, and the matching
 /// [`ServingComponents`] fields on the boot side. A bare `None` in the fifth
 /// position tells a reader nothing about which dependency is absent.
 pub struct IngestDeps {
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
-    pub datalogic: Arc<datalogic_rs::Engine>,
+    /// The process's expression engine, which the guards evaluate on.
+    pub exprs: dataflow_rs::expr::ExprEngine,
     /// `[vars]` as one JSON object, stamped into every ingested message's
     /// `metadata.vars`. `None` when the instance declares none.
     pub vars: Option<Arc<serde_json::Value>>,
@@ -693,7 +677,7 @@ pub fn start_kafka_ingest(
 
     let IngestDeps {
         runtime,
-        datalogic,
+        exprs,
         vars,
         kafka_producer,
         instance_id,
@@ -711,7 +695,7 @@ pub fn start_kafka_ingest(
         &merged_config,
         crate::kafka::consumer::ConsumerDeps {
             runtime,
-            datalogic,
+            exprs,
             vars,
             dlq_producer,
             dlq_topic,
@@ -986,7 +970,7 @@ pub fn start_background_tasks(
             trace_repo: repos.traces.clone(),
             persistence_queue: trace_persistence_queue.clone(),
             global_trace_storage: config.trace_storage.clone(),
-            datalogic: cron.datalogic,
+            exprs: cron.exprs,
             vars: cron.vars,
             instance_id: cluster.instance_id.clone(),
             status: cron.status,
@@ -1024,7 +1008,8 @@ pub fn start_background_tasks(
 /// A struct rather than three more positional parameters on
 /// [`start_background_tasks`], two of which are `Arc`s of unrelated things.
 pub struct CronComponents {
-    pub datalogic: Arc<dataflow_rs_v3::datalogic_rs::Engine>,
+    /// The process's expression engine, which the guards evaluate on.
+    pub exprs: dataflow_rs::expr::ExprEngine,
     pub vars: Option<Arc<serde_json::Value>>,
     pub status: Arc<crate::cron::CronStatus>,
 }
@@ -1171,7 +1156,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         &repos,
         &cluster,
         CronComponents {
-            datalogic: components.datalogic.clone(),
+            exprs: components.exprs.clone(),
             vars: components.vars.clone(),
             status: cron_status.clone(),
         },
@@ -1192,7 +1177,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         &channels,
         IngestDeps {
             runtime: components.runtime.clone(),
-            datalogic: components.datalogic.clone(),
+            exprs: components.exprs.clone(),
             vars: components.vars.clone(),
             kafka_producer: components.kafka_producer.clone(),
             instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
@@ -1257,7 +1242,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     let ServingComponents {
         connector_registry,
         http_client,
-        datalogic,
+        exprs,
         jwks,
         oidc_discovery,
         secrets,
@@ -1303,7 +1288,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         start_time: chrono::Utc::now(),
         metrics_handle,
         http_client,
-        datalogic,
+        exprs,
         jwks,
         oidc_discovery,
         rate_limit_state,

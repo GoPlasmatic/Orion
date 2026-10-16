@@ -35,7 +35,6 @@ mod dlq;
 mod lag;
 mod process;
 
-use dataflow_rs_v3::datalogic_rs;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -58,13 +57,15 @@ pub(crate) use process::{INITIAL_RETRY_BACKOFF_MS, next_backoff_ms};
 /// `KafkaIngestConfig`.
 ///
 /// A struct rather than positional parameters because half of these are
-/// `Option`: `start_consumer(&cfg, engine, registry, datalogic, None, None,
+/// `Option`: `start_consumer(&cfg, engine, registry, exprs, None, None,
 /// None, None)` says nothing about which `None` is which, and the next
 /// optional dependency would add a ninth argument to a list already past
 /// clippy's limit.
 pub struct ConsumerDeps {
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
-    pub datalogic: Arc<datalogic_rs::Engine>,
+    /// The process's expression engine, which the channel guards evaluate
+    /// on (I188).
+    pub exprs: dataflow_rs::expr::ExprEngine,
     /// `[vars]` as one JSON object, stamped into every ingested message's
     /// `metadata.vars` — the Kafka half of what `build_request_metadata` does
     /// for HTTP, so a workflow reads the same deployment values on either
@@ -103,7 +104,7 @@ struct ConsumeLoopContext {
     /// life of a topic set and would otherwise pin the generation it started
     /// on. See `process::process_message`.
     runtime: Arc<crate::runtime::RuntimeHandle>,
-    datalogic: Arc<datalogic_rs::Engine>,
+    exprs: dataflow_rs::expr::ExprEngine,
     vars: Option<Arc<serde_json::Value>>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
@@ -322,7 +323,7 @@ pub fn start_consumer(
 ) -> Result<ConsumerHandle, OrionError> {
     let ConsumerDeps {
         runtime,
-        datalogic,
+        exprs,
         vars,
         dlq_producer,
         dlq_topic,
@@ -402,7 +403,7 @@ pub fn start_consumer(
         consumer: consumer.clone(),
         topic_map,
         runtime,
-        datalogic,
+        exprs,
         vars,
         dlq_producer,
         dlq_topic,
