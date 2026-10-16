@@ -138,7 +138,10 @@ pub(super) fn require_document(
 }
 
 /// Resolve an optional non-negative integer field (`limit`, `skip`).
-pub(super) fn resolve_u64(
+///
+/// `pub(crate)` for `engine::kit::read::mongo_u64`'s twin test, which holds
+/// the dataflow-rs 4 reader to this one.
+pub(crate) fn resolve_u64(
     input: &TemplatedInput,
     field: &str,
     handler_name: &str,

@@ -154,7 +154,10 @@ fn algorithms(input: &Value) -> Result<Vec<jsonwebtoken::Algorithm>, DataflowErr
 /// `issuer` / `audience`: a string or an array; string values pass through
 /// the secret resolver so client ids can live as `env://` references (they
 /// round-trip masked exports even though they are not secrets).
-async fn string_or_vec(
+///
+/// `pub(crate)` for `engine::kit::fields::KeyMaterialList`'s twin test,
+/// which holds the dataflow-rs 4 field to this reading.
+pub(crate) async fn string_or_vec(
     input: &TemplatedInput,
     field: &str,
     ctx: &TaskContext<'_>,

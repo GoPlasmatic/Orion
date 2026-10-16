@@ -307,6 +307,14 @@ pub fn build_custom_functions(
     fns
 }
 
+/// Register Orion's dataflow-rs 4 functions: the twin of
+/// [`build_custom_functions`], function by function in its order, as each
+/// gains a v4 port. Empty until the first does; no serving path calls it
+/// before the building cutover.
+pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
+    let _ = (registry, deps);
+}
+
 /// Register the real Kafka-backed publish_kafka handler.
 ///
 /// Replaces the stub handler (or adds the handler if not yet registered).

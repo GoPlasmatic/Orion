@@ -12,6 +12,8 @@
 //! - [`runner`] — running one channel, and the instrumented lock accessors.
 //! - [`observer`] — always-on per-task timing, including the sync built-ins no
 //!   host can otherwise reach.
+//! - [`kit`] — what every dataflow-rs 4 function shares: the error mapping's
+//!   readers and field types, the connector shell, inert dependencies.
 //!
 //! Everything public is re-exported here, so `crate::engine::…` paths are
 //! unchanged.
@@ -127,6 +129,7 @@ mod error;
 pub mod execute;
 pub mod functions;
 pub mod handlers;
+pub mod kit;
 pub mod loader;
 pub mod observer;
 pub mod operators;
@@ -143,7 +146,9 @@ pub use functions::registry::{
     CatalogueEntry, FieldSpec, FunctionEntry, FunctionRegistry, PluginBinding,
 };
 pub use functions::schema::ConnectorRule;
-pub use handlers::{HandlerDeps, build_custom_functions, register_kafka_publisher};
+pub use handlers::{
+    HandlerDeps, build_custom_functions, register_functions, register_kafka_publisher,
+};
 pub use loader::{HandlerScreen, build_engine_workflows, build_single, filter_channels};
 pub use observer::MetricsObserver;
 pub use refs::{
