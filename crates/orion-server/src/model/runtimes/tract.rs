@@ -21,7 +21,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ::tract::prelude::*;
-use dataflow_rs::datavalue::{DType, OwnedDataTensor};
+use dataflow_rs_v3::datavalue::{DType, OwnedDataTensor};
 
 use super::{LoadBinding, LoadError, LoadedModel, ModelRuntime, RunError, devices_of, formats_of};
 use crate::model::manifest::Bindings;

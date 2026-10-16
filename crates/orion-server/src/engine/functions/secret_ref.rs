@@ -23,9 +23,9 @@
 //! `UNRESOLVED_SECRET_REF` check, so "where a reference resolves" has one
 //! answer and one list behind it.
 
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::secrets::SECRET_OPERATOR;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::secrets::SECRET_OPERATOR;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
 /// The name in a `{"secret": "name"}` node — the reserved operator dataflow-rs

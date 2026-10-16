@@ -4,7 +4,7 @@
 //! and the more delicate one — what goes into the hash decides which requests
 //! are allowed to share an answer.
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
 use serde_json::Value;

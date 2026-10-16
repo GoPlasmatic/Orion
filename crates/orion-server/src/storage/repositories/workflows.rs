@@ -1,6 +1,6 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use dataflow_rs::Workflow as DataflowWorkflow;
+use dataflow_rs_v3::Workflow as DataflowWorkflow;
 use sea_query::{Asterisk, Condition, Expr, ExprTrait, Order, Query};
 use serde::{Deserialize, Serialize};
 
@@ -982,7 +982,7 @@ fn workflow_to_dataflow_inner(
     channel_name: &str,
     id: String,
     status: &str,
-    rollout: Option<dataflow_rs::Rollout>,
+    rollout: Option<dataflow_rs_v3::Rollout>,
 ) -> Result<DataflowWorkflow, OrionError> {
     let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
@@ -1008,7 +1008,7 @@ fn workflow_to_dataflow_inner(
         "tags": tags,
         "loop": loop_config,
         "continue_on_error": workflow.continue_on_error,
-        "rollout": rollout.map(|dataflow_rs::Rollout { bucket_start, bucket_end }| serde_json::json!({
+        "rollout": rollout.map(|dataflow_rs_v3::Rollout { bucket_start, bucket_end }| serde_json::json!({
             "bucket_start": bucket_start,
             "bucket_end": bucket_end,
         })),
@@ -1036,7 +1036,7 @@ pub fn workflow_to_dataflow(
 /// Convert a Workflow to a dataflow-rs Workflow serving `rollout`'s half-open
 /// bucket range, under a version-qualified id.
 ///
-/// The range is produced by [`dataflow_rs::Rollout::partition`] in
+/// The range is produced by [`dataflow_rs_v3::Rollout::partition`] in
 /// `build_engine_workflows`, so it is already known to be representable and
 /// to be one slice of a set covering `0..100` — this used to take two `i64`
 /// bounds and re-derive that here, which meant the "unrepresentable span"
@@ -1055,7 +1055,7 @@ pub fn workflow_to_dataflow(
 pub fn workflow_to_dataflow_with_rollout(
     workflow: &Workflow,
     channel_name: &str,
-    rollout: dataflow_rs::Rollout,
+    rollout: dataflow_rs_v3::Rollout,
 ) -> Result<DataflowWorkflow, OrionError> {
     workflow_to_dataflow_inner(
         workflow,
@@ -1144,7 +1144,7 @@ mod tests {
         let df_workflow = workflow_to_dataflow_with_rollout(
             &workflow,
             "default",
-            dataflow_rs::Rollout {
+            dataflow_rs_v3::Rollout {
                 bucket_start: 0,
                 bucket_end: 50,
             },

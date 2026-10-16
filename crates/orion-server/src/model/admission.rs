@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use dataflow_rs::datavalue::OwnedDataTensor;
+use dataflow_rs_v3::datavalue::OwnedDataTensor;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

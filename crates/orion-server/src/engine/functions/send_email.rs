@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 use mail_builder::MessageBuilder;
 use mail_builder::headers::address::Address;
 use mail_builder::headers::raw::Raw;

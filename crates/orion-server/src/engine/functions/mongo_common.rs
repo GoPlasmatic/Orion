@@ -12,8 +12,8 @@
 //! `$oid`, `$date`, `$numberDecimal`, `$uuid`, … — works with no
 //! Orion-specific code, today and as `bson` grows.
 
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 use futures::TryStreamExt;
 use mongodb::bson::{self, Document};
 use serde_json::Value;

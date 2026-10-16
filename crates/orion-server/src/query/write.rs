@@ -240,14 +240,14 @@ impl From<QueryError> for WriteError {
     }
 }
 
-impl From<WriteError> for dataflow_rs::engine::error::DataflowError {
+impl From<WriteError> for dataflow_rs_v3::engine::error::DataflowError {
     fn from(e: WriteError) -> Self {
         // A wrapped `QueryError` keeps its redaction class (G3) — the write
         // path reaches `EntityNotAllowed` through exactly the same lowering.
         if matches!(&e, WriteError::Query(q) if q.is_connector_detail()) {
             return crate::errors::connector_detail_error(e);
         }
-        dataflow_rs::engine::error::DataflowError::Validation(e.to_string())
+        dataflow_rs_v3::engine::error::DataflowError::Validation(e.to_string())
     }
 }
 

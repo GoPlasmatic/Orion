@@ -78,20 +78,20 @@ fn config() -> PluginsConfig {
 /// error's text.
 async fn run(handler: &PluginFunctionHandler, input: Value, data: Value) -> Result<Value, String> {
     let name = handler.name().to_string();
-    let mut fns: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
+    let mut fns: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
     fns.insert(name.clone(), Box::new(handler.clone()));
-    let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+    let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
         "id": "w", "name": "w", "condition": true,
         "tasks": [{"id": "t", "name": "t", "function": {"name": name, "input": input}}]
     }))
     .map_err(|e| e.to_string())?;
-    let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-    let mut message = dataflow_rs::Message::from_value(&json!({}));
+    let engine = dataflow_rs_v3::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
+    let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
     if !data.is_null() {
-        dataflow_rs::engine::utils::set_nested_value(
+        dataflow_rs_v3::engine::utils::set_nested_value(
             &mut message.context,
             "data",
-            dataflow_rs::datavalue::OwnedDataValue::from(&data),
+            dataflow_rs_v3::datavalue::OwnedDataValue::from(&data),
         );
     }
     engine

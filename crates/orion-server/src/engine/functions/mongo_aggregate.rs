@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 use mongodb::bson::Document;
 use serde_json::Value;
 
@@ -387,8 +387,8 @@ mod tests {
             registry: Arc::new(ConnectorRegistry::new(Default::default())),
             limits: Default::default(),
         };
-        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
         let ctx = TaskContext::new(&mut message, &datalogic);
         let call = ConnectorCall {
             name: MongoAggregateHandler::NAME,

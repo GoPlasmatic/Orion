@@ -2,7 +2,7 @@
 //!
 //! Verifies that:
 //!   - the dry-run `/test` endpoint already returns per-step `message` snapshots
-//!     from `dataflow_rs::ExecutionTrace` (no code change — locks in the behaviour)
+//!     from `dataflow_rs_v3::ExecutionTrace` (no code change — locks in the behaviour)
 //!   - opting into `config.tracing.task_details = true` causes the engine to
 //!     capture an `ExecutionTrace` and persist it as `task_trace_json` on the
 //!     resulting trace row
@@ -51,7 +51,7 @@ async fn dry_run_test_endpoint_returns_per_step_message_snapshots() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
 
-    // dataflow_rs::ExecutionTrace exposes steps[] with per-step task_id +
+    // dataflow_rs_v3::ExecutionTrace exposes steps[] with per-step task_id +
     // message snapshot. Confirm the shape so workflow authors can rely on it.
     let steps = body["data"]["trace"]["steps"]
         .as_array()

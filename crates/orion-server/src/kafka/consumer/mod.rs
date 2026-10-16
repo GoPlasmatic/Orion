@@ -35,7 +35,7 @@ mod dlq;
 mod lag;
 mod process;
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 

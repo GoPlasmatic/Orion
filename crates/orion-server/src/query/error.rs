@@ -5,7 +5,7 @@
 //! workflow author can see precisely why a query is not runnable. All variants
 //! map to `DataflowError::Validation` (a 4xx-style error) at the handler edge.
 
-use dataflow_rs::engine::error::DataflowError;
+use dataflow_rs_v3::engine::error::DataflowError;
 
 /// A translation-time error, produced during envelope parse, lowering, or render.
 #[derive(Debug, Clone, PartialEq, Eq)]

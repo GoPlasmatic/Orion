@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
 use super::connector_handler::ConnectorHandler;
@@ -13,7 +13,7 @@ use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
-use dataflow_rs::engine::error::DataflowError;
+use dataflow_rs_v3::engine::error::DataflowError;
 
 /// Workflow function handler for reading values from a cache backend.
 pub struct CacheReadHandler {
@@ -220,9 +220,10 @@ mod tests {
     #[tokio::test]
     async fn the_run_seam_is_reachable_without_an_engine() {
         let h = handler();
-        let datalogic = std::sync::Arc::new(dataflow_rs::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs::Message::from_value(&serde_json::json!({}));
-        let mut ctx = dataflow_rs::engine::task_context::TaskContext::new(&mut message, &datalogic);
+        let datalogic = std::sync::Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs_v3::Message::from_value(&serde_json::json!({}));
+        let mut ctx =
+            dataflow_rs_v3::engine::task_context::TaskContext::new(&mut message, &datalogic);
         let call = ConnectorCall {
             name: CacheReadHandler::NAME,
             connector: "c",

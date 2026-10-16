@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use dataflow_rs::datavalue::{DType, OwnedDataTensor};
+use dataflow_rs_v3::datavalue::{DType, OwnedDataTensor};
 use serde::Serialize;
 
 use super::manifest::Manifest;

@@ -37,8 +37,8 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use dataflow_rs::datalogic_rs as datalogic;
-use dataflow_rs::datavalue::{DType, OwnedDataTensor};
+use dataflow_rs_v3::datalogic_rs as datalogic;
+use dataflow_rs_v3::datavalue::{DType, OwnedDataTensor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -1093,7 +1093,7 @@ mod tests {
     fn a_default_result_escapes_an_output_named_like_an_operator() {
         assert_eq!(
             TEMPLATE_KEY_ESCAPE,
-            dataflow_rs::Engine::builder()
+            dataflow_rs_v3::Engine::builder()
                 .build()
                 .expect("engine")
                 .template_key_escape(),

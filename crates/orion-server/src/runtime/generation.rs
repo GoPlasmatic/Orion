@@ -47,7 +47,7 @@ pub struct RuntimeGeneration {
     /// with an id of its own choosing, so the number always means "how many
     /// times this node has republished".
     pub id: u64,
-    pub engine: Arc<dataflow_rs::Engine>,
+    pub engine: Arc<dataflow_rs_v3::Engine>,
     pub channels: Arc<ChannelSnapshot>,
     /// Every function the engine above dispatches, and what each declares —
     /// what create-time validation and `GET /admin/functions` read, so a
@@ -99,7 +99,7 @@ impl RuntimeHandle {
     /// placeholder engine bootstrap builds for its datalogic is the same one
     /// that stands in here until the first real publish.
     pub fn new(
-        engine: Arc<dataflow_rs::Engine>,
+        engine: Arc<dataflow_rs_v3::Engine>,
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
     ) -> Self {
@@ -135,7 +135,7 @@ impl RuntimeHandle {
     /// generation finish on it; every load after this returns the new one.
     pub fn publish(
         &self,
-        engine: Arc<dataflow_rs::Engine>,
+        engine: Arc<dataflow_rs_v3::Engine>,
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
         plugins: Arc<PluginSet>,
@@ -166,7 +166,7 @@ impl RuntimeHandle {
 pub(crate) fn test_handle() -> Arc<RuntimeHandle> {
     Arc::new(RuntimeHandle::new(
         Arc::new(
-            dataflow_rs::Engine::builder()
+            dataflow_rs_v3::Engine::builder()
                 .build()
                 .expect("an empty engine builds"),
         ),
@@ -179,15 +179,15 @@ pub(crate) fn test_handle() -> Arc<RuntimeHandle> {
 mod tests {
     use super::*;
 
-    fn engine() -> Arc<dataflow_rs::Engine> {
+    fn engine() -> Arc<dataflow_rs_v3::Engine> {
         Arc::new(
-            dataflow_rs::Engine::builder()
+            dataflow_rs_v3::Engine::builder()
                 .build()
                 .expect("empty engine builds"),
         )
     }
 
-    fn handle() -> (RuntimeHandle, Arc<dataflow_rs::Engine>) {
+    fn handle() -> (RuntimeHandle, Arc<dataflow_rs_v3::Engine>) {
         let boot = engine();
         (
             RuntimeHandle::new(

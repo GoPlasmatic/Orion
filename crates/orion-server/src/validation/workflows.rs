@@ -532,7 +532,7 @@ pub fn validate_workflow_tasks_schema(
             synthetic["loop"] = loop_config.clone();
         }
         errors.extend(
-            dataflow_rs::Workflow::validate_authored(&synthetic)
+            dataflow_rs_v3::Workflow::validate_authored(&synthetic)
                 .into_iter()
                 // An advisory must never become a create-time refusal.
                 // `validate_authored` emits none today — the three live on
@@ -542,14 +542,14 @@ pub fn validate_workflow_tasks_schema(
                 // rejecting workflows that build and run. `Rejected` and
                 // `Defect` stay errors: the second builds and then fails every
                 // message, which is not something to accept at create.
-                .filter(|issue| issue.severity() != dataflow_rs::Severity::Advisory)
+                .filter(|issue| issue.severity() != dataflow_rs_v3::Severity::Advisory)
                 .map(engine_issue_to_field_error),
         );
     }
     errors
 }
 
-/// Render one [`dataflow_rs::WorkflowIssue`] as an Orion `FieldError`.
+/// Render one [`dataflow_rs_v3::WorkflowIssue`] as an Orion `FieldError`.
 ///
 /// The code registry is closed (`orion_api::error::field_codes`), so this maps
 /// onto the codes Orion already emits rather than minting one per `IssueCode`.
@@ -561,8 +561,8 @@ pub fn validate_workflow_tasks_schema(
 /// it drops straight into a field error. A workflow-level issue carries no
 /// path and is reported against `tasks` — the only field this function was
 /// given.
-fn engine_issue_to_field_error(issue: dataflow_rs::WorkflowIssue) -> FieldError {
-    use dataflow_rs::IssueCode;
+fn engine_issue_to_field_error(issue: dataflow_rs_v3::WorkflowIssue) -> FieldError {
+    use dataflow_rs_v3::IssueCode;
     let code = match issue.code {
         IssueCode::NoTasks | IssueCode::MissingStepId | IssueCode::MissingFunction => "REQUIRED",
         IssueCode::DuplicateStepId => "DUPLICATE_TASK_ID",
@@ -750,20 +750,20 @@ pub fn engine_advisories(
     if let Some(loop_config) = loop_config {
         synthetic["loop"] = loop_config.clone();
     }
-    let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
+    let Ok(workflow) = dataflow_rs_v3::Workflow::from_json(&synthetic.to_string()) else {
         // Unparseable tasks are reported with a better message by the schema
         // check; there is nothing to say about the shape of a document that is
         // not a workflow.
         return Vec::new();
     };
-    let issues = dataflow_rs::Engine::builder().check_workflow(&workflow);
+    let issues = dataflow_rs_v3::Engine::builder().check_workflow(&workflow);
 
     // Escaped keys first, then the walk that finds the ones the engine cannot,
     // then the shape findings — the order the three callers reported these in
     // when they were two functions called one after the other.
     let mut out: Vec<EngineAdvisory> = issues
         .iter()
-        .filter(|issue| issue.code == dataflow_rs::IssueCode::EscapedTemplateKey)
+        .filter(|issue| issue.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey)
         .filter(|issue| issue.path.as_deref().is_none_or(is_accidental_escape))
         .map(|issue| EngineAdvisory {
             check: EngineAdvisory::ESCAPED_TEMPLATE_KEY,
@@ -776,7 +776,7 @@ pub fn engine_advisories(
         // Only for a name the engine treats as custom: a built-in's parameters
         // were already walked, and reporting them twice would be worse than
         // not reporting them at all.
-        if dataflow_rs::is_builtin_function(function) {
+        if dataflow_rs_v3::is_builtin_function(function) {
             return;
         }
         if !functions.template_paths(function, field).contains(&"") {
@@ -810,8 +810,8 @@ pub fn engine_advisories(
         // rather than by naming the codes, so this asks the same question
         // `screen_workflow` asks and cannot answer it differently. The escape
         // is already reported above, with a path of its own.
-        if issue.severity() != dataflow_rs::Severity::Advisory
-            || issue.code == dataflow_rs::IssueCode::EscapedTemplateKey
+        if issue.severity() != dataflow_rs_v3::Severity::Advisory
+            || issue.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey
         {
             return None;
         }
@@ -827,10 +827,10 @@ pub fn engine_advisories(
         // `task_id`. Unreachable until such a code exists, so there is nothing
         // to write a fixture against; the arm is the fixture.
         let (check, noun) = match issue.code {
-            dataflow_rs::IssueCode::UnguardedValidation => {
+            dataflow_rs_v3::IssueCode::UnguardedValidation => {
                 (EngineAdvisory::UNGUARDED_VALIDATION, "task")
             }
-            dataflow_rs::IssueCode::GroupContinueOnError => {
+            dataflow_rs_v3::IssueCode::GroupContinueOnError => {
                 (EngineAdvisory::GROUP_CONTINUE_ON_ERROR, "group")
             }
             _ => (EngineAdvisory::UNCLASSIFIED, "task"),
@@ -1039,7 +1039,7 @@ fn reads_the_context(value: &Value) -> bool {
 /// carrying Orion's operators, against an empty context; a constant needs no
 /// other.
 fn evaluates_as_a_call(value: &Value) -> bool {
-    use dataflow_rs::datalogic_rs as datalogic;
+    use dataflow_rs_v3::datalogic_rs as datalogic;
     static ENGINE: std::sync::OnceLock<datalogic::Engine> = std::sync::OnceLock::new();
     let engine = ENGINE.get_or_init(|| {
         crate::engine::operators::add_to_datalogic(datalogic::Engine::builder()).build()
@@ -1074,14 +1074,14 @@ fn escaped_keys_in(value: &Value) -> Vec<(String, String)> {
             ] } }
         }],
     });
-    let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
+    let Ok(workflow) = dataflow_rs_v3::Workflow::from_json(&synthetic.to_string()) else {
         return Vec::new();
     };
-    let builder = dataflow_rs::Engine::builder();
+    let builder = dataflow_rs_v3::Engine::builder();
     builder
         .check_workflow(&workflow)
         .into_iter()
-        .filter(|issue| issue.code == dataflow_rs::IssueCode::EscapedTemplateKey)
+        .filter(|issue| issue.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey)
         .filter_map(|issue| {
             let path = issue.path?;
             let suffix = path.strip_prefix(PREFIX)?;

@@ -2,7 +2,7 @@
 //! repository construction, and background-task lifecycle. `main.rs` stays
 //! the readable orchestration script and calls these phases in order.
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
 use tracing_subscriber::EnvFilter;
@@ -100,7 +100,7 @@ pub use crate::storage::repositories::Repositories;
 /// brokers are configured.
 fn setup_kafka_producer(
     kafka_config: &config::KafkaIngestConfig,
-    custom_functions: &mut std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    custom_functions: &mut std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
     connector_registry: Arc<ConnectorRegistry>,
     max_pool_cache_entries: usize,
 ) -> Result<KafkaProducers, Box<dyn std::error::Error>> {
@@ -201,7 +201,7 @@ pub struct ServingComponents {
 /// handlers, and the Kafka producer.
 pub struct EngineComponents {
     pub serving: ServingComponents,
-    pub custom_functions: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    pub custom_functions: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
 }
 
 /// Build the [`EngineComponents`]: load the connector registry, create the
@@ -315,7 +315,7 @@ pub async fn build_engine_components(
     let boot_engine = Arc::new(
         crate::engine::operators::with_ops_budget(
             crate::engine::operators::with_orion_engine_defaults(
-                dataflow_rs::Engine::builder(),
+                dataflow_rs_v3::Engine::builder(),
                 &secrets,
             ),
             config.engine.ops_budget,
@@ -521,7 +521,7 @@ impl EngineComponents {
         // the workflows are added below, on the same builder.
         let builder = crate::engine::operators::with_ops_budget(
             crate::engine::operators::with_orion_engine_defaults(
-                dataflow_rs::Engine::builder(),
+                dataflow_rs_v3::Engine::builder(),
                 &serving.secrets,
             ),
             config.engine.ops_budget,
@@ -1024,7 +1024,7 @@ pub fn start_background_tasks(
 /// A struct rather than three more positional parameters on
 /// [`start_background_tasks`], two of which are `Arc`s of unrelated things.
 pub struct CronComponents {
-    pub datalogic: Arc<dataflow_rs::datalogic_rs::Engine>,
+    pub datalogic: Arc<dataflow_rs_v3::datalogic_rs::Engine>,
     pub vars: Option<Arc<serde_json::Value>>,
     pub status: Arc<crate::cron::CronStatus>,
 }

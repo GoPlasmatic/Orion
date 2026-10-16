@@ -5,7 +5,7 @@
 //! write or settle. A refusal is the whole result, and the only state any of
 //! them holds is the semaphore permit backpressure hands to the caller.
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
 use serde_json::{Value, json};

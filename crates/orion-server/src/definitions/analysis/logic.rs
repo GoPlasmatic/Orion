@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use serde_json::{Value, json};
 
 use super::dataflow::{self, Reads};

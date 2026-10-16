@@ -554,7 +554,7 @@ pub struct ChannelTracingConfig {
     #[serde(default)]
     pub errors_only: Option<bool>,
     /// When `true`, the engine captures a per-task execution trace
-    /// (intermediate input/output snapshots from `dataflow_rs::ExecutionTrace`)
+    /// (intermediate input/output snapshots from `dataflow_rs_v3::ExecutionTrace`)
     /// and persists it to the `task_trace_json` column. Off by default
     /// because each persisted trace grows proportional to message size
     /// times task count — only enable for debugging.

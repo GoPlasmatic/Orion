@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dataflow_rs::datalogic_rs as datalogic;
+use dataflow_rs_v3::datalogic_rs as datalogic;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
@@ -502,8 +502,9 @@ mod tests {
         }
         fn run(
             &self,
-            _inputs: Vec<dataflow_rs::datavalue::OwnedDataTensor>,
-        ) -> Result<Vec<dataflow_rs::datavalue::OwnedDataTensor>, crate::model::RunError> {
+            _inputs: Vec<dataflow_rs_v3::datavalue::OwnedDataTensor>,
+        ) -> Result<Vec<dataflow_rs_v3::datavalue::OwnedDataTensor>, crate::model::RunError>
+        {
             Ok(Vec::new())
         }
     }
@@ -597,7 +598,7 @@ mod tests {
         let entry = set.get("ada.c4-tiny").expect("loaded");
         let board: Vec<Vec<Vec<f32>>> = vec![vec![vec![0.0; 7]; 6]; 2];
         let root =
-            dataflow_rs::datavalue::OwnedDataValue::from(&json!({"data": {"board": [board]}}));
+            dataflow_rs_v3::datavalue::OwnedDataValue::from(&json!({"data": {"board": [board]}}));
         let arena = datalogic::bumpalo::Bump::new();
         let value = engine
             .evaluate(&entry.adapters[0].1, &root, &arena)
@@ -738,7 +739,7 @@ mod tests {
     /// revisiting.
     #[test]
     fn a_reload_hands_the_model_set_a_new_expression_engine() {
-        let engine = dataflow_rs::Engine::builder().build().expect("builds");
+        let engine = dataflow_rs_v3::Engine::builder().build().expect("builds");
         let next = engine.with_new_workflows(Vec::new()).expect("reloads");
         assert!(
             !Arc::ptr_eq(engine.datalogic(), next.datalogic()),

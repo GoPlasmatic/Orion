@@ -7,10 +7,10 @@
 //! secret registry per call and never enters context, errors, or traces.
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
@@ -39,8 +39,8 @@ impl AsyncFunctionHandler for JwtSignHandler {
     /// `AsyncFunctionHandler` directly and say it themselves.
     fn compile_input(
         input: &mut Self::Input,
-        c: &dataflow_rs::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs_v3::Result<()> {
         input.compile("jwt_sign", c)
     }
 
@@ -48,7 +48,7 @@ impl AsyncFunctionHandler for JwtSignHandler {
         &self,
         ctx: &mut TaskContext<'_>,
         input: &TemplatedInput,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         // Literal prologue (F58): the message-independent refusals first.
         let algorithm = match input.get("algorithm").and_then(Value::as_str) {
             Some(name) => crate::jwt::parse_algorithm(name).map_err(|e| validation(&e))?,

@@ -13,7 +13,10 @@ use super::profile;
 
 /// Result of one engine invocation: the engine's own result plus the captured
 /// per-task `ExecutionTrace` when the caller opted in (A2).
-pub type EngineCallResult = (dataflow_rs::Result<()>, Option<dataflow_rs::ExecutionTrace>);
+pub type EngineCallResult = (
+    dataflow_rs_v3::Result<()>,
+    Option<dataflow_rs_v3::ExecutionTrace>,
+);
 
 /// Opt in to per-task trace capture, bounded by the same byte budget the
 /// persisted row is capped at.
@@ -36,9 +39,9 @@ pub struct TraceCapture {
 /// here so timeout and trace semantics cannot drift between them. `Err(ms)`
 /// means the call timed out after `ms` milliseconds.
 pub async fn run_for_channel(
-    engine: &Arc<dataflow_rs::Engine>,
+    engine: &Arc<dataflow_rs_v3::Engine>,
     channel: &str,
-    message: &mut dataflow_rs::Message,
+    message: &mut dataflow_rs_v3::Message,
     timeout_ms: Option<u64>,
     profile: Option<&Arc<profile::ProfileCollector>>,
     capture: Option<TraceCapture>,
@@ -109,10 +112,10 @@ where
 ///   strips `context.metadata` whole-message and per-step, so a missing entry
 ///   here does not surface through the API — which is exactly why it needs
 ///   stating rather than testing end-to-end.
-fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::TraceOptions {
-    dataflow_rs::TraceOptions {
+fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs_v3::TraceOptions {
+    dataflow_rs_v3::TraceOptions {
         changes: true,
-        snapshot_audit_trail: dataflow_rs::AuditTrailScope::Own,
+        snapshot_audit_trail: dataflow_rs_v3::AuditTrailScope::Own,
         max_snapshot_bytes,
         redact_paths: vec![
             "metadata.headers".to_string(),
@@ -129,9 +132,9 @@ fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::TraceOptions {
 }
 
 async fn run_for_channel_inner(
-    engine: &Arc<dataflow_rs::Engine>,
+    engine: &Arc<dataflow_rs_v3::Engine>,
     channel: &str,
-    message: &mut dataflow_rs::Message,
+    message: &mut dataflow_rs_v3::Message,
     timeout_ms: Option<u64>,
     capture: Option<TraceCapture>,
 ) -> Result<EngineCallResult, u64> {

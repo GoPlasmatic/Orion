@@ -3,7 +3,7 @@
 //! Split out of `guards` as one concept: the limiter call and the key
 //! derivation change together and nothing else reads either.
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
 use serde_json::{Value, json};

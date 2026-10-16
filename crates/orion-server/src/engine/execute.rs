@@ -46,7 +46,7 @@ pub enum RunOutcome {
     /// The deadline expired, with the budget in milliseconds.
     Timeout(u64),
     /// The engine itself failed the call.
-    EngineError(dataflow_rs::DataflowError),
+    EngineError(dataflow_rs_v3::DataflowError),
 }
 
 impl RunOutcome {
@@ -107,9 +107,9 @@ pub struct ExecOpts<'a> {
 pub struct Execution {
     /// The message as the workflows left it — the source of the response body,
     /// the persisted result, and the error list.
-    pub message: dataflow_rs::Message,
+    pub message: dataflow_rs_v3::Message,
     /// The per-task trace, when [`ExecOpts::capture`] asked for one.
-    pub task_trace: Option<dataflow_rs::ExecutionTrace>,
+    pub task_trace: Option<dataflow_rs_v3::ExecutionTrace>,
     pub outcome: RunOutcome,
     /// Wall time of the engine call alone, for the latency histogram.
     pub duration: Duration,
@@ -128,7 +128,7 @@ pub struct Execution {
 /// an offset, emitting the counter whose label [`RunOutcome::status_label`]
 /// derives — is the caller's.
 pub async fn execute_admitted(
-    engine: &Arc<dataflow_rs::Engine>,
+    engine: &Arc<dataflow_rs_v3::Engine>,
     channel: &str,
     data: &Value,
     metadata: &Value,
@@ -148,14 +148,14 @@ pub async fn execute_admitted(
     // keeps none (`AuditMode::Off`); status classification, the error records,
     // `metadata.progress` and halting do not depend on the trail.
     let traced = opts.capture.is_some();
-    let mut builder = dataflow_rs::Message::builder()
+    let mut builder = dataflow_rs_v3::Message::builder()
         .payload_json(data)
         .metadata_json(metadata)
         .capture_changes(traced)
         .audit_mode(if traced {
-            dataflow_rs::AuditMode::Full
+            dataflow_rs_v3::AuditMode::Full
         } else {
-            dataflow_rs::AuditMode::Off
+            dataflow_rs_v3::AuditMode::Off
         });
     if let Some(bucket) = opts.routing_bucket {
         builder = builder.routing_bucket(bucket);
@@ -200,7 +200,7 @@ pub async fn execute_admitted(
 
 /// The `code: message; code: message` summary three transports were each
 /// building from `message.errors()`.
-fn error_summary(message: &dataflow_rs::Message) -> String {
+fn error_summary(message: &dataflow_rs_v3::Message) -> String {
     message
         .errors()
         .iter()
@@ -224,7 +224,8 @@ mod tests {
             "error"
         );
         assert_eq!(
-            RunOutcome::EngineError(dataflow_rs::DataflowError::Unknown("x".into())).status_label(),
+            RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Unknown("x".into()))
+                .status_label(),
             "error"
         );
     }
@@ -235,7 +236,7 @@ mod tests {
     /// them.
     #[tokio::test]
     async fn only_a_traced_run_captures_per_write_changes() {
-        let workflow = dataflow_rs::Workflow::from_json(
+        let workflow = dataflow_rs_v3::Workflow::from_json(
             r#"{"id":"w","name":"w","channel":"c","priority":0,"condition":true,
                 "loop":{"counter":"i","max":3},
                 "tasks":[{"id":"m","name":"m","function":{"name":"map","input":
@@ -243,7 +244,7 @@ mod tests {
         )
         .expect("workflow parses");
         let engine = Arc::new(
-            dataflow_rs::Engine::new(vec![workflow], std::collections::HashMap::new())
+            dataflow_rs_v3::Engine::new(vec![workflow], std::collections::HashMap::new())
                 .expect("engine builds"),
         );
         let data = serde_json::json!({"xs": [1, 2, 3]});

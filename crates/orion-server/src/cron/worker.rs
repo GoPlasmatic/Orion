@@ -45,7 +45,7 @@ pub struct WorkerDeps {
     pub trace_repo: Arc<dyn TraceSink>,
     pub persistence_queue: crate::queue::TracePersistenceQueue,
     pub global_trace_storage: crate::config::TraceStorageConfig,
-    pub datalogic: Arc<dataflow_rs::datalogic_rs::Engine>,
+    pub datalogic: Arc<dataflow_rs_v3::datalogic_rs::Engine>,
     pub vars: Option<Arc<serde_json::Value>>,
     /// This node's identity: the claimant and the singleton holder.
     pub instance_id: String,

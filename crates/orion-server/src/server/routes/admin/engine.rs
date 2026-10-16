@@ -37,7 +37,7 @@ pub(crate) async fn engine_status(
 
     for w in workflows.iter() {
         channels.insert(&w.channel);
-        if matches!(w.status, dataflow_rs::WorkflowStatus::Active) {
+        if matches!(w.status, dataflow_rs_v3::WorkflowStatus::Active) {
             active_count += 1;
         }
     }

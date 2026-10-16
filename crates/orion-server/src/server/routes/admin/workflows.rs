@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -713,7 +713,7 @@ pub(crate) async fn test_workflow(
     // `dry-run`, there *is* a running instance with a `[vars]` section, so the
     // real values are the honest ones.
     crate::engine::stamp_vars(&mut metadata, state.vars.as_deref());
-    let mut message = dataflow_rs::Message::builder()
+    let mut message = dataflow_rs_v3::Message::builder()
         .payload_json(&payload)
         .metadata_json(&metadata)
         .build();
@@ -732,8 +732,8 @@ pub(crate) async fn test_workflow(
     // take the node's memory (#353). `Own` keeps the entry each step wrote,
     // and past the budget a step keeps its id, result and timing and drops its
     // snapshot, with `truncated` set on the trace.
-    let mut trace = dataflow_rs::ExecutionTrace::with_options(dataflow_rs::TraceOptions {
-        snapshot_audit_trail: dataflow_rs::AuditTrailScope::Own,
+    let mut trace = dataflow_rs_v3::ExecutionTrace::with_options(dataflow_rs_v3::TraceOptions {
+        snapshot_audit_trail: dataflow_rs_v3::AuditTrailScope::Own,
         max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
         ..Default::default()
     });
@@ -746,7 +746,7 @@ pub(crate) async fn test_workflow(
         && trace.steps.iter().any(|s| {
             matches!(
                 s.result,
-                dataflow_rs::StepResult::Executed | dataflow_rs::StepResult::Skipped
+                dataflow_rs_v3::StepResult::Executed | dataflow_rs_v3::StepResult::Skipped
             )
         });
 

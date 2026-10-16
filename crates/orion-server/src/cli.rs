@@ -672,7 +672,7 @@ impl Catalog {
     /// [`OfflineModels`]: orion::model::OfflineModels
     pub(crate) fn model_handler(
         &self,
-    ) -> (dataflow_rs::BoxedFunctionHandler, Vec<(String, String)>) {
+    ) -> (dataflow_rs_v3::BoxedFunctionHandler, Vec<(String, String)>) {
         let mut entries = Vec::new();
         let mut unavailable = Vec::new();
         for model in &self.models {
@@ -781,7 +781,7 @@ impl Catalog {
 #[derive(Default)]
 pub(crate) struct OfflinePluginHandlers {
     /// Function name → its handler, for every plugin whose component loaded.
-    pub(crate) handlers: Vec<(String, dataflow_rs::BoxedFunctionHandler)>,
+    pub(crate) handlers: Vec<(String, dataflow_rs_v3::BoxedFunctionHandler)>,
     /// Function name → the manifest's origin, for every plugin whose
     /// component is not beside its manifest and so cannot run here.
     pub(crate) unavailable: Vec<(String, String)>,
@@ -2361,7 +2361,7 @@ pub(crate) fn offline_secrets(
 
 /// Everything an offline run needs beyond the engine itself.
 pub(crate) struct OfflineRun {
-    pub engine: dataflow_rs::Engine,
+    pub engine: dataflow_rs_v3::Engine,
     /// The connector calls the run makes, filled in as it runs — each one
     /// already labelled with the task that made it, since dataflow-rs 3.7
     /// carries the task id into the handler.
@@ -2396,8 +2396,8 @@ impl TaskRecorder {
     }
 }
 
-impl dataflow_rs::ExecutionObserver for TaskRecorder {
-    fn task_finished(&self, event: &dataflow_rs::TaskEvent<'_>) {
+impl dataflow_rs_v3::ExecutionObserver for TaskRecorder {
+    fn task_finished(&self, event: &dataflow_rs_v3::TaskEvent<'_>) {
         if let Ok(mut tasks) = self.tasks.lock() {
             tasks.push(event.task_id.to_string());
         }
@@ -2611,18 +2611,18 @@ pub(crate) enum DryRunTrace {
 
 impl DryRunTrace {
     /// The trace to record, or `None` for none.
-    fn options(self) -> Option<dataflow_rs::TraceOptions> {
+    fn options(self) -> Option<dataflow_rs_v3::TraceOptions> {
         match self {
             // The default `TraceOptions` snapshots the whole audit trail at
             // every step, which is quadratic in the steps: a two-turn run of a
             // looping workflow printed 1.5 GB (#353). `Own` keeps the one
             // entry each step wrote, and `changes` is the diff it made.
-            Self::Full => Some(dataflow_rs::TraceOptions {
+            Self::Full => Some(dataflow_rs_v3::TraceOptions {
                 changes: true,
-                snapshot_audit_trail: dataflow_rs::AuditTrailScope::Own,
+                snapshot_audit_trail: dataflow_rs_v3::AuditTrailScope::Own,
                 ..Default::default()
             }),
-            Self::Steps => Some(dataflow_rs::TraceOptions::timings_only()),
+            Self::Steps => Some(dataflow_rs_v3::TraceOptions::timings_only()),
             Self::Off => None,
         }
     }
@@ -2687,7 +2687,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
     // Per-write capture is what a trace's `changes` and the audit trail's
     // `changes` report; without a trace the run is a node's untraced run.
     let trace_options = trace_mode.options();
-    let mut message = dataflow_rs::Message::builder()
+    let mut message = dataflow_rs_v3::Message::builder()
         .payload_json(&input)
         .metadata_json(&metadata)
         .capture_changes(trace_options.is_some())
@@ -2698,7 +2698,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
     // possible answer to "what does this workflow do?".
     let (trace, run_error) = match trace_options {
         Some(options) => {
-            let mut trace = dataflow_rs::ExecutionTrace::with_options(options);
+            let mut trace = dataflow_rs_v3::ExecutionTrace::with_options(options);
             let run_error = run
                 .engine
                 .process_message_tracing(&mut message, &mut trace)
@@ -3169,7 +3169,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
         .expect
         .keys()
         .any(|path| orion::engine::functions::stub::path_root(path) == "audit_trail");
-    let mut message = dataflow_rs::Message::builder()
+    let mut message = dataflow_rs_v3::Message::builder()
         .payload_json(&case.input)
         .metadata_json(&metadata)
         .capture_changes(capture)
@@ -3246,7 +3246,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
 /// The message's errors are a second source, for an error that names a task
 /// the engine never dispatched. A task that was dispatched and failed is
 /// already recorded, in the position it ran.
-fn executed_task_ids(mut ids: Vec<String>, message: &dataflow_rs::Message) -> Vec<String> {
+fn executed_task_ids(mut ids: Vec<String>, message: &dataflow_rs_v3::Message) -> Vec<String> {
     for id in message.errors().iter().filter_map(|e| e.task_id.as_ref()) {
         if !ids.iter().any(|seen| seen == id) {
             ids.push(id.clone());

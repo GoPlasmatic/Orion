@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256, Sha512};
 use crate::channel::config::{AuthMode, ChannelAuthConfig, JwtSource};
 use crate::channel::guards::HeaderLookup;
 use crate::config::constant_time_eq;
-use dataflow_rs::datalogic_rs::{Engine as DatalogicEngine, Logic};
+use dataflow_rs_v3::datalogic_rs::{Engine as DatalogicEngine, Logic};
 
 use crate::crypto::{Codec, decode_bytes, mac_verify};
 use crate::errors::OrionError;
@@ -302,7 +302,7 @@ impl CompiledAuth {
                     // property `validate_channel_config_blob` checks for
                     // validation_logic.
                     let engine = crate::engine::operators::add_to_datalogic(
-                        dataflow_rs::datalogic_rs::Engine::builder(),
+                        dataflow_rs_v3::datalogic_rs::Engine::builder(),
                     )
                     .build();
                     engine

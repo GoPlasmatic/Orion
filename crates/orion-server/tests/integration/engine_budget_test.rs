@@ -10,13 +10,13 @@
 
 use std::collections::HashMap;
 
-use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs_v3::datavalue::OwnedDataValue;
 use serde_json::json;
 
 /// A mapping that visits every item of `data.items`, so its cost grows with
 /// the input and a small ceiling is crossed for certain.
-fn sweep_workflow() -> dataflow_rs::Workflow {
-    dataflow_rs::Workflow::from_json(
+fn sweep_workflow() -> dataflow_rs_v3::Workflow {
+    dataflow_rs_v3::Workflow::from_json(
         &json!({
             "id": "sweep", "name": "sweep", "priority": 0, "condition": true,
             "tasks": [{
@@ -36,8 +36,8 @@ fn sweep_workflow() -> dataflow_rs::Workflow {
 /// `template_at` field, so the expression is resolved by the handler through
 /// `Template::resolve`, which has an error channel the built-in `map` does
 /// not use.
-fn crypto_sweep_workflow() -> dataflow_rs::Workflow {
-    dataflow_rs::Workflow::from_json(
+fn crypto_sweep_workflow() -> dataflow_rs_v3::Workflow {
+    dataflow_rs_v3::Workflow::from_json(
         &json!({
             "id": "sweep", "name": "sweep", "priority": 0, "condition": true,
             "tasks": [{
@@ -59,15 +59,15 @@ fn crypto_sweep_workflow() -> dataflow_rs::Workflow {
 /// task without `continue_on_error`, with the message's own error list as
 /// the other place a caller looks. Both are returned so the assertions can
 /// read whichever carries it.
-async fn run(ops_budget: u64) -> (Result<(), String>, dataflow_rs::Message) {
+async fn run(ops_budget: u64) -> (Result<(), String>, dataflow_rs_v3::Message) {
     run_workflow(sweep_workflow(), HashMap::new(), ops_budget).await
 }
 
 async fn run_workflow(
-    workflow: dataflow_rs::Workflow,
-    handlers: HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    workflow: dataflow_rs_v3::Workflow,
+    handlers: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
     ops_budget: u64,
-) -> (Result<(), String>, dataflow_rs::Message) {
+) -> (Result<(), String>, dataflow_rs_v3::Message) {
     let engine = orion::engine::build_single(
         workflow,
         handlers,
@@ -75,9 +75,9 @@ async fn run_workflow(
         ops_budget,
     )
     .expect("the sweep builds under any budget — compiling charges nothing");
-    let mut message = dataflow_rs::Message::from_value(&json!({}));
+    let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
     let items: Vec<u32> = (0..500).collect();
-    dataflow_rs::engine::utils::set_nested_value(
+    dataflow_rs_v3::engine::utils::set_nested_value(
         &mut message.context,
         "data",
         OwnedDataValue::from(&json!({ "items": items })),
@@ -116,7 +116,7 @@ async fn a_mapping_that_crosses_the_ceiling_fails_its_task() {
 /// error body carry, and which the retry loop classifies as not retryable.
 #[tokio::test]
 async fn a_template_field_that_crosses_the_ceiling_fails_with_budget_exceeded() {
-    let mut handlers: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
+    let mut handlers: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
     handlers.insert(
         "crypto".to_string(),
         Box::new(orion::engine::functions::crypto::CryptoHandler),
@@ -135,7 +135,7 @@ async fn a_template_field_that_crosses_the_ceiling_fails_with_budget_exceeded() 
     );
 
     // And the same template under no ceiling digests the sweep.
-    let mut handlers: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
+    let mut handlers: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
     handlers.insert(
         "crypto".to_string(),
         Box::new(orion::engine::functions::crypto::CryptoHandler),

@@ -69,7 +69,7 @@ pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, Task
 /// reproduce what boot registered; this is that way.
 pub fn build_handlers(
     state: &crate::server::state::AppState,
-) -> std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> {
+) -> std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> {
     let mut fns = crate::engine::build_custom_functions(handler_deps(state));
     if let Some(producers) = &state.kafka.producers {
         crate::engine::register_kafka_publisher(

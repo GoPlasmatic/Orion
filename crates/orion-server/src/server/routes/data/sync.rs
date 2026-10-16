@@ -473,7 +473,7 @@ const SANITIZED_ERROR_MESSAGE: &str =
 /// the first one already knew. `AppConfig::verbose_errors` picks between them
 /// and refuses the unsafe combination at startup, so this function does not
 /// re-derive the policy; it is handed the answer.
-fn sanitize_errors(errors: &[dataflow_rs::ErrorInfo], verbose: bool) -> Vec<Value> {
+fn sanitize_errors(errors: &[dataflow_rs_v3::ErrorInfo], verbose: bool) -> Vec<Value> {
     errors
         .iter()
         .map(|e| {
@@ -527,7 +527,7 @@ pub(super) fn cached_response(body: String, shaped: bool, channel: &str) -> Resp
 /// next — the mismatch that used to be possible when the two halves were
 /// published separately (`runtime::generation`).
 pub(super) struct AdmittedOn {
-    pub engine: std::sync::Arc<dataflow_rs::Engine>,
+    pub engine: std::sync::Arc<dataflow_rs_v3::Engine>,
     pub channel_config: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
 }
 
@@ -1039,15 +1039,15 @@ mod tests {
 
     /// `ErrorInfo` is `#[non_exhaustive]` as of dataflow-rs 3.1, so the builder
     /// is the only cross-crate construction path.
-    fn info(code: &str, message: &str, task_id: Option<&str>) -> dataflow_rs::ErrorInfo {
-        let mut b = dataflow_rs::ErrorInfo::builder(code, message);
+    fn info(code: &str, message: &str, task_id: Option<&str>) -> dataflow_rs_v3::ErrorInfo {
+        let mut b = dataflow_rs_v3::ErrorInfo::builder(code, message);
         if let Some(task_id) = task_id {
             b = b.task_id(task_id);
         }
         b.build()
     }
 
-    fn sample_errors() -> Vec<dataflow_rs::ErrorInfo> {
+    fn sample_errors() -> Vec<dataflow_rs_v3::ErrorInfo> {
         vec![
             info(
                 "TASK_FAILED",

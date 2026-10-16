@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::HttpCallConfig;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::HttpCallConfig;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{ConnectorCall, require_method_allowed};

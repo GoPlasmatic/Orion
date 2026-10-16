@@ -62,7 +62,7 @@ pub struct HandlerDeps<'a> {
 /// dispatches fine and reports metrics, profile samples and errors under
 /// another function's name.
 fn register<H: functions::connector_handler::ConnectorHandler>(
-    fns: &mut HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    fns: &mut HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
     handler: H,
 ) {
     fns.insert(
@@ -80,7 +80,7 @@ fn register<H: functions::connector_handler::ConnectorHandler>(
 /// initialised.
 pub fn build_custom_functions(
     deps: HandlerDeps<'_>,
-) -> HashMap<String, dataflow_rs::BoxedFunctionHandler> {
+) -> HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> {
     let HandlerDeps {
         registry,
         client,
@@ -97,7 +97,7 @@ pub fn build_custom_functions(
         models,
         models_config,
     } = deps;
-    let mut fns: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
+    let mut fns: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
 
     register(
         &mut fns,
@@ -306,7 +306,7 @@ pub fn build_custom_functions(
 ///
 /// Replaces the stub handler (or adds the handler if not yet registered).
 pub fn register_kafka_publisher(
-    fns: &mut HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    fns: &mut HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
     registry: Arc<ConnectorRegistry>,
     producers: Arc<crate::kafka::producer::KafkaProducerCache>,
 ) {

@@ -551,7 +551,7 @@ fn context() -> Value {
 /// server builds (bootstrap wires them into the guard engine and the workflow
 /// engines alike).
 fn try_eval(logic: &Value) -> Result<Value, String> {
-    use dataflow_rs::datalogic_rs as datalogic;
+    use dataflow_rs_v3::datalogic_rs as datalogic;
     let engine = orion::engine::operators::add_to_datalogic(datalogic::Engine::builder()).build();
     let compiled = engine.compile(logic).map_err(|e| e.to_string())?;
     engine
@@ -581,7 +581,7 @@ async fn a_task_guarded_by(logic: &Value, expected: &Value) -> bool {
     let mut store = serde_json::Map::new();
     store.insert(name.to_string(), json!(value));
 
-    let workflow = dataflow_rs::Workflow::from_json(
+    let workflow = dataflow_rs_v3::Workflow::from_json(
         &json!({
             "id": "secret_op", "name": "secret_op", "priority": 0, "condition": true,
             "tasks": [{
@@ -597,14 +597,14 @@ async fn a_task_guarded_by(logic: &Value, expected: &Value) -> bool {
     .expect("the guard workflow parses");
 
     let engine = orion::engine::operators::with_orion_engine_defaults(
-        dataflow_rs::Engine::builder(),
+        dataflow_rs_v3::Engine::builder(),
         &orion::engine::ResolvedSecrets::from_values(store),
     )
     .with_workflow(workflow)
     .build()
     .expect("an engine declaring the secret builds");
 
-    let mut message = dataflow_rs::Message::builder().build();
+    let mut message = dataflow_rs_v3::Message::builder().build();
     engine
         .process_message(&mut message)
         .await

@@ -15,10 +15,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::json;
 
 use super::connector_helpers::{
@@ -48,8 +48,8 @@ impl AsyncFunctionHandler for CacheInvalidateHandler {
 
     fn compile_input(
         input: &mut Self::Input,
-        c: &dataflow_rs::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs_v3::Result<()> {
         input.compile(NAME, c)
     }
 
@@ -57,7 +57,7 @@ impl AsyncFunctionHandler for CacheInvalidateHandler {
         &self,
         ctx: &mut TaskContext<'_>,
         input: &TemplatedInput,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         self.run(ctx, input)
             .await
             .map_err(|e| e.prefixed(NAME).into())

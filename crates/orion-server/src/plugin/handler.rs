@@ -20,11 +20,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use dataflow_rs::TemplateCompiler;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::TemplateCompiler;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 use tokio::sync::Semaphore;
 
@@ -234,7 +234,7 @@ impl AsyncFunctionHandler for PluginFunctionHandler {
     /// failing at the same check below. The same rules the create-time gate
     /// applies, so what create accepted this accepts, and what a later
     /// version's schema refuses the screen refuses too.
-    fn parse_input_with(&self, input: &Value) -> dataflow_rs::Result<TemplatedInput> {
+    fn parse_input_with(&self, input: &Value) -> dataflow_rs_v3::Result<TemplatedInput> {
         let problems = self.entry.validate_input(input, "task");
         if !problems.is_empty() {
             return Err(DataflowError::Validation(
@@ -256,7 +256,7 @@ impl AsyncFunctionHandler for PluginFunctionHandler {
         &self,
         input: &mut TemplatedInput,
         c: &TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+    ) -> dataflow_rs_v3::Result<()> {
         input.compile_fields(
             &self.entry.name,
             self.entry.input_fields.as_deref().unwrap_or(&[]),
@@ -268,7 +268,7 @@ impl AsyncFunctionHandler for PluginFunctionHandler {
         &self,
         ctx: &mut TaskContext<'_>,
         input: &TemplatedInput,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         let started = Instant::now();
         let result = self.run(ctx, input).await;
         let secs = started.elapsed().as_secs_f64();

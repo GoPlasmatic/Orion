@@ -6,7 +6,7 @@
 //! Tests are marked #[ignore] by default to avoid CI failures when Docker is unavailable.
 //! Run explicitly with: `cargo test -- --ignored kafka`
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,7 +44,7 @@ async fn start_kafka() -> (testcontainers::ContainerAsync<Kafka>, String) {
 /// guards are configured for these consumer tests.
 fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     Arc::new(orion::runtime::RuntimeHandle::new(
-        Arc::new(dataflow_rs::Engine::builder().build().unwrap()),
+        Arc::new(dataflow_rs_v3::Engine::builder().build().unwrap()),
         Arc::new(orion::channel::ChannelSnapshot::empty()),
         orion::engine::FunctionRegistry::builtin().clone(),
     ))

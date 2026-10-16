@@ -26,12 +26,12 @@
 //! plugin entry. The `functions_docs_drift_test` and `function_schema_test`
 //! guards pin the two halves to each other against a live engine.
 //!
-//! [`EngineBuilder::with_handlers`]: dataflow_rs::engine::EngineBuilder::with_handlers
+//! [`EngineBuilder::with_handlers`]: dataflow_rs_v3::engine::EngineBuilder::with_handlers
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
-use dataflow_rs::engine::error::DataflowError;
+use dataflow_rs_v3::engine::error::DataflowError;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -857,7 +857,7 @@ fn write_shape(function: &str) -> Option<WriteShape> {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
-    use dataflow_rs::BuiltinKind;
+    use dataflow_rs_v3::BuiltinKind;
 
     fn plugin_entry(name: &str) -> FunctionEntry {
         FunctionEntry {
@@ -904,8 +904,8 @@ mod registry_tests {
     fn every_self_contained_builtin_is_accepted() {
         let registry = FunctionRegistry::builtin();
         let mut checked = 0;
-        for name in dataflow_rs::BUILTIN_FUNCTION_NAMES {
-            if dataflow_rs::builtin_function_kind(name) == Some(BuiltinKind::SelfContained) {
+        for name in dataflow_rs_v3::BUILTIN_FUNCTION_NAMES {
+            if dataflow_rs_v3::builtin_function_kind(name) == Some(BuiltinKind::SelfContained) {
                 assert!(
                     registry.contains(name),
                     "'{name}' runs with no registration, so rejecting it at create \
@@ -929,8 +929,8 @@ mod registry_tests {
     #[test]
     fn a_builtin_needing_a_handler_is_accepted_only_when_one_is_registered() {
         let registry = FunctionRegistry::builtin();
-        for name in dataflow_rs::BUILTIN_FUNCTION_NAMES {
-            if dataflow_rs::builtin_function_kind(name) != Some(BuiltinKind::RequiresHandler) {
+        for name in dataflow_rs_v3::BUILTIN_FUNCTION_NAMES {
+            if dataflow_rs_v3::builtin_function_kind(name) != Some(BuiltinKind::RequiresHandler) {
                 continue;
             }
             assert_eq!(

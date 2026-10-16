@@ -65,7 +65,7 @@ fn entity_key_tables_cover_exactly_the_request_schemas() {
 }
 
 /// The step tables against the workflow reference's own field tables.
-/// `dataflow_rs::Task` is `#[non_exhaustive]` and not `Serialize`, so the
+/// `dataflow_rs_v3::Task` is `#[non_exhaustive]` and not `Serialize`, so the
 /// page — which `docs_routes_drift_test`'s siblings already keep honest —
 /// is the closest pin available. A task's `description` is accepted by the
 /// engine but not documented, and is allowed as the one extra.

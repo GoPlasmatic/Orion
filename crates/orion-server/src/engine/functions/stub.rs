@@ -53,10 +53,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::apply_output;
@@ -68,7 +68,7 @@ const ANY_TARGET: &str = "*";
 pub type StubTable = HashMap<String, HashMap<String, Value>>;
 
 /// Constructor for a handler an offline run uses as-is.
-type BuildRealHandler = fn() -> dataflow_rs::BoxedFunctionHandler;
+type BuildRealHandler = fn() -> dataflow_rs_v3::BoxedFunctionHandler;
 
 /// The functions that execute for real offline rather than through a stub, and
 /// are therefore absent from the [`CallLog`].
@@ -226,7 +226,7 @@ pub fn path_root(path: &str) -> &str {
 /// on both surfaces. Chronological order across functions is not lost by the
 /// grouping: every record carries its `seq`.
 pub fn run_documents(
-    message: &dataflow_rs::Message,
+    message: &dataflow_rs_v3::Message,
     log: &CallLog,
 ) -> serde_json::Map<String, Value> {
     let mut docs = serde_json::Map::new();
@@ -356,7 +356,7 @@ fn resolve<'a>(
     stubs: &'a StubTable,
     function: &str,
     target: Option<&str>,
-) -> dataflow_rs::Result<&'a Value> {
+) -> dataflow_rs_v3::Result<&'a Value> {
     stubs
         .get(function)
         .and_then(|targets| {
@@ -411,7 +411,7 @@ impl StubHandler {
         &self,
         input: &super::templated_input::TemplatedInput,
         ctx: &TaskContext<'_>,
-    ) -> dataflow_rs::Result<Option<String>> {
+    ) -> dataflow_rs_v3::Result<Option<String>> {
         if self.function == "cache_write" {
             return Ok(None);
         }
@@ -439,7 +439,7 @@ impl StubHandler {
             Some(authored) => match evaluate_here(authored, ctx) {
                 Value::String(path) if !path.is_empty() => path,
                 other => {
-                    return Err(dataflow_rs::DataflowError::Validation(format!(
+                    return Err(dataflow_rs_v3::DataflowError::Validation(format!(
                         "{} 'output' must resolve to a non-empty dotted path, got {other}",
                         self.function
                     )));
@@ -460,8 +460,8 @@ impl AsyncFunctionHandler for StubHandler {
     /// compile is done from `execute` instead.
     fn compile_input(
         input: &mut Self::Input,
-        _c: &dataflow_rs::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+        _c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs_v3::Result<()> {
         // Deliberately nothing: `compile_input` is a static method, so it
         // cannot see which function this instance stands in for, and the
         // schema lookup is by function name. `resolved_input` reads the
@@ -474,7 +474,7 @@ impl AsyncFunctionHandler for StubHandler {
         &self,
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         // The destination is resolved before the raw document is taken, since
         // it can be an expression like any other parameter.
         let output = self.output_path(input, ctx)?;
@@ -516,13 +516,13 @@ pub struct HttpCallStub {
 
 #[async_trait]
 impl AsyncFunctionHandler for HttpCallStub {
-    type Input = dataflow_rs::engine::functions::HttpCallConfig;
+    type Input = dataflow_rs_v3::engine::functions::HttpCallConfig;
 
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         // Upstream's own resolvers throughout, so the record carries the real
         // templated connector, path and body rather than an Orion-side
         // approximation of them.
@@ -555,13 +555,13 @@ pub struct PublishKafkaStub {
 
 #[async_trait]
 impl AsyncFunctionHandler for PublishKafkaStub {
-    type Input = dataflow_rs::engine::functions::PublishKafkaConfig;
+    type Input = dataflow_rs_v3::engine::functions::PublishKafkaConfig;
 
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         let connector = input.resolve_connector(ctx)?;
         self.log.record(
             ctx,
@@ -606,8 +606,8 @@ impl AsyncFunctionHandler for ChannelCallStub {
     /// "eval before compile" error rather than the payload.
     fn compile_input(
         input: &mut Self::Input,
-        c: &dataflow_rs::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs_v3::Result<()> {
         if let Some(t) = input.channel.as_mut() {
             t.compile(c, "channel_call.channel")?;
         }
@@ -621,7 +621,7 @@ impl AsyncFunctionHandler for ChannelCallStub {
         &self,
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         // The real handler's own resolver, so a computed target is recorded as
         // the channel it actually names rather than as "unknown". It used to
         // fall back to the `"*"` stub entry for any `channel_logic` call, which
@@ -676,9 +676,9 @@ pub fn stubbable_functions() -> impl Iterator<Item = &'static str> {
 pub fn build_stub_functions_with_log(
     stubs: StubTable,
     log: Arc<CallLog>,
-) -> HashMap<String, dataflow_rs::BoxedFunctionHandler> {
+) -> HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> {
     let stubs = Arc::new(stubs);
-    let mut out: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
+    let mut out: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
 
     for function in stubbable_functions() {
         // Deterministic and offline — dry-run executes these for real, so a
@@ -693,7 +693,7 @@ pub fn build_stub_functions_with_log(
             .find(|(name, _)| *name == function)
             .map(|(_, build)| build());
 
-        let handler: dataflow_rs::BoxedFunctionHandler = match self_contained {
+        let handler: dataflow_rs_v3::BoxedFunctionHandler = match self_contained {
             Some(handler) => handler,
             None => match function {
                 "http_call" => Box::new(HttpCallStub {
@@ -780,8 +780,8 @@ mod tests {
             log: Arc::new(CallLog::new()),
         };
 
-        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
         let ctx = TaskContext::new(&mut message, &datalogic);
         let path = |h: &StubHandler, input: serde_json::Value| {
             h.output_path(
@@ -855,7 +855,7 @@ mod tests {
     /// passes. That is the silent pass the rooting rule exists to remove.
     #[test]
     fn every_root_is_published() {
-        let message = dataflow_rs::Message::from_value(&json!({}));
+        let message = dataflow_rs_v3::Message::from_value(&json!({}));
         let docs = run_documents(&message, &CallLog::new());
 
         for root in RUN_DOCUMENTS {
@@ -885,7 +885,7 @@ mod tests {
     /// otherwise the log asserts the workflow file back at you.
     #[tokio::test]
     async fn a_recorded_call_carries_the_resolved_payload() {
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
             "id": "w", "name": "w", "condition": true,
             "tasks": [{
                 "id": "persist", "name": "Persist",
@@ -910,7 +910,7 @@ mod tests {
         );
 
         let log = Arc::new(CallLog::new());
-        let engine = dataflow_rs::Engine::new(
+        let engine = dataflow_rs_v3::Engine::new(
             vec![workflow],
             build_stub_functions_with_log(stubs, log.clone()),
         )
@@ -918,7 +918,7 @@ mod tests {
         // Seed `data` directly: a case's `input` is the *payload*, and a real
         // workflow copies it into `data` with a first `parse_json`/`map` task.
         // This test is about the recorder, not that copy.
-        let mut message = dataflow_rs::Message::builder()
+        let mut message = dataflow_rs_v3::Message::builder()
             .payload_json(&json!({"sid": "sess-1"}))
             .data_json(&json!({"sid": "sess-1"}))
             .build();
@@ -948,7 +948,7 @@ mod tests {
     /// payload of, so recording happens before the lookup.
     #[tokio::test]
     async fn an_unstubbed_call_is_still_recorded() {
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
             "id": "w", "name": "w", "condition": true,
             "tasks": [{
                 "id": "read", "name": "Read",
@@ -959,12 +959,12 @@ mod tests {
         .expect("workflow parses");
 
         let log = Arc::new(CallLog::new());
-        let engine = dataflow_rs::Engine::new(
+        let engine = dataflow_rs_v3::Engine::new(
             vec![workflow],
             build_stub_functions_with_log(StubTable::new(), log.clone()),
         )
         .expect("engine builds");
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
         let _ = engine.process_message(&mut message).await;
 
         let calls = log.calls();
@@ -987,7 +987,7 @@ mod tests {
     /// the drift this table exists to prevent.
     #[tokio::test]
     async fn a_self_contained_function_runs_for_real_and_is_not_recorded() {
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
             "id": "w", "name": "w", "condition": true,
             "tasks": [{
                 "id": "digest", "name": "Digest",
@@ -998,12 +998,12 @@ mod tests {
         .expect("workflow parses");
 
         let log = Arc::new(CallLog::new());
-        let engine = dataflow_rs::Engine::new(
+        let engine = dataflow_rs_v3::Engine::new(
             vec![workflow],
             build_stub_functions_with_log(StubTable::new(), log.clone()),
         )
         .expect("engine builds");
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
         engine
             .process_message(&mut message)
             .await
@@ -1034,7 +1034,7 @@ mod tests {
                 .collect(),
         );
 
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
             "id": "typed", "name": "typed", "condition": true,
             "tasks": [{
                 "id": "call", "name": "Call",
@@ -1045,12 +1045,12 @@ mod tests {
         }))
         .expect("workflow parses");
 
-        let engine = dataflow_rs::Engine::new(
+        let engine = dataflow_rs_v3::Engine::new(
             vec![workflow],
             build_stub_functions_with_log(stubs, Arc::new(CallLog::new())),
         )
         .expect("engine builds");
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
         engine
             .process_message(&mut message)
             .await

@@ -1812,7 +1812,7 @@ async fn create_status_and_body(
 
 /// A task with no `id` is refused at create, not discovered at first request.
 ///
-/// `dataflow_rs::Task::id` is a required `String`, so such a workflow used to be
+/// `dataflow_rs_v3::Task::id` is a required `String`, so such a workflow used to be
 /// accepted (201), activate cleanly (200), and then fail to convert at engine
 /// load — quarantining its channel and answering 503 to every request with
 /// "missing field `id`". Same class as the `enrich` false-accept above.

@@ -753,20 +753,20 @@ async fn a_burst_of_large_traces_flushes_on_the_byte_budget() {
 struct AlwaysPanic;
 
 #[async_trait]
-impl dataflow_rs::engine::functions::AsyncFunctionHandler for AlwaysPanic {
+impl dataflow_rs_v3::engine::functions::AsyncFunctionHandler for AlwaysPanic {
     type Input = serde_json::Value;
 
     async fn execute(
         &self,
-        _ctx: &mut dataflow_rs::engine::task_context::TaskContext<'_>,
+        _ctx: &mut dataflow_rs_v3::engine::task_context::TaskContext<'_>,
         _input: &Self::Input,
-    ) -> dataflow_rs::Result<dataflow_rs::engine::task_outcome::TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<dataflow_rs_v3::engine::task_outcome::TaskOutcome> {
         panic!("a handler panicked mid-trace");
     }
 }
 
 fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
-    let workflow = dataflow_rs::Workflow::from_json(
+    let workflow = dataflow_rs_v3::Workflow::from_json(
         r#"{
             "id": "panic-wf",
             "name": "Panic",
@@ -779,7 +779,7 @@ fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     )
     .expect("panic workflow parses");
 
-    let engine = dataflow_rs::Engine::builder()
+    let engine = dataflow_rs_v3::Engine::builder()
         .with_workflow(workflow)
         .register("always_panic", AlwaysPanic)
         .build()

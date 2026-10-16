@@ -39,11 +39,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::TemplateCompiler;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::TemplateCompiler;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -97,7 +97,7 @@ pub trait ConnectorInput: DeserializeOwned + Send + Sync + 'static {
         &mut self,
         _handler: &'static str,
         _c: &TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+    ) -> dataflow_rs_v3::Result<()> {
         Ok(())
     }
 }
@@ -111,12 +111,16 @@ impl ConnectorInput for TemplatedInput {
         resolve_output_path(self, handler, ctx)
     }
 
-    fn compile(&mut self, handler: &'static str, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+    fn compile(
+        &mut self,
+        handler: &'static str,
+        c: &TemplateCompiler,
+    ) -> dataflow_rs_v3::Result<()> {
         TemplatedInput::compile(self, handler, c)
     }
 }
 
-impl ConnectorInput for dataflow_rs::engine::functions::HttpCallConfig {
+impl ConnectorInput for dataflow_rs_v3::engine::functions::HttpCallConfig {
     fn connector(&self, handler: &'static str) -> Result<&str, DataflowError> {
         // Typed: serde already refused a task without it, so the only refusal
         // left is the computed spelling dataflow-rs 3.9 made expressible.
@@ -133,7 +137,7 @@ impl ConnectorInput for dataflow_rs::engine::functions::HttpCallConfig {
     }
 }
 
-impl ConnectorInput for dataflow_rs::engine::functions::PublishKafkaConfig {
+impl ConnectorInput for dataflow_rs_v3::engine::functions::PublishKafkaConfig {
     fn connector(&self, handler: &'static str) -> Result<&str, DataflowError> {
         literal_connector(&self.connector, handler)
     }
@@ -158,7 +162,7 @@ impl ConnectorInput for dataflow_rs::engine::functions::PublishKafkaConfig {
 /// linter and the pool pre-warmer. Admitting a computed name means teaching all
 /// four, not just this line.
 fn literal_connector<'t>(
-    template: &'t dataflow_rs::Template,
+    template: &'t dataflow_rs_v3::Template,
     handler: &'static str,
 ) -> Result<&'t str, DataflowError> {
     template.as_json().as_str().ok_or_else(|| {
@@ -315,14 +319,17 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     /// Forwarded to `AsyncFunctionHandler::parse_input` by the wrapper, with
     /// the same default, so wrapping a handler cannot silently drop a custom
     /// parse.
-    fn parse_input(input: &Value) -> dataflow_rs::Result<Self::Input> {
+    fn parse_input(input: &Value) -> dataflow_rs_v3::Result<Self::Input> {
         serde_json::from_value(input.clone()).map_err(DataflowError::from_serde)
     }
 
     /// Compile the `Template` fields of a just-parsed input, once at engine
     /// build. Forwarded by the wrapper for the same reason as
     /// [`parse_input`](Self::parse_input).
-    fn compile_input(_input: &mut Self::Input, _c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+    fn compile_input(
+        _input: &mut Self::Input,
+        _c: &TemplateCompiler,
+    ) -> dataflow_rs_v3::Result<()> {
         Ok(())
     }
 }
@@ -338,11 +345,11 @@ pub struct Connector<H>(pub H);
 impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
     type Input = H::Input;
 
-    fn parse_input(input: &Value) -> dataflow_rs::Result<Self::Input> {
+    fn parse_input(input: &Value) -> dataflow_rs_v3::Result<Self::Input> {
         H::parse_input(input)
     }
 
-    fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+    fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs_v3::Result<()> {
         // The input's own expression fields first — the wrapper is the only
         // place holding both the input and `H::NAME` — then anything the
         // handler compiles for itself.
@@ -354,7 +361,7 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
         &self,
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         // The literal prologue, then the message-dependent resolution, in one
         // view of the message: everything both read is resolved before the
         // body takes `ctx` mutably, and a handler with several expression
@@ -366,21 +373,21 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
             let parsed = self
                 .0
                 .parse(&call, input, scope)
-                .map_err(dataflow_rs::DataflowError::from)?;
-            Ok::<_, dataflow_rs::DataflowError>((call, parsed))
+                .map_err(dataflow_rs_v3::DataflowError::from)?;
+            Ok::<_, dataflow_rs_v3::DataflowError>((call, parsed))
         })?;
 
         let registry = self.0.registry();
         call.run(registry, async {
             let config = call.resolve(registry).await?;
             let conn = require_connector::<H::Kind>(&config, call.connector)?;
-            H::gate(&parsed, conn, call.connector).map_err(dataflow_rs::DataflowError::from)?;
+            H::gate(&parsed, conn, call.connector).map_err(dataflow_rs_v3::DataflowError::from)?;
 
             let produced = self
                 .0
                 .run(parsed, conn, &call, input, ctx)
                 .await
-                .map_err(dataflow_rs::DataflowError::from)?;
+                .map_err(dataflow_rs_v3::DataflowError::from)?;
 
             if let Some(value) = produced.value {
                 apply_output(ctx, &call.output, value);
@@ -446,8 +453,8 @@ mod tests {
     #[tokio::test]
     async fn the_literal_prologue_is_reported_before_anything_message_dependent() {
         let handler = Connector(Probe(Arc::new(ConnectorRegistry::new(Default::default()))));
-        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs::Message::from_value(&serde_json::json!({}));
+        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs_v3::Message::from_value(&serde_json::json!({}));
         let mut ctx = TaskContext::new(&mut message, &datalogic);
 
         let err = handler

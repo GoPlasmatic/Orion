@@ -256,7 +256,7 @@ pub struct Trace {
     pub completed_at: Option<NaiveDateTime>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
-    /// Per-task `dataflow_rs::ExecutionTrace` JSON, captured only when the
+    /// Per-task `dataflow_rs_v3::ExecutionTrace` JSON, captured only when the
     /// channel has `config.tracing.task_details = true`. Workflow authors
     /// can inspect intermediate inputs/outputs for each task to debug
     /// pipelines without re-running them in dry-run.

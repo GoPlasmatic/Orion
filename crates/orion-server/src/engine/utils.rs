@@ -72,7 +72,7 @@ pub fn rollout_identity<'a>(metadata: &'a Value, sticky_header: &str) -> Option<
 /// aid, so an oversized one is dropped rather than failing the request.
 /// `max_bytes = 0` disables the cap, mirroring the result cap's semantics.
 pub fn serialize_task_trace_capped(
-    trace: Option<&dataflow_rs::ExecutionTrace>,
+    trace: Option<&dataflow_rs_v3::ExecutionTrace>,
     max_bytes: usize,
     context: &str,
 ) -> Option<String> {
@@ -321,7 +321,7 @@ pub fn json_kind(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs::Message;
+    use dataflow_rs_v3::Message;
     use serde_json::json;
 
     /// A message shaped the way every ingress builds one.
@@ -335,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_task_trace_cap_drops_oversized_detail() {
-        let trace = dataflow_rs::ExecutionTrace::new();
+        let trace = dataflow_rs_v3::ExecutionTrace::new();
         // Empty trace serializes to a small JSON — passes any nonzero cap…
         assert!(serialize_task_trace_capped(Some(&trace), 1024, "t").is_some());
         // …fails a cap smaller than its serialization…

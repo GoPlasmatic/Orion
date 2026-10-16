@@ -56,7 +56,7 @@ pub struct CronDeps {
     pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceSink>,
     pub persistence_queue: crate::queue::TracePersistenceQueue,
     pub global_trace_storage: crate::config::TraceStorageConfig,
-    pub datalogic: Arc<dataflow_rs::datalogic_rs::Engine>,
+    pub datalogic: Arc<dataflow_rs_v3::datalogic_rs::Engine>,
     pub vars: Option<Arc<serde_json::Value>>,
     pub instance_id: String,
     pub status: Arc<CronStatus>,

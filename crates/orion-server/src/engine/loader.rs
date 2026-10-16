@@ -83,22 +83,31 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 /// `with_new_workflows` carries across. Both expose the same
 /// `check_workflow`, so this trait exists only to name that shared shape.
 ///
-/// [`Engine`]: dataflow_rs::Engine
-/// [`EngineBuilder`]: dataflow_rs::engine::EngineBuilder
+/// [`Engine`]: dataflow_rs_v3::Engine
+/// [`EngineBuilder`]: dataflow_rs_v3::engine::EngineBuilder
 pub trait HandlerScreen {
     /// Every reason this workflow would not run, without building anything.
-    fn check_workflow(&self, workflow: &dataflow_rs::Workflow) -> Vec<dataflow_rs::WorkflowIssue>;
+    fn check_workflow(
+        &self,
+        workflow: &dataflow_rs_v3::Workflow,
+    ) -> Vec<dataflow_rs_v3::WorkflowIssue>;
 }
 
-impl HandlerScreen for dataflow_rs::Engine {
-    fn check_workflow(&self, workflow: &dataflow_rs::Workflow) -> Vec<dataflow_rs::WorkflowIssue> {
-        dataflow_rs::Engine::check_workflow(self, workflow)
+impl HandlerScreen for dataflow_rs_v3::Engine {
+    fn check_workflow(
+        &self,
+        workflow: &dataflow_rs_v3::Workflow,
+    ) -> Vec<dataflow_rs_v3::WorkflowIssue> {
+        dataflow_rs_v3::Engine::check_workflow(self, workflow)
     }
 }
 
-impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
-    fn check_workflow(&self, workflow: &dataflow_rs::Workflow) -> Vec<dataflow_rs::WorkflowIssue> {
-        dataflow_rs::engine::EngineBuilder::check_workflow(self, workflow)
+impl HandlerScreen for dataflow_rs_v3::engine::EngineBuilder {
+    fn check_workflow(
+        &self,
+        workflow: &dataflow_rs_v3::Workflow,
+    ) -> Vec<dataflow_rs_v3::WorkflowIssue> {
+        dataflow_rs_v3::engine::EngineBuilder::check_workflow(self, workflow)
     }
 }
 
@@ -151,7 +160,7 @@ impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
 /// reload, `dry-run` and the test endpoint — must agree on what "unusable"
 /// means.
 fn screen_workflow(
-    workflow: &dataflow_rs::Workflow,
+    workflow: &dataflow_rs_v3::Workflow,
     screen: &dyn HandlerScreen,
 ) -> Result<(), String> {
     // `check_workflow` asks about handlers, not structure: it never runs
@@ -163,7 +172,7 @@ fn screen_workflow(
     let issues = screen.check_workflow(workflow);
     let (advisories, issues): (Vec<_>, Vec<_>) = issues
         .into_iter()
-        .partition(|i| i.severity() == dataflow_rs::Severity::Advisory);
+        .partition(|i| i.severity() == dataflow_rs_v3::Severity::Advisory);
     // Dropped from the fatal set but not dropped. Each of the three says
     // something a load is the last chance to notice: a stripped `$` changes the
     // shape of a composed document without failing anything, a `validation`
@@ -221,17 +230,17 @@ fn screen_workflow(
 /// [`build_engine_workflows`] puts in a `ChannelLoadIssue`, so an author reads
 /// one explanation of an unusable task wherever they meet it.
 pub fn build_single(
-    workflow: dataflow_rs::Workflow,
-    handlers: HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    workflow: dataflow_rs_v3::Workflow,
+    handlers: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
     secrets: &crate::engine::ResolvedSecrets,
     ops_budget: u64,
-) -> Result<dataflow_rs::Engine, crate::errors::OrionError> {
+) -> Result<dataflow_rs_v3::Engine, crate::errors::OrionError> {
     // `ops_budget` is `engine.ops_budget` where a config exists (the admin
     // test endpoint) and `0` where none does (an offline `dry-run`), so a
     // test run on the server is bounded exactly as serving is.
     let builder = crate::engine::operators::with_ops_budget(
         crate::engine::operators::with_orion_engine_defaults(
-            dataflow_rs::Engine::builder(),
+            dataflow_rs_v3::Engine::builder(),
             secrets,
         ),
         ops_budget,
@@ -269,7 +278,7 @@ pub fn build_engine_workflows(
     workflows: &[Workflow],
     screen: &dyn HandlerScreen,
 ) -> (
-    Vec<dataflow_rs::Workflow>,
+    Vec<dataflow_rs_v3::Workflow>,
     Vec<crate::channel::ChannelLoadIssue>,
 ) {
     // Index workflows by workflow_id for fast lookup
@@ -347,7 +356,7 @@ pub fn build_engine_workflows(
             // is the engine's own arithmetic for exactly this, error direction
             // included, so the invariant is now stated once — in the crate
             // that routes on it.
-            match dataflow_rs::Rollout::partition(&percentages) {
+            match dataflow_rs_v3::Rollout::partition(&percentages) {
                 Ok(ranges) => {
                     let mut converted = Vec::new();
                     let mut failed = false;
@@ -401,8 +410,8 @@ mod tests {
     /// below need — they are about rollout arithmetic and quarantine, and
     /// their tasks are `log`, a self-contained built-in every engine
     /// dispatches.
-    fn screen() -> dataflow_rs::engine::EngineBuilder {
-        dataflow_rs::Engine::builder()
+    fn screen() -> dataflow_rs_v3::engine::EngineBuilder {
+        dataflow_rs_v3::Engine::builder()
     }
 
     /// `ESCAPED_TEMPLATE_KEY` must not quarantine a workflow.
@@ -415,7 +424,7 @@ mod tests {
     /// thing.
     #[test]
     fn an_escaped_template_key_is_an_advisory_not_a_quarantine() {
-        let workflow = dataflow_rs::Workflow::from_json(
+        let workflow = dataflow_rs_v3::Workflow::from_json(
             r#"{"id":"w","name":"w","condition":true,"tasks":[
                 {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[
                   {"path":"data.a","logic":{"$set":{"x":1}}},
@@ -429,7 +438,7 @@ mod tests {
             screen()
                 .check_workflow(&workflow)
                 .iter()
-                .filter(|i| i.code == dataflow_rs::IssueCode::EscapedTemplateKey)
+                .filter(|i| i.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey)
                 .count(),
             2
         );
@@ -453,7 +462,7 @@ mod tests {
     fn the_advisory_issues_do_not_quarantine() {
         let cases = [
             (
-                dataflow_rs::IssueCode::UnguardedValidation,
+                dataflow_rs_v3::IssueCode::UnguardedValidation,
                 r#"{"id":"w","name":"w","condition":true,"tasks":[
                     {"id":"check","name":"check","function":{"name":"validation","input":{
                       "rules":[{"logic":{"==":[1,2]},"message":"no"}]}}},
@@ -461,7 +470,7 @@ mod tests {
                       "mappings":[{"path":"data.x","logic":true}]}}}]}"#,
             ),
             (
-                dataflow_rs::IssueCode::GroupContinueOnError,
+                dataflow_rs_v3::IssueCode::GroupContinueOnError,
                 r#"{"id":"w","name":"w","condition":true,"tasks":[
                     {"id":"g","name":"g","continue_on_error":true,"tasks":[
                       {"id":"t","name":"t","function":{"name":"log","input":{
@@ -471,7 +480,7 @@ mod tests {
 
         for (code, json) in cases {
             let workflow =
-                dataflow_rs::Workflow::from_json(json).expect("the fixture is a valid workflow");
+                dataflow_rs_v3::Workflow::from_json(json).expect("the fixture is a valid workflow");
             // The engine reports it — so this is a claim about severity, not
             // about the finding being absent.
             assert!(
@@ -483,7 +492,7 @@ mod tests {
             );
             assert_eq!(
                 code.severity(),
-                dataflow_rs::Severity::Advisory,
+                dataflow_rs_v3::Severity::Advisory,
                 "{code:?} must be advisory"
             );
             assert!(
@@ -498,7 +507,7 @@ mod tests {
     /// `validate()` refuses, or one row takes every channel down.
     #[test]
     fn a_workflow_validate_refuses_is_screened() {
-        let workflow = dataflow_rs::Workflow::from_json(
+        let workflow = dataflow_rs_v3::Workflow::from_json(
             r#"{"id":"w","name":"w","condition":true,
                 "loop":{"max":2,"setup":[
                   {"id":"t","name":"s","function":{"name":"log","input":{"message":"x"}}}]},
@@ -654,7 +663,7 @@ mod tests {
     /// (`and[1]` is `>= min`, `and[2]` is `< max`) — which is why the split
     /// could be inert for as long as it was: the assertion only ever checked
     /// the *shape* of the generated JSON, never that a bucket routed anywhere.
-    fn bucket_range(wf: &dataflow_rs::Workflow) -> (u8, u8) {
+    fn bucket_range(wf: &dataflow_rs_v3::Workflow) -> (u8, u8) {
         let rollout = wf
             .rollout
             .expect("converted rollout workflow carries a range");
@@ -864,7 +873,7 @@ mod tests {
 
     // ---- build_single: the screen is not the caller's to remember --------
 
-    fn one_task_workflow(function: &str, input: serde_json::Value) -> dataflow_rs::Workflow {
+    fn one_task_workflow(function: &str, input: serde_json::Value) -> dataflow_rs_v3::Workflow {
         serde_json::from_value(serde_json::json!({
             "id": "wf-1",
             "name": "wf-1",
@@ -904,18 +913,18 @@ mod tests {
             screen()
                 .check_workflow(&task())
                 .iter()
-                .any(|i| i.severity() == dataflow_rs::Severity::Defect),
+                .any(|i| i.severity() == dataflow_rs_v3::Severity::Defect),
             "`enrich` with no handler is the Defect class"
         );
         assert!(
-            dataflow_rs::Engine::builder()
+            dataflow_rs_v3::Engine::builder()
                 .with_workflow(task())
                 .build()
                 .is_ok(),
             "`build` accepts it — the premise that makes this screen necessary"
         );
 
-        // `dataflow_rs::Engine` is not `Debug`, so unwrap the arms by hand.
+        // `dataflow_rs_v3::Engine` is not `Debug`, so unwrap the arms by hand.
         let Err(err) = build_single(
             task(),
             std::collections::HashMap::new(),

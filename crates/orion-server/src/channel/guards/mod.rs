@@ -65,7 +65,7 @@
 //! have no direct test at all, because a guard's contract is what the matrix
 //! does with it.
 
-use dataflow_rs::datalogic_rs;
+use dataflow_rs_v3::datalogic_rs;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -823,7 +823,7 @@ pub(crate) fn is_truthy(val: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::key_logic_header_paths;
-    use dataflow_rs::datalogic_rs;
+    use dataflow_rs_v3::datalogic_rs;
     use std::sync::Arc;
 
     use async_trait::async_trait;

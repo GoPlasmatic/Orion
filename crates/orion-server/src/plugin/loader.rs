@@ -89,14 +89,14 @@ impl PluginSet {
     }
 
     /// A fresh boxed handler per function, for one engine build.
-    pub fn handlers(&self) -> Vec<(String, dataflow_rs::BoxedFunctionHandler)> {
+    pub fn handlers(&self) -> Vec<(String, dataflow_rs_v3::BoxedFunctionHandler)> {
         self.plugins
             .iter()
             .flat_map(|p| p.handlers.iter())
             .map(|h| {
                 (
                     h.name().to_string(),
-                    Box::new(h.clone()) as dataflow_rs::BoxedFunctionHandler,
+                    Box::new(h.clone()) as dataflow_rs_v3::BoxedFunctionHandler,
                 )
             })
             .collect()

@@ -26,7 +26,7 @@
 //! to_connect_error)` reads better than a struct literal — they just build a
 //! `HandlerError` now, and `?` converts it.
 
-use dataflow_rs::DataflowError;
+use dataflow_rs_v3::DataflowError;
 
 /// What kind of failure a handler hit.
 ///

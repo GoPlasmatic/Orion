@@ -29,7 +29,7 @@
 //! artifact keyed by connector, including a per-message JSONLogic resolution
 //! for `channel_call` (F49) that the engine has no concept of.
 
-use dataflow_rs::{ExecutionObserver, TaskEvent, WorkflowFinished};
+use dataflow_rs_v3::{ExecutionObserver, TaskEvent, WorkflowFinished};
 
 /// Emits `orion_task_duration_seconds{workflow,task,function}` per dispatched
 /// task, and `orion_workflow_duration_seconds{workflow}` per workflow run.
@@ -129,17 +129,17 @@ mod tests {
         }
 
         let seen = std::sync::Arc::new(Seen::default());
-        let workflow = dataflow_rs::Workflow::from_json(
+        let workflow = dataflow_rs_v3::Workflow::from_json(
             r#"{"id":"w","name":"w","priority":0,"condition":true,
                 "tasks":[{"id":"m","name":"m","function":{"name":"map","input":
                   {"mappings":[{"path":"data.ok","logic":true}]}}}]}"#,
         )
         .expect("workflow parses");
-        let engine = dataflow_rs::Engine::new(vec![workflow], std::collections::HashMap::new())
+        let engine = dataflow_rs_v3::Engine::new(vec![workflow], std::collections::HashMap::new())
             .expect("engine builds")
             .with_observer(seen.clone());
 
-        let mut message = dataflow_rs::Message::builder().build();
+        let mut message = dataflow_rs_v3::Message::builder().build();
         engine
             .process_message(&mut message)
             .await
@@ -181,8 +181,8 @@ mod tests {
             }
         }
 
-        fn workflow(id: &str, condition: bool) -> dataflow_rs::Workflow {
-            dataflow_rs::Workflow::from_json(&format!(
+        fn workflow(id: &str, condition: bool) -> dataflow_rs_v3::Workflow {
+            dataflow_rs_v3::Workflow::from_json(&format!(
                 r#"{{"id":"{id}","name":"{id}","priority":0,"condition":{condition},
                     "tasks":[{{"id":"m","name":"m","function":{{"name":"map","input":
                       {{"mappings":[{{"path":"data.ok","logic":true}}]}}}}}}]}}"#
@@ -191,14 +191,14 @@ mod tests {
         }
 
         let seen = std::sync::Arc::new(Seen::default());
-        let engine = dataflow_rs::Engine::new(
+        let engine = dataflow_rs_v3::Engine::new(
             vec![workflow("runs", true), workflow("skipped", false)],
             std::collections::HashMap::new(),
         )
         .expect("engine builds")
         .with_observer(seen.clone());
 
-        let mut message = dataflow_rs::Message::builder().build();
+        let mut message = dataflow_rs_v3::Message::builder().build();
         engine
             .process_message(&mut message)
             .await

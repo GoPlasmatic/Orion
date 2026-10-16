@@ -715,7 +715,7 @@ async fn test_http_call_end_to_end() {
 /// Neither had any coverage, which mattered when they moved from raw
 /// `serde_json::Value` — recompiled from JSON on **every message**, the only
 /// two `ctx.datalogic().compile(..)` calls left in the handler surface — to
-/// `dataflow_rs::Template`, compiled once at engine construction through the
+/// `dataflow_rs_v3::Template`, compiled once at engine construction through the
 /// `compile_input` hook. The observable contract is unchanged; this pins it.
 #[tokio::test]
 async fn channel_call_resolves_target_and_payload_from_logic() {

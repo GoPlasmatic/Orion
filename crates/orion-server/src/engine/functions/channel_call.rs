@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
-use dataflow_rs::{Template, TemplateCompiler};
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::{Template, TemplateCompiler};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -84,7 +84,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
     /// every channel on every node goes down on reload. `custom_input_parse_check`
     /// compiles the same two fields ahead of `Engine::new` so a bad expression
     /// stays a per-channel `ChannelLoadIssue` (F33/F41) instead.
-    fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+    fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs_v3::Result<()> {
         if let Some(t) = input.channel.as_mut() {
             check_channel_shape(t)?;
             t.compile(c, "channel_call.channel")?;
@@ -105,7 +105,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
         &self,
         ctx: &mut TaskContext<'_>,
         input: &ChannelCallInput,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         // F49: resolve the target *before* opening the profile scope, so the
         // sample can be labelled with it. `channel_call` used to pass `None`,
         // leaving `by_connector` blank for the one handler whose fan-out most
@@ -364,7 +364,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
 pub(super) fn resolve_target(
     ctx: &TaskContext<'_>,
     input: &ChannelCallInput,
-) -> dataflow_rs::Result<String> {
+) -> dataflow_rs_v3::Result<String> {
     let Some(channel) = input.channel.as_ref() else {
         return Err(DataflowError::Validation(
             "channel_call requires 'channel'".into(),
@@ -400,7 +400,7 @@ pub(super) fn resolve_target(
 /// will be. An object or an array may be an operator call, and what it
 /// evaluates to is not knowable until a message arrives — `resolve_target`
 /// reports those.
-fn check_channel_shape(channel: &Template) -> dataflow_rs::Result<()> {
+fn check_channel_shape(channel: &Template) -> dataflow_rs_v3::Result<()> {
     match channel.as_json() {
         Value::Object(_) | Value::Array(_) | Value::String(_) => Ok(()),
         other => Err(DataflowError::Validation(format!(
@@ -413,7 +413,7 @@ fn check_channel_shape(channel: &Template) -> dataflow_rs::Result<()> {
 /// A template's value for this message as `serde_json::Value`, through
 /// `resolve` so a folded constant is served from the cache rather than
 /// re-evaluated.
-fn input_json(template: &Template, ctx: &TaskContext<'_>) -> dataflow_rs::Result<Value> {
+fn input_json(template: &Template, ctx: &TaskContext<'_>) -> dataflow_rs_v3::Result<Value> {
     Ok((&template.resolve(ctx)?).into())
 }
 

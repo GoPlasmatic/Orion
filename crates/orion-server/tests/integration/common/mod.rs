@@ -31,7 +31,7 @@ use tower::ServiceExt;
 pub fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     Arc::new(orion::runtime::RuntimeHandle::new(
         Arc::new(
-            dataflow_rs::Engine::builder()
+            dataflow_rs_v3::Engine::builder()
                 .build()
                 .expect("empty engine"),
         ),

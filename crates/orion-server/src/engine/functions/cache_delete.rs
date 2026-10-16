@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::json;
 
 use super::cache_read::MAX_KEYS;
@@ -162,8 +162,8 @@ mod tests {
             cache_pool: pool,
             registry: Arc::new(ConnectorRegistry::new(Default::default())),
         };
-        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
         let mut ctx = TaskContext::new(&mut message, &datalogic);
         let call = ConnectorCall {
             name: CacheDeleteHandler::NAME,

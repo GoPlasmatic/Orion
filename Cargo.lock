@@ -1472,6 +1472,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataflow-rs"
+version = "4.0.0-dev"
+source = "git+file:///Users/codetiger/Development/Plasmatic/dataflow-rs?rev=2620427ddcfa4f1c72da8e94df749475a22e0b6f#2620427ddcfa4f1c72da8e94df749475a22e0b6f"
+dependencies = [
+ "bumpalo",
+ "chrono",
+ "dataflow-rs-derive",
+ "datalogic-rs",
+ "datavalue-rs",
+ "futures-util",
+ "log",
+ "quick-xml",
+ "self_cell",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
+name = "dataflow-rs-derive"
+version = "4.0.0-dev"
+source = "git+file:///Users/codetiger/Development/Plasmatic/dataflow-rs?rev=2620427ddcfa4f1c72da8e94df749475a22e0b6f#2620427ddcfa4f1c72da8e94df749475a22e0b6f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "datalogic-rs"
 version = "5.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3835,7 +3867,8 @@ dependencies = [
  "cron",
  "ctor",
  "dashmap",
- "dataflow-rs",
+ "dataflow-rs 3.15.0",
+ "dataflow-rs 4.0.0-dev",
  "futures",
  "gethostname",
  "governor",

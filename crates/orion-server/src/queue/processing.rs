@@ -16,7 +16,7 @@ use super::QueuedItem;
 /// JSON under `_orion.profile` when one is provided (B3 shape lock —
 /// matches the sync response envelope).
 fn serialize_result_with_profile(
-    message: &dataflow_rs::Message,
+    message: &dataflow_rs_v3::Message,
     profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
 ) -> Result<String, serde_json::Error> {
     // No profile is the overwhelmingly common case — it needs both
@@ -523,7 +523,7 @@ async fn persist_success(
     ctx: &ProcessingContext,
     effective_trace: &crate::channel::registry::EffectiveTraceConfig,
     trace_id: &str,
-    message: &dataflow_rs::Message,
+    message: &dataflow_rs_v3::Message,
     profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
     duration_ms: f64,
     task_trace_json: Option<String>,

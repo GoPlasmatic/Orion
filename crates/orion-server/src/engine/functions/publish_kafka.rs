@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::PublishKafkaConfig;
-use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::PublishKafkaConfig;
+use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
 use super::connector_handler::{ConnectorHandler, Produced};

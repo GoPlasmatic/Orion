@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use dataflow_rs::datalogic_rs as datalogic;
+use dataflow_rs_v3::datalogic_rs as datalogic;
 
 use super::handler::ArtifactSource;
 use super::loader::{ManifestEntry, ModelEntry, ModelSet};

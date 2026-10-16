@@ -31,7 +31,7 @@ pub mod send_email;
 pub mod storage_head;
 pub mod storage_presign;
 
-use dataflow_rs::engine::message::Message;
+use dataflow_rs_v3::engine::message::Message;
 // Only the `#[cfg(test)]` harness below needs this now that the retry loop
 // itself lives upstream.
 #[cfg(test)]
@@ -43,7 +43,7 @@ use serde_json::Value;
 /// enum's own `Deserialize` spelling, so the token is always a valid method
 /// name and `from_bytes` cannot actually fail. The fallback keeps this
 /// infallible rather than asserting on that.
-pub fn to_reqwest_method(method: &dataflow_rs::HttpMethod) -> reqwest::Method {
+pub fn to_reqwest_method(method: &dataflow_rs_v3::HttpMethod) -> reqwest::Method {
     reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET)
 }
 
@@ -71,8 +71,8 @@ pub fn extract_channel(message: &Message) -> &str {
 /// made, which is the only way a caller can say "this succeeded, but not
 /// first time".
 ///
-/// [`DataflowError::retryable`]: dataflow_rs::DataflowError::retryable
-pub use dataflow_rs::{RetryPolicy, retry_with_attempts, retry_with_policy};
+/// [`DataflowError::retryable`]: dataflow_rs_v3::DataflowError::retryable
+pub use dataflow_rs_v3::{RetryPolicy, retry_with_attempts, retry_with_policy};
 
 /// Test-only shared harness: run `tasks` through a real engine with `fns`
 /// registered, seed `data` (unless null) into the message context, and return
@@ -80,21 +80,21 @@ pub use dataflow_rs::{RetryPolicy, retry_with_attempts, retry_with_policy};
 /// per-handler test modules each used to hand-roll these ~25 lines.
 #[cfg(test)]
 pub(crate) async fn run_test_tasks(
-    fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
     tasks: Value,
     data: Value,
 ) -> Result<Value, String> {
-    let workflow: dataflow_rs::Workflow = serde_json::from_value(serde_json::json!({
+    let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(serde_json::json!({
         "id": "w", "name": "w", "condition": true, "tasks": tasks
     }))
     .map_err(|e| e.to_string())?;
-    let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-    let mut message = dataflow_rs::Message::from_value(&serde_json::json!({}));
+    let engine = dataflow_rs_v3::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
+    let mut message = dataflow_rs_v3::Message::from_value(&serde_json::json!({}));
     if !data.is_null() {
-        dataflow_rs::engine::utils::set_nested_value(
+        dataflow_rs_v3::engine::utils::set_nested_value(
             &mut message.context,
             "data",
-            dataflow_rs::datavalue::OwnedDataValue::from(&data),
+            dataflow_rs_v3::datavalue::OwnedDataValue::from(&data),
         );
     }
     engine
@@ -111,11 +111,11 @@ pub(crate) async fn run_test_tasks(
 #[cfg(test)]
 pub(crate) async fn run_test_task(
     name: &str,
-    handler: dataflow_rs::BoxedFunctionHandler,
+    handler: dataflow_rs_v3::BoxedFunctionHandler,
     input: Value,
     data: Value,
 ) -> Result<Value, String> {
-    let mut fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> =
+    let mut fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
         Default::default();
     fns.insert(name.to_string(), handler);
     run_test_tasks(
@@ -129,7 +129,7 @@ pub(crate) async fn run_test_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs::engine::error::DataflowError;
+    use dataflow_rs_v3::engine::error::DataflowError;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -140,7 +140,7 @@ mod tests {
     /// assert the round trip, not just that a `Method` came back.
     #[test]
     fn every_http_method_maps_to_the_same_reqwest_verb() {
-        for method in dataflow_rs::HttpMethod::ALL {
+        for method in dataflow_rs_v3::HttpMethod::ALL {
             assert_eq!(
                 to_reqwest_method(method).as_str(),
                 method.as_str(),
@@ -152,10 +152,10 @@ mod tests {
     #[test]
     fn test_extract_channel_with_channel() {
         let mut message = Message::from_value(&serde_json::json!({"key": "val"}));
-        dataflow_rs::engine::utils::set_nested_value(
+        dataflow_rs_v3::engine::utils::set_nested_value(
             &mut message.context,
             "metadata.channel",
-            dataflow_rs::datavalue::OwnedDataValue::from("orders".to_string()),
+            dataflow_rs_v3::datavalue::OwnedDataValue::from("orders".to_string()),
         );
         assert_eq!(extract_channel(&message), "orders");
     }

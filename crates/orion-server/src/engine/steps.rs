@@ -39,10 +39,10 @@
 //! Reading [`MAX_GROUP_DEPTH`] means the limit tracks the parser by
 //! construction.
 
-use dataflow_rs::{MAX_GROUP_DEPTH, StepKind, walk_authored_steps, walk_authored_steps_at};
+use dataflow_rs_v3::{MAX_GROUP_DEPTH, StepKind, walk_authored_steps, walk_authored_steps_at};
 use serde_json::Value;
 
-pub use dataflow_rs::is_group;
+pub use dataflow_rs_v3::is_group;
 
 /// dataflow-rs refuses a step tree nested deeper than this.
 ///
@@ -82,7 +82,7 @@ pub struct Steps<'a> {
 fn authored_steps<'a>(
     tasks: &'a Value,
     loop_config: Option<&'a Value>,
-) -> impl Iterator<Item = dataflow_rs::AuthoredStep<'a>> {
+) -> impl Iterator<Item = dataflow_rs_v3::AuthoredStep<'a>> {
     let setup = loop_config.and_then(|l| l.get("setup"));
     setup
         .into_iter()
@@ -244,7 +244,7 @@ mod tests {
             "{MAX_STEP_DEPTH} levels of nesting is what the parser accepts"
         );
         assert!(
-            serde_json::from_value::<dataflow_rs::Workflow>(json!({
+            serde_json::from_value::<dataflow_rs_v3::Workflow>(json!({
                 "id": "w", "name": "w", "condition": true, "tasks": inner,
             }))
             .is_ok(),

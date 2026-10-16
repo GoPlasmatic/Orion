@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dataflow_rs::engine::error::DataflowError;
+use dataflow_rs_v3::engine::error::DataflowError;
 use serde_json::Value;
 
 use crate::connector::{AuthConfig, HttpConnectorConfig, redact_url_secrets_or_raw};
@@ -189,7 +189,7 @@ pub struct EncodedBody {
 /// Workflow validation runs the same function over a *static* `body` at
 /// authoring time (see `schema::validate_input`), keeping the two layers from
 /// drifting.
-pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<EncodedBody> {
+pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs_v3::Result<EncodedBody> {
     let encoded = match format {
         BodyFormat::Json => EncodedBody {
             bytes: serde_json::to_vec(body)
@@ -229,7 +229,7 @@ pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<Enco
 /// parameters. Anything nested is refused: form encoding has no canonical
 /// nesting. Bracket-path conventions need no support here — `"metadata[id]"`
 /// is an ordinary top-level key.
-fn encode_form(body: &Value) -> dataflow_rs::Result<String> {
+fn encode_form(body: &Value) -> dataflow_rs_v3::Result<String> {
     let Some(obj) = body.as_object() else {
         return Err(DataflowError::Validation(format!(
             "body_format 'form' requires the body to be an object of key/value pairs, got {}",
@@ -310,7 +310,7 @@ pub async fn execute_request(
     client: &reqwest::Client,
     http_config: &HttpConnectorConfig,
     spec: RequestSpec<'_>,
-) -> dataflow_rs::Result<Value> {
+) -> dataflow_rs_v3::Result<Value> {
     let RequestSpec {
         method,
         url,
@@ -470,7 +470,7 @@ fn has_content_type(headers: &std::collections::HashMap<String, String>) -> bool
 fn redirect_target(
     response: &reqwest::Response,
     current: &url::Url,
-) -> dataflow_rs::Result<Option<url::Url>> {
+) -> dataflow_rs_v3::Result<Option<url::Url>> {
     if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
         return Ok(None);
     }
@@ -528,7 +528,7 @@ async fn read_response(
     url: &url::Url,
     max_size: usize,
     format: ResponseFormat,
-) -> dataflow_rs::Result<Value> {
+) -> dataflow_rs_v3::Result<Value> {
     let status = response.status();
     let safe = safe_url(url.as_str());
 

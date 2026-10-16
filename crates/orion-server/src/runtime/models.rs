@@ -240,7 +240,7 @@ pub fn spawn_preload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs::datalogic_rs as datalogic;
+    use dataflow_rs_v3::datalogic_rs as datalogic;
     use serde_json::json;
 
     fn channel(name: &str, workflow_id: &str) -> Channel {
@@ -386,7 +386,7 @@ mod tests {
         ];
         let generation = RuntimeGeneration {
             id: 1,
-            engine: Arc::new(dataflow_rs::Engine::builder().build().expect("builds")),
+            engine: Arc::new(dataflow_rs_v3::Engine::builder().build().expect("builds")),
             channels: Arc::new(crate::channel::ChannelSnapshot::empty()),
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),
@@ -430,7 +430,7 @@ mod tests {
         ];
         let generation = RuntimeGeneration {
             id: 1,
-            engine: Arc::new(dataflow_rs::Engine::builder().build().expect("builds")),
+            engine: Arc::new(dataflow_rs_v3::Engine::builder().build().expect("builds")),
             channels: Arc::new(crate::channel::ChannelSnapshot::empty()),
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),

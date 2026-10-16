@@ -142,7 +142,7 @@ pub enum OrionError {
     Storage(#[from] sqlx::Error),
 
     #[error("Engine error: {0}")]
-    Engine(#[from] dataflow_rs::DataflowError),
+    Engine(#[from] dataflow_rs_v3::DataflowError),
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -519,7 +519,7 @@ impl IntoResponse for OrionError {
 }
 
 /// The classifications Orion's function handlers attach to a
-/// [`dataflow_rs::DataflowError::Service`].
+/// [`dataflow_rs_v3::DataflowError::Service`].
 ///
 /// These used to be **prefixes on the error message**, matched back out with
 /// `starts_with` in an order-sensitive `match`: `AsyncFunctionHandler` has to
@@ -586,7 +586,7 @@ pub enum IntegrityKind {
 pub fn channel_refused_dataflow_error(
     status: StatusCode,
     message: String,
-) -> dataflow_rs::DataflowError {
+) -> dataflow_rs_v3::DataflowError {
     let kind = match status.as_u16() {
         429 => kind::CHANNEL_RATE_LIMITED,
         403 => kind::CHANNEL_FORBIDDEN,
@@ -595,7 +595,7 @@ pub fn channel_refused_dataflow_error(
     };
     // Retryable: the caller is over a limit or the target is at capacity.
     // Neither is a server fault and both clear on their own.
-    dataflow_rs::DataflowError::service(kind, message)
+    dataflow_rs_v3::DataflowError::service(kind, message)
         .retryable(!matches!(status.as_u16(), 403 | 409))
         .build()
 }
@@ -607,8 +607,11 @@ pub fn channel_refused_dataflow_error(
 /// [`kind::CONNECTOR_DETAIL`] applies to the same kind of names, but it is the
 /// shipped behaviour of `503 CIRCUIT_OPEN` and changing it is a data-plane
 /// contract decision, not part of swapping the mechanism underneath it.
-pub fn circuit_open_dataflow_error(connector: &str, channel: &str) -> dataflow_rs::DataflowError {
-    dataflow_rs::DataflowError::service(
+pub fn circuit_open_dataflow_error(
+    connector: &str,
+    channel: &str,
+) -> dataflow_rs_v3::DataflowError {
+    dataflow_rs_v3::DataflowError::service(
         kind::CIRCUIT_OPEN,
         format!("Circuit breaker open for connector '{connector}' on channel '{channel}'"),
     )
@@ -623,8 +626,8 @@ pub fn circuit_open_dataflow_error(connector: &str, channel: &str) -> dataflow_r
 /// Build a refusal whose text names internal topology (G3).
 ///
 /// The caller gets `public`; `detail` is logged and kept on the trace.
-pub fn connector_detail_error(detail: impl std::fmt::Display) -> dataflow_rs::DataflowError {
-    dataflow_rs::DataflowError::service(kind::CONNECTOR_DETAIL, "Request validation failed")
+pub fn connector_detail_error(detail: impl std::fmt::Display) -> dataflow_rs_v3::DataflowError {
+    dataflow_rs_v3::DataflowError::service(kind::CONNECTOR_DETAIL, "Request validation failed")
         .detail(detail.to_string())
         .build()
 }
@@ -646,7 +649,7 @@ pub fn connector_detail_error(detail: impl std::fmt::Display) -> dataflow_rs::Da
 pub fn integrity_dataflow_error(
     integrity: IntegrityKind,
     detail: impl std::fmt::Display,
-) -> dataflow_rs::DataflowError {
+) -> dataflow_rs_v3::DataflowError {
     let (kind, message) = match integrity {
         IntegrityKind::Unique => (
             kind::INTEGRITY_UNIQUE,
@@ -662,15 +665,15 @@ pub fn integrity_dataflow_error(
             "A value in the request is not allowed",
         ),
     };
-    dataflow_rs::DataflowError::service(kind, message)
+    dataflow_rs_v3::DataflowError::service(kind, message)
         .detail(detail.to_string())
         .retryable(false)
         .build()
 }
 
 /// Map DataflowError variants to appropriate HTTP status codes and sanitized messages.
-fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'static str, String) {
-    use dataflow_rs::DataflowError;
+fn engine_error_response(e: &dataflow_rs_v3::DataflowError) -> (StatusCode, &'static str, String) {
+    use dataflow_rs_v3::DataflowError;
 
     // A handler-classified failure answers for itself, with no ordering hazard
     // between guards and no risk of a genuine downstream 503 relayed by
@@ -788,7 +791,7 @@ mod tests {
 
     #[test]
     fn test_engine_validation_returns_400() {
-        let err = OrionError::Engine(dataflow_rs::DataflowError::Validation(
+        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::Validation(
             "bad input".to_string(),
         ));
         let response = err.into_response();
@@ -797,7 +800,7 @@ mod tests {
 
     #[test]
     fn test_engine_budget_returns_400_with_the_message() {
-        let err = OrionError::Engine(dataflow_rs::DataflowError::BudgetExceeded(
+        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::BudgetExceeded(
             "crypto: Operation budget exceeded: 86 charged against 20".to_string(),
         ));
         let (status, code, message) = err.response_parts();
@@ -808,7 +811,9 @@ mod tests {
 
     #[test]
     fn test_engine_timeout_returns_504() {
-        let err = OrionError::Engine(dataflow_rs::DataflowError::Timeout("timed out".to_string()));
+        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::Timeout(
+            "timed out".to_string(),
+        ));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     }
@@ -1015,7 +1020,7 @@ mod tests {
 
     #[test]
     fn test_engine_generic_error_status() {
-        let err = OrionError::Engine(dataflow_rs::DataflowError::Unknown(
+        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::Unknown(
             "unknown issue".to_string(),
         ));
         let response = err.into_response();
@@ -1194,7 +1199,7 @@ mod tests {
             // `Engine` delegates to `engine_error_response`; the arms that
             // branch on the inner DataflowError are covered by the tests above.
             (
-                OrionError::Engine(dataflow_rs::DataflowError::Unknown("x".into())),
+                OrionError::Engine(dataflow_rs_v3::DataflowError::Unknown("x".into())),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "ENGINE_ERROR",
             ),
@@ -1431,7 +1436,10 @@ mod tests {
     /// channel refusal, and a relayed 429 carries none.
     #[tokio::test]
     async fn test_downstream_429_is_not_reported_as_a_channel_refusal() {
-        let err = OrionError::Engine(dataflow_rs::DataflowError::http(429, "Too Many Requests"));
+        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::http(
+            429,
+            "Too Many Requests",
+        ));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -1448,7 +1456,10 @@ mod tests {
     #[tokio::test]
     async fn test_downstream_503_is_not_reported_as_circuit_open() {
         // A genuine 503 relayed by http_call keeps the generic engine mapping.
-        let err = OrionError::Engine(dataflow_rs::DataflowError::http(503, "Service Unavailable"));
+        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::http(
+            503,
+            "Service Unavailable",
+        ));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = body_to_value(response).await;

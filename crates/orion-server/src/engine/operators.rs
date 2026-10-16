@@ -36,8 +36,8 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use dataflow_rs::datalogic_rs::operator::EvalContext;
-use dataflow_rs::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
+use dataflow_rs_v3::datalogic_rs::operator::EvalContext;
+use dataflow_rs_v3::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
 
 /// Every JSONLogic operator this build evaluates — datalogic-rs's core and
 /// extension sets (reached through dataflow-rs's `all-operators` feature) plus
@@ -63,7 +63,7 @@ pub fn operator_names() -> &'static BTreeSet<String> {
     static NAMES: OnceLock<BTreeSet<String>> = OnceLock::new();
     NAMES.get_or_init(|| {
         match with_orion_engine_defaults(
-            dataflow_rs::Engine::builder(),
+            dataflow_rs_v3::Engine::builder(),
             &crate::engine::ResolvedSecrets::empty(),
         )
         .build()
@@ -586,9 +586,9 @@ impl CustomOperator for OrionOperator {
 /// because dataflow-rs registers the `secret` operator either way and a
 /// reference against an empty store fails loudly instead of resolving to null.
 pub fn with_orion_engine_defaults(
-    mut builder: dataflow_rs::engine::EngineBuilder,
+    mut builder: dataflow_rs_v3::engine::EngineBuilder,
     secrets: &crate::engine::ResolvedSecrets,
-) -> dataflow_rs::engine::EngineBuilder {
+) -> dataflow_rs_v3::engine::EngineBuilder {
     for (name, op) in all() {
         builder = builder.with_datalogic_operator(name, op);
     }
@@ -615,9 +615,9 @@ pub fn with_orion_engine_defaults(
 /// `0` means "do not call the builder" rather than "a budget of zero", which
 /// upstream would treat as a ceiling every expression crosses.
 pub fn with_ops_budget(
-    builder: dataflow_rs::engine::EngineBuilder,
+    builder: dataflow_rs_v3::engine::EngineBuilder,
     ops_budget: u64,
-) -> dataflow_rs::engine::EngineBuilder {
+) -> dataflow_rs_v3::engine::EngineBuilder {
     if ops_budget == 0 {
         builder
     } else {
@@ -638,7 +638,7 @@ pub fn with_ops_budget(
 /// workflow does — and the way to fix it was not to mirror the operator here
 /// but to borrow an engine that already has it: `bootstrap` builds a
 /// dataflow-rs engine over the real store and keeps its
-/// [`datalogic`](dataflow_rs::Engine::datalogic). One implementation, so the
+/// [`datalogic`](dataflow_rs_v3::Engine::datalogic). One implementation, so the
 /// two surfaces cannot disagree about what a secret name resolves to.
 ///
 /// What is left for this function is the engines with no store to offer —
@@ -1040,11 +1040,11 @@ mod tensor_family_tests {
     /// engine it did before the setting existed.
     #[test]
     fn a_zero_budget_is_no_budget() {
-        let engine = with_ops_budget(dataflow_rs::Engine::builder(), 0)
+        let engine = with_ops_budget(dataflow_rs_v3::Engine::builder(), 0)
             .build()
             .expect("an empty builder builds");
         assert_eq!(engine.datalogic().config().ops_budget, None);
-        let bounded = with_ops_budget(dataflow_rs::Engine::builder(), 500)
+        let bounded = with_ops_budget(dataflow_rs_v3::Engine::builder(), 500)
             .build()
             .expect("an empty builder builds");
         assert_eq!(bounded.datalogic().config().ops_budget, Some(500));

@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 
 use orion::config::{StorageConfig, TraceQueueConfig, TraceStorageConfig};
 use orion::queue::{DlqRetryOptions, QueueMessage};
@@ -36,7 +36,7 @@ impl AsyncFunctionHandler for AlwaysFail {
         &self,
         _ctx: &mut TaskContext<'_>,
         _input: &Self::Input,
-    ) -> dataflow_rs::Result<TaskOutcome> {
+    ) -> dataflow_rs_v3::Result<TaskOutcome> {
         Err(DataflowError::FunctionExecution {
             context: "poison message".to_string(),
             source: None,
@@ -46,7 +46,7 @@ impl AsyncFunctionHandler for AlwaysFail {
 
 /// A serving generation whose only workflow fails every message.
 fn poison_runtime() -> Arc<orion::runtime::RuntimeHandle> {
-    let workflow = dataflow_rs::Workflow::from_json(
+    let workflow = dataflow_rs_v3::Workflow::from_json(
         r#"{
             "id": "poison-wf",
             "name": "Poison",
@@ -59,7 +59,7 @@ fn poison_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     )
     .expect("poison workflow parses");
 
-    let engine = dataflow_rs::Engine::builder()
+    let engine = dataflow_rs_v3::Engine::builder()
         .with_workflow(workflow)
         .register("always_fail", AlwaysFail)
         .build()

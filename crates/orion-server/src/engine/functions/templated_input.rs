@@ -50,10 +50,10 @@
 
 use std::collections::HashMap;
 
-use dataflow_rs::datavalue::OwnedDataValue;
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::{ContextView, Template, TemplateCompiler};
+use dataflow_rs_v3::datavalue::OwnedDataValue;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::{ContextView, Template, TemplateCompiler};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
@@ -181,7 +181,7 @@ impl TemplatedInput {
         &mut self,
         handler: &'static str,
         c: &TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+    ) -> dataflow_rs_v3::Result<()> {
         let fields = super::registry::FunctionRegistry::builtin()
             .get(handler)
             .and_then(|e| e.input_fields.as_deref())
@@ -206,7 +206,7 @@ impl TemplatedInput {
         handler: &str,
         fields: &[FieldSpec],
         c: &TemplateCompiler,
-    ) -> dataflow_rs::Result<()> {
+    ) -> dataflow_rs_v3::Result<()> {
         let Some(object) = self.raw.as_object() else {
             return Ok(());
         };
@@ -375,8 +375,8 @@ mod tests {
     #[test]
     fn an_uncompiled_input_reads_its_fields_as_literals() {
         let input = TemplatedInput::from(json!({"key": "orders", "n": 3}));
-        let datalogic = std::sync::Arc::new(dataflow_rs::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let datalogic = std::sync::Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
         let ctx = TaskContext::new(&mut message, &datalogic);
 
         assert_eq!(

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs_v3::engine::task_context::TaskContext;
+use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
 use super::templated_input::{FieldSource, TemplatedInput};
@@ -244,9 +244,9 @@ impl<'a> ConnectorCall<'a> {
         &self,
         registry: &ConnectorRegistry,
         fut: F,
-    ) -> dataflow_rs::Result<TaskOutcome>
+    ) -> dataflow_rs_v3::Result<TaskOutcome>
     where
-        F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
+        F: std::future::Future<Output = dataflow_rs_v3::Result<TaskOutcome>>,
     {
         guarded_handler(self.name, registry, self.connector, &self.channel, fut).await
     }
@@ -276,9 +276,9 @@ pub async fn guarded_handler<F>(
     connector: &str,
     channel: &str,
     fut: F,
-) -> dataflow_rs::Result<TaskOutcome>
+) -> dataflow_rs_v3::Result<TaskOutcome>
 where
-    F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
+    F: std::future::Future<Output = dataflow_rs_v3::Result<TaskOutcome>>,
 {
     if !registry.circuit_breaker_enabled() {
         return observed_handler_named(fn_name, connector, channel, fut).await;
@@ -336,9 +336,9 @@ pub async fn observed_handler_named<F>(
     connector: &str,
     channel: &str,
     fut: F,
-) -> dataflow_rs::Result<TaskOutcome>
+) -> dataflow_rs_v3::Result<TaskOutcome>
 where
-    F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
+    F: std::future::Future<Output = dataflow_rs_v3::Result<TaskOutcome>>,
 {
     let start = std::time::Instant::now();
     let result = crate::engine::profile::record(fn_name, Some(connector), fut).await;
@@ -1018,15 +1018,15 @@ pub fn json_type_name(v: &Value) -> &'static str {
 pub fn encode_failure(
     function: &str,
     e: crate::connector::sql_encode::EncodeError,
-) -> dataflow_rs::DataflowError {
-    dataflow_rs::DataflowError::Validation(e.message(function))
+) -> dataflow_rs_v3::DataflowError {
+    dataflow_rs_v3::DataflowError::Validation(e.message(function))
 }
 
 pub fn decode_failure(
     function: &str,
     e: crate::connector::sql_decode::DecodeError,
-) -> dataflow_rs::DataflowError {
-    dataflow_rs::DataflowError::Validation(e.message(function))
+) -> dataflow_rs_v3::DataflowError {
+    dataflow_rs_v3::DataflowError::Validation(e.message(function))
 }
 
 /// Read the `numeric_as` input: how an arbitrary-precision decimal is rendered.
