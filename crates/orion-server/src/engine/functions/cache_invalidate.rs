@@ -12,9 +12,14 @@
 //! write a response body: the response cache's keyspace stays one only Orion
 //! writes to (S19), and a workflow can move a counter in it, nothing else.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::Output;
+use dataflow_rs::function::{FunctionConfig, FunctionSpec};
+use dataflow_rs::{Ctx, Expr, Function, Outcome, Path};
 use dataflow_rs_v3::engine::error::DataflowError;
 use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
 use dataflow_rs_v3::engine::task_context::TaskContext;
@@ -30,8 +35,11 @@ use crate::channel::cache_namespace;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
 use crate::engine::HandlerError;
+use crate::engine::kit::{self, read};
 
-const NAME: &str = "cache_invalidate";
+/// This function's name, written once (F48): both engines register it
+/// under this, and its errors carry it.
+pub const NAME: &str = "cache_invalidate";
 
 /// Most namespaces one call may bump.
 const MAX_PER_CALL: usize = 64;
@@ -71,15 +79,7 @@ impl CacheInvalidateHandler {
         input: &TemplatedInput,
     ) -> Result<TaskOutcome, HandlerError> {
         let namespaces = resolve_required_str_list(input, "namespaces", NAME, ctx, MAX_PER_CALL)?;
-        if namespaces.is_empty() {
-            return Err(DataflowError::Validation(
-                "'namespaces' resolved to an empty list; name at least one".to_string(),
-            )
-            .into());
-        }
-        for ns in &namespaces {
-            cache_namespace::check_name(ns).map_err(DataflowError::Validation)?;
-        }
+        check_namespaces(&namespaces)?;
         // Resolved before anything is bumped, so a bad `output` does not leave
         // an invalidation behind a failed task.
         let output = if output_declared(input) {
@@ -88,12 +88,13 @@ impl CacheInvalidateHandler {
             None
         };
 
-        let stores = self
-            .channel_loader
-            .invalidate_namespaces(&self.registry, &self.cache_pool, &namespaces, "workflow")
-            .await
-            .map_err(to_exec_error)?;
-        tracing::debug!(namespaces = ?namespaces, stores, "Invalidated response-cache namespaces");
+        let stores = invalidate(
+            &self.channel_loader,
+            &self.registry,
+            &self.cache_pool,
+            &namespaces,
+        )
+        .await?;
 
         if let Some(path) = output {
             apply_output(
@@ -103,6 +104,120 @@ impl CacheInvalidateHandler {
             );
         }
         Ok(TaskOutcome::Success)
+    }
+}
+
+/// The namespaces' own rules, after the bound: at least one, and each a
+/// name a channel's `cache.namespaces` could declare. Shared by the
+/// dataflow-rs 3 handler and the dataflow-rs 4 function.
+fn check_namespaces(namespaces: &[String]) -> Result<(), HandlerError> {
+    if namespaces.is_empty() {
+        return Err(DataflowError::Validation(
+            "'namespaces' resolved to an empty list; name at least one".to_string(),
+        )
+        .into());
+    }
+    for ns in namespaces {
+        cache_namespace::check_name(ns).map_err(DataflowError::Validation)?;
+    }
+    Ok(())
+}
+
+/// The bump, in every store a response-cache entry could be in: how many
+/// stores it reached. Shared by both engines.
+async fn invalidate(
+    loader: &crate::channel::ChannelLoader,
+    registry: &ConnectorRegistry,
+    pool: &CachePool,
+    namespaces: &[String],
+) -> Result<usize, HandlerError> {
+    let stores = loader
+        .invalidate_namespaces(registry, pool, namespaces, "workflow")
+        .await
+        .map_err(to_exec_error)?;
+    tracing::debug!(namespaces = ?namespaces, stores, "Invalidated response-cache namespaces");
+    Ok(stores)
+}
+
+/// `cache_invalidate`'s input on dataflow-rs 4, in its field table's order
+/// (I179). `namespaces` is an expression, read by `kit::read`'s twin of
+/// `resolve_required_str_list` with 1.12's bound of 64 per call, and
+/// required at load (I183). `output` is optional: unset, nothing is written
+/// (I190's primary output).
+#[derive(Debug, FunctionConfig)]
+pub struct CacheInvalidateConfig {
+    /// The response-cache namespaces bumped.
+    namespaces: Expr<OwnedDataValue>,
+    /// Where `{"namespaces": n, "stores": m}` is written; unset, nothing is.
+    output: Option<Output>,
+}
+
+/// `cache_invalidate` as a dataflow-rs 4 function: the bump
+/// `CacheInvalidateHandler` makes, read in the same order, its errors under
+/// its name as 1.12's were.
+pub struct CacheInvalidateFunction {
+    pub channel_loader: Arc<crate::channel::ChannelLoader>,
+    pub registry: Arc<ConnectorRegistry>,
+    pub cache_pool: Arc<CachePool>,
+}
+
+impl CacheInvalidateFunction {
+    /// The handler's `run` up to its write: the namespaces, the output and
+    /// the bump, then where the answer goes and the answer.
+    async fn bump<'c>(
+        &self,
+        ctx: &Ctx<'_>,
+        cfg: &'c CacheInvalidateConfig,
+    ) -> Result<Option<(Cow<'c, Path>, OwnedDataValue)>, HandlerError> {
+        let namespaces = ctx.eval(&cfg.namespaces)?;
+        let namespaces =
+            read::required_str_list(Some(&namespaces), "namespaces", NAME, MAX_PER_CALL)?;
+        check_namespaces(&namespaces)?;
+        // Resolved before anything is bumped, so a bad `output` does not leave
+        // an invalidation behind a failed task. A computed one that resolves
+        // to `null` is `data`, as 1.12's was.
+        let output = cfg
+            .output
+            .as_ref()
+            .map(|out| kit::output_path(ctx, out, Some(&kit::DATA)))
+            .transpose()?;
+        let stores = invalidate(
+            &self.channel_loader,
+            &self.registry,
+            &self.cache_pool,
+            &namespaces,
+        )
+        .await?;
+        Ok(output.map(|path| {
+            let answer = OwnedDataValue::Object(vec![
+                ("namespaces".to_string(), namespaces.len().into()),
+                ("stores".to_string(), stores.into()),
+            ]);
+            (path, answer)
+        }))
+    }
+}
+
+impl Function for CacheInvalidateFunction {
+    type Config = CacheInvalidateConfig;
+
+    fn spec(&self) -> FunctionSpec {
+        kit::spec(NAME)
+    }
+
+    async fn call(
+        &self,
+        ctx: &mut Ctx<'_>,
+        cfg: &CacheInvalidateConfig,
+    ) -> dataflow_rs::Result<Outcome> {
+        let written = self
+            .bump(ctx, cfg)
+            .await
+            .map_err(|e| dataflow_rs::Error::from(e.prefixed(NAME)))?;
+        if let Some((path, answer)) = written {
+            ctx.set(&path, answer)?;
+        }
+        Ok(Outcome::Ok)
     }
 }
 
@@ -125,3 +240,192 @@ pub(super) const CACHE_INVALIDATE_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channel::cache_namespace::version_key;
+    use crate::connector::cache_backend::CachePurpose;
+    use crate::engine::functions::twin::{self, Seen};
+    use dataflow_rs::function::testing;
+    use dataflow_rs::program::{IssueCode, Severity};
+    use serde_json::Value;
+
+    /// The namespaces the twins look at after a bump.
+    const LOOK: &[&str] = &["ladder", "season", "a", "7"];
+
+    /// What a node with no cache connector bumps: the built-in response
+    /// cache, made as a channel's first cached response makes it.
+    struct Stores {
+        pool: Arc<CachePool>,
+        registry: Arc<ConnectorRegistry>,
+        loader: Arc<crate::channel::ChannelLoader>,
+    }
+
+    fn stores() -> Stores {
+        let pool = Arc::new(CachePool::new(4, 60, 128));
+        pool.default_memory(CachePurpose::ResponseCache);
+        Stores {
+            pool,
+            registry: Arc::new(ConnectorRegistry::new(Default::default())),
+            loader: Arc::new(crate::channel::ChannelLoader::new()),
+        }
+    }
+
+    impl Stores {
+        fn function(&self) -> CacheInvalidateFunction {
+            CacheInvalidateFunction {
+                channel_loader: self.loader.clone(),
+                registry: self.registry.clone(),
+                cache_pool: self.pool.clone(),
+            }
+        }
+
+        fn handler(&self) -> dataflow_rs_v3::BoxedFunctionHandler {
+            Box::new(CacheInvalidateHandler {
+                channel_loader: self.loader.clone(),
+                registry: self.registry.clone(),
+                cache_pool: self.pool.clone(),
+            })
+        }
+
+        /// Each of `namespaces`' version in the built-in store, in order.
+        async fn versions(&self, namespaces: &[&str]) -> Vec<Option<String>> {
+            let store = self.pool.default_memory(CachePurpose::ResponseCache);
+            let mut versions = Vec::with_capacity(namespaces.len());
+            for ns in namespaces {
+                versions.push(store.get(&version_key(ns)).await.expect("a memory read"));
+            }
+            versions
+        }
+    }
+
+    /// One task through each engine, each against stores of its own: what
+    /// each saw, and each namespace of [`LOOK`]'s version after.
+    async fn both(
+        input: Value,
+        data: Value,
+    ) -> ((Seen, Vec<Option<String>>), (Seen, Vec<Option<String>>)) {
+        let v3_stores = stores();
+        let v3 = twin::v3(NAME, v3_stores.handler(), input.clone(), data.clone()).await;
+        let v3 = (v3, v3_stores.versions(LOOK).await);
+        let v4_stores = stores();
+        let v4 = twin::v4(NAME, v4_stores.function(), input, data).await;
+        (v3, (v4, v4_stores.versions(LOOK).await))
+    }
+
+    /// Declaration order is the field table's (I179); `namespaces` is an
+    /// expression, required (I183); `output` is optional and the primary
+    /// output; an unknown key is refused, as 1.12's `deny_unknown` refused it
+    /// at authoring.
+    #[test]
+    fn the_config_is_the_field_table() {
+        let fields: Vec<&str> = CacheInvalidateConfig::fields()
+            .iter()
+            .map(|f| &*f.name)
+            .collect();
+        let table: Vec<&str> = CACHE_INVALIDATE_FIELDS.iter().map(|f| f.name).collect();
+        assert_eq!(fields, table);
+
+        let compile =
+            |input: Value| testing::config_with::<CacheInvalidateConfig>(&kit::test_exprs(), input);
+        let cfg = compile(json!({"namespaces": {"var": "data.ns"}})).expect("compiles");
+        assert!(cfg.namespaces.constant().is_none());
+        assert!(cfg.output.is_none() && cfg.primary_output().is_none());
+        let cfg = compile(json!({"namespaces": ["a"], "output": "data.inv"})).expect("compiles");
+        assert!(cfg.primary_output().is_some());
+
+        let rejected = |input: Value| -> Vec<(String, IssueCode)> {
+            compile(input)
+                .expect_err("refused")
+                .into_iter()
+                .filter(|i| i.severity == Severity::Rejected)
+                .map(|i| (i.path.to_string(), i.code))
+                .collect()
+        };
+        assert_eq!(
+            rejected(json!({})),
+            [("namespaces".to_string(), IssueCode::InputParse)]
+        );
+        let issues = rejected(json!({"namespaces": ["a"], "connector": "c"}));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].0, "connector");
+    }
+
+    /// Every bump 1.12 made, the versions compared after, and every
+    /// refusal under the function's name, as 1.12 prefixed it: an empty
+    /// list, a name a channel could not declare, more than 64, a list that
+    /// is not one, and a computed output that names no path, refused before
+    /// anything is bumped.
+    #[tokio::test]
+    async fn bumps_and_refuses_as_on_v3() {
+        let data = json!({
+            "ns": ["a", "season"], "at": "data.inv", "n": 3,
+            "many": (0..65).map(|i| format!("n{i}")).collect::<Vec<_>>(),
+        });
+        let cases = [
+            json!({"namespaces": ["ladder"], "output": "data.inv"}),
+            json!({"namespaces": {"var": "data.ns"}}),
+            json!({"namespaces": [{"cat": ["sea", "son"]}, "ladder", 7], "output": {"var": "data.at"}}),
+            json!({"namespaces": ["ladder"], "output": {"var": "data.missing"}}),
+            json!({"namespaces": ["ladder"], "output": null}),
+            // Refusals.
+            json!({"namespaces": []}),
+            json!({"namespaces": ["Ladder"]}),
+            json!({"namespaces": ["a b"]}),
+            json!({"namespaces": "ladder"}),
+            json!({"namespaces": ["ladder", null]}),
+            json!({"namespaces": {"var": "data.many"}}),
+            json!({"namespaces": ["ladder"], "output": {"var": "data.n"}}),
+            json!({"namespaces": {"throw": "boom"}}),
+            json!({"namespaces": ["ladder"], "output": {"throw": "boom"}}),
+        ];
+        for input in cases {
+            let (v3, v4) = both(input.clone(), data.clone()).await;
+            assert_eq!(v4, v3, "{input}");
+        }
+        // Spot checks: the answer, and a refusal under the function's name.
+        let (_, (seen, versions)) = both(
+            json!({"namespaces": ["ladder"], "output": "data.inv"}),
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            seen.expect("bumped"),
+            json!({"inv": {"namespaces": 1, "stores": 1}})
+        );
+        assert_eq!(versions[0].as_deref(), Some("1"));
+        let (_, (seen, versions)) = both(json!({"namespaces": []}), json!({})).await;
+        let failure = seen.expect_err("an empty list");
+        assert_eq!(failure.code, "VALIDATION_ERROR");
+        assert_eq!(
+            failure.message,
+            "Validation error: cache_invalidate: 'namespaces' resolved to an empty list; \
+             name at least one"
+        );
+        assert!(versions.iter().all(Option::is_none));
+    }
+
+    /// The call's writes: none with no output, the answer with one; the
+    /// bump either way.
+    #[tokio::test]
+    async fn writes_nothing_without_an_output_and_the_answer_with_one() {
+        for (input, writes) in [
+            (json!({"namespaces": ["ladder"]}), 0),
+            (json!({"namespaces": ["ladder"], "output": "data.inv"}), 1),
+        ] {
+            let stores = stores();
+            let called = testing::call(stores.function(), input.clone())
+                .exprs(kit::test_exprs())
+                .name(NAME)
+                .await;
+            assert_eq!(called.outcome.as_ref().ok(), Some(&Outcome::Ok), "{input}");
+            assert_eq!(called.writes.len(), writes, "{input}: {:?}", called.writes);
+            assert_eq!(
+                stores.versions(&["ladder"]).await,
+                [Some("1".to_string())],
+                "{input}"
+            );
+        }
+    }
+}

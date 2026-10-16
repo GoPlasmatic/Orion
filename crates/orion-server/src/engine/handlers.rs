@@ -319,8 +319,9 @@ pub fn build_custom_functions(
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::connector_handler::ConnectorHandler;
     use functions::{
-        data_query, data_write, db_read, db_write, http_call, mongo_aggregate, mongo_read,
-        mongo_write, publish_kafka, send_email, storage_head, storage_presign,
+        cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, data_query,
+        data_write, db_read, db_write, http_call, mongo_aggregate, mongo_read, mongo_write,
+        publish_kafka, send_email, storage_head, storage_presign,
     };
 
     let HandlerDeps {
@@ -328,6 +329,8 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         client,
         query_config,
         write_config,
+        cache_pool,
+        channel_loader,
         sql_pool_cache,
         mongo_pool_cache,
         smtp_pool_cache,
@@ -402,6 +405,42 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
             registry: connectors.clone(),
             write_config: write_config.clone(),
             max_returning: query_config.max_limit as usize,
+        },
+    );
+    registry.register(
+        <cache_read::CacheReadHandler as ConnectorHandler>::NAME,
+        cache_read::CacheReadFunction {
+            cache_pool: cache_pool.clone(),
+            registry: connectors.clone(),
+        },
+    );
+    registry.register(
+        <cache_write::CacheWriteHandler as ConnectorHandler>::NAME,
+        cache_write::CacheWriteFunction {
+            cache_pool: cache_pool.clone(),
+            registry: connectors.clone(),
+        },
+    );
+    registry.register(
+        <cache_delete::CacheDeleteHandler as ConnectorHandler>::NAME,
+        cache_delete::CacheDeleteFunction {
+            cache_pool: cache_pool.clone(),
+            registry: connectors.clone(),
+        },
+    );
+    registry.register(
+        <cache_incr::CacheIncrHandler as ConnectorHandler>::NAME,
+        cache_incr::CacheIncrFunction {
+            cache_pool: cache_pool.clone(),
+            registry: connectors.clone(),
+        },
+    );
+    registry.register(
+        cache_invalidate::NAME,
+        cache_invalidate::CacheInvalidateFunction {
+            channel_loader,
+            registry: connectors.clone(),
+            cache_pool,
         },
     );
     registry.register(

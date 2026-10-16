@@ -208,6 +208,66 @@ pub(crate) mod twin {
         }
     }
 
+    /// An in-memory cache of its own behind the cache connector `c`, as a
+    /// function reaches it: its pool, the registry holding the connector,
+    /// and the connector's config, for a test to seed or to read.
+    pub(crate) struct Cache {
+        pub pool: Arc<crate::connector::cache_backend::CachePool>,
+        pub registry: Arc<ConnectorRegistry>,
+        pub config: crate::connector::CacheConnectorConfig,
+    }
+
+    /// [`Cache`], holding `seed`: each key and the string stored at it.
+    /// `config` adds to the connector's config (its `operations`).
+    pub(crate) async fn cache(config: Value, seed: &[(&str, &str)]) -> Cache {
+        let mut connector = json!({"type": "cache", "backend": "memory"});
+        if let (Some(connector), Some(config)) = (connector.as_object_mut(), config.as_object()) {
+            connector.extend(config.clone());
+        }
+        let registry = connectors(&[("c", connector.clone())]).await;
+        let Ok(ConnectorConfig::Cache(config)) =
+            serde_json::from_value::<ConnectorConfig>(connector)
+        else {
+            unreachable!("a cache connector")
+        };
+        let cache = Cache {
+            pool: Arc::new(crate::connector::cache_backend::CachePool::new(4, 60, 128)),
+            registry,
+            config,
+        };
+        let backend = cache.backend().await;
+        for (key, value) in seed {
+            backend.set(key, value).await.expect("the seed is stored");
+        }
+        cache
+    }
+
+    impl Cache {
+        /// The workflow store `cache_read` and its kin reach through `c`.
+        pub(crate) async fn backend(
+            &self,
+        ) -> Arc<dyn crate::connector::cache_backend::CacheBackend> {
+            self.pool
+                .get_backend(
+                    crate::connector::cache_backend::CachePurpose::Workflow,
+                    "c",
+                    &self.config,
+                )
+                .await
+                .expect("a memory backend opens")
+        }
+
+        /// What the store holds at each of `keys`, in order.
+        pub(crate) async fn held(&self, keys: &[&str]) -> Vec<Option<String>> {
+            let backend = self.backend().await;
+            let mut held = Vec::with_capacity(keys.len());
+            for key in keys {
+                held.push(backend.get(key).await.expect("a memory read"));
+            }
+            held
+        }
+    }
+
     /// `handler` as the one task `t` of a dataflow-rs 3 workflow, over a
     /// message whose `data` is `data` (unless `null`).
     pub(crate) async fn v3(
