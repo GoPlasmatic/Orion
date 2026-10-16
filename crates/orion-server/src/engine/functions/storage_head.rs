@@ -11,16 +11,23 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::Output;
+use dataflow_rs::function::{FunctionConfig, FunctionSpec};
+use dataflow_rs::{Ctx, Expr, Function, Outcome};
 use dataflow_rs_v3::engine::task_context::TaskContext;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{ConnectorCall, require_op, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::{Scope, TemplatedInput};
-use crate::connector::{ConnectorRegistry, sigv4};
-use crate::engine::HandlerError;
+use crate::connector::{ConnectorRegistry, StorageConnectorConfig, sigv4};
+use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
+
+/// This function's name, for the free functions below (F48).
+const NAME: &str = <StorageHeadHandler as ConnectorHandler>::NAME;
 
 /// Workflow function handler for object-metadata lookups.
 pub struct StorageHeadHandler {
@@ -52,7 +59,7 @@ impl ConnectorHandler for StorageHeadHandler {
 
     fn gate(
         _key: &Self::Parsed,
-        conn: &crate::connector::StorageConnectorConfig,
+        conn: &StorageConnectorConfig,
         connector: &str,
     ) -> Result<(), HandlerError> {
         Ok(require_op(conn.operations.head, "head", connector)?)
@@ -61,82 +68,150 @@ impl ConnectorHandler for StorageHeadHandler {
     async fn run(
         &self,
         key: Self::Parsed,
-        storage: &crate::connector::StorageConnectorConfig,
+        storage: &StorageConnectorConfig,
         call: &ConnectorCall<'_>,
         _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
-        let (scheme, host, path) = storage
-            .address(Some(&key))
-            .map_err(DataflowError::Validation)?;
-        let url = format!("{scheme}://{host}{path}");
+        Ok(head(&self.client, storage, call.connector, &key)
+            .await?
+            .into())
+    }
+}
 
-        // S6: the one network call the storage surface makes gets the same
-        // private-address posture as every other egress.
-        if !storage.allow_private_urls
-            && let Err(msg) = crate::validation::validate_url_not_private(&url).await
-        {
-            return Err(
-                DataflowError::function_execution(format!("SSRF protection: {msg}"), None).into(),
-            );
-        }
+/// The signed HEAD, against a resolved and gated storage connector: the
+/// object's metadata, `{ "exists": false }` for a 404. Shared by the
+/// dataflow-rs 3 handler and the dataflow-rs 4 function, so both ask the
+/// same question.
+async fn head(
+    client: &reqwest::Client,
+    storage: &StorageConnectorConfig,
+    connector: &str,
+    key: &str,
+) -> Result<Value, HandlerError> {
+    let (scheme, host, path) = storage
+        .address(Some(key))
+        .map_err(|e| HandlerError::new(ErrorClass::CallerInput, e))?;
+    let url = format!("{scheme}://{host}{path}");
 
-        let amz_date = sigv4::amz_date_now();
-        let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
-        let mut req = self
-            .client
-            .head(&url)
-            .timeout(std::time::Duration::from_millis(storage.timeout_ms));
-        for (name, value) in sigv4::sign_headers(&sig_ctx, "HEAD") {
-            req = req.header(name, value);
-        }
+    // S6: the one network call the storage surface makes gets the same
+    // private-address posture as every other egress.
+    if !storage.allow_private_urls
+        && let Err(msg) = crate::validation::validate_url_not_private(&url).await
+    {
+        return Err(HandlerError::new(
+            ErrorClass::Backend,
+            format!("SSRF protection: {msg}"),
+        ));
+    }
 
-        let response = req.send().await.map_err(|e| {
-            if e.is_timeout() {
-                DataflowError::Timeout(format!("storage_head via '{}' timed out", call.connector))
-            } else {
-                // `without_url`: this message names the connector rather than
-                // the endpoint on purpose, and reqwest's `Display` would put
-                // the URL back (#281).
-                DataflowError::Io(format!(
-                    "storage_head via '{}' failed: {}",
-                    call.connector,
-                    e.without_url()
-                ))
-            }
-        })?;
+    let amz_date = sigv4::amz_date_now();
+    let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
+    let mut req = client
+        .head(&url)
+        .timeout(std::time::Duration::from_millis(storage.timeout_ms));
+    for (name, value) in sigv4::sign_headers(&sig_ctx, "HEAD") {
+        req = req.header(name, value);
+    }
 
-        let status = response.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            // A missing object is data, not failure — "is it there yet?" is
-            // the question this function exists to ask.
-            return Ok(json!({ "exists": false }).into());
-        }
-        if !status.is_success() {
-            // 403 and friends are task errors: unlike absence, they say the
-            // *question* could not be asked.
-            return Err(DataflowError::function_execution(
-                format!("storage_head via '{}': HTTP {status}", call.connector),
-                None,
+    let response = req.send().await.map_err(|e| {
+        if e.is_timeout() {
+            HandlerError::new(
+                ErrorClass::Timeout,
+                format!("storage_head via '{connector}' timed out"),
             )
-            .into());
+        } else {
+            // `without_url`: this message names the connector rather than
+            // the endpoint on purpose, and reqwest's `Display` would put
+            // the URL back (#281).
+            HandlerError::new(
+                ErrorClass::Connector,
+                format!("storage_head via '{connector}' failed: {}", e.without_url()),
+            )
         }
+    })?;
 
-        let header = |name: &str| {
-            response
-                .headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        };
-        Ok(json!({
-            "exists": true,
-            "size": header("content-length").and_then(|v| v.parse::<u64>().ok()),
-            "etag": header("etag").map(|v| v.trim_matches('"').to_string()),
-            "last_modified": header("last-modified"),
-            "content_type": header("content-type"),
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        // A missing object is data, not failure — "is it there yet?" is
+        // the question this function exists to ask.
+        return Ok(json!({ "exists": false }));
+    }
+    if !status.is_success() {
+        // 403 and friends are task errors: unlike absence, they say the
+        // *question* could not be asked.
+        return Err(HandlerError::new(
+            ErrorClass::Backend,
+            format!("storage_head via '{connector}': HTTP {status}"),
+        ));
+    }
+
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    Ok(json!({
+        "exists": true,
+        "size": header("content-length").and_then(|v| v.parse::<u64>().ok()),
+        "etag": header("etag").map(|v| v.trim_matches('"').to_string()),
+        "last_modified": header("last-modified"),
+        "content_type": header("content-type"),
+    }))
+}
+
+/// `storage_head`'s input on dataflow-rs 4: the connector, and the key read
+/// by `kit::read`'s twin of `resolve_required_str` (I183). A task missing
+/// either is refused at load (I183).
+#[derive(Debug, FunctionConfig)]
+pub struct StorageHeadConfig {
+    /// The storage connector asked.
+    connector: String,
+    /// The object key.
+    key: Expr<OwnedDataValue>,
+    /// Where `{ exists, size, etag, last_modified, content_type }` is written.
+    #[output(default = "data")]
+    output: Output,
+}
+
+/// `storage_head` as a dataflow-rs 4 function: the HEAD `StorageHeadHandler`
+/// sends, read in the same order.
+pub struct StorageHeadFunction {
+    pub registry: Arc<ConnectorRegistry>,
+    pub client: reqwest::Client,
+}
+
+impl Function for StorageHeadFunction {
+    type Config = StorageHeadConfig;
+
+    fn spec(&self) -> FunctionSpec {
+        kit::spec(NAME)
+    }
+
+    async fn call(
+        &self,
+        ctx: &mut Ctx<'_>,
+        cfg: &StorageHeadConfig,
+    ) -> dataflow_rs::Result<Outcome> {
+        let channel = kit::channel(ctx);
+        let key = ctx.eval(&cfg.key)?;
+        let key = read::required_str(Some(&key), "key", NAME)?.into_owned();
+        let mut metadata = None;
+        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
+            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
+            let storage =
+                kit::require_connector::<crate::connector::kind::Storage>(&config, &cfg.connector)?;
+            kit::require_op(storage.operations.head, "head", &cfg.connector)?;
+            metadata = Some(head(&self.client, storage, &cfg.connector, &key).await?);
+            Ok(Outcome::Ok)
         })
-        .into())
+        .await?;
+        if let Some(metadata) = metadata {
+            ctx.emit_default(OwnedDataValue::from(&metadata))?;
+        }
+        Ok(Outcome::Ok)
     }
 }
 
@@ -312,5 +387,150 @@ mod tests {
         )
         .await
         .expect_err("head=false must refuse");
+    }
+
+    // -- dataflow-rs 4: the config, and a twin of each test above, held to
+    // the handler over the same input --
+
+    use crate::engine::functions::twin::{self, Seen};
+    use dataflow_rs::function::testing;
+    use dataflow_rs::program::{IssueCode, Severity};
+
+    /// Declaration order is the field table's (I179); `connector` and `key`
+    /// are required (I183), `connector` a literal, an unknown key refused
+    /// (break 2a), and `output` defaults to `data`.
+    #[test]
+    fn the_config_is_the_field_table() {
+        let fields: Vec<&str> = StorageHeadConfig::fields()
+            .iter()
+            .map(|f| &*f.name)
+            .collect();
+        let table: Vec<&str> = STORAGE_HEAD_FIELDS.iter().map(|f| f.name).collect();
+        assert_eq!(fields, table);
+
+        let compile =
+            |input: Value| testing::config_with::<StorageHeadConfig>(&kit::test_exprs(), input);
+        let cfg =
+            compile(json!({"connector": "media", "key": {"var": "data.key"}})).expect("compiles");
+        assert!(cfg.key.constant().is_none());
+        assert_eq!(
+            cfg.output.constant().map(ToString::to_string).as_deref(),
+            Some("data")
+        );
+        let rejected = |input: Value| -> Vec<(String, IssueCode)> {
+            compile(input)
+                .expect_err("refused")
+                .into_iter()
+                .filter(|i| i.severity == Severity::Rejected)
+                .map(|i| (i.path.to_string(), i.code))
+                .collect()
+        };
+        assert_eq!(
+            rejected(json!({"connector": "media"})),
+            [("key".to_string(), IssueCode::InputParse)]
+        );
+        assert_eq!(
+            rejected(json!({"key": "k"})),
+            [("connector".to_string(), IssueCode::InputParse)]
+        );
+        assert_eq!(
+            rejected(json!({"connector": {"var": "data.c"}, "key": "k"})),
+            [("connector".to_string(), IssueCode::InputParse)]
+        );
+        let issues = rejected(json!({"connector": "media", "key": "k", "bucket": "b"}));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].0, "bucket");
+    }
+
+    /// One task through each engine, each against its own store mock.
+    async fn both(
+        input: Value,
+        exists: bool,
+        status_override: Option<u16>,
+        config: impl Fn(std::net::SocketAddr) -> StorageConnectorConfig,
+    ) -> (Seen, Seen) {
+        let mut sides = Vec::new();
+        for v4 in [false, true] {
+            let addr = spawn_store(exists, status_override).await;
+            let registry =
+                std::sync::Arc::new(crate::connector::ConnectorRegistry::new(Default::default()));
+            registry
+                .insert_for_test("media", ConnectorConfig::Storage(config(addr)))
+                .await;
+            let client = reqwest::Client::new();
+            let seen = if v4 {
+                let f = StorageHeadFunction { registry, client };
+                twin::v4(NAME, f, input.clone(), Value::Null).await
+            } else {
+                let handler = Box::new(super::super::connector_handler::Connector(
+                    StorageHeadHandler { registry, client },
+                ));
+                twin::v3(NAME, handler, input.clone(), Value::Null).await
+            };
+            // Each side's mock has its own port, which a failure may name.
+            let port = format!("127.0.0.1:{}", addr.port());
+            sides.push(seen.map_err(|f| twin::Failure {
+                message: f.message.replace(&port, "<store>"),
+                ..f
+            }));
+        }
+        let v4 = sides.pop().expect("v4");
+        (sides.pop().expect("v3"), v4)
+    }
+
+    #[tokio::test]
+    async fn an_existing_object_answers_its_metadata_on_v4() {
+        let input = json!({"connector": "media", "key": "video/out.mp4", "output": "data.meta"});
+        let (v3, v4) = both(input, true, None, storage_config).await;
+        assert_eq!(v4, v3);
+        assert_eq!(
+            v4.expect("test")["meta"],
+            json!({
+                "exists": true,
+                "size": 1048576,
+                "etag": "abc123",
+                "last_modified": "Wed, 19 Aug 2026 07:00:00 GMT",
+                "content_type": "video/mp4",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_object_is_data_not_failure_on_v4() {
+        let input = json!({"connector": "media", "key": "nope.mp4", "output": "data.meta"});
+        let (v3, v4) = both(input, false, None, storage_config).await;
+        assert_eq!(v4, v3);
+        assert_eq!(
+            v4.expect("404 must not fail the task")["meta"],
+            json!({"exists": false})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_denied_request_is_an_error_and_the_gate_applies_on_v4() {
+        let input = json!({"connector": "media", "key": "k", "output": "data.meta"});
+        let (v3, v4) = both(input.clone(), true, Some(403), storage_config).await;
+        assert_eq!(v4, v3);
+        let failure = v4.expect_err("403 says the question could not be asked");
+        assert!(failure.message.contains("403"), "{failure:?}");
+
+        let gated = |addr| {
+            let mut config = storage_config(addr);
+            config.operations.head = false;
+            config
+        };
+        let (v3, v4) = both(input, true, None, gated).await;
+        assert_eq!(v4, v3);
+        v4.expect_err("head=false must refuse");
+
+        // A key that resolves to nothing, and a connector that is not there.
+        for input in [
+            json!({"connector": "media", "key": {"var": "data.none"}}),
+            json!({"connector": "absent", "key": "k"}),
+        ] {
+            let (v3, v4) = both(input.clone(), true, None, storage_config).await;
+            assert_eq!(v4, v3, "{input}");
+            assert!(v4.is_err(), "{input}");
+        }
     }
 }

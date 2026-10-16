@@ -13,10 +13,14 @@
 //! message content or addresses, and error messages carry only the server's
 //! reply.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs_v3::engine::error::DataflowError;
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::{Interpolated, Output};
+use dataflow_rs::function::{FunctionConfig, FunctionSpec};
+use dataflow_rs::{Ctx, Expr, Function, Outcome};
 use dataflow_rs_v3::engine::task_context::TaskContext;
 use mail_builder::MessageBuilder;
 use mail_builder::headers::address::Address;
@@ -33,6 +37,7 @@ use super::templated_input::FieldSource;
 use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::smtp_pool::{PooledClient, SmtpPoolCache};
 use crate::connector::{ConnectorRegistry, SmtpConnectorConfig};
+use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name, for the free functions below — a reference to the one
@@ -98,7 +103,7 @@ impl ConnectorHandler for SendEmailHandler {
         // whether `headers` names a protected header (F58).
         check_headers_field(input.raw()).map_err(named)?;
 
-        let to = address_list(input, "to", ctx)
+        let to = address_field(input, "to", ctx)
             .map_err(named)?
             .ok_or_else(|| validation("requires 'to' (an address or an array of addresses)"))?;
         let subject = resolve_optional_str(input, "subject", NAME, ctx)?
@@ -113,10 +118,10 @@ impl ConnectorHandler for SendEmailHandler {
 
         Ok(Mail {
             to,
-            cc: address_list(input, "cc", ctx)
+            cc: address_field(input, "cc", ctx)
                 .map_err(named)?
                 .unwrap_or_default(),
-            bcc: address_list(input, "bcc", ctx)
+            bcc: address_field(input, "bcc", ctx)
                 .map_err(named)?
                 .unwrap_or_default(),
             subject,
@@ -138,61 +143,220 @@ impl ConnectorHandler for SendEmailHandler {
         _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
-        let from = sender(smtp_config, mail.from_override.as_deref(), call.connector)?;
-        let bare_id = generated_message_id(&from);
-        let message = build_message(MessageParts {
-            from: &from,
-            message_id: &bare_id,
-            to: &mail.to,
-            cc: &mail.cc,
-            subject: &mail.subject,
-            reply_to: mail.reply_to,
-            headers: &mail.headers,
-            text: mail.text,
-            html: mail.html,
-        })?;
+        Ok(
+            deliver_mail(&self.smtp_pool, mail, smtp_config, call.connector)
+                .await?
+                .into(),
+        )
+    }
+}
 
-        // Bcc rides the envelope only — it is deliberately absent from the
-        // headers `build_message` rendered, so a blind copy stays blind.
-        let recipients: Vec<&str> = mail
-            .to
-            .iter()
-            .chain(mail.cc.iter())
-            .chain(mail.bcc.iter())
-            .map(|mbox| mbox.email.as_str())
-            .collect();
+/// The send, against a resolved SMTP connector: the sender, the generated
+/// Message-ID, the rendered message, the pooled session and the one SMTP
+/// transaction. The task result, `{ message_id, response }`. Shared by the
+/// dataflow-rs 3 handler and the dataflow-rs 4 function, so both send the
+/// same mail.
+async fn deliver_mail(
+    smtp_pool: &SmtpPoolCache,
+    mail: Mail,
+    smtp_config: &SmtpConnectorConfig,
+    connector: &str,
+) -> Result<Value, HandlerError> {
+    let from = sender(smtp_config, mail.from_override.as_deref(), connector)?;
+    let bare_id = generated_message_id(&from);
+    let message = build_message(MessageParts {
+        from: &from,
+        message_id: &bare_id,
+        to: &mail.to,
+        cc: &mail.cc,
+        subject: &mail.subject,
+        reply_to: mail.reply_to,
+        headers: &mail.headers,
+        text: mail.text,
+        html: mail.html,
+    })?;
 
-        let pool = self
-            .smtp_pool
-            .get_pool(call.connector, smtp_config)
-            .await
-            .map_err(to_connect_error)?;
-        let mut client = pool.checkout().await.map_err(to_connect_error)?;
+    // Bcc rides the envelope only — it is deliberately absent from the
+    // headers `build_message` rendered, so a blind copy stays blind.
+    let recipients: Vec<&str> = mail
+        .to
+        .iter()
+        .chain(mail.cc.iter())
+        .chain(mail.bcc.iter())
+        .map(|mbox| mbox.email.as_str())
+        .collect();
 
-        // One attempt, no retry loop — see the module comment. The breaker
-        // (via the handler shell) still counts this failure.
-        let response = match deliver(&mut client, &from, &recipients, &message).await {
-            Ok(reply) => {
-                pool.checkin(client).await;
-                reply
-            }
-            Err(e) => {
-                // Deliberately not returned to the pool: after a failure
-                // part-way through a transaction the connection's protocol
-                // state is unknown, and the next send would inherit it.
-                return Err(DataflowError::function_execution(
-                    format!("SMTP send via '{}' failed: {e}", call.connector),
-                    None,
-                )
-                .into());
-            }
-        };
+    let pool = smtp_pool
+        .get_pool(connector, smtp_config)
+        .await
+        .map_err(to_connect_error)?;
+    let mut client = pool.checkout().await.map_err(to_connect_error)?;
 
-        Ok(json!({
-            "message_id": format!("<{bare_id}>"),
-            "response": response,
+    // One attempt, no retry loop — see the module comment. The breaker
+    // (via the handler shell) still counts this failure.
+    let response = match deliver(&mut client, &from, &recipients, &message).await {
+        Ok(reply) => {
+            pool.checkin(client).await;
+            reply
+        }
+        Err(e) => {
+            // Deliberately not returned to the pool: after a failure
+            // part-way through a transaction the connection's protocol
+            // state is unknown, and the next send would inherit it.
+            return Err(HandlerError::new(
+                ErrorClass::Backend,
+                format!("SMTP send via '{connector}' failed: {e}"),
+            ));
+        }
+    };
+
+    Ok(json!({
+        "message_id": format!("<{bare_id}>"),
+        "response": response,
+    }))
+}
+
+/// `send_email`'s input on dataflow-rs 4, each field in the position it
+/// executes in today (I183): `to`, `cc` and `bcc` are documents whose
+/// `{"var": …}` holes are filled and then read by `address_list`, as
+/// dataflow-rs 3 folded them; every other field is an expression read by
+/// `kit::read`'s twin of the reader it went through. A task missing
+/// `connector`, `to` or `subject` is refused at load (I183), where 1.12
+/// failed each call; every other rule is still the call's, with its message.
+#[derive(Debug, FunctionConfig)]
+pub struct SendEmailConfig {
+    /// The SMTP connector sent through.
+    connector: String,
+    /// The recipients: an address or an array of them.
+    to: Interpolated,
+    /// The carbon-copy recipients.
+    cc: Option<Interpolated>,
+    /// The blind-carbon-copy recipients, on the envelope only.
+    bcc: Option<Interpolated>,
+    /// The subject.
+    subject: Expr<OwnedDataValue>,
+    /// The plain-text body.
+    text: Option<Expr<OwnedDataValue>>,
+    /// The HTML body.
+    html: Option<Expr<OwnedDataValue>>,
+    /// A per-send sender, when the connector allows one.
+    from: Option<Expr<OwnedDataValue>>,
+    /// The Reply-To address.
+    reply_to: Option<Expr<OwnedDataValue>>,
+    /// Extra headers, each value computed from the message.
+    headers: Option<BTreeMap<String, Expr<OwnedDataValue>>>,
+    /// Where `{ message_id, response }` is written.
+    #[output(default = "data")]
+    output: Output,
+}
+
+/// An optional string field for this call, by `resolve_optional_str`'s
+/// reading.
+fn optional_str(
+    ctx: &Ctx<'_>,
+    field: &Option<Expr<OwnedDataValue>>,
+    name: &str,
+) -> Result<Option<String>, HandlerError> {
+    let value = field.as_ref().map(|expr| ctx.eval(expr)).transpose()?;
+    Ok(read::optional_str(value.as_deref(), name, NAME)?.map(std::borrow::Cow::into_owned))
+}
+
+/// An address document with its holes filled, through [`address_list`].
+fn rendered_addresses(
+    ctx: &Ctx<'_>,
+    doc: &Interpolated,
+    field: &str,
+) -> Result<Option<Vec<Mailbox>>, HandlerError> {
+    let filled = serde_json::to_value(ctx.render(doc))
+        .map_err(|e| HandlerError::new(ErrorClass::Backend, e))?;
+    address_list(field, filled)
+}
+
+/// The mail the task describes, read as `SendEmailHandler::parse` reads it,
+/// in its order: the headers' literal check, `to`, `subject`, the bodies and
+/// their rule, `cc`, `bcc`, `from`, `reply_to`, then each header's value.
+fn mail(ctx: &Ctx<'_>, cfg: &SendEmailConfig) -> Result<Mail, HandlerError> {
+    let headers = cfg.headers.iter().flatten();
+    check_headers(
+        headers
+            .clone()
+            .map(|(name, expr)| (name.as_str(), expr.raw())),
+    )
+    .map_err(named)?;
+
+    let to = rendered_addresses(ctx, &cfg.to, "to")
+        .map_err(named)?
+        .ok_or_else(|| validation("requires 'to' (an address or an array of addresses)"))?;
+    let subject = ctx.eval(&cfg.subject)?;
+    let subject = read::optional_str(Some(&subject), "subject", NAME)?
+        .ok_or_else(|| validation("requires 'subject'"))?
+        .into_owned();
+    let text = optional_str(ctx, &cfg.text, "text")?;
+    let html = optional_str(ctx, &cfg.html, "html")?;
+    if text.is_none() && html.is_none() {
+        return Err(named(validation(
+            "requires at least one of 'text' or 'html'",
+        )));
+    }
+
+    let cc = match &cfg.cc {
+        Some(doc) => rendered_addresses(ctx, doc, "cc").map_err(named)?,
+        None => None,
+    };
+    let bcc = match &cfg.bcc {
+        Some(doc) => rendered_addresses(ctx, doc, "bcc").map_err(named)?,
+        None => None,
+    };
+    Ok(Mail {
+        to,
+        cc: cc.unwrap_or_default(),
+        bcc: bcc.unwrap_or_default(),
+        subject,
+        text,
+        html,
+        from_override: optional_str(ctx, &cfg.from, "from")?,
+        reply_to: optional_str(ctx, &cfg.reply_to, "reply_to")?
+            .map(|s| parse_mailbox("reply_to", &s))
+            .transpose()?,
+        headers: headers
+            .map(|(name, expr)| {
+                let value = Value::from(&*ctx.eval(expr)?);
+                Ok((name.clone(), header_value(name, &value)?.to_string()))
+            })
+            .collect::<Result<_, HandlerError>>()?,
+    })
+}
+
+/// `send_email` as a dataflow-rs 4 function: the mail `SendEmailHandler`
+/// sends, read in the same order, through the same delivery.
+pub struct SendEmailFunction {
+    pub registry: Arc<ConnectorRegistry>,
+    pub smtp_pool: Arc<SmtpPoolCache>,
+}
+
+impl Function for SendEmailFunction {
+    type Config = SendEmailConfig;
+
+    fn spec(&self) -> FunctionSpec {
+        kit::spec(NAME)
+    }
+
+    async fn call(&self, ctx: &mut Ctx<'_>, cfg: &SendEmailConfig) -> dataflow_rs::Result<Outcome> {
+        let channel = kit::channel(ctx);
+        let mail = mail(ctx, cfg)?;
+        let mut sent = None;
+        kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
+            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
+            let smtp =
+                kit::require_connector::<crate::connector::kind::Smtp>(&config, &cfg.connector)?;
+            sent = Some(deliver_mail(&self.smtp_pool, mail, smtp, &cfg.connector).await?);
+            Ok(Outcome::Ok)
         })
-        .into())
+        .await?;
+        if let Some(result) = sent {
+            ctx.emit_default(OwnedDataValue::from(&result))?;
+        }
+        Ok(Outcome::Ok)
     }
 }
 
@@ -214,17 +378,25 @@ fn named(e: HandlerError) -> HandlerError {
     e.prefixed(NAME)
 }
 
-/// An address field: one address or an array, each `addr@x` or
-/// `Name <addr@x>`. `None` when the field is absent.
-fn address_list(
+/// An address field as dataflow-rs 3 reads it: the authored value with its
+/// `{"var": …}` holes folded against the message, through [`address_list`].
+/// `None` when the field is absent.
+fn address_field(
     input: &TemplatedInput,
     field: &str,
     ctx: &TaskContext<'_>,
 ) -> Result<Option<Vec<Mailbox>>, HandlerError> {
-    let raw = match input.get(field) {
-        None | Some(Value::Null) => return Ok(None),
-        Some(raw) => resolve_value(raw, ctx),
-    };
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => address_list(field, resolve_value(raw, ctx)),
+    }
+}
+
+/// An address field's value, its holes filled: one address or an array,
+/// each `addr@x` or `Name <addr@x>`. `None` for `null` or an empty array.
+/// Today's executed reading of `to`, `cc` and `bcc` (I183), whichever engine
+/// filled the holes.
+fn address_list(field: &str, raw: Value) -> Result<Option<Vec<Mailbox>>, HandlerError> {
     let parsed = match raw {
         Value::String(s) => vec![parse_mailbox(field, &s)?],
         Value::Array(items) => {
@@ -374,45 +546,53 @@ fn generated_message_id(from: &Mailbox) -> String {
 fn check_headers_field(input: &Value) -> Result<(), HandlerError> {
     match input.get("headers") {
         None | Some(Value::Null) => Ok(()),
-        Some(Value::Object(map)) => {
-            for (name, value) in map {
-                if PROTECTED_HEADERS
-                    .iter()
-                    .any(|p| p.eq_ignore_ascii_case(name))
-                {
-                    return Err(validation(&format!(
-                        "'headers' may not set '{name}' — use the structured field instead"
-                    )));
-                }
-                // A scalar is unambiguously itself in JSONLogic, so it is
-                // judged here; an object or array may be an operator call, and
-                // what it produces is `resolve_headers`'s to check.
-                if value.is_object() || value.is_array() {
-                    continue;
-                }
-                if !value.is_string() {
-                    return Err(validation(&format!("'headers.{name}' must be a string")));
-                }
-                // These two were lettre's `HeaderName::new_from_ascii` and
-                // `HeaderValue` doing the checking. mail-builder's `Raw`
-                // writes both halves verbatim, so the injection guard is
-                // Orion's now: a CR or LF ends the header and begins one the
-                // caller chose, and a ':' in a name splits it in two.
-                if name.is_empty() || !name.bytes().all(|b| b.is_ascii_graphic() && b != b':') {
-                    return Err(validation(&format!(
-                        "'headers.{name}' is not a valid header name"
-                    )));
-                }
-                if value.as_str().is_some_and(|v| v.contains(['\r', '\n'])) {
-                    return Err(validation(&format!(
-                        "'headers.{name}' may not contain a line break"
-                    )));
-                }
-            }
-            Ok(())
-        }
+        Some(Value::Object(map)) => check_headers(map.iter().map(|(k, v)| (k.as_str(), v))),
         Some(_) => Err(validation("'headers' must be an object of string values")),
     }
+}
+
+/// The literal half of each `headers` member, as authored: its name is not
+/// a structured field's, and a scalar value is a string with no line break
+/// under a valid name. An object or an array may be an operator call, and
+/// what it produces is checked when it is resolved.
+fn check_headers<'a>(
+    members: impl IntoIterator<Item = (&'a str, &'a Value)>,
+) -> Result<(), HandlerError> {
+    for (name, value) in members {
+        if PROTECTED_HEADERS
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(name))
+        {
+            return Err(validation(&format!(
+                "'headers' may not set '{name}' — use the structured field instead"
+            )));
+        }
+        // A scalar is unambiguously itself in JSONLogic, so it is
+        // judged here; an object or array may be an operator call, and
+        // what it produces is `resolve_headers`'s to check.
+        if value.is_object() || value.is_array() {
+            continue;
+        }
+        if !value.is_string() {
+            return Err(validation(&format!("'headers.{name}' must be a string")));
+        }
+        // These two were lettre's `HeaderName::new_from_ascii` and
+        // `HeaderValue` doing the checking. mail-builder's `Raw`
+        // writes both halves verbatim, so the injection guard is
+        // Orion's now: a CR or LF ends the header and begins one the
+        // caller chose, and a ':' in a name splits it in two.
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_graphic() && b != b':') {
+            return Err(validation(&format!(
+                "'headers.{name}' is not a valid header name"
+            )));
+        }
+        if value.as_str().is_some_and(|v| v.contains(['\r', '\n'])) {
+            return Err(validation(&format!(
+                "'headers.{name}' may not contain a line break"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve each header value against the message.
@@ -440,19 +620,25 @@ fn resolve_headers(
             continue;
         };
         let value = value.map_err(HandlerError::from)?;
-        let Some(text) = value.as_str() else {
-            return Err(validation(&format!(
-                "'headers.{name}' must resolve to a string"
-            )));
-        };
-        if text.contains(['\r', '\n']) {
-            return Err(validation(&format!(
-                "'headers.{name}' may not contain a line break"
-            )));
-        }
-        out.push((name.clone(), text.to_string()));
+        out.push((name.clone(), header_value(name, &value)?.to_string()));
     }
     Ok(out)
+}
+
+/// A resolved header value, as the JSON it resolved to: a string with no
+/// line break.
+fn header_value<'v>(name: &str, value: &'v Value) -> Result<&'v str, HandlerError> {
+    let Some(text) = value.as_str() else {
+        return Err(validation(&format!(
+            "'headers.{name}' must resolve to a string"
+        )));
+    };
+    if text.contains(['\r', '\n']) {
+        return Err(validation(&format!(
+            "'headers.{name}' may not contain a line break"
+        )));
+    }
+    Ok(text)
 }
 
 /// Everything [`build_message`] assembles, gathered so the call site reads by
@@ -477,7 +663,7 @@ struct MessageParts<'a> {
 ///
 /// mail-builder supplies Date and MIME-Version, picks the transfer encoding
 /// per part, and renders `text` + `html` as multipart/alternative.
-fn build_message(parts: MessageParts<'_>) -> Result<Vec<u8>, DataflowError> {
+fn build_message(parts: MessageParts<'_>) -> Result<Vec<u8>, HandlerError> {
     let MessageParts {
         from,
         message_id,
@@ -521,9 +707,9 @@ fn build_message(parts: MessageParts<'_>) -> Result<Vec<u8>, DataflowError> {
         builder = builder.header(name.clone(), Raw::new(value.clone()));
     }
 
-    builder.write_to_vec().map_err(|e| {
-        DataflowError::Validation(format!("{NAME}: message could not be assembled: {e}"))
-    })
+    builder
+        .write_to_vec()
+        .map_err(|e| validation(&format!("{NAME}: message could not be assembled: {e}")))
 }
 
 /// Drive one SMTP transaction and return the server's final reply line.
@@ -1124,5 +1310,384 @@ mod tests {
             .expect_err("test")
             .to_string();
         assert!(err.contains("reply_to"), "{err}");
+    }
+
+    // -- dataflow-rs 4: the config, and a twin of each test above that runs
+    // the handler, held to it over the same input --
+
+    use crate::engine::functions::twin::{self, Seen};
+    use dataflow_rs::function::testing;
+    use dataflow_rs::program::{IssueCode, Severity};
+
+    fn config_v4(input: Value) -> Result<SendEmailConfig, Vec<dataflow_rs::Issue>> {
+        testing::config_with(&kit::test_exprs(), input)
+    }
+
+    /// Declaration order is the field table's (I179).
+    #[test]
+    fn the_config_declares_the_field_table_in_its_order() {
+        let fields: Vec<&str> = SendEmailConfig::fields().iter().map(|f| &*f.name).collect();
+        let table: Vec<&str> = SEND_EMAIL_FIELDS.iter().map(|f| f.name).collect();
+        assert_eq!(fields, table);
+    }
+
+    #[test]
+    fn every_field_kind_compiles() {
+        let cfg = config_v4(json!({
+            "connector": "mailer",
+            "to": [{"var": "data.email"}, "Audit <audit@example.test>"],
+            "cc": {"var": "data.cc"},
+            "bcc": "blind@example.test",
+            "subject": {"cat": ["Order ", {"var": "data.id"}]},
+            "text": "t", "html": "<p>h</p>",
+            "from": "noreply@example.test", "reply_to": {"var": "data.reply"},
+            "headers": {"X-Id": {"var": "data.id"}},
+            "output": "data.mail"
+        }))
+        .expect("compiles");
+        assert_eq!(cfg.connector, "mailer");
+        assert_eq!(cfg.to.holes().count(), 1);
+        assert_eq!(cfg.cc.as_ref().map(|d| d.holes().count()), Some(1));
+        assert!(cfg.subject.constant().is_none() && cfg.text.is_some());
+        assert_eq!(cfg.headers.as_ref().map(BTreeMap::len), Some(1));
+        let output = cfg.output.constant().map(ToString::to_string);
+        assert_eq!(output.as_deref(), Some("data.mail"));
+
+        // `output` defaults to `data`, as the field table says.
+        let cfg = config_v4(json!({"connector": "m", "to": "a@b.test", "subject": "s"}))
+            .expect("compiles");
+        assert_eq!(
+            cfg.output.constant().map(ToString::to_string).as_deref(),
+            Some("data")
+        );
+        assert!(cfg.cc.is_none() && cfg.headers.is_none());
+    }
+
+    /// A literal `connector`; `connector`, `to` and `subject` required (I183);
+    /// an unknown key refused (break 2a). Every rule beyond the shape stays
+    /// the call's, so a task with no body still compiles.
+    #[test]
+    fn the_required_fields_and_an_unknown_key_are_refused() {
+        let rejected = |input: Value| -> Vec<(String, IssueCode)> {
+            config_v4(input)
+                .expect_err("refused")
+                .into_iter()
+                .filter(|i| i.severity == Severity::Rejected)
+                .map(|i| (i.path.to_string(), i.code))
+                .collect()
+        };
+        let full = json!({"connector": "m", "to": "a@b.test", "subject": "s"});
+        for field in ["connector", "to", "subject"] {
+            let mut input = full.clone();
+            input.as_object_mut().expect("object").remove(field);
+            assert_eq!(
+                rejected(input),
+                [(field.to_string(), IssueCode::InputParse)]
+            );
+        }
+        let mut computed = full.clone();
+        computed["connector"] = json!({"var": "data.mailer"});
+        assert_eq!(
+            rejected(computed),
+            [("connector".to_string(), IssueCode::InputParse)]
+        );
+        let mut unknown = full.clone();
+        unknown["body"] = json!("b");
+        let issues = rejected(unknown);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].0, "body");
+        config_v4(full).expect("no body is the call's to refuse");
+    }
+
+    fn handler_v3(
+        registry: Arc<ConnectorRegistry>,
+        smtp_pool: Arc<SmtpPoolCache>,
+    ) -> Box<super::super::connector_handler::Connector<SendEmailHandler>> {
+        Box::new(super::super::connector_handler::Connector(
+            SendEmailHandler {
+                registry,
+                smtp_pool,
+            },
+        ))
+    }
+
+    async fn mailer(config: SmtpConnectorConfig) -> Arc<ConnectorRegistry> {
+        let registry =
+            std::sync::Arc::new(crate::connector::ConnectorRegistry::new(Default::default()));
+        registry
+            .insert_for_test("mailer", ConnectorConfig::Smtp(config))
+            .await;
+        registry
+    }
+
+    /// One task through each engine, each against its own one-session mock:
+    /// what each side saw, and each mock's DATA payload when the send
+    /// reached it.
+    async fn both(
+        input: Value,
+        config: impl Fn(std::net::SocketAddr) -> SmtpConnectorConfig,
+        data: Value,
+    ) -> [(Seen, Option<String>); 2] {
+        let mut sides = Vec::new();
+        for v4 in [false, true] {
+            let (addr, rx) = spawn_smtp_mock().await;
+            let registry = mailer(config(addr)).await;
+            let pool = Arc::new(SmtpPoolCache::new(4));
+            let seen = if v4 {
+                let f = SendEmailFunction {
+                    registry,
+                    smtp_pool: pool,
+                };
+                twin::v4(NAME, f, input.clone(), data.clone()).await
+            } else {
+                twin::v3(
+                    NAME,
+                    handler_v3(registry, pool),
+                    input.clone(),
+                    data.clone(),
+                )
+                .await
+            };
+            // The mock reports its payload once the session ends, which the
+            // pool's drop at the end of the run does; a refused call never
+            // reached it.
+            let mut rx = rx;
+            let wire = match &seen {
+                Ok(_) => tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+                    .await
+                    .ok()
+                    .and_then(Result::ok),
+                Err(_) => rx.try_recv().ok(),
+            }
+            .filter(|wire| !wire.is_empty());
+            sides.push((seen, wire));
+        }
+        sides.try_into().expect("two sides")
+    }
+
+    /// `seen` with each generated Message-ID, which is fresh per send, in a
+    /// shape check and then masked.
+    fn masked(seen: &Seen) -> Seen {
+        fn mask(v: &mut Value) {
+            match v {
+                Value::Object(map) => {
+                    for (k, v) in map.iter_mut() {
+                        if k == "message_id" {
+                            let id = v.as_str().expect("a string id");
+                            assert!(
+                                id.starts_with('<') && id.ends_with("@example.test>"),
+                                "{id}"
+                            );
+                            *v = json!("<masked>");
+                        } else {
+                            mask(v);
+                        }
+                    }
+                }
+                Value::Array(items) => items.iter_mut().for_each(mask),
+                _ => {}
+            }
+        }
+        seen.clone().map(|mut data| {
+            mask(&mut data);
+            data
+        })
+    }
+
+    #[tokio::test]
+    async fn sends_a_multipart_message_through_a_real_smtp_exchange_on_v4() {
+        let input = json!({
+            "connector": "mailer",
+            "to": {"var": "data.email"},
+            "cc": ["Audit <audit@example.test>"],
+            "subject": "Your verification code",
+            "text": "Your OTP is 123456",
+            "html": "<p>Your OTP is <b>123456</b></p>",
+            "headers": {"Auto-Submitted": "auto-generated"},
+            "output": "data.mail"
+        });
+        let data = json!({"email": "User <user@example.test>"});
+        let [(v3, _), (v4, wire)] = both(input, smtp_config, data).await;
+        assert_eq!(masked(&v4), masked(&v3));
+
+        let out = v4.expect("sent");
+        let message_id = out["mail"]["message_id"].as_str().expect("test");
+        assert!(
+            out["mail"]["response"]
+                .as_str()
+                .expect("test")
+                .contains("mock-42"),
+            "{}",
+            out["mail"]
+        );
+        let wire = wire.expect("the payload reached the server");
+        assert!(wire.contains("multipart/alternative"), "{wire}");
+        assert!(wire.contains("Auto-Submitted: auto-generated"), "{wire}");
+        assert!(wire.contains("Your OTP is 123456"), "{wire}");
+        assert!(wire.contains("Subject: Your verification code"), "{wire}");
+        assert!(wire.contains("Cc: "), "{wire}");
+        assert!(wire.contains(message_id), "{wire}");
+    }
+
+    #[tokio::test]
+    async fn from_override_needs_the_connector_gate_on_v4() {
+        let input = json!({
+            "connector": "mailer",
+            "to": "user@example.test",
+            "subject": "s",
+            "text": "b",
+            "from": "spoof@example.test"
+        });
+        let [(v3, _), (v4, _)] = both(input.clone(), smtp_config, json!({})).await;
+        assert_eq!(v4, v3);
+        let failure = v4.expect_err("test");
+        assert!(
+            failure.message.contains("allow_from_override"),
+            "{failure:?}"
+        );
+
+        let allowing = |addr| SmtpConnectorConfig {
+            allow_from_override: true,
+            ..smtp_config(addr)
+        };
+        let [(v3, _), (v4, wire)] = both(input, allowing, json!({})).await;
+        assert_eq!(masked(&v4), masked(&v3));
+        assert!(v4.is_ok() && wire.is_some_and(|w| w.contains("spoof@example.test")));
+    }
+
+    #[tokio::test]
+    async fn message_shape_errors_are_named_on_v4() {
+        for (input, expected) in [
+            (
+                json!({"connector": "mailer", "to": "a@b.test", "subject": "s"}),
+                "'text' or 'html'",
+            ),
+            (
+                json!({"connector": "mailer", "to": ["ok@b.test", "not an address"],
+                       "subject": "s", "text": "b"}),
+                "to[1]",
+            ),
+            (
+                json!({"connector": "mailer", "to": "a@b.test", "subject": "s",
+                       "text": "b", "headers": {"Subject": "override"}}),
+                "structured field",
+            ),
+            // The refusals the three above do not reach, each in its turn.
+            (
+                json!({"connector": "mailer", "to": null, "subject": "s", "text": "b"}),
+                "requires 'to'",
+            ),
+            (
+                json!({"connector": "mailer", "to": [], "subject": "s", "text": "b"}),
+                "requires 'to'",
+            ),
+            (
+                json!({"connector": "mailer", "to": "a@b.test", "subject": {"var": "data.none"},
+                       "text": "b"}),
+                "requires 'subject'",
+            ),
+            (
+                json!({"connector": "mailer", "to": "a@b.test", "subject": 7, "text": "b"}),
+                "must resolve to a string",
+            ),
+            (
+                json!({"connector": "mailer", "to": "a@b.test", "subject": "s", "text": "b",
+                       "reply_to": "nope"}),
+                "reply_to",
+            ),
+            (
+                json!({"connector": "mailer", "to": "a@b.test", "subject": "s", "text": "b",
+                       "headers": {"X-Id": {"cat": ["a\r\n", "Bcc: x@y.test"]}}}),
+                "line break",
+            ),
+            (
+                json!({"connector": "mailer", "to": "a@b.test", "subject": "s", "text": "b",
+                       "headers": {"X-Id": {"var": "data.none"}}}),
+                "must resolve to a string",
+            ),
+            (
+                json!({"connector": "mailer", "to": {"var": "data.none"}, "cc": 7,
+                       "subject": "s", "text": "b"}),
+                "requires 'to'",
+            ),
+            (
+                json!({"connector": "missing", "to": "a@b.test", "subject": "s", "text": "b"}),
+                "Connector 'missing' not found",
+            ),
+        ] {
+            let [(v3, _), (v4, wire)] = both(input.clone(), smtp_config, json!({})).await;
+            assert_eq!(v4, v3, "{input}");
+            let failure = v4.expect_err("refused");
+            assert!(failure.message.contains(expected), "{input}: {failure:?}");
+            assert!(wire.is_none(), "nothing is sent: {input}");
+        }
+    }
+
+    /// Send `count` messages through one shared pool on dataflow-rs 4.
+    async fn send_n_v4(
+        addr: std::net::SocketAddr,
+        input: Value,
+        count: usize,
+    ) -> Arc<SmtpPoolCache> {
+        let registry = mailer(smtp_config(addr)).await;
+        let smtp_pool = std::sync::Arc::new(SmtpPoolCache::new(4));
+        for _ in 0..count {
+            let f = SendEmailFunction {
+                registry: registry.clone(),
+                smtp_pool: smtp_pool.clone(),
+            };
+            twin::v4(NAME, f, input.clone(), json!({}))
+                .await
+                .expect("sent");
+        }
+        smtp_pool
+    }
+
+    #[tokio::test]
+    async fn bcc_reaches_the_envelope_but_never_the_headers_on_v4() {
+        let (addr, log) = spawn_logging_smtp_mock().await;
+        let pool = send_n_v4(
+            addr,
+            json!({"connector": "mailer", "to": "user@example.test",
+                   "bcc": ["blind@example.test"], "subject": "s", "text": "b"}),
+            1,
+        )
+        .await;
+        drop(pool);
+
+        let transcript = log.lock().expect("test").transcript.clone();
+        assert!(
+            transcript.contains("RCPT TO:<blind@example.test>"),
+            "bcc must be an envelope recipient: {transcript}"
+        );
+        assert!(
+            !transcript.to_ascii_lowercase().contains("bcc:"),
+            "bcc must never be a header: {transcript}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_send_reuses_the_pooled_connection_on_v4() {
+        let (addr, log) = spawn_logging_smtp_mock().await;
+        let pool = send_n_v4(
+            addr,
+            json!({"connector": "mailer", "to": "user@example.test",
+                   "subject": "s", "text": "b"}),
+            2,
+        )
+        .await;
+        drop(pool);
+
+        let log = log.lock().expect("test");
+        assert_eq!(
+            log.connections, 1,
+            "two sends should share one connection: {}",
+            log.transcript
+        );
+        assert!(
+            log.transcript.contains("RSET"),
+            "reuse must probe with RSET: {}",
+            log.transcript
+        );
     }
 }

@@ -309,10 +309,58 @@ pub fn build_custom_functions(
 
 /// Register Orion's dataflow-rs 4 functions: the twin of
 /// [`build_custom_functions`], function by function in its order, as each
-/// gains a v4 port. Empty until the first does; no serving path calls it
-/// before the building cutover.
+/// gains a v4 port, each under its dataflow-rs 3 handler's name (F48). No
+/// serving path calls it before the building cutover.
+///
+/// `publish_kafka` is registered with no producer, as
+/// `build_custom_functions` registers its stub: the producer is swapped in
+/// once Kafka is initialised, as [`register_kafka_publisher`] does for
+/// dataflow-rs 3 (`Registry::register` replaces a name).
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
-    let _ = (registry, deps);
+    use functions::connector_handler::ConnectorHandler;
+    use functions::{http_call, publish_kafka, send_email, storage_head, storage_presign};
+
+    let HandlerDeps {
+        registry: connectors,
+        client,
+        smtp_pool_cache,
+        ..
+    } = deps;
+
+    registry.register(
+        <http_call::HttpCallHandler as ConnectorHandler>::NAME,
+        http_call::HttpCallFunction {
+            registry: connectors.clone(),
+            client: client.clone(),
+        },
+    );
+    registry.register(
+        <send_email::SendEmailHandler as ConnectorHandler>::NAME,
+        send_email::SendEmailFunction {
+            registry: connectors.clone(),
+            smtp_pool: smtp_pool_cache,
+        },
+    );
+    registry.register(
+        <storage_presign::StoragePresignHandler as ConnectorHandler>::NAME,
+        storage_presign::StoragePresignFunction {
+            registry: connectors.clone(),
+        },
+    );
+    registry.register(
+        <storage_head::StorageHeadHandler as ConnectorHandler>::NAME,
+        storage_head::StorageHeadFunction {
+            registry: connectors.clone(),
+            client,
+        },
+    );
+    registry.register(
+        <publish_kafka::PublishKafkaHandler as ConnectorHandler>::NAME,
+        publish_kafka::PublishKafkaFunction {
+            registry: connectors,
+            producers: None,
+        },
+    );
 }
 
 /// Register the real Kafka-backed publish_kafka handler.

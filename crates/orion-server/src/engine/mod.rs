@@ -141,7 +141,7 @@ pub mod secrets;
 pub mod steps;
 pub mod utils;
 
-pub use error::{ErrorClass, HandlerError};
+pub use error::{ErrorClass, HTTP_ERROR, HandlerError, HttpFailure, http_error, http_status};
 pub use execute::{ExecOpts, Execution, RunOutcome, execute_admitted};
 pub use functions::registry::{
     CatalogueEntry, FieldSpec, FunctionEntry, FunctionRegistry, PluginBinding,

@@ -1,9 +1,35 @@
 use std::time::Duration;
 
-use dataflow_rs_v3::engine::error::DataflowError;
 use serde_json::Value;
 
 use crate::connector::{AuthConfig, HttpConnectorConfig, redact_url_secrets_or_raw};
+use crate::engine::{ErrorClass, HandlerError, http_error};
+
+// The four failures this module reports, as dataflow-rs 4 errors with the
+// codes, retryability and recorded text dataflow-rs 3's variants of the same
+// names gave them (I184), through the one table `HandlerError` keeps. An
+// upstream's non-2xx answer is the fifth, `http_error`.
+
+/// dataflow-rs 3's `Validation`: the caller's to fix, the message kept.
+fn validation(msg: impl std::fmt::Display) -> dataflow_rs::Error {
+    HandlerError::new(ErrorClass::CallerInput, msg).into()
+}
+
+/// dataflow-rs 3's `FunctionExecution` with no source: the request failed,
+/// and repeating it would fail the same way.
+fn execution(msg: impl std::fmt::Display) -> dataflow_rs::Error {
+    HandlerError::new(ErrorClass::Backend, msg).into()
+}
+
+/// dataflow-rs 3's `Timeout`: retryable.
+fn timed_out(msg: impl std::fmt::Display) -> dataflow_rs::Error {
+    HandlerError::new(ErrorClass::Timeout, msg).into()
+}
+
+/// dataflow-rs 3's `Io`: the upstream could not be reached, retryable.
+fn connect_failure(msg: impl std::fmt::Display) -> dataflow_rs::Error {
+    HandlerError::new(ErrorClass::Connector, msg).into()
+}
 
 /// How much of a non-2xx response body may reach an error message (#281).
 ///
@@ -110,11 +136,11 @@ pub fn apply_auth(req: reqwest::RequestBuilder, auth: &AuthConfig) -> reqwest::R
 /// trip the breaker like any dependency outage); rejections and config
 /// problems are non-retryable connector detail — a credential failure is not
 /// evidence about the API's health.
-pub fn oauth_error_to_dataflow(e: crate::connector::oauth::OAuthError) -> DataflowError {
+pub fn oauth_error_to_dataflow(e: crate::connector::oauth::OAuthError) -> dataflow_rs::Error {
     if e.retryable() {
-        DataflowError::Io(e.to_string())
+        connect_failure(e)
     } else {
-        crate::errors::connector_detail_error(e.to_string())
+        crate::errors::service::connector_detail(e)
     }
 }
 
@@ -189,15 +215,11 @@ pub struct EncodedBody {
 /// Workflow validation runs the same function over a *static* `body` at
 /// authoring time (see `schema::validate_input`), keeping the two layers from
 /// drifting.
-pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs_v3::Result<EncodedBody> {
+pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<EncodedBody> {
     let encoded = match format {
         BodyFormat::Json => EncodedBody {
             bytes: serde_json::to_vec(body)
-                .map_err(|e| {
-                    DataflowError::Validation(format!(
-                        "Failed to serialize request body as JSON: {e}"
-                    ))
-                })?
+                .map_err(|e| validation(format!("Failed to serialize request body as JSON: {e}")))?
                 .into(),
             content_type: "application/json",
         },
@@ -211,7 +233,7 @@ pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs_v3::Result<E
                 content_type: "text/plain; charset=utf-8",
             },
             other => {
-                return Err(DataflowError::Validation(format!(
+                return Err(validation(format!(
                     "body_format 'text' requires the body to be a string, got {}",
                     crate::engine::utils::json_kind(other)
                 )));
@@ -229,9 +251,9 @@ pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs_v3::Result<E
 /// parameters. Anything nested is refused: form encoding has no canonical
 /// nesting. Bracket-path conventions need no support here — `"metadata[id]"`
 /// is an ordinary top-level key.
-fn encode_form(body: &Value) -> dataflow_rs_v3::Result<String> {
+fn encode_form(body: &Value) -> dataflow_rs::Result<String> {
     let Some(obj) = body.as_object() else {
-        return Err(DataflowError::Validation(format!(
+        return Err(validation(format!(
             "body_format 'form' requires the body to be an object of key/value pairs, got {}",
             crate::engine::utils::json_kind(body)
         )));
@@ -268,8 +290,8 @@ fn scalar_form_value(v: &Value) -> Option<String> {
     }
 }
 
-fn form_value_error(key: &str, value: &Value) -> DataflowError {
-    DataflowError::Validation(format!(
+fn form_value_error(key: &str, value: &Value) -> dataflow_rs::Error {
+    validation(format!(
         "body_format 'form' cannot encode '{key}' ({}): entries must be scalars \
          or arrays of scalars — form encoding has no canonical nesting",
         crate::engine::utils::json_kind(value)
@@ -310,7 +332,7 @@ pub async fn execute_request(
     client: &reqwest::Client,
     http_config: &HttpConnectorConfig,
     spec: RequestSpec<'_>,
-) -> dataflow_rs_v3::Result<Value> {
+) -> dataflow_rs::Result<Value> {
     let RequestSpec {
         method,
         url,
@@ -324,7 +346,7 @@ pub async fn execute_request(
     // `Validation` reaches the caller as a 400 with the message verbatim
     // (`errors.rs`), so this one is caller-visible even before the trace.
     let original = url::Url::parse(url)
-        .map_err(|e| DataflowError::Validation(format!("Invalid URL '{}': {e}", safe_url(url))))?;
+        .map_err(|e| validation(format!("Invalid URL '{}': {e}", safe_url(url))))?;
     let mut current = original.clone();
     let mut method = method.clone();
     // Encoded once — the bytes are identical on every retry and redirect hop.
@@ -339,10 +361,7 @@ pub async fn execute_request(
         if !(http_config.allow_private_urls && own_endpoint)
             && let Err(msg) = crate::validation::validate_url_not_private(current.as_str()).await
         {
-            return Err(DataflowError::function_execution(
-                format!("SSRF protection: {msg}"),
-                None,
-            ));
+            return Err(execution(format!("SSRF protection: {msg}")));
         }
 
         let mut req = client
@@ -409,11 +428,11 @@ pub async fn execute_request(
         let response = req.send().await.map_err(|e| {
             let url = safe_url(current.as_str());
             if e.is_timeout() {
-                DataflowError::Timeout(format!("HTTP request to {url} timed out"))
+                timed_out(format!("HTTP request to {url} timed out"))
             } else {
                 // `without_url` because reqwest's own `Display` appends the URL
                 // it was handed — unredacted, and a second time alongside ours.
-                DataflowError::Io(format!("HTTP request to {url} failed: {}", e.without_url()))
+                connect_failure(format!("HTTP request to {url} failed: {}", e.without_url()))
             }
         })?;
 
@@ -440,13 +459,10 @@ pub async fn execute_request(
         .await;
     }
 
-    Err(DataflowError::function_execution(
-        format!(
-            "Stopped after {MAX_REDIRECTS} redirects requesting {}",
-            safe_url(url)
-        ),
-        None,
-    ))
+    Err(execution(format!(
+        "Stopped after {MAX_REDIRECTS} redirects requesting {}",
+        safe_url(url)
+    )))
 }
 
 /// Same scheme-default-aware host:port — the boundary within which connector
@@ -470,7 +486,7 @@ fn has_content_type(headers: &std::collections::HashMap<String, String>) -> bool
 fn redirect_target(
     response: &reqwest::Response,
     current: &url::Url,
-) -> dataflow_rs_v3::Result<Option<url::Url>> {
+) -> dataflow_rs::Result<Option<url::Url>> {
     if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
         return Ok(None);
     }
@@ -478,35 +494,26 @@ fn redirect_target(
         return Ok(None);
     };
     let location = location.to_str().map_err(|_| {
-        DataflowError::function_execution(
-            format!(
-                "Redirect from {} has a non-ASCII Location header",
-                safe_url(current.as_str())
-            ),
-            None,
-        )
+        execution(format!(
+            "Redirect from {} has a non-ASCII Location header",
+            safe_url(current.as_str())
+        ))
     })?;
     let next = current.join(location).map_err(|e| {
-        DataflowError::function_execution(
-            format!(
-                "Redirect from {} has invalid Location '{}': {e}",
-                safe_url(current.as_str()),
-                // The Location is a URL the *upstream* chose; it can carry a
-                // credential of its own, so it is redacted like any other.
-                safe_url(location)
-            ),
-            None,
-        )
+        execution(format!(
+            "Redirect from {} has invalid Location '{}': {e}",
+            safe_url(current.as_str()),
+            // The Location is a URL the *upstream* chose; it can carry a
+            // credential of its own, so it is redacted like any other.
+            safe_url(location)
+        ))
     })?;
     if !matches!(next.scheme(), "http" | "https") {
-        return Err(DataflowError::function_execution(
-            format!(
-                "Redirect from {} targets unsupported scheme '{}'",
-                safe_url(current.as_str()),
-                next.scheme()
-            ),
-            None,
-        ));
+        return Err(execution(format!(
+            "Redirect from {} targets unsupported scheme '{}'",
+            safe_url(current.as_str()),
+            next.scheme()
+        )));
     }
     Ok(Some(next))
 }
@@ -528,7 +535,7 @@ async fn read_response(
     url: &url::Url,
     max_size: usize,
     format: ResponseFormat,
-) -> dataflow_rs_v3::Result<Value> {
+) -> dataflow_rs::Result<Value> {
     let status = response.status();
     let safe = safe_url(url.as_str());
 
@@ -536,9 +543,8 @@ async fn read_response(
     // non-2xx that announces an oversized body is refused as oversized rather
     // than quoted back — the preview below would otherwise be the only thing
     // standing between that body and the trace it lands in.
-    crate::http_body::check_declared_length(&response, max_size).map_err(|e| {
-        DataflowError::function_execution(format!("Response from {safe}: {e}"), None)
-    })?;
+    crate::http_body::check_declared_length(&response, max_size)
+        .map_err(|e| execution(format!("Response from {safe}: {e}")))?;
 
     if !status.is_success() {
         // Read at most `ERROR_BODY_PREVIEW` bytes of the error body for the
@@ -548,7 +554,7 @@ async fn read_response(
         // asked for.
         let preview =
             crate::http_body::read_preview(response, max_size.min(ERROR_BODY_PREVIEW)).await;
-        return Err(DataflowError::http(
+        return Err(http_error(
             status.as_u16(),
             format!("HTTP {status} from {safe}: {}", preview.to_message()),
         ));
@@ -556,17 +562,11 @@ async fn read_response(
 
     let body_bytes = crate::http_body::read_bounded(response, max_size)
         .await
-        .map_err(|e| {
-            DataflowError::function_execution(format!("Response from {safe}: {e}"), None)
-        })?;
+        .map_err(|e| execution(format!("Response from {safe}: {e}")))?;
 
     match format {
-        ResponseFormat::Json => serde_json::from_slice(&body_bytes).map_err(|e| {
-            DataflowError::function_execution(
-                format!("Failed to parse response from {safe} as JSON: {e}"),
-                None,
-            )
-        }),
+        ResponseFormat::Json => serde_json::from_slice(&body_bytes)
+            .map_err(|e| execution(format!("Failed to parse response from {safe} as JSON: {e}"))),
         // Lossy on invalid UTF-8, matching the error-path body capture above.
         ResponseFormat::Text => Ok(Value::String(
             String::from_utf8_lossy(&body_bytes).into_owned(),

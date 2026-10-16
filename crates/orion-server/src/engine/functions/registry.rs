@@ -31,7 +31,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
-use dataflow_rs_v3::engine::error::DataflowError;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -627,10 +626,10 @@ impl FunctionEntry {
                 && format != BodyFormat::Json
                 && let Err(e) = encode_body(body, format)
             {
-                let msg = match e {
-                    DataflowError::Validation(m) => m,
-                    other => other.to_string(),
-                };
+                // `encode_body` refuses only as the caller's to fix, so the
+                // guidance is the message without the class label its
+                // record carries: dataflow-rs 3's `Validation` payload.
+                let msg = crate::engine::HandlerError::from(e).msg;
                 errors.push(FieldError::new(
                     format!("{input_path}.body"),
                     "INVALID",

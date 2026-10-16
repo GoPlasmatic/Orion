@@ -6,7 +6,9 @@
 //! - [`guarded`]: the connector shell — the circuit breaker and the
 //!   connector metrics — around a connector function's work.
 //! - [`resolve_connector`] and [`require_connector`]: the connector lookups,
-//!   on dataflow-rs 4's error.
+//!   on dataflow-rs 4's error, and [`require_op`] and
+//!   [`require_method_allowed`], the connector's operation gates.
+//! - [`spec`]: a function's `schema.rs` row as its `FunctionSpec`.
 //! - [`ProfileLayer`]: the per-request profile, as one registry layer
 //!   around every host call.
 //! - [`OfflineDeps`]: inert dependencies, so every function can be
@@ -26,16 +28,93 @@ use std::sync::Arc;
 
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::ExprEngine;
-use dataflow_rs::function::{BoxFuture, CallLayer, Next};
+use dataflow_rs::function::{BoxFuture, CallLayer, FunctionSpec, Next, Reference};
 use dataflow_rs::{Ctx, Outcome};
 
-use crate::connector::{ConnectorConfig, ConnectorRegistry, ConnectorTarget};
+use crate::connector::{ConnectorConfig, ConnectorRegistry, ConnectorTarget, HttpOperationGates};
+use crate::engine::functions::schema;
 use crate::engine::{HandlerDeps, ResolvedSecrets};
 
 /// The channel a call's run was started on, `"unknown"` when it was started
 /// on none — what `extract_channel` answers from the message's metadata.
-pub fn channel<'c>(ctx: &'c Ctx<'_>) -> &'c str {
+/// Borrowed for the run, not for `ctx`, so a call holds it while it writes.
+pub fn channel<'r>(ctx: &Ctx<'r>) -> &'r str {
     ctx.info().channel.unwrap_or("unknown")
+}
+
+/// What `name`'s row in `schema.rs` says about the function, as its
+/// [`FunctionSpec`] (I179): the row's description and category, its retry
+/// safety on dataflow-rs 4's three answers (`Pure`, `Read` and
+/// `IdempotentWrite` are `Idempotent`, `UnsafeWrite` is `NotIdempotent`,
+/// `DependsOn` is `Unknown`), and, for a function that takes a connector,
+/// its `connector` field as a reference of the function's own kind (I187),
+/// which the authoring oracle judges by that function's `ConnectorRule`.
+///
+/// # Panics
+///
+/// When `schema.rs` has no row named `name`: a function registered under a
+/// name Orion does not declare, which `kit`'s tests refuse for every
+/// function `register_functions` registers.
+pub fn spec(name: &str) -> FunctionSpec {
+    let row = schema::registry()
+        .iter()
+        .find(|row| row.name == name)
+        .expect("every function Orion registers has its schema.rs row");
+    let retry = match row.retry_safety {
+        schema::RetrySafety::Pure
+        | schema::RetrySafety::Read
+        | schema::RetrySafety::IdempotentWrite => dataflow_rs::function::RetrySafety::Idempotent,
+        schema::RetrySafety::UnsafeWrite => dataflow_rs::function::RetrySafety::NotIdempotent,
+        schema::RetrySafety::DependsOn { .. } => dataflow_rs::function::RetrySafety::Unknown,
+    };
+    let references = match row.connector {
+        Some(_) => vec![Reference::new("connector", row.name)],
+        None => Vec::new(),
+    };
+    FunctionSpec::default()
+        .with_description(row.description)
+        .with_category(row.category)
+        .with_retry(retry)
+        .with_references(references)
+}
+
+/// `connector_helpers::require_op` on dataflow-rs 4's error: a connector
+/// whose gate for `op` is off refuses the call before anything is dialled.
+///
+/// # Errors
+///
+/// A `connector_detail` refusal when `allowed` is false: the caller is told
+/// the request failed validation, and which operation is off rides as the
+/// operator-only detail.
+pub fn require_op(allowed: bool, op: &str, connector: &str) -> dataflow_rs::Result<()> {
+    if allowed {
+        return Ok(());
+    }
+    Err(crate::errors::service::connector_detail(format!(
+        "operation '{op}' is disabled on connector '{connector}'"
+    )))
+}
+
+/// `connector_helpers::require_method_allowed` on dataflow-rs 4's error: an
+/// HTTP connector's method allow-list (F22e), where an empty list allows
+/// every method.
+///
+/// # Errors
+///
+/// A `connector_detail` refusal naming the method and the allowed ones when
+/// the list excludes `method`.
+pub fn require_method_allowed(
+    gates: &HttpOperationGates,
+    method: &str,
+    connector: &str,
+) -> dataflow_rs::Result<()> {
+    if gates.allows_method(method) {
+        return Ok(());
+    }
+    Err(crate::errors::service::connector_detail(format!(
+        "HTTP method '{method}' is not allowed on connector '{connector}' (allowed: {})",
+        gates.methods.join(", ")
+    )))
 }
 
 /// `guarded_handler` on dataflow-rs 4's types: the circuit breaker and the
@@ -691,10 +770,83 @@ mod tests {
         assert_eq!(profile["handlers"], json!([]), "{profile}");
     }
 
+    /// The gates refuse as 1.12's did: the code, retryability, recorded text
+    /// and operator-only detail, open and closed.
+    #[test]
+    fn the_gates_refuse_as_1_12_did() {
+        for allowed in [true, false] {
+            let kit = require_op(allowed, "publish", "events").map_err(|e| facts_v4(&e));
+            let v3 = v3::require_op(allowed, "publish", "events").map_err(facts_v3);
+            assert_eq!(kit, v3, "allowed: {allowed}");
+        }
+        for methods in [
+            vec![],
+            vec!["GET".to_string()],
+            vec!["get".to_string(), "PUT".to_string()],
+        ] {
+            let gates = HttpOperationGates { methods };
+            for method in ["GET", "POST", "PUT"] {
+                let kit = require_method_allowed(&gates, method, "api").map_err(|e| facts_v4(&e));
+                let v3 = v3::require_method_allowed(&gates, method, "api").map_err(facts_v3);
+                assert_eq!(kit, v3, "{method} against {:?}", gates.methods);
+            }
+        }
+    }
+
+    /// Each function `register_functions` registers carries its `schema.rs`
+    /// row: the description, the category, the retry safety mapped (I179),
+    /// and the connector reference (I187).
+    #[test]
+    fn spec_is_the_schema_row() {
+        use dataflow_rs::function::RetrySafety;
+        let offline = OfflineDeps::new();
+        let mut registry = dataflow_rs::Registry::new(test_exprs());
+        crate::engine::register_functions(&mut registry, offline.deps());
+        let mut seen = 0;
+        for info in registry.catalogue().filter(|info| !info.builtin) {
+            let row = schema::registry()
+                .iter()
+                .find(|row| row.name == info.name)
+                .expect("a row");
+            assert_eq!(info.spec.description, row.description, "{}", info.name);
+            assert_eq!(info.spec.category, row.category, "{}", info.name);
+            let retry = match row.retry_safety {
+                schema::RetrySafety::UnsafeWrite => RetrySafety::NotIdempotent,
+                schema::RetrySafety::DependsOn { .. } => RetrySafety::Unknown,
+                _ => RetrySafety::Idempotent,
+            };
+            assert_eq!(info.spec.retry, retry, "{}", info.name);
+            let references: Vec<_> = info
+                .spec
+                .references
+                .iter()
+                .map(|r| (r.field.to_string(), r.kind.to_string()))
+                .collect();
+            let expected: Vec<_> = row
+                .connector
+                .iter()
+                .map(|_| ("connector".to_string(), row.name.to_string()))
+                .collect();
+            assert_eq!(references, expected, "{}", info.name);
+            seen += 1;
+        }
+        assert!(seen > 0, "register_functions registered nothing");
+    }
+
+    /// The functions ported so far, in `build_custom_functions`' order.
+    const PORTED: &[&str] = &[
+        "http_call",
+        "send_email",
+        "storage_presign",
+        "storage_head",
+        "publish_kafka",
+    ];
+
     /// Every function 1.12 registers can be built over the inert
-    /// dependencies, and `register_functions` registers nothing yet.
+    /// dependencies, and `register_functions` registers the ones ported so
+    /// far, each under the name `build_custom_functions` gives its twin.
     #[tokio::test]
-    async fn offline_deps_build_every_function_and_register_functions_is_empty() {
+    async fn offline_deps_build_every_function_and_register_the_ported_ones() {
         let offline = OfflineDeps::new();
         let built = crate::engine::build_custom_functions(offline.deps());
         for name in [
@@ -708,9 +860,18 @@ mod tests {
             assert!(built.contains_key(name), "{name}");
         }
         let mut registry = dataflow_rs::Registry::new(test_exprs());
-        let before = registry.catalogue().count();
         crate::engine::register_functions(&mut registry, offline.deps());
-        assert_eq!(registry.catalogue().count(), before);
+        let hosts: Vec<&str> = registry
+            .catalogue()
+            .filter(|info| !info.builtin)
+            .map(|info| info.name)
+            .collect();
+        let mut ported = PORTED.to_vec();
+        ported.sort_unstable();
+        assert_eq!(hosts, ported, "the catalogue lists host functions by name");
+        for name in PORTED {
+            assert!(built.contains_key(*name), "{name} has a dataflow-rs 3 twin");
+        }
         // The engine every test compiles on: Orion's operators, no secrets.
         assert!(
             test_exprs()

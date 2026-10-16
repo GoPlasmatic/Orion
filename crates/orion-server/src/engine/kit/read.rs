@@ -21,7 +21,9 @@
 
 use std::borrow::Cow;
 
+use dataflow_rs::Expr;
 use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::FromValue;
 use serde_json::{Map, Value};
 
 use crate::connector::sql_decode::{BinaryAs, NumericAs, RowFormat};
@@ -403,6 +405,51 @@ pub fn mongo_u64(
     }
 }
 
+/// dataflow-rs 3's `Template::resolve_string`, the reading of every string
+/// parameter of its typed configs (`http_call`'s path, headers and formats,
+/// `publish_kafka`'s topic and key): a string as itself, anything else its
+/// compact JSON, so `7` is `"7"` and `null` is `"null"`. Never refused, as it
+/// never was; a string is lent.
+pub fn plain_str(v: &OwnedDataValue) -> Cow<'_, str> {
+    match v {
+        OwnedDataValue::String(s) => Cow::Borrowed(s),
+        other => Cow::Owned(other.to_string()),
+    }
+}
+
+/// dataflow-rs 3's `Template::resolve_u64` (`http_call.timeout_ms`): any
+/// finite number from `0` to `u64::MAX`, a fraction cut to its whole part,
+/// so `2.5` is `2`. `label` opens the refusal, which quotes the value.
+///
+/// # Errors
+///
+/// A [`ErrorClass::CallerInput`] error for a negative or non-finite number,
+/// one past `u64::MAX`, or a value that is not a number.
+pub fn template_u64(v: &OwnedDataValue, label: &str) -> Result<u64, HandlerError> {
+    let read = match v {
+        OwnedDataValue::Number(n) => {
+            let f = n.as_f64();
+            // Judged before the cast, which would saturate or give 0.
+            (f.is_finite() && f >= 0.0 && f <= u64::MAX as f64).then_some(f as u64)
+        }
+        _ => None,
+    };
+    read.ok_or_else(|| {
+        refused(format!(
+            "{label} must evaluate to a non-negative number, got {v}"
+        ))
+    })
+}
+
+/// A parameter dataflow-rs 3's typed configs declared `Option<Template>`
+/// (`http_call`'s `path`, `body`, `body_format` and `response_format`,
+/// `publish_kafka`'s `key` and `value`), as serde read it: an explicit
+/// `null` is the parameter left unset. dataflow-rs 4 compiles a `null` as a
+/// constant expression, so the caller asks here first.
+pub fn present<T: FromValue>(field: &Option<Expr<T>>) -> Option<&Expr<T>> {
+    field.as_ref().filter(|expr| !expr.raw().is_null())
+}
+
 /// Each reader against its dataflow-rs 3 twin over the same JSON: the value
 /// on success, and the class and the message on a refusal — computed from
 /// the twin, never written out.
@@ -652,6 +699,51 @@ mod tests {
             let v4 = seen_v4(row_format(Some(&numeric), Some(&binary), H));
             assert_eq!(v4, v3);
         }
+    }
+
+    /// `plain_str` and `template_u64` against dataflow-rs 3's `Template`
+    /// over every scalar, which an uncompiled template reads as itself. A
+    /// compiled one, over every kind of value, is held to them by
+    /// `http_call`'s twin over its typed config.
+    #[test]
+    fn plain_str_and_template_u64_are_templates_readers() {
+        let label = "http_call timeout_ms";
+        for value in values().into_iter().flatten() {
+            if !(value.is_string() || value.is_number() || value.is_boolean()) {
+                continue;
+            }
+            let template = dataflow_rs_v3::Template::from(value.clone());
+            let owned = OwnedDataValue::from(&value);
+            let v3 = with_v3(|ctx| template.resolve_string(ctx)).expect("a scalar resolves");
+            assert_eq!(plain_str(&owned), v3, "{value}");
+            let v3 = with_v3(|ctx| seen_v3(template.resolve_u64(ctx, label)));
+            assert_eq!(seen_v4(template_u64(&owned, label)), v3, "{value}");
+        }
+        assert_eq!(plain_str(&OwnedDataValue::Null), "null");
+        assert_eq!(
+            plain_str(&OwnedDataValue::from(&json!({"a": [1]}))),
+            r#"{"a":[1]}"#
+        );
+        assert!(matches!(
+            plain_str(&OwnedDataValue::from(&json!("x"))),
+            Cow::Borrowed("x")
+        ));
+        assert_eq!(
+            template_u64(&OwnedDataValue::from(&json!(2.5)), label).ok(),
+            Some(2)
+        );
+    }
+
+    /// An explicit `null` is unset; anything else, a `null` an expression
+    /// computes included, is the parameter.
+    #[test]
+    fn present_reads_an_authored_null_as_unset() {
+        let exprs = crate::engine::kit::test_exprs();
+        let compiled = |raw: Value| Some(exprs.compile::<OwnedDataValue>(&raw).expect("compiles"));
+        assert!(present(&compiled(Value::Null)).is_none());
+        assert!(present::<OwnedDataValue>(&None).is_none());
+        assert!(present(&compiled(json!("/orders"))).is_some());
+        assert!(present(&compiled(json!({"var": "data.missing"}))).is_some());
     }
 
     /// `mongo_common::resolve_u64` reads the authored field: a literal `null`

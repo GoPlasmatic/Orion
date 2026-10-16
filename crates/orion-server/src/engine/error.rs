@@ -243,6 +243,75 @@ impl std::fmt::Display for HandlerError {
     }
 }
 
+/// The code dataflow-rs 3's `DataflowError::Http` records, and the one an
+/// [`http_error`] carries.
+pub const HTTP_ERROR: &str = "HTTP_ERROR";
+
+/// A non-2xx answer from an upstream, as a dataflow-rs 4 error: dataflow-rs
+/// 3's `DataflowError::Http { status, message }`, so its code
+/// ([`HTTP_ERROR`]), its retryability (a 5xx, a 429, a 408, or no status at
+/// all) and its recorded text (`"HTTP error: {status} - {message}"`) are
+/// 1.12's. The status and the bare message ride as the source, an
+/// [`HttpFailure`], so a caller reads the status with [`http_status`] and
+/// the error converts back into the dataflow-rs 3 variant whole.
+pub fn http_error(status: u16, message: impl Into<String>) -> dataflow_rs::Error {
+    let failure = HttpFailure {
+        status,
+        message: message.into(),
+    };
+    dataflow_rs::Error::service(HTTP_ERROR, failure.to_string())
+        .with_retryable(failure.is_retryable())
+        .with_source(failure)
+}
+
+/// The upstream status of an [`http_error`]; `None` for any other error.
+pub fn http_status(e: &dataflow_rs::Error) -> Option<u16> {
+    http_failure(e).map(|failure| failure.status)
+}
+
+/// The [`HttpFailure`] an [`http_error`] carries.
+fn http_failure(e: &dataflow_rs::Error) -> Option<&HttpFailure> {
+    std::error::Error::source(e)?.downcast_ref::<HttpFailure>()
+}
+
+/// What an [`http_error`] carries as its source: the upstream's status and
+/// the bare message, the two fields of dataflow-rs 3's `Http` variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpFailure {
+    /// The upstream's status; `0` when there was none.
+    pub status: u16,
+    /// The message, without the `"HTTP error: {status} - "` the error's own
+    /// text opens with.
+    pub message: String,
+}
+
+impl HttpFailure {
+    /// dataflow-rs 3's rule for `Http`: a server error, a rate limit, a
+    /// request timeout, or a connection that gave no status.
+    fn is_retryable(&self) -> bool {
+        self.status >= 500 || matches!(self.status, 429 | 408 | 0)
+    }
+
+    /// The class dataflow-rs 3's `Http` was read as: a 4xx is the caller's,
+    /// anything else the backend's.
+    fn class(&self) -> ErrorClass {
+        if (400..500).contains(&self.status) {
+            ErrorClass::CallerInput
+        } else {
+            ErrorClass::Backend
+        }
+    }
+}
+
+/// dataflow-rs 3's `Display` for `Http`.
+impl std::fmt::Display for HttpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP error: {} - {}", self.status, self.message)
+    }
+}
+
+impl std::error::Error for HttpFailure {}
+
 /// The one place a classification becomes a `DataflowError` variant.
 ///
 /// Every mapping here is the one its constructor made before, so retryability
@@ -269,6 +338,10 @@ impl From<HandlerError> for DataflowError {
 /// detail and retryability kept. `rest` is the `HandlerError` the error
 /// travelled in, for the kinds with no variant of their own.
 fn v4_into_v3(original: dataflow_rs::Error, rest: HandlerError) -> DataflowError {
+    // An upstream's non-2xx answer goes back as the variant it stands for.
+    if let Some(failure) = http_failure(&original) {
+        return DataflowError::http(failure.status, failure.message.clone());
+    }
     let message = bare_message(&original).to_string();
     match original.kind() {
         ErrorKind::Budget => DataflowError::BudgetExceeded(message),
@@ -325,6 +398,10 @@ impl From<HandlerError> for dataflow_rs::Error {
 /// "Task t error: ", which a dataflow-rs 4 service error's record takes
 /// verbatim — and, as the source, its detail.
 fn v3_into_v4(original: DataflowError) -> dataflow_rs::Error {
+    // The variant whose status a caller reads (`http_call`'s 401) keeps it.
+    if let DataflowError::Http { status, message } = &original {
+        return http_error(*status, message.clone());
+    }
     let retryable = original.retryable();
     let detail = original.detail().map(str::to_string);
     let code = dataflow_rs_v3::ErrorInfo::new(None, None, original.clone()).code;
@@ -361,6 +438,16 @@ fn bare_message(e: &dataflow_rs::Error) -> &str {
 /// variant.
 impl From<dataflow_rs::Error> for HandlerError {
     fn from(e: dataflow_rs::Error) -> Self {
+        // An upstream's non-2xx answer is classified and worded as the
+        // dataflow-rs 3 variant it stands for.
+        if let Some(failure) = http_failure(&e) {
+            return Self {
+                class: failure.class(),
+                msg: failure.message.clone(),
+                detail: None,
+                original: Some(Original::V4(Box::new(e))),
+            };
+        }
         let class = match e.kind() {
             // A configured cap: the author's or the operator's to fix, and a
             // retry spends the same operations — the class a dataflow-rs 3
@@ -586,6 +673,42 @@ mod round_trip_tests {
             }
             other => unreachable!("a Service error must return as one, got {other:?}"),
         }
+    }
+
+    /// An upstream's non-2xx answer as a dataflow-rs 4 error is dataflow-rs
+    /// 3's `Http` variant: the same code, retryability, recorded text and
+    /// class at every status, its status readable, and either engine's error
+    /// converted into the other's whole.
+    #[test]
+    fn an_http_error_is_the_dataflow_rs_3_http_variant() {
+        for status in [0, 301, 400, 401, 404, 408, 429, 500, 502, 503] {
+            let v4 = http_error(status, "HTTP 503 from upstream: down");
+            let v3 = DataflowError::http(status, "HTTP 503 from upstream: down");
+            let code = dataflow_rs_v3::ErrorInfo::new(None, None, v3.clone()).code;
+            assert_eq!(v4.code(), code, "{status}");
+            assert_eq!(v4.is_retryable(), v3.retryable(), "{status}");
+            assert_eq!(v4.message(), v3.to_string(), "{status}");
+            assert_eq!(http_status(&v4), Some(status));
+            assert_eq!(detail_of(&v4), None, "an HTTP failure carries no detail");
+
+            let (into_v4, into_v3) = (HandlerError::from(v4), HandlerError::from(v3.clone()));
+            assert_eq!(into_v4.class, into_v3.class, "{status}");
+            assert_eq!(into_v4.msg, into_v3.msg, "{status}");
+
+            let back = DataflowError::from(into_v4);
+            assert!(
+                matches!(&back, DataflowError::Http { status: s, message }
+                    if *s == status && message == "HTTP 503 from upstream: down"),
+                "{back:?}"
+            );
+            let forward = dataflow_rs::Error::from(into_v3);
+            assert_eq!(http_status(&forward), Some(status));
+            assert_eq!(forward.message(), v3.to_string());
+        }
+        assert_eq!(
+            http_status(&dataflow_rs::Error::service(HTTP_ERROR, "x")),
+            None
+        );
     }
 
     /// Rewriting the message drops the original, because it is no longer the

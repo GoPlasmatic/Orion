@@ -108,6 +108,149 @@ pub(crate) async fn run_test_task(
     .await
 }
 
+/// Test-only: one task through each engine, as a client reads the result, so
+/// a dataflow-rs 4 function's test holds it to its dataflow-rs 3 handler over
+/// the same input — the same writes, outcome and error (the port rules).
+///
+/// What is compared is what leaves the engine: the message's `data` after
+/// the task, or the failure that stopped it, with its code, the text its
+/// record carries after `"Task t error: "`, its retryability and its
+/// operator-only detail.
+#[cfg(test)]
+pub(crate) mod twin {
+    use std::sync::Arc;
+
+    use dataflow_rs::datavalue::OwnedDataValue;
+    use dataflow_rs::function::testing;
+    use dataflow_rs::run::ErrorKind;
+    use serde_json::{Value, json};
+
+    use crate::connector::{ConnectorConfig, ConnectorRegistry};
+
+    /// A task's failure, as its record and a retry read it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct Failure {
+        pub code: String,
+        /// The record's text after `"Task t error: "`.
+        pub message: String,
+        pub retryable: bool,
+        pub detail: Option<String>,
+    }
+
+    /// The message's `data` after the task, or the failure that stopped it.
+    pub(crate) type Seen = Result<Value, Failure>;
+
+    /// A connector registry holding `connectors`, each a connector config's
+    /// JSON (`{"type": "http", …}`), with the circuit breaker off.
+    pub(crate) async fn connectors(connectors: &[(&str, Value)]) -> Arc<ConnectorRegistry> {
+        let registry = Arc::new(ConnectorRegistry::new(Default::default()));
+        for (name, config) in connectors {
+            let config: ConnectorConfig =
+                serde_json::from_value(config.clone()).expect("a connector config");
+            registry.insert_for_test(name, config).await;
+        }
+        registry
+    }
+
+    /// `handler` as the one task `t` of a dataflow-rs 3 workflow, over a
+    /// message whose `data` is `data` (unless `null`).
+    pub(crate) async fn v3(
+        name: &str,
+        handler: dataflow_rs_v3::BoxedFunctionHandler,
+        input: Value,
+        data: Value,
+    ) -> Seen {
+        let mut fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
+            Default::default();
+        fns.insert(name.to_string(), handler);
+        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
+            "id": "w", "name": "w", "condition": true,
+            "tasks": [{"id": "t", "name": "t", "function": {"name": name, "input": input}}]
+        }))
+        .expect("a workflow");
+        let engine = dataflow_rs_v3::Engine::new(vec![workflow], fns).expect("the engine builds");
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
+        if !data.is_null() {
+            dataflow_rs_v3::engine::utils::set_nested_value(
+                &mut message.context,
+                "data",
+                OwnedDataValue::from(&data),
+            );
+        }
+        match engine.process_message(&mut message).await {
+            Ok(()) => Ok(message.data().into()),
+            Err(e) => {
+                let record = message.errors().first().expect("the failure is recorded");
+                let failure = Failure {
+                    code: record.code.clone(),
+                    message: e.to_string(),
+                    retryable: e.retryable(),
+                    detail: record.detail.clone(),
+                };
+                // What the harness reads off the error is what the record says.
+                assert_eq!(record.message, format!("Task t error: {}", failure.message));
+                Err(failure)
+            }
+        }
+    }
+
+    /// One call of `f`, registered as `name`, on Orion's expressions, over a
+    /// message whose `data` is `data`. The config must compile.
+    pub(crate) async fn v4<F: dataflow_rs::Function>(
+        name: &str,
+        f: F,
+        input: Value,
+        data: Value,
+    ) -> Seen {
+        let message = dataflow_rs::Message::from_parts(
+            OwnedDataValue::Null,
+            OwnedDataValue::from(&data),
+            OwnedDataValue::Null,
+        );
+        let called = testing::call(f, input)
+            .exprs(crate::engine::kit::test_exprs())
+            .name(name)
+            .message(message)
+            .await;
+        seen(&called)
+    }
+
+    /// What a call did, as [`Seen`]. A call whose config was refused fails
+    /// the test, naming the issues.
+    pub(crate) fn seen(called: &testing::Called) -> Seen {
+        match &called.outcome {
+            Ok(_) => Ok(Value::from(called.message.context().data())),
+            Err(e) => {
+                assert!(
+                    *e.kind() != ErrorKind::Compile,
+                    "the config was refused: {:?}",
+                    called.issues
+                );
+                Err(failure(e))
+            }
+        }
+    }
+
+    /// A dataflow-rs 4 error as its record and a retry read it: a service
+    /// error's message as it is, any other kind's under the label the
+    /// recorder gives that kind, as dataflow-rs 3's `Display` did.
+    pub(crate) fn failure(e: &dataflow_rs::Error) -> Failure {
+        let label = match e.kind() {
+            ErrorKind::Eval => "Logic evaluation error: ",
+            ErrorKind::Parse => "Deserialization error: ",
+            ErrorKind::TimedOut => "Timeout error: ",
+            ErrorKind::FunctionNotFound => "Function not found: ",
+            _ => "",
+        };
+        Failure {
+            code: e.code().to_string(),
+            message: format!("{label}{}", e.message()),
+            retryable: e.is_retryable(),
+            detail: crate::errors::service::detail_of(e).map(str::to_string),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
