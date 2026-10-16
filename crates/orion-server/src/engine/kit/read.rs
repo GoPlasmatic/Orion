@@ -63,8 +63,12 @@ fn scalar_to_key(v: &OwnedDataValue) -> Result<Cow<'_, str>, Value> {
 /// A `params` object, for the dialects that fold it into a filter's
 /// `{"param": …}` nodes: the object's entries, or none for anything else.
 /// `resolve_params`'s reading.
-pub fn params(v: Option<&OwnedDataValue>) -> Map<String, Value> {
-    match v.map(json) {
+///
+/// It takes the JSON a rendered `params` document serializes into
+/// (`kit::rendered`), the value `resolve_params` was handed, rather than an
+/// evaluated value: the field is a document, never an expression.
+pub fn params(v: Option<Value>) -> Map<String, Value> {
+    match v {
         Some(Value::Object(map)) => map,
         _ => Map::new(),
     }
@@ -302,14 +306,17 @@ pub fn optional_i64(
 /// which would leave the statement's placeholders unbound.
 /// `resolve_bind_params`'s reading.
 ///
+/// It takes the JSON a rendered `params` document serializes into, as
+/// [`params`] does.
+///
 /// # Errors
 ///
 /// A [`ErrorClass::CallerInput`] error for a value that is not an array.
-pub fn bind_params(v: Option<&OwnedDataValue>, handler: &str) -> Result<Vec<Value>, HandlerError> {
+pub fn bind_params(v: Option<Value>, handler: &str) -> Result<Vec<Value>, HandlerError> {
     let Some(v) = v else {
         return Ok(Vec::new());
     };
-    match json(v) {
+    match v {
         Value::Null => Ok(Vec::new()),
         Value::Array(items) => Ok(items),
         other => Err(refused(format!(
@@ -659,7 +666,7 @@ mod tests {
         twin(
             "params",
             |input, ctx| v3::resolve_bind_params(input, H, ctx),
-            |v| bind_params(v, H),
+            |v| bind_params(v.map(Value::from), H),
         );
     }
 
@@ -668,7 +675,7 @@ mod tests {
         twin(
             "params",
             |input, ctx| Ok(v3::resolve_params(input, H, ctx)),
-            |v| Ok(params(v)),
+            |v| Ok(params(v.map(Value::from))),
         );
     }
 

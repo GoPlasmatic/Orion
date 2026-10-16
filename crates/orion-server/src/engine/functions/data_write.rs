@@ -1,6 +1,10 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dataflow_rs::expr::{Interpolated, Output};
+use dataflow_rs::function::{FunctionConfig, FunctionSpec};
+use dataflow_rs::{Ctx, Function, Outcome};
 use dataflow_rs_v3::engine::error::DataflowError;
 use dataflow_rs_v3::engine::task_context::TaskContext;
 use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
@@ -11,15 +15,18 @@ use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
     ConnectorCall, QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure,
     encode_failure, es_request, es_write_error, is_mongo, require_op_allowed, resolve_params,
-    resolve_row_format, send_es, timed_query, to_connect_error, to_exec_error,
+    resolve_row_format, send_es, to_connect_error, to_exec_error,
 };
+use super::db_read::rendered_row_format;
 use super::mongo_common::{delete_envelope, empty_insert_envelope, update_envelope};
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
+use crate::connector::sql_decode::RowFormat;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
 use crate::engine::HandlerError;
+use crate::engine::kit::{self, read};
 use crate::query::backend::es::{EsWrite, bulk_ndjson};
 use crate::query::backend::mongo::MongoWrite;
 use crate::query::write::{ResolvedWrite, WriteOp};
@@ -67,14 +74,28 @@ pub struct DataWriteHandler {
 /// The envelope is carried *unresolved* on purpose: resolving it needs the
 /// entity registry, which is built from the connector's own schema guards, so
 /// there is nothing to resolve until the connector is in hand.
-pub struct DataWrite {
+///
+/// Owned by the dataflow-rs 3 handler, which reads it off the authored input
+/// per call; the literals borrowed from the compiled config by the
+/// dataflow-rs 4 function.
+pub struct DataWrite<'a> {
     params: Map<String, Value>,
     /// How a decimal and a binary column in a `returning` row render. SQL
     /// backends only.
-    format: crate::connector::sql_decode::RowFormat,
-    schema: Option<Value>,
-    envelope: Value,
-    database: Option<String>,
+    format: RowFormat,
+    schema: Option<Cow<'a, Value>>,
+    envelope: Cow<'a, Value>,
+    database: Option<Cow<'a, str>>,
+}
+
+/// What a portable write reaches its backends through, and the bounds it is
+/// held to: the handler's or the function's, borrowed.
+struct Backends<'a> {
+    pool_cache: &'a SqlPoolCache,
+    mongo_pool_cache: &'a MongoPoolCache,
+    http_client: &'a reqwest::Client,
+    write_config: &'a crate::config::WriteConfig,
+    max_returning: usize,
 }
 
 #[async_trait]
@@ -84,7 +105,7 @@ impl ConnectorHandler for DataWriteHandler {
     /// variant.
     type Kind = crate::connector::DataBackend;
     type Input = TemplatedInput;
-    type Parsed = DataWrite;
+    type Parsed = DataWrite<'static>;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
         &self.registry
@@ -126,12 +147,12 @@ impl ConnectorHandler for DataWriteHandler {
             format: resolve_row_format(input, <Self as ConnectorHandler>::NAME, ctx)?,
             // Optional inline schema (privileged config): renames, allowlist,
             // and the per-column `writable` flag.
-            schema: input.get("schema").cloned(),
-            envelope,
+            schema: input.get("schema").cloned().map(Cow::Owned),
+            envelope: Cow::Owned(envelope),
             database: input
                 .get("database")
                 .and_then(Value::as_str)
-                .map(str::to_string),
+                .map(|database| Cow::Owned(database.to_string())),
         })
     }
 
@@ -151,90 +172,222 @@ impl ConnectorHandler for DataWriteHandler {
         _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
-        // F24: with no schema the registry rejects rather than passing every
-        // name through, and the connector's own guards apply on top.
-        let registry = build_entity_registry(parsed.schema.as_ref(), conn, call.connector)?;
-
-        // One backend-neutral resolution: parse envelope, fold params into
-        // values/set, resolve physical names, coerce, lower the filter, and
-        // enforce the write-safety guards (W15).
-        let resolved = query::write::resolve_write(
-            &parsed.envelope,
-            &parsed.params,
-            &registry,
-            &self.write_config,
-        )
-        .map_err(DataflowError::from)?;
-
-        // The gate, before anything is dialled: a connector config can disable
-        // individual ops (e.g. delete) regardless of what workflows ask for.
-        if let Some(gates) = conn.operation_gates() {
-            require_op_allowed(gates, resolved.op().as_str(), call.connector)?;
-        }
-
-        let (result, outcome) = match conn {
-            ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-                // A MongoDB connection string carries no default database, so
-                // this is the one branch that requires the task to name one.
-                let database = parsed.database.as_deref().ok_or_else(|| {
-                    DataflowError::Validation(format!("{} requires 'database' field", call.name))
-                })?;
-                let mw =
-                    query::backend::mongo::render_write(&resolved).map_err(DataflowError::from)?;
-                let client = self
-                    .mongo_pool_cache
-                    .get_client(call.connector, db)
-                    .await
-                    .map_err(to_connect_error)?;
-                // F11: bound the write like the SQL branches bound theirs.
-                // The error passes through as itself (`QueryFailure::Classified`):
-                // `execute_mongo` has already decided between a partial-bulk
-                // 207, a duplicate-key 409 and a backend failure, and
-                // stringifying it here threw all three away.
-                timed_query(
-                    db.query_timeout_ms,
-                    call.name,
-                    execute_mongo(&client, database, mw),
-                )
-                .await?
-            }
-            ConnectorConfig::Db(db) => {
-                let dialect: SqlDialect = detect_backend(&db.connection_string)
-                    .map_err(to_exec_error)?
-                    .into();
-                let (sql, values) = query::backend::sql::render_write(&resolved, dialect)
-                    .map_err(DataflowError::from)?;
-                let pool = self
-                    .pool_cache
-                    .get_pool(call.connector, db)
-                    .await
-                    .map_err(to_connect_error)?;
-                execute_sql(
-                    &pool,
-                    &sql,
-                    values,
-                    &resolved,
-                    db.query_timeout_ms,
-                    parsed.format,
-                    self.max_returning,
-                )
-                .await?
-            }
-            ConnectorConfig::Es(es) => {
-                let ew =
-                    query::backend::es::render_write(&resolved).map_err(DataflowError::from)?;
-                run_es_write(&self.http_client, es, ew).await?
-            }
-            // `DataBackend` admits `db` and `es` and nothing else; the
-            // wrong-type refusal this arm used to write is the wrapper's now.
-            other => unreachable!(
-                "DataBackend admitted a '{}' connector",
-                other.connector_type()
-            ),
+        let backends = Backends {
+            pool_cache: &self.pool_cache,
+            mongo_pool_cache: &self.mongo_pool_cache,
+            http_client: &self.http_client,
+            write_config: &self.write_config,
+            max_returning: self.max_returning,
         };
-
+        let (result, outcome) = run_write(backends, &parsed, conn, call.connector, None).await?;
         // F28: a partially applied bulk write is a 207, not a success.
         Ok(Produced::with_outcome(result, outcome))
+    }
+}
+
+/// The write's answer and its outcome, `Success` or F28's partial 207,
+/// against a resolved `db` or `es` connector: the envelope resolved, its
+/// operation gated, then written. Shared by the dataflow-rs 3 handler and
+/// the dataflow-rs 4 function. `run_deadline` is the deadline of the run the
+/// call belongs to, which bounds every SQL and MongoDB leg with the
+/// connector's `query_timeout_ms` ([`QueryBudget::within`]).
+async fn run_write(
+    backends: Backends<'_>,
+    parsed: &DataWrite<'_>,
+    conn: &ConnectorConfig,
+    connector: &str,
+    run_deadline: Option<dataflow_rs::run::Instant>,
+) -> Result<(Value, TaskOutcome), HandlerError> {
+    // F24: with no schema the registry rejects rather than passing every
+    // name through, and the connector's own guards apply on top.
+    let registry = build_entity_registry(parsed.schema.as_deref(), conn, connector)?;
+
+    // One backend-neutral resolution: parse envelope, fold params into
+    // values/set, resolve physical names, coerce, lower the filter, and
+    // enforce the write-safety guards (W15).
+    let resolved = query::write::resolve_write(
+        &parsed.envelope,
+        &parsed.params,
+        &registry,
+        backends.write_config,
+    )
+    .map_err(DataflowError::from)?;
+
+    // The gate, before anything is dialled: a connector config can disable
+    // individual ops (e.g. delete) regardless of what workflows ask for.
+    if let Some(gates) = conn.operation_gates() {
+        require_op_allowed(gates, resolved.op().as_str(), connector)?;
+    }
+
+    Ok(match conn {
+        ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
+            // A MongoDB connection string carries no default database, so
+            // this is the one branch that requires the task to name one.
+            let database = parsed.database.as_deref().ok_or_else(|| {
+                DataflowError::Validation(format!("{NAME} requires 'database' field"))
+            })?;
+            let mw = query::backend::mongo::render_write(&resolved).map_err(DataflowError::from)?;
+            let client = backends
+                .mongo_pool_cache
+                .get_client(connector, db)
+                .await
+                .map_err(to_connect_error)?;
+            // F11: bound the write like the SQL branches bound theirs.
+            // The error passes through as itself (`QueryFailure::Classified`):
+            // `execute_mongo` has already decided between a partial-bulk
+            // 207, a duplicate-key 409 and a backend failure, and
+            // stringifying it here threw all three away.
+            QueryBudget::within(db.query_timeout_ms, run_deadline)
+                .run(NAME, execute_mongo(&client, database, mw))
+                .await?
+        }
+        ConnectorConfig::Db(db) => {
+            let dialect: SqlDialect = detect_backend(&db.connection_string)
+                .map_err(to_exec_error)?
+                .into();
+            let (sql, values) = query::backend::sql::render_write(&resolved, dialect)
+                .map_err(DataflowError::from)?;
+            let pool = backends
+                .pool_cache
+                .get_pool(connector, db)
+                .await
+                .map_err(to_connect_error)?;
+            execute_sql(
+                &pool,
+                &sql,
+                values,
+                &resolved,
+                QueryBudget::within(db.query_timeout_ms, run_deadline),
+                parsed.format,
+                backends.max_returning,
+            )
+            .await?
+        }
+        ConnectorConfig::Es(es) => {
+            let ew = query::backend::es::render_write(&resolved).map_err(DataflowError::from)?;
+            run_es_write(backends.http_client, es, ew).await?
+        }
+        // `DataBackend` admits `db` and `es` and nothing else; the
+        // wrong-type refusal this arm used to write is the wrapper's now.
+        other => unreachable!(
+            "DataBackend admitted a '{}' connector",
+            other.connector_type()
+        ),
+    })
+}
+
+/// `data_write`'s input on dataflow-rs 4, in its field table's order (I179).
+/// The connector and the envelope are required at load (I183). The envelope
+/// and the schema are literal documents, `{"param": …}` holes and all, for
+/// Orion's own dialect to fold; `params` and the rendering choices are
+/// documents of `var` holes, as 1.12 folded them. `database` keeps 1.12's
+/// reading: a string names the database, anything else is none.
+#[derive(Debug, FunctionConfig)]
+pub struct DataWriteConfig {
+    /// The `db` or `es` connector written through.
+    connector: String,
+    /// The backend-neutral mutation envelope.
+    write: Value,
+    /// The named values folded into the envelope's `{"param": …}` nodes.
+    params: Option<Interpolated>,
+    /// The inline entity schema.
+    schema: Option<Value>,
+    /// The MongoDB database, read only when it is a string.
+    database: Option<Value>,
+    /// How a decimal column in a `returning` row renders. SQL backends only.
+    numeric_as: Option<Interpolated>,
+    /// How a binary column in a `returning` row renders. SQL backends only.
+    binary_as: Option<Interpolated>,
+    /// Where the write's answer is written.
+    #[output(default = "data")]
+    output: Output,
+}
+
+/// `data_write` as a dataflow-rs 4 function: the write `DataWriteHandler`
+/// makes, read in the same order, a partially applied bulk write answering
+/// `Outcome::Status(207)`.
+pub struct DataWriteFunction {
+    pub pool_cache: Arc<SqlPoolCache>,
+    pub mongo_pool_cache: Arc<MongoPoolCache>,
+    pub http_client: reqwest::Client,
+    pub registry: Arc<ConnectorRegistry>,
+    /// Safety bounds (`max_rows` / `allow_unfiltered`) from `[write]`.
+    pub write_config: crate::config::WriteConfig,
+    /// Hard cap on rows a `returning` clause may hand back, from
+    /// `query.max_limit`.
+    pub max_returning: usize,
+}
+
+/// A dataflow-rs 3 outcome of the shared write, as dataflow-rs 4's.
+fn outcome(outcome: TaskOutcome) -> Outcome {
+    match outcome {
+        TaskOutcome::Success => Outcome::Ok,
+        TaskOutcome::Status(status) => Outcome::Status(status),
+        TaskOutcome::Skip => Outcome::Skip,
+        TaskOutcome::Halt => Outcome::Halt,
+    }
+}
+
+impl Function for DataWriteFunction {
+    type Config = DataWriteConfig;
+
+    fn spec(&self) -> FunctionSpec {
+        kit::spec(NAME)
+    }
+
+    async fn call(&self, ctx: &mut Ctx<'_>, cfg: &DataWriteConfig) -> dataflow_rs::Result<Outcome> {
+        let channel = kit::channel(ctx);
+        // The prologue's output, then `parse`'s order: `params`, the
+        // rendering choices, the literals.
+        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let params = cfg
+            .params
+            .as_ref()
+            .map(|doc| kit::rendered(ctx, doc))
+            .transpose()?;
+        let parsed = DataWrite {
+            params: read::params(params),
+            format: rendered_row_format(
+                ctx,
+                cfg.numeric_as.as_ref(),
+                cfg.binary_as.as_ref(),
+                NAME,
+            )?,
+            schema: cfg.schema.as_ref().map(Cow::Borrowed),
+            envelope: Cow::Borrowed(&cfg.write),
+            database: cfg
+                .database
+                .as_ref()
+                .and_then(Value::as_str)
+                .map(Cow::Borrowed),
+        };
+        let run_deadline = ctx.deadline();
+        let mut answer = None;
+        let done = kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
+            let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
+            let conn =
+                kit::require_connector::<crate::connector::DataBackend>(&config, &cfg.connector)?;
+            let backends = Backends {
+                pool_cache: &self.pool_cache,
+                mongo_pool_cache: &self.mongo_pool_cache,
+                http_client: &self.http_client,
+                write_config: &self.write_config,
+                max_returning: self.max_returning,
+            };
+            let (result, done) =
+                run_write(backends, &parsed, conn, &cfg.connector, run_deadline).await?;
+            answer = Some(result);
+            Ok(outcome(done))
+        })
+        .await?;
+        if let Some(answer) = answer {
+            ctx.set(
+                &output,
+                dataflow_rs::datavalue::OwnedDataValue::from(&answer),
+            )?;
+        }
+        // F28: a partially applied bulk write is a 207, not a success.
+        Ok(done)
     }
 }
 
@@ -265,17 +418,15 @@ impl ConnectorHandler for DataWriteHandler {
 /// leaving either unbounded would reintroduce the hang F11 closed, and giving
 /// each its own `query_timeout_ms` would triple the bound the connector's owner
 /// configured.
-#[allow(clippy::too_many_arguments)]
 async fn execute_sql(
     pool: &crate::connector::pool_cache::SqlPool,
     sql: &str,
     values: sea_query_sqlx::SqlxValues,
     w: &ResolvedWrite,
-    timeout_ms: Option<u64>,
+    budget: QueryBudget,
     format: crate::connector::sql_decode::RowFormat,
     max_returning: usize,
 ) -> Result<(Value, TaskOutcome), DataflowError> {
-    let budget = QueryBudget::start(timeout_ms);
     // The transaction is per driver, so the whole statement runs inside the
     // dispatch rather than behind an `Executor` bound — `sqlx::Any` was the
     // only thing that made one generic body possible, and it is what capped
@@ -912,5 +1063,400 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("MongoDB insert"), "{msg}");
         assert!(msg.contains("duplicate key"), "must name why: {msg}");
+    }
+
+    // -- dataflow-rs 4: the config, and twins of the handler over in-memory
+    // SQLite and a mock Elasticsearch node --
+
+    use std::time::Duration;
+
+    use crate::engine::functions::twin::{self, Seen};
+    use dataflow_rs::function::testing;
+    use dataflow_rs::program::{IssueCode, Severity};
+    use dataflow_rs::run::ErrorKind;
+
+    const SEED: &[&str] = &[
+        "CREATE TABLE users (id TEXT PRIMARY KEY, status TEXT, avatar BLOB)",
+        "INSERT INTO users VALUES ('u1', 'active', X'00FF')",
+    ];
+
+    fn handler(
+        pool_cache: Arc<SqlPoolCache>,
+        registry: Arc<ConnectorRegistry>,
+    ) -> dataflow_rs_v3::BoxedFunctionHandler {
+        Box::new(super::super::connector_handler::Connector(
+            DataWriteHandler {
+                pool_cache,
+                mongo_pool_cache: Arc::new(MongoPoolCache::new(8)),
+                http_client: reqwest::Client::new(),
+                registry,
+                write_config: crate::config::WriteConfig::default(),
+                max_returning: 1000,
+            },
+        ))
+    }
+
+    fn function(
+        pool_cache: Arc<SqlPoolCache>,
+        registry: Arc<ConnectorRegistry>,
+    ) -> DataWriteFunction {
+        DataWriteFunction {
+            pool_cache,
+            mongo_pool_cache: Arc::new(MongoPoolCache::new(8)),
+            http_client: reqwest::Client::new(),
+            registry,
+            write_config: crate::config::WriteConfig::default(),
+            max_returning: 1000,
+        }
+    }
+
+    /// The rows of `users`, in order.
+    async fn users(db: &twin::Sqlite) -> Value {
+        let rows: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, status FROM users ORDER BY id")
+                .fetch_all(&db.pool)
+                .await
+                .expect("the table reads");
+        json!(rows)
+    }
+
+    /// One task through each engine, each against a database of its own
+    /// seeded with [`SEED`], its connector configured with `config`; and
+    /// each database's rows after it.
+    async fn both(input: Value, data: Value, config: Value) -> ((Seen, Value), (Seen, Value)) {
+        let mut sides = Vec::new();
+        for v4 in [false, true] {
+            let db = twin::sqlite(config.clone(), SEED).await;
+            let (pool_cache, registry) = (db.pool_cache.clone(), db.registry.clone());
+            let seen = if v4 {
+                twin::v4(
+                    NAME,
+                    function(pool_cache, registry),
+                    input.clone(),
+                    data.clone(),
+                )
+                .await
+            } else {
+                twin::v3(
+                    NAME,
+                    handler(pool_cache, registry),
+                    input.clone(),
+                    data.clone(),
+                )
+                .await
+            };
+            sides.push((seen, users(&db).await));
+        }
+        let v4 = sides.pop().expect("v4");
+        (sides.pop().expect("v3"), v4)
+    }
+
+    /// A `data_write` task of `envelope` over `users`, every column
+    /// writable.
+    fn write(envelope: Value) -> Value {
+        json!({
+            "connector": "db", "write": envelope,
+            "schema": {"unmapped": "identity"}, "output": "data.w"
+        })
+    }
+
+    /// Declaration order is the field table's (I179). The envelope and the
+    /// schema are literal documents, `{"param": …}` holes and `$` keys as
+    /// authored; `params` is a document of `var` holes; `connector` and
+    /// `write` are required (I183), where 1.12 failed each call without
+    /// them; an unknown key is refused (break 2a), the flat pre-1.0 envelope
+    /// included.
+    #[test]
+    fn the_config_is_the_field_table() {
+        let fields: Vec<&str> = DataWriteConfig::fields().iter().map(|f| &*f.name).collect();
+        let table: Vec<&str> = DATA_WRITE_FIELDS.iter().map(|f| f.name).collect();
+        assert_eq!(fields, table);
+
+        let envelope = json!({
+            "op": "update", "target": "users",
+            "set": {"status": {"param": "s"}, "$meta": {"var": "data.x"}},
+            "filter": {"==": [{"field": "id"}, {"param": "id"}]}
+        });
+        let params = json!({"s": {"var": "data.status"}, "id": {"var": "data.who"}});
+        let cfg = testing::config_with::<DataWriteConfig>(
+            &crate::engine::kit::test_exprs(),
+            json!({"connector": "db", "write": envelope.clone(), "params": params.clone(),
+                   "database": ["not", "a", "string"]}),
+        )
+        .expect("compiles");
+        assert_eq!(cfg.write, envelope, "the envelope is literal");
+        let doc = cfg.params.as_ref().expect("set");
+        assert_eq!(doc.raw(), &params);
+        let holes: Vec<String> = doc.holes().map(ToString::to_string).collect();
+        assert_eq!(holes, ["data.status", "data.who"]);
+        let output = cfg.output.constant().map(ToString::to_string);
+        assert_eq!(output.as_deref(), Some("data"));
+
+        let rejected = |input: Value| -> Vec<(String, IssueCode)> {
+            testing::config_with::<DataWriteConfig>(&crate::engine::kit::test_exprs(), input)
+                .expect_err("refused")
+                .into_iter()
+                .filter(|i| i.severity == Severity::Rejected)
+                .map(|i| (i.path.to_string(), i.code))
+                .collect()
+        };
+        assert_eq!(
+            rejected(json!({"connector": "db"})),
+            [("write".to_string(), IssueCode::InputParse)]
+        );
+        assert_eq!(
+            rejected(json!({"write": {}})),
+            [("connector".to_string(), IssueCode::InputParse)]
+        );
+        let flat = rejected(json!({"connector": "db", "write": {}, "op": "insert"}));
+        assert_eq!(flat.len(), 1, "{flat:?}");
+        assert_eq!(flat[0].0, "op");
+    }
+
+    /// An insert, a bulk insert (in its transaction), an update folding
+    /// params from the message, and a delete with `returning`, each
+    /// answered at `output`, each database ending the same.
+    #[tokio::test]
+    async fn a_write_answers_as_on_v3() {
+        let data = json!({"status": "banned", "who": "u1"});
+        let mut update = write(json!({
+            "op": "update", "target": "users",
+            "set": {"status": {"param": "s"}},
+            "filter": {"==": [{"field": "id"}, {"param": "id"}]}
+        }));
+        update["params"] = json!({"s": {"var": "data.status"}, "id": {"var": "data.who"}});
+        for input in [
+            write(
+                json!({"op": "insert", "target": "users", "values": {"id": "u2", "status": "new"}}),
+            ),
+            write(json!({"op": "insert", "target": "users", "values": [
+                {"id": "u2", "status": "a"}, {"id": "u3", "status": "b"}
+            ]})),
+            update,
+            write(json!({
+                "op": "delete", "target": "users",
+                "filter": {"==": [{"field": "id"}, "u1"]}, "returning": ["id", "avatar"]
+            })),
+        ] {
+            let (v3, v4) = both(input.clone(), data.clone(), json!({})).await;
+            assert_eq!(v4, v3, "{input}");
+            assert_eq!(v4.0.expect("written")["w"]["status"], "ok", "{input}");
+        }
+        // `binary_as` folds into a `returning` row's rendering.
+        let mut input = write(json!({
+            "op": "delete", "target": "users",
+            "filter": {"==": [{"field": "id"}, "u1"]}, "returning": ["avatar"]
+        }));
+        input["binary_as"] = json!({"var": "data.enc"});
+        let (v3, v4) = both(input, json!({"enc": "base64"}), json!({})).await;
+        assert_eq!(v4, v3);
+        assert_eq!(
+            v4.0.expect("deleted")["w"]["returning"],
+            json!([{"avatar": "AP8="}])
+        );
+    }
+
+    /// The operation's gate, the write-safety guards, a missing param, the
+    /// integrity refusal, the connector and an output that names no path,
+    /// each with 1.12's code and text, and each database untouched.
+    #[tokio::test]
+    async fn refusals_are_1_12s() {
+        let insert = write(json!({"op": "insert", "target": "users", "values": {"id": "u2"}}));
+        let mut absent = insert.clone();
+        absent["connector"] = json!("absent");
+        let mut computed = insert.clone();
+        computed["output"] = json!({"var": "data.n"});
+        let mut binary = insert.clone();
+        binary["binary_as"] = json!("money");
+        for (input, config) in [
+            (insert.clone(), json!({"operations": {"insert": false}})),
+            (write(json!({"op": "delete", "target": "users"})), json!({})),
+            (
+                write(
+                    json!({"op": "update", "target": "users", "set": {"status": {"param": "s"}}, "all": true}),
+                ),
+                json!({}),
+            ),
+            (
+                write(json!({"op": "insert", "target": "users", "values": {"id": "u1"}})),
+                json!({}),
+            ),
+            (absent, json!({})),
+            (computed, json!({})),
+            (binary, json!({})),
+        ] {
+            let (v3, v4) = both(input.clone(), json!({"n": 1}), config).await;
+            assert_eq!(v4, v3, "{input}");
+            assert!(v4.0.is_err(), "{input}");
+            assert_eq!(v4.1, json!([["u1", "active"]]), "{input}");
+        }
+    }
+
+    /// A mock Elasticsearch node answering `_bulk` with `items`, counting
+    /// the requests it sees.
+    async fn es_node(items: Value) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&seen);
+        let app = axum::Router::new().fallback(move || {
+            let counter = Arc::clone(&counter);
+            let items = items.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                axum::Json(json!({"took": 1, "errors": true, "items": items}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        (addr, seen)
+    }
+
+    /// F28 on dataflow-rs 4: a bulk insert that applied some of its items
+    /// answers `Outcome::Status(207)` with the applied and failed items at
+    /// `output`, where 1.12 recorded status 207; one that applied all is a
+    /// plain success, and one that applied none a hard error, as on 1.12.
+    #[tokio::test]
+    async fn a_partial_bulk_write_is_outcome_status_207() {
+        let ok = |id: &str| json!({"index": {"_id": id, "status": 201, "result": "created"}});
+        let failed = json!({"index": {"_id": "b", "status": 400,
+                             "error": {"type": "mapper_parsing_exception", "reason": "bad"}}});
+        let input = write(json!({"op": "insert", "target": "events", "values": [
+            {"id": "a", "n": 1}, {"id": "b", "n": "x"}
+        ]}));
+        for (items, outcome, status) in [
+            (
+                json!([ok("a"), failed.clone()]),
+                Some(Outcome::Status(207)),
+                Some(207),
+            ),
+            (json!([ok("a"), ok("b")]), Some(Outcome::Ok), Some(200)),
+            (json!([failed.clone(), failed]), None, None),
+        ] {
+            let mut sides = Vec::new();
+            for v4 in [false, true] {
+                let (addr, seen) = es_node(items.clone()).await;
+                let connector = json!({
+                    "type": "es", "url": format!("http://{addr}"), "allow_private_urls": true
+                });
+                let registry = twin::connectors(&[("db", connector)]).await;
+                let pool_cache = Arc::new(SqlPoolCache::new(8));
+                if v4 {
+                    let called = testing::call(function(pool_cache, registry), input.clone())
+                        .exprs(crate::engine::kit::test_exprs())
+                        .name(NAME)
+                        .await;
+                    let done = called.outcome.as_ref().ok().copied();
+                    assert_eq!(done, outcome, "{items}");
+                    sides.push((
+                        twin::seen(&called),
+                        seen.load(std::sync::atomic::Ordering::SeqCst),
+                    ));
+                } else {
+                    let (v3, audit) = twin::v3_status(
+                        NAME,
+                        handler(pool_cache, registry),
+                        input.clone(),
+                        Value::Null,
+                    )
+                    .await;
+                    if v3.is_ok() {
+                        assert_eq!(audit, status, "{items}");
+                    }
+                    sides.push((v3, seen.load(std::sync::atomic::Ordering::SeqCst)));
+                }
+            }
+            assert_eq!(sides[1], sides[0], "{items}");
+            assert_eq!(sides[1].1, 1, "one bulk request");
+            match outcome {
+                Some(Outcome::Status(207)) => {
+                    let answer = sides[1].0.clone().expect("a partial write is not an error");
+                    assert_eq!(answer["w"]["status"], "partial", "{answer}");
+                }
+                Some(_) => assert_eq!(sides[1].0.clone().expect("written")["w"]["status"], "ok"),
+                None => assert!(sides[1].0.is_err(), "nothing applied"),
+            }
+        }
+    }
+
+    fn insert_one() -> Value {
+        write(json!({"op": "insert", "target": "users", "values": {"id": "u2"}}))
+    }
+
+    /// `QueryBudget` within the run's deadline (E10), the one connection held
+    /// so the write waits on the pool: a run deadline before the connector's
+    /// `query_timeout_ms` ends the call `TimedOut`, as 1.12's channel timeout
+    /// ended the run, writing nothing, here or in the database.
+    #[tokio::test]
+    async fn a_run_deadline_before_the_query_timeout_ends_the_call_timed_out() {
+        let db = twin::sqlite(json!({"query_timeout_ms": 30_000}), SEED).await;
+        let held = db.pool.acquire().await.expect("the one connection");
+        let started = std::time::Instant::now();
+        let called = testing::call(
+            function(db.pool_cache.clone(), db.registry.clone()),
+            insert_one(),
+        )
+        .exprs(crate::engine::kit::test_exprs())
+        .name(NAME)
+        .deadline(dataflow_rs::run::Instant::now() + Duration::from_millis(150))
+        .await;
+        let error = called.outcome.expect_err("the run's deadline passed");
+        assert_eq!(*error.kind(), ErrorKind::TimedOut);
+        assert_eq!(
+            error.message(),
+            "the run's deadline passed during `data_write`"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(called.writes.is_empty());
+        drop(held);
+        assert_eq!(users(&db).await, json!([["u1", "active"]]));
+    }
+
+    /// A `query_timeout_ms` before the run's deadline is the budget's, with
+    /// 1.12's code, text and retryability, on autocommit and inside a bulk
+    /// insert's transaction.
+    #[tokio::test]
+    async fn a_query_timeout_before_the_run_deadline_is_1_12s() {
+        let config = json!({"query_timeout_ms": 150});
+        let bulk = write(
+            json!({"op": "insert", "target": "users", "values": [{"id": "u2"}, {"id": "u3"}]}),
+        );
+        for input in [insert_one(), bulk] {
+            let db = twin::sqlite(config.clone(), SEED).await;
+            let held = db.pool.acquire().await.expect("the one connection");
+            let v3 = twin::v3(
+                NAME,
+                handler(db.pool_cache.clone(), db.registry.clone()),
+                input.clone(),
+                Value::Null,
+            )
+            .await;
+            drop(held);
+            let db = twin::sqlite(config.clone(), SEED).await;
+            let _held = db.pool.acquire().await.expect("the one connection");
+            let called = testing::call(
+                function(db.pool_cache.clone(), db.registry.clone()),
+                input.clone(),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME)
+            .deadline(dataflow_rs::run::Instant::now() + Duration::from_secs(60))
+            .await;
+            let v4 = twin::seen(&called);
+            assert_eq!(v4, v3, "{input}");
+            let failure = v4.expect_err("the write timed out");
+            assert_eq!(failure.code, "TIMEOUT_ERROR");
+            assert_eq!(
+                failure.message,
+                "Timeout error: data_write query timed out after 150ms"
+            );
+            assert!(failure.retryable);
+        }
     }
 }

@@ -318,11 +318,18 @@ pub fn build_custom_functions(
 /// dataflow-rs 3 (`Registry::register` replaces a name).
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::connector_handler::ConnectorHandler;
-    use functions::{http_call, publish_kafka, send_email, storage_head, storage_presign};
+    use functions::{
+        data_query, data_write, db_read, db_write, http_call, publish_kafka, send_email,
+        storage_head, storage_presign,
+    };
 
     let HandlerDeps {
         registry: connectors,
         client,
+        query_config,
+        write_config,
+        sql_pool_cache,
+        mongo_pool_cache,
         smtp_pool_cache,
         ..
     } = deps;
@@ -351,14 +358,50 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         <storage_head::StorageHeadHandler as ConnectorHandler>::NAME,
         storage_head::StorageHeadFunction {
             registry: connectors.clone(),
-            client,
+            client: client.clone(),
         },
     );
     registry.register(
         <publish_kafka::PublishKafkaHandler as ConnectorHandler>::NAME,
         publish_kafka::PublishKafkaFunction {
-            registry: connectors,
+            registry: connectors.clone(),
             producers: None,
+        },
+    );
+    registry.register(
+        <db_read::DbReadHandler as ConnectorHandler>::NAME,
+        db_read::DbReadFunction {
+            pool_cache: sql_pool_cache.clone(),
+            registry: connectors.clone(),
+            max_rows: query_config.max_limit as usize,
+        },
+    );
+    registry.register(
+        <db_write::DbWriteHandler as ConnectorHandler>::NAME,
+        db_write::DbWriteFunction {
+            pool_cache: sql_pool_cache.clone(),
+            registry: connectors.clone(),
+        },
+    );
+    registry.register(
+        <data_query::DataQueryHandler as ConnectorHandler>::NAME,
+        data_query::DataQueryFunction {
+            pool_cache: sql_pool_cache.clone(),
+            mongo_pool_cache: mongo_pool_cache.clone(),
+            http_client: client.clone(),
+            registry: connectors.clone(),
+            limits: query_config.clone(),
+        },
+    );
+    registry.register(
+        <data_write::DataWriteHandler as ConnectorHandler>::NAME,
+        data_write::DataWriteFunction {
+            pool_cache: sql_pool_cache,
+            mongo_pool_cache,
+            http_client: client,
+            registry: connectors,
+            write_config: write_config.clone(),
+            max_returning: query_config.max_limit as usize,
         },
     );
 }

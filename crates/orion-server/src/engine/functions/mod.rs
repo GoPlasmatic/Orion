@@ -152,6 +152,62 @@ pub(crate) mod twin {
         registry
     }
 
+    /// A SQLite database of its own, in memory, behind the `db` connector
+    /// `db`, as a function reaches it: its pool cache, the registry holding
+    /// the connector, and the pool itself, for a test to seed or to hold.
+    pub(crate) struct Sqlite {
+        pub pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
+        pub registry: Arc<ConnectorRegistry>,
+        pub pool: sqlx::SqlitePool,
+    }
+
+    /// [`Sqlite`], seeded by running `seed` in order. The connector holds
+    /// one connection to a shared-cache database, so the database lives as
+    /// long as the pool does and a test holding that connection makes the
+    /// next acquire wait. `config` adds to the connector's config (a
+    /// `query_timeout_ms`, its `operations`).
+    pub(crate) async fn sqlite(config: Value, seed: &[&str]) -> Sqlite {
+        use crate::connector::pool_cache::{SqlPool, SqlPoolCache};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut connector = json!({
+            "type": "db",
+            "connection_string": format!(
+                "sqlite:file:twin_{}_{n}?mode=memory&cache=shared",
+                std::process::id()
+            ),
+            "max_connections": 1,
+        });
+        if let (Some(connector), Some(config)) = (connector.as_object_mut(), config.as_object()) {
+            connector.extend(config.clone());
+        }
+        let registry = connectors(&[("db", connector.clone())]).await;
+        let Ok(ConnectorConfig::Db(db)) = serde_json::from_value::<ConnectorConfig>(connector)
+        else {
+            unreachable!("a db connector")
+        };
+        let pool_cache = Arc::new(SqlPoolCache::new(8));
+        let SqlPool::Sqlite(pool) = pool_cache
+            .get_pool("db", &db)
+            .await
+            .expect("the pool opens")
+        else {
+            unreachable!("a sqlite connection string opens a sqlite pool")
+        };
+        for statement in seed {
+            sqlx::query(sqlx::AssertSqlSafe(*statement))
+                .execute(&pool)
+                .await
+                .expect("the seed runs");
+        }
+        Sqlite {
+            pool_cache,
+            registry,
+            pool,
+        }
+    }
+
     /// `handler` as the one task `t` of a dataflow-rs 3 workflow, over a
     /// message whose `data` is `data` (unless `null`).
     pub(crate) async fn v3(
@@ -160,6 +216,18 @@ pub(crate) mod twin {
         input: Value,
         data: Value,
     ) -> Seen {
+        v3_status(name, handler, input, data).await.0
+    }
+
+    /// [`v3`], and the status the task's audit entry records when it
+    /// finished: `200`, or the status it answered with (a partial bulk
+    /// write's `207`).
+    pub(crate) async fn v3_status(
+        name: &str,
+        handler: dataflow_rs_v3::BoxedFunctionHandler,
+        input: Value,
+        data: Value,
+    ) -> (Seen, Option<usize>) {
         let mut fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
             Default::default();
         fns.insert(name.to_string(), handler);
@@ -177,7 +245,7 @@ pub(crate) mod twin {
                 OwnedDataValue::from(&data),
             );
         }
-        match engine.process_message(&mut message).await {
+        let seen = match engine.process_message(&mut message).await {
             Ok(()) => Ok(message.data().into()),
             Err(e) => {
                 let record = message.errors().first().expect("the failure is recorded");
@@ -191,7 +259,9 @@ pub(crate) mod twin {
                 assert_eq!(record.message, format!("Task t error: {}", failure.message));
                 Err(failure)
             }
-        }
+        };
+        let status = message.audit_trail().last().map(|entry| entry.status);
+        (seen, status)
     }
 
     /// One call of `f`, registered as `name`, on Orion's expressions, over a

@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::Output;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
-use dataflow_rs::program::{AuthoredPath, IssueCode, Severity};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 use dataflow_rs_v3::engine::error::DataflowError;
 use dataflow_rs_v3::engine::task_context::TaskContext;
@@ -282,17 +281,7 @@ impl Function for StoragePresignFunction {
     /// I185: an `output` that is a literal context root, the default `data`
     /// included, is a Defect at `output`.
     fn prepare(&self, cfg: &mut StoragePresignConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
-        match cfg.output.constant() {
-            Some(path) if path.is_root() => {
-                let mut at = AuthoredPath::root();
-                at.push("output");
-                Err(vec![
-                    Issue::new(IssueCode::InputParse, at, ROOT_OUTPUT)
-                        .with_severity(Severity::Defect),
-                ])
-            }
-            _ => Ok(()),
-        }
+        kit::root_output_defect(&cfg.output, ROOT_OUTPUT)
     }
 
     async fn call(
@@ -898,6 +887,7 @@ mod tests {
 
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
+    use dataflow_rs::program::{IssueCode, Severity};
 
     fn config_v4(input: Value) -> Result<StoragePresignConfig, Vec<dataflow_rs::Issue>> {
         testing::config_with(&kit::test_exprs(), input)

@@ -10,7 +10,9 @@
 //!   [`require_method_allowed`], the connector's operation gates.
 //! - [`spec`]: a function's `schema.rs` row as its `FunctionSpec`.
 //! - [`output_path`]: where a call's result goes, resolved before its work,
-//!   as 1.12's connector shell resolved it.
+//!   as 1.12's connector shell resolved it, and [`root_output_defect`],
+//!   I185's Defect for a result no context root takes.
+//! - [`rendered`]: a document field rendered for this call, as JSON.
 //! - [`ProfileLayer`]: the per-request profile, as one registry layer
 //!   around every host call.
 //! - [`OfflineDeps`]: inert dependencies, so every function can be
@@ -32,9 +34,10 @@ use std::sync::{Arc, LazyLock};
 
 use dataflow_rs::Path;
 use dataflow_rs::datavalue::OwnedDataValue;
-use dataflow_rs::expr::{ExprEngine, Output};
+use dataflow_rs::expr::{ExprEngine, Interpolated, Output};
 use dataflow_rs::function::{BoxFuture, CallLayer, FunctionSpec, Next, Reference};
-use dataflow_rs::{Ctx, Outcome};
+use dataflow_rs::program::{AuthoredPath, IssueCode, Severity};
+use dataflow_rs::{Ctx, Issue, Outcome};
 
 use crate::connector::{ConnectorConfig, ConnectorRegistry, ConnectorTarget, HttpOperationGates};
 use crate::engine::functions::schema;
@@ -115,6 +118,47 @@ pub fn output_path<'o>(
             )),
         )),
     }
+}
+
+/// I185's Defect, from a function's `prepare`, for a result that is never
+/// an object (an array of rows, a URL, a token): an `output` that is a
+/// literal context root, the default `data` included, fails every call,
+/// since a root takes only an object (break 21), where 1.12 replaced the root
+/// with the result. `message` names the function and the fix. A computed
+/// output is judged per call, when its path is known.
+///
+/// # Errors
+///
+/// The one Defect, `INPUT_PARSE` at `output`, when the output is a literal
+/// root.
+pub fn root_output_defect(out: &Output, message: &str) -> Result<(), Vec<Issue>> {
+    match out.constant() {
+        Some(path) if path.is_root() => {
+            let mut at = AuthoredPath::root();
+            at.push("output");
+            Err(vec![
+                Issue::new(IssueCode::InputParse, at, message).with_severity(Severity::Defect),
+            ])
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `doc` rendered for this call, serialized straight into the JSON a
+/// dataflow-rs 3 reader took (`resolve_value`'s fold of the same document),
+/// with no tree of the rendered document's own.
+///
+/// # Errors
+///
+/// A [`ErrorClass::Backend`](crate::engine::ErrorClass::Backend) error for
+/// a document that does not serialize, which a rendered document always
+/// does.
+pub fn rendered(
+    ctx: &Ctx<'_>,
+    doc: &Interpolated,
+) -> Result<serde_json::Value, crate::engine::HandlerError> {
+    serde_json::to_value(ctx.render(doc))
+        .map_err(|e| crate::engine::HandlerError::new(crate::engine::ErrorClass::Backend, e))
 }
 
 /// What `name`'s row in `schema.rs` says about the function, as its
@@ -915,6 +959,10 @@ mod tests {
         "storage_presign",
         "storage_head",
         "publish_kafka",
+        "db_read",
+        "db_write",
+        "data_query",
+        "data_write",
     ];
 
     /// Every function 1.12 registers can be built over the inert

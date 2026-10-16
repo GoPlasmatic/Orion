@@ -1108,18 +1108,37 @@ const DEFAULT_QUERY_TIMEOUT_MS: u64 = 30_000;
 /// connector's owner set it to.
 #[derive(Debug, Clone, Copy)]
 pub struct QueryBudget {
-    deadline: tokio::time::Instant,
+    /// When the legs time out: `None` when the run's own deadline comes
+    /// first, which the engine enforces itself (see [`Self::within`]).
+    deadline: Option<tokio::time::Instant>,
     total_ms: u64,
 }
 
 impl QueryBudget {
     /// Start a budget of `timeout_ms` (or the default) from now.
     pub fn start(timeout_ms: Option<u64>) -> Self {
+        Self::within(timeout_ms, None)
+    }
+
+    /// [`Self::start`], inside the deadline of the run the call belongs to
+    /// (`Ctx::deadline`): the earlier of the two bounds the legs (E10).
+    ///
+    /// When the connector's `query_timeout_ms` ends first, a leg it cuts
+    /// short fails as it always has, `"{handler} query timed out after
+    /// {ms}ms"`. When the run's deadline ends first, the budget arms no timer
+    /// of its own: dataflow-rs 4 races every host call against the run's
+    /// deadline and drops the call when it passes, ending the run `TimedOut`,
+    /// as 1.12's channel timeout dropped the run. A timer of the budget's own
+    /// at the same instant would win that race (the engine polls the call
+    /// first) and turn the run's timeout into the task's error.
+    pub fn within(timeout_ms: Option<u64>, run: Option<dataflow_rs::run::Instant>) -> Self {
         let total_ms = timeout_ms.unwrap_or(DEFAULT_QUERY_TIMEOUT_MS);
-        Self {
-            deadline: tokio::time::Instant::now() + Duration::from_millis(total_ms),
-            total_ms,
-        }
+        let own = tokio::time::Instant::now() + Duration::from_millis(total_ms);
+        let deadline = match run.map(tokio::time::Instant::from_std) {
+            Some(run) if run <= own => None,
+            _ => Some(own),
+        };
+        Self { deadline, total_ms }
     }
 
     /// Run one leg of the operation against the shared deadline.
@@ -1129,8 +1148,11 @@ impl QueryBudget {
         E: Into<QueryFailure>,
     {
         let total_ms = self.total_ms;
-        tokio::time::timeout_at(self.deadline, operation)
-            .await
+        let finished = match self.deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, operation).await,
+            None => Ok(operation.await),
+        };
+        finished
             .map_err(|_| {
                 HandlerError::new(
                     ErrorClass::Timeout,
@@ -1375,6 +1397,45 @@ mod error_taxonomy_tests {
         assert!(
             matches!(err, DataflowError::FunctionExecution { .. }),
             "text cannot promote a backend failure to a limit: {err:?}"
+        );
+    }
+
+    /// E10: a budget inside a run's deadline that comes first arms no timer
+    /// of its own, and a leg runs on past that deadline, which the engine's
+    /// race enforces; one whose `query_timeout_ms` comes first keeps its
+    /// own, as with no run deadline at all.
+    #[tokio::test]
+    async fn a_budget_inside_an_earlier_run_deadline_arms_no_timer_of_its_own() {
+        let soon = dataflow_rs::run::Instant::now() + Duration::from_millis(10);
+        let late = dataflow_rs::run::Instant::now() + Duration::from_secs(3_600);
+        assert!(
+            QueryBudget::within(Some(60_000), Some(soon))
+                .deadline
+                .is_none()
+        );
+        assert!(QueryBudget::within(Some(10), Some(late)).deadline.is_some());
+        assert!(QueryBudget::within(Some(10), None).deadline.is_some());
+        assert!(QueryBudget::start(None).deadline.is_some());
+
+        let leg = QueryBudget::within(Some(60_000), Some(soon))
+            .run("db_read", async {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                Ok::<_, String>(7)
+            })
+            .await;
+        assert_eq!(
+            leg.ok(),
+            Some(7),
+            "the run's deadline is not the budget's to enforce"
+        );
+
+        let err = QueryBudget::within(Some(10), Some(late))
+            .run("db_read", std::future::pending::<Result<(), String>>())
+            .await
+            .expect_err("the query timeout ends the leg");
+        assert_eq!(
+            err.to_string(),
+            "Timeout error: db_read query timed out after 10ms"
         );
     }
 
