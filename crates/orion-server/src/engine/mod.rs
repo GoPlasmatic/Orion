@@ -148,7 +148,8 @@ pub use functions::registry::{
 };
 pub use functions::schema::ConnectorRule;
 pub use handlers::{
-    HandlerDeps, build_custom_functions, register_functions, register_kafka_publisher,
+    HandlerDeps, build_custom_functions, is_reserved_function_name, register_functions,
+    register_kafka_publisher, register_plugin_functions,
 };
 pub use loader::{HandlerScreen, build_engine_workflows, build_single, filter_channels};
 pub use observer::MetricsObserver;

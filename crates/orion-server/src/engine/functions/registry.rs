@@ -70,6 +70,25 @@ impl FieldSpec {
     fn is_template(&self) -> bool {
         self.template_at.contains(&"")
     }
+
+    /// Whether the authored value `v` passes this field's kind check, the
+    /// one [`FunctionEntry::validate_input`] makes of every field it is
+    /// handed: a value of the declared kind; an object or an array in a
+    /// `Template` position, which may be an operator call; a `{"var": ..}`
+    /// node in a `resolvable` field; a `{"secret": ..}` node where the field
+    /// reads key material at its root. A plugin function's dataflow-rs 4
+    /// config asks it of each `resolvable` field at load, as 1.12's
+    /// `parse_input_with` did, so the two cannot disagree.
+    pub(crate) fn admits(&self, v: &Value) -> bool {
+        self.kind.matches(v)
+            // A `Template` field's kind describes the *resolved* value. An
+            // object or array there may be an operator call, so only a
+            // scalar — unambiguously itself in JSONLogic — is still checked
+            // against the kind directly.
+            || (self.is_template() && (v.is_object() || v.is_array()))
+            || (self.resolvable && is_var_node(v))
+            || takes_secret_node(self, v)
+    }
 }
 
 impl From<&FieldSchema> for FieldSpec {
@@ -716,16 +735,7 @@ fn check_fields(
                     field.kind.as_str()
                 ),
             )),
-            (Some(v), _)
-                if !field.kind.matches(v)
-                    // A `Template` field's kind describes the *resolved* value.
-                    // An object or array there may be an operator call, so only
-                    // a scalar — unambiguously itself in JSONLogic — is still
-                    // checked against the kind directly.
-                    && !(field.is_template() && (v.is_object() || v.is_array()))
-                    && !(field.resolvable && is_var_node(v))
-                    && !takes_secret_node(field, v) =>
-            {
+            (Some(v), _) if !field.admits(v) => {
                 errors.push(
                     FieldError::new(
                         format!("{path_prefix}.{}", field.name),

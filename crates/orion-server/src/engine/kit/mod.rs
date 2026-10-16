@@ -8,7 +8,8 @@
 //! - [`resolve_connector`] and [`require_connector`]: the connector lookups,
 //!   on dataflow-rs 4's error, and [`require_op`] and
 //!   [`require_method_allowed`], the connector's operation gates.
-//! - [`spec`]: a function's `schema.rs` row as its `FunctionSpec`.
+//! - [`spec`]: a function's `schema.rs` row as its `FunctionSpec`, and
+//!   [`retry`], its retry safety on dataflow-rs 4's answers.
 //! - [`output_path`]: where a call's result goes, resolved before its work,
 //!   as 1.12's connector shell resolved it; [`root_output_defect`], I185's
 //!   Defect for a result no context root takes; and [`root_output_advisory`]
@@ -199,13 +200,6 @@ pub fn spec(name: &str) -> FunctionSpec {
         .iter()
         .find(|row| row.name == name)
         .expect("every function Orion registers has its schema.rs row");
-    let retry = match row.retry_safety {
-        schema::RetrySafety::Pure
-        | schema::RetrySafety::Read
-        | schema::RetrySafety::IdempotentWrite => dataflow_rs::function::RetrySafety::Idempotent,
-        schema::RetrySafety::UnsafeWrite => dataflow_rs::function::RetrySafety::NotIdempotent,
-        schema::RetrySafety::DependsOn { .. } => dataflow_rs::function::RetrySafety::Unknown,
-    };
     let references = match row.connector {
         Some(_) => vec![Reference::new("connector", row.name)],
         None => Vec::new(),
@@ -213,8 +207,22 @@ pub fn spec(name: &str) -> FunctionSpec {
     FunctionSpec::default()
         .with_description(row.description)
         .with_category(row.category)
-        .with_retry(retry)
+        .with_retry(retry(row.retry_safety))
         .with_references(references)
+}
+
+/// Orion's retry safety on dataflow-rs 4's three answers (I179): `Pure`,
+/// `Read` and `IdempotentWrite` are `Idempotent`, `UnsafeWrite` is
+/// `NotIdempotent`, `DependsOn` is `Unknown`. [`spec`] reads it off a
+/// `schema.rs` row, and a plugin function off its registry entry.
+pub fn retry(safety: schema::RetrySafety) -> dataflow_rs::function::RetrySafety {
+    match safety {
+        schema::RetrySafety::Pure
+        | schema::RetrySafety::Read
+        | schema::RetrySafety::IdempotentWrite => dataflow_rs::function::RetrySafety::Idempotent,
+        schema::RetrySafety::UnsafeWrite => dataflow_rs::function::RetrySafety::NotIdempotent,
+        schema::RetrySafety::DependsOn { .. } => dataflow_rs::function::RetrySafety::Unknown,
+    }
 }
 
 /// `connector_helpers::require_op` on dataflow-rs 4's error: a connector

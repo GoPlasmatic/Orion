@@ -11,12 +11,15 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use dataflow_rs::Issue;
+use dataflow_rs::program::{IssueCode, PathSeg};
+
 use crate::config::PluginsConfig;
 use crate::engine::{FunctionEntry, PluginBinding};
 use crate::storage::models::{Plugin, PluginHealth};
 use crate::storage::repositories::plugins::PluginRepository;
 
-use super::handler::PluginFunctionHandler;
+use super::handler::{PluginFunction, PluginFunctionHandler};
 use super::limits::Limits;
 use super::manifest::Manifest;
 use super::runtime::WasmRuntime;
@@ -42,6 +45,8 @@ pub struct LoadedPlugin {
     pub compile_ms: u64,
     entries: Vec<FunctionEntry>,
     handlers: Vec<PluginFunctionHandler>,
+    /// The same functions on dataflow-rs 4, each over its handler.
+    plugin_functions: Vec<PluginFunction>,
 }
 
 /// The plugin half of a generation: what loaded, what did not, and the
@@ -102,6 +107,14 @@ impl PluginSet {
             .collect()
     }
 
+    /// Every loaded function as a dataflow-rs 4 function, for one
+    /// `Registry`: what [`Self::handlers`] is to a dataflow-rs 3 engine.
+    /// [`register_plugin_functions`](crate::engine::register_plugin_functions)
+    /// registers them.
+    pub fn functions(&self) -> impl Iterator<Item = &PluginFunction> {
+        self.plugins.iter().flat_map(|p| p.plugin_functions.iter())
+    }
+
     /// This node's account of one plugin version.
     pub fn health_of(&self, plugin_id: &str, version: i64, enabled: bool) -> PluginHealth {
         if let Some(p) = self
@@ -145,6 +158,50 @@ impl PluginSet {
                 reason.push_str(&format!(" — plugin function '{function}': {why}"));
             }
         }
+    }
+
+    /// [`Self::annotate`] for dataflow-rs 4's verdict, by the issue rather
+    /// than by its text: when `issue` is the `UNKNOWN_FUNCTION` a task naming
+    /// a function of a plugin that did not load is refused with, the plugin
+    /// and why are attached to `reason`, in `annotate`'s words.
+    ///
+    /// The function is the one the task names: the string at the issue's
+    /// path (`tasks[i].function.name`, or wherever the step sits, a group's
+    /// or a loop's `setup` included) in `workflow`, the definition the issue
+    /// was found in, as authored. Nothing is read from the issue's message,
+    /// so a function whose name holds another's (`acme.codec.parse` and
+    /// `acme.codec.parse-strict`), a task id or a workflow name that spells
+    /// one, attaches nothing it should not.
+    pub fn annotate_issue(&self, issue: &Issue, workflow: &serde_json::Value, reason: &mut String) {
+        if let Some((function, why)) = self.unavailable_named_by(issue, workflow) {
+            reason.push_str(&format!(" — plugin function '{function}': {why}"));
+        }
+    }
+
+    /// The unavailable function `issue` refuses `workflow`'s task for, and
+    /// why it is unavailable: see [`Self::annotate_issue`].
+    pub fn unavailable_named_by(
+        &self,
+        issue: &Issue,
+        workflow: &serde_json::Value,
+    ) -> Option<(&str, &str)> {
+        if issue.code != IssueCode::UnknownFunction {
+            return None;
+        }
+        let named = issue
+            .path
+            .segs()
+            .iter()
+            .try_fold(workflow, |value, seg| match seg {
+                PathSeg::Key(key) => value.get(&**key),
+                PathSeg::Index(index) => value.get(*index),
+                _ => None,
+            })?
+            .as_str()?;
+        self.unavailable
+            .iter()
+            .find(|(function, _)| function == named)
+            .map(|(function, why)| (function.as_str(), why.as_str()))
     }
 }
 
@@ -286,11 +343,19 @@ async fn load_one(
         abi: manifest.abi.clone(),
     };
     let entries = manifest.entries(&binding);
-    let handlers = entries
+    let handlers: Vec<PluginFunctionHandler> = entries
         .iter()
         .map(|e| {
             PluginFunctionHandler::new(Arc::new(e.clone()), loaded.clone(), runtime.clone(), limits)
         })
+        .collect();
+    // `entries` holds one entry per declared function, in order, so each
+    // handler is its declaration's.
+    let plugin_functions = manifest
+        .functions
+        .iter()
+        .zip(&handlers)
+        .map(|(decl, handler)| PluginFunction::new(handler.clone(), decl.runtime_fields()))
         .collect();
     Ok(LoadedPlugin {
         id: row.plugin_id.clone(),
@@ -300,6 +365,7 @@ async fn load_one(
         compile_ms: loaded.compile_time.as_millis() as u64,
         entries,
         handlers,
+        plugin_functions,
     })
 }
 
@@ -310,5 +376,131 @@ fn load_stage(e: &super::runtime::LoadError) -> &'static str {
         LoadError::Compile(_) => "compile",
         LoadError::Link(_) => "link",
         LoadError::SelfTest { .. } => "self_test",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dataflow_rs::def::{ParseOptions, parse};
+    use dataflow_rs::program::CompileOptions;
+    use serde_json::{Value, json};
+
+    /// Two plugins that did not load, as `load_active` records them.
+    fn set() -> PluginSet {
+        PluginSet {
+            unavailable: vec![
+                (
+                    "acme.codec.parse".to_string(),
+                    "acme.codec v2 self_test: the export trapped".to_string(),
+                ),
+                (
+                    "acme.other.render".to_string(),
+                    "acme.other v1 disabled: plugins are disabled on this node \
+                     (plugins.enabled = false)"
+                        .to_string(),
+                ),
+            ],
+            ..PluginSet::default()
+        }
+    }
+
+    /// Every issue dataflow-rs 4 refuses `workflow` with, on a registry
+    /// holding none of the plugins' functions.
+    fn issues(workflow: &Value) -> Vec<Issue> {
+        let compiler = dataflow_rs::Registry::new(crate::engine::kit::test_exprs())
+            .compiler(CompileOptions::default());
+        let def = parse(workflow, ParseOptions::default())
+            .def
+            .expect("the workflow parses");
+        compiler.compile_one(&def).expect_err("refused")
+    }
+
+    /// A workflow naming a function of a plugin that did not load is
+    /// refused `UNKNOWN_FUNCTION` at the task's `function.name`, and the
+    /// plugin's reason is attached by what the task names there: in a
+    /// group and in a loop's `setup` too, and not to a task naming another
+    /// function whose name holds that one, which the text-matching
+    /// `annotate` attaches it to.
+    #[test]
+    fn an_unloaded_plugin_function_is_named_by_the_issues_path_not_its_text() {
+        let set = set();
+        let workflow = json!({
+            "id": "statements",
+            "name": "acme.codec.parse every line",
+            "loop": {
+                "max": 2,
+                "setup": [{"id": "warm", "function": {"name": "acme.other.render", "input": {}}}]
+            },
+            "tasks": [
+                {"id": "acme.codec.parse", "function": {"name": "acme.codec.parse-strict", "input": {}}},
+                {"id": "g", "tasks": [
+                    {"id": "decode", "function": {"name": "acme.codec.parse", "input": {"record": "x"}}}
+                ]}
+            ]
+        });
+        let issues = issues(&workflow);
+        let reasons: Vec<(String, IssueCode, String)> = issues
+            .iter()
+            .map(|issue| {
+                let mut reason = String::new();
+                set.annotate_issue(issue, &workflow, &mut reason);
+                (issue.path.to_string(), issue.code, reason)
+            })
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                (
+                    "loop.setup[0].function.name".to_string(),
+                    IssueCode::UnknownFunction,
+                    " — plugin function 'acme.other.render': acme.other v1 disabled: plugins are \
+                     disabled on this node (plugins.enabled = false)"
+                        .to_string(),
+                ),
+                (
+                    "tasks[0].function.name".to_string(),
+                    IssueCode::UnknownFunction,
+                    String::new(),
+                ),
+                (
+                    "tasks[1].tasks[0].function.name".to_string(),
+                    IssueCode::UnknownFunction,
+                    " — plugin function 'acme.codec.parse': acme.codec v2 self_test: the export \
+                     trapped"
+                        .to_string(),
+                ),
+            ]
+        );
+        assert_eq!(
+            set.unavailable_named_by(&issues[2], &workflow),
+            Some((
+                "acme.codec.parse",
+                "acme.codec v2 self_test: the export trapped"
+            ))
+        );
+
+        // What the text alone gives: the task naming `acme.codec.parse-strict`
+        // reads as naming `acme.codec.parse`.
+        let mut by_text = issues[1].message.clone();
+        set.annotate(&mut by_text);
+        assert!(
+            by_text.contains("plugin function 'acme.codec.parse'"),
+            "{by_text}"
+        );
+
+        // Only the unknown function's issue is the plugin's, at its path.
+        let elsewhere = Issue::new(
+            IssueCode::InputParse,
+            "tasks[1].tasks[0].function.name".parse().expect("a path"),
+            "acme.codec.parse",
+        );
+        assert_eq!(set.unavailable_named_by(&elsewhere, &workflow), None);
+        let off_the_path = Issue::new(
+            IssueCode::UnknownFunction,
+            "tasks[9].function.name".parse().expect("a path"),
+            "acme.codec.parse",
+        );
+        assert_eq!(set.unavailable_named_by(&off_the_path, &workflow), None);
     }
 }
