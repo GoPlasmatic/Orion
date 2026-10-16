@@ -44,6 +44,24 @@ pub const ERROR_CONTEXT_PATH: &str = "metadata._orion_errors";
 /// The bare key under `metadata`, for the ingress stamping sites.
 pub const ERROR_CONTEXT_KEY: &str = "_orion_errors";
 
+/// [`ERROR_CONTEXT_PATH`] as dataflow-rs 4's error context, keeping its
+/// default number of records: the one place Orion configures it. Every
+/// dataflow-rs 4 engine Orion builds takes it
+/// (`EngineConfig::default().error_context(ERROR_CONTEXT.clone())`), as
+/// [`operators::with_orion_engine_defaults`] gives dataflow-rs 3's engines
+/// the path, and `channel_call` strips its key from the metadata it hands a
+/// target.
+pub static ERROR_CONTEXT: std::sync::LazyLock<dataflow_rs::run::ErrorContext> =
+    std::sync::LazyLock::new(|| {
+        dataflow_rs::run::ErrorContext::new(
+            ERROR_CONTEXT_PATH
+                .parse()
+                .expect("the error context's path is a path"),
+            dataflow_rs::run::ErrorContext::DEFAULT_LIMIT,
+        )
+        .expect("the error context's path is below none of the engine's own slots")
+    });
+
 /// Clear the engine-owned error records from a metadata object.
 ///
 /// Lives beside the constant so a new ingress has one call to make rather than

@@ -486,23 +486,21 @@ impl ChannelCallConfig {
 /// earliest of the call's own timeout (the task's, else the target's, else
 /// the default) and the run's deadline, and its token is a child of the
 /// run's, so the child ends with its partial `Run` instead of being dropped
-/// with the call. Whose limit stopped it decides what the call does:
-///
-/// - the call's own timeout came first: the call fails with 1.12's
-///   `TIMEOUT_ERROR`, retryable;
-/// - the run's deadline (a tie included) or the run's token: the call waits,
-///   and the engine's race, which polls the call first, cuts it short in
-///   the same wake, so the run ends `TimedOut` or `Cancelled`. Returning the
-///   child's status as an error instead would end the run `Stopped`, as a
-///   failure of this task (I100), which is not what happened.
+/// with the call. When the call's own timeout came first (strictly: a tie is
+/// the run's), the call fails with 1.12's `TIMEOUT_ERROR`, retryable.
 ///
 /// **A child that stopped passes its error on (I184):** `Error::wrap` keeps
 /// its kind, so its code, and its retryability, under 1.12's "channel_call to
-/// '…' failed" prefix, where 1.12 rewrapped it as `FUNCTION_ERROR`.
+/// '…' failed" prefix, where 1.12 rewrapped it as `FUNCTION_ERROR`. That
+/// includes a child the run's own deadline or token stopped: a call's `Err`
+/// after its run's own limit has passed ends the run on that limit,
+/// `TimedOut` or `Cancelled`, with the limit's record on the task (dataflow-rs
+/// `daaf8c0`), so the run reports its own limit, not a failure of this task.
 ///
-/// The child's metadata is the caller's with the call position advanced and
-/// `channel` naming the target; the caller's error records are not cleared,
-/// since the child's run resets its own error context (break 20).
+/// The child's metadata is the caller's with the call position advanced,
+/// `channel` naming the target, and the caller's error records stripped
+/// before the target's guards read it, as 1.12 cleared them; the child's run
+/// resets its own error context anyway (break 20).
 pub struct ChannelCallFunction {
     /// The node's serving generation, loaded once per call: the target's
     /// guards and the engine that runs it come from the same build.
@@ -563,6 +561,10 @@ impl Function for ChannelCallFunction {
             OwnedDataValue::from(depth + 1),
         );
         put(&mut metadata, META_CALL_CHAIN, OwnedDataValue::from(chain));
+        // #280: the child inherits the caller's metadata wholesale, so
+        // without this its guards would read, and branch on, the caller's
+        // failed tasks as if they were its own.
+        strip_error_records(&mut metadata);
 
         // One generation for this call: the target's guards here and the
         // engine that runs it below come from the same build.
@@ -661,22 +663,18 @@ impl Function for ChannelCallFunction {
         if run.matched() == 0 && run.workflows().next().is_none() {
             return Err(not_found(&target).into());
         }
-        let ended = match run.status() {
-            RunStatus::Completed => Ended::Completed,
-            RunStatus::CompletedWithErrors => Ended::WithErrors,
-            RunStatus::TimedOut if limits.own => Ended::OwnTimeout,
-            RunStatus::TimedOut => Ended::RunsLimit,
-            RunStatus::Cancelled if ctx.cancel().is_some_and(CancelToken::is_cancelled) => {
-                Ended::RunsLimit
+        match run.status() {
+            RunStatus::Completed => {}
+            RunStatus::CompletedWithErrors => {
+                return Err(failed(&target, summary(child.errors())).into());
             }
-            _ => Ended::Stopped,
-        };
-        match ended {
-            Ended::Completed => {}
-            Ended::WithErrors => return Err(failed(&target, summary(child.errors())).into()),
-            Ended::OwnTimeout => return Err(timed_out(&target, timeout_ms).into()),
-            Ended::RunsLimit => return left_to_the_run().await,
-            Ended::Stopped => {
+            RunStatus::TimedOut if limits.own => {
+                return Err(timed_out(&target, timeout_ms).into());
+            }
+            // A workflow's error, or the run's own deadline or token handed
+            // down: the child's error, passed on. After the run's own limit
+            // the engine ends this run on that limit instead (`daaf8c0`).
+            _ => {
                 if let Err(e) = run.into_result() {
                     return Err(e.wrap(format_args!("channel_call to '{target}' failed")));
                 }
@@ -685,20 +683,6 @@ impl Function for ChannelCallFunction {
         ctx.set(&output, child.context().data().clone())?;
         Ok(Outcome::Ok)
     }
-}
-
-/// How a child's run ended, as the call reads it.
-enum Ended {
-    /// Every workflow finished, and the message holds no error records.
-    Completed,
-    /// Every workflow finished, and the message holds error records.
-    WithErrors,
-    /// The call's own timeout came first.
-    OwnTimeout,
-    /// The run's own deadline or token, handed to the child, stopped it.
-    RunsLimit,
-    /// A workflow stopped the run with its error.
-    Stopped,
 }
 
 /// The deadline and cancellation a child's run inherits, and whose deadline
@@ -740,21 +724,23 @@ fn own_deadline(ms: u64) -> Option<Instant> {
         .checked_add(Duration::from_millis(ms))
 }
 
-/// What a call does once the run's own deadline or token, handed to its
-/// child, stopped the child: nothing more.
-///
-/// Natively the engine races every host call against its run's limits,
-/// polling the call first. A call that returned the child's `TimedOut` or
-/// `Cancelled` in the wake the limit fired in would end its run `Stopped`
-/// with it (I100), as if the target had failed on its own. Pending instead
-/// lets the race cut the call short in that wake: the token is already
-/// cancelled, or the deadline already passed and its timer fires on its
-/// tick, so the wait is never longer than that. The run then ends
-/// `TimedOut` or `Cancelled`, the call's task recording the run's
-/// `TIMEOUT_ERROR` or `CANCELLED` as for any call a limit cuts short, and
-/// this future is dropped with the call.
-async fn left_to_the_run() -> dataflow_rs::Result<Outcome> {
-    std::future::pending().await
+/// `metadata` without the caller's error records: the key at Orion's
+/// error-context path ([`crate::engine::ERROR_CONTEXT`]), read as the
+/// engine reads it, when that path is under `metadata`.
+fn strip_error_records(metadata: &mut OwnedDataValue) {
+    let path = crate::engine::ERROR_CONTEXT.path();
+    if path.root() != dataflow_rs::expr::Root::Metadata {
+        return;
+    }
+    let root = path.root().as_str().to_string();
+    let mut context = OwnedDataValue::Object(vec![(root, std::mem::take(metadata))]);
+    let removed = path.remove(&mut context).is_ok();
+    debug_assert!(removed, "an error context's path is never a root");
+    if let OwnedDataValue::Object(mut roots) = context
+        && let Some((_, stripped)) = roots.pop()
+    {
+        *metadata = stripped;
+    }
 }
 
 /// `key` set to `value` in `object`, in place when it is there and last
@@ -990,7 +976,7 @@ mod tests {
     use dataflow_rs::function::testing;
     use dataflow_rs::observe::{Event, Interest, Observer};
     use dataflow_rs::program::Severity;
-    use dataflow_rs::run::{EngineConfig, ErrorContext};
+    use dataflow_rs::run::EngineConfig;
     use serde_json::json;
 
     use super::*;
@@ -1338,11 +1324,18 @@ mod tests {
         handlers.insert("trip".to_string(), Box::new(WaitHandler));
         let v3_workflows = workflows
             .iter()
-            .map(|w| dataflow_rs_v3::Workflow::from_json(&w.to_string()).expect("a v3 workflow"))
-            .collect();
-        let v3 = Arc::new(
-            dataflow_rs_v3::Engine::new(v3_workflows, handlers).expect("the v3 engine builds"),
+            .map(|w| dataflow_rs_v3::Workflow::from_json(&w.to_string()).expect("a v3 workflow"));
+        // Built as 1.12 built every engine: Orion's operators, its secrets
+        // and its error context.
+        let mut v3 = dataflow_rs_v3::Engine::builder().with_workflows(v3_workflows);
+        for (name, handler) in handlers {
+            v3 = v3.register_boxed(name, handler);
+        }
+        let v3 = crate::engine::operators::with_orion_engine_defaults(
+            v3,
+            &crate::engine::ResolvedSecrets::empty(),
         );
+        let v3 = Arc::new(v3.build().expect("the v3 engine builds"));
 
         let runs = Arc::new(Runs::default());
         let mut registry = dataflow_rs::Registry::new(exprs.clone());
@@ -1358,13 +1351,8 @@ mod tests {
         registry.register("wait", Wait);
         registry.register("fail", Fail);
         registry.register("trip", Trip(knobs.trip));
-        let error_context = ErrorContext::new(
-            crate::engine::ERROR_CONTEXT_PATH.parse().expect("a path"),
-            ErrorContext::DEFAULT_LIMIT,
-        )
-        .expect("Orion's error context");
         let config = EngineConfig::default()
-            .error_context(error_context)
+            .error_context(crate::engine::ERROR_CONTEXT.clone())
             .observer(runs.clone());
         let mut builder = dataflow_rs::Engine::builder()
             .registry(registry)
@@ -1461,10 +1449,13 @@ mod tests {
         }
     }
 
-    /// A dataflow-rs 4 run as [`Seen`].
+    /// A dataflow-rs 4 run as [`Seen`]: `data` when every workflow finished,
+    /// error records or not, as dataflow-rs 3's `Ok(())` reads it.
     fn seen(run: &dataflow_rs::Run, message: &Message) -> Seen {
         match run.status() {
-            RunStatus::Completed => Ok(Value::from(message.context().data())),
+            RunStatus::Completed | RunStatus::CompletedWithErrors => {
+                Ok(Value::from(message.context().data()))
+            }
             RunStatus::Stopped(e) => {
                 let failure = twin::failure(e);
                 let record = message.errors().last().expect("the failure is recorded");
@@ -2186,6 +2177,35 @@ mod tests {
         );
     }
 
+    /// The target's guards see none of the caller's error records, as 1.12
+    /// cleared them before the guards (#280): a caller with a recorded
+    /// failure under `continue` calls a target whose `validation_logic`
+    /// rejects any message carrying one, and is admitted. On both engines.
+    #[tokio::test]
+    async fn the_targets_guards_see_none_of_the_callers_error_records() {
+        let strict = greeter().named("strict").config(json!({
+            "validation_logic": {"!": [{"var": "metadata._orion_errors"}]}
+        }));
+        let caller = chan(
+            "caller",
+            json!([
+                {"id": "boom", "name": "boom", "continue_on_error": true,
+                 "function": {"name": "fail", "input": {}}},
+                {"id": "seen", "name": "seen", "function": {"name": "map", "input": {"mappings": [
+                    {"path": "data.own", "logic": {"var": "metadata._orion_errors.0.task_id"}}
+                ]}}},
+                {"id": "t", "name": "t", "function": {"name": NAME,
+                    "input": {"channel": "strict", "output": "data.r"}}}
+            ]),
+        );
+        let chans = [strict, caller];
+        let (v3, v4) = both(&chans, "caller", json!({"name": "Ada"}), json!({})).await;
+        assert_eq!(v4, v3);
+        let data = v4.expect("admitted");
+        assert_eq!(data["own"], "boom", "the caller holds its own record");
+        assert_eq!(data["r"]["greeting"], "Hello, Ada");
+    }
+
     /// O25: the payload, the metadata and the result cross as values, with
     /// no JSON between them, so a tensor in the caller's payload or
     /// metadata reaches the target, and comes back, as a tensor. 1.12's
@@ -2423,11 +2443,55 @@ mod tests {
         }
     }
 
+    /// The run's token tripped from another task while the child runs: the
+    /// child, holding a child of that token, reports `Cancelled`, the call
+    /// passes its error on, and the engine ends the parent run `Cancelled`
+    /// on its own token, recording the token's text on the call's task.
+    #[tokio::test(start_paused = true)]
+    async fn the_runs_token_tripped_from_another_task_ends_the_run_cancelled() {
+        let world = waiting(None, Knobs::default()).await;
+        let token = CancelToken::new();
+        let canceller = {
+            let token = token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                token.cancel();
+            })
+        };
+        let (report, message) = world
+            .v4_run(
+                "caller",
+                json!({}),
+                json!({}),
+                RunOptions::default().cancel(&token),
+            )
+            .await;
+        canceller.await.expect("the canceller ran");
+        assert!(
+            matches!(report.status(), RunStatus::Cancelled),
+            "{report:?}"
+        );
+        assert_eq!(
+            world.runs.finished(),
+            [
+                ("target".to_string(), "cancelled".to_string()),
+                ("caller".to_string(), "cancelled".to_string()),
+            ]
+        );
+        let record = message.errors().last().expect("the call is recorded");
+        assert_eq!(record.code, "CANCELLED");
+        assert_eq!(
+            record.message,
+            "Task t error: the run was cancelled during `channel_call`"
+        );
+    }
+
     /// A chain of calls, `caller` to `mid` to `target`: the run's deadline
     /// passing in the grandchild ends every run on the chain `TimedOut`,
     /// innermost first, and the run's token tripped there ends every one
-    /// `Cancelled`: each call hands the limit down, and each leaves it to
-    /// its own run's race.
+    /// `Cancelled`: each call hands the limit down and passes its child's
+    /// error on, and the engine ends each run on its own limit, since the
+    /// error comes after it (dataflow-rs `daaf8c0`).
     #[tokio::test(start_paused = true)]
     async fn the_runs_limits_end_every_run_on_a_chain() {
         for trip in [false, true] {
