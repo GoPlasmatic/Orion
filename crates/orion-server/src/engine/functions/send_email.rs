@@ -13,7 +13,6 @@
 //! message content or addresses, and error messages carry only the server's
 //! reply.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -37,7 +36,7 @@ use super::templated_input::FieldSource;
 use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::smtp_pool::{PooledClient, SmtpPoolCache};
 use crate::connector::{ConnectorRegistry, SmtpConnectorConfig};
-use crate::engine::kit::{self, read};
+use crate::engine::kit::{self, Members, read};
 use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name, for the free functions below — a reference to the one
@@ -243,8 +242,9 @@ pub struct SendEmailConfig {
     from: Option<Expr<OwnedDataValue>>,
     /// The Reply-To address.
     reply_to: Option<Expr<OwnedDataValue>>,
-    /// Extra headers, each value computed from the message.
-    headers: Option<BTreeMap<String, Expr<OwnedDataValue>>>,
+    /// Extra headers, each value computed from the message, kept in the
+    /// order written: 1.12 judged and rendered them in that order.
+    headers: Option<Members<Expr<OwnedDataValue>>>,
     /// Where `{ message_id, response }` is written.
     #[output(default = "data")]
     output: Output,
@@ -276,13 +276,13 @@ fn rendered_addresses(
 /// in its order: the headers' literal check, `to`, `subject`, the bodies and
 /// their rule, `cc`, `bcc`, `from`, `reply_to`, then each header's value.
 fn mail(ctx: &Ctx<'_>, cfg: &SendEmailConfig) -> Result<Mail, HandlerError> {
-    let headers = cfg.headers.iter().flatten();
-    check_headers(
-        headers
-            .clone()
-            .map(|(name, expr)| (name.as_str(), expr.raw())),
-    )
-    .map_err(named)?;
+    let headers = cfg
+        .headers
+        .as_ref()
+        .map(Members::iter)
+        .into_iter()
+        .flatten();
+    check_headers(headers.clone().map(|(name, expr)| (name, expr.raw()))).map_err(named)?;
 
     let to = rendered_addresses(ctx, &cfg.to, "to")
         .map_err(named)?
@@ -321,7 +321,7 @@ fn mail(ctx: &Ctx<'_>, cfg: &SendEmailConfig) -> Result<Mail, HandlerError> {
         headers: headers
             .map(|(name, expr)| {
                 let value = Value::from(&*ctx.eval(expr)?);
-                Ok((name.clone(), header_value(name, &value)?.to_string()))
+                Ok((name.to_string(), header_value(name, &value)?.to_string()))
             })
             .collect::<Result<_, HandlerError>>()?,
     })
@@ -343,6 +343,9 @@ impl Function for SendEmailFunction {
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &SendEmailConfig) -> dataflow_rs::Result<Outcome> {
         let channel = kit::channel(ctx);
+        // The prologue's output, before the mail is read: an output that
+        // names no path sends nothing.
+        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
         let mail = mail(ctx, cfg)?;
         let mut sent = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
@@ -354,7 +357,7 @@ impl Function for SendEmailFunction {
         })
         .await?;
         if let Some(result) = sent {
-            ctx.emit_default(OwnedDataValue::from(&result))?;
+            ctx.set(&output, OwnedDataValue::from(&result))?;
         }
         Ok(Outcome::Ok)
     }
@@ -1349,7 +1352,7 @@ mod tests {
         assert_eq!(cfg.to.holes().count(), 1);
         assert_eq!(cfg.cc.as_ref().map(|d| d.holes().count()), Some(1));
         assert!(cfg.subject.constant().is_none() && cfg.text.is_some());
-        assert_eq!(cfg.headers.as_ref().map(BTreeMap::len), Some(1));
+        assert_eq!(cfg.headers.as_ref().map(Members::len), Some(1));
         let output = cfg.output.constant().map(ToString::to_string);
         assert_eq!(output.as_deref(), Some("data.mail"));
 
@@ -1689,5 +1692,92 @@ mod tests {
             "reuse must probe with RSET: {}",
             log.transcript
         );
+    }
+
+    /// A computed `output` is resolved before the mail is read, as 1.12's
+    /// prologue resolved it: one that names no path is 1.12's
+    /// `VALIDATION_ERROR`, with its text, and no SMTP session is opened; one
+    /// that resolves to `null` is the default `data`, and one that names a
+    /// path is written there.
+    #[tokio::test]
+    async fn a_computed_output_is_resolved_before_the_send_as_1_12_did() {
+        let data = json!({"n": 3, "flag": true, "empty": "", "at": "data.mail"});
+        for (output, sent) in [
+            (json!({"var": "data.n"}), false),
+            (json!({"var": "data.flag"}), false),
+            (json!({"var": "data.empty"}), false),
+            (json!({"var": "data.none"}), true),
+            (json!({"var": "data.at"}), true),
+        ] {
+            let input = json!({"connector": "mailer", "to": "a@b.test", "subject": "s",
+                               "text": "b", "output": output});
+            let mut sides = Vec::new();
+            for v4 in [false, true] {
+                let (addr, log) = spawn_logging_smtp_mock().await;
+                let registry = mailer(smtp_config(addr)).await;
+                let pool = Arc::new(SmtpPoolCache::new(4));
+                let seen = if v4 {
+                    let f = SendEmailFunction {
+                        registry,
+                        smtp_pool: pool,
+                    };
+                    twin::v4(NAME, f, input.clone(), data.clone()).await
+                } else {
+                    twin::v3(
+                        NAME,
+                        handler_v3(registry, pool),
+                        input.clone(),
+                        data.clone(),
+                    )
+                    .await
+                };
+                let connections = log.lock().expect("test").connections;
+                sides.push((masked(&seen), connections));
+            }
+            assert_eq!(sides[1], sides[0], "{output}");
+            let (seen, connections) = &sides[1];
+            assert_eq!(*connections, usize::from(sent), "{output}");
+            if !sent {
+                let failure = seen.as_ref().expect_err("refused");
+                assert_eq!(failure.code, "VALIDATION_ERROR", "{output}");
+                assert!(
+                    failure.message.starts_with(
+                        "Validation error: 'output' must resolve to a non-empty dotted path"
+                    ),
+                    "{failure:?}"
+                );
+            }
+        }
+    }
+
+    /// Extra headers reach the message in the order written, and of several
+    /// bad ones the first written is the one refused, literal or computed, as
+    /// 1.12's.
+    #[tokio::test]
+    async fn the_headers_keep_the_order_written() {
+        let input = json!({"connector": "mailer", "to": "a@b.test", "subject": "s", "text": "b",
+                           "headers": {"X-B": "2", "X-A": "1", "X-C": {"var": "data.c"}}});
+        let [(v3, v3_wire), (v4, v4_wire)] = both(input, smtp_config, json!({"c": "3"})).await;
+        assert_eq!(masked(&v4), masked(&v3));
+        let at = |wire: &str, header: &str| wire.find(header).expect(header);
+        for wire in [v3_wire.expect("sent"), v4_wire.expect("sent")] {
+            assert!(
+                at(&wire, "X-B: 2") < at(&wire, "X-A: 1")
+                    && at(&wire, "X-A: 1") < at(&wire, "X-C: 3"),
+                "{wire}"
+            );
+        }
+
+        for headers in [
+            json!({"X-Evil": "a\nb", "Subject": "s"}),
+            json!({"X-2": {"var": "data.none"}, "X-1": {"var": "data.crlf"}}),
+            json!({"Z-Bad Name": "v", "A-Bad Name": "v"}),
+        ] {
+            let input = json!({"connector": "mailer", "to": "a@b.test", "subject": "s",
+                               "text": "b", "headers": headers});
+            let [(v3, _), (v4, wire)] = both(input, smtp_config, json!({"crlf": "a\r\nb"})).await;
+            assert_eq!(v4, v3, "{headers}");
+            assert!(v4.is_err() && wire.is_none(), "{headers}");
+        }
     }
 }

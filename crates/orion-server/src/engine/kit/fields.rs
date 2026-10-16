@@ -1,5 +1,6 @@
-//! Orion's own config field types (I183): key material, a list of it, and an
-//! expression a function evaluates over a root of its own.
+//! Orion's own config field types (I183): key material, a list of it, an
+//! expression a function evaluates over a root of its own, and a map that
+//! keeps its members in the order they were written.
 //!
 //! Each implements [`ConfigField`], so a derived config holds one as it holds
 //! an `Expr`: compiled once at build with every issue at its path, walked by
@@ -540,6 +541,75 @@ impl ConfigField for DetachedExpr {
     }
 }
 
+/// An object field whose members are kept in the order the task wrote them,
+/// each value a `T`: `send_email.headers`, whose members 1.12 judged and
+/// rendered in that order (I183), where a `BTreeMap` sorts them. The input
+/// object's order is the authored one, since Orion's graph builds
+/// `serde_json` with `preserve_order`.
+///
+/// Compiled, walked and resolved as a `BTreeMap<String, T>` is, each member
+/// at its key; only the order differs. `null` is not a value, so an
+/// `Option<Members<T>>` written as `null` is unset.
+#[derive(Debug)]
+pub struct Members<T>(Vec<(String, T)>);
+
+impl<T> Members<T> {
+    /// The members, in the order written.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &T)> + Clone {
+        self.0.iter().map(|(key, value)| (key.as_str(), value))
+    }
+
+    /// How many members there are.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<T: ConfigField> ConfigField for Members<T> {
+    fn compile(raw: &Value, cx: &mut CompileCx<'_>) -> Option<Self> {
+        let Some(entries) = raw.as_object() else {
+            cx.issue(IssueCode::InputParse, "expected an object");
+            return None;
+        };
+        // Every member is compiled, so every issue is reported.
+        let compiled: Vec<Option<(String, T)>> = entries
+            .iter()
+            .map(|(key, value)| {
+                cx.at(key.as_str(), |cx| T::compile(value, cx))
+                    .map(|value| (key.clone(), value))
+            })
+            .collect();
+        compiled.into_iter().collect::<Option<_>>().map(Self)
+    }
+
+    fn visit(&self, v: &mut Visit<'_>) {
+        for (key, value) in &self.0 {
+            v.at(key.as_str(), |v| value.visit(v));
+        }
+    }
+
+    fn resolve(&self, r: &mut dyn Resolver) -> dataflow_rs::Result<Option<OwnedDataValue>> {
+        let entries = self
+            .0
+            .iter()
+            .map(|(key, value)| {
+                let value = value.resolve(r)?.unwrap_or(OwnedDataValue::Null);
+                Ok((key.clone(), value))
+            })
+            .collect::<dataflow_rs::Result<Vec<_>>>()?;
+        Ok(Some(OwnedDataValue::Object(entries)))
+    }
+
+    fn kind() -> FieldKind {
+        FieldKind::Map(T::kind)
+    }
+}
+
 /// Each field type through `testing::config_with` and `testing::call` on a
 /// probe function, against its dataflow-rs 3 twin run on a dataflow-rs 3
 /// engine over the same input, message and secret store: the expectation is
@@ -1030,5 +1100,89 @@ mod tests {
             DetachedExpr::kind(),
             FieldKind::Literal(ValueKind::Any)
         ));
+    }
+
+    /// A config holding an ordered map of expressions.
+    #[derive(Debug, dataflow_rs::function::FunctionConfig)]
+    struct MembersConfig {
+        m: Option<Members<Expr<OwnedDataValue>>>,
+    }
+
+    /// A config holding an ordered map of literals.
+    #[derive(Debug, dataflow_rs::function::FunctionConfig)]
+    struct LiteralMembers {
+        m: Members<String>,
+    }
+
+    /// Writes its resolved input, as a layer reads it, at `data.input`.
+    struct Echo;
+
+    impl Function for Echo {
+        type Config = MembersConfig;
+
+        async fn call(
+            &self,
+            ctx: &mut Ctx<'_>,
+            _cfg: &MembersConfig,
+        ) -> dataflow_rs::Result<Outcome> {
+            let input = ctx.input()?;
+            ctx.set(&"data.input".parse()?, input)?;
+            Ok(Outcome::Ok)
+        }
+    }
+
+    /// `Members` keeps the authored order through compile, walk and resolve,
+    /// where a `BTreeMap` would sort; `null` is unset, a non-object refused,
+    /// and each member's issue sits at its key.
+    #[tokio::test]
+    async fn members_keep_the_order_written() {
+        let input = json!({"m": {"z": "last-written-first", "a": {"var": "data.n"}, "m": 7}});
+        let cfg = testing::config_with::<MembersConfig>(&exprs(), input.clone()).expect("compiles");
+        let members = cfg.m.as_ref().expect("set");
+        let keys: Vec<&str> = members.iter().map(|(key, _)| key).collect();
+        assert_eq!(keys, ["z", "a", "m"]);
+        assert_eq!(members.len(), 3);
+
+        /// The paths a walk reports, in order.
+        struct Paths(Vec<String>);
+        impl ExprVisitor for Paths {
+            fn expr(&mut self, at: &AuthoredPath, _raw: &Value, _records: bool) {
+                self.0.push(at.to_string());
+            }
+        }
+        let mut paths = Paths(Vec::new());
+        FunctionConfig::visit(&cfg, &mut paths);
+        assert_eq!(paths.0, ["m.z", "m.a", "m.m"]);
+
+        let data = OwnedDataValue::from(&data());
+        let called = testing::call(Echo, input)
+            .exprs(exprs())
+            .message(Message::from_parts(
+                OwnedDataValue::Null,
+                data,
+                OwnedDataValue::Null,
+            ))
+            .await;
+        assert_eq!(called.outcome.expect("echoes"), Outcome::Ok);
+        let written = called
+            .message
+            .context()
+            .get(&"data.input".parse().expect("a path"))
+            .expect("written");
+        assert_eq!(
+            serde_json::to_string(written).expect("json"),
+            r#"{"m":{"z":"last-written-first","a":5,"m":7}}"#
+        );
+
+        let unset =
+            testing::config_with::<MembersConfig>(&exprs(), json!({"m": null})).expect("compiles");
+        assert!(unset.m.is_none());
+        let issues = testing::config_with::<MembersConfig>(&exprs(), json!({"m": [1]}))
+            .expect_err("not an object");
+        assert_eq!(issues[0].path.to_string(), "m", "{issues:?}");
+        let issues =
+            testing::config_with::<LiteralMembers>(&exprs(), json!({"m": {"ok": "a", "bad": 7}}))
+                .expect_err("a member is not a string");
+        assert_eq!(issues[0].path.to_string(), "m.bad", "{issues:?}");
     }
 }

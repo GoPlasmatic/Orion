@@ -5,12 +5,12 @@
 //! [`PublishKafkaFunction`] is the dataflow-rs 4 function over Orion's own
 //! [`PublishKafkaConfig`] (break 10).
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
-use dataflow_rs::{Ctx, Expr, Function, Outcome, Path};
+use dataflow_rs::{Ctx, Expr, Function, Outcome};
 use dataflow_rs_v3::engine::error::DataflowError;
 use dataflow_rs_v3::engine::functions::PublishKafkaConfig as V3PublishKafkaConfig;
 use dataflow_rs_v3::engine::task_context::TaskContext;
@@ -188,9 +188,6 @@ pub struct PublishKafkaConfig {
     value: Option<Expr<OwnedDataValue>>,
 }
 
-/// `data`, which an unset `value` publishes.
-static DATA: LazyLock<Path> = LazyLock::new(|| "data".parse().expect("`data` is a path"));
-
 impl PublishKafkaConfig {
     /// The record's key for this call: `resolve_key`'s reading, `None` when
     /// unset, which Kafka partitions round-robin.
@@ -208,7 +205,7 @@ impl PublishKafkaConfig {
         Ok(match read::present(&self.value) {
             Some(expr) => Value::from(&*ctx.eval(expr)?),
             None => ctx
-                .get(&DATA)
+                .get(&kit::DATA)
                 .map_or(Value::Null, |data| Value::from(&*data)),
         })
     }

@@ -376,6 +376,13 @@ impl Function for HttpCallFunction {
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &HttpCallConfig) -> dataflow_rs::Result<Outcome> {
         let channel = kit::channel(ctx);
+        // The prologue's output, before anything about the request is read:
+        // an output that names no path sends nothing.
+        let output = cfg
+            .output
+            .as_ref()
+            .map(|out| kit::output_path(ctx, out, None))
+            .transpose()?;
         // `parse`'s half, before the connector is looked up (F58): the
         // formats, the timeout and the headers, in that order.
         let method =
@@ -430,8 +437,8 @@ impl Function for HttpCallFunction {
         .await?;
 
         // `output` is optional: leaving it unset discards the body.
-        if let Some(body) = response.filter(|_| cfg.output.is_some()) {
-            ctx.emit_default(OwnedDataValue::from(&body))?;
+        if let (Some(path), Some(body)) = (&output, response) {
+            ctx.set(path, OwnedDataValue::from(&body))?;
         }
         Ok(Outcome::Ok)
     }
@@ -1129,6 +1136,78 @@ mod tests {
             started.elapsed() < Duration::from_secs(2),
             "{:?}",
             started.elapsed()
+        );
+    }
+
+    /// A computed `output` is resolved before anything about the request is
+    /// read, and one that names no path is refused with the family's
+    /// `VALIDATION_ERROR` and nothing is sent. 3.15's `http_call` read its
+    /// output through `resolve_string`, which refused nothing: it sent the
+    /// request and wrote the response at a context key no response shows,
+    /// which dataflow-rs 4 has no way to write, so the request it sent is the
+    /// one difference, and this pins both sides of it. An output that names a
+    /// path is written there, alike.
+    #[tokio::test]
+    async fn a_computed_output_is_resolved_before_the_request() {
+        let data = json!({"n": 3, "word": "result", "at": "data.r"});
+        for output in [
+            json!({"var": "data.n"}),
+            json!({"var": "data.word"}),
+            json!({"var": "data.none"}),
+        ] {
+            let input = json!({"connector": "api", "output": output});
+
+            let (url, sent) = flaky(0).await;
+            let registry = twin::connectors(&[("api", connector(&url))]).await;
+            let v4 = twin::v4(NAME, function(registry), input.clone(), data.clone()).await;
+            let failure = v4.expect_err("refused before the request");
+            assert_eq!(failure.code, "VALIDATION_ERROR", "{output}");
+            assert!(
+                failure
+                    .message
+                    .starts_with("Validation error: 'output' must resolve"),
+                "{failure:?}"
+            );
+            assert_eq!(sent.load(Ordering::SeqCst), 0, "{output}: nothing is sent");
+
+            let (url, sent) = flaky(0).await;
+            let registry = twin::connectors(&[("api", connector(&url))]).await;
+            let handler = Box::new(Connector(handler(registry)));
+            let v3 = twin::v3(NAME, handler, input, data.clone()).await;
+            assert_eq!(
+                v3,
+                Ok(data.clone()),
+                "{output}: 3.15 wrote where no response shows"
+            );
+            assert_eq!(
+                sent.load(Ordering::SeqCst),
+                1,
+                "{output}: 3.15 sent the request"
+            );
+        }
+
+        let input = json!({"connector": "api", "output": {"var": "data.at"}});
+        let mut sides = Vec::new();
+        for v4 in [false, true] {
+            let (url, sent) = flaky(0).await;
+            let registry = twin::connectors(&[("api", connector(&url))]).await;
+            let seen = if v4 {
+                twin::v4(NAME, function(registry), input.clone(), data.clone()).await
+            } else {
+                twin::v3(
+                    NAME,
+                    Box::new(Connector(handler(registry))),
+                    input.clone(),
+                    data.clone(),
+                )
+                .await
+            };
+            sides.push((seen, sent.load(Ordering::SeqCst)));
+        }
+        assert_eq!(sides[1], sides[0]);
+        assert_eq!(
+            sides[1].0.as_ref().ok().map(|d| &d["r"]),
+            Some(&json!({"ok": true}))
         );
     }
 }

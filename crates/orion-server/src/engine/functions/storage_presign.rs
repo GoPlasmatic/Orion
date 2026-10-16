@@ -167,7 +167,8 @@ fn presign_url(
 }
 
 /// `storage_presign`'s input on dataflow-rs 4, each field read as today
-/// (I183): `method` the literal `presign_method` reads, the rest expressions
+/// (I183): `method` the literal `presign_method` reads, any JSON, so a
+/// non-string or `null` is GET as it was, and the rest expressions
 /// read by `kit::read`'s twins of `resolve_required_str`,
 /// `resolve_duration_secs`, `resolve_optional_str` and `resolve_optional_u64`.
 /// A task missing `connector`, `key` or `expires_in` is refused at load
@@ -177,8 +178,8 @@ fn presign_url(
 pub struct StoragePresignConfig {
     /// The storage connector whose credentials sign the URL.
     connector: String,
-    /// `GET` (the default) or `PUT`.
-    method: Option<String>,
+    /// `GET` (the default) or `PUT`; anything but a string is GET.
+    method: Option<Value>,
     /// The object key.
     key: Expr<OwnedDataValue>,
     /// The URL's lifetime: seconds, or `"<n>s|m|h|d"`.
@@ -230,7 +231,7 @@ fn optional_str(
 /// The presign the task describes, read as `StoragePresignHandler::parse`
 /// reads it, in its order.
 fn presign(ctx: &Ctx<'_>, cfg: &StoragePresignConfig) -> Result<Presign, HandlerError> {
-    let method = presign_method(cfg.method.as_deref()).map_err(named)?;
+    let method = presign_method(cfg.method.as_ref().and_then(Value::as_str)).map_err(named)?;
     check_method_fields(method, |field| cfg.sets(field)).map_err(named)?;
     let key = ctx.eval(&cfg.key)?;
     let key = read::required_str(Some(&key), "key", NAME)?.into_owned();
@@ -300,6 +301,9 @@ impl Function for StoragePresignFunction {
         cfg: &StoragePresignConfig,
     ) -> dataflow_rs::Result<Outcome> {
         let channel = kit::channel(ctx);
+        // The prologue's output, before the presign is read: an output that
+        // names no path signs nothing.
+        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
         let presign = presign(ctx, cfg)?;
         let mut url = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
@@ -316,7 +320,7 @@ impl Function for StoragePresignFunction {
         })
         .await?;
         if let Some(url) = url {
-            ctx.emit_default(OwnedDataValue::String(url))?;
+            ctx.set(&output, OwnedDataValue::String(url))?;
         }
         Ok(Outcome::Ok)
     }
@@ -918,7 +922,7 @@ mod tests {
             "content_length": {"var": "data.bytes"}, "output": "data.url"
         }))
         .expect("compiles");
-        assert_eq!(cfg.method.as_deref(), Some("PUT"));
+        assert_eq!(cfg.method.as_ref().and_then(Value::as_str), Some("PUT"));
         assert!(cfg.key.constant().is_none() && cfg.expires_in.constant().is_some());
         assert!(cfg.sets("content_type") && cfg.sets("content_length"));
         assert!(!cfg.sets("response_content_type"));
@@ -1233,6 +1237,98 @@ mod tests {
             assert_eq!(v4, v3, "{input}");
             let failure = v4.expect_err("test");
             assert!(failure.message.contains(expected), "{input}: {failure:?}");
+        }
+    }
+
+    /// A `method` that is not a string is GET, as 1.12 read it: the config
+    /// loads, and the call answers to the `presign_get` gate, not
+    /// `presign_put`, on both engines.
+    #[tokio::test]
+    async fn a_method_that_is_not_a_string_is_get() {
+        for method in [
+            json!(5),
+            json!(true),
+            json!({"a": 1}),
+            json!(["PUT"]),
+            json!(null),
+        ] {
+            let input = json!({"connector": "media", "method": method, "key": "k.txt",
+                               "expires_in": 60, "output": "data.url"});
+            config_v4(input.clone()).expect("not a load refusal");
+
+            let mut no_put = storage_config(false);
+            no_put.operations.presign_put = false;
+            let (v3, v4) = both(input.clone(), no_put).await;
+            assert_eq!(unclocked(&v4), unclocked(&v3), "{method}");
+            assert!(
+                v4.is_ok(),
+                "{method}: GET does not answer to presign_put: {v4:?}"
+            );
+
+            let mut no_get = storage_config(false);
+            no_get.operations.presign_get = false;
+            let (v3, v4) = both(input, no_get).await;
+            assert_eq!(v4, v3, "{method}");
+            assert!(v4.is_err(), "{method}: GET answers to presign_get");
+        }
+    }
+
+    /// A computed `output` is resolved before anything is read or signed, as
+    /// 1.12's prologue resolved it: one that names no path is 1.12's
+    /// `VALIDATION_ERROR` with its text, ahead of the task's own refusals;
+    /// one that names a path is written there.
+    #[tokio::test]
+    async fn a_computed_output_is_resolved_first_as_1_12_did() {
+        for (input, written) in [
+            (
+                json!({"connector": "media", "key": "k", "expires_in": 60,
+                    "output": {"var": "data.n"}}),
+                false,
+            ),
+            (
+                json!({"connector": "media", "key": "k", "expires_in": 60,
+                    "output": {"var": "data.empty"}}),
+                false,
+            ),
+            // Ahead of the method's own refusal, as in 1.12.
+            (
+                json!({"connector": "media", "method": "POST", "key": "k", "expires_in": 60,
+                    "output": {"var": "data.n"}}),
+                false,
+            ),
+            (
+                json!({"connector": "media", "key": "k", "expires_in": 60,
+                    "output": {"var": "data.at"}}),
+                true,
+            ),
+        ] {
+            let data = json!({"n": 3, "empty": "", "at": "data.url"});
+            let v3 = twin::v3(
+                NAME,
+                Box::new(super::super::connector_handler::Connector(
+                    StoragePresignHandler {
+                        registry: media(storage_config(false)).await,
+                    },
+                )),
+                input.clone(),
+                data.clone(),
+            )
+            .await;
+            let f = StoragePresignFunction {
+                registry: media(storage_config(false)).await,
+            };
+            let v4 = twin::v4(NAME, f, input.clone(), data).await;
+            assert_eq!(unclocked(&v4), unclocked(&v3), "{input}");
+            if written {
+                assert!(v4.expect("signed")["url"].is_string());
+            } else {
+                let failure = v4.expect_err("refused");
+                assert_eq!(failure.code, "VALIDATION_ERROR", "{input}");
+                assert!(
+                    failure.message.contains("'output' must resolve"),
+                    "{failure:?}"
+                );
+            }
         }
     }
 }

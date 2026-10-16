@@ -196,6 +196,9 @@ impl Function for StorageHeadFunction {
         cfg: &StorageHeadConfig,
     ) -> dataflow_rs::Result<Outcome> {
         let channel = kit::channel(ctx);
+        // The prologue's output, before the key is read: an output that
+        // names no path asks nothing.
+        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
         let key = ctx.eval(&cfg.key)?;
         let key = read::required_str(Some(&key), "key", NAME)?.into_owned();
         let mut metadata = None;
@@ -209,7 +212,7 @@ impl Function for StorageHeadFunction {
         })
         .await?;
         if let Some(metadata) = metadata {
-            ctx.emit_default(OwnedDataValue::from(&metadata))?;
+            ctx.set(&output, OwnedDataValue::from(&metadata))?;
         }
         Ok(Outcome::Ok)
     }
@@ -531,6 +534,72 @@ mod tests {
             let (v3, v4) = both(input.clone(), true, None, storage_config).await;
             assert_eq!(v4, v3, "{input}");
             assert!(v4.is_err(), "{input}");
+        }
+    }
+
+    /// A computed `output` is resolved before the key is read and before the
+    /// HEAD, as 1.12's prologue resolved it: one that names no path is 1.12's
+    /// `VALIDATION_ERROR` with its text, and the store sees no request; one
+    /// that names a path is written there after one request.
+    #[tokio::test]
+    async fn a_computed_output_is_resolved_before_the_head_as_1_12_did() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let data = json!({"n": 3, "at": "data.meta"});
+        for (output, asked) in [
+            (json!({"var": "data.n"}), 0),
+            (json!({"var": "data.missing.deeper"}), 1),
+            (json!({"var": "data.at"}), 1),
+        ] {
+            let input = json!({"connector": "media", "key": "k", "output": output});
+            let mut sides = Vec::new();
+            for v4 in [false, true] {
+                let requests = Arc::new(AtomicUsize::new(0));
+                let counter = Arc::clone(&requests);
+                let app = axum::Router::new().fallback(move || {
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        axum::http::StatusCode::NOT_FOUND
+                    }
+                });
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind");
+                let addr = listener.local_addr().expect("addr");
+                tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+                let registry = std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                    Default::default(),
+                ));
+                registry
+                    .insert_for_test("media", ConnectorConfig::Storage(storage_config(addr)))
+                    .await;
+                let client = reqwest::Client::new();
+                let seen = if v4 {
+                    twin::v4(
+                        NAME,
+                        StorageHeadFunction { registry, client },
+                        input.clone(),
+                        data.clone(),
+                    )
+                    .await
+                } else {
+                    let handler = Box::new(super::super::connector_handler::Connector(
+                        StorageHeadHandler { registry, client },
+                    ));
+                    twin::v3(NAME, handler, input.clone(), data.clone()).await
+                };
+                sides.push((seen, requests.load(Ordering::SeqCst)));
+            }
+            assert_eq!(sides[1], sides[0], "{output}");
+            assert_eq!(sides[1].1, asked, "{output}");
+            if asked == 0 {
+                let failure = sides[1].0.as_ref().expect_err("refused");
+                assert_eq!(failure.code, "VALIDATION_ERROR");
+                assert_eq!(
+                    failure.message,
+                    "Validation error: 'output' must resolve to a non-empty dotted path, got number"
+                );
+            }
         }
     }
 }

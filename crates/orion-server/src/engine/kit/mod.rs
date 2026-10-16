@@ -9,6 +9,8 @@
 //!   on dataflow-rs 4's error, and [`require_op`] and
 //!   [`require_method_allowed`], the connector's operation gates.
 //! - [`spec`]: a function's `schema.rs` row as its `FunctionSpec`.
+//! - [`output_path`]: where a call's result goes, resolved before its work,
+//!   as 1.12's connector shell resolved it.
 //! - [`ProfileLayer`]: the per-request profile, as one registry layer
 //!   around every host call.
 //! - [`OfflineDeps`]: inert dependencies, so every function can be
@@ -20,14 +22,17 @@
 pub mod fields;
 pub mod read;
 
-pub use fields::{DetachedExpr, KeyMaterial, KeyMaterialList, key_material, key_material_list};
+pub use fields::{
+    DetachedExpr, KeyMaterial, KeyMaterialList, Members, key_material, key_material_list,
+};
 
 use std::borrow::Cow;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
+use dataflow_rs::Path;
 use dataflow_rs::datavalue::OwnedDataValue;
-use dataflow_rs::expr::ExprEngine;
+use dataflow_rs::expr::{ExprEngine, Output};
 use dataflow_rs::function::{BoxFuture, CallLayer, FunctionSpec, Next, Reference};
 use dataflow_rs::{Ctx, Outcome};
 
@@ -40,6 +45,76 @@ use crate::engine::{HandlerDeps, ResolvedSecrets};
 /// Borrowed for the run, not for `ctx`, so a call holds it while it writes.
 pub fn channel<'r>(ctx: &Ctx<'r>) -> &'r str {
     ctx.info().channel.unwrap_or("unknown")
+}
+
+/// The `data` root: the default `output` of the connector functions, and
+/// what `publish_kafka` sends when no `value` is set.
+pub static DATA: LazyLock<Path> = LazyLock::new(|| "data".parse().expect("`data` is a path"));
+
+/// Where a call's result goes, resolved before the call does any work, as
+/// 1.12's connector shell resolved `output` in its prologue (I183): an
+/// output that names no path fails before anything is sent or signed, and
+/// the call writes to the path given here with `Ctx::set` once its work is
+/// done.
+///
+/// A literal output is its compiled path, read at no cost. A computed one
+/// is evaluated now, against the context as the call sees it, and read as
+/// 1.12's `resolve_output_path` read it: a dotted path is the path; `null`
+/// is `on_null` (the output's default, which 1.12 applied), or refused when
+/// there is none to apply; anything else is refused with 1.12's text. A
+/// string 1.12 took as a dotted path but that names no context root
+/// (`"result"`) is refused here too: 1.12 wrote it to a context key no
+/// response shows, and dataflow-rs 4 has no such key to write.
+///
+/// # Errors
+///
+/// A [`ErrorClass::CallerInput`](crate::engine::ErrorClass::CallerInput)
+/// error for a result that is not a path, `VALIDATION_ERROR` as 1.12's was;
+/// the evaluation's own error when the expression fails, `LOGIC_ERROR` as
+/// 1.12's was.
+pub fn output_path<'o>(
+    ctx: &Ctx<'_>,
+    out: &'o Output,
+    on_null: Option<&'o Path>,
+) -> dataflow_rs::Result<Cow<'o, Path>> {
+    if let Some(path) = out.constant() {
+        return Ok(Cow::Borrowed(path));
+    }
+    if let Ok(path) = ctx.eval(out.path()) {
+        return Ok(path);
+    }
+    // Not a path, or not evaluated at all: the value, as 1.12 judged it. It
+    // compiled when the output did, on the same engine, so this compiles too;
+    // and only a call that is about to fail pays for it.
+    let value = ctx.exprs().compile::<OwnedDataValue>(out.path().raw())?;
+    let value = ctx.eval(&value)?;
+    let not_a_path = |got: &str| -> dataflow_rs::Error {
+        crate::engine::HandlerError::new(
+            crate::engine::ErrorClass::CallerInput,
+            format!("'output' must resolve to a non-empty dotted path, got {got}"),
+        )
+        .into()
+    };
+    match &*value {
+        OwnedDataValue::Null => on_null.map(Cow::Borrowed).ok_or_else(|| not_a_path("null")),
+        OwnedDataValue::String(dotted) if !dotted.is_empty() => {
+            dotted.parse::<Path>().map(Cow::Owned).map_err(|e| {
+                crate::engine::HandlerError::new(
+                    crate::engine::ErrorClass::CallerInput,
+                    format!(
+                        "'output' must resolve to a path in the context: {}",
+                        e.message()
+                    ),
+                )
+                .into()
+            })
+        }
+        other => Err(not_a_path(
+            crate::engine::functions::connector_helpers::json_type_name(&serde_json::Value::from(
+                other,
+            )),
+        )),
+    }
 }
 
 /// What `name`'s row in `schema.rs` says about the function, as its
