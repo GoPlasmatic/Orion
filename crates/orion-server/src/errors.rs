@@ -703,7 +703,7 @@ impl IntegrityKind {
 /// retryability, read from the same table, so the code a client sees does not
 /// depend on which engine ran the task. v4's `Error` has no `detail` field:
 /// the operator-only text rides as the error's [`source`](std::error::Error::source),
-/// a [`ServiceDetail`], which its JSON never carries.
+/// a [`ServiceDetail`](service::ServiceDetail), which its JSON never carries.
 pub mod service {
     use super::{IntegrityKind, StatusCode, kind};
     use dataflow_rs::Error;

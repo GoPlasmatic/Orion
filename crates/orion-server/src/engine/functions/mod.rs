@@ -56,24 +56,6 @@ pub fn extract_channel(message: &Message) -> &str {
         .unwrap_or("unknown")
 }
 
-/// The retry loop `http_call` runs, re-exported from dataflow-rs.
-///
-/// This was Orion's own until dataflow-rs 3.7, which absorbed it: same three
-/// policy fields, same exponential backoff under a 60s per-sleep ceiling, same
-/// whole-loop deadline with a backoff that would cross it skipped rather than
-/// slept, and the same `tokio::time::Instant` so a paused test clock stays
-/// coherent with the sleeps. The crate has always classified errors by
-/// [`DataflowError::retryable`]; it now ships the loop that acts on it, and
-/// upstream is where that pair belongs — the classification and the mechanism
-/// reading it are one decision.
-///
-/// [`retry_with_attempts`] is the same loop reporting how many attempts it
-/// made, which is the only way a caller can say "this succeeded, but not
-/// first time".
-///
-/// [`DataflowError::retryable`]: dataflow_rs_v3::DataflowError::retryable
-pub use dataflow_rs_v3::{RetryPolicy, retry_with_attempts, retry_with_policy};
-
 /// Test-only shared harness: run `tasks` through a real engine with `fns`
 /// registered, seed `data` (unless null) into the message context, and return
 /// the message's final `data` — or the first task error, formatted. The
@@ -167,9 +149,11 @@ mod tests {
     }
 
     /// F8: the loop must stop retrying once the deadline is spent, rather
-    /// than running attempts + backoff far past the caller's budget.
+    /// than running attempts + backoff far past the caller's budget. The loop
+    /// is `engine::retry`, vendored from dataflow-rs 3.15.
     #[tokio::test]
     async fn test_retry_policy_honours_deadline() {
+        use crate::engine::retry::{RetryPolicy, retry_with_policy};
         use std::sync::atomic::{AtomicUsize, Ordering};
         let attempts = Arc::new(AtomicUsize::new(0));
         let seen = attempts.clone();

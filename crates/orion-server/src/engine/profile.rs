@@ -16,11 +16,14 @@
 //! it creates a collector and wraps the engine call in
 //! `ORION_PROFILE.scope(...)`. Each Orion custom handler then calls
 //! [`record`] to log the wall-clock cost of its body — `record` is a
-//! single `try_with` no-op when no collector is in scope.
+//! single `try_with` no-op when no collector is in scope. On dataflow-rs 4
+//! the sample is taken once, around every host call, by the registry layer
+//! `engine::kit::ProfileLayer`, through `sample`.
 //!
 //! `channel_call` recursion is depth-tracked so nested handler samples
 //! don't double-count toward `handlers_total_ms`.
 
+use std::borrow::Cow;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -44,7 +47,9 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// One handler invocation sample.
 #[derive(Debug, Clone)]
 pub struct HandlerSample {
-    pub function: &'static str,
+    /// The function's name: a dataflow-rs 3 handler's own constant, or the
+    /// name a dataflow-rs 4 call was made by.
+    pub function: Cow<'static, str>,
     pub connector: Option<String>,
     /// When the handler body started, so nesting can be resolved by interval
     /// containment rather than guessed (F50).
@@ -176,7 +181,7 @@ impl ProfileCollector {
                     0.0
                 };
                 let mut obj = json!({
-                    "function": s.function,
+                    "function": s.function.as_ref(),
                     "duration_ms": round2(dur_ms),
                     "pct_of_workflow": round2(pct),
                 });
@@ -189,7 +194,7 @@ impl ProfileCollector {
                     .map(|x| {
                         let dms = x.duration.as_secs_f64() * 1000.0;
                         let mut o = json!({
-                            "function": x.function,
+                            "function": x.function.as_ref(),
                             "duration_ms": round2(dms),
                             "depth": x.depth,
                         });
@@ -207,10 +212,10 @@ impl ProfileCollector {
             .collect();
 
         // by_function aggregation (depth-0 only).
-        let mut by_function: std::collections::BTreeMap<&'static str, (u32, f64)> =
+        let mut by_function: std::collections::BTreeMap<&str, (u32, f64)> =
             std::collections::BTreeMap::new();
         for s in samples.iter().filter(|s| s.depth == 0) {
-            let entry = by_function.entry(s.function).or_insert((0, 0.0));
+            let entry = by_function.entry(s.function.as_ref()).or_insert((0, 0.0));
             entry.0 += 1;
             entry.1 += s.duration.as_secs_f64() * 1000.0;
         }
@@ -333,17 +338,35 @@ where
         Ok(c) => c,
         Err(_) => return fut.await,
     };
+    sample(
+        &collector,
+        Cow::Borrowed(function),
+        connector.map(str::to_owned),
+        fut,
+    )
+    .await
+}
 
+/// Time `fut` into `collector` as one sample of `function`, nested at the
+/// collector's current depth: [`record`]'s body, once a collector is in hand.
+pub(crate) async fn sample<F, T>(
+    collector: &ProfileCollector,
+    function: Cow<'static, str>,
+    connector: Option<String>,
+    fut: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
     let depth = collector.depth.fetch_add(1, Ordering::Relaxed);
     let start = Instant::now();
     let result = fut.await;
     let elapsed = start.elapsed();
     collector.depth.fetch_sub(1, Ordering::Relaxed);
 
-    let connector_owned = connector.map(str::to_owned);
     lock(&collector.samples).push(HandlerSample {
         function,
-        connector: connector_owned,
+        connector,
         started: start,
         duration: elapsed,
         depth,

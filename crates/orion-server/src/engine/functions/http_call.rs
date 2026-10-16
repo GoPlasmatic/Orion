@@ -13,6 +13,7 @@ use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::Scope;
 use crate::connector::ConnectorRegistry;
 use crate::engine::HandlerError;
+use crate::engine::retry::{RetryPolicy, retry_with_attempts};
 
 /// The half of an `http_call` task read before the connector is resolved.
 ///
@@ -120,7 +121,7 @@ impl ConnectorHandler for HttpCallHandler {
         } else {
             0
         };
-        let policy = super::RetryPolicy {
+        let policy = RetryPolicy {
             max_retries,
             retry_delay_ms: retry_config.retry_delay_ms,
             // F47: the ceiling is the sum of the attempts' own budgets —
@@ -153,14 +154,14 @@ impl ConnectorHandler for HttpCallHandler {
         // F6: the breaker is applied by the handler shell, the same one every
         // other egress path uses. This branch used to carry its own copy — the
         // only one in the codebase. `retry_with_attempts` rather than
-        // `retry_with_policy`: the loop moved upstream in dataflow-rs 3.7 and
-        // logs its retries through the `log` facade, which Orion does not
-        // bridge into `tracing`. Taking the count back means one warning naming
-        // how many attempts a call actually cost, instead of the per-attempt
-        // warnings that used to come out of Orion's own copy of the loop — and
-        // it says the same thing about a call that eventually *succeeded*,
-        // which the old warnings did too but nothing summarised.
-        let (result, attempts) = super::retry_with_attempts(policy, "HTTP call", || {
+        // `retry_with_policy`: the loop (dataflow-rs 3.15's, vendored as
+        // `engine::retry`) logs each retry at `debug` only. Taking the count
+        // back means one warning naming how many attempts a call actually
+        // cost, instead of the per-attempt warnings that used to come out of
+        // Orion's own copy of the loop — and it says the same thing about a
+        // call that eventually *succeeded*, which the old warnings did too but
+        // nothing summarised.
+        let (result, attempts) = retry_with_attempts(policy, "HTTP call", || {
             http_common::execute_request(
                 &self.client,
                 http_config,

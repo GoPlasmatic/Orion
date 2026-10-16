@@ -7,6 +7,8 @@
 //!   connector metrics — around a connector function's work.
 //! - [`resolve_connector`] and [`require_connector`]: the connector lookups,
 //!   on dataflow-rs 4's error.
+//! - [`ProfileLayer`]: the per-request profile, as one registry layer
+//!   around every host call.
 //! - [`OfflineDeps`]: inert dependencies, so every function can be
 //!   registered with no `AppState`.
 //!
@@ -18,10 +20,13 @@ pub mod read;
 
 pub use fields::{DetachedExpr, KeyMaterial, KeyMaterialList, key_material, key_material_list};
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::sync::Arc;
 
+use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::ExprEngine;
+use dataflow_rs::function::{BoxFuture, CallLayer, Next};
 use dataflow_rs::{Ctx, Outcome};
 
 use crate::connector::{ConnectorConfig, ConnectorRegistry, ConnectorTarget};
@@ -44,8 +49,8 @@ pub fn channel<'c>(ctx: &'c Ctx<'_>) -> &'c str {
 /// unconditional, since observability is not resilience configuration.
 ///
 /// `name` is the function's, for the breaker's log line. The profile sample
-/// is not taken here: the profile is a registry layer around every host
-/// call, this one included (I189).
+/// is not taken here: [`ProfileLayer`] wraps every host call, this one
+/// included.
 ///
 /// # Errors
 ///
@@ -104,6 +109,52 @@ where
     crate::metrics::record_connector_request(connector, channel, status);
     crate::metrics::record_connector_duration(connector, channel, start.elapsed().as_secs_f64());
     result
+}
+
+/// The per-request profile as one registry [`CallLayer`] (I189): while a
+/// [`ProfileCollector`](crate::engine::profile::ProfileCollector) is in scope,
+/// each host call is one sample, nested at the collector's depth, named by
+/// the function it was called by and attributed to its input's `connector`,
+/// or for `channel_call` the `channel` it reaches. With no collector in scope
+/// the call is passed on untouched: no input is read and nothing is boxed
+/// beyond the chain's own future, so an unprofiled call pays one task-local
+/// read.
+///
+/// One layer for every host function, so the functions outside the
+/// connector shell are profiled too, where 1.12 sampled only the connector
+/// handlers and `channel_call`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProfileLayer;
+
+impl CallLayer for ProfileLayer {
+    fn call<'a>(
+        &'a self,
+        ctx: &'a mut Ctx<'_>,
+        next: Next<'a>,
+    ) -> BoxFuture<'a, dataflow_rs::Result<Outcome>> {
+        let Ok(collector) = crate::engine::profile::ORION_PROFILE.try_with(Arc::clone) else {
+            return next.run(ctx);
+        };
+        Box::pin(async move {
+            let function = Cow::Owned(ctx.info().function.to_owned());
+            let target = profile_target(ctx);
+            crate::engine::profile::sample(&collector, function, target, next.run(ctx)).await
+        })
+    }
+}
+
+/// What a sample is attributed to: the input's `connector`, else the
+/// `channel` a `channel_call` reaches (the label 1.12 gave it). Read from
+/// [`Ctx::input`], which evaluates no secret-reading field, and only while
+/// profiling.
+fn profile_target(ctx: &Ctx<'_>) -> Option<String> {
+    let input = ctx.input().ok()?;
+    ["connector", "channel"].iter().find_map(|key| {
+        input
+            .get(*key)
+            .and_then(OwnedDataValue::as_str)
+            .map(str::to_owned)
+    })
 }
 
 /// The connector named `name`, `connector_helpers::resolve_connector` on
@@ -527,6 +578,115 @@ mod tests {
             .expect_err("not a database");
         assert_eq!(facts_v4(&kit), facts_v3(v3));
         assert!(require_connector::<crate::connector::kind::Es>(&es, "search").is_ok());
+    }
+
+    /// A probe with the fields a sample is attributed by.
+    #[derive(Debug, dataflow_rs::function::FunctionConfig)]
+    struct Target {
+        connector: Option<String>,
+        channel: Option<dataflow_rs::Expr<String>>,
+    }
+
+    /// Answers `Ok`, after a nested sample of its own when asked.
+    struct Probe {
+        nested: bool,
+    }
+
+    impl Function for Probe {
+        type Config = Target;
+
+        async fn call(&self, _ctx: &mut Ctx<'_>, _cfg: &Target) -> dataflow_rs::Result<Outcome> {
+            if self.nested {
+                crate::engine::profile::record("db_read", Some("inner-db"), async {}).await;
+            }
+            Ok(Outcome::Ok)
+        }
+    }
+
+    /// One call of `probe` under the layer, as `name`, with a collector in
+    /// scope when `profiled`; the collector's rendered profile.
+    async fn profiled(probe: Probe, name: &str, input: Value, profiled: bool) -> Value {
+        let collector = crate::engine::profile::ProfileCollector::new();
+        let call = testing::call(probe, input).name(name).layer(ProfileLayer);
+        let called = if profiled {
+            crate::engine::profile::ORION_PROFILE
+                .scope(Arc::clone(&collector), call.into_future())
+                .await
+        } else {
+            call.await
+        };
+        assert!(called.issues.is_empty(), "{:?}", called.issues);
+        assert_eq!(called.outcome.expect("the probe answers"), Outcome::Ok);
+        collector.to_json()
+    }
+
+    #[tokio::test]
+    async fn profile_layer_records_a_sample_per_call_with_a_collector_in_scope() {
+        let profile = profiled(
+            Probe { nested: false },
+            "db_read",
+            json!({"connector": "db1"}),
+            true,
+        )
+        .await;
+        let handlers = profile["handlers"].as_array().expect("handlers");
+        assert_eq!(handlers.len(), 1, "{profile}");
+        assert_eq!(handlers[0]["function"], "db_read", "named by ctx.info()");
+        assert_eq!(handlers[0]["connector"], "db1", "attributed by ctx.input()");
+        assert_eq!(profile["by_function"]["db_read"]["count"], 1);
+        assert_eq!(profile["by_connector"]["db1"]["count"], 1);
+
+        // `channel_call`'s label is the channel it reaches, computed or not.
+        let profile = profiled(
+            Probe { nested: false },
+            "channel_call",
+            json!({"channel": {"cat": ["downstream", "-ch"]}}),
+            true,
+        )
+        .await;
+        assert_eq!(
+            profile["by_connector"]["downstream-ch"]["count"], 1,
+            "{profile}"
+        );
+
+        // A function with neither field is profiled too, unattributed.
+        let profile = profiled(Probe { nested: false }, "crypto", json!({}), true).await;
+        assert_eq!(profile["handlers"][0]["function"], "crypto");
+        assert!(profile["handlers"][0].get("connector").is_none());
+    }
+
+    /// A sample taken inside the call nests under the layer's, as a
+    /// `channel_call`'s child calls nest under it.
+    #[tokio::test]
+    async fn a_sample_inside_the_call_nests_under_the_layers() {
+        let profile = profiled(
+            Probe { nested: true },
+            "channel_call",
+            json!({"channel": "orders"}),
+            true,
+        )
+        .await;
+        let handlers = profile["handlers"].as_array().expect("handlers");
+        assert_eq!(
+            handlers.len(),
+            1,
+            "only the outer call is top-level: {profile}"
+        );
+        assert_eq!(handlers[0]["function"], "channel_call");
+        assert_eq!(handlers[0]["nested"][0]["function"], "db_read");
+        assert_eq!(handlers[0]["nested"][0]["depth"], 1);
+    }
+
+    #[tokio::test]
+    async fn profile_layer_records_nothing_without_a_collector() {
+        let profile = profiled(
+            Probe { nested: false },
+            "db_read",
+            json!({"connector": "db1"}),
+            false,
+        )
+        .await;
+        assert_eq!(profile["handlers"], json!([]), "{profile}");
     }
 
     /// Every function 1.12 registers can be built over the inert

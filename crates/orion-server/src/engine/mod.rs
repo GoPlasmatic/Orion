@@ -135,6 +135,7 @@ pub mod observer;
 pub mod operators;
 pub mod profile;
 pub mod refs;
+pub mod retry;
 pub mod runner;
 pub mod secrets;
 pub mod steps;
