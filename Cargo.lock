@@ -1474,7 +1474,7 @@ dependencies = [
 [[package]]
 name = "dataflow-rs"
 version = "4.0.0-dev"
-source = "git+file:///Users/codetiger/Development/Plasmatic/dataflow-rs?rev=2620427ddcfa4f1c72da8e94df749475a22e0b6f#2620427ddcfa4f1c72da8e94df749475a22e0b6f"
+source = "git+file:///Users/codetiger/Development/Plasmatic/dataflow-rs?rev=daaf8c0c446a24b2f758d8f1a5cae765c188c5fc#daaf8c0c446a24b2f758d8f1a5cae765c188c5fc"
 dependencies = [
  "bumpalo",
  "chrono",
@@ -1495,7 +1495,7 @@ dependencies = [
 [[package]]
 name = "dataflow-rs-derive"
 version = "4.0.0-dev"
-source = "git+file:///Users/codetiger/Development/Plasmatic/dataflow-rs?rev=2620427ddcfa4f1c72da8e94df749475a22e0b6f#2620427ddcfa4f1c72da8e94df749475a22e0b6f"
+source = "git+file:///Users/codetiger/Development/Plasmatic/dataflow-rs?rev=daaf8c0c446a24b2f758d8f1a5cae765c188c5fc#daaf8c0c446a24b2f758d8f1a5cae765c188c5fc"
 dependencies = [
  "proc-macro2",
  "quote",

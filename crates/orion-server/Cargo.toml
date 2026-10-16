@@ -93,7 +93,7 @@ harness = true
 # dataflow-rs 4, the engine, at a pinned commit of its unpublished `main`
 # (dataflow-rs phase 7c). `version` is exact so `cargo deny` reads no wildcard;
 # phase 8 replaces the git source with the published 4.0.0.
-dataflow-rs = { git = "file:///Users/codetiger/Development/Plasmatic/dataflow-rs", rev = "2620427ddcfa4f1c72da8e94df749475a22e0b6f", version = "=4.0.0-dev", features = ["all-operators", "tensor", "budget"] }
+dataflow-rs = { git = "file:///Users/codetiger/Development/Plasmatic/dataflow-rs", rev = "daaf8c0c446a24b2f758d8f1a5cae765c188c5fc", version = "=4.0.0-dev", features = ["all-operators", "tensor", "budget"] }
 # dataflow-rs 3.15, beside v4 until the port deletes it (Task O14). The derive
 # emits `::dataflow_rs::` paths, so v3 is the one renamed.
 dataflow-rs-v3 = { package = "dataflow-rs", version = "=3.15.0", features = ["all-operators", "tensor", "budget"] }
