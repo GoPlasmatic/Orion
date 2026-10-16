@@ -311,7 +311,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// One call as its caller sees it: whether the work ran, and the error's
-    /// code, retryability and caller-facing message.
+    /// code, retryability and the text its record carries (a dataflow-rs 3
+    /// error's `Display`, a dataflow-rs 4 service error's message).
     type Seen = (bool, Option<(String, bool, String)>);
 
     /// What each call of a plan does: succeed, or fail with a class.
@@ -366,7 +367,7 @@ mod tests {
             .await;
             let error = result.err().map(|e| {
                 let code = dataflow_rs_v3::ErrorInfo::new(None, None, e.clone()).code;
-                (code, e.retryable(), HandlerError::from(e).msg)
+                (code, e.retryable(), e.to_string())
             });
             seen.push((ran.load(Ordering::Relaxed), error));
         }
@@ -536,7 +537,8 @@ mod tests {
         );
     }
 
-    /// The code, retryability, message and detail of a v4 and a v3 error.
+    /// The code, retryability, recorded text and detail of a v4 and a v3
+    /// error.
     fn facts_v4(e: &dataflow_rs::Error) -> (String, bool, String, Option<String>) {
         (
             e.code().to_string(),
@@ -549,7 +551,7 @@ mod tests {
     fn facts_v3(e: dataflow_rs_v3::DataflowError) -> (String, bool, String, Option<String>) {
         let detail = e.detail().map(str::to_string);
         let code = dataflow_rs_v3::ErrorInfo::new(None, None, e.clone()).code;
-        (code, e.retryable(), HandlerError::from(e).msg, detail)
+        (code, e.retryable(), e.to_string(), detail)
     }
 
     #[tokio::test]

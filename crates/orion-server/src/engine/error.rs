@@ -30,9 +30,11 @@
 //! `HandlerError` converts into either engine's error. Into dataflow-rs 4 each
 //! class becomes a service error carrying the code the dataflow-rs 3 variant
 //! it maps to records (`VALIDATION_ERROR`, `IO_ERROR`, `FUNCTION_ERROR`,
-//! `TIMEOUT_ERROR`) with that variant's retryability, so a client sees the
-//! same code whichever engine ran the task. An error converted *from* either
-//! engine is carried whole and handed back as itself.
+//! `TIMEOUT_ERROR`), that variant's retryability, and a message opening with
+//! the label that variant's `Display` printed ("Validation error: …"), so a
+//! client sees the same code and the same recorded text whichever engine ran
+//! the task. An error converted *from* either engine is carried whole and
+//! handed back as itself.
 
 use dataflow_rs::run::ErrorKind;
 use dataflow_rs_v3::DataflowError;
@@ -76,6 +78,38 @@ pub enum ErrorClass {
 }
 
 impl ErrorClass {
+    /// The code the dataflow-rs 3 variant this class maps to records, and the
+    /// label its `Display` puts before the message: what a dataflow-rs 4
+    /// error built from the class carries, so its code is 1.12's and so is
+    /// its record, "Task t error: <label><message>".
+    fn v3_face(self) -> (&'static str, &'static str) {
+        match self {
+            ErrorClass::CallerInput | ErrorClass::Limit => {
+                ("VALIDATION_ERROR", "Validation error: ")
+            }
+            ErrorClass::Connector => ("IO_ERROR", "IO error: "),
+            ErrorClass::Backend => ("FUNCTION_ERROR", "Function execution error: "),
+            ErrorClass::Timeout => ("TIMEOUT_ERROR", "Timeout error: "),
+        }
+    }
+
+    /// The class a code [`Self::v3_face`] writes is read back as, with its
+    /// label. `Limit` shares `CallerInput`'s code and reads back as it, as a
+    /// dataflow-rs 3 `Validation` does.
+    fn of_code(code: &str) -> Option<(Self, &'static str)> {
+        [
+            Self::CallerInput,
+            Self::Connector,
+            Self::Backend,
+            Self::Timeout,
+        ]
+        .into_iter()
+        .find_map(|class| {
+            let (written, label) = class.v3_face();
+            (written == code).then_some((class, label))
+        })
+    }
+
     /// Whether the engine's retry loop should try this again.
     ///
     /// Stated here rather than inferred from the variant it maps to, so the
@@ -174,25 +208,14 @@ impl HandlerError {
     }
 
     /// The dataflow-rs 4 error this class maps to, built from `msg` (I184):
-    /// the code its dataflow-rs 3 variant records, and that variant's
-    /// retryability. `detail` rides as the source, which the error's JSON
-    /// never carries.
+    /// the code its dataflow-rs 3 variant records, that variant's
+    /// retryability (a connection failure and a timeout are retried), and
+    /// `msg` under the label that variant displayed. `detail` rides as the
+    /// source, which the error's JSON never carries.
     fn into_v4_from_class(self) -> dataflow_rs::Error {
-        let error = match self.class {
-            // 400, message preserved.
-            ErrorClass::CallerInput | ErrorClass::Limit => {
-                dataflow_rs::Error::service("VALIDATION_ERROR", self.msg)
-            }
-            // Retryable: could not reach the backend.
-            ErrorClass::Connector => {
-                dataflow_rs::Error::service("IO_ERROR", self.msg).with_retryable(true)
-            }
-            // Not retryable.
-            ErrorClass::Backend => dataflow_rs::Error::service("FUNCTION_ERROR", self.msg),
-            ErrorClass::Timeout => {
-                dataflow_rs::Error::service("TIMEOUT_ERROR", self.msg).with_retryable(true)
-            }
-        };
+        let (code, label) = self.class.v3_face();
+        let error = dataflow_rs::Error::service(code, format!("{label}{}", self.msg))
+            .with_retryable(self.class.is_retryable());
         match self.detail {
             Some(detail) => error.with_source(ServiceDetail(detail)),
             None => error,
@@ -246,19 +269,18 @@ impl From<HandlerError> for DataflowError {
 /// detail and retryability kept. `rest` is the `HandlerError` the error
 /// travelled in, for the kinds with no variant of their own.
 fn v4_into_v3(original: dataflow_rs::Error, rest: HandlerError) -> DataflowError {
-    let message = original.message().to_string();
+    let message = bare_message(&original).to_string();
     match original.kind() {
         ErrorKind::Budget => DataflowError::BudgetExceeded(message),
         ErrorKind::Eval => DataflowError::LogicEvaluation(message),
         ErrorKind::TimedOut => DataflowError::Timeout(message),
         ErrorKind::Parse => DataflowError::Deserialization(message),
         ErrorKind::FunctionNotFound => DataflowError::FunctionNotFound(message),
-        ErrorKind::Service { code } => match code.as_ref() {
-            "VALIDATION_ERROR" => DataflowError::Validation(message),
-            "IO_ERROR" => DataflowError::Io(message),
-            "TIMEOUT_ERROR" => DataflowError::Timeout(message),
-            "FUNCTION_ERROR" => DataflowError::function_execution(message, None),
-            kind => {
+        // The variant displays the label again, so it takes the bare message.
+        ErrorKind::Service { code } => match ErrorClass::of_code(code) {
+            Some((class, _)) => HandlerError::new(class, message).into_v3_from_class(),
+            None => {
+                let kind = code.as_ref();
                 let mut built =
                     DataflowError::service(kind, message).retryable(original.is_retryable());
                 if let Some(detail) = detail_of(&original) {
@@ -299,18 +321,31 @@ impl From<HandlerError> for dataflow_rs::Error {
 /// A dataflow-rs 3 error, for a v4 function that was handed one through a
 /// shared helper: a service error with the code dataflow-rs 3 records for it
 /// (its own classifier, through `ErrorInfo`), its retryability, its
-/// caller-facing message and, as the source, its detail.
+/// `Display` text as the message — what dataflow-rs 3 recorded after
+/// "Task t error: ", which a dataflow-rs 4 service error's record takes
+/// verbatim — and, as the source, its detail.
 fn v3_into_v4(original: DataflowError) -> dataflow_rs::Error {
     let retryable = original.retryable();
     let detail = original.detail().map(str::to_string);
     let code = dataflow_rs_v3::ErrorInfo::new(None, None, original.clone()).code;
-    // The payload, as `From<DataflowError>` reads it, never `Display`'s
-    // variant-prefixed text.
-    let message = HandlerError::from(original).msg;
+    let message = original.to_string();
     let error = dataflow_rs::Error::service(code, message).with_retryable(retryable);
     match detail {
         Some(detail) => error.with_source(ServiceDetail(detail)),
         None => error,
+    }
+}
+
+/// A dataflow-rs 4 error's message as a `HandlerError` holds it: bare, with
+/// the label of a class-table code taken off, so a rebuilt or prefixed
+/// error carries the label once.
+fn bare_message(e: &dataflow_rs::Error) -> &str {
+    let message = e.message();
+    match e.kind() {
+        ErrorKind::Service { code } => ErrorClass::of_code(code)
+            .and_then(|(_, label)| message.strip_prefix(label))
+            .unwrap_or(message),
+        _ => message,
     }
 }
 
@@ -321,7 +356,9 @@ fn v3_into_v4(original: DataflowError) -> dataflow_rs::Error {
 /// the four codes the class table writes come back as their classes, and
 /// any other code by the retryability it declares, as a dataflow-rs 3
 /// service error is. The original is kept, so the conversion back is the
-/// identity; a service error's detail is read from its source.
+/// identity; a service error's detail is read from its source. `msg` is the
+/// message without a class label, as it is the payload of a dataflow-rs 3
+/// variant.
 impl From<dataflow_rs::Error> for HandlerError {
     fn from(e: dataflow_rs::Error) -> Self {
         let class = match e.kind() {
@@ -330,15 +367,12 @@ impl From<dataflow_rs::Error> for HandlerError {
             // `BudgetExceeded` takes.
             ErrorKind::Budget => ErrorClass::Limit,
             ErrorKind::TimedOut => ErrorClass::Timeout,
-            ErrorKind::Service { code } => match code.as_ref() {
-                "VALIDATION_ERROR" => ErrorClass::CallerInput,
-                "IO_ERROR" => ErrorClass::Connector,
-                "TIMEOUT_ERROR" => ErrorClass::Timeout,
-                "FUNCTION_ERROR" => ErrorClass::Backend,
+            ErrorKind::Service { code } => match ErrorClass::of_code(code) {
+                Some((class, _)) => class,
                 // A service-classified failure declares its own
                 // retryability, so honour that rather than re-deriving it.
-                _ if e.is_retryable() => ErrorClass::Connector,
-                _ => ErrorClass::Backend,
+                None if e.is_retryable() => ErrorClass::Connector,
+                None => ErrorClass::Backend,
             },
             // An evaluation, a parse, a missing function, a config or
             // compile failure, a cancellation, and any kind added upstream
@@ -348,7 +382,7 @@ impl From<dataflow_rs::Error> for HandlerError {
         };
         Self {
             class,
-            msg: e.message().to_string(),
+            msg: bare_message(&e).to_string(),
             detail: detail_of(&e).map(str::to_string),
             original: Some(Original::V4(Box::new(e))),
         }
@@ -660,7 +694,8 @@ mod v4_tests {
             assert_eq!(v4.code(), v3_code(&v3), "{class:?}");
             assert_eq!(v4.is_retryable(), v3.retryable(), "{class:?}");
             assert_eq!(v4.is_retryable(), class.is_retryable(), "{class:?}");
-            assert_eq!(v4.message(), "boom", "{class:?}");
+            // The label v3's variant displays, then the message: 1.12's text.
+            assert_eq!(v4.message(), v3.to_string(), "{class:?}");
         }
     }
 
@@ -670,11 +705,43 @@ mod v4_tests {
         let e = dataflow_rs::Error::from(
             HandlerError::new(ErrorClass::Backend, "query failed").with_detail("table secrets"),
         );
+        let v3 = DataflowError::from(HandlerError::new(ErrorClass::Backend, "query failed"));
         assert_eq!(detail_of(&e), Some("table secrets"));
         assert_eq!(
             serde_json::to_value(&e).expect("serializes"),
-            json!({"code": "FUNCTION_ERROR", "message": "query failed", "retryable": false})
+            json!({"code": v3_code(&v3), "message": v3.to_string(), "retryable": false})
         );
+    }
+
+    /// The label is written once: reading a class-built error back strips
+    /// it, so `msg` is bare as a dataflow-rs 3 payload is, and a prefixed or
+    /// rebuilt error carries it once, where dataflow-rs 3's would.
+    #[test]
+    fn a_class_label_is_never_doubled() {
+        for class in [
+            ErrorClass::CallerInput,
+            ErrorClass::Limit,
+            ErrorClass::Connector,
+            ErrorClass::Backend,
+            ErrorClass::Timeout,
+        ] {
+            let built = dataflow_rs::Error::from(HandlerError::new(class, "bad"));
+            let back = HandlerError::from(built);
+            let v3_back = HandlerError::from(DataflowError::from(HandlerError::new(class, "bad")));
+            assert_eq!(back.msg, v3_back.msg, "{class:?}");
+
+            let again = dataflow_rs::Error::from(back.prefixed("crypto"));
+            let v3 = DataflowError::from(v3_back.prefixed("crypto"));
+            assert_eq!(again.message(), v3.to_string(), "{class:?}");
+            assert_eq!(again.code(), v3_code(&v3), "{class:?}");
+
+            let rebuilt = dataflow_rs::Error::from(HandlerError::from(again));
+            assert_eq!(
+                rebuilt.message(),
+                v3.to_string(),
+                "carried whole: {class:?}"
+            );
+        }
     }
 
     /// An error the engine handed a function goes back as itself: its own
@@ -753,8 +820,7 @@ mod v4_tests {
             let v3 = DataflowError::from(HandlerError::from(v3).prefixed("http_call"));
             assert_eq!(v4.code(), v3_code(&v3), "{v3:?}");
             assert_eq!(v4.is_retryable(), v3.retryable(), "{v3:?}");
-            let v3_message = HandlerError::from(v3).msg;
-            assert_eq!(v4.message(), v3_message);
+            assert_eq!(v4.message(), v3.to_string(), "{v3:?}");
         }
     }
 
@@ -794,7 +860,8 @@ mod v4_tests {
             assert_eq!(v4.code(), v3_code(&v3), "{v3:?}");
             assert_eq!(v4.is_retryable(), v3.retryable(), "{v3:?}");
             assert_eq!(detail_of(&v4), v3.detail(), "{v3:?}");
-            assert_eq!(v4.message(), HandlerError::from(v3.clone()).msg, "{v3:?}");
+            // Its `Display`: what dataflow-rs 3 recorded after "Task t error: ".
+            assert_eq!(v4.message(), v3.to_string(), "{v3:?}");
         }
     }
 
@@ -830,5 +897,132 @@ mod v4_tests {
             ))),
             DataflowError::Validation(ref m) if m == "bad"
         ));
+    }
+
+    /// How a probe fails: with a class, or with the engine error an
+    /// evaluation hands a function, optionally prefixed with its name.
+    #[derive(Clone, Copy, Debug)]
+    enum Failure {
+        Class(ErrorClass),
+        Eval,
+        Budget,
+    }
+
+    /// The failure as dataflow-rs 4 sees it.
+    fn failure_v4(failure: Failure, prefixed: bool) -> HandlerError {
+        let e = match failure {
+            Failure::Class(class) => HandlerError::new(class, "the backend said no"),
+            Failure::Eval => HandlerError::from(eval_error()),
+            Failure::Budget => HandlerError::from(budget_error()),
+        };
+        if prefixed { e.prefixed("probe") } else { e }
+    }
+
+    /// The same failure as dataflow-rs 3 saw it: the variant the engine's
+    /// evaluation gave, with the same text.
+    fn failure_v3(failure: Failure, prefixed: bool) -> HandlerError {
+        let e = match failure {
+            Failure::Class(class) => HandlerError::new(class, "the backend said no"),
+            Failure::Eval => HandlerError::from(DataflowError::LogicEvaluation(
+                eval_error().message().to_string(),
+            )),
+            Failure::Budget => HandlerError::from(DataflowError::BudgetExceeded(
+                budget_error().message().to_string(),
+            )),
+        };
+        if prefixed { e.prefixed("probe") } else { e }
+    }
+
+    /// A dataflow-rs 4 function failing as `failure_v4` says.
+    struct FailsV4(Failure, bool);
+
+    impl dataflow_rs::Function for FailsV4 {
+        type Config = ();
+
+        async fn call(
+            &self,
+            _ctx: &mut dataflow_rs::Ctx<'_>,
+            _cfg: &(),
+        ) -> dataflow_rs::Result<dataflow_rs::Outcome> {
+            Err(failure_v4(self.0, self.1).into())
+        }
+    }
+
+    /// A dataflow-rs 3 handler failing as `failure_v3` says.
+    struct FailsV3(Failure, bool);
+
+    #[async_trait::async_trait]
+    impl dataflow_rs_v3::engine::functions::AsyncFunctionHandler for FailsV3 {
+        type Input = serde_json::Value;
+
+        async fn execute(
+            &self,
+            _ctx: &mut dataflow_rs_v3::engine::task_context::TaskContext<'_>,
+            _input: &serde_json::Value,
+        ) -> dataflow_rs_v3::Result<dataflow_rs_v3::engine::task_outcome::TaskOutcome> {
+            Err(failure_v3(self.0, self.1).into())
+        }
+    }
+
+    /// The code and text of the record a failing task `t` writes, on a
+    /// dataflow-rs 4 engine: the record the engine composes itself.
+    async fn v4_record(probe: FailsV4) -> (String, String) {
+        let engine = dataflow_rs::Engine::builder()
+            .register("probe", probe)
+            .workflow_json(&json!({"id": "w", "tasks": [{
+                "id": "t",
+                "function": {"name": "probe", "input": {}},
+                "on_failure": "continue"
+            }]}))
+            .build()
+            .expect("the engine builds");
+        let mut message = dataflow_rs::Message::new(OwnedDataValue::Null);
+        engine.run(&mut message).await;
+        let record = message.errors().first().expect("the failure is recorded");
+        (record.code.clone(), record.message.clone())
+    }
+
+    /// The same, on a dataflow-rs 3 engine.
+    async fn v3_record(probe: FailsV3) -> (String, String) {
+        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
+            "id": "w", "name": "w", "condition": true,
+            "tasks": [{
+                "id": "t", "name": "t", "continue_on_error": true,
+                "function": {"name": "probe", "input": {}}
+            }]
+        }))
+        .expect("a workflow");
+        let engine = dataflow_rs_v3::Engine::builder()
+            .register("probe", probe)
+            .with_workflow(workflow)
+            .build()
+            .expect("the engine builds");
+        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
+        let _ = engine.process_message(&mut message).await;
+        let record = message.errors().first().expect("the failure is recorded");
+        (record.code.clone(), record.message.clone())
+    }
+
+    /// The record a failing task writes is 1.12's, code and text: each class,
+    /// bare and prefixed with the function's name, and the evaluation and
+    /// budget errors a function passes on whole, which keep their own text.
+    #[tokio::test]
+    async fn a_failing_tasks_record_is_what_1_12_recorded() {
+        let failures = [
+            Failure::Class(ErrorClass::CallerInput),
+            Failure::Class(ErrorClass::Limit),
+            Failure::Class(ErrorClass::Connector),
+            Failure::Class(ErrorClass::Backend),
+            Failure::Class(ErrorClass::Timeout),
+            Failure::Eval,
+            Failure::Budget,
+        ];
+        for failure in failures {
+            for prefixed in [false, true] {
+                let v4 = v4_record(FailsV4(failure, prefixed)).await;
+                let v3 = v3_record(FailsV3(failure, prefixed)).await;
+                assert_eq!(v4, v3, "{failure:?}, prefixed: {prefixed}");
+            }
+        }
     }
 }
