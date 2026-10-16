@@ -148,6 +148,12 @@ const ROOT_OUTPUT: &str = "`cache_read` with `keys` writes an array of values, a
     root takes only an object (break 21): set `output` to a path below it, such as \
     `data.values`";
 
+/// One key's value may be an object or not, so a literal root `output` is
+/// an Advisory: a miss or a non-object value fails the call (break 21).
+const ONE_AT_ROOT: &str = "`cache_read` writes one key's cached value at `output`, and a \
+    context root takes only an object (break 21): a miss (`null`) or a non-object value fails \
+    the call; set `output` to a path below it, such as `data.cached`";
+
 /// `cache_read`'s input on dataflow-rs 4, in its field table's order (I179).
 /// The connector is a literal, required at load (I183); `key` and `keys`
 /// are expressions, read by `kit::read`'s twins of `resolve_required_str`
@@ -198,13 +204,16 @@ impl Function for CacheReadFunction {
         kit::spec(NAME)
     }
 
-    /// I185: with `keys` set, an `output` that is a literal context root,
-    /// the default `data` included, is a Defect at `output`. One `key`'s
-    /// value may be an object, so a root is judged per call.
+    /// An `output` that is a literal context root, the default `data`
+    /// included: with `keys` set, I185's Defect at `output`, since the
+    /// array never fits; with one `key`, an Advisory there, since the value
+    /// may be an object, and a miss or anything else fails the call (break
+    /// 21). A computed output is judged per call.
     fn prepare(&self, cfg: &mut CacheReadConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
-        match cfg.keys {
-            Some(_) => kit::root_output_defect(&cfg.output, ROOT_OUTPUT),
-            None => Ok(()),
+        match (&cfg.key, &cfg.keys) {
+            (_, Some(_)) => kit::root_output_defect(&cfg.output, ROOT_OUTPUT),
+            (Some(_), None) => kit::root_output_advisory(&cfg.output, ONE_AT_ROOT),
+            (None, None) => Ok(()),
         }
     }
 
@@ -585,6 +594,69 @@ mod tests {
             } else {
                 assert!(defects.is_empty(), "{input}: {defects:?}");
                 assert_eq!(called.outcome.as_ref().ok(), Some(&Outcome::Ok), "{input}");
+            }
+        }
+    }
+
+    /// One `key` at a literal root `output`, the default `data` included, is
+    /// an Advisory at `output`: a miss or a non-object value fails the call
+    /// (break 21), and a cached object is written, so the function loads
+    /// and runs. None below a root, for a computed output, or with `keys`,
+    /// which the Defect covers.
+    #[tokio::test]
+    async fn one_key_at_a_root_output_is_an_advisory() {
+        for (input, advisory) in [
+            (json!({"connector": "c", "key": "a"}), true),
+            (
+                json!({"connector": "c", "key": "a", "output": "data"}),
+                true,
+            ),
+            (
+                json!({"connector": "c", "key": "a", "output": "temp_data"}),
+                true,
+            ),
+            (json!({"connector": "c", "key": "a", "output": null}), true),
+            (
+                json!({"connector": "c", "key": "a", "output": "data.cached"}),
+                false,
+            ),
+            (
+                json!({"connector": "c", "key": "a", "output": {"cat": ["data", ".cached"]}}),
+                false,
+            ),
+            (
+                json!({"connector": "c", "key": "a", "output": {"var": "data.missing"}}),
+                false,
+            ),
+            (
+                json!({"connector": "c", "keys": ["a"], "output": "data.values"}),
+                false,
+            ),
+            (json!({"connector": "c", "keys": ["a"]}), false),
+        ] {
+            let cache = twin::cache(json!({}), &[("a", r#"{"n":1}"#)]).await;
+            let called = testing::call(function(&cache), input.clone())
+                .exprs(kit::test_exprs())
+                .name(NAME)
+                .await;
+            let advisories: Vec<_> = called
+                .issues
+                .iter()
+                .filter(|i| i.severity == Severity::Advisory)
+                .map(|i| (i.path.to_string(), i.code, i.message.as_str()))
+                .collect();
+            if advisory {
+                assert_eq!(
+                    advisories,
+                    [("output".to_string(), IssueCode::InputParse, ONE_AT_ROOT)],
+                    "{input}"
+                );
+                assert_eq!(called.issues.len(), 1, "{input}: {:?}", called.issues);
+                assert_eq!(called.outcome.as_ref().ok(), Some(&Outcome::Ok), "{input}");
+                // The cached object, written at the root.
+                assert_eq!(called.writes.len(), 1, "{input}: {:?}", called.writes);
+            } else {
+                assert!(advisories.is_empty(), "{input}: {advisories:?}");
             }
         }
     }

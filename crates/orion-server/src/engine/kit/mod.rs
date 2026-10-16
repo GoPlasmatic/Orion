@@ -10,8 +10,9 @@
 //!   [`require_method_allowed`], the connector's operation gates.
 //! - [`spec`]: a function's `schema.rs` row as its `FunctionSpec`.
 //! - [`output_path`]: where a call's result goes, resolved before its work,
-//!   as 1.12's connector shell resolved it, and [`root_output_defect`],
-//!   I185's Defect for a result no context root takes.
+//!   as 1.12's connector shell resolved it; [`root_output_defect`], I185's
+//!   Defect for a result no context root takes; and [`root_output_advisory`]
+//!   for one a root may not take.
 //! - [`rendered`]: a document field rendered for this call, as JSON.
 //! - [`ProfileLayer`]: the per-request profile, as one registry layer
 //!   around every host call.
@@ -132,12 +133,31 @@ pub fn output_path<'o>(
 /// The one Defect, `INPUT_PARSE` at `output`, when the output is a literal
 /// root.
 pub fn root_output_defect(out: &Output, message: &str) -> Result<(), Vec<Issue>> {
+    root_output_issue(out, message, Severity::Defect)
+}
+
+/// [`root_output_defect`]'s Advisory, for a result that may be an object
+/// and may not (one key's cached value): an `output` that is a literal
+/// context root, the default `data` included, fails each call whose result
+/// is not an object (break 21), where 1.12 replaced the root. The call is
+/// not refused, since an object is written fine, so it never quarantines.
+///
+/// # Errors
+///
+/// The one Advisory, `INPUT_PARSE` at `output`, when the output is a
+/// literal root.
+pub fn root_output_advisory(out: &Output, message: &str) -> Result<(), Vec<Issue>> {
+    root_output_issue(out, message, Severity::Advisory)
+}
+
+/// One issue of `severity` at `output` when the output is a literal root.
+fn root_output_issue(out: &Output, message: &str, severity: Severity) -> Result<(), Vec<Issue>> {
     match out.constant() {
         Some(path) if path.is_root() => {
             let mut at = AuthoredPath::root();
             at.push("output");
             Err(vec![
-                Issue::new(IssueCode::InputParse, at, message).with_severity(Severity::Defect),
+                Issue::new(IssueCode::InputParse, at, message).with_severity(severity),
             ])
         }
         _ => Ok(()),
