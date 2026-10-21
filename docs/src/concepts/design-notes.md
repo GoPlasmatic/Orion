@@ -99,11 +99,11 @@ A **generation** is those two halves together, built from one read of the databa
 
 The sequence is:
 
-1. **Build off to the side.** The reload reads every active channel and workflow from the database and constructs both halves outside any lock. If the engine cannot be built, the reload aborts with nothing published and the running generation is untouched. The failure mode is "the old configuration keeps serving", never "nothing serves", and never a node left half-updated.
+1. **Build off to the side.** The reload captures the active channels, workflows, plugins and models in one repeatable database snapshot, releases that read transaction, and constructs the next generation away from request readers. A node-local mutex serializes reloads and connector refreshes. If the engine cannot be built, the reload aborts with nothing published and the running generation is untouched. The failure mode is "the old configuration keeps serving", never "nothing serves", and never a node left half-updated.
 2. **Publish once.** One store makes both halves visible together. A channel that fails to load is quarantined, refused at every ingress and reported through `GET /health`, and the reload proceeds for every other channel. The alternative, aborting the whole reload for one broken `config_json`, would make every activate, archive and delete hostage to the estate's worst row.
 3. **Then tend the consumer.** After the store, the Kafka consumer is restarted only if the reload changed the set of subscribed topics. Otherwise it is paused and resumed around the swap. In cluster mode, epoch-driven reloads add per-node jitter to a full restart, so the replicas do not all leave and rejoin the consumer group at the same instant.
 
-A cluster resync is triggered when another node's mutation advances the shared config epoch. It is this same reload plus a connector-registry refresh and an eviction of all cached connector pools. A remote node cannot know *which* connector changed, so every pool rebuilds lazily on next use.
+Published entity changes commit their configuration epoch with the entity and audit rows. Every node, including a single node, watches for unapplied epochs and retries failed reloads. Connector-scoped or unknown advances also refresh the connector registry and evict cached connector pools; definition-only advances preserve those pools. A local connector change invalidates only its affected pool names and rebuilds dependent channel guards.
 
 Stated normatively in: [The Entity Lifecycle](./lifecycle.md#what-moves-the-engine).
 

@@ -120,9 +120,9 @@ pub(crate) async fn run_test_task(
 pub(crate) mod twin {
     use std::sync::Arc;
 
+    use dataflow_rs::ErrorKind;
     use dataflow_rs::datavalue::OwnedDataValue;
     use dataflow_rs::function::testing;
-    use dataflow_rs::run::ErrorKind;
     use serde_json::{Value, json};
 
     use crate::connector::{ConnectorConfig, ConnectorRegistry};
@@ -367,9 +367,7 @@ pub(crate) mod twin {
     pub(crate) fn failure(e: &dataflow_rs::Error) -> Failure {
         let label = match e.kind() {
             ErrorKind::Eval => "Logic evaluation error: ",
-            ErrorKind::Parse => "Deserialization error: ",
             ErrorKind::TimedOut => "Timeout error: ",
-            ErrorKind::FunctionNotFound => "Function not found: ",
             _ => "",
         };
         Failure {

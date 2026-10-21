@@ -267,6 +267,28 @@ impl DbPool {
             DbPool::Mysql(p) => Ok(DbTransaction::Mysql(p.begin().await?)),
         }
     }
+
+    /// Pin one read snapshot across multiple definition tables. MySQL's
+    /// isolation is set for this transaction on its acquired connection,
+    /// rather than assuming the server's default is repeatable read.
+    pub async fn begin_snapshot_tx(&self) -> Result<DbTransaction, sqlx::Error> {
+        match self {
+            Self::Sqlite(pool) => Ok(DbTransaction::Sqlite(pool.begin().await?)),
+            Self::Postgres(pool) => Ok(DbTransaction::Postgres(
+                pool.begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                    .await?,
+            )),
+            Self::Mysql(pool) => {
+                let mut conn = pool.acquire().await?;
+                sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(DbTransaction::Mysql(
+                    sqlx::Transaction::begin(conn, None).await?,
+                ))
+            }
+        }
+    }
 }
 
 // ============================================================

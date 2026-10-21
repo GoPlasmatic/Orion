@@ -2,130 +2,42 @@
 //! operators rebind `var` for their later arguments, and where in a task's
 //! input the engine evaluates JSONLogic.
 //!
-//! Both tables are closed and pinned by tests — a new operator or a new
-//! logic-bearing field fails a test until someone classifies it. That is
-//! the discipline that lets a rule say "this read is certainly of the
-//! context" rather than "probably".
+//! Operator semantics come from dataflow-rs's live catalogue. Logic-bearing
+//! fields come from Orion's function registry and the built-ins below.
 
 use serde_json::Value;
 
 use crate::engine::FunctionRegistry;
 
-/// Operators whose arguments after the first are evaluated **per element**
-/// (or per error, for `try`), with `var` rebound to that element. A read
-/// inside one of those arguments is not a read of the message context, so
-/// every rule that reasons about context paths treats it as unknown.
-///
-/// `switch`/`match` are here defensively: their pattern arguments are
-/// evaluated against the matched value in some forms, and "unknown" is the
-/// safe classification.
-pub const SCOPING: &[&str] = &[
-    "map", "filter", "reduce", "all", "some", "none", "group_by", "distinct", "sort", "try",
-    "switch", "match",
-];
+/// The live operator metadata, including aliases and Orion's registrations.
+/// Kept once for the analysis; the engine supplies scope and effect semantics.
+fn catalogue() -> &'static std::collections::BTreeMap<String, dataflow_rs::expr::Operator> {
+    static OPERATORS: std::sync::OnceLock<
+        std::collections::BTreeMap<String, dataflow_rs::expr::Operator>,
+    > = std::sync::OnceLock::new();
+    OPERATORS.get_or_init(|| {
+        crate::engine::operators::orion_exprs(&crate::engine::ResolvedSecrets::empty(), 0)
+            .expect("Orion's operator registrations are valid")
+            .operators()
+            .iter()
+            .cloned()
+            .map(|op| (op.name.to_string(), op))
+            .collect()
+    })
+}
 
-/// Operators whose every argument is evaluated in the enclosing scope.
-/// Together with [`SCOPING`] this must cover the whole vocabulary
-/// (`analysis::tests::every_operator_is_classified`).
-pub const NON_SCOPING: &[&str] = &[
-    "var",
-    "val",
-    "==",
-    "!=",
-    "===",
-    "!==",
-    ">",
-    ">=",
-    "<",
-    "<=",
-    "and",
-    "or",
-    "!",
-    "!!",
-    "if",
-    "?:",
-    "+",
-    "-",
-    "*",
-    "/",
-    "%",
-    "max",
-    "min",
-    "cat",
-    "substr",
-    "in",
-    "merge",
-    "missing",
-    "missing_some",
-    "now",
-    "datetime",
-    "parse_date",
-    "format_date",
-    "date_diff",
-    "timestamp",
-    "length",
-    "upper",
-    "lower",
-    "trim",
-    "split",
-    "starts_with",
-    "ends_with",
-    "slice",
-    "abs",
-    "ceil",
-    "floor",
-    "keys",
-    "values",
-    "entries",
-    "??",
-    "type",
-    "exists",
-    "throw",
-    "base64_encode",
-    "base64_decode",
-    "base64url_encode",
-    "base64url_decode",
-    "hex_encode",
-    "hex_decode",
-    "random",
-    "url_encode",
-    "url_decode",
-    "join",
-    "secret",
-    // The tensor family (dataflow-rs 3.13 `tensor`): fixed positional
-    // arguments, every one evaluated in the enclosing scope. Nothing here
-    // rebinds `var` — `one_hot`'s `indices` and `gather`'s `indices` are
-    // values, not per-element expressions.
-    "tensor",
-    "zeros",
-    "full",
-    "scatter",
-    "rle_expand",
-    "one_hot",
-    "stack",
-    "concat",
-    "unstack",
-    "reshape",
-    "transpose",
-    "pad",
-    "crop",
-    "cast",
-    "normalize",
-    "argmax",
-    "gather",
-    "to_list",
-    "shape",
-    "dtype",
-];
-
-/// Operators whose result is not a function of the context alone. An
-/// expression containing one cannot be evaluated offline on the engine's
-/// behalf, so rules that evaluate stay silent on it. `secret` is here
-/// because its value comes from the engine's store, not the message.
-pub const NONDETERMINISTIC: &[&str] = &["now", "random", "secret"];
-
+/// Whether later arguments can read a rebound element rather than the context.
+/// Unknown operators are conservative, so an analysis cannot prove a false read.
 pub fn is_scoping(op: &str) -> bool {
-    SCOPING.contains(&op)
+    catalogue().get(op).is_none_or(|op| op.scoping)
+}
+
+/// Secrets depend on the engine's store, even though their reads are deterministic.
+/// They must never be evaluated by an offline rule with an empty store.
+pub fn is_nondeterministic(op: &str) -> bool {
+    catalogue().get(op).is_none_or(|op| {
+        !op.deterministic || op.family == dataflow_rs::expr::OperatorFamily::Secret
+    })
 }
 
 /// The JSONLogic expressions the engine evaluates in a task's `input`, as

@@ -1,6 +1,6 @@
 <!-- description: The [cluster] settings: enabling multi-replica mode, the shared Redis, the epoch poll interval and the per-replica instance_id, with their defaults. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-20 -->
 
 # Cluster settings
 
@@ -18,9 +18,9 @@ instance_id = ""
 
 ## Description
 
-With `cluster.enabled = false` — the default — Orion is a plain single node: no epoch watcher, no shared backends, no job leases. Enable it and N replicas sharing one PostgreSQL/MySQL and one Redis behave as a single logical system:
+With `cluster.enabled = false` — the default — Orion is a plain single node: no shared backends or job leases. Its configuration watcher still retries committed changes after a failed reload. Enable it and N replicas sharing one PostgreSQL/MySQL and one Redis behave as a single logical system:
 
-- **Config changes propagate.** A workflow or channel edited through any node bumps a database epoch; every other node notices within `epoch_poll_interval_ms` and reloads. Without this, an edit only affects the replica that received it.
+- **Config changes propagate.** A published channel, workflow, connector, plugin or model change commits its epoch notification in the same database transaction; every other node notices within `epoch_poll_interval_ms` and reloads. Without this, an edit only affects the replica that received it.
 - **Dedup and response caches default to the shared Redis**, so idempotency and caching are fleet-wide rather than per-node. A channel whose dedup store would silently degrade to node-local memory refuses to load instead.
 - **Rate-limit windows are shared**, so a channel's limit is the fleet's limit and not N times it.
 - **Background jobs single-flight.** Trace cleanup, audit cleanup, and DLQ retry run on one node at a time behind a lease.

@@ -92,6 +92,5 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# dataflow-rs 4 at a pinned local commit, for the 4.0 port (dataflow-4). Phase 8
-# replaces the git source with the published crate, and this line goes.
-allow-git = ["file:///Users/codetiger/Development/Plasmatic/dataflow-rs"]
+# Temporary upstream Swagger UI security fix; see the exact manifest revision.
+allow-git = ["https://github.com/juhaku/utoipa"]

@@ -1072,9 +1072,9 @@ mod tests {
     use std::time::Duration;
 
     use crate::engine::functions::twin::{self, Seen};
+    use dataflow_rs::ErrorKind;
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
-    use dataflow_rs::run::ErrorKind;
 
     const SEED: &[&str] = &[
         "CREATE TABLE users (id TEXT PRIMARY KEY, status TEXT, avatar BLOB)",

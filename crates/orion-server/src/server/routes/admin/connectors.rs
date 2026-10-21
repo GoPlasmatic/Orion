@@ -27,21 +27,20 @@ use super::audit_log;
 // Connectors CRUD
 // ============================================================
 
-/// Reload the connector registry after a mutation, then advance the config
-/// epoch so other nodes resync too (connector edits previously propagated to
-/// no other node at all).
-async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
-    state
-        .connector_registry
-        .reload(state.repos.connectors.as_ref())
-        .await?;
-    // `Connectors` scope: a peer answering this bump must reload its registry
-    // and drop its cached pools, because the endpoint or the credentials
-    // behind a live connection may now be wrong.
-    state
-        .cluster
-        .bump_config_epoch(crate::cluster::EpochScope::Connectors)
-        .await;
+/// Apply an already-committed connector change. Its epoch committed with the
+/// row, so a failed inline build leaves reconciliation pending, not a lost
+/// notification or a response claiming the persisted mutation failed.
+async fn reload_connectors(
+    state: &AppState,
+    committed_epoch: Option<i64>,
+) -> Result<(), OrionError> {
+    if crate::runtime::reload::reload_connectors_after_commit(state)
+        .await
+        .is_ok()
+        && let Some(epoch) = committed_epoch
+    {
+        state.cluster.record_config_applied(epoch);
+    }
     Ok(())
 }
 
@@ -208,8 +207,10 @@ pub(crate) async fn create_connector(
     let mut write = super::audited_write(&state, &principal, "create", "connector", "").await?;
     let connector = state.repos.connectors.create_tx(write.tx(), &req).await?;
     write.addressed_to(&connector.id);
-    write.commit().await?;
-    reload_connectors(&state).await?;
+    let committed_epoch = write
+        .commit_published(Some(crate::cluster::EpochScope::Connectors))
+        .await?;
+    reload_connectors(&state, committed_epoch).await?;
     let masked = mask_connector(&connector);
     Ok(created_response(masked))
 }
@@ -320,7 +321,9 @@ pub(crate) async fn update_connector(
         .connectors
         .update_tx(write.tx(), &id, &req)
         .await?;
-    write.commit().await?;
+    let committed_epoch = write
+        .commit_published(Some(crate::cluster::EpochScope::Connectors))
+        .await?;
     // Eviction runs after the commit, like the reload: it drops live TCP
     // connections, which a rollback could not put back.
     //
@@ -333,7 +336,7 @@ pub(crate) async fn update_connector(
     if let Some(old_name) = renamed_from {
         evict_connector_pools(&state, &old_name, &slots).await;
     }
-    reload_connectors(&state).await?;
+    reload_connectors(&state, committed_epoch).await?;
     let masked = mask_connector(&connector);
     Ok(data_response(masked))
 }
@@ -360,7 +363,9 @@ pub(crate) async fn delete_connector(
     // `create_connector` for why a connector write is always the audited path.
     let mut write = super::audited_write(&state, &principal, "delete", "connector", &id).await?;
     state.repos.connectors.delete_tx(write.tx(), &id).await?;
-    write.commit().await?;
+    let committed_epoch = write
+        .commit_published(Some(crate::cluster::EpochScope::Connectors))
+        .await?;
     // After the commit: eviction drops live TCP connections, which a rollback
     // could not put back.
     evict_connector_pools(
@@ -377,7 +382,7 @@ pub(crate) async fn delete_connector(
         .caches
         .cache_pool
         .evict_memory_namespaces(&connector.name);
-    reload_connectors(&state).await?;
+    reload_connectors(&state, committed_epoch).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -410,9 +415,11 @@ pub(crate) async fn import_connectors(
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
     super::check_import_batch_size(items.len())?;
-    let repo = state.repos.connectors.clone();
+    let create_state = state.clone();
+    let create_principal = principal.clone();
     let probe = state.repos.connectors.clone();
     let upsert_state = state.clone();
+    let upsert_principal = principal.clone();
     let outcome = super::import_items::<CreateConnectorRequest, _, _, _, _, _, _, _, _>(
         items,
         query.dry_run,
@@ -426,12 +433,14 @@ pub(crate) async fn import_connectors(
                 async move { repo.exists_by_name(&name).await }
             },
             create: |c: CreateConnectorRequest| {
-                let repo = repo.clone();
-                async move { repo.create(&c).await.map(|_| ()) }
+                let state = create_state.clone();
+                let principal = create_principal.clone();
+                async move { import_connector_create(&state, &principal, &c).await }
             },
             upsert: |c: CreateConnectorRequest, dry_run: bool| {
                 let state = upsert_state.clone();
-                async move { upsert_connector(&state, c, dry_run).await }
+                let principal = upsert_principal.clone();
+                async move { upsert_connector(&state, &principal, c, dry_run).await }
             },
         },
     )
@@ -439,10 +448,8 @@ pub(crate) async fn import_connectors(
     if query.dry_run {
         return Ok(super::import_response(true, outcome));
     }
-    // K5: one row per written entity, plus the batch summary row.
-    for id in outcome.written() {
-        audit_log(&state.audit_queue, &principal, "import", "connector", id);
-    }
+    // Per-item audit and notification commit with each item. The summary
+    // remains an event about the batch rather than a configuration write.
     audit_log(
         &state.audit_queue,
         &principal,
@@ -452,9 +459,23 @@ pub(crate) async fn import_connectors(
     );
     // Reload registry once at the end if anything was written.
     if outcome.imported > 0 {
-        reload_connectors(&state).await?;
+        reload_connectors(&state, None).await?;
     }
     Ok(super::import_response(false, outcome))
+}
+
+async fn import_connector_create(
+    state: &AppState,
+    principal: &Option<Extension<AdminPrincipal>>,
+    req: &CreateConnectorRequest,
+) -> Result<(), OrionError> {
+    let mut write =
+        super::audited_write(state, principal, "import", "connector", &req.name).await?;
+    state.repos.connectors.create_tx(write.tx(), req).await?;
+    write
+        .commit_published(Some(crate::cluster::EpochScope::Connectors))
+        .await?;
+    Ok(())
 }
 
 /// K2: one connector item under `on_conflict=new_version`.
@@ -466,6 +487,7 @@ pub(crate) async fn import_connectors(
 /// changed config must not keep serving through a cached connection pool.
 async fn upsert_connector(
     state: &AppState,
+    principal: &Option<Extension<AdminPrincipal>>,
     req: CreateConnectorRequest,
     dry_run: bool,
 ) -> Result<super::ImportAction, OrionError> {
@@ -475,7 +497,7 @@ async fn upsert_connector(
         Ok(existing) => existing,
         Err(OrionError::NotFound(_)) => {
             if !dry_run {
-                state.repos.connectors.create(&req).await?;
+                import_connector_create(state, principal, &req).await?;
             }
             return Ok(ImportAction::Created);
         }
@@ -488,10 +510,13 @@ async fn upsert_connector(
         return Ok(ImportAction::Unchanged);
     }
     if !dry_run {
+        let mut write =
+            super::audited_write(state, principal, "import", "connector", &req.name).await?;
         state
             .repos
             .connectors
-            .update(
+            .update_tx(
+                write.tx(),
                 &existing.id,
                 &UpdateConnectorRequest {
                     name: None, // matched on name — it cannot change here
@@ -501,6 +526,9 @@ async fn upsert_connector(
                     tags: Some(req.tags),
                 },
             )
+            .await?;
+        write
+            .commit_published(Some(crate::cluster::EpochScope::Connectors))
             .await?;
         evict_connector_pools(
             state,

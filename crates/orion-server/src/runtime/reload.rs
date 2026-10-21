@@ -50,24 +50,34 @@ pub async fn resync_from_db(
     state: &AppState,
     scope: crate::cluster::EpochScope,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
-    if scope.touches_connectors() {
-        state
-            .connector_registry
-            .reload(state.repos.connectors.as_ref())
-            .await?;
-        // Paired with the reload above, always: a pool dropped without its
-        // connector being re-read is a pool rebuilt from config this node has
-        // not re-checked. Every slot, through one exhaustive match, so a cache
-        // added later cannot be left out of the sweep — the SMTP cache was,
-        // which left a node serving through a stale transport after an SMTP
-        // connector changed elsewhere in the cluster.
-        state.caches.evict_all_pools().await;
-    }
-    reload_engine_with_opts(
+    resync_from_db_with_opts(
         state,
+        scope,
         ReloadOpts {
             kafka_restart_jitter: true,
         },
+    )
+    .await
+}
+
+pub(crate) async fn resync_from_db_with_opts(
+    state: &AppState,
+    scope: crate::cluster::EpochScope,
+    opts: ReloadOpts,
+) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
+    reload_with_scope(state, opts, Some(scope), true).await
+}
+
+/// Local connector writes already invalidate the affected names. Rebuild
+/// their dependent guards without dropping every unrelated connection pool.
+pub(crate) async fn reload_connectors_after_commit(
+    state: &AppState,
+) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
+    reload_with_scope(
+        state,
+        ReloadOpts::default(),
+        Some(crate::cluster::EpochScope::Connectors),
+        false,
     )
     .await
 }
@@ -81,6 +91,15 @@ pub async fn reload_engine_with_opts(
     state: &AppState,
     opts: ReloadOpts,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
+    reload_with_scope(state, opts, None, false).await
+}
+
+async fn reload_with_scope(
+    state: &AppState,
+    opts: ReloadOpts,
+    scope: Option<crate::cluster::EpochScope>,
+    evict_connector_pools: bool,
+) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     let start = std::time::Instant::now();
 
     // One reload at a time, process-wide. Everything below is a
@@ -90,13 +109,23 @@ pub async fn reload_engine_with_opts(
     let _reload_guard = state.reload_lock.lock().await;
 
     let result = async {
-        // Two independent reads, overlapped: this runs on every admin mutation
-        // and, in cluster mode, on every node whose epoch watcher sees a bump,
-        // so the sequential form paid two round trips where one suffices.
-        let (channels, active_workflows) = tokio::try_join!(
-            state.repos.channels.list_active(),
-            state.repos.workflows.list_active(),
-        )?;
+        // Registry replacement belongs to the same serialized operation as
+        // channel construction, including peer-driven and connector reloads.
+        if scope.is_some_and(|scope| scope.touches_connectors()) {
+            state
+                .connector_registry
+                .reload(state.repos.connectors.as_ref())
+                .await?;
+            if evict_connector_pools {
+                state.caches.evict_all_pools().await;
+            }
+        }
+        let crate::storage::repositories::ActiveDefinitions {
+            channels,
+            workflows: active_workflows,
+            plugins: plugin_rows,
+            models: model_rows,
+        } = state.repos.active_definitions().await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
         // The outgoing generation, read once: it is the screen for the new
         // workflows, the base the new engine is built from, and the reuse
@@ -135,7 +164,6 @@ pub async fn reload_engine_with_opts(
         // plugin functions and the profile layer) and the engine's config;
         // a changed one registers the loaded plugin functions on a registry
         // assembled afresh and builds a new engine.
-        let plugin_rows = state.repos.plugins.list_active().await?;
         let plugins_changed =
             crate::plugin::PluginSet::fingerprint_of(&plugin_rows) != current.plugins.fingerprint();
         let (new_engine, new_engine4, functions, plugins, engine_issues) = if plugins_changed {
@@ -233,7 +261,6 @@ pub async fn reload_engine_with_opts(
         // compiled; `ModelSet::reload` carries them. A workflow naming a
         // model the set does not serve is quarantined with the reason, the
         // way a workflow naming an unavailable plugin function is.
-        let model_rows = state.repos.models.list_active().await?;
         let models = Arc::new(crate::model::ModelSet::reload(
             &current.models,
             &model_rows,

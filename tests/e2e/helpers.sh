@@ -338,9 +338,11 @@ start_server() {
         port="$E2E_PORT"
     fi
 
-    ORION_DB_PATH=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-XXXXXX.db")
-    ORION_LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-XXXXXX.log")
-    ORION_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-XXXXXX.toml")
+    # BSD mktemp expands Xs only at the end of the template. A suffix after
+    # XXXXXX produced a literal shared filename on macOS.
+    ORION_DB_PATH=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-db.XXXXXX")
+    ORION_LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-log.XXXXXX")
+    ORION_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-config.XXXXXX")
     # Suite 18 registers a model; `models.enabled` refuses an empty cache_dir.
     ORION_MODELS_CACHE=$(mktemp -d "${TMPDIR:-/tmp}/orion-e2e-models-XXXXXX")
 
@@ -367,6 +369,8 @@ start_server() {
 [server]
 host = "127.0.0.1"
 port = $port
+shutdown_drain_secs = 0
+shutdown_force_timeout_secs = 2
 
 [storage]
 url = "sqlite:$ORION_DB_PATH?mode=rwc"
@@ -461,6 +465,7 @@ stop_server() {
             log_info "Force killing server"
             kill -9 "$ORION_PID" 2>/dev/null || true
         fi
+        wait "$ORION_PID" 2>/dev/null || true
     fi
 
     ORION_PID=""

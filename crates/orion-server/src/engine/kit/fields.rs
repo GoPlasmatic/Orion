@@ -49,7 +49,7 @@ pub enum KeyMaterial {
     Text(String),
     /// An expression; the engine's secret checks see it, and
     /// [`Ctx::input`] writes it `null` when it reads a secret.
-    Expr(Expr<OwnedDataValue>),
+    Expr(Box<Expr<OwnedDataValue>>),
 }
 
 impl std::fmt::Debug for KeyMaterial {
@@ -73,7 +73,9 @@ impl ConfigField for KeyMaterial {
     fn compile(raw: &Value, cx: &mut CompileCx<'_>) -> Option<Self> {
         match raw {
             Value::String(text) => Some(Self::Text(text.clone())),
-            _ => Expr::<OwnedDataValue>::compile(raw, cx).map(Self::Expr),
+            _ => Expr::<OwnedDataValue>::compile(raw, cx)
+                .map(Box::new)
+                .map(Self::Expr),
         }
     }
 
@@ -87,7 +89,7 @@ impl ConfigField for KeyMaterial {
     fn resolve(&self, r: &mut dyn Resolver) -> dataflow_rs::Result<Option<OwnedDataValue>> {
         match self {
             Self::Text(text) => Ok(Some(OwnedDataValue::String(text.clone()))),
-            Self::Expr(expr) => r.eval(expr).map(Some),
+            Self::Expr(expr) => r.eval(expr.as_ref()).map(Some),
         }
     }
 

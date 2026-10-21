@@ -7,7 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Connection pools distinguish effective connector settings across SQL,
+  MongoDB, Redis and SMTP. In-flight creation cannot refill an evicted
+  entry or supply a different connector revision's pool.
+- Timed-out or cancelled model calls retain inference and cold-load permits
+  until their blocking jobs finish. Live inference accounting follows that
+  lifetime too.
+- Live definition mutations and connector imports commit their audit and
+  configuration notification together. Failed inline reloads remain pending
+  and are retried on single nodes as well as replicas. Deferred definition
+  edits still wait for explicit reload.
+- Reload reads active channels, workflows, plugins and models in one database
+  snapshot. PostgreSQL and MySQL snapshots explicitly use repeatable-read
+  isolation; connector refreshes share the reload lock.
+- Model work estimation follows stored weight shapes through standard Cast,
+  Identity and DequantizeLinear nodes, with bounded traversal and the existing
+  conservative fallback for unknown transformations.
+
+### Security
+
+- Swagger UI uses upstream's pinned ZIP 9 build fix for
+  RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369, pending a
+  published release containing utoipa#1645. The workspace patches must be
+  replaced with that release before publishing crates, since downstream
+  consumers do not inherit patches.
+
 ### Changed
+
+- **Use the published dataflow-rs 4.0.0 release.** Builds no longer require
+  a local dataflow-rs checkout. Extension operator families are selected
+  explicitly at runtime, preserving the datetime and tensor vocabulary.
+  datalogic-rs 5.8.2 and datavalue-rs 0.3.2 supply the expression evaluator.
+  The serving engine remains on 3.15 while the execution cutover is pending.
+
+- **Authoring analysis uses dataflow-rs 4's typed expression compiler and
+  operator metadata.** Constant folding and template evaluation use the same
+  expression settings as channel guards. Scope and determinism come from
+  the live operator catalogue; secret reads remain excluded from offline
+  evaluation. Plugin registration uses the engine's fallible API, so an
+  invalid runtime function specification is reported instead of panicking.
 
 - **`POST /api/v1/admin/workflows/validate` compiles a condition as activation
   does.** It compiled the workflow's and each task's `condition` on a bare

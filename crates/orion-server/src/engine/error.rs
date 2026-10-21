@@ -36,7 +36,7 @@
 //! the task. An error converted *from* either engine is carried whole and
 //! handed back as itself.
 
-use dataflow_rs::run::ErrorKind;
+use dataflow_rs::ErrorKind;
 use dataflow_rs_v3::DataflowError;
 
 use crate::errors::service::{ServiceDetail, detail_of};
@@ -347,8 +347,6 @@ fn v4_into_v3(original: dataflow_rs::Error, rest: HandlerError) -> DataflowError
         ErrorKind::Budget => DataflowError::BudgetExceeded(message),
         ErrorKind::Eval => DataflowError::LogicEvaluation(message),
         ErrorKind::TimedOut => DataflowError::Timeout(message),
-        ErrorKind::Parse => DataflowError::Deserialization(message),
-        ErrorKind::FunctionNotFound => DataflowError::FunctionNotFound(message),
         // The variant displays the label again, so it takes the bare message.
         ErrorKind::Service { code } => match ErrorClass::of_code(code) {
             Some((class, _)) => HandlerError::new(class, message).into_v3_from_class(),

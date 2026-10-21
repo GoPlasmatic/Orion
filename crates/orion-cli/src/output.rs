@@ -29,7 +29,7 @@ pub fn print_value(format: &OutputFormat, value: &Value) -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(value)?);
         }
         OutputFormat::Yaml => {
-            print!("{}", serde_yaml::to_string(value)?);
+            print!("{}", serde_saphyr::to_string(value)?);
         }
     }
     Ok(())

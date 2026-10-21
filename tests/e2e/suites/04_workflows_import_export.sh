@@ -45,7 +45,7 @@ test_diff_round_trips_its_own_export() {
     cli_raw workflows import -f "$FIXTURES_DIR/workflows/import_batch.json"
 
     local export_file
-    export_file=$(mktemp "${TMPDIR:-/tmp}/e2e-export-XXXXXX.json")
+    export_file="$TEST_TMPDIR/export.json"
     cli_raw workflows export
     echo "$CLI_OUTPUT" > "$export_file"
 
@@ -60,7 +60,7 @@ test_diff_reports_drift_nonzero() {
     cli_raw workflows import -f "$FIXTURES_DIR/workflows/import_batch.json"
 
     local export_file
-    export_file=$(mktemp "${TMPDIR:-/tmp}/e2e-drift-XXXXXX.json")
+    export_file="$TEST_TMPDIR/drift.json"
     cli_raw workflows export
     # Change one workflow's content, and drop the hash so the comparison falls
     # back to the fields — the hand-authored-file path.

@@ -1,7 +1,7 @@
 //! Epoch watcher: the receive side of the config-change bus (A2/A11).
 //!
-//! Every admin mutation bumps the `config_epoch` row in the shared DB (the
-//! send side, `bump_config_epoch`). Each node polls that row; when the epoch
+//! Published entity changes commit their `config_epoch` notification in the
+//! same database transaction. Each node polls that row; when the epoch
 //! is ahead of what this node has applied it resyncs from the DB — the engine
 //! and channel estate always, the connector registry and the cached pools
 //! when the advance does not prove otherwise (`EpochScope`). Breaker resets
@@ -13,12 +13,9 @@ use std::time::Duration;
 use crate::server::state::AppState;
 
 /// Register the cluster background tasks with the supervisor. Registers
-/// nothing when cluster mode is disabled — the tasks simply don't exist on a
-/// single node.
+/// the reconciler on single nodes too: a committed change whose inline reload
+/// failed still needs to reach the serving generation without another edit.
 pub fn start_cluster_tasks(state: &AppState) {
-    if !state.cluster.enabled {
-        return;
-    }
     let watcher_state = state.clone();
     // Required: a node whose watcher is dead never learns about another
     // node's mutation, so it keeps serving the configuration it booted with

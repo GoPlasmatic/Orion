@@ -39,7 +39,7 @@ impl MongoPoolCache {
         let allow_private = config.allow_private_urls;
 
         self.cache
-            .get_or_create(connector_name, || async move {
+            .get_or_create_versioned(connector_name, config, || async move {
                 let mut opts = mongodb::options::ClientOptions::parse(&conn_str)
                     .await
                     .map_err(|e| OrionError::Internal {

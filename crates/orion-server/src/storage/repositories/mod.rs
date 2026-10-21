@@ -41,7 +41,29 @@ pub struct Repositories {
     pub cron: Arc<dyn cron::CronRepository>,
 }
 
+pub(crate) struct ActiveDefinitions {
+    pub channels: Vec<crate::storage::models::Channel>,
+    pub workflows: Vec<crate::storage::models::Workflow>,
+    pub plugins: Vec<crate::storage::models::Plugin>,
+    pub models: Vec<crate::storage::models::Model>,
+}
+
 impl Repositories {
+    /// Capture related active rows together, then release the read snapshot
+    /// before compilation or artifact I/O. Atomic publication must not be
+    /// built from independent reads of several configuration revisions.
+    pub(crate) async fn active_definitions(&self) -> Result<ActiveDefinitions, OrionError> {
+        let mut tx = self.pool.begin_snapshot_tx().await?;
+        let definitions = ActiveDefinitions {
+            channels: versioned::list_active_tx(&mut tx, &channels::spec()).await?,
+            workflows: versioned::list_active_tx(&mut tx, &workflows::spec()).await?,
+            plugins: versioned::list_active_tx(&mut tx, &plugins::spec()).await?,
+            models: versioned::list_active_tx(&mut tx, &models::spec()).await?,
+        };
+        tx.commit().await?;
+        Ok(definitions)
+    }
+
     /// Create repositories. `storage` supplies the optional at-rest cipher
     /// for connector configs (H3) — validated at config load, so a bad key
     /// never reaches this point.
@@ -97,8 +119,9 @@ impl Repositories {
     /// events that have **no** entity write to join — `test`, `reload`,
     /// `backup` — and for the two that have one this cannot cover: a draft
     /// create or update, which writes a row that is not live until something
-    /// activates it, and the bulk imports, which span many rows and report
-    /// per-item outcomes rather than committing as one.
+    /// activates it, and imports of versioned drafts, which report per-item
+    /// outcomes rather than committing as one. Connector imports use audited
+    /// transactions per written item because their changes are immediately live.
     ///
     /// Connector mutations are **not** in that set, though they were until the
     /// audit hole was closed. A connector has no draft state, so every write
@@ -150,10 +173,23 @@ impl AuditedWrite<'_> {
     /// A failure here rolls the entity write back with it, which is the
     /// intended trade: refusing a mutation is recoverable — the caller sees an
     /// error and retries — while accepting one silently unrecorded is not.
-    pub async fn commit(mut self) -> Result<(), OrionError> {
+    pub async fn commit(self) -> Result<(), OrionError> {
+        self.commit_published(None).await.map(|_| ())
+    }
+
+    /// Commit the mutation, audit and optional publication notification
+    /// together. Deferred package edits deliberately have no notification.
+    pub async fn commit_published(
+        mut self,
+        scope: Option<crate::cluster::EpochScope>,
+    ) -> Result<Option<i64>, OrionError> {
         self.audit_logs.insert_tx(&mut self.tx, &self.event).await?;
+        let epoch = match scope {
+            Some(scope) => Some(cluster::bump_epoch_tx(&mut self.tx, scope.as_str()).await?),
+            None => None,
+        };
         self.tx.commit().await?;
-        Ok(())
+        Ok(epoch)
     }
 }
 
@@ -200,6 +236,100 @@ mod tests {
             .await
             .expect("list")
             .total
+    }
+
+    #[tokio::test]
+    async fn publication_is_durable_at_commit_without_an_inline_reload() {
+        use crate::storage::repositories::cluster::ClusterRepository;
+        let (pool, repos) = repos().await;
+        seed_active_channel(&repos, "durable-publication").await;
+        let epoch_repo = cluster::SqlClusterRepository::new(pool);
+        let before = epoch_repo.get_epoch().await.expect("epoch").epoch;
+        let mut write = repos
+            .audited(event("delete", "durable-publication"))
+            .await
+            .expect("begin");
+        repos
+            .channels
+            .delete_tx(write.tx(), "durable-publication")
+            .await
+            .expect("delete");
+        let epoch = write
+            .commit_published(Some(crate::cluster::EpochScope::Definitions))
+            .await
+            .expect("commit")
+            .expect("publication");
+        // No route handler or notification sender runs after this commit.
+        let persisted = epoch_repo.get_epoch().await.expect("durable epoch");
+        assert_eq!(epoch, before + 1);
+        assert_eq!(persisted.epoch, epoch);
+        assert_eq!(persisted.epoch_scope_at, epoch);
+        assert_eq!(persisted.epoch_scope, "definitions");
+        assert!(
+            repos
+                .channels
+                .get_by_id("durable-publication")
+                .await
+                .is_err()
+        );
+        assert_eq!(audit_rows(&repos).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_publication_rolls_back_the_mutation_and_audit() {
+        let (pool, repos) = repos().await;
+        seed_active_channel(&repos, "failed-publication").await;
+        let (sql, values) = crate::storage::build_sqlx(
+            pool.backend(),
+            sea_query::Query::delete().from_table(crate::storage::schema::ConfigEpoch::Table),
+        );
+        pool.execute_query(&sql, values)
+            .await
+            .expect("remove epoch row");
+        let mut write = repos
+            .audited(event("delete", "failed-publication"))
+            .await
+            .expect("begin");
+        repos
+            .channels
+            .delete_tx(write.tx(), "failed-publication")
+            .await
+            .expect("delete");
+        assert!(
+            write
+                .commit_published(Some(crate::cluster::EpochScope::Definitions))
+                .await
+                .is_err()
+        );
+        assert!(repos.channels.get_by_id("failed-publication").await.is_ok());
+        assert_eq!(audit_rows(&repos).await, 0);
+    }
+
+    #[tokio::test]
+    async fn deferred_changes_do_not_publish_an_epoch() {
+        use crate::storage::repositories::cluster::ClusterRepository;
+        let (pool, repos) = repos().await;
+        seed_active_channel(&repos, "deferred-publication").await;
+        let epoch_repo = cluster::SqlClusterRepository::new(pool);
+        let before = epoch_repo.get_epoch().await.expect("epoch").epoch;
+        let mut write = repos
+            .audited(event("delete", "deferred-publication"))
+            .await
+            .expect("begin");
+        repos
+            .channels
+            .delete_tx(write.tx(), "deferred-publication")
+            .await
+            .expect("delete");
+        assert_eq!(write.commit_published(None).await.expect("commit"), None);
+        assert_eq!(epoch_repo.get_epoch().await.expect("epoch").epoch, before);
+        assert!(
+            repos
+                .channels
+                .get_by_id("deferred-publication")
+                .await
+                .is_err()
+        );
     }
 
     /// §2.6: the entity write and its audit row are one commit. Both are

@@ -1,8 +1,8 @@
 //! Multi-instance (HA) coordination runtime.
 //!
 //! One [`ClusterRuntime`] lives on `AppState`. With `cluster.enabled = false`
-//! (the default) it is inert: no Redis connection, no shared backends — the
-//! only observable artifact is the boot-time instance id. When enabled it
+//! (the default) there is no Redis connection or shared backend. Configuration
+//! reconciliation still runs so failed inline reloads can recover. When enabled it
 //! carries the shared Redis handle, the default shared cache backend, the
 //! [`ClusterRepository`] used for epoch/lease coordination, and the last
 //! epoch values this node has applied.
@@ -150,77 +150,45 @@ pub struct ClusterRuntime {
     /// Epoch/lease coordination repository (always present; harmless when
     /// disabled — the epoch tables exist on every backend).
     pub repo: Arc<dyn ClusterRepository>,
-    /// Highest config epoch this node has already applied. Its own bumps
-    /// count as applied — the inline reload happens before the bump — but only
-    /// when the bump lands on the next epoch: a jump means a peer's change is
-    /// folded into the number and this node has not applied that one, so the
-    /// watermark stays put and the watcher resyncs.
+    /// Highest committed config epoch this node has applied. An inline reload
+    /// marks only its next epoch, and only after success. A gap may contain a
+    /// peer's connector edit, so the watcher must reconcile it.
     pub last_seen_epoch: AtomicI64,
     /// Highest breaker epoch this node has already applied.
     pub last_seen_breaker_epoch: AtomicI64,
-    /// Set when a bump failed after its mutation was already committed and
-    /// live on this node, cleared by the next successful bump. Reported as
-    /// the `config_propagation` component of `/health`.
-    ///
-    /// The failure it names is real but not this node's: the change is
-    /// serving here and the peers have not been told. Nothing a client can do
-    /// with a 500 helps — the row is written, so a retry is a duplicate
-    /// version or a 409 — and nothing else notices, because the watcher on a
-    /// peer only ever sees an epoch that did not move. So it is a node-health
-    /// signal instead of a per-request error.
+    /// A manual publication request failed to record its epoch. Entity
+    /// mutations roll back if their transactional notification fails.
+    /// Reported as `config_propagation` in cluster health.
     propagation_degraded: std::sync::atomic::AtomicBool,
 }
 
 impl ClusterRuntime {
-    /// Advance the config epoch after a successfully applied local mutation
-    /// (the send side of the epoch bus; the watcher is the receive side).
-    /// Runs even with cluster disabled (keeps the counter monotonic so
-    /// enabling cluster later starts sane) but only propagates failures when
-    /// enabled — on a single node a failed bump changes nothing, while in a
-    /// cluster it means the change did NOT propagate and the caller must
-    /// surface the error.
-    pub async fn bump_config_epoch(&self, scope: EpochScope) {
+    /// Mark only the next committed change applied. A gap includes peer
+    /// changes this node may not have loaded (in particular connectors).
+    pub fn record_config_applied(&self, epoch: i64) {
+        let _ = self.last_seen_epoch.compare_exchange(
+            epoch - 1,
+            epoch,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Persist the intent of a manual reload before trying to build it.
+    /// Entity mutations use `AuditedWrite::commit_published` instead.
+    pub async fn request_config_reload(&self, scope: EpochScope) -> Result<i64, OrionError> {
         use std::sync::atomic::Ordering;
         match self.repo.bump_epoch(scope.as_str()).await {
             Ok(epoch) => {
-                // Claim this epoch as applied only when it is the very next
-                // one. The inline reload applied *this* node's change and
-                // nothing else, so an epoch that jumped means a peer's bump
-                // landed in between — and recording the higher number would
-                // mark that peer's change applied here when it never was. The
-                // gap is not academic: this node's own reload re-reads the
-                // channel and workflow rows, but nothing re-reads the connector
-                // registry, so a peer's connector edit swallowed this way stays
-                // invisible until something else bumps. Leaving the watermark
-                // where it is costs one wide resync on the next tick, which is
-                // the same answer every other unattributable advance gets.
-                let _ = self.last_seen_epoch.compare_exchange(
-                    epoch - 1,
-                    epoch,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                );
                 self.propagation_degraded.store(false, Ordering::Release);
+                Ok(epoch)
             }
-            Err(e) if self.enabled => {
-                // Not returned to the caller. The mutation is committed and
-                // serving on this node; a 500 would tell the client its change
-                // failed when it did not, and its retry writes a second
-                // version or collides with the first. The peers are the ones
-                // in trouble, and they cannot see it — a watcher polling an
-                // epoch that did not move looks exactly like a quiet fleet —
-                // so it surfaces here instead.
-                self.propagation_degraded.store(true, Ordering::Release);
-                crate::metrics::record_error("config_epoch_bump");
-                tracing::error!(
-                    error = %e,
-                    scope = scope.as_str(),
-                    "Failed to advance the config epoch: this node's change is live \
-                     but peers will not see it until a later bump succeeds"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to bump config epoch (cluster disabled — ignored)");
+            Err(error) => {
+                if self.enabled {
+                    self.propagation_degraded.store(true, Ordering::Release);
+                    crate::metrics::record_error("config_epoch_bump");
+                }
+                Err(error)
             }
         }
     }
@@ -282,12 +250,8 @@ pub async fn init_cluster_runtime(
     // initial channel/workflow load, so anything already counted is included
     // in that load, and any bump that lands after this read correctly
     // triggers a watcher resync.
-    let (epoch, breaker_epoch) = if config.enabled {
-        let row = repo.get_epoch().await?;
-        (row.epoch, row.breaker_epoch)
-    } else {
-        (0, 0)
-    };
+    let row = repo.get_epoch().await?;
+    let (epoch, breaker_epoch) = (row.epoch, row.breaker_epoch);
 
     Ok(Arc::new(ClusterRuntime {
         enabled: config.enabled,

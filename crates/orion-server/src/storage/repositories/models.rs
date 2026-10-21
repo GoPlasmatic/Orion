@@ -49,7 +49,7 @@ pub use orion_api::dto::ModelArtifactRef;
 /// `admission` filter can select on `"state":"…"` as a substring.
 pub const ADMISSION_PENDING_JSON: &str = r#"{"state":"pending"}"#;
 
-fn spec() -> VersionedSpec {
+pub(super) fn spec() -> VersionedSpec {
     use sea_query::IntoIden;
     VersionedSpec {
         table: Models::Table.into_iden(),

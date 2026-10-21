@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Any nonempty `NO_COLOR` value disables color without boolean parsing,
+  including the common `NO_COLOR=1` setting. `--no-color` remains available.
+
+### Changed
+
+- YAML output uses `serde-saphyr` 2 instead of the archived `serde_yaml` and
+  `unsafe-libyaml` crates. YAML formatting and quoting follow the new serializer.
+
 ## [1.12.0] - 2026-10-01
 
 ## [1.11.1] - 2026-09-27

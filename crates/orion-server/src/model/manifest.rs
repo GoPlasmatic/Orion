@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use dataflow_rs::datavalue::{DType, OwnedDataTensor, OwnedDataValue};
-use dataflow_rs::expr::{ExprEngine, Family};
+use dataflow_rs::expr::{ExprEngine, OperatorFamily};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -96,7 +96,7 @@ fn forbidden_operators() -> &'static [(String, &'static str)] {
             .operators()
             .iter()
             .filter_map(|op| {
-                let reason = if op.family == Family::Secret {
+                let reason = if op.family == OperatorFamily::Secret {
                     SECRET_REASON
                 } else if !op.deterministic {
                     nondeterministic_reason(&op.name)

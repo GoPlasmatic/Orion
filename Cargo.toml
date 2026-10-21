@@ -42,6 +42,15 @@ repository = "https://github.com/GoPlasmatic/Orion"
 orion-api = { version = "1.12.0", path = "crates/orion-api" }
 orion-client = { version = "1.12.0", path = "crates/orion-client" }
 
+# utoipa#1645 fixes RUSTSEC-2026-0367/8/9 by moving Swagger UI's build to
+# ZIP 9. Keep the exact upstream revision until the fix is published.
+# Its path dependency on utoipa must share the API crate's ToSchema types.
+# Remove both patches together once a registry release includes the fix;
+# downstream cargo-install consumers do not inherit workspace patches.
+[patch.crates-io]
+utoipa = { git = "https://github.com/juhaku/utoipa", rev = "5aff30b375c0c72aeccfa8fa6100db8f2901b3ba" }
+utoipa-swagger-ui = { git = "https://github.com/juhaku/utoipa", rev = "5aff30b375c0c72aeccfa8fa6100db8f2901b3ba" }
+
 # `cargo release <level|version>` performs a release commit: it rewrites
 # `workspace.package.version` and both `workspace.dependencies` requirements,
 # then tags. Kept to a bare `vX.Y.Z` tag because that is what release.yml,

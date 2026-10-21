@@ -32,11 +32,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use dataflow_rs::ErrorKind;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{ExprVisitor, FieldSpec as RuntimeField, Interpolated};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare, Templated};
 use dataflow_rs::program::{AuthoredPath, IssueCode, PathSeg};
-use dataflow_rs::run::ErrorKind;
 use dataflow_rs::{Ctx, Issue, Outcome, Path};
 use dataflow_rs_v3::TemplateCompiler;
 use dataflow_rs_v3::engine::error::DataflowError;

@@ -277,10 +277,9 @@ pub(crate) const EXPORT_PAGE_SIZE: i64 = 500;
 /// mutated mid-export could be skipped or duplicated — a documented
 /// non-guarantee the promotion docs had to warn about. One transaction makes
 /// the pages a consistent snapshot: SQLite pins its read snapshot at the
-/// transaction's first read, MySQL's InnoDB default isolation is already
-/// REPEATABLE READ (and refuses the SET mid-transaction), and Postgres —
-/// whose READ COMMITTED takes a fresh snapshot per statement, exactly the
-/// skew this exists to remove — is raised to REPEATABLE READ explicitly.
+/// transaction's first read, and both MySQL and Postgres explicitly use
+/// REPEATABLE READ through `DbPool::begin_snapshot_tx`, independently of
+/// their server or session defaults.
 ///
 /// Invariant: `page_size` must lie in `1..=1000`, same reasoning as
 /// `collect_pages` in the route layer — a clamped page would read short and
@@ -295,14 +294,10 @@ pub async fn snapshot_pages<T: DbRow>(
         "page_size {page_size} is outside the repository clamp (1..=1000); \
          a clamped page would silently truncate the snapshot"
     );
-    let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
-    if pool.backend() == crate::storage::DbBackend::Postgres {
-        tx.execute_query(
-            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-            sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
-        )
-        .await?;
-    }
+    let mut tx = pool
+        .begin_snapshot_tx()
+        .await
+        .map_err(OrionError::Storage)?;
     let mut out = Vec::new();
     let mut offset = 0i64;
     loop {

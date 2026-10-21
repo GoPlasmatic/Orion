@@ -151,9 +151,15 @@ pub(crate) async fn delete_channel(
     // gone with nothing recording who removed it.
     let mut write = super::audited_write(&state, &principal, "delete", "channel", &id).await?;
     state.repos.channels.delete_tx(write.tx(), &id).await?;
-    write.commit().await?;
+    let committed_epoch = write
+        .commit_published(
+            query
+                .reload
+                .publication(crate::cluster::EpochScope::Definitions),
+        )
+        .await?;
 
-    super::reload_after_commit(&state, query.reload).await?;
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -215,9 +221,15 @@ pub(crate) async fn change_channel_status(
         StatusAction::Activate => state.repos.channels.activate_tx(write.tx(), &id).await?,
         StatusAction::Archive => state.repos.channels.archive_tx(write.tx(), &id).await?,
     };
-    write.commit().await?;
+    let committed_epoch = write
+        .commit_published(
+            query
+                .reload
+                .publication(crate::cluster::EpochScope::Definitions),
+        )
+        .await?;
 
-    super::reload_after_commit(&state, query.reload).await?;
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 

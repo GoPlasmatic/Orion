@@ -269,9 +269,9 @@ mod tests {
 
     use super::*;
     use crate::engine::functions::twin::{self, Seen};
+    use dataflow_rs::ErrorKind;
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
-    use dataflow_rs::run::ErrorKind;
     use serde_json::{Value, json};
 
     const SEED: &[&str] = &[

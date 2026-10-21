@@ -327,10 +327,15 @@ pub(crate) async fn delete_plugin(
     // §2.6: the delete and its audit row commit together.
     let mut write = super::audited_write(&state, &principal, "delete", "plugin", &id).await?;
     state.repos.plugins.delete_tx(write.tx(), &id).await?;
-    write.commit().await?;
-
-    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Plugins)
+    let committed_epoch = write
+        .commit_published(
+            query
+                .reload
+                .publication(crate::cluster::EpochScope::Plugins),
+        )
         .await?;
+
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -413,10 +418,15 @@ pub(crate) async fn change_plugin_status(
         StatusAction::Activate => state.repos.plugins.activate_tx(write.tx(), &id).await?,
         StatusAction::Archive => state.repos.plugins.archive_tx(write.tx(), &id).await?,
     };
-    write.commit().await?;
-
-    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Plugins)
+    let committed_epoch = write
+        .commit_published(
+            query
+                .reload
+                .publication(crate::cluster::EpochScope::Plugins),
+        )
         .await?;
+
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(data_response(PluginResponse::try_from(&plugin)?))
 }
 

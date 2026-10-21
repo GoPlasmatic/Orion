@@ -88,12 +88,10 @@ harness = true
 # ceiling until `engine.ops_budget` is set; a ceiling crossed in a *condition*
 # fails closed to `false` with no error channel, which is why the setting is
 # documented next to that caveat rather than defaulted on.
-# `dataflow_rs::datalogic_rs` and `dataflow_rs_v3::datalogic_rs` are one crate (5.7.1), and both
-# dependencies below take the same three features.
-# dataflow-rs 4, the engine, at a pinned commit of its unpublished `main`
-# (dataflow-rs phase 7c). `version` is exact so `cargo deny` reads no wildcard;
-# phase 8 replaces the git source with the published 4.0.0.
-dataflow-rs = { git = "file:///Users/codetiger/Development/Plasmatic/dataflow-rs", rev = "daaf8c0c446a24b2f758d8f1a5cae765c188c5fc", version = "=4.0.0-dev", features = ["all-operators", "tensor", "budget"] }
+# v4 selects extension families on ExprEngineBuilder at runtime. `datetime`
+# and `tensor` still need their Cargo gates; `budget` enables the ops ceiling.
+# Use the published crate so builds do not require a developer's checkout.
+dataflow-rs = { version = "4.0.0", features = ["datetime", "tensor", "budget"] }
 # dataflow-rs 3.15, beside v4 until the port deletes it (Task O14). The derive
 # emits `::dataflow_rs::` paths, so v3 is the one renamed.
 dataflow-rs-v3 = { package = "dataflow-rs", version = "=3.15.0", features = ["all-operators", "tensor", "budget"] }
@@ -214,7 +212,7 @@ tower = { version = "0.5", default-features = false, features = ["util"] }
 # operator sets and NNEF archive support an ONNX graph may need. The build stays
 # pure Rust — the CPU runtime everywhere, plus Metal on Apple targets. MIT OR
 # Apache-2.0 throughout; rust-version 1.91, under the 1.98 floor.
-tract = { version = "0.23.8", default-features = false, features = ["onnx", "metal", "transformers", "pulse", "flate2"] }
+tract = { version = "0.23.9", default-features = false, features = ["onnx", "metal", "transformers", "pulse", "flate2"] }
 # The runtime-independent ONNX reader (`model::onnx`): a hand-written subset
 # of onnx.proto3 — the parameter count, node count, IR version, opset and the
 # graph's input and output names an admission records — decoded with prost,
@@ -234,6 +232,7 @@ prost = "0.14"
 # rdkafka-sys bundles librdkafka >= 2.13.
 rdkafka = { version = "0.39", default-features = false, features = ["tokio", "ssl-vendored"] }
 utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+# The workspace patches this to upstream's unpublished ZIP 9 security fix.
 utoipa-swagger-ui = { version = "10", features = ["axum"] }
 
 # External DB connectors
@@ -301,7 +300,8 @@ rdkafka = { version = "0.39", default-features = false, features = ["cmake-build
 # test-util (paused clocks, time::advance) is test-only; feature unification
 # gives the in-crate #[cfg(test)] modules access without shipping it in release.
 tokio = { version = "1", features = ["test-util"] }
-testcontainers = "0.27"
+# testcontainers-modules 0.15 uses 0.27; 0.28's bollard conflicts with it.
+testcontainers = "0.27.3"
 testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search", "redis"] }
 # Already a runtime dependency; listed here so integration tests can build a
 # connection for direct backend tests (RedisRateLimitBackend takes a

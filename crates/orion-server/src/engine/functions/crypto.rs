@@ -1774,11 +1774,7 @@ mod tests {
                 .name(NAME)
                 .await;
             let error = called.outcome.expect_err("refused before the call");
-            assert_eq!(
-                *error.kind(),
-                dataflow_rs::run::ErrorKind::Compile,
-                "{input}"
-            );
+            assert_eq!(*error.kind(), dataflow_rs::ErrorKind::Compile, "{input}");
         }
     }
 

@@ -253,7 +253,7 @@ Compute the value in a `map` task first and reference the result:
 
 ## Compatibility
 
-The extension categories (`datetime`, `ext-string`, `ext-array`, `ext-math`, `ext-control`, `error-handling`, `tensor`) are Cargo features of datalogic-rs. Orion reaches datalogic-rs through dataflow-rs and cannot enable a datalogic feature on its own. Orion turns them all on through dataflow-rs's `all-operators` feature, plus `tensor` and `budget` (both outside `all-operators` upstream) since 1.8. A build without those features compiles only the [Core](#core) set.
+Orion reaches datalogic-rs through dataflow-rs. Its dataflow-rs 4 expression engine selects the extension families at runtime with `all_operators()` and selects `Tensor` separately. The `datetime` and `tensor` Cargo features compile those families in; `budget` enables the operation ceiling. The dataflow-rs 3 workflow engine still enables its `all-operators`, `tensor` and `budget` Cargo features during the migration. Both engines expose the vocabulary listed above, including the tensor operators available since 1.8.
 
 ## Related
 

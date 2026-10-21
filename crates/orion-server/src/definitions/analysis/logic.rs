@@ -1,7 +1,7 @@
 //! Expressions as the engine sees them: compiled once, with what the
 //! compiler could prove about them.
 //!
-//! Every judgement here is the engine's own — `Logic::is_constant` is the
+//! Every judgement here is the engine's own — `dataflow_rs::Expr::constant` is the
 //! datalogic compiler reporting that it folded the whole rule to a literal,
 //! and [`Evaluator::evaluate`] runs the same evaluator the serving engine
 //! runs, with Orion's operators registered. A rule that uses these is not
@@ -9,8 +9,9 @@
 
 use std::collections::BTreeSet;
 
-use dataflow_rs_v3::datalogic_rs;
-use serde_json::{Value, json};
+use dataflow_rs::datavalue::OwnedDataValue;
+use dataflow_rs::expr::ExprEngine;
+use serde_json::Value;
 
 use super::dataflow::{self, Reads};
 use super::operators;
@@ -47,13 +48,13 @@ impl Expr {
     pub fn nondeterministic(&self) -> bool {
         self.operators
             .iter()
-            .any(|op| operators::NONDETERMINISTIC.contains(&op.as_str()))
+            .any(|op| operators::is_nondeterministic(op))
     }
 }
 
-/// A datalogic engine with Orion's operators, for offline judgement.
+/// The same expression engine as the runtime, with no secrets for offline judgement.
 pub struct Evaluator {
-    engine: datalogic_rs::Engine,
+    engine: ExprEngine,
 }
 
 impl Default for Evaluator {
@@ -65,17 +66,20 @@ impl Default for Evaluator {
 impl Evaluator {
     pub fn new() -> Self {
         Self {
-            engine: crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder())
-                .build(),
+            engine: crate::engine::operators::orion_exprs(
+                &crate::engine::ResolvedSecrets::empty(),
+                0,
+            )
+            .expect("Orion's operator registrations are valid"),
         }
     }
 
     pub fn expr(&self, value: &Value) -> Expr {
-        let compiled = self.engine.compile(value).ok();
+        let compiled = self.engine.compile::<OwnedDataValue>(value).ok();
         let constant = compiled
             .as_ref()
-            .filter(|logic| logic.is_constant())
-            .and_then(|_| self.evaluate(value, &json!({})));
+            .and_then(|expr| expr.constant())
+            .map(Value::from);
         let mut ops = BTreeSet::new();
         collect_operators(value, &mut ops);
         Expr {
@@ -90,7 +94,11 @@ impl Evaluator {
     /// Evaluate `value` against `context` exactly as the serving engine
     /// would. `None` when the engine refuses or errors — never a guess.
     pub fn evaluate(&self, value: &Value, context: &Value) -> Option<Value> {
-        self.engine.eval_into::<Value, _, _>(value, context).ok()
+        let expr = self.engine.compile::<OwnedDataValue>(value).ok()?;
+        self.engine
+            .eval(&expr, context)
+            .ok()
+            .map(|result| Value::from(&*result.value))
     }
 }
 
@@ -113,6 +121,7 @@ fn collect_operators(value: &Value, out: &mut BTreeSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn constants_are_the_compilers_verdict() {
@@ -159,6 +168,22 @@ mod tests {
         assert!(
             !ev.expr(&json!({">": [{"var": "data.t"}, 1]}))
                 .nondeterministic()
+        );
+        assert!(ev.expr(&json!({"secret": "api_key"})).nondeterministic());
+        assert!(ev.expr(&json!({"random": [0, 10]})).nondeterministic());
+    }
+
+    #[test]
+    fn analysis_uses_the_runtime_template_and_tensor_vocabulary() {
+        let ev = Evaluator::new();
+        let document = json!({"$cat": ["literal"], "count": {"var": "data.n"}});
+        assert_eq!(
+            ev.evaluate(&document, &json!({"data": {"n": 3}})),
+            Some(json!({"cat": ["literal"], "count": 3})),
+        );
+        assert_eq!(
+            ev.evaluate(&json!({"shape": [{"zeros": [[2, 3], "f32"]}]}), &json!({})),
+            Some(json!([2, 3])),
         );
     }
 }

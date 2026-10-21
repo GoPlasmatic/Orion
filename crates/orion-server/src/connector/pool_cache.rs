@@ -148,7 +148,7 @@ impl SqlPoolCache {
         let connect_timeout = config.connect_timeout_ms.unwrap_or(5000);
 
         self.cache
-            .get_or_create(connector_name, || async move {
+            .get_or_create_versioned(connector_name, config, || async move {
                 // S6: refuse a private/internal target before dialling. Only on
                 // the create path — a cached pool was checked when it was
                 // opened, and re-resolving per query would put a DNS round trip

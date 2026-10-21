@@ -75,8 +75,8 @@ pub struct Cli {
     #[arg(long, global = true, help_heading = "Output")]
     verbose: bool,
 
-    /// Disable colored output
-    #[arg(long, global = true, env = "NO_COLOR", help_heading = "Output")]
+    /// Disable colored output (also honors nonempty NO_COLOR)
+    #[arg(long, global = true, help_heading = "Output")]
     no_color: bool,
 
     /// Audit label for this change, e.g. "ticket=OPS-4412"
@@ -101,7 +101,7 @@ pub struct Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    if cli.no_color {
+    if cli.no_color || std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
         colored::control::set_override(false);
     }
 

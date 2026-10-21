@@ -7,9 +7,16 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use super::POOL_ACCESS_COUNTER;
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheKey {
+    name: String,
+    config: Option<[u8; 32]>,
+}
 
 /// A cached entry with LRU tracking.
 struct CacheEntry<V> {
@@ -38,7 +45,8 @@ impl<V> CacheEntry<V> {
 /// `V` must be `Clone` so callers can obtain an owned handle (connection /
 /// pool) without holding the lock.
 pub struct LruCache<V: Clone> {
-    entries: RwLock<HashMap<String, CacheEntry<V>>>,
+    entries: RwLock<HashMap<CacheKey, CacheEntry<V>>>,
+    invalidated: AtomicU64,
     max_entries: usize,
     cache_label: &'static str,
     /// F17: called with every removed value — explicit evict, evict_all, and
@@ -52,6 +60,7 @@ impl<V: Clone> LruCache<V> {
     pub fn new(max_entries: usize, cache_label: &'static str) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
+            invalidated: AtomicU64::new(0),
             max_entries,
             cache_label,
             on_evict: None,
@@ -66,6 +75,7 @@ impl<V: Clone> LruCache<V> {
     ) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
+            invalidated: AtomicU64::new(0),
             max_entries,
             cache_label,
             on_evict: Some(std::sync::Arc::new(handler)),
@@ -88,21 +98,70 @@ impl<V: Clone> LruCache<V> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, E>>,
     {
+        self.get_or_create_key(
+            CacheKey {
+                name: key.to_string(),
+                config: None,
+            },
+            create_fn,
+        )
+        .await
+    }
+
+    /// Connection settings are part of identity: an old caller may finish
+    /// opening a connection after an edit, but cannot supply a new caller's
+    /// pool. Only the connector name, never this digest or its input, is logged.
+    pub async fn get_or_create_versioned<F, Fut, C>(
+        &self,
+        name: &str,
+        config: &C,
+        create_fn: F,
+    ) -> Result<V, crate::errors::OrionError>
+    where
+        C: serde::Serialize,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<V, crate::errors::OrionError>>,
+    {
+        let bytes = serde_json::to_vec(config).map_err(|e| {
+            crate::errors::OrionError::internal_from("Cannot identify connection settings", e)
+        })?;
+        self.get_or_create_key(
+            CacheKey {
+                name: name.to_string(),
+                config: Some(Sha256::digest(bytes).into()),
+            },
+            create_fn,
+        )
+        .await
+    }
+
+    async fn get_or_create_key<F, Fut, E>(&self, key: CacheKey, create_fn: F) -> Result<V, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<V, E>>,
+    {
         // Fast path: read lock
-        {
+        let generation = {
             let entries = self.entries.read().await;
-            if let Some(entry) = entries.get(key) {
+            if let Some(entry) = entries.get(&key) {
                 entry.touch();
                 return Ok(entry.value.clone());
             }
-        }
+            self.invalidated.load(Ordering::Relaxed)
+        };
 
         // Create outside the write lock
         let value = create_fn().await?;
 
         // Insert under write lock; if another task raced, use theirs
         let mut entries = self.entries.write().await;
-        if let Some(existing) = entries.get(key) {
+        // Eviction also invalidates creations that have not inserted yet.
+        // The caller can finish using its value, but it must not refill the
+        // cache after a credential rotation or explicit invalidation.
+        if self.invalidated.load(Ordering::Relaxed) != generation {
+            return Ok(value);
+        }
+        if let Some(existing) = entries.get(&key) {
             existing.touch();
             let winner = existing.value.clone();
             // The race-losing value never enters the cache — hand it to the
@@ -120,7 +179,7 @@ impl<V: Clone> LruCache<V> {
                 .map(|(k, _)| k.clone())
         {
             tracing::info!(
-                evicted = %lru_key,
+                evicted = %lru_key.name,
                 cache = self.cache_label,
                 "Pool cache at capacity, evicting least-recently-used entry"
             );
@@ -129,15 +188,22 @@ impl<V: Clone> LruCache<V> {
             }
         }
 
-        entries.insert(key.to_string(), CacheEntry::new(value.clone()));
+        entries.insert(key, CacheEntry::new(value.clone()));
         Ok(value)
     }
 
     /// Evict a cached entry (e.g., when connector config changes). The
     /// removed value is handed to the evict handler (F17).
     pub async fn evict(&self, key: &str) {
-        let removed = self.entries.write().await.remove(key);
-        if let Some(entry) = removed {
+        let removed = {
+            let mut entries = self.entries.write().await;
+            self.invalidated.fetch_add(1, Ordering::Relaxed);
+            let keys: Vec<_> = entries.keys().filter(|k| k.name == key).cloned().collect();
+            keys.into_iter()
+                .filter_map(|k| entries.remove(&k))
+                .collect::<Vec<_>>()
+        };
+        for entry in removed {
             self.dispose(entry.value);
         }
     }
@@ -149,6 +215,7 @@ impl<V: Clone> LruCache<V> {
     pub async fn evict_all(&self) {
         let drained: Vec<V> = {
             let mut entries = self.entries.write().await;
+            self.invalidated.fetch_add(1, Ordering::Relaxed);
             entries.drain().map(|(_, e)| e.value).collect()
         };
         for value in drained {
@@ -162,6 +229,88 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    #[tokio::test]
+    async fn an_eviction_invalidates_a_creation_that_has_not_finished() {
+        for all in [false, true] {
+            let cache = Arc::new(LruCache::new(4, "test"));
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let (finish, resume) = tokio::sync::oneshot::channel();
+            let old_cache = cache.clone();
+            let old = tokio::spawn(async move {
+                old_cache
+                    .get_or_create("db", || async move {
+                        started.send(()).expect("reader waits");
+                        resume.await.expect("creator released");
+                        Ok::<_, ()>(1)
+                    })
+                    .await
+                    .expect("old caller finishes")
+            });
+            ready.await.expect("creation started");
+            if all {
+                cache.evict_all().await;
+            } else {
+                cache.evict("db").await;
+            }
+            finish.send(()).expect("creator waits");
+            assert_eq!(old.await.expect("joined"), 1);
+            assert_eq!(
+                cache.get_or_create("db", || async { Ok::<_, ()>(2) }).await,
+                Ok(2)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_revisions_do_not_supply_each_others_values() {
+        let cache = Arc::new(LruCache::new(4, "test"));
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finish, resume) = tokio::sync::oneshot::channel();
+        let old_cache = cache.clone();
+        let old = tokio::spawn(async move {
+            old_cache
+                .get_or_create_versioned("db", &"old-secret", || async move {
+                    started.send(()).expect("reader waits");
+                    resume.await.expect("creator released");
+                    Ok(1)
+                })
+                .await
+                .expect("old connection")
+        });
+        ready.await.expect("creation started");
+        assert_eq!(
+            cache
+                .get_or_create_versioned("db", &"new-secret", || async { Ok(2) })
+                .await
+                .expect("new connection"),
+            2
+        );
+        finish.send(()).expect("creator waits");
+        assert_eq!(old.await.expect("joined"), 1);
+        assert_eq!(
+            cache
+                .get_or_create_versioned("db", &"new-secret", || async { Ok(3) })
+                .await
+                .expect("new cache hit"),
+            2
+        );
+        cache.evict("db").await;
+        assert_eq!(
+            cache
+                .get_or_create_versioned("db", &"old-secret", || async { Ok(4) })
+                .await
+                .expect("evicted old revision"),
+            4
+        );
+        assert_eq!(
+            cache
+                .get_or_create_versioned("db", &"new-secret", || async { Ok(5) })
+                .await
+                .expect("evicted new revision"),
+            5
+        );
+    }
 
     /// F17: every removal path must hand the value to the evict handler.
     #[tokio::test]

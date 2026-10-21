@@ -196,10 +196,11 @@ impl SmtpPoolCache {
         connector_name: &str,
         config: &SmtpConnectorConfig,
     ) -> Result<Arc<SmtpPool>, OrionError> {
+        let identity = config;
         let config = config.clone();
         let name = connector_name.to_string();
         self.cache
-            .get_or_create(connector_name, || async move {
+            .get_or_create_versioned(connector_name, identity, || async move {
                 if !config.allow_private_urls
                     && let Err(msg) =
                         crate::validation::validate_hostport_not_private(&config.host, config.port)

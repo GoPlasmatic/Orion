@@ -65,6 +65,47 @@ pub struct SqlClusterRepository {
     pool: DbPool,
 }
 
+/// Record a configuration change in the transaction that made it. A crash
+/// after commit cannot lose the notification, and rollback loses both.
+pub(crate) async fn bump_epoch_tx(
+    tx: &mut crate::storage::DbTransaction,
+    scope: &str,
+) -> Result<i64, OrionError> {
+    let (sql, values) = build_sqlx(
+        tx.backend(),
+        Query::update()
+            .table(ConfigEpoch::Table)
+            // MySQL evaluates SET left to right; all backends must stamp
+            // the new epoch, rather than incrementing the stamp twice.
+            .value(
+                ConfigEpoch::EpochScopeAt,
+                Expr::col(ConfigEpoch::Epoch).add(1),
+            )
+            .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
+            .value(ConfigEpoch::EpochScope, scope)
+            .value(
+                ConfigEpoch::UpdatedAt,
+                Expr::cust(super::helpers::sql_now(tx.backend())),
+            )
+            .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
+    );
+    if tx.execute_query(&sql, values).await? != 1 {
+        return Err(SqlClusterRepository::missing_epoch_row());
+    }
+    let (sql, values) = build_sqlx(
+        tx.backend(),
+        Query::select()
+            .column(ConfigEpoch::Epoch)
+            .from(ConfigEpoch::Table)
+            .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
+    );
+    let (epoch,) = tx
+        .fetch_optional_as::<(i64,)>(&sql, values)
+        .await?
+        .ok_or_else(SqlClusterRepository::missing_epoch_row)?;
+    Ok(epoch)
+}
+
 impl SqlClusterRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
@@ -112,24 +153,10 @@ impl SqlClusterRepository {
 impl ClusterRepository for SqlClusterRepository {
     async fn bump_epoch(&self, scope: &str) -> Result<i64, OrionError> {
         crate::metrics::timed_db_op("cluster.bump_epoch", async {
-            // Counter and scope in one statement: a reader that sees the new
-            // epoch always sees the scope that goes with it.
-            let update = Query::update()
-                .table(ConfigEpoch::Table)
-                // `epoch_scope_at` is assigned BEFORE `epoch`, and the order
-                // is load-bearing: MySQL evaluates a multi-column SET left to
-                // right and lets a later assignment read a column the same
-                // statement already updated, while SQLite and PostgreSQL
-                // evaluate every right-hand side against the old row. Written
-                // first, `epoch + 1` is the same new value on all three.
-                .value(
-                    ConfigEpoch::EpochScopeAt,
-                    Expr::col(ConfigEpoch::Epoch).add(1),
-                )
-                .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
-                .value(ConfigEpoch::EpochScope, scope)
-                .to_owned();
-            self.update_epoch_row(update, ConfigEpoch::Epoch).await
+            let mut tx = self.pool.begin_write_tx().await?;
+            let epoch = bump_epoch_tx(&mut tx, scope).await?;
+            tx.commit().await?;
+            Ok(epoch)
         })
         .await
     }

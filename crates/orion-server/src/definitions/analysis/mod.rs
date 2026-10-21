@@ -457,28 +457,29 @@ mod tests {
         );
     }
 
-    /// The scoping table must classify the whole vocabulary — a new operator
-    /// fails this until someone decides which side it is on.
+    /// Analysis consumes the engine's metadata for every spelling, aliases included.
     #[test]
     fn every_operator_is_classified() {
-        for op in crate::engine::operators::operator_names() {
-            let scoping = operators::SCOPING.contains(&op.as_str());
-            let plain = operators::NON_SCOPING.contains(&op.as_str());
-            assert!(
-                scoping ^ plain,
-                "operator `{op}` must be in exactly one of SCOPING / NON_SCOPING"
+        let exprs =
+            crate::engine::operators::orion_exprs(&crate::engine::ResolvedSecrets::empty(), 0)
+                .expect("Orion's operator registrations are valid");
+        for op in exprs.operators() {
+            assert_eq!(operators::is_scoping(&op.name), op.scoping, "{}", op.name);
+            assert_eq!(
+                operators::is_nondeterministic(&op.name),
+                !op.deterministic || op.family == dataflow_rs::expr::OperatorFamily::Secret,
+                "{}",
+                op.name,
             );
         }
-        for op in operators::SCOPING.iter().chain(operators::NON_SCOPING) {
-            assert!(
-                crate::engine::operators::is_operator(op),
-                "`{op}` is classified but is not an operator this build registers"
-            );
-        }
+        assert!(operators::is_nondeterministic("secret"));
+        assert!(operators::is_nondeterministic("random"));
+        assert!(operators::is_nondeterministic("now"));
+        assert!(operators::is_scoping("unknown_future_operator"));
+        assert!(operators::is_nondeterministic("unknown_future_operator"));
     }
 
-    /// The claim behind `SCOPING`: inside those operators' later arguments a
-    /// `var` reads the element, not the context.
+    /// Inside scoping operators' later arguments a `var` reads the element.
     #[test]
     fn scoping_operators_rebind_var_to_the_element() {
         let ev = Evaluator::new();

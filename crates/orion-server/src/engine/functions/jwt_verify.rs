@@ -1475,11 +1475,7 @@ mod tests {
         .deadline(started + std::time::Duration::from_millis(300))
         .await;
         let error = called.outcome.expect_err("the run's deadline passed");
-        assert_eq!(
-            *error.kind(),
-            dataflow_rs::run::ErrorKind::TimedOut,
-            "{error}"
-        );
+        assert_eq!(*error.kind(), dataflow_rs::ErrorKind::TimedOut, "{error}");
         assert!(called.writes.is_empty());
         assert!(started.elapsed() < crate::jwt::jwks::FETCH_TIMEOUT);
     }

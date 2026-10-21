@@ -43,6 +43,7 @@ mod compile_test;
 mod concurrency_test;
 mod config_docs_drift_test;
 mod config_references_test;
+mod configuration_recovery_test;
 mod connector_cache_test;
 mod connector_db_test;
 mod connector_encryption_test;

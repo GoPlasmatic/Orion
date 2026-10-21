@@ -30,7 +30,7 @@ impl RedisPoolCache {
         })?;
 
         self.cache
-            .get_or_create(connector_name, || async move {
+            .get_or_create_versioned(connector_name, config, || async move {
                 // S6: refuse a private/internal target before dialling (see the
                 // note in `pool_cache.rs` on why this is create-path only).
                 crate::validation::check_cache_endpoint(connector_name, config).await?;

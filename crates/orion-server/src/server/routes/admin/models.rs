@@ -330,10 +330,11 @@ pub(crate) async fn delete_model(
     // The delete and its audit row commit together.
     let mut write = super::audited_write(&state, &principal, "delete", "model", &id).await?;
     state.repos.models.delete_tx(write.tx(), &id).await?;
-    write.commit().await?;
-
-    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Models)
+    let committed_epoch = write
+        .commit_published(query.reload.publication(crate::cluster::EpochScope::Models))
         .await?;
+
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -407,10 +408,11 @@ pub(crate) async fn change_model_status(
         StatusAction::Activate => state.repos.models.activate_tx(write.tx(), &id).await?,
         StatusAction::Archive => state.repos.models.archive_tx(write.tx(), &id).await?,
     };
-    write.commit().await?;
-
-    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Models)
+    let committed_epoch = write
+        .commit_published(query.reload.publication(crate::cluster::EpochScope::Models))
         .await?;
+
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(data_response(ModelResponse::try_from(&model)?))
 }
 

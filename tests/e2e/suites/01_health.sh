@@ -19,6 +19,15 @@ test_health_quiet_mode() {
     assert_eq "$CLI_OUTPUT" "ok"
 }
 
+test_health_yaml_output() {
+    cli_raw --output yaml health
+    assert_exit_code 0 "$CLI_EXIT"
+    assert_contains "$CLI_OUTPUT" "status: ok"
+    assert_contains "$CLI_OUTPUT" "components:"
+    assert_contains "$CLI_OUTPUT" "database: ok"
+    assert_contains "$CLI_OUTPUT" "engine: ok"
+}
+
 test_engine_status_empty() {
     reset_server_state
     cli engine status
@@ -30,6 +39,7 @@ test_engine_status_empty() {
 
 run_test "health check returns ok with components" test_health_check
 run_test "health quiet mode prints ok"             test_health_quiet_mode
+run_test "health YAML output includes nested components" test_health_yaml_output
 run_test "engine status on empty server"           test_engine_status_empty
 
 end_suite

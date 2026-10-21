@@ -1591,9 +1591,9 @@ mod tests {
     use crate::engine::functions::mongo_common::testkit;
     use crate::engine::functions::twin::{self, Seen};
     use crate::errors::kind::CONNECTOR_DETAIL;
+    use dataflow_rs::ErrorKind;
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
-    use dataflow_rs::run::ErrorKind;
     use std::time::Duration;
 
     /// At most three documents per `insert_many`, unfiltered writes off

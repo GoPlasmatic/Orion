@@ -16,7 +16,7 @@ use super::helpers::{
 use super::versioned::{self, VersionedSpec};
 
 /// The versioned-lifecycle spec shared machinery operates on.
-fn spec() -> VersionedSpec {
+pub(super) fn spec() -> VersionedSpec {
     use sea_query::IntoIden;
     VersionedSpec {
         table: Channels::Table.into_iden(),

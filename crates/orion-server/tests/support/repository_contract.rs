@@ -44,6 +44,111 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     a_dropped_audited_write_rolls_back(backend, &repos).await;
     the_current_version_read_returns_the_newest(backend, &repos).await;
     a_bump_stamps_the_scope_with_its_own_epoch(backend, pool).await;
+    a_live_write_commits_its_publication(backend, pool, &repos).await;
+    a_read_snapshot_is_repeatable(backend, pool).await;
+}
+
+async fn a_live_write_commits_its_publication(backend: &str, pool: &DbPool, repos: &Repositories) {
+    use orion::cluster::EpochScope;
+    use orion::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
+    let epochs = SqlClusterRepository::new(pool.clone());
+    repos
+        .channels
+        .create(&channel_request("contract-publication"))
+        .await
+        .expect("draft");
+    repos
+        .channels
+        .activate("contract-publication")
+        .await
+        .expect("activate");
+    let before = epochs.get_epoch().await.expect("epoch").epoch;
+    let mut write = repos
+        .audited(audit_event("archive", "contract-publication"))
+        .await
+        .expect("write");
+    repos
+        .channels
+        .archive_tx(write.tx(), "contract-publication")
+        .await
+        .expect("archive");
+    let committed = write
+        .commit_published(Some(EpochScope::Definitions))
+        .await
+        .expect("commit");
+    let row = epochs.get_epoch().await.expect("epoch");
+    assert_eq!(
+        committed,
+        Some(before + 1),
+        "{backend}: transaction returns its epoch"
+    );
+    assert_eq!(
+        row.epoch,
+        before + 1,
+        "{backend}: no post-commit sender is required"
+    );
+    assert_eq!(
+        row.epoch_scope_at, row.epoch,
+        "{backend}: scope and epoch agree"
+    );
+    assert_eq!(row.epoch_scope, "definitions", "{backend}: scope survives");
+    assert_eq!(
+        repos
+            .channels
+            .get_by_id("contract-publication")
+            .await
+            .expect("row")
+            .status,
+        "archived"
+    );
+}
+
+async fn a_read_snapshot_is_repeatable(backend: &str, pool: &DbPool) {
+    use orion::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
+    // SQLite's concurrent-writer case needs WAL on disk, and is exercised
+    // in configuration_recovery_test rather than this in-memory harness.
+    if matches!(pool, DbPool::Sqlite(_)) {
+        return;
+    }
+    if let DbPool::Mysql(mysql) = pool {
+        // Prove the snapshot helper does not depend on InnoDB's usual
+        // default: make every pooled session READ COMMITTED first.
+        let mut connections = Vec::new();
+        for _ in 0..mysql.options().get_max_connections() {
+            let mut conn = mysql.acquire().await.expect("session");
+            sqlx::query("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
+                .execute(&mut *conn)
+                .await
+                .expect("change session default");
+            connections.push(conn);
+        }
+        drop(connections);
+    }
+    let epochs = SqlClusterRepository::new(pool.clone());
+    let mut snapshot = pool.begin_snapshot_tx().await.expect("read snapshot");
+    let empty = || sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new()));
+    let first: Vec<(i64,)> = snapshot
+        .fetch_all_as("SELECT epoch FROM config_epoch WHERE id = 1", empty())
+        .await
+        .expect("first read");
+    let new_epoch = epochs
+        .bump_epoch("definitions")
+        .await
+        .expect("concurrent commit");
+    let pinned: Vec<(i64,)> = snapshot
+        .fetch_all_as("SELECT epoch FROM config_epoch WHERE id = 1", empty())
+        .await
+        .expect("second read");
+    assert_eq!(
+        first, pinned,
+        "{backend}: definition reads share one snapshot"
+    );
+    snapshot.commit().await.expect("release snapshot");
+    assert_eq!(
+        new_epoch,
+        first[0].0 + 1,
+        "{backend}: the writer actually committed"
+    );
 }
 
 /// A config-epoch bump stamps `epoch_scope_at` with the epoch it produced.

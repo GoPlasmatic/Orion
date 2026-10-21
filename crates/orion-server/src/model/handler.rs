@@ -65,10 +65,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use dataflow_rs::ErrorKind;
 use dataflow_rs::datavalue::{OwnedDataTensor, OwnedDataValue};
 use dataflow_rs::expr::ExprEngine;
 use dataflow_rs::function::{FunctionSpec, Prepare};
-use dataflow_rs::run::ErrorKind;
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 use dataflow_rs_v3::datalogic_rs as datalogic;
 use dataflow_rs_v3::engine::error::DataflowError;
@@ -76,7 +76,7 @@ use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
 use dataflow_rs_v3::engine::task_context::TaskContext;
 use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Value, json};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 use super::artifact::ArtifactStore;
@@ -778,18 +778,34 @@ impl Charged {
     }
 }
 
+struct InferencePermits {
+    held: Option<(OwnedSemaphorePermit, OwnedSemaphorePermit)>,
+    global: Arc<Semaphore>,
+    slots: usize,
+}
+
+impl Drop for InferencePermits {
+    fn drop(&mut self) {
+        self.held.take();
+        crate::metrics::set_model_live_inferences(
+            self.slots.saturating_sub(self.global.available_permits()) as u64,
+        );
+    }
+}
+
 /// A permit from `permits` before `deadline`, or a `permit` refusal naming
 /// the ceiling that was full. With no deadline of the call's own, the wait
 /// is the run's to end.
-async fn acquire<'s>(
-    permits: &'s Semaphore,
+async fn acquire(
+    permits: &Arc<Semaphore>,
     deadline: Option<Instant>,
     ceiling: &str,
     labels: &Labels,
-) -> Result<SemaphorePermit<'s>, Refused> {
+) -> Result<OwnedSemaphorePermit, Refused> {
+    let acquire = permits.clone().acquire_owned();
     let acquired = match deadline {
-        Some(deadline) => tokio::time::timeout_at(deadline, permits.acquire()).await,
-        None => Ok(permits.acquire().await),
+        Some(deadline) => tokio::time::timeout_at(deadline, acquire).await,
+        None => Ok(acquire.await),
     };
     match acquired {
         Ok(Ok(permit)) => Ok(permit),
@@ -1019,14 +1035,14 @@ async fn infer<W>(
                 })?;
 
         let queued = Instant::now();
-        let _global = acquire(
+        let global = acquire(
             &host.inference_permits,
             deadline,
             "models.max_concurrent_inferences",
             &labels,
         )
         .await?;
-        let _own = acquire(
+        let own = acquire(
             &entry.permits,
             deadline,
             "models.max_concurrency_per_model",
@@ -1044,25 +1060,36 @@ async fn infer<W>(
                 .saturating_sub(host.inference_permits.available_permits()) as u64,
         );
 
+        let permits = InferencePermits {
+            held: Some((global, own)),
+            global: host.inference_permits.clone(),
+            slots: host.inference_slots,
+        };
+
         let run_started = Instant::now();
-        let outputs = tokio::task::spawn_blocking(move || loaded.run(tensors))
-            .await
-            .map_err(|e| {
-                refuse(
-                    Some(&labels),
-                    Failure::new(Category::Run, "the inference did not complete").with_detail(e),
+        let outputs = tokio::task::spawn_blocking(move || {
+            // Timing out the waiter does not stop a running blocking job.
+            // Capacity belongs to that job until it really ends.
+            let _permits = permits;
+            loaded.run(tensors)
+        })
+        .await
+        .map_err(|e| {
+            refuse(
+                Some(&labels),
+                Failure::new(Category::Run, "the inference did not complete").with_detail(e),
+            )
+        })?
+        .map_err(|e| {
+            refuse(
+                Some(&labels),
+                Failure::new(
+                    Category::Run,
+                    format!("the model failed to run ({} stage)", e.stage),
                 )
-            })?
-            .map_err(|e| {
-                refuse(
-                    Some(&labels),
-                    Failure::new(
-                        Category::Run,
-                        format!("the model failed to run ({} stage)", e.stage),
-                    )
-                    .with_detail(e.message),
-                )
-            })?;
+                .with_detail(e.message),
+            )
+        })?;
         Ok::<_, Refused>((outputs, cold_load, queued_for, run_started.elapsed()))
     };
     let timed = match deadline {
@@ -1283,10 +1310,11 @@ async fn fetch_and_load(
     // from holding K artifacts at once. Held until this function returns.
     // `acquire` only errors if the semaphore is closed, which it never is —
     // the host holds it for the life of the process.
-    let _load_slot = match &host.load_permits {
+    let load_slot = match &host.load_permits {
         Some(permits) => Some(
             permits
-                .acquire()
+                .clone()
+                .acquire_owned()
                 .await
                 .map_err(|e| LoadError::new("load", format!("the load slot is gone: {e}")))?,
         ),
@@ -1295,9 +1323,12 @@ async fn fetch_and_load(
     let bytes = host.artifacts.bytes(entry).await?;
     let entry = entry.clone();
     let device = device.to_string();
-    tokio::task::spawn_blocking(move || runtime.load(&bytes, &entry.binding, &device))
-        .await
-        .map_err(|e| LoadError::new("load", format!("the load did not complete: {e}")))?
+    tokio::task::spawn_blocking(move || {
+        let _load_slot = load_slot;
+        runtime.load(&bytes, &entry.binding, &device)
+    })
+    .await
+    .map_err(|e| LoadError::new("load", format!("the load did not complete: {e}")))?
 }
 
 #[cfg(test)]
@@ -1652,6 +1683,199 @@ mod tests {
                 config: self.config.clone(),
             }
         }
+    }
+
+    struct BlockingWork {
+        gate: std::sync::Mutex<bool>,
+        wake: std::sync::Condvar,
+        started: tokio::sync::mpsc::UnboundedSender<()>,
+    }
+
+    impl BlockingWork {
+        fn block(&self) {
+            self.started.send(()).expect("test watches started work");
+            let guard = self.gate.lock().expect("gate");
+            let _wait = self
+                .wake
+                .wait_timeout_while(guard, Duration::from_secs(5), |released| !*released)
+                .expect("wait");
+        }
+
+        fn release(&self) {
+            *self.gate.lock().expect("gate") = true;
+            self.wake.notify_all();
+        }
+    }
+
+    impl LoadedModel for BlockingWork {
+        fn digest(&self) -> &str {
+            "test"
+        }
+        fn resident_bytes(&self) -> usize {
+            1
+        }
+        fn run(
+            &self,
+            _: Vec<OwnedDataTensor>,
+        ) -> Result<Vec<OwnedDataTensor>, super::super::runtimes::RunError> {
+            self.block();
+            Ok(Vec::new())
+        }
+    }
+
+    struct BlockingRuntime(Arc<BlockingWork>);
+
+    impl ModelRuntime for BlockingRuntime {
+        fn name(&self) -> &'static str {
+            "tract"
+        }
+        fn devices(&self) -> &'static [&'static str] {
+            &["cpu"]
+        }
+        fn formats(&self) -> &'static [&'static str] {
+            &["onnx"]
+        }
+        fn load(
+            &self,
+            _: &[u8],
+            _: &super::super::runtimes::LoadBinding,
+            _: &str,
+        ) -> Result<Arc<dyn LoadedModel>, LoadError> {
+            self.0.block();
+            Ok(self.0.clone())
+        }
+    }
+
+    fn blocking_work() -> (Arc<BlockingWork>, tokio::sync::mpsc::UnboundedReceiver<()>) {
+        let (started, receiver) = tokio::sync::mpsc::unbounded_channel();
+        (
+            Arc::new(BlockingWork {
+                gate: std::sync::Mutex::new(false),
+                wake: std::sync::Condvar::new(),
+                started,
+            }),
+            receiver,
+        )
+    }
+
+    /// The limit counts real blocking jobs, including ones whose callers
+    /// have timed out or gone away. Both permit families must stay held.
+    #[tokio::test]
+    async fn inference_capacity_survives_timeout_and_caller_cancellation() {
+        for cancel in [false, true] {
+            let rig = Rig::new();
+            let source = match rig.source() {
+                ModelSource::Offline(source) => source,
+                _ => unreachable!(),
+            };
+            let host = rig.host();
+            let entry = source.set().get("ada.c4-tiny").expect("entry").clone();
+            let (work, mut started) = blocking_work();
+            let model: Arc<dyn LoadedModel> = work.clone();
+            host.loaded
+                .get_or_load(
+                    CacheKey {
+                        digest: entry.digest.clone(),
+                        runtime: "tract",
+                        device: "cpu".to_string(),
+                        binding: entry.binding.fingerprint().to_string(),
+                    },
+                    || async { Ok(model) },
+                )
+                .await
+                .expect("cached");
+            let call = |timeout_ms| {
+                testing::call(
+                    ModelInferFunction {
+                        source: ModelSource::Offline(source.clone()),
+                        host: Some(host.clone()),
+                        config: rig.config.clone(),
+                    },
+                    infer(json!({"timeout_ms": timeout_ms})),
+                )
+                .exprs(rig.exprs.clone())
+                .name(NAME)
+                .message(message(&data()))
+            };
+            let first = tokio::spawn(call(if cancel { 10_000 } else { 100 }).into_future());
+            tokio::time::timeout(Duration::from_secs(2), started.recv())
+                .await
+                .expect("job starts")
+                .expect("started");
+            if cancel {
+                first.abort();
+                assert!(matches!(first.await, Err(error) if error.is_cancelled()));
+            } else {
+                assert!(first.await.expect("joined").outcome.is_err());
+            }
+            let held_global = host.inference_permits.available_permits();
+            let held_own = entry.permits.available_permits();
+            let second = call(20).await;
+            let no_second_job = started.try_recv().is_err();
+            work.release();
+            let _released_slot = tokio::time::timeout(
+                Duration::from_secs(2),
+                host.inference_permits.clone().acquire_owned(),
+            )
+            .await
+            .expect("real completion returns capacity")
+            .expect("open");
+            assert_eq!(held_global, 0, "timed-out work keeps global capacity");
+            assert_eq!(
+                held_own,
+                entry.limits.max_concurrency as usize - 1,
+                "timed-out work keeps its model permit"
+            );
+            assert!(
+                second.outcome.is_err(),
+                "second caller cannot bypass the limit"
+            );
+            assert!(no_second_job, "only one blocking job may start");
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_load_capacity_survives_caller_cancellation() {
+        let rig = Rig::new();
+        let entry = rig
+            .source()
+            .set()
+            .get("ada.c4-tiny")
+            .expect("entry")
+            .clone();
+        let mut host = rig.host();
+        Arc::get_mut(&mut host).expect("unique host").load_permits =
+            Some(Arc::new(Semaphore::new(1)));
+        let slots = host.load_permits.as_ref().expect("bounded").clone();
+        let (work, mut started) = blocking_work();
+        let runtime: Arc<dyn ModelRuntime> = Arc::new(BlockingRuntime(work.clone()));
+        let task_host = host.clone();
+        let task_entry = entry.clone();
+        let task_runtime = runtime.clone();
+        let first = tokio::spawn(async move {
+            fetch_and_load(&task_host, &task_entry, task_runtime, "cpu").await
+        });
+        tokio::time::timeout(Duration::from_secs(2), started.recv())
+            .await
+            .expect("load starts")
+            .expect("started");
+        first.abort();
+        assert!(matches!(first.await, Err(error) if error.is_cancelled()));
+        let held = slots.available_permits();
+        let second = tokio::time::timeout(
+            Duration::from_millis(20),
+            fetch_and_load(&host, &entry, runtime, "cpu"),
+        )
+        .await;
+        let no_second_job = started.try_recv().is_err();
+        work.release();
+        let _released_slot = tokio::time::timeout(Duration::from_secs(2), slots.acquire())
+            .await
+            .expect("load finishes")
+            .expect("open");
+        assert_eq!(held, 0, "a running parse retains its cold-load slot");
+        assert!(second.is_err(), "second load waits for real completion");
+        assert!(no_second_job);
     }
 
     /// A `[1, 2, 6, 7]` board, a few stones placed, as the fixture's

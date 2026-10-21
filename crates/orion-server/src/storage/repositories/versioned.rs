@@ -206,6 +206,19 @@ pub(crate) async fn list_active<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
 ) -> Result<Vec<T>, OrionError> {
+    let (sql, values) = build_sqlx(pool.backend(), &mut active_query(spec));
+    Ok(pool.fetch_all_as::<T>(&sql, values).await?)
+}
+
+pub(crate) async fn list_active_tx<T: DbRow>(
+    tx: &mut DbTransaction,
+    spec: &VersionedSpec,
+) -> Result<Vec<T>, OrionError> {
+    let (sql, values) = build_sqlx(tx.backend(), &mut active_query(spec));
+    Ok(tx.fetch_all_as::<T>(&sql, values).await?)
+}
+
+fn active_query(spec: &VersionedSpec) -> sea_query::SelectStatement {
     let mut select = Query::select();
     select
         .column(Asterisk)
@@ -215,8 +228,7 @@ pub(crate) async fn list_active<T: DbRow>(
         Some(priority) => select.order_by(priority.clone(), Order::Desc),
         None => select.order_by(spec.id_col.clone(), Order::Asc),
     };
-    let (sql, values) = build_sqlx(pool.backend(), &mut select);
-    Ok(pool.fetch_all_as::<T>(&sql, values).await?)
+    select
 }
 
 /// One page of an entity's version history, newest first.

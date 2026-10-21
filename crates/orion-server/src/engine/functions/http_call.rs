@@ -1130,7 +1130,7 @@ mod tests {
         .deadline(dataflow_rs::run::Instant::now() + Duration::from_millis(150))
         .await;
         let error = called.outcome.expect_err("the deadline passes first");
-        assert_eq!(*error.kind(), dataflow_rs::run::ErrorKind::TimedOut);
+        assert_eq!(*error.kind(), dataflow_rs::ErrorKind::TimedOut);
         assert!(called.writes.is_empty());
         assert!(
             started.elapsed() < Duration::from_secs(2),

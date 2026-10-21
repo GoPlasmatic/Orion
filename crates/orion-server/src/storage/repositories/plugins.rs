@@ -30,7 +30,7 @@ use super::helpers::{
 };
 use super::versioned::{self, VersionedSpec};
 
-fn spec() -> VersionedSpec {
+pub(super) fn spec() -> VersionedSpec {
     use sea_query::IntoIden;
     VersionedSpec {
         table: Plugins::Table.into_iden(),

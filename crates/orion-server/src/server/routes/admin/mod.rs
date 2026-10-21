@@ -632,6 +632,12 @@ pub(crate) enum ReloadMode {
     Defer,
 }
 
+impl ReloadMode {
+    fn publication(self, scope: crate::cluster::EpochScope) -> Option<crate::cluster::EpochScope> {
+        (self == Self::Now).then_some(scope)
+    }
+}
+
 /// Query parameters accepted by the two `PATCH /{id}/status` endpoints
 /// (K3, K4).
 ///
@@ -855,11 +861,19 @@ async fn audit_and_reload(
     }
     // `?`, where `reload_after_commit` deliberately discards: see the note
     // above. A manual reload that failed must not answer `200`.
-    let generation = reload_engine(state).await?;
-    state
+    // A manual reload finalizes deferred edits. Publish its durable intent
+    // before attempting the build, so a failed build is retried as well.
+    let epoch = state
         .cluster
-        .bump_config_epoch(crate::cluster::EpochScope::Definitions)
-        .await;
+        .request_config_reload(crate::cluster::EpochScope::Definitions)
+        .await
+        .inspect_err(|_| {
+            state
+                .reload_degraded
+                .store(true, std::sync::atomic::Ordering::Release);
+        })?;
+    let generation = reload_engine(state).await?;
+    state.cluster.record_config_applied(epoch);
     Ok(Some(generation))
 }
 
@@ -878,29 +892,18 @@ async fn audit_and_reload(
 async fn reload_after_commit(
     state: &AppState,
     reload: ReloadMode,
-) -> Result<(), crate::errors::OrionError> {
-    // `Definitions` scope: a channel or workflow row moved, which changes the
-    // engine and the channel estate and nothing else. A peer answering this
-    // reloads those and leaves its connector pools alone — before the scope
-    // existed, every activation dropped every pooled connection on every node.
-    reload_after_commit_scoped(state, reload, crate::cluster::EpochScope::Definitions).await
-}
-
-/// [`reload_after_commit`] with the scope the mutation names — `Plugins`
-/// for the plugin routes, whose peers must compare the active plugin set
-/// rather than only republish definitions, and `Models` for the model
-/// routes likewise.
-async fn reload_after_commit_scoped(
-    state: &AppState,
-    reload: ReloadMode,
-    scope: crate::cluster::EpochScope,
+    committed_epoch: Option<i64>,
 ) -> Result<(), crate::errors::OrionError> {
     if reload == ReloadMode::Defer {
         return Ok(());
     }
-    // Not `?`: see the note above. The degradation is on `/health`.
-    let _ = reload_engine(state).await;
-    state.cluster.bump_config_epoch(scope).await;
+    // The entity and epoch already committed together. A failed build keeps
+    // the old generation and leaves this epoch unapplied for reconciliation.
+    if reload_engine(state).await.is_ok()
+        && let Some(epoch) = committed_epoch
+    {
+        state.cluster.record_config_applied(epoch);
+    }
     Ok(())
 }
 

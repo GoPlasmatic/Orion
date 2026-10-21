@@ -166,9 +166,15 @@ pub(crate) async fn delete_workflow(
     // §2.6: the delete and its audit row commit together.
     let mut write = super::audited_write(&state, &principal, "delete", "workflow", &id).await?;
     state.repos.workflows.delete_tx(write.tx(), &id).await?;
-    write.commit().await?;
+    let committed_epoch = write
+        .commit_published(
+            query
+                .reload
+                .publication(crate::cluster::EpochScope::Definitions),
+        )
+        .await?;
 
-    super::reload_after_commit(&state, query.reload).await?;
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -236,9 +242,15 @@ pub(crate) async fn change_workflow_status(
         }
         StatusAction::Archive => state.repos.workflows.archive_tx(write.tx(), &id).await?,
     };
-    write.commit().await?;
+    let committed_epoch = write
+        .commit_published(
+            query
+                .reload
+                .publication(crate::cluster::EpochScope::Definitions),
+        )
+        .await?;
 
-    super::reload_after_commit(&state, query.reload).await?;
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -551,9 +563,15 @@ pub(crate) async fn update_rollout(
         .workflows
         .update_rollout_tx(write.tx(), &id, req.rollout_percentage)
         .await?;
-    write.commit().await?;
+    let committed_epoch = write
+        .commit_published(
+            query
+                .reload
+                .publication(crate::cluster::EpochScope::Definitions),
+        )
+        .await?;
 
-    super::reload_after_commit(&state, query.reload).await?;
+    super::reload_after_commit(&state, query.reload, committed_epoch).await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 

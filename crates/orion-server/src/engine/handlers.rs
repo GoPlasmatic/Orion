@@ -562,9 +562,9 @@ pub fn register_kafka_function(
 /// [`PluginSet::functions`](crate::plugin::PluginSet::functions). A name
 /// registered before is replaced, as the map's insert replaced it.
 ///
-/// A name reserved for a built-in ([`is_reserved_function_name`]) is
-/// refused rather than registered, since `Registry::register` panics on one
-/// (I43): it is logged and returned, and a task naming it calls the
+/// An invalid registration is refused through `Registry::try_register`, so
+/// runtime names and schemas cannot panic the node. It is logged and returned.
+/// For a reserved built-in name, a task naming it calls the
 /// built-in, which dataflow-rs 3 also dispatched in the plugin's place. An
 /// uploaded manifest cannot hold one, its functions living under its
 /// reverse-domain name; only a stored row that skipped the upload's check
@@ -575,16 +575,15 @@ pub fn register_plugin_functions(
 ) -> Vec<String> {
     let mut refused = Vec::new();
     for function in functions {
-        if is_reserved_function_name(function.name()) {
-            tracing::error!(
-                function = function.name(),
-                "Plugin function not registered: the name is reserved for a built-in function"
-            );
-            refused.push(function.name().to_string());
-            continue;
-        }
         let name = function.name().to_string();
-        registry.register(&name, function);
+        if let Err(error) = registry.try_register(&name, function) {
+            tracing::error!(
+                function = %name,
+                error = %error,
+                "Plugin function not registered"
+            );
+            refused.push(name);
+        }
     }
     refused
 }
@@ -595,7 +594,7 @@ pub fn register_plugin_functions(
 /// reader rewrites before any name is looked up. A host registering names
 /// from data checks them first, as `register`'s documentation asks.
 pub fn is_reserved_function_name(name: &str) -> bool {
-    dataflow_rs::def::BUILTIN_FUNCTIONS.contains(&name) || name == "validate"
+    dataflow_rs::def::is_reserved_function(name)
 }
 
 /// Register the real Kafka-backed publish_kafka handler.

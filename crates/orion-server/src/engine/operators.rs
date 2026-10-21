@@ -38,13 +38,13 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
+use dataflow_rs::datalogic_rs::operator::EvalContext;
+use dataflow_rs::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
 use dataflow_rs::datavalue::OwnedDataValue;
-use dataflow_rs::expr::{ExprEngine, OperatorInfo, Secrets};
-use dataflow_rs_v3::datalogic_rs::operator::EvalContext;
-use dataflow_rs_v3::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
+use dataflow_rs::expr::{ExprEngine, Operator, OperatorFamily, Secrets};
 
 /// Every JSONLogic operator this build evaluates — datalogic-rs's core and
-/// extension sets (reached through dataflow-rs's `all-operators` feature) plus
+/// extension sets (selected by [`orion_exprs`]) plus
 /// Orion's own registrations above and the engine's `secret`.
 ///
 /// Authoring-time checks read this to tell an operator apart from a data key:
@@ -110,7 +110,7 @@ pub fn is_operator(name: &str) -> bool {
 /// stored template key that names one of these (`logic.tensor_operator_key`),
 /// and that report has to say which names changed meaning in 1.8, not which
 /// names are operators. The unit tests below pin the list to the
-/// [`Family::Tensor`](dataflow_rs::expr::Family::Tensor) rows of
+/// [`OperatorFamily::Tensor`] rows of
 /// [`orion_exprs`]'s [`ExprEngine::operators`], so it can neither name an
 /// operator the build does not compile nor miss one the family adds.
 ///
@@ -639,10 +639,12 @@ pub fn orion_exprs(
     secrets: &crate::engine::ResolvedSecrets,
     ops_budget: u64,
 ) -> dataflow_rs::Result<ExprEngine> {
-    let mut builder = ExprEngine::builder();
+    let mut builder = ExprEngine::builder()
+        .all_operators()
+        .family(OperatorFamily::Tensor);
     for (name, op) in all() {
         builder = if op.deterministic() {
-            builder.operator_with(OperatorInfo::custom(name).deterministic(true), op)
+            builder.operator_with(Operator::custom(name).deterministic(true), op)
         } else {
             builder.operator(name, op)
         };
@@ -960,7 +962,7 @@ mod tests {
     // ---- The process's expression engine (I188) -------------------------
 
     use crate::engine::ResolvedSecrets;
-    use dataflow_rs::expr::Family;
+    use dataflow_rs::expr::OperatorFamily;
 
     /// The ten names, in registration order: the table `all()` is.
     const ORION_OPERATORS: [&str; 10] = [
@@ -1023,10 +1025,10 @@ mod tests {
     #[test]
     fn orion_exprs_lists_the_ten_operators() {
         let exprs = exprs();
-        let custom: Vec<&OperatorInfo> = exprs
+        let custom: Vec<&Operator> = exprs
             .operators()
             .iter()
-            .filter(|op| op.family == Family::Custom)
+            .filter(|op| op.family == OperatorFamily::Custom)
             .collect();
         let names: Vec<&str> = custom.iter().map(|op| &*op.name).collect();
         assert_eq!(names, ORION_OPERATORS, "the ten, in registration order");
@@ -1069,7 +1071,7 @@ mod tests {
         let family: BTreeSet<&str> = exprs
             .operators()
             .iter()
-            .filter(|op| op.family == Family::Tensor)
+            .filter(|op| op.family == OperatorFamily::Tensor)
             .map(|op| &*op.name)
             .collect();
         let listed: BTreeSet<&str> = TENSOR_OPERATORS.into_iter().collect();
@@ -1191,7 +1193,7 @@ mod tests {
         let err = bounded
             .eval(&expr, &context)
             .expect_err("crosses the ceiling");
-        assert_eq!(err.kind(), &dataflow_rs::run::ErrorKind::Budget);
+        assert_eq!(err.kind(), &dataflow_rs::ErrorKind::Budget);
         assert_eq!(
             Err(err.to_string()),
             on_v3(&v3_engine(&ResolvedSecrets::empty(), 10), &heavy, &context),

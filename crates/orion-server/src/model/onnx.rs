@@ -422,6 +422,23 @@ pub fn conv_work(bytes: &[u8]) -> Result<Option<ConvWork>, String> {
         }
     }
 
+    // These standard operators preserve the first input's shape. Exporters
+    // commonly keep f16 or quantized weights behind one of them; following
+    // only these edges does not attempt general graph shape inference.
+    // https://onnx.ai/onnx/operators/onnx__Cast.html
+    // https://onnx.ai/onnx/operators/onnx__DequantizeLinear.html
+    let aliases: std::collections::HashMap<&str, &str> = graph
+        .node
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.operator().as_str(),
+                "Cast" | "Identity" | "DequantizeLinear"
+            )
+        })
+        .filter_map(|node| Some((node.output.first()?.as_str(), node.input.first()?.as_str())))
+        .collect();
+
     let mut work = ConvWork::default();
     for node in &graph.node {
         let op = node.operator();
@@ -430,7 +447,18 @@ pub fn conv_work(bytes: &[u8]) -> Result<Option<ConvWork>, String> {
         }
         let Some(dims) = weight_operand(&op)
             .and_then(|at| node.input.get(at))
-            .and_then(|name| stored.get(name.as_str()))
+            .and_then(|name| {
+                let mut name = name.as_str();
+                // A finite walk also refuses cycles without recursion or an
+                // unbounded visited set on a malformed graph.
+                for _ in 0..=aliases.len() {
+                    if let Some(dims) = stored.get(name) {
+                        return Some(*dims);
+                    }
+                    name = aliases.get(name)?;
+                }
+                None
+            })
         else {
             return Ok(None);
         };
@@ -712,6 +740,73 @@ mod tests {
                 pointwise: 12,
             })
         );
+    }
+
+    #[test]
+    fn stored_weights_keep_their_work_through_shape_preserving_conversions() {
+        let expected = conv_work(fixture::BOARD_ONNX).expect("original work");
+        for operators in [
+            vec!["Cast"],
+            vec!["Identity"],
+            vec!["DequantizeLinear"],
+            vec!["Cast", "Identity", "DequantizeLinear"],
+        ] {
+            let mut model = ModelProto::decode(fixture::BOARD_ONNX).expect("fixture");
+            let graph = model.graph.as_mut().expect("graph");
+            let mut conversions = Vec::new();
+            for node in &mut graph.node {
+                let Some(at) = weight_operand(&node.operator()) else {
+                    continue;
+                };
+                for op in &operators {
+                    let input = node.input[at].clone();
+                    let output = format!("{input}-{op}");
+                    conversions.push(NodeProto {
+                        op_type: op.to_string(),
+                        input: vec![input],
+                        output: vec![output.clone()],
+                        ..Default::default()
+                    });
+                    node.input[at] = output;
+                }
+            }
+            graph.node.extend(conversions);
+            assert_eq!(
+                conv_work(&model.encode_to_vec()).expect("converted work"),
+                expected,
+                "{operators:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn weight_shape_walk_refuses_cycles_unknown_operators_and_custom_domains() {
+        for (operator, domain, cycle) in [
+            ("Cast", "", true),
+            ("Transpose", "", false),
+            ("Identity", "custom", false),
+        ] {
+            let mut model = ModelProto::decode(fixture::AS_INIT_ONNX).expect("fixture");
+            let graph = model.graph.as_mut().expect("graph");
+            let weight = graph.node[0].input[1].clone();
+            graph.node[0].input[1] = "converted".to_string();
+            graph.node.push(NodeProto {
+                op_type: operator.to_string(),
+                domain: domain.to_string(),
+                input: vec![if cycle {
+                    "converted".to_string()
+                } else {
+                    weight
+                }],
+                output: vec!["converted".to_string()],
+                ..Default::default()
+            });
+            assert_eq!(
+                conv_work(&model.encode_to_vec()).expect("work"),
+                None,
+                "{operator}, {domain}, cycle={cycle}"
+            );
+        }
     }
 
     /// A matrix product whose weight is not stored — two activations
