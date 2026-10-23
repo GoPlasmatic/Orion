@@ -91,7 +91,7 @@ harness = true
 # v4 selects extension families on ExprEngineBuilder at runtime. `datetime`
 # and `tensor` still need their Cargo gates; `budget` enables the ops ceiling.
 # Use the published crate so builds do not require a developer's checkout.
-dataflow-rs = { version = "4.0.0", features = ["datetime", "tensor", "budget"] }
+dataflow-rs = { version = "4.0.1", features = ["datetime", "tensor", "budget"] }
 # dataflow-rs 3.15, beside v4 until the port deletes it (Task O14). The derive
 # emits `::dataflow_rs::` paths, so v3 is the one renamed.
 dataflow-rs-v3 = { package = "dataflow-rs", version = "=3.15.0", features = ["all-operators", "tensor", "budget"] }

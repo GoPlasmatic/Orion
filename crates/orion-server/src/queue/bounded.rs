@@ -57,7 +57,7 @@ use tokio::task::JoinHandle;
 /// write ordered before this release actually happened.
 pub(crate) fn release_counter(counter: &AtomicUsize, by: usize) -> usize {
     let previous = counter
-        .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Release, Ordering::Relaxed, |current| {
             Some(current.saturating_sub(by))
         })
         // The closure never returns `None`, so this cannot fail.

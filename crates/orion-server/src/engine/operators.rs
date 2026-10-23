@@ -145,10 +145,52 @@ pub fn is_tensor_operator(key: &str) -> bool {
     TENSOR_OPERATORS.contains(&key)
 }
 
+/// Byte chunk size for custom-operator budget charging, matching
+/// `datalogic-rs`'s `STRING_UNIT` (64 bytes, one cache line) so custom string
+/// and encoding operators price byte movement at the same scale as built-in
+/// string operators while keeping short strings (< 64 bytes) free of extra
+/// per-byte charges.
+const STRING_UNIT: usize = 64;
+
+/// Charge one operation per whole [`STRING_UNIT`] bytes touched.
+#[inline]
+fn charge_bytes(ctx: &mut EvalContext<'_, '_>, bytes: usize) -> datalogic::Result<()> {
+    if bytes >= STRING_UNIT {
+        ctx.charge((bytes / STRING_UNIT) as u64)?;
+    }
+    Ok(())
+}
+
+/// Charge for walking a composite value before serializing it to compact JSON.
+fn charge_composite_work(
+    ctx: &mut EvalContext<'_, '_>,
+    value: &DataValue<'_>,
+) -> datalogic::Result<()> {
+    if let Some(items) = value.as_array() {
+        ctx.charge(items.len() as u64)?;
+        for item in items {
+            charge_composite_work(ctx, item)?;
+        }
+    } else if let Some(entries) = value.as_object() {
+        ctx.charge(entries.len() as u64)?;
+        for (key, val) in entries {
+            charge_bytes(ctx, key.len())?;
+            charge_composite_work(ctx, val)?;
+        }
+    } else if let Some(s) = value.as_str() {
+        charge_bytes(ctx, s.len())?;
+    }
+    Ok(())
+}
+
 /// The text an encoder operates on: strings as-is (borrowed — no copy on the
 /// common case), other values as their compact-JSON form, `null`/absent as an
 /// error naming the operator.
-fn encode_text<'v>(op: &'static str, args: &[&'v DataValue<'v>]) -> Result<Cow<'v, str>, Error> {
+fn encode_text<'v>(
+    op: &'static str,
+    args: &[&'v DataValue<'v>],
+    ctx: &mut EvalContext<'_, 'v>,
+) -> Result<Cow<'v, str>, Error> {
     let Some(v) = args.first() else {
         return Err(Error::custom_message(format!("{op} requires one argument")));
     };
@@ -157,7 +199,10 @@ fn encode_text<'v>(op: &'static str, args: &[&'v DataValue<'v>]) -> Result<Cow<'
         None if v.is_null() => Err(Error::custom_message(format!(
             "{op} of null — the argument is missing or resolved to nothing"
         ))),
-        None => Ok(Cow::Owned(v.to_string())),
+        None => {
+            charge_composite_work(ctx, v)?;
+            Ok(Cow::Owned(v.to_string()))
+        }
     }
 }
 
@@ -177,10 +222,11 @@ impl CustomOperator for Encode {
     fn evaluate<'a>(
         &self,
         args: &[&'a DataValue<'a>],
-        _ctx: &mut EvalContext<'_, 'a>,
+        ctx: &mut EvalContext<'_, 'a>,
         arena: &'a datalogic::bumpalo::Bump,
     ) -> datalogic::Result<&'a DataValue<'a>> {
-        let text = encode_text(self.name, args)?;
+        let text = encode_text(self.name, args, ctx)?;
+        charge_bytes(ctx, text.len())?;
         Ok(arena.string(&encode_bytes(self.codec, text.as_bytes())))
     }
 }
@@ -194,10 +240,11 @@ impl CustomOperator for Decode {
     fn evaluate<'a>(
         &self,
         args: &[&'a DataValue<'a>],
-        _ctx: &mut EvalContext<'_, 'a>,
+        ctx: &mut EvalContext<'_, 'a>,
         arena: &'a datalogic::bumpalo::Bump,
     ) -> datalogic::Result<&'a DataValue<'a>> {
         let input = decode_text(self.name, args)?;
+        charge_bytes(ctx, input.len())?;
         let bytes = decode_bytes(self.codec, input)
             .map_err(|e| Error::custom_message(format!("{}: invalid input: {e}", self.name)))?;
         let text = String::from_utf8(bytes).map_err(|_| {
@@ -242,7 +289,7 @@ impl CustomOperator for Random {
     fn evaluate<'a>(
         &self,
         args: &[&'a DataValue<'a>],
-        _ctx: &mut EvalContext<'_, 'a>,
+        ctx: &mut EvalContext<'_, 'a>,
         arena: &'a datalogic::bumpalo::Bump,
     ) -> datalogic::Result<&'a DataValue<'a>> {
         use rand::RngExt;
@@ -271,6 +318,7 @@ impl CustomOperator for Random {
             }
             "digits" => {
                 let n = int_arg(args, 1, "digits count", 1, MAX_DIGITS)?;
+                charge_bytes(ctx, n as usize)?;
                 let code: String = (0..n)
                     .map(|_| char::from(b'0' + rng.random_range(0..10u8)))
                     .collect();
@@ -289,6 +337,7 @@ impl CustomOperator for Random {
             "string" => {
                 let length = int_arg(args, 1, "length", 1, MAX_STRING_LENGTH)?;
                 let alphabet = alphabet_chars(args.get(2).copied())?;
+                charge_bytes(ctx, length as usize)?;
                 let s: String = (0..length)
                     .map(|_| alphabet[rng.random_range(0..alphabet.len())])
                     .collect();
@@ -305,6 +354,7 @@ impl CustomOperator for Random {
                         ))
                     })?,
                 };
+                charge_bytes(ctx, n as usize)?;
                 let mut buf = vec![0u8; n as usize];
                 rng.fill(buf.as_mut_slice());
                 Ok(arena.string(&encode_bytes(codec, &buf)))
@@ -404,13 +454,14 @@ impl CustomOperator for UrlEncode {
     fn evaluate<'a>(
         &self,
         args: &[&'a DataValue<'a>],
-        _ctx: &mut EvalContext<'_, 'a>,
+        ctx: &mut EvalContext<'_, 'a>,
         arena: &'a datalogic::bumpalo::Bump,
     ) -> datalogic::Result<&'a DataValue<'a>> {
         // Same text model as the encoders, `null` included: silently encoding
         // a missing variable into an empty query value is the failure class
         // the codec operators already reject.
-        let text = encode_text("url_encode", args)?;
+        let text = encode_text("url_encode", args, ctx)?;
+        charge_bytes(ctx, text.len())?;
         // The one RFC 3986 encoder in the tree, shared with SigV4 signing so
         // the two can never disagree about the unreserved set.
         Ok(arena.string(&crate::connector::sigv4::uri_encode(&text, false)))
@@ -425,10 +476,11 @@ impl CustomOperator for UrlDecode {
     fn evaluate<'a>(
         &self,
         args: &[&'a DataValue<'a>],
-        _ctx: &mut EvalContext<'_, 'a>,
+        ctx: &mut EvalContext<'_, 'a>,
         arena: &'a datalogic::bumpalo::Bump,
     ) -> datalogic::Result<&'a DataValue<'a>> {
         let input = decode_text("url_decode", args)?;
+        charge_bytes(ctx, input.len())?;
         // Shared with route-parameter decoding, which returns `None` on both
         // failure modes. Note this does **not** treat `+` as a space: that is
         // form-encoding, and the correct inverse of RFC 3986 leaves it alone.
@@ -456,7 +508,7 @@ impl CustomOperator for Join {
     fn evaluate<'a>(
         &self,
         args: &[&'a DataValue<'a>],
-        _ctx: &mut EvalContext<'_, 'a>,
+        ctx: &mut EvalContext<'_, 'a>,
         arena: &'a datalogic::bumpalo::Bump,
     ) -> datalogic::Result<&'a DataValue<'a>> {
         let Some(first) = args.first() else {
@@ -480,12 +532,16 @@ impl CustomOperator for Join {
             ));
         };
 
+        ctx.charge(items.len() as u64)?;
         let mut out = String::new();
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
+                charge_bytes(ctx, sep.len())?;
                 out.push_str(sep);
             }
-            out.push_str(&render_element(item));
+            let piece = render_element(item, ctx)?;
+            charge_bytes(ctx, piece.len())?;
+            out.push_str(&piece);
         }
         Ok(arena.string(&out))
     }
@@ -498,11 +554,17 @@ impl CustomOperator for Join {
 /// rule governs an operator's *own* argument, where null means a missing
 /// variable; inside an array being joined it is a value, and `cat` already
 /// renders it empty.
-fn render_element<'v>(v: &'v DataValue<'v>) -> Cow<'v, str> {
+fn render_element<'v>(
+    v: &'v DataValue<'v>,
+    ctx: &mut EvalContext<'_, 'v>,
+) -> Result<Cow<'v, str>, Error> {
     match v.as_str() {
-        Some(s) => Cow::Borrowed(s),
-        None if v.is_null() => Cow::Borrowed(""),
-        None => Cow::Owned(v.to_string()),
+        Some(s) => Ok(Cow::Borrowed(s)),
+        None if v.is_null() => Ok(Cow::Borrowed("")),
+        None => {
+            charge_composite_work(ctx, v)?;
+            Ok(Cow::Owned(v.to_string()))
+        }
     }
 }
 
@@ -1201,6 +1263,39 @@ mod tests {
         );
         // `0` sets none.
         assert!(on_v4(&exprs(), &heavy, &context).is_ok());
+    }
+
+    #[test]
+    fn custom_operators_charge_proportional_to_variable_work() {
+        let long_text = "x".repeat(64 * 10);
+        let encoded_b64 = crate::crypto::encode_bytes(Codec::Base64, long_text.as_bytes());
+        let encoded_url = crate::connector::sigv4::uri_encode(&long_text, false);
+        let items: Vec<String> = (0..20).map(|i| format!("item-{i}")).collect();
+        let context = json!({
+            "data": {
+                "long": long_text,
+                "b64": encoded_b64,
+                "url": encoded_url,
+                "items": items,
+            }
+        });
+
+        let bounded = orion_exprs(&ResolvedSecrets::empty(), 5).expect("builds");
+        for logic in [
+            json!({"base64_encode": [{"var": "data.long"}]}),
+            json!({"base64_decode": [{"var": "data.b64"}]}),
+            json!({"url_encode": [{"var": "data.long"}]}),
+            json!({"url_decode": [{"var": "data.url"}]}),
+            json!({"join": [{"var": "data.items"}, ", "]}),
+            json!({"random": ["string", 512]}),
+            json!({"random": ["bytes", 512]}),
+        ] {
+            let expr = bounded.compile::<OwnedDataValue>(&logic).expect("compiles");
+            let err = bounded
+                .eval(&expr, &context)
+                .expect_err("variable-sized work crosses budget ceiling of 5");
+            assert_eq!(err.kind(), &dataflow_rs::ErrorKind::Budget, "{logic}");
+        }
     }
 }
 

@@ -483,10 +483,22 @@ pub fn compile_row(compiler: &Compiler, json: &Value) -> Result<Compiled, Vec<Is
 /// `crate::engine::ERROR_CONTEXT`). A reload that keeps the registry builds
 /// its engine with `Engine::with_program`, which keeps this config.
 pub fn serving_engine(program: Program) -> dataflow_rs::Engine {
+    serving_engine_with_policy(program, dataflow_rs::run::ConditionErrorPolicy::default())
+}
+
+/// Build a `dataflow-rs` 4 serving engine over `program` with Orion's error
+/// context and an explicit [`dataflow_rs::run::ConditionErrorPolicy`]
+/// (`ConditionErrorPolicy::Stop` for v2 fail-closed condition evaluation, or
+/// `ConditionErrorPolicy::Skip` for v1 compatibility).
+pub fn serving_engine_with_policy(
+    program: Program,
+    condition_policy: dataflow_rs::run::ConditionErrorPolicy,
+) -> dataflow_rs::Engine {
     dataflow_rs::Engine::new(
         program,
         dataflow_rs::run::EngineConfig::default()
-            .error_context(crate::engine::ERROR_CONTEXT.clone()),
+            .error_context(crate::engine::ERROR_CONTEXT.clone())
+            .with_condition_error_policy(condition_policy),
     )
 }
 

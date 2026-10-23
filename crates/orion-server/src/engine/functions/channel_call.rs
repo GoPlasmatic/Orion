@@ -652,6 +652,9 @@ impl Function for ChannelCallFunction {
         if let Some(token) = &token {
             options = options.cancel(token);
         }
+        if let Some(accountant) = ctx.accountant() {
+            options = options.accountant(accountant);
+        }
         let mut child = Message::from_parts(data, OwnedDataValue::Null, metadata);
         let run = engine.run_with(&mut child, &options).await;
 
@@ -2667,5 +2670,63 @@ mod tests {
         let failure = twin::seen(&called).expect_err("refused");
         let expected: DataflowError = not_found("orders").into();
         assert_eq!(failure.message, expected.to_string());
+    }
+
+    #[tokio::test]
+    async fn the_child_inherits_the_runs_accountant_without_resetting_budgets() {
+        let chans = [
+            greeter(),
+            chan(
+                "caller",
+                call(json!({"channel": "target", "output": "data.result"})),
+            ),
+        ];
+        let w = world(&chans).await;
+
+        // 1. Unbounded SharedRunAccountant counts tasks and expression ops across
+        //    both parent (`caller`: 1 task) and child (`target`: 2 tasks = 3 total).
+        let acct = crate::engine::SharedRunAccountant::unbounded();
+        let (run, msg) = w
+            .v4_run(
+                "caller",
+                json!({"name": "World"}),
+                json!({}),
+                acct.apply(RunOptions::default()),
+            )
+            .await;
+        assert_eq!(
+            seen(&run, &msg).expect("succeeds")["result"]["greeting"],
+            "Hello, World"
+        );
+        let snap = acct.snapshot();
+        assert_eq!(
+            snap.tasks_dispatched, 3,
+            "parent (1 task) + child (2 tasks) share the same accountant"
+        );
+        assert!(
+            snap.expr_ops_charged > 0,
+            "child expression ops are reported to the shared accountant"
+        );
+        assert_eq!(snap.in_flight, 0);
+
+        // 2. A root task ceiling of 2 allows the parent task (`channel_call`) and
+        //    the child's first task (`t0`), then stops before the child's second
+        //    task (`t1`) can run.
+        let capped = crate::engine::SharedRunAccountant::new(crate::engine::RunBudgetLimits {
+            max_tasks: Some(2),
+            ..Default::default()
+        });
+        let (capped_run, capped_msg) = w
+            .v4_run(
+                "caller",
+                json!({"name": "World"}),
+                json!({}),
+                capped.apply(RunOptions::default()),
+            )
+            .await;
+        let err =
+            seen(&capped_run, &capped_msg).expect_err("child task exceeds shared task ceiling");
+        assert_eq!(err.code, "BUDGET_EXCEEDED");
+        assert_eq!(capped.snapshot().tasks_dispatched, 3);
     }
 }

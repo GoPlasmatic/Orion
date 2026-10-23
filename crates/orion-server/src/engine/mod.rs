@@ -144,10 +144,12 @@ pub fn stamp_vars(metadata: &mut serde_json::Value, vars: Option<&serde_json::Va
     }
 }
 
+pub mod budget;
 mod error;
 pub mod execute;
 pub mod functions;
 pub mod handlers;
+pub mod intake;
 pub mod kit;
 pub mod loader;
 pub mod observer;
@@ -160,6 +162,7 @@ pub mod secrets;
 pub mod steps;
 pub mod utils;
 
+pub use budget::{RunBudgetLimits, RunBudgetSnapshot, SharedRunAccountant};
 pub use error::{ErrorClass, HTTP_ERROR, HandlerError, HttpFailure, http_error, http_status};
 pub use execute::{ExecOpts, Execution, RunOutcome, execute_admitted};
 pub use functions::registry::{
@@ -173,6 +176,7 @@ pub use handlers::{
 pub use loader::{
     AliasRewrite, EngineLoad, HandlerScreen, LoadedWorkflows, build_engine_workflows, build_single,
     compile_row, filter_channels, quarantines, rewrite_aliases, serving_engine,
+    serving_engine_with_policy,
 };
 pub use observer::MetricsObserver;
 pub use refs::{
