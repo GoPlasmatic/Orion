@@ -21,29 +21,10 @@ use super::contract::ImplementationKind;
 use super::foundation::{
     COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
 };
-use super::migration::{
-    ENTERPRISE_DRIVER_ELASTICSEARCH, ENTERPRISE_DRIVER_KAFKA, ENTERPRISE_DRIVER_MONGODB,
-    ENTERPRISE_DRIVER_MYSQL, ENTERPRISE_DRIVER_REDIS, ENTERPRISE_DRIVER_SMTP,
-    ENTERPRISE_DRIVER_STORAGE,
-};
 use super::CompositionRoot;
 
 /// Canonical Community Edition native Rust channel driver protocol IDs (`DEC-003`).
 pub const COMMUNITY_CHANNEL_PROTOCOLS: [&str; 4] = ["cron", "http", "rest", "source"];
-
-/// Canonical Enterprise Edition native Rust channel driver protocol IDs (`DEC-003`).
-pub const ENTERPRISE_CHANNEL_PROTOCOLS: [&str; 3] = ["graphql", "kafka", "sse"];
-
-/// Canonical Enterprise Edition Direct Rust provider driver IDs (`DEC-005`).
-pub const ENTERPRISE_RUST_DRIVERS: [&str; 7] = [
-    ENTERPRISE_DRIVER_ELASTICSEARCH,
-    ENTERPRISE_DRIVER_KAFKA,
-    ENTERPRISE_DRIVER_MONGODB,
-    ENTERPRISE_DRIVER_MYSQL,
-    ENTERPRISE_DRIVER_REDIS,
-    ENTERPRISE_DRIVER_SMTP,
-    ENTERPRISE_DRIVER_STORAGE,
-];
 
 /// Boundary violation discovered while auditing a [`CompositionRoot`] against the
 /// Community Edition contract (`V2-11.3`).
@@ -110,13 +91,13 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
         }
     }
 
-    for enterprise_channel in ENTERPRISE_CHANNEL_PROTOCOLS {
-        if registered_channels.iter().any(|c| c == enterprise_channel) {
+    for ch in &registered_channels {
+        if !COMMUNITY_CHANNEL_PROTOCOLS.contains(&ch.as_str()) {
             violations.push(BoundaryViolation {
                 code: "ENTERPRISE_CHANNEL_LEAKED_INTO_COMMUNITY",
-                component: enterprise_channel.to_string(),
+                component: ch.clone(),
                 message: format!(
-                    "Enterprise channel driver '{enterprise_channel}' must not be registered in pure Community assembly"
+                    "Non-Community channel driver '{ch}' must not be registered in pure Community assembly"
                 ),
             });
         }
@@ -154,25 +135,8 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
         }
     }
 
-    for enterprise_driver in ENTERPRISE_RUST_DRIVERS {
-        if registered_rust_providers
-            .iter()
-            .any(|d| d == enterprise_driver)
-        {
-            violations.push(BoundaryViolation {
-                code: "ENTERPRISE_RUST_PROVIDER_LEAKED_INTO_COMMUNITY",
-                component: enterprise_driver.to_string(),
-                message: format!(
-                    "Enterprise Direct Rust provider '{enterprise_driver}' must not be registered in Community assembly"
-                ),
-            });
-        }
-    }
-
     for rust_driver in &registered_rust_providers {
-        if !COMMUNITY_RUST_DRIVERS.contains(&rust_driver.as_str())
-            && !ENTERPRISE_RUST_DRIVERS.contains(&rust_driver.as_str())
-        {
+        if !COMMUNITY_RUST_DRIVERS.contains(&rust_driver.as_str()) {
             violations.push(BoundaryViolation {
                 code: "UNCATALOGED_DIRECT_RUST_PROVIDER",
                 component: rust_driver.clone(),

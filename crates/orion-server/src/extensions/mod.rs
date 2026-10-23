@@ -59,7 +59,7 @@ pub use channel_driver::{
 };
 pub use community_assembly::{
     BoundaryViolation, COMMUNITY_CHANNEL_PROTOCOLS, CommunityAssemblyReport,
-    ENTERPRISE_CHANNEL_PROTOCOLS, ENTERPRISE_RUST_DRIVERS, verify_community_assembly,
+    verify_community_assembly,
 };
 pub use context::{
     AdmittedRun, AttemptContext, AuthorityGrant, BudgetCounters, BudgetLimits, BudgetScope,

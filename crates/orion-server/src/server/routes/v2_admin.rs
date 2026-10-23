@@ -791,9 +791,12 @@ async fn edition_transition_preflight(
     if let Some(rev) = revisions.into_iter().find(|r| r.revision == target_rev) {
         for p in &rev.manifest.providers {
             let full_id = format!("{}.{}", p.publisher, p.provider_id);
-            if crate::extensions::ENTERPRISE_RUST_DRIVERS.contains(&full_id.as_str())
-                || crate::extensions::ENTERPRISE_RUST_DRIVERS.contains(&p.provider_id.as_str())
-                || p.publisher.starts_with("orion.enterprise")
+            let is_community_foundation =
+                crate::extensions::COMMUNITY_RUST_DRIVERS.contains(&full_id.as_str())
+                    || crate::extensions::COMMUNITY_RUST_DRIVERS.contains(&p.provider_id.as_str());
+            if !is_community_foundation
+                && (p.publisher.starts_with("orion.enterprise")
+                    || p.publisher.starts_with("com.orion.enterprise"))
             {
                 incompatible_providers.push(full_id.clone());
                 findings.push(json!({
