@@ -36,7 +36,7 @@ async fn test_async_path_rejects_invalid_input_per_validation_logic() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/async-validated-ch/async",
+            "/api/v2/data/async-validated-ch/async",
             Some(json!({"data": {"quantity": 5}})),
         ))
         .await
@@ -55,7 +55,7 @@ async fn test_async_path_rejects_invalid_input_per_validation_logic() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/async-validated-ch/async",
+            "/api/v2/data/async-validated-ch/async",
             Some(json!({"data": {"order_id": "ORD-1"}})),
         ))
         .await
@@ -80,7 +80,7 @@ async fn test_async_path_honors_deduplication() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/async-dedup-ch/async",
+            "/api/v2/data/async-dedup-ch/async",
             "async-key-1",
             json!({"data": {"n": 1}}),
         ))
@@ -92,7 +92,7 @@ async fn test_async_path_honors_deduplication() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/async-dedup-ch/async",
+            "/api/v2/data/async-dedup-ch/async",
             "async-key-1",
             json!({"data": {"n": 2}}),
         ))
@@ -104,7 +104,7 @@ async fn test_async_path_honors_deduplication() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/async-dedup-ch/async",
+            "/api/v2/data/async-dedup-ch/async",
             "async-key-2",
             json!({"data": {"n": 3}}),
         ))
@@ -179,7 +179,7 @@ async fn test_channel_call_enforces_target_validation_logic() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/caller-invalid",
+            "/api/v2/data/caller-invalid",
             Some(json!({"data": {}})),
         ))
         .await
@@ -198,7 +198,7 @@ async fn test_channel_call_enforces_target_validation_logic() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/caller-valid",
+            "/api/v2/data/caller-valid",
             Some(json!({"data": {}})),
         ))
         .await
@@ -236,7 +236,7 @@ async fn test_metadata_channel_set_on_http_ingress() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/f4-ch",
+            "/api/v2/data/f4-ch",
             Some(json!({"data": {}, "metadata": {"channel": "spoofed"}})),
         ))
         .await
@@ -248,7 +248,7 @@ async fn test_metadata_channel_set_on_http_ingress() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/f4-ch/async",
+            "/api/v2/data/f4-ch/async",
             Some(json!({"data": {}})),
         ))
         .await
@@ -283,7 +283,7 @@ async fn test_metadata_channel_set_on_channel_call() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/f4-caller",
+            "/api/v2/data/f4-caller",
             Some(json!({"data": {}})),
         ))
         .await
@@ -338,7 +338,7 @@ async fn failing_task_response(environment: &str) -> serde_json::Value {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             None,
         ))
         .await
@@ -349,7 +349,7 @@ async fn failing_task_response(environment: &str) -> serde_json::Value {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/verbosity-ch",
+            "/api/v2/data/verbosity-ch",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -432,7 +432,7 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             None,
         ))
         .await
@@ -443,7 +443,7 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/g1-errors-ch",
+            "/api/v2/data/g1-errors-ch",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -469,7 +469,7 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?channel=g1-errors-ch&limit=1",
+            "/api/v2/admin/traces?channel=g1-errors-ch&limit=1",
             None,
         ))
         .await
@@ -482,7 +482,7 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -512,7 +512,7 @@ async fn test_async_path_honors_origin_allow_list() {
 
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/data/async-cors-ch/async")
+        .uri("/api/v2/data/async-cors-ch/async")
         .header("content-type", "application/json")
         .header("origin", "https://evil.example")
         .body(axum::body::Body::from(
@@ -575,14 +575,14 @@ async fn test_channel_rate_limit_applies_without_the_platform_limiter() {
 
     let resp = app
         .clone()
-        .oneshot(post_from_client("/api/v1/data/n16-rl-sync"))
+        .oneshot(post_from_client("/api/v2/data/n16-rl-sync"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let resp = app
         .clone()
-        .oneshot(post_from_client("/api/v1/data/n16-rl-sync"))
+        .oneshot(post_from_client("/api/v2/data/n16-rl-sync"))
         .await
         .unwrap();
     assert_eq!(
@@ -661,7 +661,7 @@ async fn test_channel_rate_limit_keys_per_client_behind_a_trusted_proxy() {
         let resp = app
             .clone()
             .oneshot(with_peer(
-                post_claiming_client("/api/v1/data/n16-rl-proxied", client),
+                post_claiming_client("/api/v2/data/n16-rl-proxied", client),
                 "10.0.0.7:5000",
             ))
             .await
@@ -677,7 +677,7 @@ async fn test_channel_rate_limit_keys_per_client_behind_a_trusted_proxy() {
     let resp = app
         .clone()
         .oneshot(with_peer(
-            post_claiming_client("/api/v1/data/n16-rl-proxied", "203.0.113.7"),
+            post_claiming_client("/api/v2/data/n16-rl-proxied", "203.0.113.7"),
             "10.0.0.7:5000",
         ))
         .await
@@ -704,7 +704,7 @@ async fn test_channel_rate_limit_ignores_a_spoofed_forwarded_header() {
     let resp = app
         .clone()
         .oneshot(with_peer(
-            post_claiming_client("/api/v1/data/n16-rl-spoof", "203.0.113.7"),
+            post_claiming_client("/api/v2/data/n16-rl-spoof", "203.0.113.7"),
             "198.51.100.9:5000",
         ))
         .await
@@ -716,7 +716,7 @@ async fn test_channel_rate_limit_ignores_a_spoofed_forwarded_header() {
     let resp = app
         .clone()
         .oneshot(with_peer(
-            post_claiming_client("/api/v1/data/n16-rl-spoof", "203.0.113.99"),
+            post_claiming_client("/api/v2/data/n16-rl-spoof", "203.0.113.99"),
             "198.51.100.9:5000",
         ))
         .await
@@ -744,14 +744,14 @@ async fn test_channel_rate_limit_applies_to_async_submissions() {
 
     let resp = app
         .clone()
-        .oneshot(post_from_client("/api/v1/data/n16-rl-async/async"))
+        .oneshot(post_from_client("/api/v2/data/n16-rl-async/async"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
     let resp = app
         .clone()
-        .oneshot(post_from_client("/api/v1/data/n16-rl-async/async"))
+        .oneshot(post_from_client("/api/v2/data/n16-rl-async/async"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -784,7 +784,7 @@ async fn test_channel_call_consumes_the_target_rate_limit() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/n16-rl-caller",
+            "/api/v2/data/n16-rl-caller",
             Some(json!({"data": {}})),
         ))
         .await
@@ -802,7 +802,7 @@ async fn test_channel_call_consumes_the_target_rate_limit() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/n16-rl-caller",
+            "/api/v2/data/n16-rl-caller",
             Some(json!({"data": {}})),
         ))
         .await
@@ -886,7 +886,7 @@ async fn test_async_worker_honours_the_channel_timeout() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/n16-async-timeout/async",
+            "/api/v2/data/n16-async-timeout/async",
             Some(json!({"data": {}})),
         ))
         .await
@@ -928,7 +928,7 @@ async fn test_origin_allow_list_refuses_an_unlisted_origin() {
     let resp = app
         .clone()
         .oneshot(post_with_origin(
-            "/api/v1/data/n24-origins",
+            "/api/v2/data/n24-origins",
             "https://evil.example",
         ))
         .await
@@ -938,7 +938,7 @@ async fn test_origin_allow_list_refuses_an_unlisted_origin() {
     let resp = app
         .clone()
         .oneshot(post_with_origin(
-            "/api/v1/data/n24-origins",
+            "/api/v2/data/n24-origins",
             "https://allowed.example",
         ))
         .await
@@ -951,7 +951,7 @@ async fn test_origin_allow_list_refuses_an_unlisted_origin() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/n24-origins",
+            "/api/v2/data/n24-origins",
             Some(json!({"data": {}})),
         ))
         .await
@@ -974,7 +974,7 @@ async fn test_pre_1_0_cors_key_is_refused_at_create() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "n24-legacy-cors",
                 "channel_type": "sync",
@@ -1008,7 +1008,7 @@ async fn test_misspelled_channel_config_key_is_refused_at_create() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "typo-guard",
                 "channel_type": "sync",

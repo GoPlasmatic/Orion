@@ -165,7 +165,7 @@ where
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/plugins",
+    path = "/api/v2/admin/plugins",
     params(PluginFilter),
     tag = "Plugins",
     responses(
@@ -183,7 +183,7 @@ pub(crate) async fn list_plugins(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/plugins",
+    path = "/api/v2/admin/plugins",
     tag = "Plugins",
     request_body = CreatePluginRequest,
     responses(
@@ -214,7 +214,7 @@ pub(crate) async fn create_plugin(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/plugins/{id}",
+    path = "/api/v2/admin/plugins/{id}",
     tag = "Plugins",
     params(("id" = String, Path, description = "Plugin ID")),
     responses(
@@ -240,7 +240,7 @@ pub(crate) async fn get_plugin(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/admin/plugins/{id}",
+    path = "/api/v2/admin/plugins/{id}",
     tag = "Plugins",
     params(("id" = String, Path, description = "Plugin ID")),
     request_body = UpdatePluginRequest,
@@ -298,7 +298,7 @@ pub(crate) async fn update_plugin(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/admin/plugins/{id}",
+    path = "/api/v2/admin/plugins/{id}",
     tag = "Plugins",
     params(("id" = String, Path, description = "Plugin ID"), super::ReloadQuery),
     responses(
@@ -345,7 +345,7 @@ pub(crate) async fn delete_plugin(
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/admin/plugins/{id}/status",
+    path = "/api/v2/admin/plugins/{id}/status",
     tag = "Plugins",
     params(("id" = String, Path, description = "Plugin ID"), super::StatusChangeQuery),
     request_body = StatusChangeRequest,
@@ -495,7 +495,7 @@ impl super::VersionedLifecycle for PluginLifecycle<'_> {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/plugins/{id}/versions",
+    path = "/api/v2/admin/plugins/{id}/versions",
     tag = "Plugins",
     params(("id" = String, Path, description = "Plugin ID"), VersionFilter),
     responses(
@@ -516,7 +516,7 @@ pub(crate) async fn list_plugin_versions(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/plugins/{id}/versions",
+    path = "/api/v2/admin/plugins/{id}/versions",
     tag = "Plugins",
     params(("id" = String, Path, description = "Plugin ID")),
     responses(
@@ -554,7 +554,7 @@ pub(crate) struct PluginDependencies {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/plugins/{id}/dependencies",
+    path = "/api/v2/admin/plugins/{id}/dependencies",
     tag = "Plugins",
     params(("id" = String, Path, description = "Plugin ID")),
     responses(
@@ -585,7 +585,7 @@ pub(crate) async fn plugin_dependencies(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/plugins/import",
+    path = "/api/v2/admin/plugins/import",
     tag = "Plugins",
     request_body = Vec<CreatePluginRequest>,
     params(super::ImportQuery),
@@ -761,7 +761,7 @@ impl super::VersionedUpsert for PluginUpsert<'_> {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/plugins/export",
+    path = "/api/v2/admin/plugins/export",
     tag = "Plugins",
     params(PluginFilter),
     responses(
@@ -792,7 +792,7 @@ pub(crate) async fn export_plugins(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/plugins/validate",
+    path = "/api/v2/admin/plugins/validate",
     tag = "Plugins",
     request_body = CreatePluginRequest,
     responses(

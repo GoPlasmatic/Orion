@@ -31,7 +31,7 @@ async fn post_unauthenticated(app: &axum::Router, channel: &str) -> axum::http::
     app.clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(json!({"data": {}})),
         ))
         .await
@@ -125,7 +125,7 @@ async fn error_owned_headers_survive_shaping() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/data/jwt-shaped")
+                .uri("/api/v2/data/jwt-shaped")
                 .header("content-type", "application/json")
                 .header("authorization", "Bearer not-a-real-token")
                 .body(Body::from(r#"{"data":{}}"#))
@@ -168,7 +168,7 @@ async fn a_shaped_429_keeps_retry_after() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/throttled",
+                "/api/v2/data/throttled",
                 Some(json!({"data": {}})),
             ))
             .await
@@ -253,7 +253,7 @@ async fn unusable_templates_are_refused_at_create() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/channels",
+                "/api/v2/admin/channels",
                 Some(json!({
                     "name": name,
                     "channel_type": "sync",

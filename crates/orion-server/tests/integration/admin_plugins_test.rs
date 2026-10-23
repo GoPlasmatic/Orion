@@ -75,7 +75,7 @@ async fn get(app: &axum::Router, path: &str) -> (StatusCode, Value) {
 }
 
 async fn create_fixture(app: &axum::Router) -> Value {
-    let (status, body) = post(app, "/api/v1/admin/plugins", upload()).await;
+    let (status, body) = post(app, "/api/v2/admin/plugins", upload()).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     body["data"].clone()
 }
@@ -83,7 +83,7 @@ async fn create_fixture(app: &axum::Router) -> Value {
 async fn set_status(app: &axum::Router, id: &str, status: &str) -> (StatusCode, Value) {
     patch(
         app,
-        &format!("/api/v1/admin/plugins/{id}/status"),
+        &format!("/api/v2/admin/plugins/{id}/status"),
         json!({"status": status}),
     )
     .await
@@ -105,7 +105,7 @@ fn wrap_workflow(name: &str) -> Value {
 
 /// The catalogue entry for a function, if served.
 async fn catalogued(app: &axum::Router, function: &str) -> Option<Value> {
-    let (_, body) = get(app, "/api/v1/admin/functions").await;
+    let (_, body) = get(app, "/api/v2/admin/functions").await;
     body["data"]
         .as_array()
         .expect("array")
@@ -142,7 +142,7 @@ async fn an_upload_is_validated_compiled_and_stored_as_a_draft() {
     );
 
     // The single read says what this node thinks of the version.
-    let (status, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+    let (status, body) = get(&app, "/api/v2/admin/plugins/test.fixture").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["health"]["state"], "inactive", "{body}");
 
@@ -150,7 +150,7 @@ async fn an_upload_is_validated_compiled_and_stored_as_a_draft() {
     assert!(catalogued(&app, "test.fixture.identity").await.is_none());
 
     // The id is the manifest's, and one plugin has one id.
-    let (status, body) = post(&app, "/api/v1/admin/plugins", upload()).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins", upload()).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 }
 
@@ -160,7 +160,7 @@ async fn bad_uploads_are_refused_with_a_path() {
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins",
+        "/api/v2/admin/plugins",
         json!({"manifest": MANIFEST.replace("orion:plugin@1.0.0", "orion:plugin@9.0.0"), "component": component_b64()}),
     )
     .await;
@@ -172,7 +172,7 @@ async fn bad_uploads_are_refused_with_a_path() {
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins",
+        "/api/v2/admin/plugins",
         json!({"manifest": MANIFEST, "component": "not base64!"}),
     )
     .await;
@@ -181,7 +181,7 @@ async fn bad_uploads_are_refused_with_a_path() {
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins",
+        "/api/v2/admin/plugins",
         json!({"manifest": MANIFEST, "component": base64::engine::general_purpose::STANDARD.encode(b"not a component")}),
     )
     .await;
@@ -196,7 +196,7 @@ async fn bad_uploads_are_refused_with_a_path() {
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins",
+        "/api/v2/admin/plugins",
         json!({"plugin_id": "someone.else", "manifest": MANIFEST, "component": component_b64()}),
     )
     .await;
@@ -205,7 +205,7 @@ async fn bad_uploads_are_refused_with_a_path() {
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins",
+        "/api/v2/admin/plugins",
         json!({"manifest": MANIFEST, "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}),
     )
     .await;
@@ -231,7 +231,7 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
     assert_eq!(entry["plugin"]["id"], "test.fixture");
     assert_eq!(entry["plugin"]["digest"], digest);
     assert_eq!(entry["retry_safety"]["kind"], "pure");
-    let (_, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+    let (_, body) = get(&app, "/api/v2/admin/plugins/test.fixture").await;
     assert_eq!(body["data"]["health"]["state"], "loaded", "{body}");
     assert!(body["data"]["health"]["compile_ms"].is_number());
     let generation = state.runtime.load();
@@ -251,7 +251,7 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
     .await;
     let (status, body) = post(
         &app,
-        &format!("/api/v1/data/{channel}"),
+        &format!("/api/v2/data/{channel}"),
         json!({"data": {"msg": "hi"}}),
     )
     .await;
@@ -260,7 +260,7 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
     assert_eq!(body["data"]["result"]["len"], 16, "{body}");
 
     // Dependants are reported, and they gate archive and delete.
-    let (_, deps) = get(&app, "/api/v1/admin/plugins/test.fixture/dependencies").await;
+    let (_, deps) = get(&app, "/api/v2/admin/plugins/test.fixture/dependencies").await;
     assert_eq!(deps["data"]["workflows"], json!([workflow_id]), "{deps}");
     let (status, body) = set_status(&app, "test.fixture", "archived").await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
@@ -273,7 +273,7 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
         .clone()
         .oneshot(json_request(
             "DELETE",
-            "/api/v1/admin/plugins/test.fixture",
+            "/api/v2/admin/plugins/test.fixture",
             None,
         ))
         .await
@@ -283,7 +283,7 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
     // Archive the workflow, then the plugin; its functions leave the vocabulary.
     let (status, body) = patch(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/status"),
         json!({"status": "archived"}),
     )
     .await;
@@ -296,14 +296,14 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
     // The workflow cannot come back while its function is gone.
     let (status, body) = post(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/versions"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/versions"),
         json!({}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, body) = patch(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/status"),
         json!({"status": "active"}),
     )
     .await;
@@ -320,7 +320,7 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
         .clone()
         .oneshot(json_request(
             "DELETE",
-            "/api/v1/admin/plugins/test.fixture",
+            "/api/v2/admin/plugins/test.fixture",
             None,
         ))
         .await
@@ -387,7 +387,7 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     .await;
     let (status, body) = post(
         &app,
-        &format!("/api/v1/data/{channel}"),
+        &format!("/api/v2/data/{channel}"),
         json!({"data": {"who": "world"}}),
     )
     .await;
@@ -398,7 +398,7 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     // engine would evaluate it, and a plugin never sees key material.
     let (status, body) = post(
         &app,
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         upper_workflow("Upper with a secret", json!({"secret": "api_key"})),
     )
     .await;
@@ -413,7 +413,7 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     // mismatch named — and `?dry_run=true` reports the same finding.
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins/test.fixture/versions",
+        "/api/v2/admin/plugins/test.fixture/versions",
         json!({}),
     )
     .await;
@@ -424,7 +424,7 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/plugins/test.fixture",
+            "/api/v2/admin/plugins/test.fixture",
             Some(json!({"manifest": renamed})),
         ))
         .await
@@ -432,7 +432,7 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     assert_eq!(resp.status(), StatusCode::OK, "{}", body_json(resp).await);
     let (status, body) = patch(
         &app,
-        "/api/v1/admin/plugins/test.fixture/status?dry_run=true",
+        "/api/v2/admin/plugins/test.fixture/status?dry_run=true",
         json!({"status": "active"}),
     )
     .await;
@@ -455,7 +455,7 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     // Version 1 kept serving throughout.
     let (status, body) = post(
         &app,
-        &format!("/api/v1/data/{channel}"),
+        &format!("/api/v2/data/{channel}"),
         json!({"data": {"who": "still"}}),
     )
     .await;
@@ -465,7 +465,7 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     // Once the dependant is gone, the new schema activates.
     let (status, body) = patch(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/status"),
         json!({"status": "archived"}),
     )
     .await;
@@ -495,7 +495,7 @@ async fn a_new_version_supersedes_the_active_one() {
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins/test.fixture/versions",
+        "/api/v2/admin/plugins/test.fixture/versions",
         json!({}),
     )
     .await;
@@ -508,7 +508,7 @@ async fn a_new_version_supersedes_the_active_one() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/plugins/test.fixture",
+            "/api/v2/admin/plugins/test.fixture",
             Some(json!({"tags": ["v2"]})),
         ))
         .await
@@ -521,7 +521,7 @@ async fn a_new_version_supersedes_the_active_one() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["version"], 2);
 
-    let (_, versions) = get(&app, "/api/v1/admin/plugins/test.fixture/versions").await;
+    let (_, versions) = get(&app, "/api/v2/admin/plugins/test.fixture/versions").await;
     let by_version: Vec<(i64, String)> = versions["data"]
         .as_array()
         .expect("array")
@@ -552,7 +552,7 @@ async fn export_and_import_round_trip_with_and_without_artifacts() {
     assert_eq!(status, StatusCode::OK);
 
     // Inlined: the artifact travels with the item.
-    let (status, exported) = get(&app, "/api/v1/admin/plugins/export?include_artifacts=true").await;
+    let (status, exported) = get(&app, "/api/v2/admin/plugins/export?include_artifacts=true").await;
     assert_eq!(status, StatusCode::OK);
     let items = exported["data"].as_array().expect("array").clone();
     assert_eq!(items.len(), 1);
@@ -562,7 +562,7 @@ async fn export_and_import_round_trip_with_and_without_artifacts() {
     // Re-importing the same content over the active version is a no-op.
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins/import?on_conflict=new_version",
+        "/api/v2/admin/plugins/import?on_conflict=new_version",
         Value::Array(items.clone()),
     )
     .await;
@@ -572,7 +572,7 @@ async fn export_and_import_round_trip_with_and_without_artifacts() {
 
     // Without artifacts the item names the digest; a target holding the
     // bytes accepts it — here as a second plugin sharing the component.
-    let (_, exported) = get(&app, "/api/v1/admin/plugins/export").await;
+    let (_, exported) = get(&app, "/api/v2/admin/plugins/export").await;
     let mut item = exported["data"][0].clone();
     assert!(item.get("component").is_none());
     let mut manifest = item["manifest"].clone();
@@ -586,10 +586,10 @@ async fn export_and_import_round_trip_with_and_without_artifacts() {
     }
     item["manifest"] = manifest;
     item["plugin_id"] = json!("test.other");
-    let (status, body) = post(&app, "/api/v1/admin/plugins/import", json!([item])).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins/import", json!([item])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["imported"], 1, "{body}");
-    let (status, body) = get(&app, "/api/v1/admin/plugins/test.other").await;
+    let (status, body) = get(&app, "/api/v2/admin/plugins/test.other").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["digest"], items[0]["digest"]);
     let (status, body) = set_status(&app, "test.other", "active").await;
@@ -603,13 +603,13 @@ async fn dry_run_reports_every_gate_without_writing() {
     create_fixture(&app).await;
     let (status, body) = patch(
         &app,
-        "/api/v1/admin/plugins/test.fixture/status?dry_run=true",
+        "/api/v2/admin/plugins/test.fixture/status?dry_run=true",
         json!({"status": "active"}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["valid"], true, "{body}");
-    let (_, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+    let (_, body) = get(&app, "/api/v2/admin/plugins/test.fixture").await;
     assert_eq!(body["data"]["status"], "draft", "a dry run writes nothing");
 
     let (status, _) = set_status(&app, "test.fixture", "active").await;
@@ -623,7 +623,7 @@ async fn dry_run_reports_every_gate_without_writing() {
     .await;
     let (status, body) = patch(
         &app,
-        "/api/v1/admin/plugins/test.fixture/status?dry_run=true",
+        "/api/v2/admin/plugins/test.fixture/status?dry_run=true",
         json!({"status": "archived"}),
     )
     .await;
@@ -638,7 +638,7 @@ async fn dry_run_reports_every_gate_without_writing() {
 #[tokio::test]
 async fn a_node_with_plugins_disabled_refuses_uploads_and_reports_it() {
     let (state, app) = app(false).await;
-    let (status, body) = post(&app, "/api/v1/admin/plugins", upload()).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins", upload()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
         body["error"]["message"]
@@ -681,7 +681,7 @@ async fn a_node_with_plugins_disabled_refuses_uploads_and_reports_it() {
     assert_eq!(generation.plugins.issues.len(), 1);
     assert_eq!(generation.plugins.issues[0].stage, "disabled");
     assert!(!generation.functions.contains("test.fixture.wrap"));
-    let (_, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+    let (_, body) = get(&app, "/api/v2/admin/plugins/test.fixture").await;
     assert_eq!(body["data"]["health"]["state"], "disabled", "{body}");
 }
 
@@ -694,7 +694,7 @@ async fn the_plugin_routes_take_a_component_sized_body() {
     let big = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 1_500_000]);
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins",
+        "/api/v2/admin/plugins",
         json!({"manifest": MANIFEST, "component": big}),
     )
     .await;
@@ -705,15 +705,15 @@ async fn the_plugin_routes_take_a_component_sized_body() {
 #[tokio::test]
 async fn validate_answers_without_storing() {
     let (_state, app) = app(true).await;
-    let (status, body) = post(&app, "/api/v1/admin/plugins/validate", upload()).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins/validate", upload()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["valid"], true, "{body}");
-    let (status, _) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+    let (status, _) = get(&app, "/api/v2/admin/plugins/test.fixture").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins/validate",
+        "/api/v2/admin/plugins/validate",
         json!({"manifest": MANIFEST.replace("[[functions]]\nname = \"test.fixture.upper\"", "[[functions]]\nname = \"parse\""), "component": component_b64()}),
     )
     .await;
@@ -779,7 +779,7 @@ async fn a_signature_from_plugin_sign_is_accepted_at_upload() {
     let (_state, app) = trusting_app(vec![public.trim().to_string()]).await;
     let mut signed = upload();
     signed["signature"] = json!(signature);
-    let (status, body) = post(&app, "/api/v1/admin/plugins", signed).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins", signed).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
@@ -796,14 +796,14 @@ async fn a_trusting_node_requires_a_signature_over_the_digest_at_upload_and_at_l
     let (state, app) = trusting_app(vec![key.public_key_base64()]).await;
     let digest = orion::plugin::WasmRuntime::digest(COMPONENT);
 
-    let (status, body) = post(&app, "/api/v1/admin/plugins", upload()).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins", upload()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["details"][0]["path"], "signature", "{body}");
     assert_eq!(body["error"]["details"][0]["code"], "REQUIRED", "{body}");
 
     let mut signed_by_stranger = upload();
     signed_by_stranger["signature"] = json!(stranger.sign(&digest));
-    let (status, body) = post(&app, "/api/v1/admin/plugins", signed_by_stranger).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins", signed_by_stranger).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["details"][0]["code"], "INVALID", "{body}");
     assert!(
@@ -813,13 +813,13 @@ async fn a_trusting_node_requires_a_signature_over_the_digest_at_upload_and_at_l
         "{body}"
     );
     // The same refusal from the pre-flight, so a pipeline learns before it uploads.
-    let (status, body) = post(&app, "/api/v1/admin/plugins/validate", upload()).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins/validate", upload()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["valid"], false, "{body}");
 
     let mut signed = upload();
     signed["signature"] = json!(key.sign(&digest));
-    let (status, body) = post(&app, "/api/v1/admin/plugins", signed).await;
+    let (status, body) = post(&app, "/api/v2/admin/plugins", signed).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(
         body["data"]["signature"],
@@ -828,13 +828,13 @@ async fn a_trusting_node_requires_a_signature_over_the_digest_at_upload_and_at_l
     );
     let (status, body) = set_status(&app, "test.fixture", "active").await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (_, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+    let (_, body) = get(&app, "/api/v2/admin/plugins/test.fixture").await;
     assert_eq!(body["data"]["health"]["state"], "loaded", "{body}");
 
     // A new version keeps the digest, so it keeps the signature and activates.
     let (status, body) = post(
         &app,
-        "/api/v1/admin/plugins/test.fixture/versions",
+        "/api/v2/admin/plugins/test.fixture/versions",
         json!({}),
     )
     .await;
@@ -901,7 +901,7 @@ async fn a_multipart_upload_is_the_json_upload_in_another_shape() {
 
     let request = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/admin/plugins")
+        .uri("/api/v2/admin/plugins")
         .header(
             "content-type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -926,7 +926,7 @@ async fn a_multipart_upload_is_the_json_upload_in_another_shape() {
     stray.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     let request = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/admin/plugins/validate")
+        .uri("/api/v2/admin/plugins/validate")
         .header(
             "content-type",
             format!("multipart/form-data; boundary={boundary}"),
@@ -953,7 +953,7 @@ async fn workflow_dependencies_name_the_plugin_version_and_digest() {
 
     let (status, body) = post(
         &app,
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         wrap_workflow("Wrap, for the dependency route"),
     )
     .await;
@@ -964,7 +964,7 @@ async fn workflow_dependencies_name_the_plugin_version_and_digest() {
         .to_string();
     let (status, deps) = get(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/dependencies"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/dependencies"),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{deps}");
@@ -981,7 +981,7 @@ async fn workflow_dependencies_name_the_plugin_version_and_digest() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let (_, deps) = get(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/dependencies"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/dependencies"),
     )
     .await;
     assert_eq!(deps["data"]["plugins"], json!([]), "{deps}");
@@ -1015,7 +1015,7 @@ async fn an_import_with_a_new_signature_is_not_unchanged() {
         async move {
             let (status, body) = post(
                 &app,
-                "/api/v1/admin/plugins/import?on_conflict=new_version",
+                "/api/v2/admin/plugins/import?on_conflict=new_version",
                 json!([item]),
             )
             .await;
@@ -1030,7 +1030,7 @@ async fn an_import_with_a_new_signature_is_not_unchanged() {
     let stored = || {
         let app = app.clone();
         async move {
-            let (_, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+            let (_, body) = get(&app, "/api/v2/admin/plugins/test.fixture").await;
             body["data"]["signature"]
                 .as_str()
                 .unwrap_or_default()
@@ -1054,7 +1054,7 @@ async fn an_import_with_a_new_signature_is_not_unchanged() {
     // unsigned item before it compares anything.
     let (status, body) = post(
         &open,
-        "/api/v1/admin/plugins/import?on_conflict=new_version",
+        "/api/v2/admin/plugins/import?on_conflict=new_version",
         json!([signed_by(&first)]),
     )
     .await;
@@ -1063,11 +1063,11 @@ async fn an_import_with_a_new_signature_is_not_unchanged() {
     unsigned["plugin_id"] = json!("test.fixture");
     let (_, body) = post(
         &open,
-        "/api/v1/admin/plugins/import?on_conflict=new_version",
+        "/api/v2/admin/plugins/import?on_conflict=new_version",
         json!([unsigned]),
     )
     .await;
     assert_eq!(body["data"]["results"][0]["action"], "unchanged", "{body}");
-    let (_, body) = get(&open, "/api/v1/admin/plugins/test.fixture").await;
+    let (_, body) = get(&open, "/api/v2/admin/plugins/test.fixture").await;
     assert_eq!(body["data"]["signature"], json!(first.sign(&digest)));
 }

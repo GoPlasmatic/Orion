@@ -118,7 +118,7 @@ async fn post_is_not_retried_by_default() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/f8-post-ch",
+            "/api/v2/data/f8-post-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -148,7 +148,7 @@ async fn get_still_retries() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/f8-get-ch",
+            "/api/v2/data/f8-get-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -178,7 +178,7 @@ async fn post_retries_when_connector_opts_in() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/f8-post-optin-ch",
+            "/api/v2/data/f8-post-optin-ch",
             Some(json!({"data": {}})),
         ))
         .await

@@ -29,7 +29,7 @@ async fn rendered_exposition_carries_the_advertised_families() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/no-such-channel",
+            "/api/v2/data/no-such-channel",
             Some(json!({"data": {}})),
         ))
         .await

@@ -1404,7 +1404,7 @@ async fn publish_kafka_publishes_to_the_connectors_brokers() {
         .clone()
         .oneshot(crate::common::json_request(
             "POST",
-            "/api/v1/data/t3-publish-ch",
+            "/api/v2/data/t3-publish-ch",
             Some(serde_json::json!({"data": {"order_id": "ORD-1", "amount": 42}})),
         ))
         .await
@@ -1507,7 +1507,7 @@ async fn publish_kafka_rejects_a_non_kafka_connector() {
         .clone()
         .oneshot(crate::common::json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             Some(serde_json::json!({
                 "connector_type": "db",
                 "config": { "connection_string": "sqlite::memory:" }
@@ -1521,7 +1521,7 @@ async fn publish_kafka_rejects_a_non_kafka_connector() {
         .clone()
         .oneshot(crate::common::json_request(
             "POST",
-            "/api/v1/data/t3-wrong-conn-ch",
+            "/api/v2/data/t3-wrong-conn-ch",
             Some(serde_json::json!({"data": {}})),
         ))
         .await
@@ -1545,7 +1545,7 @@ async fn publish_kafka_with_a_non_kafka_connector_cannot_activate() {
         .clone()
         .oneshot(crate::common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(serde_json::json!({
                 "name": "kafka-wrong-type",
                 "tasks": [{
@@ -1570,7 +1570,7 @@ async fn publish_kafka_with_a_non_kafka_connector_cannot_activate() {
         .clone()
         .oneshot(crate::common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await

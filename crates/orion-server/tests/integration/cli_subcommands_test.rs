@@ -909,7 +909,7 @@ fn dump_openapi_writes_the_spec_to_stdout() {
         spec["openapi"]
     );
     assert!(
-        spec["paths"]["/api/v1/data/{channel}"].is_object(),
+        spec["paths"]["/api/v2/data/{channel}"].is_object(),
         "the data plane must be documented"
     );
 }

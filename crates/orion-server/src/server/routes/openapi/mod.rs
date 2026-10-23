@@ -117,11 +117,11 @@ impl Modify for SecurityAddon {
                         .scheme(HttpAuthScheme::Bearer)
                         .description(Some(
                             "Admin API key presented as `Authorization: Bearer <key>` — the \
-                             default. Enforced on `/api/v1/admin/*`, `/metrics`, and \
-                             `/api/v1/admin/traces*` whenever `admin_auth.enabled` is true, which \
+                             default. Enforced on `/api/v2/admin/*`, `/metrics`, and \
+                             `/api/v2/admin/traces*` whenever `admin_auth.enabled` is true, which \
                              the shipped Helm chart and HA compose files set. Keys come from \
                              `admin_auth.api_keys`, either in plaintext or as `sha256:<64-hex>` \
-                             digests. The data plane (`POST /api/v1/data/{channel}`) is not \
+                             digests. The data plane (`POST /api/v2/data/{channel}`) is not \
                              covered by this scheme.",
                         ))
                         .build(),
@@ -212,14 +212,14 @@ impl Modify for SecurityAddon {
         description = "\
 Declarative services runtime platform.
 
-**Authentication.** The admin API (`/api/v1/admin/*`), the Prometheus endpoint \
-(`/metrics`), and the trace read endpoints (`/api/v1/admin/traces*`) require an \
+**Authentication.** The admin API (`/api/v2/admin/*`), the Prometheus endpoint \
+(`/metrics`), and the trace read endpoints (`/api/v2/admin/traces*`) require an \
 admin API key when `admin_auth.enabled` is true — the default in the shipped \
 Helm chart and HA compose files. Operations that need it carry a `security` \
 block; see the `admin_bearer` / `admin_api_key` schemes for how the key is \
 presented and for the `admin_auth.header` config key that selects between them.
 
-The data plane (`/api/v1/data/{channel}`) and the health probes are \
+The data plane (`/api/v2/data/{channel}`) and the health probes are \
 deliberately unauthenticated: channel-level access control is expressed \
 through each channel's `validation_logic` and `origin_allow_list`.
 
@@ -459,9 +459,9 @@ mod tests {
     #[test]
     fn security_matches_the_middleware_guard() {
         const HANDLER_ENFORCED_401: &[&str] = &[
-            "/api/v1/admin/traces/{id}",
-            "/api/v1/data/{channel}",
-            "/api/v1/data/{channel}/async",
+            "/api/v2/admin/traces/{id}",
+            "/api/v2/data/{channel}",
+            "/api/v2/data/{channel}/async",
         ];
         let spec = spec();
         for (path, item) in &spec.paths.paths {
@@ -599,8 +599,8 @@ mod tests {
     fn data_plane_and_probes_are_documented() {
         let spec = spec();
         for path in [
-            "/api/v1/data/{channel}",
-            "/api/v1/data/{channel}/async",
+            "/api/v2/data/{channel}",
+            "/api/v2/data/{channel}/async",
             "/healthz",
             "/readyz",
         ] {
@@ -609,9 +609,9 @@ mod tests {
         let data = spec
             .paths
             .paths
-            .get("/api/v1/data/{channel}")
+            .get("/api/v2/data/{channel}")
             .and_then(|item| item.post.as_ref())
-            .expect("POST /api/v1/data/{channel}");
+            .expect("POST /api/v2/data/{channel}");
         // Unauthenticated by design — assert it explicitly so a future blanket
         // `security` default cannot quietly claim otherwise.
         assert!(data.security.is_none());
@@ -624,9 +624,9 @@ mod tests {
         let async_submit = spec
             .paths
             .paths
-            .get("/api/v1/data/{channel}/async")
+            .get("/api/v2/data/{channel}/async")
             .and_then(|item| item.post.as_ref())
-            .expect("POST /api/v1/data/{channel}/async");
+            .expect("POST /api/v2/data/{channel}/async");
         let accepted = async_submit
             .responses
             .responses

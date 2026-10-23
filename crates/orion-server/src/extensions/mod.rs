@@ -192,26 +192,6 @@ impl CompositionRoot {
         }
     }
 
-    /// Construct a composition root that also includes the legacy v1 `"kafka"`
-    /// channel driver for backward compatibility with `/api/v1/admin/channels`
-    /// prior to Phase 3 Enterprise extraction.
-    pub fn community_with_legacy_v1() -> Self {
-        let providers = ProviderRegistry::new();
-        let pools = ResourcePoolRegistry::new();
-        foundation::register_community_foundation_providers(&providers, &pools);
-        let deployments = ImmutableDeploymentStore::default();
-        let reconciler = NodeReconciler::new(deployments.clone(), "node-local-1", "boot-1");
-        Self {
-            channels: ChannelDriverRegistry::with_legacy_v1(),
-            providers,
-            admission: Arc::new(CommunityAdmissionPolicy::new()),
-            pools,
-            deployments,
-            reconciler,
-            native_scheduler: NativeWorkScheduler::new(16),
-        }
-    }
-
     /// Register an additional native Rust [`ChannelDriver`] (e.g. `graphql`, `sse`, `kafka`).
     pub fn with_channel_driver(self, driver: Arc<dyn ChannelDriver>) -> Self {
         self.channels.register(driver);

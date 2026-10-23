@@ -74,7 +74,7 @@ async fn test_redis_cache_write_then_read() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/redis-wr",
+            "/api/v2/data/redis-wr",
             Some(json!({"data": {}})),
         ))
         .await
@@ -150,7 +150,7 @@ async fn test_redis_cache_ttl_expiry() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/redis-ttl-write",
+            "/api/v2/data/redis-ttl-write",
             Some(json!({"data": {}})),
         ))
         .await
@@ -162,7 +162,7 @@ async fn test_redis_cache_ttl_expiry() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/redis-ttl-read",
+            "/api/v2/data/redis-ttl-read",
             Some(json!({"data": {}})),
         ))
         .await
@@ -179,7 +179,7 @@ async fn test_redis_cache_ttl_expiry() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/redis-ttl-read",
+            "/api/v2/data/redis-ttl-read",
             Some(json!({"data": {}})),
         ))
         .await
@@ -226,7 +226,7 @@ async fn test_redis_dedup_rejects_a_replayed_idempotency_key() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/redis-dedup-ch",
+            "/api/v2/data/redis-dedup-ch",
             "redis-dedup-key-001",
             payload.clone(),
         ))
@@ -238,7 +238,7 @@ async fn test_redis_dedup_rejects_a_replayed_idempotency_key() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/redis-dedup-ch",
+            "/api/v2/data/redis-dedup-ch",
             "redis-dedup-key-001",
             payload.clone(),
         ))
@@ -497,7 +497,7 @@ async fn test_redis_response_cache_namespace_invalidation() {
             let resp = app
                 .oneshot(common::json_request(
                     "POST",
-                    &format!("/api/v1/data/{channel}"),
+                    &format!("/api/v2/data/{channel}"),
                     Some(json!({"data": {}})),
                 ))
                 .await

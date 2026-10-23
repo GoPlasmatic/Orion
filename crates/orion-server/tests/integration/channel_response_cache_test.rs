@@ -37,7 +37,7 @@ async fn test_cache_hit_on_same_request() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-hit-ch",
+            "/api/v2/data/cache-hit-ch",
             Some(payload.clone()),
         ))
         .await
@@ -51,7 +51,7 @@ async fn test_cache_hit_on_same_request() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-hit-ch",
+            "/api/v2/data/cache-hit-ch",
             Some(payload.clone()),
         ))
         .await
@@ -89,7 +89,7 @@ async fn test_cache_miss_on_different_data() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-miss-ch",
+            "/api/v2/data/cache-miss-ch",
             Some(json!({"data": {"key": "a"}})),
         ))
         .await
@@ -102,7 +102,7 @@ async fn test_cache_miss_on_different_data() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-miss-ch",
+            "/api/v2/data/cache-miss-ch",
             Some(json!({"data": {"key": "b"}})),
         ))
         .await
@@ -144,7 +144,7 @@ async fn test_cache_key_fields_scoping() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-fields-ch",
+            "/api/v2/data/cache-fields-ch",
             Some(json!({"data": {"user_id": "u1", "ts": "t1"}})),
         ))
         .await
@@ -158,7 +158,7 @@ async fn test_cache_key_fields_scoping() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-fields-ch",
+            "/api/v2/data/cache-fields-ch",
             Some(json!({"data": {"user_id": "u1", "ts": "t2"}})),
         ))
         .await
@@ -177,7 +177,7 @@ async fn test_cache_key_fields_scoping() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-fields-ch",
+            "/api/v2/data/cache-fields-ch",
             Some(json!({"data": {"user_id": "u2", "ts": "t1"}})),
         ))
         .await
@@ -223,7 +223,7 @@ async fn test_cache_expires_after_ttl() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-ttl-ch",
+            "/api/v2/data/cache-ttl-ch",
             Some(payload.clone()),
         ))
         .await
@@ -242,7 +242,7 @@ async fn test_cache_expires_after_ttl() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-ttl-ch",
+            "/api/v2/data/cache-ttl-ch",
             Some(payload.clone()),
         ))
         .await
@@ -284,7 +284,7 @@ async fn test_cache_with_named_connector() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-connector-ch",
+            "/api/v2/data/cache-connector-ch",
             Some(payload.clone()),
         ))
         .await
@@ -298,7 +298,7 @@ async fn test_cache_with_named_connector() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-connector-ch",
+            "/api/v2/data/cache-connector-ch",
             Some(payload.clone()),
         ))
         .await
@@ -352,7 +352,7 @@ async fn test_error_response_is_not_cached() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             None,
         ))
         .await
@@ -366,7 +366,7 @@ async fn test_error_response_is_not_cached() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/n2-cache-ch",
+            "/api/v2/data/n2-cache-ch",
             Some(payload.clone()),
         ))
         .await
@@ -390,7 +390,7 @@ async fn test_error_response_is_not_cached() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/n2-cache-ch",
+            "/api/v2/data/n2-cache-ch",
             Some(payload),
         ))
         .await
@@ -460,7 +460,7 @@ async fn a_shaped_response_that_sets_a_cookie_is_not_cached() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/cookie-cache-ch",
+                "/api/v2/data/cookie-cache-ch",
                 Some(payload.clone()),
             ))
             .await

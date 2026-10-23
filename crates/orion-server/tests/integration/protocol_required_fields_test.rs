@@ -14,7 +14,7 @@ async fn rest_channel_missing_both_methods_and_route_pattern_collects_both_error
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "rest-missing-both",
                 "channel_type": "sync",
@@ -50,7 +50,7 @@ async fn http_channel_missing_required_fields_reports_protocol_in_message() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "http-missing",
                 "channel_type": "sync",
@@ -76,7 +76,7 @@ async fn field_error_carries_expected_hint_for_protocol_required_fields() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "rest-hint",
                 "channel_type": "sync",

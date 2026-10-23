@@ -19,7 +19,7 @@ use crate::storage::repositories::traces::TraceFilter;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/traces",
+    path = "/api/v2/admin/traces",
     tag = "Traces",
     params(TraceFilter),
     responses(
@@ -99,7 +99,7 @@ enum TraceLane {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/traces/{id}",
+    path = "/api/v2/admin/traces/{id}",
     tag = "Traces",
     description = "\
 Fetch one trace. Access follows a two-lane rule (R12): present either a \

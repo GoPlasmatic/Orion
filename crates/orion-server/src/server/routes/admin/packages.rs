@@ -108,7 +108,7 @@ fn validate_put(name: &str, req: &PutPackageReceiptRequest) -> Result<(), OrionE
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/packages",
+    path = "/api/v2/admin/packages",
     tag = "Packages",
     params(PackageListQuery),
     responses(
@@ -143,7 +143,7 @@ pub(crate) async fn list_packages(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/packages/{name}",
+    path = "/api/v2/admin/packages/{name}",
     tag = "Packages",
     params(("name" = String, Path, description = "Package name")),
     responses(
@@ -174,7 +174,7 @@ pub(crate) async fn get_package(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/admin/packages/{name}",
+    path = "/api/v2/admin/packages/{name}",
     tag = "Packages",
     params(("name" = String, Path, description = "Package name")),
     request_body = PutPackageReceiptRequest,

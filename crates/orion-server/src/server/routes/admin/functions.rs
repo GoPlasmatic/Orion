@@ -21,7 +21,7 @@ use crate::server::state::AppState;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/functions",
+    path = "/api/v2/admin/functions",
     tag = "Functions",
     responses(
         (status = 200, description = "Registered workflow function schemas", body = DataEnvelope<Vec<FunctionSchemaItem>>)

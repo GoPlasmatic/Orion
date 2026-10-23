@@ -463,10 +463,10 @@ mod tests {
     /// status or versions endpoint. That is the type error doing its job.
     #[test]
     fn the_connector_kind_points_at_the_connector_endpoints() {
-        assert_eq!(KIND.collection, "/api/v1/admin/connectors");
-        assert_eq!(KIND.export, "/api/v1/admin/connectors/export");
-        assert_eq!(KIND.validate, "/api/v1/admin/connectors/validate");
-        assert_eq!((KIND.item)("c1"), "/api/v1/admin/connectors/c1");
+        assert_eq!(KIND.collection, "/api/v2/admin/connectors");
+        assert_eq!(KIND.export, "/api/v2/admin/connectors/export");
+        assert_eq!(KIND.validate, "/api/v2/admin/connectors/validate");
+        assert_eq!((KIND.item)("c1"), "/api/v2/admin/connectors/c1");
         assert_eq!(
             KIND.id_field, "id",
             "connectors answer with a bare id, not a prefixed one"

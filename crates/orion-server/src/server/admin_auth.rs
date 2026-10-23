@@ -115,18 +115,18 @@ pub(crate) fn is_guarded_path(path: &str, metrics_on_this_listener: bool) -> boo
     if path == METRICS_PATH {
         return metrics_on_this_listener;
     }
-    path.starts_with("/api/v1/admin") || path.starts_with("/api/v2/admin")
+    path.starts_with("/api/v2/admin")
 }
 
 /// Whether a `MatchedPath` is a data-plane catch-all rather than a real route.
 ///
 /// **This is a security predicate, not a convenience.** `server.data_mounts`
 /// registers `{mount}/{*path}` handlers, so under a mount a request to an
-/// unregistered admin path — `GET /api/v1/admin/nonexistent` — *does* match a
+/// unregistered admin path — `GET /api/v2/admin/nonexistent` — *does* match a
 /// route, and `MatchedPath` becomes the literal `/{*path}`. That does not start
-/// with `/api/v1/admin`, so [`is_guarded_path`] would answer `false` and the
+/// with `/api/v2/admin`, so [`is_guarded_path`] would answer `false` and the
 /// request would reach the **unauthenticated** data plane. A channel could then
-/// claim any unregistered path under `/api/v1/admin/` and be served anonymously.
+/// claim any unregistered path under `/api/v2/admin/` and be served anonymously.
 ///
 /// When the matched path is one of these, the raw URI is the only thing that
 /// says what the caller actually asked for, so both this middleware and the
@@ -138,7 +138,7 @@ pub(crate) fn is_data_catch_all(matched: &str) -> bool {
 /// The one admin-plane path that authenticates itself rather than through the
 /// middleware. Named so [`is_guarded_path`] and the route registration cannot
 /// drift apart silently.
-pub(crate) const SINGLE_TRACE_PATH: &str = "/api/v1/admin/traces/{id}";
+pub(crate) const SINGLE_TRACE_PATH: &str = "/api/v2/admin/traces/{id}";
 
 /// The Prometheus exposition path, guarded only on a listener that serves it.
 pub(crate) const METRICS_PATH: &str = "/metrics";
@@ -402,8 +402,8 @@ mod tests {
     #[test]
     fn the_admin_plane_is_guarded_regardless_of_the_metrics_listener() {
         for on_main in [true, false] {
-            assert!(is_guarded_path("/api/v1/admin/workflows", on_main));
-            assert!(is_guarded_path("/api/v1/admin/traces", on_main));
+            assert!(is_guarded_path("/api/v2/admin/workflows", on_main));
+            assert!(is_guarded_path("/api/v2/admin/traces", on_main));
             assert!(is_guarded_path("/api/v2/admin/deployments", on_main));
             assert!(is_guarded_path(
                 "/api/v2/admin/runtime-capabilities",
@@ -411,7 +411,6 @@ mod tests {
             ));
             // R12: the single-trace GET authenticates in its handler.
             assert!(!is_guarded_path(SINGLE_TRACE_PATH, on_main));
-            assert!(!is_guarded_path("/api/v1/data/{*path}", on_main));
             assert!(!is_guarded_path("/api/v2/data/{*path}", on_main));
             assert!(!is_guarded_path("/health", on_main));
         }

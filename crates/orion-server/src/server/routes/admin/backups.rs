@@ -32,7 +32,7 @@ fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/backups",
+    path = "/api/v2/admin/backups",
     tag = "Backups",
     responses(
         (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)", body = DataEnvelope<BackupFile>),
@@ -252,7 +252,7 @@ fn prune_old_backups(backup_dir: &str, retain: usize) -> Vec<String> {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/backups",
+    path = "/api/v2/admin/backups",
     tag = "Backups",
     responses(
         (status = 200, description = "List of backup files in the configured backup directory", body = DataEnvelope<Vec<BackupListItem>>),

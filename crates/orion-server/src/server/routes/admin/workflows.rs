@@ -33,7 +33,7 @@ use crate::storage::repositories::helpers::VersionFilter;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/workflows",
+    path = "/api/v2/admin/workflows",
     params(WorkflowFilter),
     tag = "Workflows",
     responses(
@@ -51,7 +51,7 @@ pub(crate) async fn list_workflows(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/workflows",
+    path = "/api/v2/admin/workflows",
     tag = "Workflows",
     request_body = CreateWorkflowRequest,
     responses(
@@ -85,7 +85,7 @@ pub(crate) async fn create_workflow(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/workflows/{id}",
+    path = "/api/v2/admin/workflows/{id}",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
@@ -104,7 +104,7 @@ pub(crate) async fn get_workflow(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/admin/workflows/{id}",
+    path = "/api/v2/admin/workflows/{id}",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     request_body = UpdateWorkflowRequest,
@@ -147,7 +147,7 @@ pub(crate) async fn update_workflow(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/admin/workflows/{id}",
+    path = "/api/v2/admin/workflows/{id}",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID"), super::ReloadQuery),
     responses(
@@ -184,7 +184,7 @@ pub(crate) async fn delete_workflow(
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/admin/workflows/{id}/status",
+    path = "/api/v2/admin/workflows/{id}/status",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID"), super::StatusChangeQuery),
     request_body = StatusChangeRequest,
@@ -431,7 +431,7 @@ pub(crate) struct PluginDependency {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/workflows/{id}/dependencies",
+    path = "/api/v2/admin/workflows/{id}/dependencies",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
@@ -533,7 +533,7 @@ pub(crate) async fn workflow_dependencies(
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/admin/workflows/{id}/rollout",
+    path = "/api/v2/admin/workflows/{id}/rollout",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID"), super::ReloadQuery),
     request_body = RolloutUpdateRequest,
@@ -581,7 +581,7 @@ pub(crate) async fn update_rollout(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/workflows/{id}/versions",
+    path = "/api/v2/admin/workflows/{id}/versions",
     tag = "Workflows",
     params(
         ("id" = String, Path, description = "Workflow ID"),
@@ -607,7 +607,7 @@ pub(crate) async fn list_workflow_versions(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/workflows/{id}/versions",
+    path = "/api/v2/admin/workflows/{id}/versions",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
@@ -645,7 +645,7 @@ pub(crate) struct TestWorkflowRequest {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/workflows/{id}/test",
+    path = "/api/v2/admin/workflows/{id}/test",
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     request_body = TestWorkflowRequest,
@@ -797,7 +797,7 @@ pub(crate) async fn test_workflow(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/workflows/import",
+    path = "/api/v2/admin/workflows/import",
     tag = "Workflows",
     request_body = Vec<CreateWorkflowRequest>,
     params(super::ImportQuery),
@@ -929,7 +929,7 @@ pub(crate) fn exists_or_err<T>(result: Result<T, OrionError>) -> Result<bool, Or
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/workflows/export",
+    path = "/api/v2/admin/workflows/export",
     tag = "Workflows",
     params(WorkflowFilter),
     responses(
@@ -957,7 +957,7 @@ pub(crate) async fn export_workflows(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/workflows/validate",
+    path = "/api/v2/admin/workflows/validate",
     tag = "Workflows",
     request_body = CreateWorkflowRequest,
     responses(

@@ -88,7 +88,7 @@ async fn sqlite_column_kinds_round_trip() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/types-ch",
+            "/api/v2/data/types-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -173,7 +173,7 @@ async fn utf8_blob_reads_back_as_text() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/blob-ch",
+            "/api/v2/data/blob-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -262,7 +262,7 @@ async fn postgres_real_and_bytea_are_not_null() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-types-ch",
+            "/api/v2/data/pg-types-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -388,7 +388,7 @@ async fn postgres_decodes_the_types_an_ordinary_schema_uses() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-types-ch",
+            "/api/v2/data/pg-types-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -467,7 +467,7 @@ async fn postgres_numeric_as_string_keeps_every_digit() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-numeric-ch",
+            "/api/v2/data/pg-numeric-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -545,7 +545,7 @@ async fn postgres_a_non_text_parameter_is_cast_in_the_query() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-bind-ch",
+            "/api/v2/data/pg-bind-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -600,7 +600,7 @@ async fn postgres_a_type_with_no_json_form_names_the_column_and_the_remedy() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-exotic-ch",
+            "/api/v2/data/pg-exotic-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -698,7 +698,7 @@ async fn mysql_decodes_the_types_an_ordinary_schema_uses() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mysql-types-ch",
+            "/api/v2/data/mysql-types-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -788,7 +788,7 @@ async fn mysql_boolean_reads_back_as_a_json_boolean() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mysql-bool-ch",
+            "/api/v2/data/mysql-bool-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -875,7 +875,7 @@ async fn postgres_char_and_citext_decode_scalar_and_array() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-char-ch",
+            "/api/v2/data/pg-char-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -941,7 +941,7 @@ async fn postgres_internal_char_names_the_column_and_the_remedy() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-ichar-ch",
+            "/api/v2/data/pg-ichar-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -1032,7 +1032,7 @@ async fn postgres_domain_columns_decode_as_the_type_they_wrap() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-domain-ch",
+            "/api/v2/data/pg-domain-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -1201,7 +1201,7 @@ async fn postgres_one_placeholder_takes_both_json_shapes() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/data/pg-n6-ch",
+                "/api/v2/data/pg-n6-ch",
                 Some(json!({ "p": p })),
             ))
             .await
@@ -1251,7 +1251,7 @@ async fn postgres_a_parameter_is_not_read_with_an_earlier_calls_type() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/data/pg-n6s-ch",
+                "/api/v2/data/pg-n6s-ch",
                 Some(json!({ "p": p })),
             ))
             .await
@@ -1304,7 +1304,7 @@ async fn postgres_a_uuid_parameter_needs_no_cast() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-n6u-ch",
+            "/api/v2/data/pg-n6u-ch",
             Some(json!({ "p": ID })),
         ))
         .await
@@ -1350,7 +1350,7 @@ async fn postgres_an_array_parameter_binds_as_a_list() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-n6a-ch",
+            "/api/v2/data/pg-n6a-ch",
             Some(json!({ "p": [1, "3"] })),
         ))
         .await
@@ -1408,7 +1408,7 @@ async fn postgres_an_unmapped_parameter_type_is_not_refused_here() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-n6i-ch",
+            "/api/v2/data/pg-n6i-ch",
             Some(json!({ "p": "10.0.0.1" })),
         ))
         .await
@@ -1437,7 +1437,7 @@ async fn postgres_an_unmapped_parameter_type_is_not_refused_here() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-n6i-cast-ch",
+            "/api/v2/data/pg-n6i-cast-ch",
             Some(json!({ "p": "10.0.0.1" })),
         ))
         .await
@@ -1487,7 +1487,7 @@ async fn postgres_a_value_that_cannot_convert_names_the_placeholder() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-n6e-ch",
+            "/api/v2/data/pg-n6e-ch",
             Some(json!({ "p": "abc" })),
         ))
         .await

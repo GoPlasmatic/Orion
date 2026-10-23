@@ -18,7 +18,7 @@ async fn create_channel_missing_route_pattern_returns_field_pathed_details() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "broken",
                 "channel_type": "sync",
@@ -60,7 +60,7 @@ async fn create_channel_missing_topic_for_kafka_returns_field_details() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "needs-topic",
                 "channel_type": "async",
@@ -84,7 +84,7 @@ async fn invalid_connector_type_returns_field_pathed_error_with_allowed_values_i
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "bad",
                 "connector_type": "grpc",
@@ -122,7 +122,7 @@ async fn v01_envelope_preserved_for_non_validation_404() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/does-not-exist",
+            "/api/v2/admin/workflows/does-not-exist",
             None,
         ))
         .await
@@ -143,7 +143,7 @@ async fn error_response_embeds_request_id_when_header_provided() {
     let app = test_app().await;
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/admin/channels")
+        .uri("/api/v2/admin/channels")
         .header("content-type", "application/json")
         .header("x-request-id", "test-req-id-42")
         .body(axum::body::Body::from(

@@ -67,7 +67,7 @@ async fn an_in_process_apply_serves_and_is_recorded_like_a_cli_one() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/inproc",
+            "/api/v2/data/inproc",
             Some(json!({"data": {}})),
         ))
         .await
@@ -76,7 +76,7 @@ async fn an_in_process_apply_serves_and_is_recorded_like_a_cli_one() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/packages/inproc", None))
+        .oneshot(json_request("GET", "/api/v2/admin/packages/inproc", None))
         .await
         .expect("receipt");
     let receipt: Value = body_json(resp).await;
@@ -90,7 +90,7 @@ async fn an_in_process_apply_serves_and_is_recorded_like_a_cli_one() {
     // The audit rows carry the change context the transport scoped.
     let audit = wait_for_body(
         &app,
-        "/api/v1/admin/audit-logs?resource_type=package",
+        "/api/v2/admin/audit-logs?resource_type=package",
         |body| body["data"].as_array().is_some_and(|rows| !rows.is_empty()),
     )
     .await;
@@ -116,13 +116,13 @@ async fn an_in_process_refusal_reads_like_an_http_one() {
     let state = test_state_with_config(orion::config::AppConfig::default()).await;
     let api = InProcessAdmin::new(state, "system:test", "test".to_string());
     let err = api
-        .get_data::<Value>("/api/v1/admin/workflows/no-such-workflow")
+        .get_data::<Value>("/api/v2/admin/workflows/no-such-workflow")
         .await
         .expect_err("404");
     assert_eq!(err.status(), Some(StatusCode::NOT_FOUND));
     assert!(err.to_string().starts_with("HTTP 404 "), "{err}");
     assert!(
-        api.get_data_opt::<Value>("/api/v1/admin/workflows/no-such-workflow")
+        api.get_data_opt::<Value>("/api/v2/admin/workflows/no-such-workflow")
             .await
             .expect("opt")
             .is_none()

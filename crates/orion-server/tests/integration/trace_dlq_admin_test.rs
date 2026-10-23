@@ -1,4 +1,4 @@
-//! O4: the `/api/v1/admin/trace-dlq` operator surface — list, get, requeue,
+//! O4: the `/api/v2/admin/trace-dlq` operator surface — list, get, requeue,
 //! purge. Before this the DLQ had no read path at all, so entries accumulated
 //! with zero visibility and no manual replay.
 
@@ -56,7 +56,7 @@ async fn list_paginates_and_omits_payloads() {
     let (app, _pending, _exhausted) = app_with_entries().await;
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))
+        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -85,7 +85,7 @@ async fn list_filters_by_exhaustion_and_channel() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/trace-dlq?exhausted=true",
+            "/api/v2/admin/trace-dlq?exhausted=true",
             None,
         ))
         .await
@@ -97,7 +97,7 @@ async fn list_filters_by_exhaustion_and_channel() {
     let resp = app
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/trace-dlq?channel=orders",
+            "/api/v2/admin/trace-dlq?channel=orders",
             None,
         ))
         .await
@@ -115,7 +115,7 @@ async fn get_by_id_returns_the_payload() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            &format!("/api/v1/admin/trace-dlq/{pending}"),
+            &format!("/api/v2/admin/trace-dlq/{pending}"),
             None,
         ))
         .await
@@ -128,7 +128,7 @@ async fn get_by_id_returns_the_payload() {
     let resp = app
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/trace-dlq/no-such-entry",
+            "/api/v2/admin/trace-dlq/no-such-entry",
             None,
         ))
         .await
@@ -144,7 +144,7 @@ async fn requeue_resets_an_exhausted_entry() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            &format!("/api/v1/admin/trace-dlq/{exhausted}/requeue"),
+            &format!("/api/v2/admin/trace-dlq/{exhausted}/requeue"),
             None,
         ))
         .await
@@ -158,7 +158,7 @@ async fn requeue_resets_an_exhausted_entry() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/trace-dlq?exhausted=true",
+            "/api/v2/admin/trace-dlq?exhausted=true",
             None,
         ))
         .await
@@ -168,7 +168,7 @@ async fn requeue_resets_an_exhausted_entry() {
     let resp = app
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/trace-dlq/no-such-entry/requeue",
+            "/api/v2/admin/trace-dlq/no-such-entry/requeue",
             None,
         ))
         .await
@@ -184,7 +184,7 @@ async fn purge_removes_only_exhausted_entries() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/trace-dlq/purge",
+            "/api/v2/admin/trace-dlq/purge",
             Some(serde_json::json!({"older_than_hours": 0})),
         ))
         .await
@@ -193,7 +193,7 @@ async fn purge_removes_only_exhausted_entries() {
     assert_eq!(common::body_json(resp).await["data"]["purged"], 1);
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))
+        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
         .await
         .unwrap();
     let body = common::body_json(resp).await;
@@ -213,7 +213,7 @@ async fn purge_requires_an_explicit_age() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/trace-dlq/purge",
+            "/api/v2/admin/trace-dlq/purge",
             Some(serde_json::json!({})),
         ))
         .await
@@ -221,7 +221,7 @@ async fn purge_requires_an_explicit_age() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))
+        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
         .await
         .unwrap();
     assert_eq!(common::body_json(resp).await["total"], 2);
@@ -237,7 +237,7 @@ async fn purge_respects_the_age_bound() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/trace-dlq/purge",
+            "/api/v2/admin/trace-dlq/purge",
             Some(serde_json::json!({"older_than_hours": 24})),
         ))
         .await
@@ -246,7 +246,7 @@ async fn purge_respects_the_age_bound() {
     assert_eq!(common::body_json(resp).await["data"]["purged"], 0);
 
     let resp = app
-        .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))
+        .oneshot(common::json_request("GET", "/api/v2/admin/trace-dlq", None))
         .await
         .unwrap();
     assert_eq!(common::body_json(resp).await["total"], 2);

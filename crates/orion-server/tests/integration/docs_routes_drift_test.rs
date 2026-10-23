@@ -23,7 +23,7 @@
 //!
 //! Two reference forms are read, because the audit found a broken example in
 //! each: a `curl` against `http://localhost:8080`, and an inline code span
-//! like `` `POST /api/v1/admin/engine/reload` ``. The inline form is only read
+//! like `` `POST /api/v2/admin/engine/reload` ``. The inline form is only read
 //! when the path starts with `/api/v1/`, which is what separates a real
 //! reference from the shorthand the prose uses for a family of endpoints
 //! (`POST /{kind}/import`, `POST /engine/reload`).
@@ -39,12 +39,12 @@ const HOST: &str = "http://localhost:8080";
 /// Paths served by something other than a documented operation.
 ///
 /// The data plane is a single dynamic handler: every channel defines its own
-/// route pattern and method set at runtime, so `/api/v1/data/**` cannot be
+/// route pattern and method set at runtime, so `/api/v2/data/**` cannot be
 /// resolved against a static table and any shape under it is legitimate. The
 /// other two are mounted by the Swagger UI layer rather than declared as
 /// operations, so they are absent from the document that describes them.
 fn is_unroutable_by_design(path: &str) -> bool {
-    path.starts_with("/api/v1/data/") || path == "/docs" || path == "/api/v1/openapi.json"
+    path.starts_with("/api/v2/data/") || path == "/docs" || path == "/api/v2/openapi.json"
 }
 
 /// One route the server actually serves: method, path template, and the query

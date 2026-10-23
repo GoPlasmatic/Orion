@@ -16,7 +16,7 @@ use super::audit_and_reload;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/engine/status",
+    path = "/api/v2/admin/engine/status",
     tag = "Engine",
     responses(
         (status = 200, description = "Engine status: the generation this node serves, what it \
@@ -64,7 +64,7 @@ pub(crate) async fn engine_status(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/engine/reload",
+    path = "/api/v2/admin/engine/reload",
     tag = "Engine",
     responses(
         (status = 200, description = "Engine reloaded. `generation` is the id of the generation \

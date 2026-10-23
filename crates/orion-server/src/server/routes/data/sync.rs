@@ -506,7 +506,7 @@ pub(super) fn cached_response(body: String, shaped: bool, channel: &str) -> Resp
 /// next — the mismatch that used to be possible when the two halves were
 /// published separately (`runtime::generation`).
 pub(super) struct AdmittedOn {
-    pub engine: std::sync::Arc<dataflow_rs_v3::Engine>,
+    pub generation: std::sync::Arc<crate::runtime::RuntimeGeneration>,
     pub channel_config: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
 }
 
@@ -527,7 +527,7 @@ pub(super) async fn process_sync_for_channel(
     admission: Admission,
 ) -> Result<Response, OrionError> {
     let AdmittedOn {
-        engine,
+        generation,
         channel_config,
     } = admitted;
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
@@ -590,8 +590,8 @@ pub(super) async fn process_sync_for_channel(
         // The shared post-admission step: message build, engine snapshot, the
         // deadline arm, the `has_errors` rule and the two metrics. What stays here
         // is response shaping and persistence.
-        let execution = crate::engine::execute_admitted(
-            &engine,
+        let execution = crate::engine::execute_admitted_on_generation(
+            &generation,
             channel,
             &data,
             &metadata,

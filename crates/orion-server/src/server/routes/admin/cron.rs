@@ -30,7 +30,7 @@ use super::audit_log;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/cron/occurrences",
+    path = "/api/v2/admin/cron/occurrences",
     tag = "Cron",
     params(CronOccurrenceFilter),
     responses(
@@ -59,7 +59,7 @@ pub(crate) async fn list_occurrences(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/cron/occurrences/{id}",
+    path = "/api/v2/admin/cron/occurrences/{id}",
     tag = "Cron",
     params(("id" = String, Path, description = "Occurrence id")),
     responses(
@@ -78,7 +78,7 @@ pub(crate) async fn get_occurrence(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/cron/occurrences/{id}/retry",
+    path = "/api/v2/admin/cron/occurrences/{id}/retry",
     tag = "Cron",
     params(("id" = String, Path, description = "Occurrence id")),
     responses(
@@ -111,7 +111,7 @@ pub(crate) async fn retry_occurrence(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/cron/occurrences/{id}/cancel",
+    path = "/api/v2/admin/cron/occurrences/{id}/cancel",
     tag = "Cron",
     params(("id" = String, Path, description = "Occurrence id")),
     responses(
@@ -174,7 +174,7 @@ pub(crate) async fn cancel_occurrence(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/cron/status",
+    path = "/api/v2/admin/cron/status",
     tag = "Cron",
     responses(
         (status = 200, description = "One row per active cron channel: its schedule, where its \
@@ -242,7 +242,7 @@ pub(crate) async fn cron_status(State(state): State<AppState>) -> Result<Json<Va
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/channels/{id}/trigger",
+    path = "/api/v2/admin/channels/{id}/trigger",
     tag = "Cron",
     params(("id" = String, Path, description = "Channel id of an active cron channel")),
     responses(

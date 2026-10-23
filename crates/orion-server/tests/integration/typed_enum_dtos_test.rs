@@ -18,7 +18,7 @@ async fn v01_lowercase_wire_values_still_accepted() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "v01-style",
                 "channel_type": "sync",
@@ -45,7 +45,7 @@ async fn channel_type_and_protocol_are_case_insensitive() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "mixed-case",
                 "channel_type": "SYNC",
@@ -70,7 +70,7 @@ async fn connector_type_is_case_insensitive() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "uppercase-http",
                 "connector_type": "HTTP",
@@ -90,7 +90,7 @@ async fn invalid_channel_protocol_is_rejected_at_deserialization_with_400() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "bad-protocol",
                 "channel_type": "sync",
@@ -118,7 +118,7 @@ async fn invalid_channel_type_is_rejected_with_400() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "bad-channel-type",
                 "channel_type": "stream",
@@ -143,7 +143,7 @@ async fn model_status_transition_is_typed_like_the_other_entities() {
     let h = crate::common::models::harness().await;
     crate::common::models::register_fixture(&h.app).await;
     let uri = format!(
-        "/api/v1/admin/models/{}/status",
+        "/api/v2/admin/models/{}/status",
         crate::common::models::FIXTURE_ID
     );
 

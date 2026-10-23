@@ -16,7 +16,7 @@ use crate::storage::repositories::audit_logs::AuditLogFilter;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/audit-logs",
+    path = "/api/v2/admin/audit-logs",
     tag = "Audit",
     params(AuditLogFilter),
     responses(

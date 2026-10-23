@@ -41,7 +41,7 @@ fn detail<'a>(body: &'a Value, path: &str) -> &'a Value {
 #[tokio::test]
 async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({
             "workflow_id": "probe", "name": "Probe",
             "tasks": [
@@ -82,7 +82,7 @@ async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
 #[tokio::test]
 async fn a_use_step_is_named_not_its_missing_task_fields() {
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({
             "workflow_id": "probe", "name": "Probe",
             "tasks": [
@@ -110,7 +110,7 @@ async fn a_use_step_is_named_not_its_missing_task_fields() {
 #[tokio::test]
 async fn a_from_deep_in_a_payload_is_refused_rather_than_stored() {
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({
             "workflow_id": "probe", "name": "Probe",
             "tasks": [
@@ -134,7 +134,7 @@ async fn condition_and_loop_are_checked_as_well_as_tasks() {
         "input": {"mappings": [{"path": "data.ok", "logic": true}]}}});
 
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({"workflow_id": "p1", "name": "P", "tasks": [task.clone()],
                "condition": {"$from": "constants.guard"}}),
     )
@@ -143,7 +143,7 @@ async fn condition_and_loop_are_checked_as_well_as_tasks() {
     assert_eq!(detail(&body, "condition")["code"], "UNCOMPILED_SOURCE");
 
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({"workflow_id": "p2", "name": "P", "tasks": [task],
                "loop": {"$from": "constants.sweep"}}),
     )
@@ -157,7 +157,7 @@ async fn condition_and_loop_are_checked_as_well_as_tasks() {
 #[tokio::test]
 async fn a_connector_config_names_the_reference() {
     let (status, body) = post(
-        "/api/v1/admin/connectors",
+        "/api/v2/admin/connectors",
         json!({"name": "probe", "connector_type": "db",
                "config": {"$from": "constants.db"}}),
     )
@@ -177,7 +177,7 @@ async fn a_connector_config_names_the_reference() {
 #[tokio::test]
 async fn a_channel_config_says_what_the_key_is_rather_than_offering_spellings() {
     let (status, body) = post(
-        "/api/v1/admin/channels",
+        "/api/v2/admin/channels",
         json!({"name": "probe-ch", "channel_type": "sync", "protocol": "rest",
                "methods": ["POST"], "route_pattern": "/probe",
                "config": {"$from": "constants.guards", "timeout_ms": 1000}}),
@@ -199,7 +199,7 @@ async fn validate_agrees_with_create() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "workflow_id": "probe", "name": "Probe",
                 "tasks": [{"id": "t", "name": "T", "function": {"name": "mongo_read",
@@ -223,7 +223,7 @@ async fn the_update_path_is_gated_too() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "upd", "name": "Upd",
                 "tasks": [{"id": "t", "name": "T", "function": {"name": "map",
@@ -237,7 +237,7 @@ async fn the_update_path_is_gated_too() {
     let resp = app
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/upd",
+            "/api/v2/admin/workflows/upd",
             Some(json!({"tasks": [{"id": "t", "name": "T",
                 "function": {"name": "mongo_read", "input": {"$from": "constants.db",
                     "collection": "u", "filter": {}, "output": "temp_data.u"}}}]})),
@@ -260,7 +260,7 @@ async fn the_update_path_is_gated_too() {
 #[tokio::test]
 async fn a_payload_that_merely_resembles_a_reference_still_creates() {
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({
             "workflow_id": "lookalike", "name": "Lookalike",
             "tasks": [{"id": "t", "name": "T", "function": {"name": "map",
@@ -282,7 +282,7 @@ async fn a_payload_that_merely_resembles_a_reference_still_creates() {
 #[tokio::test]
 async fn a_sql_reference_is_named_by_uncompiled_source() {
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({
             "workflow_id": "sqlref", "name": "SQL ref",
             "tasks": [{"id": "r", "name": "R", "function": {"name": "db_read",
@@ -302,7 +302,7 @@ async fn a_sql_reference_is_named_by_uncompiled_source() {
 #[tokio::test]
 async fn a_value_fragment_and_a_repetition_are_named() {
     let (status, body) = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         json!({
             "workflow_id": "sugar", "name": "Sugar",
             "condition": {"$use": "positive", "with": {"field": "total"}},

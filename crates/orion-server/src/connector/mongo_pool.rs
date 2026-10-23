@@ -100,3 +100,17 @@ impl Default for MongoPoolCache {
         Self::new(100)
     }
 }
+
+impl crate::extensions::ConnectionPoolCache for MongoPoolCache {
+    fn cache_id(&self) -> &str {
+        "mongo_pool"
+    }
+
+    fn evict<'a>(&'a self, connector_name: &'a str) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { MongoPoolCache::evict(self, connector_name).await })
+    }
+
+    fn evict_all<'a>(&'a self) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { MongoPoolCache::evict_all(self).await })
+    }
+}

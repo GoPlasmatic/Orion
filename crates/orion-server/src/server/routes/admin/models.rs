@@ -159,7 +159,7 @@ fn health_of(state: &AppState, row: &Model) -> Result<ModelHealth, OrionError> {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/models",
+    path = "/api/v2/admin/models",
     params(ModelFilter),
     tag = "Models",
     responses(
@@ -177,7 +177,7 @@ pub(crate) async fn list_models(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/models",
+    path = "/api/v2/admin/models",
     tag = "Models",
     request_body = CreateModelRequest,
     responses(
@@ -215,7 +215,7 @@ pub(crate) async fn create_model(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/models/{id}",
+    path = "/api/v2/admin/models/{id}",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID")),
     responses(
@@ -236,7 +236,7 @@ pub(crate) async fn get_model(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/admin/models/{id}",
+    path = "/api/v2/admin/models/{id}",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID")),
     request_body = UpdateModelRequest,
@@ -307,7 +307,7 @@ pub(crate) async fn update_model(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/admin/models/{id}",
+    path = "/api/v2/admin/models/{id}",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID"), super::ReloadQuery),
     responses(
@@ -344,7 +344,7 @@ pub(crate) async fn delete_model(
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/admin/models/{id}/status",
+    path = "/api/v2/admin/models/{id}/status",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID"), super::StatusChangeQuery),
     request_body = StatusChangeRequest,
@@ -501,7 +501,7 @@ pub(crate) struct AdmitQuery {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/models/{id}/admit",
+    path = "/api/v2/admin/models/{id}/admit",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID"), AdmitQuery),
     responses(
@@ -546,7 +546,7 @@ pub(crate) async fn admit_model(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/models/{id}/versions",
+    path = "/api/v2/admin/models/{id}/versions",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID"), VersionFilter),
     responses(
@@ -567,7 +567,7 @@ pub(crate) async fn list_model_versions(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/models/{id}/versions",
+    path = "/api/v2/admin/models/{id}/versions",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID")),
     responses(
@@ -609,7 +609,7 @@ pub(crate) struct ModelDependencies {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/models/{id}/dependencies",
+    path = "/api/v2/admin/models/{id}/dependencies",
     tag = "Models",
     params(("id" = String, Path, description = "Model ID")),
     responses(
@@ -639,7 +639,7 @@ pub(crate) async fn model_dependencies(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/models/import",
+    path = "/api/v2/admin/models/import",
     tag = "Models",
     request_body = Vec<CreateModelRequest>,
     params(super::ImportQuery),
@@ -787,7 +787,7 @@ impl super::VersionedUpsert for ModelUpsert<'_> {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/models/export",
+    path = "/api/v2/admin/models/export",
     tag = "Models",
     params(ModelFilter),
     responses(
@@ -837,7 +837,7 @@ pub(crate) struct ModelValidationEnvelope {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/models/validate",
+    path = "/api/v2/admin/models/validate",
     tag = "Models",
     request_body = CreateModelRequest,
     responses(

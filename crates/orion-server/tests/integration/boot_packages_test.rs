@@ -77,13 +77,13 @@ async fn readyz_holds_until_the_packages_serve_and_a_restart_is_a_no_op() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/boot",
+            "/api/v2/data/boot",
             Some(json!({"data": {}})),
         ))
         .await
         .expect("data call");
     assert_eq!(resp.status(), StatusCode::OK);
-    let (_, receipt) = get(&app, "/api/v1/admin/packages/boot").await;
+    let (_, receipt) = get(&app, "/api/v2/admin/packages/boot").await;
     assert_eq!(
         receipt["data"]["current"]["principal"],
         "system:boot-packages"
@@ -98,7 +98,7 @@ async fn readyz_holds_until_the_packages_serve_and_a_restart_is_a_no_op() {
         state.packages.snapshot()[0].state,
         BootState::AlreadyApplied
     );
-    let (_, versions) = get(&app, "/api/v1/admin/workflows/boot-flow/versions").await;
+    let (_, versions) = get(&app, "/api/v2/admin/workflows/boot-flow/versions").await;
     assert_eq!(
         versions["data"].as_array().map(Vec::len),
         Some(1),
@@ -135,7 +135,7 @@ async fn an_artifact_that_does_not_check_fails_before_anything_is_written() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["components"]["packages"], "failed");
     // Not even the first, valid artifact was applied.
-    let (status, _) = get(&app, "/api/v1/admin/packages/first").await;
+    let (status, _) = get(&app, "/api/v2/admin/packages/first").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -189,9 +189,9 @@ async fn a_superseded_version_is_left_as_it_is() {
     // The old node restarts.
     orion::package::boot::run(state.clone()).await;
     assert_eq!(state.packages.snapshot()[0].state, BootState::Superseded);
-    let (_, receipt) = get(&app, "/api/v1/admin/packages/rolling").await;
+    let (_, receipt) = get(&app, "/api/v2/admin/packages/rolling").await;
     assert_eq!(receipt["data"]["current"]["version"], "2.0.0");
-    let (_, workflow) = get(&app, "/api/v1/admin/workflows/rolling-flow").await;
+    let (_, workflow) = get(&app, "/api/v2/admin/workflows/rolling-flow").await;
     assert_eq!(
         workflow["data"]["tasks"][0]["function"]["input"]["message"], "v2",
         "{workflow}"

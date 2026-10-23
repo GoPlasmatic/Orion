@@ -138,7 +138,7 @@ async fn test_rate_limit_admin_endpoint() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/workflows")
+        .uri("/api/v2/admin/workflows")
         .header("x-forwarded-for", "10.0.0.200")
         .body(Body::empty())
         .unwrap();
@@ -148,7 +148,7 @@ async fn test_rate_limit_admin_endpoint() {
     // Second should be rate limited
     let req2 = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/workflows")
+        .uri("/api/v2/admin/workflows")
         .header("x-forwarded-for", "10.0.0.200")
         .body(Body::empty())
         .unwrap();
@@ -181,7 +181,7 @@ async fn test_rate_limit_channel_specific_from_db() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(serde_json::json!({
                 "name": "rate-limit-test-wf",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -198,7 +198,7 @@ async fn test_rate_limit_channel_specific_from_db() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -210,7 +210,7 @@ async fn test_rate_limit_channel_specific_from_db() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": "rate-limited-orders",
                 "channel_type": "sync",
@@ -238,7 +238,7 @@ async fn test_rate_limit_channel_specific_from_db() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -248,7 +248,7 @@ async fn test_rate_limit_channel_specific_from_db() {
     // First request to channel — should succeed (not 429)
     let req1 = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/rate-limited-orders")
+        .uri("/api/v2/data/rate-limited-orders")
         .header("x-forwarded-for", "10.0.0.50")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"data":{"test":true}}"#))
@@ -259,7 +259,7 @@ async fn test_rate_limit_channel_specific_from_db() {
     // Second request from same IP to same channel — should be rate limited
     let req2 = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/rate-limited-orders")
+        .uri("/api/v2/data/rate-limited-orders")
         .header("x-forwarded-for", "10.0.0.50")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"data":{"test":true}}"#))
@@ -292,7 +292,7 @@ async fn test_channel_rate_limit_survives_engine_reload() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(serde_json::json!({
                 "name": "reload-rl-wf",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -308,7 +308,7 @@ async fn test_channel_rate_limit_survives_engine_reload() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -319,7 +319,7 @@ async fn test_channel_rate_limit_survives_engine_reload() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": "reload-rl-ch",
                 "channel_type": "sync",
@@ -342,7 +342,7 @@ async fn test_channel_rate_limit_survives_engine_reload() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -352,7 +352,7 @@ async fn test_channel_rate_limit_survives_engine_reload() {
     let data_req = || {
         Request::builder()
             .method("POST")
-            .uri("/api/v1/data/reload-rl-ch")
+            .uri("/api/v2/data/reload-rl-ch")
             .header("x-forwarded-for", "10.0.0.60")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"data":{"test":true}}"#))
@@ -370,7 +370,7 @@ async fn test_channel_rate_limit_survives_engine_reload() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/engine/reload",
+            "/api/v2/admin/engine/reload",
             None,
         ))
         .await
@@ -421,7 +421,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(serde_json::json!({
                 "name": "key-logic-test-wf",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -436,7 +436,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -447,7 +447,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": "api-key-limited",
                 "channel_type": "sync",
@@ -473,7 +473,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -482,7 +482,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
     // Request with API key "key-A" — should succeed
     let req1 = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/api-key-limited")
+        .uri("/api/v2/data/api-key-limited")
         .header("x-forwarded-for", "10.0.0.1")
         .header("x-api-key", "key-A")
         .header("content-type", "application/json")
@@ -494,7 +494,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
     // Second request with same API key "key-A" — should be rate limited
     let req2 = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/api-key-limited")
+        .uri("/api/v2/data/api-key-limited")
         .header("x-forwarded-for", "10.0.0.1")
         .header("x-api-key", "key-A")
         .header("content-type", "application/json")
@@ -506,7 +506,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
     // Request with different API key "key-B" from same IP — should succeed (independent limit)
     let req3 = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/api-key-limited")
+        .uri("/api/v2/data/api-key-limited")
         .header("x-forwarded-for", "10.0.0.1")
         .header("x-api-key", "key-B")
         .header("content-type", "application/json")
@@ -568,7 +568,7 @@ async fn test_rate_limit_applies_to_rest_routed_channel() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(serde_json::json!({
                 "name": "s9-wf",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "s9"}}}]
@@ -584,7 +584,7 @@ async fn test_rate_limit_applies_to_rest_routed_channel() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -597,7 +597,7 @@ async fn test_rate_limit_applies_to_rest_routed_channel() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": "s9-orders-get",
                 "channel_type": "sync",
@@ -624,7 +624,7 @@ async fn test_rate_limit_applies_to_rest_routed_channel() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -634,7 +634,7 @@ async fn test_rate_limit_applies_to_rest_routed_channel() {
     let get_order = || {
         Request::builder()
             .method("GET")
-            .uri("/api/v1/data/orders/ORD-1")
+            .uri("/api/v2/data/orders/ORD-1")
             .header("x-forwarded-for", "10.0.0.77")
             .body(Body::empty())
             .unwrap()
@@ -678,7 +678,7 @@ async fn test_rate_limit_applies_to_rest_routed_async_path() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(serde_json::json!({
                 "name": "s9-async-wf",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "s9"}}}]
@@ -693,7 +693,7 @@ async fn test_rate_limit_applies_to_rest_routed_async_path() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -704,7 +704,7 @@ async fn test_rate_limit_applies_to_rest_routed_async_path() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": "s9-events-post",
                 "channel_type": "sync",
@@ -731,7 +731,7 @@ async fn test_rate_limit_applies_to_rest_routed_async_path() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -741,7 +741,7 @@ async fn test_rate_limit_applies_to_rest_routed_async_path() {
     let post_event = || {
         Request::builder()
             .method("POST")
-            .uri("/api/v1/data/events/click/async")
+            .uri("/api/v2/data/events/click/async")
             .header("x-forwarded-for", "10.0.0.88")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"data":{"a":1}}"#))
@@ -785,7 +785,7 @@ async fn test_data_plane_429_comes_from_endpoints_data_rps() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(serde_json::json!({
                 "name": "data-rps-wf",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "x"}}}]
@@ -801,7 +801,7 @@ async fn test_data_plane_429_comes_from_endpoints_data_rps() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -814,7 +814,7 @@ async fn test_data_plane_429_comes_from_endpoints_data_rps() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": "data-rps-channel",
                 "channel_type": "sync",
@@ -834,7 +834,7 @@ async fn test_data_plane_429_comes_from_endpoints_data_rps() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -844,7 +844,7 @@ async fn test_data_plane_429_comes_from_endpoints_data_rps() {
     let data_req = |ip: &str| {
         Request::builder()
             .method("POST")
-            .uri("/api/v1/data/data-rps-channel")
+            .uri("/api/v2/data/data-rps-channel")
             .header("x-forwarded-for", ip.to_string())
             .header("content-type", "application/json")
             .body(Body::from(r#"{"data":{"n":1}}"#))

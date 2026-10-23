@@ -1,9 +1,9 @@
 //! B6 (Tier-2 ergonomics): bulk import for channels/connectors + ?dry_run=true.
 //!
 //! Verifies:
-//!   - POST /api/v1/admin/channels/import imports an array of channels and
+//!   - POST /api/v2/admin/channels/import imports an array of channels and
 //!     returns {imported, failed, errors[]}
-//!   - POST /api/v1/admin/connectors/import same shape for connectors
+//!   - POST /api/v2/admin/connectors/import same shape for connectors
 //!   - ?dry_run=true on workflows/channels/connectors imports validates
 //!     without writing and reports would_create / would_fail
 
@@ -20,7 +20,7 @@ async fn channels_import_creates_each_item() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import",
+            "/api/v2/admin/channels/import",
             Some(json!([
                 {
                     "name": "ch-imp-1",
@@ -53,7 +53,7 @@ async fn channels_import_dry_run_does_not_persist() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import?dry_run=true",
+            "/api/v2/admin/channels/import?dry_run=true",
             Some(json!([
                 {
                     "name": "ch-dry-1",
@@ -82,7 +82,7 @@ async fn channels_import_dry_run_does_not_persist() {
     // Confirm the would-be channel was NOT actually persisted.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/channels", None))
+        .oneshot(json_request("GET", "/api/v2/admin/channels", None))
         .await
         .unwrap();
     let body = body_json(resp).await;
@@ -100,7 +100,7 @@ async fn connectors_import_creates_each_item() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/import",
+            "/api/v2/admin/connectors/import",
             Some(json!([
                 { "name": "imp-a", "connector_type": "http", "config": {"url": "https://a.example.com"} },
                 { "name": "imp-b", "connector_type": "http", "config": {"url": "https://b.example.com"} }
@@ -120,7 +120,7 @@ async fn connectors_import_dry_run_reports_validation_outcome() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/import?dry_run=true",
+            "/api/v2/admin/connectors/import?dry_run=true",
             Some(json!([
                 { "name": "good", "connector_type": "http", "config": {"url": "https://good.example"} },
                 { "name": "bad-url-scheme", "connector_type": "http", "config": {"url": "ftp://bad.example"} }
@@ -145,7 +145,7 @@ async fn channels_import_dry_run_reports_enum_typo_per_item() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import?dry_run=true",
+            "/api/v2/admin/channels/import?dry_run=true",
             Some(json!([
                 {
                     "name": "ch-enum-ok",
@@ -182,7 +182,7 @@ async fn channels_import_real_run_skips_only_the_bad_enum_item() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import",
+            "/api/v2/admin/channels/import",
             Some(json!([
                 {
                     "name": "ch-real-ok",
@@ -215,7 +215,7 @@ async fn connectors_import_dry_run_reports_enum_typo_per_item() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/import?dry_run=true",
+            "/api/v2/admin/connectors/import?dry_run=true",
             Some(json!([
                 { "name": "con-enum-ok", "connector_type": "http", "config": {"url": "https://ok.example"} },
                 { "name": "con-enum-bad", "connector_type": "bogus", "config": {"url": "https://bad.example"} }
@@ -241,7 +241,7 @@ async fn workflows_import_dry_run_does_not_persist() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/import?dry_run=true",
+            "/api/v2/admin/workflows/import?dry_run=true",
             Some(json!([
                 {
                     "name": "wf-dry",
@@ -259,7 +259,7 @@ async fn workflows_import_dry_run_does_not_persist() {
     // No row persisted.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
+        .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
         .await
         .unwrap();
     let body = body_json(resp).await;
@@ -289,7 +289,7 @@ async fn dry_run_reports_a_conflict_with_an_already_stored_connector() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/import?dry_run=true",
+            "/api/v2/admin/connectors/import?dry_run=true",
             Some(json!([
                 {"name": "taken", "connector_type": "db",
                  "config": {"connection_string": "sqlite::memory:"}},
@@ -316,7 +316,7 @@ async fn dry_run_reports_a_conflict_with_an_already_stored_connector() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/import",
+            "/api/v2/admin/connectors/import",
             Some(json!([
                 {"name": "taken", "connector_type": "db",
                  "config": {"connection_string": "sqlite::memory:"}},
@@ -340,7 +340,7 @@ async fn dry_run_reports_a_duplicate_inside_the_batch() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/import?dry_run=true",
+            "/api/v2/admin/workflows/import?dry_run=true",
             Some(json!([
                 {"workflow_id": "same", "name": "First",
                  "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"a"}}}]},
@@ -376,7 +376,7 @@ async fn dry_run_does_not_invent_conflicts_for_unnamed_items() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/import?dry_run=true",
+            "/api/v2/admin/workflows/import?dry_run=true",
             Some(json!([item.clone(), item])),
         ))
         .await
@@ -406,7 +406,7 @@ async fn workflows_import_partial_success_actually_persists_the_valid_rows() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/import",
+            "/api/v2/admin/workflows/import",
             Some(json!([
                 {"workflow_id": "imp-valid-1", "name": "Valid One", "tasks": task.clone()},
                 // Unknown function name — rejected by create-path validation.
@@ -431,7 +431,7 @@ async fn workflows_import_partial_success_actually_persists_the_valid_rows() {
             .clone()
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/admin/workflows/{id}"),
+                &format!("/api/v2/admin/workflows/{id}"),
                 None,
             ))
             .await
@@ -447,7 +447,7 @@ async fn workflows_import_partial_success_actually_persists_the_valid_rows() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/imp-invalid",
+            "/api/v2/admin/workflows/imp-invalid",
             None,
         ))
         .await
@@ -477,9 +477,9 @@ async fn a_malformed_item_fails_alone_on_every_import_endpoint() {
     let malformed = json!({"nope": true});
 
     for (path, good) in [
-        ("/api/v1/admin/workflows/import", good_workflow),
-        ("/api/v1/admin/channels/import", good_channel),
-        ("/api/v1/admin/connectors/import", good_connector),
+        ("/api/v2/admin/workflows/import", good_workflow),
+        ("/api/v2/admin/channels/import", good_channel),
+        ("/api/v2/admin/connectors/import", good_connector),
     ] {
         let app = test_app().await;
         let resp = app
@@ -510,7 +510,7 @@ async fn a_malformed_item_fails_alone_on_every_import_endpoint() {
 #[tokio::test]
 async fn workflow_upsert_ladder() {
     let app = test_app().await;
-    let uri = "/api/v1/admin/workflows/import?on_conflict=new_version";
+    let uri = "/api/v2/admin/workflows/import?on_conflict=new_version";
     let item = |message: &str| {
         json!([{
             "workflow_id": "wf-upsert",
@@ -557,7 +557,7 @@ async fn workflow_upsert_ladder() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/wf-upsert",
+            "/api/v2/admin/workflows/wf-upsert",
             None,
         ))
         .await
@@ -571,7 +571,7 @@ async fn workflow_upsert_ladder() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/wf-upsert/status",
+            "/api/v2/admin/workflows/wf-upsert/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -601,7 +601,7 @@ async fn workflow_upsert_ladder() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/wf-upsert",
+            "/api/v2/admin/workflows/wf-upsert",
             None,
         ))
         .await
@@ -616,8 +616,8 @@ async fn workflow_upsert_ladder() {
 #[tokio::test]
 async fn upsert_dry_run_reports_the_would_be_action() {
     let app = test_app().await;
-    let real = "/api/v1/admin/workflows/import?on_conflict=new_version";
-    let dry = "/api/v1/admin/workflows/import?on_conflict=new_version&dry_run=true";
+    let real = "/api/v2/admin/workflows/import?on_conflict=new_version";
+    let dry = "/api/v2/admin/workflows/import?on_conflict=new_version&dry_run=true";
     let item = |message: &str| {
         json!([{
             "workflow_id": "wf-upsert-dry",
@@ -656,7 +656,7 @@ async fn upsert_dry_run_reports_the_would_be_action() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/wf-upsert-dry",
+            "/api/v2/admin/workflows/wf-upsert-dry",
             None,
         ))
         .await
@@ -682,7 +682,7 @@ async fn skip_mode_and_in_batch_duplicates() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import",
+            "/api/v2/admin/channels/import",
             Some(create),
         ))
         .await
@@ -693,7 +693,7 @@ async fn skip_mode_and_in_batch_duplicates() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import?on_conflict=skip",
+            "/api/v2/admin/channels/import?on_conflict=skip",
             Some(json!([
                 {"channel_id": "ch-skip", "name": "renamed",
                  "channel_type": "sync", "protocol": "http",
@@ -714,7 +714,7 @@ async fn skip_mode_and_in_batch_duplicates() {
     // The skipped channel kept its stored name.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/channels/ch-skip", None))
+        .oneshot(json_request("GET", "/api/v2/admin/channels/ch-skip", None))
         .await
         .unwrap();
     assert_eq!(body_json(resp).await["data"]["name"], "ch-skip");
@@ -724,7 +724,7 @@ async fn skip_mode_and_in_batch_duplicates() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import?on_conflict=new_version",
+            "/api/v2/admin/channels/import?on_conflict=new_version",
             Some(json!([
                 {"channel_id": "ch-dup", "name": "ch-dup",
                  "channel_type": "sync", "protocol": "http",
@@ -753,7 +753,7 @@ async fn skip_mode_and_in_batch_duplicates() {
 #[tokio::test]
 async fn connector_upsert_updates_in_place_and_keeps_enabled() {
     let app = test_app().await;
-    let uri = "/api/v1/admin/connectors/import?on_conflict=new_version";
+    let uri = "/api/v2/admin/connectors/import?on_conflict=new_version";
     let item = |url: &str| {
         json!([{
             "name": "upsert-http",
@@ -774,7 +774,7 @@ async fn connector_upsert_updates_in_place_and_keeps_enabled() {
     // K1: the disabled flag survived the import.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/connectors/export", None))
+        .oneshot(json_request("GET", "/api/v2/admin/connectors/export", None))
         .await
         .unwrap();
     let export = body_json(resp).await;
@@ -806,7 +806,7 @@ async fn connector_upsert_updates_in_place_and_keeps_enabled() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/connectors/export", None))
+        .oneshot(json_request("GET", "/api/v2/admin/connectors/export", None))
         .await
         .unwrap();
     let export = body_json(resp).await;

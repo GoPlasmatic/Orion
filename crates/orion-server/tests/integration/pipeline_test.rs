@@ -57,7 +57,7 @@ async fn test_parse_map_log_pipeline() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/parse-map-log",
+            "/api/v2/data/parse-map-log",
             Some(json!({"data": {"amount": 100}})),
         ))
         .await
@@ -134,7 +134,7 @@ async fn test_filter_halts_pipeline() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/filter-ch",
+            "/api/v2/data/filter-ch",
             Some(json!({"data": {"priority": 3}})),
         ))
         .await
@@ -154,7 +154,7 @@ async fn test_filter_halts_pipeline() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/filter-ch",
+            "/api/v2/data/filter-ch",
             Some(json!({"data": {"priority": 10}})),
         ))
         .await
@@ -245,7 +245,7 @@ async fn test_multi_task_data_flow() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-flow",
+            "/api/v2/data/cache-flow",
             Some(json!({"data": {"name": "Alice"}})),
         ))
         .await
@@ -339,7 +339,7 @@ async fn test_conditional_per_task_execution() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cond-tasks",
+            "/api/v2/data/cond-tasks",
             Some(json!({"data": {"type": "basic"}})),
         ))
         .await
@@ -367,7 +367,7 @@ async fn test_conditional_per_task_execution() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cond-tasks",
+            "/api/v2/data/cond-tasks",
             Some(json!({"data": {"type": "premium"}})),
         ))
         .await
@@ -438,7 +438,7 @@ async fn test_continue_on_error() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             None,
         ))
         .await
@@ -449,7 +449,7 @@ async fn test_continue_on_error() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/continue-err",
+            "/api/v2/data/continue-err",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -532,7 +532,7 @@ async fn a_later_task_can_branch_on_the_failure_code() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             None,
         ))
         .await
@@ -543,7 +543,7 @@ async fn a_later_task_can_branch_on_the_failure_code() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/branch-err",
+            "/api/v2/data/branch-err",
             Some(json!({"data": {}})),
         ))
         .await
@@ -617,7 +617,7 @@ async fn the_error_record_carries_no_message_and_cannot_be_round_tripped() {
     app.clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             None,
         ))
         .await
@@ -627,7 +627,7 @@ async fn the_error_record_carries_no_message_and_cannot_be_round_tripped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/leak-err",
+            "/api/v2/data/leak-err",
             Some(json!({"data": {}})),
         ))
         .await
@@ -675,7 +675,7 @@ async fn a_caller_cannot_seed_the_error_records() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/seed-err",
+            "/api/v2/data/seed-err",
             Some(json!({
                 "data": {},
                 "metadata": { "_orion_errors": [
@@ -721,7 +721,7 @@ async fn test_http_call_then_map_pipeline() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "mock-api",
                 "name": "mock-api",
@@ -786,7 +786,7 @@ async fn test_http_call_then_map_pipeline() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/http-map-ch",
+            "/api/v2/data/http-map-ch",
             Some(json!({"data": {"request_id": "r-1"}})),
         ))
         .await
@@ -841,7 +841,7 @@ async fn test_data_sync_processing() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/orders",
+            "/api/v2/data/orders",
             Some(json!({
                 "data": { "order_id": "ORD-001", "amount": 150 },
                 "metadata": { "source": "test" }
@@ -877,7 +877,7 @@ async fn test_data_async_processing() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/events/async",
+            "/api/v2/data/events/async",
             Some(json!({
                 "data": { "event": "click", "user_id": "u1" }
             })),

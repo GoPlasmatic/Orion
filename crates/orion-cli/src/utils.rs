@@ -82,7 +82,7 @@ pub fn read_json_input(file: Option<&str>, data: Option<&str>, stdin: bool) -> R
 /// Read a JSON-array file and POST it to a bulk-import endpoint, printing a
 /// summary of the outcome. Shared by `workflows`/`channels`/`connectors import`.
 ///
-/// `base_path` is the import endpoint (e.g. `/api/v1/admin/channels/import`),
+/// `base_path` is the import endpoint (e.g. `/api/v2/admin/channels/import`),
 /// `label` the singular resource noun (e.g. `channel`). With `dry_run`, appends
 /// `?dry_run=true` so the server validates without writing. `on_conflict`
 /// (`fail`/`skip`/`new_version`) rides along as `?on_conflict=`. The v1.0

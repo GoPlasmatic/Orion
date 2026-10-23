@@ -1054,18 +1054,18 @@ mod tests {
     /// wrong entity's family compiles. Asserted against literal URLs.
     #[test]
     fn the_model_kind_points_at_the_model_endpoints() {
-        assert_eq!(KIND.collection, "/api/v1/admin/models");
-        assert_eq!(KIND.export, "/api/v1/admin/models/export");
-        assert_eq!(KIND.validate, "/api/v1/admin/models/validate");
-        assert_eq!((KIND.item)("acme.fraud"), "/api/v1/admin/models/acme.fraud");
+        assert_eq!(KIND.collection, "/api/v2/admin/models");
+        assert_eq!(KIND.export, "/api/v2/admin/models/export");
+        assert_eq!(KIND.validate, "/api/v2/admin/models/validate");
+        assert_eq!((KIND.item)("acme.fraud"), "/api/v2/admin/models/acme.fraud");
         assert_eq!(KIND.id_field, "model_id");
         assert_eq!(
             (VERSIONED.status)("acme.fraud"),
-            "/api/v1/admin/models/acme.fraud/status"
+            "/api/v2/admin/models/acme.fraud/status"
         );
         assert_eq!(
             (VERSIONED.versions)("acme.fraud"),
-            "/api/v1/admin/models/acme.fraud/versions"
+            "/api/v2/admin/models/acme.fraud/versions"
         );
     }
 

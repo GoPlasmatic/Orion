@@ -36,7 +36,7 @@ async fn test_dedup_rejects_duplicate() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-ch",
+            "/api/v2/data/dedup-ch",
             "key-001",
             payload.clone(),
         ))
@@ -48,7 +48,7 @@ async fn test_dedup_rejects_duplicate() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-ch",
+            "/api/v2/data/dedup-ch",
             "key-001",
             payload.clone(),
         ))
@@ -69,7 +69,7 @@ async fn test_dedup_rejects_duplicate() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-ch",
+            "/api/v2/data/dedup-ch",
             "key-002",
             payload.clone(),
         ))
@@ -108,7 +108,7 @@ async fn test_dedup_allows_after_window() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-expire-ch",
+            "/api/v2/data/dedup-expire-ch",
             "expire-key",
             payload.clone(),
         ))
@@ -125,7 +125,7 @@ async fn test_dedup_allows_after_window() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-expire-ch",
+            "/api/v2/data/dedup-expire-ch",
             "expire-key",
             payload.clone(),
         ))
@@ -162,7 +162,7 @@ async fn test_dedup_missing_header_passes() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dedup-noheader-ch",
+            "/api/v2/data/dedup-noheader-ch",
             Some(payload.clone()),
         ))
         .await
@@ -174,7 +174,7 @@ async fn test_dedup_missing_header_passes() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dedup-noheader-ch",
+            "/api/v2/data/dedup-noheader-ch",
             Some(payload.clone()),
         ))
         .await
@@ -209,7 +209,7 @@ async fn test_dedup_different_keys_both_pass() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-diff-ch",
+            "/api/v2/data/dedup-diff-ch",
             "aaa",
             payload.clone(),
         ))
@@ -221,7 +221,7 @@ async fn test_dedup_different_keys_both_pass() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-diff-ch",
+            "/api/v2/data/dedup-diff-ch",
             "bbb",
             payload.clone(),
         ))
@@ -266,7 +266,7 @@ async fn test_dedup_key_scoped_per_channel() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-scope-a",
+            "/api/v2/data/dedup-scope-a",
             "shared-token",
             payload.clone(),
         ))
@@ -278,7 +278,7 @@ async fn test_dedup_key_scoped_per_channel() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-scope-b",
+            "/api/v2/data/dedup-scope-b",
             "shared-token",
             payload.clone(),
         ))
@@ -290,7 +290,7 @@ async fn test_dedup_key_scoped_per_channel() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/dedup-scope-a",
+            "/api/v2/data/dedup-scope-a",
             "shared-token",
             payload,
         ))
@@ -349,7 +349,7 @@ async fn test_workflow_cache_write_cannot_manufacture_a_dedup_conflict() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/poison-ch",
+            "/api/v2/data/poison-ch",
             "attacker-key",
             payload.clone(),
         ))
@@ -361,7 +361,7 @@ async fn test_workflow_cache_write_cannot_manufacture_a_dedup_conflict() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/poison-ch",
+            "/api/v2/data/poison-ch",
             "victim-key",
             payload.clone(),
         ))
@@ -377,7 +377,7 @@ async fn test_workflow_cache_write_cannot_manufacture_a_dedup_conflict() {
     let resp = app
         .clone()
         .oneshot(post_with_idempotency_key(
-            "/api/v1/data/poison-ch",
+            "/api/v2/data/poison-ch",
             "victim-key",
             payload,
         ))

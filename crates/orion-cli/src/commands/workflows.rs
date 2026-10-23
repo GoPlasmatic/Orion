@@ -825,18 +825,18 @@ mod tests {
     /// from.
     #[test]
     fn the_workflow_kind_points_at_the_workflow_endpoints() {
-        assert_eq!(KIND.collection, "/api/v1/admin/workflows");
-        assert_eq!(KIND.export, "/api/v1/admin/workflows/export");
-        assert_eq!(KIND.validate, "/api/v1/admin/workflows/validate");
-        assert_eq!((KIND.item)("w1"), "/api/v1/admin/workflows/w1");
+        assert_eq!(KIND.collection, "/api/v2/admin/workflows");
+        assert_eq!(KIND.export, "/api/v2/admin/workflows/export");
+        assert_eq!(KIND.validate, "/api/v2/admin/workflows/validate");
+        assert_eq!((KIND.item)("w1"), "/api/v2/admin/workflows/w1");
         assert_eq!(KIND.id_field, "workflow_id");
         assert_eq!(
             (VERSIONED.status)("w1"),
-            "/api/v1/admin/workflows/w1/status"
+            "/api/v2/admin/workflows/w1/status"
         );
         assert_eq!(
             (VERSIONED.versions)("w1"),
-            "/api/v1/admin/workflows/w1/versions"
+            "/api/v2/admin/workflows/w1/versions"
         );
     }
 

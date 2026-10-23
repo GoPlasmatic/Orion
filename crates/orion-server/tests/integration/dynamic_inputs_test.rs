@@ -74,7 +74,7 @@ async fn cache_key_resolves_from_the_message() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/data/dyn-cache-ch",
+                "/api/v2/data/dyn-cache-ch",
                 Some(json!({"data": {"id": id, "payload": payload}})),
             ))
             .await
@@ -92,7 +92,7 @@ async fn cache_key_resolves_from_the_message() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-cache-ch",
+            "/api/v2/data/dyn-cache-ch",
             Some(json!({"data": {"id": "alpha", "payload": "first"}})),
         ))
         .await
@@ -156,7 +156,7 @@ async fn cache_key_accepts_a_numeric_message_value() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-cache-num-ch",
+            "/api/v2/data/dyn-cache-num-ch",
             Some(json!({"data": {"id": 4242}})),
         ))
         .await
@@ -221,7 +221,7 @@ async fn cache_ttl_resolves_from_the_message() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-cache-ttl-ch",
+            "/api/v2/data/dyn-cache-ttl-ch",
             Some(json!({"data": {"id": "ttl-key", "ttl": 60}})),
         ))
         .await
@@ -311,7 +311,7 @@ async fn sql_bind_params_resolve_from_the_message() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-db-ch",
+            "/api/v2/data/dyn-db-ch",
             Some(json!({"data": {"id": "sku-77", "name": "Sprocket", "qty": 12}})),
         ))
         .await
@@ -381,7 +381,7 @@ async fn bind_params_support_the_var_default_form() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-db-default-ch",
+            "/api/v2/data/dyn-db-default-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -448,7 +448,7 @@ async fn literal_inputs_are_unchanged() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-literal-ch",
+            "/api/v2/data/dyn-literal-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -469,7 +469,7 @@ async fn workflow_validation_accepts_var_nodes_on_resolvable_fields() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "dynamic-inputs",
                 "tasks": [{
@@ -503,7 +503,7 @@ async fn workflow_validation_rejects_var_nodes_on_literal_fields() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "dynamic-connector",
                 "tasks": [{
@@ -585,7 +585,7 @@ async fn mongo_filter_resolves_from_the_message() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-mongo-seed-ch",
+            "/api/v2/data/dyn-mongo-seed-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -634,7 +634,7 @@ async fn mongo_filter_resolves_from_the_message() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-mongo-ch",
+            "/api/v2/data/dyn-mongo-ch",
             Some(json!({"data": {"owner": "alice"}})),
         ))
         .await
@@ -654,7 +654,7 @@ async fn mongo_filter_resolves_from_the_message() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dyn-mongo-ch",
+            "/api/v2/data/dyn-mongo-ch",
             Some(json!({"data": {"owner": "bob"}})),
         ))
         .await

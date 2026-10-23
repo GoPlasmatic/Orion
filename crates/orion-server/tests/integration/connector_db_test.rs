@@ -45,7 +45,7 @@ async fn test_db_write_create_table() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-create-table",
+            "/api/v2/data/ch-create-table",
             Some(json!({"data": {}})),
         ))
         .await
@@ -111,7 +111,7 @@ async fn test_db_write_insert_row() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-insert-row",
+            "/api/v2/data/ch-insert-row",
             Some(json!({"data": {}})),
         ))
         .await
@@ -190,7 +190,7 @@ async fn test_db_read_select_rows() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-select-rows",
+            "/api/v2/data/ch-select-rows",
             Some(json!({"data": {}})),
         ))
         .await
@@ -263,7 +263,7 @@ async fn test_db_read_empty_table() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-empty-table",
+            "/api/v2/data/ch-empty-table",
             Some(json!({"data": {}})),
         ))
         .await
@@ -347,7 +347,7 @@ async fn test_db_write_parameterized_query() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-params",
+            "/api/v2/data/ch-params",
             Some(json!({"data": {}})),
         ))
         .await
@@ -411,7 +411,7 @@ async fn test_db_invalid_sql_returns_error() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-invalid-sql",
+            "/api/v2/data/ch-invalid-sql",
             Some(json!({"data": {}})),
         ))
         .await
@@ -484,7 +484,7 @@ async fn test_db_read_row_cap_enforced() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-row-cap-setup",
+            "/api/v2/data/ch-row-cap-setup",
             Some(json!({"data": {}})),
         ))
         .await
@@ -518,7 +518,7 @@ async fn test_db_read_row_cap_enforced() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-row-cap-read",
+            "/api/v2/data/ch-row-cap-read",
             Some(json!({"data": {}})),
         ))
         .await
@@ -559,7 +559,7 @@ async fn test_db_read_row_cap_enforced() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-row-cap-limited",
+            "/api/v2/data/ch-row-cap-limited",
             Some(json!({"data": {}})),
         ))
         .await
@@ -634,7 +634,7 @@ async fn db_write_with_a_numeric_as_it_cannot_act_on_quarantines_its_channel() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/na-ch",
+            "/api/v2/data/na-ch",
             Some(json!({"data": {}})),
         ))
         .await

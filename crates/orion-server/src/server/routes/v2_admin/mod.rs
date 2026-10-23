@@ -127,12 +127,15 @@ pub(super) fn principal_id(ext: Option<Extension<AdminPrincipal>>) -> String {
 }
 
 pub(super) async fn sync_v2_deployments_to_db(state: &AppState) {
-    if let crate::storage::DbPool::Sqlite(ref pool) = state.db_pool
-        && let Err(e) = state.composition.deployments.persist_to_sqlite(pool).await
+    if let Err(e) = state
+        .composition
+        .deployments
+        .persist_to_db_pool(&state.db_pool)
+        .await
     {
         tracing::error!(
             error = %e,
-            "Failed to persist v2 deployment store state to SQLite"
+            "Failed to persist v2 deployment store state to database"
         );
     }
 }

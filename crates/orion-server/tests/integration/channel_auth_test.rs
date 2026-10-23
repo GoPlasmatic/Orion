@@ -1,6 +1,6 @@
 //! Per-channel authentication on the HTTP data plane, end to end.
 //!
-//! `admin_auth` covers `/api/v1/admin` and nothing else, so a data channel was
+//! `admin_auth` covers `/api/v2/admin` and nothing else, so a data channel was
 //! reachable by anyone who could reach the port. The unit tests in
 //! `src/channel/auth.rs` cover the credential comparisons themselves; these
 //! cover the parts only a whole server can show — that the guard is actually
@@ -50,7 +50,7 @@ async fn a_request_without_a_key_is_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/guarded",
+            "/api/v2/data/guarded",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -72,7 +72,7 @@ async fn a_request_with_the_wrong_key_is_refused() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/guarded2",
+            "/api/v2/data/guarded2",
             ("X-API-Key", "wrong"),
             json!({"data": {"x": 1}}),
         ))
@@ -95,7 +95,7 @@ async fn a_request_with_the_right_key_is_served() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/guarded3",
+            "/api/v2/data/guarded3",
             ("X-API-Key", "s3cret"),
             json!({"data": {"x": 1}}),
         ))
@@ -126,7 +126,7 @@ async fn the_async_submission_path_is_authenticated_too() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/guarded-async/async",
+            "/api/v2/data/guarded-async/async",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -140,7 +140,7 @@ async fn the_async_submission_path_is_authenticated_too() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/guarded-async/async",
+            "/api/v2/data/guarded-async/async",
             ("X-API-Key", "s3cret"),
             json!({"data": {"x": 1}}),
         ))
@@ -173,7 +173,7 @@ async fn an_unauthenticated_caller_cannot_claim_an_idempotency_key() {
     let resp = app
         .clone()
         .oneshot(common::post_with_idempotency_key(
-            "/api/v1/data/guarded-dedup",
+            "/api/v2/data/guarded-dedup",
             "token-1",
             json!({"data": {"x": 1}}),
         ))
@@ -184,7 +184,7 @@ async fn an_unauthenticated_caller_cannot_claim_an_idempotency_key() {
     // The genuine caller still gets served: the key was never claimed.
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/guarded-dedup")
+        .uri("/api/v2/data/guarded-dedup")
         .header("content-type", "application/json")
         .header("X-API-Key", "s3cret")
         .header("Idempotency-Key", "token-1")
@@ -231,7 +231,7 @@ async fn an_hmac_signed_webhook_is_verified_against_the_raw_body() {
     let signed = |sig: &str, payload: &[u8]| {
         Request::builder()
             .method("POST")
-            .uri("/api/v1/data/webhook")
+            .uri("/api/v2/data/webhook")
             .header("content-type", "application/json")
             .header("X-Hub-Signature-256", sig)
             .body(Body::from(payload.to_vec()))
@@ -289,7 +289,7 @@ async fn an_api_key_can_come_from_the_environment() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/env-guarded",
+            "/api/v2/data/env-guarded",
             ("X-API-Key", "from-env"),
             json!({"data": {}}),
         ))
@@ -301,7 +301,7 @@ async fn an_api_key_can_come_from_the_environment() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/env-guarded",
+            "/api/v2/data/env-guarded",
             ("X-API-Key", "env://ORION_TEST_CHANNEL_KEY"),
             json!({"data": {}}),
         ))
@@ -325,7 +325,7 @@ async fn a_channel_without_auth_is_unchanged() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/open",
+            "/api/v2/data/open",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -357,7 +357,7 @@ async fn a_channel_whose_auth_cannot_be_built_is_quarantined() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/broken-auth",
+            "/api/v2/data/broken-auth",
             Some(json!({"data": {}})),
         ))
         .await
@@ -389,7 +389,7 @@ async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/channels/{channel_id}"),
+            &format!("/api/v2/admin/channels/{channel_id}"),
             None,
         ))
         .await
@@ -406,7 +406,7 @@ async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/channels/{channel_id}/versions"),
+            &format!("/api/v2/admin/channels/{channel_id}/versions"),
             None,
         ))
         .await
@@ -418,7 +418,7 @@ async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/channels/{channel_id}"),
+            &format!("/api/v2/admin/channels/{channel_id}"),
             Some(json!({"config": config})),
         ))
         .await
@@ -433,7 +433,7 @@ async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -445,7 +445,7 @@ async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/masked-rt",
+            "/api/v2/data/masked-rt",
             ("x-api-key", "sk-live-9"),
             json!({"data": {"ok": true}}),
         ))
@@ -461,7 +461,7 @@ async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/masked-rt",
+            "/api/v2/data/masked-rt",
             ("x-api-key", "******"),
             json!({"data": {"ok": true}}),
         ))
@@ -479,7 +479,7 @@ async fn channel_create_rejects_the_mask_sentinel() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "mask-reject",
                 "channel_type": "sync",
@@ -544,7 +544,7 @@ async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/channels",
+                "/api/v2/admin/channels",
                 Some(json!({
                     "name": "bad-auth-channel",
                     "channel_type": "sync",
@@ -577,7 +577,7 @@ async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "zoom-hooks",
                 "channel_type": "sync",
@@ -661,7 +661,7 @@ async fn a_verified_jwt_exposes_claims_to_the_workflow() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/me",
+            "/api/v2/data/me",
             Some(json!({"data": {}})),
         ))
         .await
@@ -675,7 +675,7 @@ async fn a_verified_jwt_exposes_claims_to_the_workflow() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/me",
+            "/api/v2/data/me",
             ("Authorization", &format!("Bearer {token}")),
             json!({"data": {}}),
         ))
@@ -692,7 +692,7 @@ async fn a_verified_jwt_exposes_claims_to_the_workflow() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/me",
+            "/api/v2/data/me",
             ("Authorization", &format!("Bearer {}", mint_jwt(expired))),
             json!({"data": {}}),
         ))
@@ -725,7 +725,7 @@ async fn authorization_logic_answers_403_for_verified_but_insufficient_claims() 
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/admin-only",
+            "/api/v2/data/admin-only",
             ("Authorization", &format!("Bearer {token}")),
             json!({"data": {}}),
         ))
@@ -738,7 +738,7 @@ async fn authorization_logic_answers_403_for_verified_but_insufficient_claims() 
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/admin-only",
+            "/api/v2/data/admin-only",
             ("Authorization", &format!("Bearer {}", mint_jwt(admin))),
             json!({"data": {}}),
         ))
@@ -763,7 +763,7 @@ async fn optional_jwt_admits_tokenless_and_still_rejects_invalid() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/maybe-auth",
+            "/api/v2/data/maybe-auth",
             Some(json!({"data": {}})),
         ))
         .await
@@ -776,7 +776,7 @@ async fn optional_jwt_admits_tokenless_and_still_rejects_invalid() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/maybe-auth",
+            "/api/v2/data/maybe-auth",
             ("Authorization", "Bearer not.a.token"),
             json!({"data": {}}),
         ))
@@ -820,7 +820,7 @@ async fn conforming_authorization_headers_are_accepted() {
     let token = mint_jwt(fresh_claims());
 
     for (channel, credential) in [("bearer-key", "s3cret"), ("bearer-jwt", token.as_str())] {
-        let uri = format!("/api/v1/data/{channel}");
+        let uri = format!("/api/v2/data/{channel}");
         for spelling in ["Bearer", "bearer", "BEARER", "Bearer "] {
             let resp = app
                 .clone()
@@ -877,7 +877,7 @@ async fn a_foreign_scheme_gets_the_bare_challenge_and_a_bad_token_does_not() {
         let resp = app
             .clone()
             .oneshot(request_with_header(
-                "/api/v1/data/challenged",
+                "/api/v2/data/challenged",
                 ("Authorization", value),
                 json!({"data": {}}),
             ))
@@ -921,7 +921,7 @@ async fn broken_jwt_configs_are_refused_at_create() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/channels",
+                "/api/v2/admin/channels",
                 Some(json!({
                     "name": "bad-jwt",
                     "channel_type": "sync",
@@ -973,7 +973,7 @@ async fn repeated_wrong_keys_put_a_client_into_backoff() {
 
     let wrong = |app: axum::Router| async move {
         app.oneshot(request_with_header(
-            "/api/v1/data/guessable",
+            "/api/v2/data/guessable",
             ("X-API-Key", "wrong"),
             json!({"data": {"x": 1}}),
         ))
@@ -998,7 +998,7 @@ async fn repeated_wrong_keys_put_a_client_into_backoff() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/guessable",
+            "/api/v2/data/guessable",
             ("X-API-Key", "the-real-key"),
             json!({"data": {"x": 1}}),
         ))
@@ -1036,7 +1036,7 @@ async fn a_lockout_on_one_channel_does_not_reach_another() {
         let _ = app
             .clone()
             .oneshot(request_with_header(
-                "/api/v1/data/ch-a",
+                "/api/v2/data/ch-a",
                 ("X-API-Key", "wrong"),
                 json!({"data": {"x": 1}}),
             ))
@@ -1047,7 +1047,7 @@ async fn a_lockout_on_one_channel_does_not_reach_another() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/ch-b",
+            "/api/v2/data/ch-b",
             ("X-API-Key", "shared-key"),
             json!({"data": {"x": 1}}),
         ))
@@ -1092,9 +1092,9 @@ async fn a_caller_cannot_supply_metadata_auth() {
 
     let forged = json!({"data": {}, "metadata": {"auth": {"claims": {"sub": "admin"}}}});
     for uri in [
-        "/api/v1/data/forge-optional",
-        "/api/v1/data/forge-open",
-        "/api/v1/data/forge-open/async",
+        "/api/v2/data/forge-optional",
+        "/api/v2/data/forge-open",
+        "/api/v2/data/forge-open/async",
     ] {
         let resp = app
             .clone()
@@ -1114,7 +1114,7 @@ async fn a_caller_cannot_supply_metadata_auth() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/forge-key",
+            "/api/v2/data/forge-key",
             ("X-API-Key", "k1"),
             forged.clone(),
         ))
@@ -1129,7 +1129,7 @@ async fn a_caller_cannot_supply_metadata_auth() {
     let resp = app
         .clone()
         .oneshot(request_with_header(
-            "/api/v1/data/forge-optional",
+            "/api/v2/data/forge-optional",
             ("Authorization", &format!("Bearer {token}")),
             forged,
         ))
@@ -1176,7 +1176,7 @@ async fn the_response_cache_keys_on_the_verified_subject() {
         async move {
             let resp = app
                 .oneshot(request_with_header(
-                    "/api/v1/data/per-user",
+                    "/api/v2/data/per-user",
                     ("Authorization", &auth),
                     body,
                 ))

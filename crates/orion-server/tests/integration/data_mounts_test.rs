@@ -1,13 +1,13 @@
 //! #279: `server.data_mounts` — serving REST channels at additional paths.
 //!
-//! The data plane is hard-mounted at `/api/v1/data`. `route_pattern`s are
+//! The data plane is hard-mounted at `/api/v2/data`. `route_pattern`s are
 //! already multi-segment and unrestricted, so `"/zoom/meetings/user"` was a
 //! legal pattern before this change — only the mount point was missing, which
 //! forced a reverse proxy whose only job was to prepend the prefix.
 //!
 //! **Two of the tests here are security regressions, not features.** Under a
 //! root mount `MatchedPath` becomes the literal `/{*path}`, which does not
-//! start with `/api/v1/admin` — so admin auth would wave the request through
+//! start with `/api/v2/admin` — so admin auth would wave the request through
 //! to the anonymous data plane, and the rate limiter would meter it against
 //! the wrong budget.
 
@@ -37,7 +37,7 @@ async fn a_mounted_channel_serves_both_paths() {
     let app = common::test_app_with_config(config_with_mounts(&["/zoom"])).await;
     rest_channel(&app, "zoom-meetings", "/zoom/meetings/user").await;
 
-    for path in ["/zoom/meetings/user", "/api/v1/data/zoom/meetings/user"] {
+    for path in ["/zoom/meetings/user", "/api/v2/data/zoom/meetings/user"] {
         let resp = app
             .clone()
             .oneshot(json_request("POST", path, Some(json!({"data": {"a": 1}}))))
@@ -64,11 +64,11 @@ async fn a_mounted_channel_serves_async_too() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 }
 
-/// **Security regression 1.** With a root mount, `GET /api/v1/admin/nonexistent`
+/// **Security regression 1.** With a root mount, `GET /api/v2/admin/nonexistent`
 /// matches the catch-all, so `MatchedPath` is `/{*path}` — which is not an
 /// admin path. Without the fix the request reaches the unauthenticated data
 /// plane, and a channel could claim any unregistered path under
-/// `/api/v1/admin/` and be served anonymously.
+/// `/api/v2/admin/` and be served anonymously.
 #[tokio::test]
 async fn a_root_mount_does_not_disable_admin_auth() {
     let mut config = config_with_mounts(&["/"]);
@@ -77,9 +77,9 @@ async fn a_root_mount_does_not_disable_admin_auth() {
     let app = common::test_app_with_config(config).await;
 
     for path in [
-        "/api/v1/admin/nonexistent",
-        "/api/v1/admin/workflows/x/steal",
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/nonexistent",
+        "/api/v2/admin/workflows/x/steal",
+        "/api/v2/admin/workflows",
     ] {
         let resp = app
             .clone()
@@ -107,7 +107,7 @@ async fn the_self_authenticating_trace_read_is_unaffected() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces/00000000-0000-0000-0000-000000000000",
+            "/api/v2/admin/traces/00000000-0000-0000-0000-000000000000",
             None,
         ))
         .await
@@ -196,13 +196,13 @@ async fn a_channel_shadowed_by_a_platform_route_is_refused_at_activation() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "shadowed",
                 "channel_type": "sync",
                 "protocol": "rest",
                 "methods": ["POST"],
-                "route_pattern": "/api/v1/admin/anything",
+                "route_pattern": "/api/v2/admin/anything",
                 "workflow_id": wf_id,
             })),
         ))
@@ -217,7 +217,7 @@ async fn a_channel_shadowed_by_a_platform_route_is_refused_at_activation() {
     let resp = app
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({ "status": "active" })),
         ))
         .await
@@ -246,7 +246,7 @@ async fn no_mounts_is_todays_behaviour() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/orders/7",
+            "/api/v2/data/orders/7",
             Some(json!({"data": {}})),
         ))
         .await

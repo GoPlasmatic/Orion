@@ -30,7 +30,7 @@ async fn run_of(app: &axum::Router, channel: &str) -> Value {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(json!({"data": {}})),
         ))
         .await
@@ -88,7 +88,7 @@ async fn a_workflow_and_the_admin_route_invalidate_a_namespace() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/finish-match",
+            "/api/v2/data/finish-match",
             Some(json!({"data": {}})),
         ))
         .await
@@ -115,7 +115,7 @@ async fn a_workflow_and_the_admin_route_invalidate_a_namespace() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/cache/namespaces/ladder/invalidate",
+            "/api/v2/admin/cache/namespaces/ladder/invalidate",
             None,
         ))
         .await
@@ -129,7 +129,7 @@ async fn a_workflow_and_the_admin_route_invalidate_a_namespace() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/cache/namespaces/Not%20Valid/invalidate",
+            "/api/v2/admin/cache/namespaces/Not%20Valid/invalidate",
             None,
         ))
         .await
@@ -153,7 +153,7 @@ async fn namespaces_are_validated_at_create() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/channels",
+                "/api/v2/admin/channels",
                 Some(json!({
                     "name": format!("ns-{}", label.replace(' ', "-")),
                     "channel_type": "sync",
@@ -194,7 +194,7 @@ async fn cache_invalidate_refuses_a_bad_name_without_bumping_anything() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/bad-inv",
+            "/api/v2/data/bad-inv",
             Some(json!({"data": {"ns": "NOT OK"}})),
         ))
         .await

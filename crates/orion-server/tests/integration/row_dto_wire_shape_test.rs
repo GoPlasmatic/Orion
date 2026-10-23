@@ -51,7 +51,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
     let app = common::test_app().await;
     let id = common::create_connector(&app, common::db_connector("wire-shape-conn")).await;
 
-    let body = get(&app, &format!("/api/v1/admin/connectors/{id}")).await;
+    let body = get(&app, &format!("/api/v2/admin/connectors/{id}")).await;
     assert_eq!(
         keys(&body["data"], "connector"),
         [
@@ -83,7 +83,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
     );
 
     // The list adds exactly the three registry fields on top of the same row.
-    let list = get(&app, "/api/v1/admin/connectors").await;
+    let list = get(&app, "/api/v2/admin/connectors").await;
     let row = &list["data"][0];
     assert_eq!(
         keys(row, "connector list row"),
@@ -115,7 +115,7 @@ async fn audit_log_response_keeps_every_field_the_row_published() {
     // `data[0]` as null on slow CI runners).
     common::create_connector(&app, common::db_connector("wire-shape-audit")).await;
 
-    let body = common::wait_for_body(&app, "/api/v1/admin/audit-logs", |b| {
+    let body = common::wait_for_body(&app, "/api/v2/admin/audit-logs", |b| {
         b["data"][0].is_object()
     })
     .await;
@@ -164,7 +164,7 @@ async fn app_with_dlq_entry() -> (axum::Router, String) {
 async fn trace_dlq_responses_keep_every_field_the_rows_published() {
     let (app, id) = app_with_dlq_entry().await;
 
-    let detail = get(&app, &format!("/api/v1/admin/trace-dlq/{id}")).await;
+    let detail = get(&app, &format!("/api/v2/admin/trace-dlq/{id}")).await;
     assert_eq!(
         keys(&detail["data"], "dlq entry"),
         [
@@ -182,7 +182,7 @@ async fn trace_dlq_responses_keep_every_field_the_rows_published() {
         ]
     );
 
-    let list = get(&app, "/api/v1/admin/trace-dlq").await;
+    let list = get(&app, "/api/v2/admin/trace-dlq").await;
     assert_eq!(
         keys(&list["data"][0], "dlq summary"),
         [
@@ -225,12 +225,12 @@ async fn trace_listing_carries_neither_payloads_nor_the_token_hash() {
     // An async submission is what writes an `access_token_hash` (R12).
     common::submit_async(
         &app,
-        "/api/v1/data/d27-trace-list/async",
+        "/api/v2/data/d27-trace-list/async",
         json!({"data": {"secret_field": "top-secret-payload"}}),
     )
     .await;
 
-    let body = common::wait_for_body(&app, "/api/v1/admin/traces?limit=10", |b| {
+    let body = common::wait_for_body(&app, "/api/v2/admin/traces?limit=10", |b| {
         b["data"].as_array().is_some_and(|rows| !rows.is_empty())
     })
     .await;
@@ -293,7 +293,7 @@ async fn wire_names_survive_the_column_rename() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "D26 wire shape",
                 "tags": ["production", "d26"],
@@ -310,7 +310,7 @@ async fn wire_names_survive_the_column_rename() {
         .expect("workflow_id")
         .to_string();
 
-    let fetched = get(&app, &format!("/api/v1/admin/workflows/{workflow_id}")).await;
+    let fetched = get(&app, &format!("/api/v2/admin/workflows/{workflow_id}")).await;
     for (what, body) in [("create", &created), ("read", &fetched)] {
         assert_eq!(
             keys(&body["data"], "workflow"),
@@ -343,7 +343,7 @@ async fn wire_names_survive_the_column_rename() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+            &format!("/api/v2/admin/workflows/{workflow_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -359,7 +359,7 @@ async fn wire_names_survive_the_column_rename() {
     )
     .await;
 
-    let fetched = get(&app, &format!("/api/v1/admin/channels/{channel_id}")).await;
+    let fetched = get(&app, &format!("/api/v2/admin/channels/{channel_id}")).await;
     assert_eq!(
         keys(&fetched["data"], "channel"),
         [
@@ -451,7 +451,7 @@ async fn tag_filtering_reaches_the_renamed_column() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(json!({
                     "name": name,
                     "tags": [tag],
@@ -464,7 +464,7 @@ async fn tag_filtering_reaches_the_renamed_column() {
         assert_eq!(resp.status(), StatusCode::CREATED);
     }
 
-    let body = get(&app, "/api/v1/admin/workflows?tag=d26-keep").await;
+    let body = get(&app, "/api/v2/admin/workflows?tag=d26-keep").await;
     let rows = body["data"].as_array().expect("data array");
     assert_eq!(rows.len(), 1, "exactly the tagged workflow: {body}");
     assert_eq!(rows[0]["tags"], json!(["d26-keep"]));
@@ -481,7 +481,7 @@ async fn model_response_keeps_every_field_the_row_published() {
 
     let body = get(
         &h.app,
-        &format!("/api/v1/admin/models/{}", common::models::FIXTURE_ID),
+        &format!("/api/v2/admin/models/{}", common::models::FIXTURE_ID),
     )
     .await;
     assert_eq!(
@@ -517,7 +517,7 @@ async fn model_response_keeps_every_field_the_row_published() {
     assert_eq!(keys(&body["data"]["admission"], "admission"), ["state"]);
 
     // The list row is the same shape without this node's view.
-    let list = get(&h.app, "/api/v1/admin/models").await;
+    let list = get(&h.app, "/api/v2/admin/models").await;
     let mut expected = keys(&body["data"], "model");
     expected.retain(|k| k != "health");
     assert_eq!(keys(&list["data"][0], "model list row"), expected);

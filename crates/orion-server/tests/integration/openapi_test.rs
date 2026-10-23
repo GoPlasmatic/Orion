@@ -5,7 +5,7 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn test_openapi_spec_endpoint() {
     let app = common::test_app().await;
-    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let req = common::json_request("GET", "/api/v2/openapi.json", None);
     let response = app.oneshot(req).await.unwrap();
 
     assert_eq!(response.status(), 200);
@@ -25,7 +25,7 @@ async fn test_openapi_spec_endpoint() {
 #[tokio::test]
 async fn test_openapi_spec_all_endpoints() {
     let app = common::test_app().await;
-    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let req = common::json_request("GET", "/api/v2/openapi.json", None);
     let response = app.oneshot(req).await.unwrap();
     let body = common::body_json(response).await;
     let paths = body["paths"].as_object().unwrap();
@@ -35,23 +35,23 @@ async fn test_openapi_spec_all_endpoints() {
     // plane (served by one catch-all handler, documented as a templated
     // path), the DLQ group, and the two Kubernetes probes.
     let expected = [
-        "/api/v1/admin/traces",
-        "/api/v1/admin/traces/{id}",
+        "/api/v2/admin/traces",
+        "/api/v2/admin/traces/{id}",
         "/health",
         "/metrics",
         // B4 additions:
-        "/api/v1/admin/functions",
-        "/api/v1/admin/audit-logs",
-        "/api/v1/admin/backups",
+        "/api/v2/admin/functions",
+        "/api/v2/admin/audit-logs",
+        "/api/v2/admin/backups",
         // C8 additions:
-        "/api/v1/data/{channel}",
-        "/api/v1/data/{channel}/async",
+        "/api/v2/data/{channel}",
+        "/api/v2/data/{channel}/async",
         "/healthz",
         "/readyz",
-        "/api/v1/admin/trace-dlq",
-        "/api/v1/admin/trace-dlq/{id}",
-        "/api/v1/admin/trace-dlq/{id}/requeue",
-        "/api/v1/admin/trace-dlq/purge",
+        "/api/v2/admin/trace-dlq",
+        "/api/v2/admin/trace-dlq/{id}",
+        "/api/v2/admin/trace-dlq/{id}/requeue",
+        "/api/v2/admin/trace-dlq/purge",
     ];
 
     for path in &expected {
@@ -62,7 +62,7 @@ async fn test_openapi_spec_all_endpoints() {
 #[tokio::test]
 async fn openapi_documents_new_b4_tags() {
     let app = common::test_app().await;
-    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let req = common::json_request("GET", "/api/v2/openapi.json", None);
     let response = app.oneshot(req).await.unwrap();
     let body = common::body_json(response).await;
     // The `tags` block surfaces in the spec so Swagger UI groups
@@ -86,7 +86,7 @@ async fn openapi_documents_new_b4_tags() {
 #[tokio::test]
 async fn openapi_declares_admin_security() {
     let app = common::test_app().await;
-    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let req = common::json_request("GET", "/api/v2/openapi.json", None);
     let response = app.oneshot(req).await.unwrap();
     let body = common::body_json(response).await;
 
@@ -103,12 +103,12 @@ async fn openapi_declares_admin_security() {
     let paths = body["paths"].as_object().unwrap();
     // Everything the admin-auth middleware guards must say so.
     for path in [
-        "/api/v1/admin/channels",
-        "/api/v1/admin/workflows",
-        "/api/v1/admin/connectors",
-        "/api/v1/admin/trace-dlq",
-        "/api/v1/admin/audit-logs",
-        "/api/v1/admin/traces",
+        "/api/v2/admin/channels",
+        "/api/v2/admin/workflows",
+        "/api/v2/admin/connectors",
+        "/api/v2/admin/trace-dlq",
+        "/api/v2/admin/audit-logs",
+        "/api/v2/admin/traces",
         "/metrics",
     ] {
         let security = &paths[path]["get"]["security"];
@@ -125,8 +125,8 @@ async fn openapi_declares_admin_security() {
     // ...and nothing else may: the data plane and the probes are open by
     // design, and claiming otherwise would be just as wrong.
     for (path, method) in [
-        ("/api/v1/data/{channel}", "post"),
-        ("/api/v1/data/{channel}/async", "post"),
+        ("/api/v2/data/{channel}", "post"),
+        ("/api/v2/data/{channel}/async", "post"),
         ("/health", "get"),
         ("/healthz", "get"),
         ("/readyz", "get"),
@@ -146,11 +146,11 @@ async fn openapi_declares_admin_security() {
 #[tokio::test]
 async fn openapi_documents_the_data_plane() {
     let app = common::test_app().await;
-    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let req = common::json_request("GET", "/api/v2/openapi.json", None);
     let response = app.oneshot(req).await.unwrap();
     let body = common::body_json(response).await;
 
-    let sync = &body["paths"]["/api/v1/data/{channel}"]["post"];
+    let sync = &body["paths"]["/api/v2/data/{channel}"]["post"];
     assert_eq!(
         sync["requestBody"]["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/ProcessRequest"
@@ -173,7 +173,7 @@ async fn openapi_documents_the_data_plane() {
         );
     }
 
-    let async_submit = &body["paths"]["/api/v1/data/{channel}/async"]["post"];
+    let async_submit = &body["paths"]["/api/v2/data/{channel}/async"]["post"];
     let accepted = &async_submit["responses"]["202"];
     assert_eq!(
         accepted["content"]["application/json"]["schema"]["$ref"],
@@ -206,7 +206,7 @@ async fn openapi_documents_the_data_plane() {
 #[tokio::test]
 async fn openapi_references_the_shared_error_envelope() {
     let app = common::test_app().await;
-    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let req = common::json_request("GET", "/api/v2/openapi.json", None);
     let response = app.oneshot(req).await.unwrap();
     let body = common::body_json(response).await;
 
@@ -292,7 +292,7 @@ fn production_config() -> AppConfig {
 async fn docs_are_404_in_production_by_default() {
     let app = common::test_app_with_config(production_config()).await;
 
-    for path in ["/docs", "/docs/", "/api/v1/openapi.json"] {
+    for path in ["/docs", "/docs/", "/api/v2/openapi.json"] {
         let resp = app
             .clone()
             .oneshot(common::json_request("GET", path, None))
@@ -315,7 +315,7 @@ async fn explicit_docs_enabled_wins_in_production() {
 
     let resp = app
         .clone()
-        .oneshot(common::json_request("GET", "/api/v1/openapi.json", None))
+        .oneshot(common::json_request("GET", "/api/v2/openapi.json", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -330,7 +330,7 @@ async fn explicit_docs_disabled_wins_in_development() {
     config.server.docs.enabled = Some(false);
     let app = common::test_app_with_config(config).await;
 
-    for path in ["/docs/", "/api/v1/openapi.json"] {
+    for path in ["/docs/", "/api/v2/openapi.json"] {
         let resp = app
             .clone()
             .oneshot(common::json_request("GET", path, None))
@@ -354,7 +354,7 @@ async fn disabling_docs_leaves_the_rest_of_the_api_served() {
 
     let resp = app
         .clone()
-        .oneshot(common::json_request("GET", "/api/v1/admin/workflows", None))
+        .oneshot(common::json_request("GET", "/api/v2/admin/workflows", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -371,7 +371,7 @@ async fn disabling_docs_leaves_the_rest_of_the_api_served() {
 #[tokio::test]
 async fn openapi_declares_403_on_guarded_mutating_operations() {
     let app = common::test_app().await;
-    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let req = common::json_request("GET", "/api/v2/openapi.json", None);
     let response = app.oneshot(req).await.unwrap();
     let body = common::body_json(response).await;
 

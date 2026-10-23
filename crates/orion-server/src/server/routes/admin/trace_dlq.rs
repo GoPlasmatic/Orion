@@ -29,7 +29,7 @@ pub(crate) struct PurgeTraceDlqRequest {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/trace-dlq",
+    path = "/api/v2/admin/trace-dlq",
     tag = "Trace DLQ",
     params(TraceDlqFilter),
     responses(
@@ -61,7 +61,7 @@ pub(crate) async fn list_trace_dlq(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/trace-dlq/{id}",
+    path = "/api/v2/admin/trace-dlq/{id}",
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
@@ -80,7 +80,7 @@ pub(crate) async fn get_trace_dlq_entry(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/trace-dlq/{id}/requeue",
+    path = "/api/v2/admin/trace-dlq/{id}/requeue",
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
@@ -101,7 +101,7 @@ pub(crate) async fn requeue_trace_dlq_entry(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/trace-dlq/purge",
+    path = "/api/v2/admin/trace-dlq/purge",
     tag = "Trace DLQ",
     request_body = PurgeTraceDlqRequest,
     responses(

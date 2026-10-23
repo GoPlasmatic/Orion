@@ -41,7 +41,7 @@ async fn test_concurrent_data_requests_multiple_channels() {
                 let resp = app
                     .oneshot(common::json_request(
                         "POST",
-                        &format!("/api/v1/data/conc-ch-{}", i),
+                        &format!("/api/v2/data/conc-ch-{}", i),
                         Some(json!({"data": {"round": round, "channel": i}})),
                     ))
                     .await
@@ -91,7 +91,7 @@ async fn test_engine_reload_under_data_load() {
             let resp = app
                 .oneshot(common::json_request(
                     "POST",
-                    "/api/v1/admin/engine/reload",
+                    "/api/v2/admin/engine/reload",
                     None,
                 ))
                 .await
@@ -107,7 +107,7 @@ async fn test_engine_reload_under_data_load() {
             let resp = app
                 .oneshot(common::json_request(
                     "POST",
-                    "/api/v1/data/reload-ch",
+                    "/api/v2/data/reload-ch",
                     Some(json!({"data": {"test": true}})),
                 ))
                 .await
@@ -140,7 +140,7 @@ async fn test_engine_reload_under_data_load() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/reload-ch",
+            "/api/v2/data/reload-ch",
             Some(json!({"data": {"after_reload": true}})),
         ))
         .await
@@ -208,7 +208,7 @@ async fn concurrent_reloads_converge_on_the_latest_rows() {
         tasks.push(tokio::spawn(async move {
             app.oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/engine/reload",
+                "/api/v2/admin/engine/reload",
                 None,
             ))
             .await
@@ -224,7 +224,7 @@ async fn concurrent_reloads_converge_on_the_latest_rows() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/converge-ch",
+            "/api/v2/data/converge-ch",
             Some(json!({"data": {"after": true}})),
         ))
         .await
@@ -249,7 +249,7 @@ async fn test_channel_status_race_no_panics() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("Race Workflow")),
         ))
         .await
@@ -261,7 +261,7 @@ async fn test_channel_status_race_no_panics() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -272,7 +272,7 @@ async fn test_channel_status_race_no_panics() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "race-ch",
                 "channel_type": "sync",
@@ -292,7 +292,7 @@ async fn test_channel_status_race_no_panics() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -311,7 +311,7 @@ async fn test_channel_status_race_no_panics() {
             let resp = app
                 .oneshot(common::json_request(
                     "PATCH",
-                    &format!("/api/v1/admin/channels/{}/status", ch_id),
+                    &format!("/api/v2/admin/channels/{}/status", ch_id),
                     Some(json!({"status": status})),
                 ))
                 .await
@@ -327,7 +327,7 @@ async fn test_channel_status_race_no_panics() {
             let resp = app
                 .oneshot(common::json_request(
                     "POST",
-                    "/api/v1/data/race-ch",
+                    "/api/v2/data/race-ch",
                     Some(json!({"data": {"test": true}})),
                 ))
                 .await
@@ -373,7 +373,7 @@ async fn test_concurrent_workflow_creation_same_name() {
             let resp = app
                 .oneshot(common::json_request(
                     "POST",
-                    "/api/v1/admin/workflows",
+                    "/api/v2/admin/workflows",
                     Some(common::simple_log_workflow("duplicate-wf")),
                 ))
                 .await
@@ -580,7 +580,7 @@ async fn a_channel_is_never_routable_before_its_workflow_runs() {
                 .clone()
                 .oneshot(common::json_request(
                     "POST",
-                    &format!("/api/v1/data/{channel}"),
+                    &format!("/api/v2/data/{channel}"),
                     Some(serde_json::json!({"data": {"round": round}})),
                 ))
                 .await

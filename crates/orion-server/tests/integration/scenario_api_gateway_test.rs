@@ -36,7 +36,7 @@ async fn test_gateway_path_param_forwarding() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "upstream-api",
                 "name": "upstream-api",
@@ -100,7 +100,7 @@ async fn test_gateway_path_param_forwarding() {
     // -- Send request through the gateway ---------------------------------
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/users/42")
+        .uri("/api/v2/data/users/42")
         .body(Body::empty())
         .unwrap();
 
@@ -180,10 +180,10 @@ async fn test_gateway_multi_method_routing() {
 
     create_rest_channel(&app, "items-post", "/items/{id}", vec!["POST"], &post_wf_id).await;
 
-    // -- Request 1: GET /api/v1/data/items/123 ----------------------------
+    // -- Request 1: GET /api/v2/data/items/123 ----------------------------
     let get_req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/items/123")
+        .uri("/api/v2/data/items/123")
         .body(Body::empty())
         .unwrap();
 
@@ -195,12 +195,12 @@ async fn test_gateway_multi_method_routing() {
     assert_eq!(body["data"]["action"], "read");
     assert_eq!(body["data"]["item_id"], "123");
 
-    // -- Request 2: POST /api/v1/data/items/123 ---------------------------
+    // -- Request 2: POST /api/v2/data/items/123 ---------------------------
     let resp = app
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/items/123",
+            "/api/v2/data/items/123",
             Some(json!({"data": {"name": "Widget"}})),
         ))
         .await

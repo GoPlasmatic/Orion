@@ -23,7 +23,7 @@ async fn dry_run_test_endpoint_returns_per_step_message_snapshots() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "trace-shape",
                 "tasks": [{
@@ -43,7 +43,7 @@ async fn dry_run_test_endpoint_returns_per_step_message_snapshots() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{}/test", wf_id),
+            &format!("/api/v2/admin/workflows/{}/test", wf_id),
             Some(json!({ "data": { "x": 1 } })),
         ))
         .await
@@ -114,7 +114,7 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{}", channel_name),
+            &format!("/api/v2/data/{}", channel_name),
             Some(json!({ "data": { "x": 1 } })),
         ))
         .await
@@ -126,7 +126,7 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
     // Wait for the sync-mode trace persistence, then fetch the detail — the
     // list is a payload-free projection (S14), so task_trace_json is served
     // only by the single-trace GET.
-    let body = crate::common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let body = crate::common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == channel_name))
@@ -145,7 +145,7 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -185,14 +185,14 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{}", channel_name),
+            &format!("/api/v2/data/{}", channel_name),
             Some(json!({ "data": {} })),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body = crate::common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let body = crate::common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == channel_name))
@@ -208,7 +208,7 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -246,7 +246,7 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{}", channel_name),
+            &format!("/api/v2/data/{}", channel_name),
             Some(json!({ "data": { "x": 1 } })),
         ))
         .await
@@ -256,7 +256,7 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
     // Find the trace row id, then fetch it via the single-trace GET endpoint.
     let body = crate::common::wait_for_body(
         &app,
-        &format!("/api/v1/admin/traces?channel={}", channel_name),
+        &format!("/api/v2/admin/traces?channel={}", channel_name),
         |b| b["data"].as_array().is_some_and(|a| !a.is_empty()),
     )
     .await;
@@ -268,7 +268,7 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{}", trace_id),
+            &format!("/api/v2/admin/traces/{}", trace_id),
             None,
         ))
         .await
@@ -307,7 +307,7 @@ async fn async_request_with_task_details_captures_and_returns_task_trace_json() 
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{}/async", channel_name),
+            &format!("/api/v2/data/{}/async", channel_name),
             Some(json!({ "data": { "x": 1 } })),
         ))
         .await
@@ -380,7 +380,7 @@ async fn task_trace_steps_do_not_carry_request_headers() {
     let cookie_secret = "uuid-must-not-reach-a-trace";
     let mut req = json_request(
         "POST",
-        &format!("/api/v1/data/{channel_name}"),
+        &format!("/api/v2/data/{channel_name}"),
         Some(json!({ "data": { "x": 1 } })),
     );
     req.headers_mut().insert(
@@ -396,7 +396,7 @@ async fn task_trace_steps_do_not_carry_request_headers() {
 
     let body = crate::common::wait_for_body(
         &app,
-        &format!("/api/v1/admin/traces?channel={channel_name}"),
+        &format!("/api/v2/admin/traces?channel={channel_name}"),
         |b| b["data"].as_array().is_some_and(|a| !a.is_empty()),
     )
     .await;
@@ -408,7 +408,7 @@ async fn task_trace_steps_do_not_carry_request_headers() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await

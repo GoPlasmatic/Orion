@@ -117,7 +117,7 @@ async fn post(app: &axum::Router, channel: &str, body: Value) -> (StatusCode, Va
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(body),
         ))
         .await
@@ -134,7 +134,7 @@ async fn create_workflow(app: &axum::Router, workflow: Value) -> (StatusCode, Va
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -313,7 +313,7 @@ async fn the_async_ingress_stamps_the_same_vars() {
 
     let (trace_id, token) = common::submit_async(
         &app,
-        "/api/v1/data/async-ch/async",
+        "/api/v2/data/async-ch/async",
         json!({ "data": {}, "metadata": { "vars": { "topic_prefix": "attacker" } } }),
     )
     .await;
@@ -343,7 +343,7 @@ async fn the_admin_test_endpoint_stamps_the_same_vars() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            &format!("/api/v2/admin/workflows/{wf_id}/test"),
             Some(json!({
                 "data": {},
                 "metadata": { "vars": { "topic_prefix": "attacker" } }
@@ -409,7 +409,7 @@ async fn a_var_is_visible_in_the_persisted_task_trace() {
     let (status, body) = post(&app, "vars-trace-ch", json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let list = common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let list = common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == "vars-trace-ch"))
@@ -426,7 +426,7 @@ async fn a_var_is_visible_in_the_persisted_task_trace() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -718,7 +718,7 @@ async fn an_engine_reload_keeps_the_store() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .expect("reload");
     assert_eq!(resp.status(), StatusCode::OK, "{:?}", body_json(resp).await);
@@ -1047,7 +1047,7 @@ async fn a_secret_appears_in_no_recording_surface() {
 
     // The served trace list and detail, including `task_trace_json` — a
     // per-step `Message` clone under default trace options.
-    let list = common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let list = common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == "leak-ch"))
@@ -1065,7 +1065,7 @@ async fn a_secret_appears_in_no_recording_surface() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -1100,7 +1100,7 @@ async fn a_secret_appears_in_no_recording_surface() {
     // The audit trail, which records the admin writes that created all this.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
         .await
         .expect("audit logs");
     assert_no_secret_in("an audit log entry", &body_json(resp).await.to_string());
@@ -1141,7 +1141,7 @@ async fn the_sweep_finds_a_value_that_does_reach_the_message() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.to_string().contains(PLANTED), "the response: {body}");
 
-    let list = common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let list = common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == "control-ch"))
@@ -1158,7 +1158,7 @@ async fn the_sweep_finds_a_value_that_does_reach_the_message() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -1218,7 +1218,7 @@ async fn a_literal_key_leaks_through_the_stored_definition_not_the_trace() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{wf_id}"),
+            &format!("/api/v2/admin/workflows/{wf_id}"),
             None,
         ))
         .await
@@ -1244,8 +1244,8 @@ async fn the_stored_definition_holds_the_name_and_not_the_value() {
     .await;
 
     for uri in [
-        format!("/api/v1/admin/workflows/{wf_id}"),
-        "/api/v1/admin/workflows/export".to_string(),
+        format!("/api/v2/admin/workflows/{wf_id}"),
+        "/api/v2/admin/workflows/export".to_string(),
     ] {
         let resp = app
             .clone()
@@ -1276,7 +1276,7 @@ async fn the_admin_test_endpoint_leaks_no_secret() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            &format!("/api/v2/admin/workflows/{wf_id}/test"),
             Some(json!({ "data": { "payload": "order-4711" } })),
         ))
         .await
@@ -1319,7 +1319,7 @@ async fn a_failing_task_names_the_field_and_never_the_value() {
     let (_, body) = post(&app, "fail-ch", json!({ "data": {} })).await;
     assert_no_secret_in("a failing run's response", &body.to_string());
 
-    let list = common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let list = common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == "fail-ch"))
@@ -1403,7 +1403,7 @@ async fn validate_reports_the_same_stray_reference() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(common::workflow_with_tasks(
                 "stray wf",
                 json!([{
@@ -1442,7 +1442,7 @@ async fn a_stray_reference_is_refused_on_update() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/workflows/{wf_id}"),
+            &format!("/api/v2/admin/workflows/{wf_id}"),
             Some(json!({ "tasks": [{
                 "id": "call", "name": "Call",
                 "function": { "name": "send_email", "input": {
@@ -1667,7 +1667,7 @@ async fn the_admin_test_endpoint_stamps_vars_when_metadata_is_omitted() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            &format!("/api/v2/admin/workflows/{wf_id}/test"),
             Some(json!({ "data": {} })),
         ))
         .await
@@ -1842,7 +1842,7 @@ async fn an_absent_audience_element_is_dropped_rather_than_failing_the_task() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            &format!("/api/v2/admin/workflows/{wf_id}/test"),
             Some(json!({ "data": { "token": "not-a-jwt", "aud1": "orders-api" } })),
         ))
         .await
@@ -1922,7 +1922,7 @@ async fn an_unknown_key_holding_a_var_is_still_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "typo-var-ch",
                 "channel_type": "sync",
@@ -1968,7 +1968,7 @@ async fn a_var_in_a_closed_typed_field_defers_the_block_to_load() {
 
     let mut req = json_request(
         "POST",
-        "/api/v1/data/enum-var-ch",
+        "/api/v2/data/enum-var-ch",
         Some(json!({ "data": {} })),
     );
     req.headers_mut()

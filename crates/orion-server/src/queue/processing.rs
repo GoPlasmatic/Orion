@@ -381,8 +381,8 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // The shared post-admission step: message build, engine snapshot, the
     // deadline arm and the `has_errors` rule. What stays here is persistence
     // and the DLQ routing.
-    let execution = crate::engine::execute_admitted(
-        &generation.engine,
+    let execution = crate::engine::execute_admitted_on_generation(
+        &generation,
         &channel,
         &msg.payload,
         &msg.metadata,

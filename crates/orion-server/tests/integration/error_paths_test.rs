@@ -17,7 +17,7 @@ async fn test_non_json_content_type_rejected_with_415() {
     // Non-JSON Content-Type with a body should return 415 Unsupported Media Type.
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/orders")
+        .uri("/api/v2/data/orders")
         .header("content-type", "text/plain")
         .body(Body::from(r#"{"data": {"key": "value"}}"#))
         .unwrap();
@@ -32,7 +32,7 @@ async fn test_completely_invalid_json_body() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/orders")
+        .uri("/api/v2/data/orders")
         .header("content-type", "application/json")
         .body(Body::from("this is not json {{{"))
         .unwrap();
@@ -55,7 +55,7 @@ async fn test_empty_body_accepted() {
     // or any request without payload.
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/empty-body-ch")
+        .uri("/api/v2/data/empty-body-ch")
         .header("content-type", "application/json")
         .body(Body::empty())
         .unwrap();
@@ -83,7 +83,7 @@ async fn a_bare_object_body_is_the_payload() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/bare",
+            "/api/v2/data/bare",
             Some(json!({"amount": 5})),
         ))
         .await
@@ -96,7 +96,7 @@ async fn a_bare_object_body_is_the_payload() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/bare",
+            "/api/v2/data/bare",
             Some(json!({"data": {"amount": 5}})),
         ))
         .await
@@ -110,7 +110,7 @@ async fn a_bare_object_body_is_the_payload() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/bare",
+            "/api/v2/data/bare",
             Some(json!([1, 2, 3])),
         ))
         .await
@@ -133,7 +133,7 @@ async fn an_envelope_with_only_metadata_is_accepted() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/meta-only",
+            "/api/v2/data/meta-only",
             Some(json!({"metadata": {"source": "test"}})),
         ))
         .await
@@ -152,7 +152,7 @@ async fn test_nonexistent_trace_returns_404() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces/nonexistent-trace-id",
+            "/api/v2/admin/traces/nonexistent-trace-id",
             None,
         ))
         .await
@@ -168,7 +168,7 @@ async fn test_delete_nonexistent_workflow_returns_404() {
     let resp = app
         .oneshot(json_request(
             "DELETE",
-            "/api/v1/admin/workflows/nonexistent-workflow",
+            "/api/v2/admin/workflows/nonexistent-workflow",
             None,
         ))
         .await
@@ -184,7 +184,7 @@ async fn test_delete_nonexistent_connector_returns_404() {
     let resp = app
         .oneshot(json_request(
             "DELETE",
-            "/api/v1/admin/connectors/nonexistent-connector",
+            "/api/v2/admin/connectors/nonexistent-connector",
             None,
         ))
         .await
@@ -202,7 +202,7 @@ async fn test_update_nonexistent_workflow_returns_404() {
     let resp = app
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/nonexistent-workflow",
+            "/api/v2/admin/workflows/nonexistent-workflow",
             Some(json!({"name": "Updated Name"})),
         ))
         .await
@@ -224,7 +224,7 @@ async fn test_invalid_status_transition() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Status Test Workflow",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -240,7 +240,7 @@ async fn test_invalid_status_transition() {
     let resp = app
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", workflow_id),
+            &format!("/api/v2/admin/workflows/{}/status", workflow_id),
             Some(json!({"status": "invalid_status"})),
         ))
         .await
@@ -272,7 +272,7 @@ async fn test_duplicate_workflow_id_rejected() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow.clone()),
         ))
         .await
@@ -285,7 +285,7 @@ async fn test_duplicate_workflow_id_rejected() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -319,7 +319,7 @@ async fn test_duplicate_of_activated_workflow_returns_conflict() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow.clone()),
         ))
         .await
@@ -330,7 +330,7 @@ async fn test_duplicate_of_activated_workflow_returns_conflict() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/duplicate-active-workflow/status",
+            "/api/v2/admin/workflows/duplicate-active-workflow/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -340,7 +340,7 @@ async fn test_duplicate_of_activated_workflow_returns_conflict() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -366,7 +366,7 @@ async fn test_duplicate_channel_id_returns_conflict() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(channel.clone()),
         ))
         .await
@@ -377,7 +377,7 @@ async fn test_duplicate_channel_id_returns_conflict() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(channel),
         ))
         .await
@@ -410,7 +410,7 @@ async fn test_duplicate_connector_id_returns_conflict() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(connector),
         ))
         .await
@@ -421,7 +421,7 @@ async fn test_duplicate_connector_id_returns_conflict() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "dup-conn",
                 "name": "Different Name",
@@ -496,7 +496,7 @@ async fn oversized_import_batch_is_refused_before_any_write() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/import",
+            "/api/v2/admin/workflows/import",
             Some(json!(items)),
         ))
         .await
@@ -514,7 +514,7 @@ async fn oversized_import_batch_is_refused_before_any_write() {
 
     // Nothing was written.
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
+        .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
         .await
         .unwrap();
     let body = common::body_json(resp).await;
@@ -553,7 +553,7 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/tiny",
+            "/api/v2/data/tiny",
             Some(big_payload.clone()),
         ))
         .await
@@ -577,7 +577,7 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Big Description",
                 "description": "y".repeat(2000),
@@ -601,7 +601,7 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({ "name": "y".repeat(300 * 1024) })),
         ))
         .await

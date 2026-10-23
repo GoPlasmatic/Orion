@@ -20,7 +20,7 @@ async fn test_dry_run_with_matching_condition() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "dry-run-match",
                 "name": "Dry Run Match",
@@ -59,7 +59,7 @@ async fn test_dry_run_with_matching_condition() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/dry-run-match/test",
+            "/api/v2/admin/workflows/dry-run-match/test",
             Some(json!({"data": {"x": 21}})),
         ))
         .await
@@ -109,7 +109,7 @@ async fn test_dry_run_unmatched_condition() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "dry-run-unmatch",
                 "name": "Dry Run Unmatched",
@@ -137,7 +137,7 @@ async fn test_dry_run_unmatched_condition() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/dry-run-unmatch/test",
+            "/api/v2/admin/workflows/dry-run-unmatch/test",
             Some(json!({"data": {"priority": 1}})),
         ))
         .await
@@ -190,7 +190,7 @@ async fn test_dry_run_with_connector_functions() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "dry-run-cache-wf",
                 "name": "Dry Run Cache Write",
@@ -220,7 +220,7 @@ async fn test_dry_run_with_connector_functions() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/dry-run-cache-wf/test",
+            "/api/v2/admin/workflows/dry-run-cache-wf/test",
             Some(json!({"data": {}})),
         ))
         .await
@@ -251,7 +251,7 @@ async fn test_versioning_create_and_list() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "ver-lifecycle",
                 "name": "Version Lifecycle v1",
@@ -271,7 +271,7 @@ async fn test_versioning_create_and_list() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/ver-lifecycle/status",
+            "/api/v2/admin/workflows/ver-lifecycle/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -286,7 +286,7 @@ async fn test_versioning_create_and_list() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/ver-lifecycle/versions",
+            "/api/v2/admin/workflows/ver-lifecycle/versions",
             None,
         ))
         .await
@@ -301,7 +301,7 @@ async fn test_versioning_create_and_list() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/ver-lifecycle",
+            "/api/v2/admin/workflows/ver-lifecycle",
             Some(json!({"name": "Version Lifecycle v2"})),
         ))
         .await
@@ -315,7 +315,7 @@ async fn test_versioning_create_and_list() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/ver-lifecycle/versions",
+            "/api/v2/admin/workflows/ver-lifecycle/versions",
             None,
         ))
         .await
@@ -338,7 +338,7 @@ async fn test_versioning_create_and_list() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/ver-lifecycle/status",
+            "/api/v2/admin/workflows/ver-lifecycle/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -353,7 +353,7 @@ async fn test_versioning_create_and_list() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/ver-lifecycle/versions",
+            "/api/v2/admin/workflows/ver-lifecycle/versions",
             None,
         ))
         .await
@@ -383,7 +383,7 @@ async fn test_import_export_round_trip() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "export-rt-1",
                 "name": "Export Round Trip 1",
@@ -400,7 +400,7 @@ async fn test_import_export_round_trip() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/export-rt-1/status",
+            "/api/v2/admin/workflows/export-rt-1/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -411,7 +411,7 @@ async fn test_import_export_round_trip() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "export-rt-2",
                 "name": "Export Round Trip 2",
@@ -430,7 +430,7 @@ async fn test_import_export_round_trip() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/export-rt-2/status",
+            "/api/v2/admin/workflows/export-rt-2/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -440,7 +440,7 @@ async fn test_import_export_round_trip() {
     // Export all workflows from app1
     let resp = app1
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/workflows/export", None))
+        .oneshot(json_request("GET", "/api/v2/admin/workflows/export", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -474,7 +474,7 @@ async fn test_import_export_round_trip() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/import",
+            "/api/v2/admin/workflows/import",
             Some(json!(import_payload)),
         ))
         .await
@@ -492,7 +492,7 @@ async fn test_import_export_round_trip() {
     // Verify workflows exist on app2 as drafts
     let resp = app2
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
+        .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -526,7 +526,7 @@ async fn test_validate_endpoint() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Valid Workflow",
                 "condition": true,
@@ -545,7 +545,7 @@ async fn test_validate_endpoint() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "",
                 "condition": true,
@@ -568,7 +568,7 @@ async fn test_validate_endpoint() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "No Tasks",
                 "condition": true,
@@ -591,7 +591,7 @@ async fn test_validate_endpoint() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Duplicate IDs",
                 "condition": true,
@@ -624,7 +624,7 @@ async fn test_validate_endpoint() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Missing Task Name",
                 "condition": true,
@@ -661,7 +661,7 @@ async fn test_rollout_traffic_split() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "rollout-test",
                 "name": "Rollout Test",
@@ -681,7 +681,7 @@ async fn test_rollout_traffic_split() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/rollout-test/status",
+            "/api/v2/admin/workflows/rollout-test/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -693,7 +693,7 @@ async fn test_rollout_traffic_split() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/rollout-test/rollout",
+            "/api/v2/admin/workflows/rollout-test/rollout",
             Some(json!({"rollout_percentage": 50})),
         ))
         .await
@@ -709,7 +709,7 @@ async fn test_rollout_traffic_split() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/rollout-test/rollout",
+            "/api/v2/admin/workflows/rollout-test/rollout",
             Some(json!({"rollout_percentage": 100})),
         ))
         .await
@@ -723,7 +723,7 @@ async fn test_rollout_traffic_split() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/rollout-test",
+            "/api/v2/admin/workflows/rollout-test",
             None,
         ))
         .await
@@ -737,7 +737,7 @@ async fn test_rollout_traffic_split() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/rollout-test/rollout",
+            "/api/v2/admin/workflows/rollout-test/rollout",
             Some(json!({"rollout_percentage": 0})),
         ))
         .await
@@ -752,7 +752,7 @@ async fn test_rollout_traffic_split() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/rollout-test/rollout",
+            "/api/v2/admin/workflows/rollout-test/rollout",
             Some(json!({"rollout_percentage": 101})),
         ))
         .await
@@ -813,7 +813,7 @@ async fn rollout_percentages_split_traffic_across_versions() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/split/versions",
+            "/api/v2/admin/workflows/split/versions",
             None,
         ))
         .await
@@ -823,7 +823,7 @@ async fn rollout_percentages_split_traffic_across_versions() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/split",
+            "/api/v2/admin/workflows/split",
             Some(marker_workflow("v2")),
         ))
         .await
@@ -835,7 +835,7 @@ async fn rollout_percentages_split_traffic_across_versions() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/split/status",
+            "/api/v2/admin/workflows/split/status",
             Some(json!({"status": "active", "rollout_percentage": 50})),
         ))
         .await
@@ -853,7 +853,7 @@ async fn rollout_percentages_split_traffic_across_versions() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/split",
+                "/api/v2/data/split",
                 Some(json!({"data": {}})),
             ))
             .await
@@ -896,7 +896,7 @@ async fn a_failing_dry_run_returns_the_steps_that_ran() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "partial-dry-run",
                 "name": "Partial Dry Run",
@@ -929,7 +929,7 @@ async fn a_failing_dry_run_returns_the_steps_that_ran() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/partial-dry-run/test",
+            "/api/v2/admin/workflows/partial-dry-run/test",
             Some(json!({"data": {}})),
         ))
         .await
@@ -967,7 +967,7 @@ async fn validate(app: &axum::Router, workflow: serde_json::Value) -> serde_json
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(workflow),
         ))
         .await

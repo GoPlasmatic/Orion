@@ -14,7 +14,7 @@ async fn test_connectors_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "test-http",
                 "connector_type": "http",
@@ -39,7 +39,7 @@ async fn test_connectors_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             None,
         ))
         .await
@@ -52,7 +52,7 @@ async fn test_connectors_crud_lifecycle() {
     // List connectors (should include our new one)
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/connectors", None))
+        .oneshot(json_request("GET", "/api/v2/admin/connectors", None))
         .await
         .unwrap();
 
@@ -69,7 +69,7 @@ async fn test_connectors_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             Some(json!({
                 "config": {
                     "url": "https://example.com/v2/api",
@@ -89,7 +89,7 @@ async fn test_connectors_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             None,
         ))
         .await
@@ -102,7 +102,7 @@ async fn test_connectors_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             None,
         ))
         .await
@@ -123,7 +123,7 @@ async fn test_create_connector_invalid_type() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "bad-connector",
                 "connector_type": "grpc",
@@ -144,7 +144,7 @@ async fn test_create_connector_invalid_config_structure() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "bad-config",
                 "connector_type": "http",
@@ -165,7 +165,7 @@ async fn test_create_connector_non_http_url_scheme() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "ftp-connector",
                 "connector_type": "http",
@@ -190,7 +190,7 @@ async fn test_update_connector_invalid_type() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "valid-http",
                 "connector_type": "http",
@@ -211,7 +211,7 @@ async fn test_update_connector_invalid_type() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             Some(json!({ "connector_type": "grpc" })),
         ))
         .await
@@ -232,7 +232,7 @@ async fn test_circuit_breaker_list_endpoint() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -252,7 +252,7 @@ async fn test_circuit_breaker_reset_not_found() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/circuit-breakers/nonexistent-key",
+            "/api/v2/admin/connectors/circuit-breakers/nonexistent-key",
             None,
         ))
         .await
@@ -280,7 +280,7 @@ async fn test_update_connector_with_type_and_config() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "type-cfg-conn",
                 "name": "type-config-test",
@@ -299,7 +299,7 @@ async fn test_update_connector_with_type_and_config() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/type-cfg-conn",
+            "/api/v2/admin/connectors/type-cfg-conn",
             Some(json!({
                 "connector_type": "http",
                 "config": {
@@ -323,7 +323,7 @@ async fn test_update_connector_name_only() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "name-only-conn",
                 "name": "original-name",
@@ -339,7 +339,7 @@ async fn test_update_connector_name_only() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/name-only-conn",
+            "/api/v2/admin/connectors/name-only-conn",
             Some(json!({"name": "renamed-connector"})),
         ))
         .await
@@ -364,7 +364,7 @@ async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "reads-orders",
                 "tasks": [{
@@ -389,7 +389,7 @@ async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -401,7 +401,7 @@ async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             Some(json!({"name": "orders-db-v2"})),
         ))
         .await
@@ -416,7 +416,7 @@ async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             Some(json!({"enabled": true})),
         ))
         .await
@@ -428,7 +428,7 @@ async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -439,7 +439,7 @@ async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             Some(json!({"name": "orders-db-v2"})),
         ))
         .await
@@ -471,7 +471,7 @@ async fn test_sync_processing_with_metadata() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/meta-ch",
+            "/api/v2/data/meta-ch",
             Some(json!({
                 "data": {"order_id": "ORD-001"},
                 "metadata": {"source": "api", "trace_id": "abc123"}
@@ -500,7 +500,7 @@ async fn test_connector_list_with_pagination() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/connectors",
+                "/api/v2/admin/connectors",
                 Some(json!({
                     "id": format!("page-conn-{}", i),
                     "name": format!("page-conn-{}", i),
@@ -517,7 +517,7 @@ async fn test_connector_list_with_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors?limit=1&offset=0",
+            "/api/v2/admin/connectors?limit=1&offset=0",
             None,
         ))
         .await
@@ -542,7 +542,7 @@ async fn test_create_connector_with_custom_id() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "my-custom-conn-id",
                 "name": "custom-id-test",
@@ -569,7 +569,7 @@ async fn test_update_connector_enabled_flag() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "enable-conn",
                 "name": "enable-test",
@@ -585,7 +585,7 @@ async fn test_update_connector_enabled_flag() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/enable-conn",
+            "/api/v2/admin/connectors/enable-conn",
             Some(json!({"enabled": false})),
         ))
         .await
@@ -608,7 +608,7 @@ async fn test_update_connector_config_only_invalid_rejected() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "r4-db-conn",
                 "name": "r4-db",
@@ -626,7 +626,7 @@ async fn test_update_connector_config_only_invalid_rejected() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/r4-db-conn",
+            "/api/v2/admin/connectors/r4-db-conn",
             Some(json!({"config": {}})),
         ))
         .await
@@ -646,7 +646,7 @@ async fn test_update_connector_config_only_invalid_rejected() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/r4-db-conn",
+            "/api/v2/admin/connectors/r4-db-conn",
             None,
         ))
         .await
@@ -671,7 +671,7 @@ async fn test_update_connector_config_only_valid_accepted() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "r4-db-conn-ok",
                 "name": "r4-db-ok",
@@ -688,7 +688,7 @@ async fn test_update_connector_config_only_valid_accepted() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/r4-db-conn-ok",
+            "/api/v2/admin/connectors/r4-db-conn-ok",
             Some(json!({"config": {"connection_string": "sqlite:file.db"}})),
         ))
         .await
@@ -706,7 +706,7 @@ async fn test_update_connector_config_only_wrong_shape_for_stored_type() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "r4-cache-conn",
                 "name": "r4-cache",
@@ -722,7 +722,7 @@ async fn test_update_connector_config_only_wrong_shape_for_stored_type() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/r4-cache-conn",
+            "/api/v2/admin/connectors/r4-cache-conn",
             Some(json!({"config": {"backend": "memcached"}})),
         ))
         .await
@@ -745,7 +745,7 @@ async fn test_connector_get_edit_put_preserves_secrets() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "f34-http",
                 "name": "f34-http",
@@ -767,7 +767,7 @@ async fn test_connector_get_edit_put_preserves_secrets() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/f34-http",
+            "/api/v2/admin/connectors/f34-http",
             None,
         ))
         .await
@@ -787,7 +787,7 @@ async fn test_connector_get_edit_put_preserves_secrets() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/f34-http",
+            "/api/v2/admin/connectors/f34-http",
             Some(json!({"config": config})),
         ))
         .await
@@ -799,7 +799,7 @@ async fn test_connector_get_edit_put_preserves_secrets() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/f34-http",
+            "/api/v2/admin/connectors/f34-http",
             None,
         ))
         .await
@@ -822,7 +822,7 @@ async fn test_connector_get_edit_put_preserves_secrets() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/f34-http",
+            "/api/v2/admin/connectors/f34-http",
             Some(json!({"config": config})),
         ))
         .await
@@ -844,7 +844,7 @@ async fn test_connector_update_rejects_unmatched_mask() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "f34-reject",
                 "name": "f34-reject",
@@ -861,7 +861,7 @@ async fn test_connector_update_rejects_unmatched_mask() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/f34-reject",
+            "/api/v2/admin/connectors/f34-reject",
             Some(json!({"config": {
                 "url": "https://api.example.com",
                 "method": "GET",
@@ -888,7 +888,7 @@ async fn test_connector_create_rejects_mask_placeholder() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "f34-create",
                 "connector_type": "http",
@@ -914,7 +914,7 @@ async fn test_connector_url_password_round_trip() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "f34-cache",
                 "name": "f34-cache",
@@ -930,7 +930,7 @@ async fn test_connector_url_password_round_trip() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/f34-cache",
+            "/api/v2/admin/connectors/f34-cache",
             None,
         ))
         .await
@@ -944,7 +944,7 @@ async fn test_connector_url_password_round_trip() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/f34-cache",
+            "/api/v2/admin/connectors/f34-cache",
             Some(json!({"config": config})),
         ))
         .await
@@ -970,7 +970,7 @@ async fn test_connector_multi_secret_url_partial_round_trip() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "s18-multi",
                 "name": "s18-multi",
@@ -990,7 +990,7 @@ async fn test_connector_multi_secret_url_partial_round_trip() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/s18-multi",
+            "/api/v2/admin/connectors/s18-multi",
             None,
         ))
         .await
@@ -1008,7 +1008,7 @@ async fn test_connector_multi_secret_url_partial_round_trip() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/s18-multi",
+            "/api/v2/admin/connectors/s18-multi",
             Some(json!({"config": {
                 "url": "https://svc:newpass@api.example.com/v1?api_key=******&page=2",
                 "method": "GET"
@@ -1030,7 +1030,7 @@ async fn test_connector_multi_secret_url_partial_round_trip() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/s18-multi",
+            "/api/v2/admin/connectors/s18-multi",
             None,
         ))
         .await
@@ -1046,7 +1046,7 @@ async fn test_connector_multi_secret_url_partial_round_trip() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/s18-multi",
+            "/api/v2/admin/connectors/s18-multi",
             Some(json!({"config": config})),
         ))
         .await
@@ -1068,7 +1068,7 @@ async fn test_connector_update_rejects_unmatched_url_query_mask() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "s18-reject",
                 "name": "s18-reject",
@@ -1086,7 +1086,7 @@ async fn test_connector_update_rejects_unmatched_url_query_mask() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/s18-reject",
+            "/api/v2/admin/connectors/s18-reject",
             Some(json!({"config": {
                 "url": "https://api.example.com/v1?page=2&api_key=******",
                 "method": "GET"
@@ -1115,7 +1115,7 @@ async fn test_update_connector_type_and_invalid_config_rejected() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "bad-cfg-conn",
                 "name": "bad-cfg-conn",
@@ -1132,7 +1132,7 @@ async fn test_update_connector_type_and_invalid_config_rejected() {
             .clone()
             .oneshot(json_request(
                 "PUT",
-                "/api/v1/admin/connectors/bad-cfg-conn",
+                "/api/v2/admin/connectors/bad-cfg-conn",
                 Some(json!({"connector_type": "http", "config": bad})),
             ))
             .await
@@ -1156,7 +1156,7 @@ async fn test_connector_retry_count_is_bounded() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "huge-retry",
                 "name": "huge-retry",
@@ -1176,7 +1176,7 @@ async fn test_connector_retry_count_is_bounded() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "ok-retry",
                 "name": "ok-retry",
@@ -1210,7 +1210,7 @@ async fn create_connector_status(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": id,
                 "name": id,
@@ -1374,7 +1374,7 @@ async fn s6_private_db_target_is_refused_when_the_pool_is_opened() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?channel=s6-ch&limit=1",
+            "/api/v2/admin/traces?channel=s6-ch&limit=1",
             None,
         ))
         .await
@@ -1387,7 +1387,7 @@ async fn s6_private_db_target_is_refused_when_the_pool_is_opened() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -1454,7 +1454,7 @@ async fn probing_a_working_db_connector_reports_reachable() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/{id}/test"),
+            &format!("/api/v2/admin/connectors/{id}/test"),
             None,
         ))
         .await
@@ -1491,7 +1491,7 @@ async fn probing_an_unreachable_db_connector_reports_the_failure() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/{id}/test"),
+            &format!("/api/v2/admin/connectors/{id}/test"),
             None,
         ))
         .await
@@ -1534,7 +1534,7 @@ async fn probing_reports_an_unresolvable_secret() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/{id}/test"),
+            &format!("/api/v2/admin/connectors/{id}/test"),
             None,
         ))
         .await
@@ -1552,7 +1552,7 @@ async fn probing_an_unknown_connector_is_404() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/no-such-connector/test",
+            "/api/v2/admin/connectors/no-such-connector/test",
             None,
         ))
         .await
@@ -1574,7 +1574,7 @@ async fn test_smtp_connector_create_mask_and_validation() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "mailer",
                 "connector_type": "smtp",
@@ -1616,7 +1616,7 @@ async fn test_smtp_connector_create_mask_and_validation() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/connectors",
+                "/api/v2/admin/connectors",
                 Some(json!({
                     "name": "bad-mailer",
                     "connector_type": "smtp",
@@ -1643,7 +1643,7 @@ async fn test_smtp_connector_create_mask_and_validation() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/validate",
+            "/api/v2/admin/connectors/validate",
             Some(json!({
                 "name": "dev-mailer",
                 "connector_type": "smtp",
@@ -1668,7 +1668,7 @@ async fn test_send_email_workflow_validation_at_create() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "OTP Mail",
                 "condition": true,
@@ -1711,7 +1711,7 @@ async fn test_send_email_workflow_validation_at_create() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(json!({
                     "name": "Bad Mail",
                     "condition": true,
@@ -1749,7 +1749,7 @@ async fn test_storage_connector_create_mask_and_validation() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "media",
                 "connector_type": "storage",
@@ -1781,7 +1781,7 @@ async fn test_storage_connector_create_mask_and_validation() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "bad-media",
                 "connector_type": "storage",
@@ -1808,7 +1808,7 @@ async fn test_storage_presign_workflow_validation_at_create() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Playback URL",
                 "condition": true,
@@ -1834,7 +1834,7 @@ async fn test_storage_presign_workflow_validation_at_create() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Bounded upload URL",
                 "condition": true,
@@ -1887,7 +1887,7 @@ async fn test_storage_presign_workflow_validation_at_create() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(json!({
                     "name": "Bad Presign",
                     "condition": true,
@@ -1932,7 +1932,7 @@ async fn an_http_connector_may_reference_its_url_and_its_private_opt_out() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/validate",
+            "/api/v2/admin/connectors/validate",
             Some(peer.clone()),
         ))
         .await
@@ -1942,7 +1942,7 @@ async fn an_http_connector_may_reference_its_url_and_its_private_opt_out() {
     assert_eq!(body["data"]["valid"], json!(true), "{body}");
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/connectors", Some(peer)))
+        .oneshot(json_request("POST", "/api/v2/admin/connectors", Some(peer)))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -1951,7 +1951,7 @@ async fn an_http_connector_may_reference_its_url_and_its_private_opt_out() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors/validate",
+            "/api/v2/admin/connectors/validate",
             Some(json!({
                 "name": "bearer-in-header",
                 "connector_type": "http",

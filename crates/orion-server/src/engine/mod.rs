@@ -208,7 +208,9 @@ pub mod utils;
 
 pub use budget::{RunBudgetLimits, RunBudgetSnapshot, SharedRunAccountant};
 pub use error::{ErrorClass, HTTP_ERROR, HandlerError, HttpFailure, http_error, http_status};
-pub use execute::{ExecOpts, Execution, RunOutcome, execute_admitted};
+pub use execute::{
+    ExecOpts, Execution, RunOutcome, execute_admitted, execute_admitted_on_generation,
+};
 pub use functions::registry::{
     CatalogueEntry, FieldSpec, FunctionEntry, FunctionRegistry, PluginBinding,
 };

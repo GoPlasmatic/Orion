@@ -55,7 +55,7 @@ async fn channel_and_workflow_deletes_defer_to_the_next_reload() {
     delete_deferred(
         &state,
         &app,
-        &format!("/api/v1/admin/channels/{channel_id}"),
+        &format!("/api/v2/admin/channels/{channel_id}"),
     )
     .await;
     // Still served: the generation is the one published before the delete.
@@ -71,13 +71,13 @@ async fn channel_and_workflow_deletes_defer_to_the_next_reload() {
     delete_deferred(
         &state,
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}"),
+        &format!("/api/v2/admin/workflows/{workflow_id}"),
     )
     .await;
 
     let before = state.runtime.published_count();
     assert_eq!(
-        send(&app, "POST", "/api/v1/admin/engine/reload", None).await,
+        send(&app, "POST", "/api/v2/admin/engine/reload", None).await,
         StatusCode::OK
     );
     assert_eq!(state.runtime.published_count(), before + 1);
@@ -102,7 +102,7 @@ async fn a_delete_without_the_parameter_still_reloads() {
         send(
             &app,
             "DELETE",
-            &format!("/api/v1/admin/channels/{channel_id}"),
+            &format!("/api/v2/admin/channels/{channel_id}"),
             None
         )
         .await,
@@ -132,10 +132,10 @@ async fn a_plugin_delete_defers() {
             .encode(include_bytes!("../fixtures/plugins/fixture.wasm")),
     });
     assert_eq!(
-        send(&app, "POST", "/api/v1/admin/plugins", Some(upload)).await,
+        send(&app, "POST", "/api/v2/admin/plugins", Some(upload)).await,
         StatusCode::CREATED
     );
-    delete_deferred(&state, &app, "/api/v1/admin/plugins/test.fixture").await;
+    delete_deferred(&state, &app, "/api/v2/admin/plugins/test.fixture").await;
 }
 
 #[tokio::test]
@@ -143,5 +143,5 @@ async fn a_model_delete_defers() {
     let h = harness().await;
     let model = register_fixture(&h.app).await;
     let id = model["model_id"].as_str().expect("model id");
-    delete_deferred(&h.state, &h.app, &format!("/api/v1/admin/models/{id}")).await;
+    delete_deferred(&h.state, &h.app, &format!("/api/v2/admin/models/{id}")).await;
 }

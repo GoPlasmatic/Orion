@@ -16,7 +16,7 @@ async fn test_channel_call_basic() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Target Workflow",
                 "condition": true,
@@ -55,7 +55,7 @@ async fn test_channel_call_basic() {
     app.clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", target_wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", target_wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -66,7 +66,7 @@ async fn test_channel_call_basic() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "target",
                 "channel_type": "sync",
@@ -86,7 +86,7 @@ async fn test_channel_call_basic() {
     app.clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", target_ch_id),
+            &format!("/api/v2/admin/channels/{}/status", target_ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -97,7 +97,7 @@ async fn test_channel_call_basic() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Source Workflow",
                 "condition": true,
@@ -124,7 +124,7 @@ async fn test_channel_call_basic() {
     app.clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", source_wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", source_wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -135,7 +135,7 @@ async fn test_channel_call_basic() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "source",
                 "channel_type": "sync",
@@ -155,7 +155,7 @@ async fn test_channel_call_basic() {
     app.clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", source_ch_id),
+            &format!("/api/v2/admin/channels/{}/status", source_ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -166,7 +166,7 @@ async fn test_channel_call_basic() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/source",
+            "/api/v2/data/source",
             Some(json!({"data": {"name": "World"}})),
         ))
         .await
@@ -214,7 +214,7 @@ async fn test_channel_call_missing_target() {
     let resp = app
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/caller",
+            "/api/v2/data/caller",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -302,7 +302,7 @@ async fn a_target_whose_workflow_errors_fails_the_caller() {
     let resp = app
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/errors-caller",
+            "/api/v2/data/errors-caller",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -372,7 +372,7 @@ async fn a_cron_channel_is_not_callable() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "scheduled-target",
                 "channel_type": "async",
@@ -392,7 +392,7 @@ async fn a_cron_channel_is_not_callable() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -410,7 +410,7 @@ async fn a_cron_channel_is_not_callable() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cron-caller",
+            "/api/v2/data/cron-caller",
             Some(json!({"data": {}})),
         ))
         .await
@@ -441,7 +441,7 @@ async fn self_call_is_refused_as_a_cycle() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/loop-self",
+            "/api/v2/data/loop-self",
             Some(json!({"data": {}})),
         ))
         .await
@@ -477,7 +477,7 @@ async fn mutual_recursion_is_refused_as_a_cycle() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cycle-a",
+            "/api/v2/data/cycle-a",
             Some(json!({"data": {}})),
         ))
         .await
@@ -532,7 +532,7 @@ async fn call_depth_beyond_configured_max_is_refused() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/chain-1",
+            "/api/v2/data/chain-1",
             Some(json!({"data": {}})),
         ))
         .await
@@ -569,7 +569,7 @@ async fn injected_call_chain_surfaces_cycle_refusal_message() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/probe-entry",
+            "/api/v2/data/probe-entry",
             Some(json!({
                 "data": {},
                 "metadata": { "_orion_call_chain": ["probe-target"], "_orion_call_depth": 1 }
@@ -611,7 +611,7 @@ async fn injected_call_depth_surfaces_depth_refusal_message() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/depth-entry",
+            "/api/v2/data/depth-entry",
             Some(json!({
                 "data": {},
                 "metadata": { "_orion_call_depth": 10 }
@@ -654,7 +654,7 @@ async fn test_http_call_end_to_end() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "mock-http-api",
                 "name": "mock-http-api",
@@ -700,7 +700,7 @@ async fn test_http_call_end_to_end() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/http-call-ch",
+            "/api/v2/data/http-call-ch",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -787,7 +787,7 @@ async fn channel_call_resolves_target_and_payload_from_logic() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/dispatcher",
+                "/api/v2/data/dispatcher",
                 Some(json!({"data": {"route": route, "token": format!("t-{route}")}})),
             ))
             .await

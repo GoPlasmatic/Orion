@@ -134,7 +134,7 @@ async fn active_workflows_using(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/connectors",
+    path = "/api/v2/admin/connectors",
     tag = "Connectors",
     params(ConnectorFilter),
     responses(
@@ -187,7 +187,7 @@ pub(crate) async fn list_connectors(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/connectors",
+    path = "/api/v2/admin/connectors",
     tag = "Connectors",
     request_body = CreateConnectorRequest,
     responses(
@@ -222,7 +222,7 @@ pub(crate) async fn create_connector(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/connectors/{id}",
+    path = "/api/v2/admin/connectors/{id}",
     tag = "Connectors",
     params(("id" = String, Path, description = "Connector ID")),
     responses(
@@ -242,7 +242,7 @@ pub(crate) async fn get_connector(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/admin/connectors/{id}",
+    path = "/api/v2/admin/connectors/{id}",
     tag = "Connectors",
     params(("id" = String, Path, description = "Connector ID")),
     request_body = UpdateConnectorRequest,
@@ -348,7 +348,7 @@ pub(crate) async fn update_connector(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/admin/connectors/{id}",
+    path = "/api/v2/admin/connectors/{id}",
     tag = "Connectors",
     params(("id" = String, Path, description = "Connector ID")),
     responses(
@@ -397,7 +397,7 @@ pub(crate) async fn delete_connector(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/connectors/import",
+    path = "/api/v2/admin/connectors/import",
     tag = "Connectors",
     request_body = Vec<CreateConnectorRequest>,
     params(super::ImportQuery),
@@ -551,7 +551,7 @@ async fn upsert_connector(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/connectors/circuit-breakers",
+    path = "/api/v2/admin/connectors/circuit-breakers",
     tag = "Connectors",
     responses(
         (status = 200, description = "Circuit breaker states", body = DataEnvelope<CircuitBreakerStates>),
@@ -576,7 +576,7 @@ pub(crate) async fn list_circuit_breakers(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/connectors/circuit-breakers/{key}",
+    path = "/api/v2/admin/connectors/circuit-breakers/{key}",
     tag = "Connectors",
     params(("key" = String, Path, description = "Circuit breaker key (channel:connector)")),
     responses(
@@ -634,7 +634,7 @@ pub(crate) async fn reset_circuit_breaker(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/connectors/export",
+    path = "/api/v2/admin/connectors/export",
     tag = "Connectors",
     params(ConnectorFilter),
     responses(
@@ -688,7 +688,7 @@ pub(crate) async fn export_connectors(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/connectors/validate",
+    path = "/api/v2/admin/connectors/validate",
     tag = "Connectors",
     request_body = CreateConnectorRequest,
     responses(
@@ -788,7 +788,7 @@ pub(crate) struct ProbeEnvelope {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/connectors/{id}/test",
+    path = "/api/v2/admin/connectors/{id}/test",
     tag = "Connectors",
     params(("id" = String, Path, description = "Connector ID")),
     responses(

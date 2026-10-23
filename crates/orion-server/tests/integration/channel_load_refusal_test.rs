@@ -39,7 +39,7 @@ async fn insert_raw_active_channel(
 async fn reload_engine(app: &axum::Router) -> (StatusCode, serde_json::Value) {
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .expect("reload request");
     let status = resp.status();
@@ -51,7 +51,7 @@ async fn serves_ok(app: &axum::Router, channel: &str) -> bool {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -94,7 +94,7 @@ async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &
     );
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .oneshot(json_request("GET", "/api/v2/admin/engine/status", None))
         .await
         .expect("status");
     let status_body = body_json(resp).await;
@@ -143,7 +143,7 @@ async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{bad_channel}"),
+            &format!("/api/v2/data/{bad_channel}"),
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -310,7 +310,7 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "new-ch",
                 "channel_type": "sync",
@@ -333,7 +333,7 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{new_id}/status"),
+            &format!("/api/v2/admin/channels/{new_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -353,7 +353,7 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{new_id}/status"),
+            &format!("/api/v2/admin/channels/{new_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -438,7 +438,7 @@ async fn channel_whose_workflow_disappears_is_quarantined() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -450,7 +450,7 @@ async fn channel_whose_workflow_disappears_is_quarantined() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/f33-orphan",
+            "/api/v2/data/f33-orphan",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -732,7 +732,7 @@ async fn an_output_that_is_no_path_quarantines_its_channel() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                &format!("/api/v1/data/{channel}"),
+                &format!("/api/v2/data/{channel}"),
                 Some(json!({"data": {}})),
             ))
             .await

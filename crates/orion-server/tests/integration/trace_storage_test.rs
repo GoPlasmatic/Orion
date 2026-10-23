@@ -31,7 +31,7 @@ async fn list_total(app: &axum::Router) -> u64 {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?limit=1&include_total=true",
+            "/api/v2/admin/traces?limit=1&include_total=true",
             None,
         ))
         .await
@@ -46,7 +46,7 @@ async fn submit_sync(app: &axum::Router, channel: &str) -> StatusCode {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{}", channel),
+            &format!("/api/v2/data/{}", channel),
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -161,7 +161,7 @@ async fn an_async_submission_is_pollable_even_when_trace_storage_is_off() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/ch_async_off/async",
+            "/api/v2/data/ch_async_off/async",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -282,7 +282,7 @@ async fn async_submission_is_never_sampled_out() {
 
     let (trace_id, token) = common::submit_async(
         &app,
-        "/api/v1/data/ch_async_sampled/async",
+        "/api/v2/data/ch_async_sampled/async",
         json!({"data": {"x": 1}}),
     )
     .await;
@@ -310,7 +310,7 @@ async fn channel_override_persists_when_global_is_off() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "ch_override",
                 "channel_type": "sync",
@@ -332,7 +332,7 @@ async fn channel_override_persists_when_global_is_off() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status":"active"})),
         ))
         .await
@@ -356,7 +356,7 @@ async fn channel_override_persists_when_global_is_off() {
 async fn admin_channel_id(app: &axum::Router, name: &str) -> String {
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/channels", None))
+        .oneshot(json_request("GET", "/api/v2/admin/channels", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -384,7 +384,7 @@ async fn sync_trace_records_channel_id() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?channel=ch_cid_sync",
+            "/api/v2/admin/traces?channel=ch_cid_sync",
             None,
         ))
         .await
@@ -408,7 +408,7 @@ async fn async_trace_records_channel_id() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/ch_cid_async/async",
+            "/api/v2/data/ch_cid_async/async",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -423,7 +423,7 @@ async fn async_trace_records_channel_id() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
+            &format!("/api/v2/admin/traces/{trace_id}?token={token}"),
             None,
         ))
         .await

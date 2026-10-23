@@ -524,15 +524,15 @@ mod tests {
     /// static was built from — comparing it to itself would prove nothing.
     #[test]
     fn the_channel_kind_points_at_the_channel_endpoints() {
-        assert_eq!(KIND.collection, "/api/v1/admin/channels");
-        assert_eq!(KIND.export, "/api/v1/admin/channels/export");
-        assert_eq!(KIND.validate, "/api/v1/admin/channels/validate");
-        assert_eq!((KIND.item)("c1"), "/api/v1/admin/channels/c1");
+        assert_eq!(KIND.collection, "/api/v2/admin/channels");
+        assert_eq!(KIND.export, "/api/v2/admin/channels/export");
+        assert_eq!(KIND.validate, "/api/v2/admin/channels/validate");
+        assert_eq!((KIND.item)("c1"), "/api/v2/admin/channels/c1");
         assert_eq!(KIND.id_field, "channel_id");
-        assert_eq!((VERSIONED.status)("c1"), "/api/v1/admin/channels/c1/status");
+        assert_eq!((VERSIONED.status)("c1"), "/api/v2/admin/channels/c1/status");
         assert_eq!(
             (VERSIONED.versions)("c1"),
-            "/api/v1/admin/channels/c1/versions"
+            "/api/v2/admin/channels/c1/versions"
         );
     }
 }

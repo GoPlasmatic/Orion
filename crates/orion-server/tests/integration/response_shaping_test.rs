@@ -66,7 +66,7 @@ async fn a_shaped_channel_returns_its_own_status_and_headers() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/created-ch",
+            "/api/v2/data/created-ch",
             Some(json!({"data": {"id": "ORD-1", "total": 10}})),
         ))
         .await
@@ -107,7 +107,7 @@ async fn a_shaped_channel_can_return_a_client_error_status() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/missing-ch",
+            "/api/v2/data/missing-ch",
             Some(json!({"data": {"found": false}})),
         ))
         .await
@@ -143,7 +143,7 @@ async fn a_shaped_channel_can_return_a_non_json_body() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/csv-ch",
+            "/api/v2/data/csv-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -190,7 +190,7 @@ async fn a_disallowed_header_is_dropped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/narrow-ch",
+            "/api/v2/data/narrow-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -236,7 +236,7 @@ async fn a_forbidden_header_is_refused_even_when_allowlisted() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/forbidden-ch",
+            "/api/v2/data/forbidden-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -283,7 +283,7 @@ async fn a_cached_shaped_response_replays_its_status_and_headers() {
     let request = || {
         json_request(
             "POST",
-            "/api/v1/data/cached-ch",
+            "/api/v2/data/cached-ch",
             Some(json!({"data": {"id": "CACHED"}})),
         )
     };
@@ -338,7 +338,7 @@ async fn an_envelope_channel_is_untouched_by_the_control_key() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/envelope-ch",
+            "/api/v2/data/envelope-ch",
             Some(json!({"data": {"id": "ORD-2"}})),
         ))
         .await
@@ -388,7 +388,7 @@ async fn a_shaped_channel_without_a_control_block_falls_back_to_the_envelope() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-control-ch",
+            "/api/v2/data/no-control-ch",
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -419,7 +419,7 @@ async fn an_invalid_status_falls_back_to_200() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/bad-status-ch",
+            "/api/v2/data/bad-status-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -479,7 +479,7 @@ async fn a_shaped_response_can_set_and_clear_a_cookie_at_once() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/oauth-cb-ch",
+            "/api/v2/data/oauth-cb-ch",
             Some(json!({"data": {"token": "jwt-abc"}})),
         ))
         .await
@@ -522,7 +522,7 @@ async fn an_array_header_value_sets_the_header_once_per_element() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/multi-link-ch",
+            "/api/v2/data/multi-link-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -556,7 +556,7 @@ async fn a_single_valued_header_still_replaces_the_default() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/csv-ch",
+            "/api/v2/data/csv-ch",
             Some(json!({"data": {"rows": "a,b\n1,2"}})),
         ))
         .await
@@ -595,7 +595,7 @@ async fn cookies_need_the_channel_to_enable_them() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-cookies-ch",
+            "/api/v2/data/no-cookies-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -642,7 +642,7 @@ async fn a_cookie_value_that_could_inject_attributes_is_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/inject-ch",
+            "/api/v2/data/inject-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -664,7 +664,7 @@ async fn a_cookie_value_that_could_inject_attributes_is_refused() {
 /// cannot be added to it on the wire. The trace is where it goes, and the
 /// trace's envelope is what this reads.
 async fn drops_in_trace(app: &axum::Router, channel: &str) -> Vec<Value> {
-    let body = common::wait_for_body(app, "/api/v1/admin/traces", |b| {
+    let body = common::wait_for_body(app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == channel))
@@ -681,7 +681,7 @@ async fn drops_in_trace(app: &axum::Router, channel: &str) -> Vec<Value> {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -728,7 +728,7 @@ async fn an_invalid_cookie_is_dropped_and_the_response_says_so() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/signin-ch",
+            "/api/v2/data/signin-ch",
             Some(json!({"data": {"flag": "1"}})),
         ))
         .await
@@ -808,7 +808,7 @@ async fn every_dropped_response_declaration_is_recorded() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                &format!("/api/v1/data/{channel}"),
+                &format!("/api/v2/data/{channel}"),
                 Some(json!({"data": {"id": 1}})),
             ))
             .await
@@ -859,7 +859,7 @@ async fn a_response_that_dropped_a_declaration_is_not_cached() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/dropcache-ch",
+                "/api/v2/data/dropcache-ch",
                 Some(json!({"data": {"id": 1}})),
             ))
             .await
@@ -869,7 +869,7 @@ async fn a_response_that_dropped_a_declaration_is_not_cached() {
 
     // Two traces, not one: a cache hit is answered before the engine runs and
     // would leave the second request unrecorded.
-    let body = common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let body = common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().filter(|r| r["channel"] == "dropcache-ch").count() >= 2)
@@ -911,7 +911,7 @@ async fn a_complete_shaped_response_records_no_drops() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/clean-ch",
+            "/api/v2/data/clean-ch",
             Some(json!({"data": {"id": 1}})),
         ))
         .await

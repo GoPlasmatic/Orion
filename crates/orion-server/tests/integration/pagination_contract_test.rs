@@ -95,8 +95,8 @@ async fn workflows_and_channels_lists_page_the_same_way() {
         .await;
     }
 
-    assert_pagination_contract(&app, "/api/v1/admin/workflows", 3).await;
-    assert_pagination_contract(&app, "/api/v1/admin/channels", 3).await;
+    assert_pagination_contract(&app, "/api/v2/admin/workflows", 3).await;
+    assert_pagination_contract(&app, "/api/v2/admin/channels", 3).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ async fn version_history_pages_the_same_way() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                &format!("/api/v1/admin/workflows/{workflow_id}/versions"),
+                &format!("/api/v2/admin/workflows/{workflow_id}/versions"),
                 Some(json!({})),
             ))
             .await
@@ -126,7 +126,7 @@ async fn version_history_pages_the_same_way() {
             .clone()
             .oneshot(common::json_request(
                 "PATCH",
-                &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+                &format!("/api/v2/admin/workflows/{workflow_id}/status"),
                 Some(json!({"status": "active"})),
             ))
             .await
@@ -136,7 +136,7 @@ async fn version_history_pages_the_same_way() {
 
     assert_pagination_contract(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/versions"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/versions"),
         3,
     )
     .await;
@@ -153,7 +153,7 @@ async fn connectors_list_pages_the_same_way() {
         common::create_connector(&app, common::db_connector(&format!("page-conn-{i}"))).await;
     }
 
-    assert_pagination_contract(&app, "/api/v1/admin/connectors", 3).await;
+    assert_pagination_contract(&app, "/api/v2/admin/connectors", 3).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,9 +168,9 @@ async fn audit_log_list_pages_the_same_way() {
     for i in 0..3 {
         common::create_connector(&app, common::db_connector(&format!("page-audit-{i}"))).await;
     }
-    common::wait_for_body(&app, "/api/v1/admin/audit-logs", |b| b["total"] == 3).await;
+    common::wait_for_body(&app, "/api/v2/admin/audit-logs", |b| b["total"] == 3).await;
 
-    assert_pagination_contract(&app, "/api/v1/admin/audit-logs", 3).await;
+    assert_pagination_contract(&app, "/api/v2/admin/audit-logs", 3).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ async fn trace_dlq_list_pages_the_same_way() {
     }
     let app = orion::server::build_router(state);
 
-    assert_pagination_contract(&app, "/api/v1/admin/trace-dlq", 3).await;
+    assert_pagination_contract(&app, "/api/v2/admin/trace-dlq", 3).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,12 +218,12 @@ async fn trace_list_pages_the_same_way() {
     for i in 0..3 {
         common::submit_async(
             &app,
-            "/api/v1/data/page-traces/async",
+            "/api/v2/data/page-traces/async",
             json!({"data": {"n": i}}),
         )
         .await;
     }
-    common::wait_for_body(&app, "/api/v1/admin/traces?include_total=true", |b| {
+    common::wait_for_body(&app, "/api/v2/admin/traces?include_total=true", |b| {
         b["total"] == 3
     })
     .await;
@@ -232,12 +232,12 @@ async fn trace_list_pages_the_same_way() {
     // full scan of the filtered set on Postgres and InnoDB, and a 10M-row table
     // was paying it on every page. Asking for it restores the shared contract
     // exactly.
-    assert_pagination_contract(&app, "/api/v1/admin/traces?include_total=true", 3).await;
+    assert_pagination_contract(&app, "/api/v2/admin/traces?include_total=true", 3).await;
 
     // And the deviation itself: no flag, no count — but the rest of the
     // envelope is unchanged, so a caller that never reads `total` sees the
     // same shape it always did.
-    let page = get(&app, "/api/v1/admin/traces").await;
+    let page = get(&app, "/api/v2/admin/traces").await;
     assert!(
         page["total"].is_null(),
         "traces must not count unless asked: {page}"
@@ -262,7 +262,7 @@ async fn models_list_pages_the_same_way() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/models",
+                "/api/v2/admin/models",
                 Some(body),
             ))
             .await
@@ -270,7 +270,7 @@ async fn models_list_pages_the_same_way() {
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
     }
 
-    assert_pagination_contract(&h.app, "/api/v1/admin/models", 3).await;
+    assert_pagination_contract(&h.app, "/api/v2/admin/models", 3).await;
     // The admission filter rides on the same page: every row is pending.
-    assert_pagination_contract(&h.app, "/api/v1/admin/models?admission=pending", 3).await;
+    assert_pagination_contract(&h.app, "/api/v2/admin/models?admission=pending", 3).await;
 }

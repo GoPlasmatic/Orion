@@ -44,7 +44,7 @@ async fn set_status(app: &axum::Router, id: &str, status: &str) -> (StatusCode, 
     send(
         app,
         "PATCH",
-        &format!("/api/v1/admin/models/{id}/status"),
+        &format!("/api/v2/admin/models/{id}/status"),
         Some(json!({"status": status})),
     )
     .await
@@ -121,7 +121,7 @@ async fn a_registration_is_checked_stored_pending_and_queued() {
     assert_eq!(h.bucket.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     // The single read adds this node's view.
-    let (status, body) = get(&h.app, &format!("/api/v1/admin/models/{FIXTURE_ID}")).await;
+    let (status, body) = get(&h.app, &format!("/api/v2/admin/models/{FIXTURE_ID}")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["health"]["state"], "pending");
 
@@ -129,7 +129,7 @@ async fn a_registration_is_checked_stored_pending_and_queued() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models",
+        "/api/v2/admin/models",
         Some(registration("bucket", &fixture_digest())),
     )
     .await;
@@ -158,7 +158,7 @@ async fn admission_fetches_verifies_and_records_the_stats() {
     assert!(stats.probe_ms > 0.0, "{stats:?}");
     assert_eq!(h.bucket.gets.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-    let (status, body) = get(&h.app, &format!("/api/v1/admin/models/{FIXTURE_ID}")).await;
+    let (status, body) = get(&h.app, &format!("/api/v2/admin/models/{FIXTURE_ID}")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let model = &body["data"];
     assert_eq!(model["admission"]["state"], "passed");
@@ -203,7 +203,7 @@ async fn a_wrong_digest_fails_admission_at_the_digest_stage() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models",
+        "/api/v2/admin/models",
         Some(registration("bucket", &claimed)),
     )
     .await;
@@ -216,7 +216,7 @@ async fn a_wrong_digest_fails_admission_at_the_digest_stage() {
             if reason.contains(&claimed) && reason.contains(&fixture_digest())),
         "{outcome:?}"
     );
-    let (_, body) = get(&h.app, &format!("/api/v1/admin/models/{FIXTURE_ID}")).await;
+    let (_, body) = get(&h.app, &format!("/api/v2/admin/models/{FIXTURE_ID}")).await;
     assert_eq!(body["data"]["admission"]["state"], "failed");
     assert_eq!(body["data"]["admission"]["stage"], "digest");
     assert!(body["data"]["stats"].is_null());
@@ -236,7 +236,7 @@ async fn a_wrong_digest_fails_admission_at_the_digest_stage() {
 /// The row after a failed admission: the verdict names the stage, the
 /// stats stay `null`, and the model is not one this node serves.
 async fn assert_failed_at(app: &axum::Router, stage: &str) {
-    let (_, body) = get(app, &format!("/api/v1/admin/models/{FIXTURE_ID}")).await;
+    let (_, body) = get(app, &format!("/api/v2/admin/models/{FIXTURE_ID}")).await;
     assert_eq!(body["data"]["admission"]["state"], "failed", "{body}");
     assert_eq!(body["data"]["admission"]["stage"], stage, "{body}");
     assert!(body["data"]["stats"].is_null(), "{body}");
@@ -248,7 +248,7 @@ async fn a_manifest_input_the_graph_lacks_fails_admission_at_parse() {
     let h = harness().await;
     let mut body = registration("bucket", &fixture_digest());
     body["manifest"]["inputs"][0]["name"] = json!("boards");
-    let (status, resp) = send(&h.app, "POST", "/api/v1/admin/models", Some(body)).await;
+    let (status, resp) = send(&h.app, "POST", "/api/v2/admin/models", Some(body)).await;
     // Registration cannot tell: the graph is not read until admission.
     assert_eq!(status, StatusCode::ACCEPTED, "{resp}");
 
@@ -304,7 +304,7 @@ async fn weights_carried_in_attributes_are_counted_and_the_ceiling_holds() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models",
+        "/api/v2/admin/models",
         Some(registration.clone()),
     )
     .await;
@@ -324,7 +324,7 @@ async fn weights_carried_in_attributes_are_counted_and_the_ceiling_holds() {
     let mut config = models_config(true);
     config.models.max_parameters = 10;
     let h = harness_serving(AS_CONST_ONNX.to_vec(), config).await;
-    let (status, body) = send(&h.app, "POST", "/api/v1/admin/models", Some(registration)).await;
+    let (status, body) = send(&h.app, "POST", "/api/v2/admin/models", Some(registration)).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let outcome = admit(&h.state, AS_CONST_ID).await;
     assert!(
@@ -341,7 +341,7 @@ async fn an_output_shape_the_graph_does_not_produce_fails_admission_at_probe() {
     let h = harness().await;
     let mut body = registration("bucket", &fixture_digest());
     body["manifest"]["outputs"][0]["shape"] = json!([1, 8]);
-    let (status, resp) = send(&h.app, "POST", "/api/v1/admin/models", Some(body)).await;
+    let (status, resp) = send(&h.app, "POST", "/api/v2/admin/models", Some(body)).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{resp}");
 
     let outcome = admit(&h.state, FIXTURE_ID).await;
@@ -373,7 +373,7 @@ async fn bytes_that_are_not_a_model_fail_admission_at_parse() {
     let (status, resp) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models",
+        "/api/v2/admin/models",
         Some(registration("junk", &orion::crypto::sha256_digest(&junk))),
     )
     .await;
@@ -408,7 +408,7 @@ async fn activation_waits_for_admission_to_pass() {
     let (status, body) = send(
         &h.app,
         "PATCH",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/status?dry_run=true"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/status?dry_run=true"),
         Some(json!({"status": "active"})),
     )
     .await;
@@ -446,13 +446,13 @@ async fn activation_waits_for_admission_to_pass() {
     let (status, body) = set_status(&h.app, FIXTURE_ID, "active").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["status"], "active");
-    let (_, body) = get(&h.app, &format!("/api/v1/admin/models/{FIXTURE_ID}")).await;
+    let (_, body) = get(&h.app, &format!("/api/v2/admin/models/{FIXTURE_ID}")).await;
     assert_eq!(body["data"]["health"]["state"], "admitted");
 
     // The admin lists select on the verdict.
-    let (_, body) = get(&h.app, "/api/v1/admin/models?admission=passed").await;
+    let (_, body) = get(&h.app, "/api/v2/admin/models?admission=passed").await;
     assert_eq!(body["total"], 1);
-    let (_, body) = get(&h.app, "/api/v1/admin/models?admission=pending").await;
+    let (_, body) = get(&h.app, "/api/v2/admin/models?admission=pending").await;
     assert_eq!(body["total"], 0);
     let _ = std::fs::remove_dir_all(models.store.cache_dir());
 }
@@ -466,7 +466,7 @@ async fn the_admit_route_reruns_admission_on_this_node() {
     let (status, body) = send(
         &h.app,
         "POST",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/admit"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/admit"),
         None,
     )
     .await;
@@ -477,7 +477,7 @@ async fn the_admit_route_reruns_admission_on_this_node() {
     let (status, body) = send(
         &h.app,
         "POST",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/admit?wait=true"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/admit?wait=true"),
         None,
     )
     .await;
@@ -490,7 +490,7 @@ async fn the_admit_route_reruns_admission_on_this_node() {
     let (status, body) = send(
         &h.app,
         "POST",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/admit?wait=true"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/admit?wait=true"),
         None,
     )
     .await;
@@ -509,13 +509,13 @@ async fn a_connector_that_refuses_reads_is_refused_at_registration() {
     let h = harness().await;
     let mut gated = crate::common::models::storage_connector("gated", h.bucket.addr);
     gated["config"]["operations"] = json!({"presign_get": false});
-    let (status, body) = send(&h.app, "POST", "/api/v1/admin/connectors", Some(gated)).await;
+    let (status, body) = send(&h.app, "POST", "/api/v2/admin/connectors", Some(gated)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models",
+        "/api/v2/admin/models",
         Some(registration("gated", &fixture_digest())),
     )
     .await;
@@ -533,7 +533,7 @@ async fn a_connector_that_refuses_reads_is_refused_at_registration() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/connectors",
+        "/api/v2/admin/connectors",
         Some(crate::common::db_connector("not-a-bucket")),
     )
     .await;
@@ -542,7 +542,7 @@ async fn a_connector_that_refuses_reads_is_refused_at_registration() {
         let (status, body) = send(
             &h.app,
             "POST",
-            "/api/v1/admin/models",
+            "/api/v2/admin/models",
             Some(registration(connector, &fixture_digest())),
         )
         .await;
@@ -550,7 +550,7 @@ async fn a_connector_that_refuses_reads_is_refused_at_registration() {
         assert_eq!(body["error"]["details"][0]["path"], "artifact.connector");
     }
     // Nothing was written.
-    let (_, body) = get(&h.app, "/api/v1/admin/models").await;
+    let (_, body) = get(&h.app, "/api/v2/admin/models").await;
     assert_eq!(body["total"], 0);
 }
 
@@ -560,7 +560,7 @@ async fn a_node_without_the_runtime_refuses_every_write() {
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/admin/models",
+        "/api/v2/admin/models",
         Some(registration("bucket", &fixture_digest())),
     )
     .await;
@@ -574,7 +574,7 @@ async fn a_node_without_the_runtime_refuses_every_write() {
     let (status, body) = send(
         &app,
         "POST",
-        "/api/v1/admin/models/validate",
+        "/api/v2/admin/models/validate",
         Some(registration("bucket", &fixture_digest())),
     )
     .await;
@@ -587,7 +587,7 @@ async fn a_node_without_the_runtime_refuses_every_write() {
     );
 
     // The read side answers, and says so.
-    let (status, body) = get(&app, "/api/v1/admin/models").await;
+    let (status, body) = get(&app, "/api/v2/admin/models").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["total"], 0);
     let (_, body) = get(&app, "/health").await;
@@ -606,7 +606,7 @@ async fn validate_reports_the_manifest_and_the_object() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models/validate",
+        "/api/v2/admin/models/validate",
         Some(json!({"manifest": bad, "artifact": {
             "connector": "bucket", "key": FIXTURE_KEY, "digest": fixture_digest()}})),
     )
@@ -630,7 +630,7 @@ async fn validate_reports_the_manifest_and_the_object() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models/validate",
+        "/api/v2/admin/models/validate",
         Some(json!({"manifest": manifest(), "artifact": {"connector": "bucket"}})),
     )
     .await;
@@ -642,7 +642,7 @@ async fn validate_reports_the_manifest_and_the_object() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models/validate",
+        "/api/v2/admin/models/validate",
         Some(registration("bucket", &fixture_digest())),
     )
     .await;
@@ -651,7 +651,7 @@ async fn validate_reports_the_manifest_and_the_object() {
     assert_eq!(body["data"]["head"]["size"], FIXTURE_ONNX.len() as u64);
     assert_eq!(body["data"]["head"]["etag"], "fixture-etag");
     // Nothing written, nothing fetched.
-    let (_, body) = get(&h.app, "/api/v1/admin/models").await;
+    let (_, body) = get(&h.app, "/api/v2/admin/models").await;
     assert_eq!(body["total"], 0);
     assert_eq!(h.bucket.gets.load(std::sync::atomic::Ordering::SeqCst), 0);
 
@@ -659,7 +659,7 @@ async fn validate_reports_the_manifest_and_the_object() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/models",
+        "/api/v2/admin/models",
         Some(
             json!({"model_id": "ada.other", "manifest": manifest(), "artifact": {
             "connector": "bucket", "key": FIXTURE_KEY, "digest": fixture_digest()}}),
@@ -682,7 +682,7 @@ async fn an_update_keeps_the_verdict_unless_the_artifact_moved() {
     let (status, body) = send(
         &h.app,
         "PUT",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}"),
         Some(json!({"manifest": described, "tags": ["fixture", "v2"]})),
     )
     .await;
@@ -699,7 +699,7 @@ async fn an_update_keeps_the_verdict_unless_the_artifact_moved() {
     let (status, body) = send(
         &h.app,
         "PUT",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}"),
         Some(
             json!({"artifact": {"connector": "bucket", "key": "models/c4-tiny-v2.onnx",
             "digest": fixture_digest()}}),
@@ -718,7 +718,7 @@ async fn an_update_keeps_the_verdict_unless_the_artifact_moved() {
     let (status, body) = send(
         &h.app,
         "POST",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/versions"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/versions"),
         None,
     )
     .await;
@@ -729,7 +729,7 @@ async fn an_update_keeps_the_verdict_unless_the_artifact_moved() {
     assert_eq!(body["data"]["stats"]["artifact_bytes"], 6171);
     let (_, body) = get(
         &h.app,
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/versions"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/versions"),
     )
     .await;
     assert_eq!(body["total"], 2);
@@ -752,7 +752,7 @@ async fn dependants_are_listed_and_gate_archive_and_delete() {
 
     let (status, body) = get(
         &h.app,
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/dependencies"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/dependencies"),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -774,7 +774,7 @@ async fn dependants_are_listed_and_gate_archive_and_delete() {
     let (status, body) = send(
         &h.app,
         "DELETE",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}"),
         None,
     )
     .await;
@@ -782,7 +782,7 @@ async fn dependants_are_listed_and_gate_archive_and_delete() {
     let (status, body) = send(
         &h.app,
         "PATCH",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/status?dry_run=true"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/status?dry_run=true"),
         Some(json!({"status": "archived"})),
     )
     .await;
@@ -804,13 +804,13 @@ async fn dependants_are_listed_and_gate_archive_and_delete() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+            &format!("/api/v2/admin/models/{FIXTURE_ID}"),
             None,
         ))
         .await
         .expect("request");
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-    let (status, _) = get(&h.app, &format!("/api/v1/admin/models/{FIXTURE_ID}")).await;
+    let (status, _) = get(&h.app, &format!("/api/v2/admin/models/{FIXTURE_ID}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let models = h.state.models.as_ref().expect("enabled");
     let _ = std::fs::remove_dir_all(models.store.cache_dir());
@@ -822,7 +822,7 @@ async fn export_carries_the_reference_and_import_readmits() {
     register_fixture(&source.app).await;
     assert!(admit(&source.state, FIXTURE_ID).await.passed());
 
-    let (status, body) = get(&source.app, "/api/v1/admin/models/export?tag=fixture").await;
+    let (status, body) = get(&source.app, "/api/v2/admin/models/export?tag=fixture").await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let items = body["data"].as_array().expect("data");
     assert_eq!(items.len(), 1);
@@ -838,7 +838,7 @@ async fn export_carries_the_reference_and_import_readmits() {
         "an export item is a reference, not the artifact: {} bytes",
         item.to_string().len()
     );
-    let (_, body) = get(&source.app, "/api/v1/admin/models/export?tag=absent").await;
+    let (_, body) = get(&source.app, "/api/v2/admin/models/export?tag=absent").await;
     assert!(body["data"].as_array().expect("data").is_empty());
 
     // A fresh instance with its own connector of the same name: the import
@@ -847,14 +847,14 @@ async fn export_carries_the_reference_and_import_readmits() {
     let (status, body) = send(
         &target.app,
         "POST",
-        "/api/v1/admin/models/import",
+        "/api/v2/admin/models/import",
         Some(json!(items)),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["imported"], 1, "{body}");
     assert_eq!(body["data"]["failed"], 0, "{body}");
-    let (_, body) = get(&target.app, &format!("/api/v1/admin/models/{FIXTURE_ID}")).await;
+    let (_, body) = get(&target.app, &format!("/api/v2/admin/models/{FIXTURE_ID}")).await;
     assert_eq!(body["data"]["admission"], json!({"state": "pending"}));
     assert_eq!(body["data"]["content_hash"], item["content_hash"]);
     assert!(admit(&target.state, FIXTURE_ID).await.passed());
@@ -867,7 +867,7 @@ async fn export_carries_the_reference_and_import_readmits() {
     let (status, body) = send(
         &target.app,
         "POST",
-        "/api/v1/admin/models/import?on_conflict=new_version",
+        "/api/v2/admin/models/import?on_conflict=new_version",
         Some(json!(items)),
     )
     .await;

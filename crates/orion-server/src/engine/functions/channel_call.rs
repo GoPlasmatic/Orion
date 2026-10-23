@@ -237,7 +237,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             //
             // One generation for this call: the target's guards here and the
             // engine that runs it below come from the same build.
-            let generation = self.runtime.load();
+            let generation = self.runtime.load_pinned_or_current();
             let target_runtime = Some(serviceable_target(&generation, &target_channel)?);
             // The header view is the metadata inherited from the originating
             // request, so a target whose `rate_limit.key_logic` reads a

@@ -101,7 +101,7 @@ pub async fn post(app: &axum::Router, channel: &str, body: Value) -> (StatusCode
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(body),
         ))
         .await

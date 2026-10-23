@@ -37,7 +37,7 @@ async fn seen(app: &axum::Router, channel: &str, body: serde_json::Value) -> ser
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(body),
         ))
         .await
@@ -147,7 +147,7 @@ async fn an_empty_body_is_an_empty_object_in_payload_mode() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/data/empty-ch", None))
+        .oneshot(json_request("POST", "/api/v2/data/empty-ch", None))
         .await
         .expect("request");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -201,7 +201,7 @@ async fn payload_mode_applies_to_the_async_path() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/async-ch/async",
+            "/api/v2/data/async-ch/async",
             Some(push_body()),
         ))
         .await

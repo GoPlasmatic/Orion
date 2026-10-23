@@ -50,7 +50,7 @@ async fn test_cache_write_then_read() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-wr",
+            "/api/v2/data/cache-wr",
             Some(json!({"data": {}})),
         ))
         .await
@@ -96,7 +96,7 @@ async fn test_cache_read_missing_key() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-miss",
+            "/api/v2/data/cache-miss",
             Some(json!({"data": {}})),
         ))
         .await
@@ -174,7 +174,7 @@ async fn test_cache_write_with_ttl_expiry() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-ttl-write",
+            "/api/v2/data/cache-ttl-write",
             Some(json!({"data": {}})),
         ))
         .await
@@ -186,7 +186,7 @@ async fn test_cache_write_with_ttl_expiry() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-ttl-read",
+            "/api/v2/data/cache-ttl-read",
             Some(json!({"data": {}})),
         ))
         .await
@@ -205,7 +205,7 @@ async fn test_cache_write_with_ttl_expiry() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-ttl-read",
+            "/api/v2/data/cache-ttl-read",
             Some(json!({"data": {}})),
         ))
         .await
@@ -261,7 +261,7 @@ async fn test_cache_json_value_round_trip() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-json",
+            "/api/v2/data/cache-json",
             Some(json!({"data": {}})),
         ))
         .await
@@ -359,7 +359,7 @@ async fn test_cache_overwrite_key() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-ow-write-a",
+            "/api/v2/data/cache-ow-write-a",
             Some(json!({"data": {}})),
         ))
         .await
@@ -371,7 +371,7 @@ async fn test_cache_overwrite_key() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-ow-write-b",
+            "/api/v2/data/cache-ow-write-b",
             Some(json!({"data": {}})),
         ))
         .await
@@ -383,7 +383,7 @@ async fn test_cache_overwrite_key() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-ow-read",
+            "/api/v2/data/cache-ow-read",
             Some(json!({"data": {}})),
         ))
         .await
@@ -430,7 +430,7 @@ async fn test_cache_missing_connector_error() {
         .clone()
         .oneshot(common::json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             None,
         ))
         .await
@@ -441,7 +441,7 @@ async fn test_cache_missing_connector_error() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/cache-bad-conn",
+            "/api/v2/data/cache-bad-conn",
             Some(json!({"data": {}})),
         ))
         .await
@@ -499,7 +499,7 @@ async fn cache_incr_keys_and_delete_compose_a_generation_counter() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/gen-flow",
+            "/api/v2/data/gen-flow",
             Some(json!({"data": {}})),
         ))
         .await
@@ -530,7 +530,7 @@ async fn cache_read_requires_exactly_one_of_key_and_keys() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(common::workflow_with_tasks(
                     id,
                     json!([{"id": "t", "name": "t", "function": {"name": "cache_read", "input": input}}]),

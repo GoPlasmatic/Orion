@@ -178,7 +178,7 @@ async fn an_account_credentials_connector_acquires_and_applies_its_token() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/data/zoom-ch",
+                "/api/v2/data/zoom-ch",
                 Some(json!({"data": {}})),
             ))
             .await
@@ -231,7 +231,7 @@ async fn http_call_acquires_applies_and_caches_the_token() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/data/orders-ch",
+                "/api/v2/data/orders-ch",
                 Some(json!({"data": {}})),
             ))
             .await
@@ -268,7 +268,7 @@ async fn the_probe_exercises_the_whole_oauth_setup() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/{id}/test"),
+            &format!("/api/v2/admin/connectors/{id}/test"),
             None,
         ))
         .await
@@ -290,7 +290,7 @@ async fn the_probe_exercises_the_whole_oauth_setup() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/{id}/test"),
+            &format!("/api/v2/admin/connectors/{id}/test"),
             None,
         ))
         .await
@@ -318,7 +318,7 @@ async fn the_admin_read_masks_oauth2_credentials() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            &format!("/api/v1/admin/connectors/{id}"),
+            &format!("/api/v2/admin/connectors/{id}"),
             None,
         ))
         .await
@@ -342,7 +342,7 @@ async fn a_bad_oauth2_block_is_refused_at_create() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(bad),
         ))
         .await

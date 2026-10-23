@@ -42,7 +42,7 @@ async fn meta_with_cookie(
 ) -> serde_json::Value {
     let mut builder = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/data/{channel}"))
+        .uri(format!("/api/v2/data/{channel}"))
         .header("content-type", "application/json");
     if let Some(jar) = cookie {
         builder = builder.header("cookie", jar);
@@ -215,7 +215,7 @@ async fn an_allowlisted_cookie_survives_a_channel_call() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/data/caller-ch")
+                .uri("/api/v2/data/caller-ch")
                 .header("content-type", "application/json")
                 .header("cookie", "browser_uuid=abc-123")
                 .body(Body::from("{}"))
@@ -247,7 +247,7 @@ async fn structurally_impossible_names_are_refused() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/channels",
+                "/api/v2/admin/channels",
                 Some(json!({
                     "name": format!("bad-{}", bad[0].as_str().unwrap_or("empty")),
                     "channel_type": "sync",

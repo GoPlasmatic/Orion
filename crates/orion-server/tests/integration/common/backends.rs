@@ -102,7 +102,7 @@ pub struct BackendHarness {
 }
 
 impl BackendHarness {
-    /// Admin `POST /api/v1/admin/connectors` body pointing at this backend.
+    /// Admin `POST /api/v2/admin/connectors` body pointing at this backend.
     /// Mirrors the shape of `db_connector_sqlite` in `common/mod.rs` (SQL/Mongo)
     /// and the `es` connector in `es_test.rs` (Elasticsearch).
     pub fn connector_json(&self) -> Value {

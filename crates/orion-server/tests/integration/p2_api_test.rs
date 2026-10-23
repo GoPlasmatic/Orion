@@ -41,7 +41,7 @@ async fn dependencies_reports_connectors_and_channel_calls() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{id}/dependencies"),
+            &format!("/api/v2/admin/workflows/{id}/dependencies"),
             None,
         ))
         .await
@@ -68,7 +68,7 @@ async fn dependencies_reports_connectors_and_channel_calls() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/absent/dependencies",
+            "/api/v2/admin/workflows/absent/dependencies",
             None,
         ))
         .await
@@ -101,7 +101,7 @@ async fn content_hash_tracks_importable_content_only() {
             let resp = app
                 .oneshot(json_request(
                     "GET",
-                    &format!("/api/v1/admin/workflows/{id}"),
+                    &format!("/api/v2/admin/workflows/{id}"),
                     None,
                 ))
                 .await
@@ -125,7 +125,7 @@ async fn content_hash_tracks_importable_content_only() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{a}/status"),
+            &format!("/api/v2/admin/workflows/{a}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -142,7 +142,7 @@ async fn content_hash_tracks_importable_content_only() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{a}/versions"),
+            &format!("/api/v2/admin/workflows/{a}/versions"),
             None,
         ))
         .await
@@ -152,7 +152,7 @@ async fn content_hash_tracks_importable_content_only() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/workflows/{a}"),
+            &format!("/api/v2/admin/workflows/{a}"),
             Some(json!({"tasks": [{"id": "t1", "name": "log",
                                    "function": {"name": "log",
                                                 "input": {"message": "different"}}}]})),

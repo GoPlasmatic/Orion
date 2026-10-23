@@ -305,7 +305,7 @@ async fn failed_consumer_restart_on_reload_degrades_readiness() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": "k7-defect-channel",
                 "channel_type": "async",
@@ -325,7 +325,7 @@ async fn failed_consumer_restart_on_reload_degrades_readiness() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -526,7 +526,7 @@ async fn a_failed_manual_reload_is_reported_to_the_caller() {
     // and not about the request never having been routed.
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .expect("reload");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -541,7 +541,7 @@ async fn a_failed_manual_reload_is_reported_to_the_caller() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .expect("reload");
     let status = resp.status();

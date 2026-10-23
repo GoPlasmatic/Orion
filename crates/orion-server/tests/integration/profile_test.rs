@@ -63,7 +63,7 @@ async fn profile_header_disabled_by_default() {
         .clone()
         .oneshot(json_request_with_profile(
             "POST",
-            "/api/v1/data/p-default",
+            "/api/v2/data/p-default",
             Some(json!({"data": {}})),
         ))
         .await
@@ -109,7 +109,7 @@ async fn profile_header_enabled() {
         .clone()
         .oneshot(json_request_with_profile(
             "POST",
-            "/api/v1/data/p-on",
+            "/api/v2/data/p-on",
             Some(json!({"data": {}})),
         ))
         .await
@@ -183,7 +183,7 @@ async fn profile_query_param() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/p-q?profile=1",
+            "/api/v2/data/p-q?profile=1",
             Some(json!({"data": {}})),
         ))
         .await
@@ -220,7 +220,7 @@ async fn profile_overhead_residual_nonnegative() {
         .clone()
         .oneshot(json_request_with_profile(
             "POST",
-            "/api/v1/data/p-res",
+            "/api/v2/data/p-res",
             Some(json!({"data": {}})),
         ))
         .await
@@ -270,7 +270,7 @@ async fn profile_async_embedded_in_trace() {
         .clone()
         .oneshot(json_request_with_profile(
             "POST",
-            "/api/v1/data/p-async/async",
+            "/api/v2/data/p-async/async",
             Some(json!({"data": {}})),
         ))
         .await
@@ -318,7 +318,7 @@ async fn profile_falsy_header_ignored() {
 
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/data/p-falsy")
+        .uri("/api/v2/data/p-falsy")
         .header("content-type", "application/json")
         .header("x-orion-profile", "0")
         .body(axum::body::Body::from(
@@ -358,7 +358,7 @@ async fn profile_no_connector_handlers_has_no_negative_zero() {
         .clone()
         .oneshot(json_request_with_profile(
             "POST",
-            "/api/v1/data/p-nozero",
+            "/api/v2/data/p-nozero",
             Some(json!({"data": {}})),
         ))
         .await

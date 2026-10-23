@@ -47,7 +47,7 @@ async fn the_stored_column_is_ciphertext_and_the_api_is_unchanged() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "enc-http",
                 "connector_type": "http",
@@ -77,7 +77,7 @@ async fn the_stored_column_is_ciphertext_and_the_api_is_unchanged() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             None,
         ))
         .await
@@ -132,7 +132,7 @@ async fn pre_existing_plaintext_rows_keep_loading() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/connectors/legacy-1",
+            "/api/v2/admin/connectors/legacy-1",
             None,
         ))
         .await
@@ -148,7 +148,7 @@ async fn pre_existing_plaintext_rows_keep_loading() {
         .clone()
         .oneshot(common::json_request(
             "PUT",
-            "/api/v1/admin/connectors/legacy-1",
+            "/api/v2/admin/connectors/legacy-1",
             Some(json!({"enabled": false})),
         ))
         .await

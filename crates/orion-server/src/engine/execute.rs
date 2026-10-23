@@ -225,6 +225,176 @@ pub async fn execute_admitted(
     }
 }
 
+/// Run `channel`'s workflows over `data` on the admitted [`crate::runtime::RuntimeGeneration`].
+///
+/// Pins `generation` in [`crate::runtime::PINNED_GENERATION`] for the duration
+/// of the execution so nested in-process `channel_call` invocations, guard
+/// stores, and model inference resolve against the same generation (`V2-05.2`,
+/// `V2-05.3`). When `opts.capture` is `None` and `generation.engine4` is
+/// present, executes on the Dataflow v4 [`dataflow_rs::Engine`]; when per-task
+/// `ExecutionTrace` capture is requested (or on synthetic test generations
+/// without `engine4`), delegates to [`execute_admitted`].
+pub async fn execute_admitted_on_generation(
+    generation: &Arc<crate::runtime::RuntimeGeneration>,
+    channel: &str,
+    data: &Value,
+    metadata: &Value,
+    opts: ExecOpts<'_>,
+) -> Execution {
+    crate::runtime::generation::PINNED_GENERATION
+        .scope(
+            Arc::clone(generation),
+            execute_admitted_on_generation_inner(generation, channel, data, metadata, opts),
+        )
+        .await
+}
+
+async fn execute_admitted_on_generation_inner(
+    generation: &Arc<crate::runtime::RuntimeGeneration>,
+    channel: &str,
+    data: &Value,
+    metadata: &Value,
+    opts: ExecOpts<'_>,
+) -> Execution {
+    if opts.capture.is_none()
+        && let Some(ref engine4) = generation.engine4
+    {
+        return execute_admitted_on_v4(engine4, channel, data, metadata, opts).await;
+    }
+    execute_admitted(&generation.engine, channel, data, metadata, opts).await
+}
+
+async fn execute_admitted_on_v4(
+    engine: &dataflow_rs::Engine,
+    channel: &str,
+    data: &Value,
+    metadata: &Value,
+    opts: ExecOpts<'_>,
+) -> Execution {
+    use dataflow_rs::datavalue::OwnedDataValue;
+    use dataflow_rs::run::{AuditMode, RunOptions, RunStatus};
+
+    let mut v4_msg = dataflow_rs::Message::from_parts(
+        OwnedDataValue::from(data),
+        OwnedDataValue::Null,
+        OwnedDataValue::from(metadata),
+    );
+
+    if opts.timeout_ms == Some(0) {
+        return Execution {
+            message: v4_message_to_v3(&v4_msg, data, metadata),
+            task_trace: None,
+            outcome: RunOutcome::Timeout(0),
+            duration: Duration::ZERO,
+        };
+    }
+
+    let mut run_opts = RunOptions::default()
+        .channel(channel)
+        .capture_changes(false)
+        .audit(AuditMode::Off);
+    if let Some(bucket) = opts.routing_bucket {
+        run_opts = run_opts.routing_bucket(bucket);
+    }
+    if let Some(ms) = opts.timeout_ms
+        && let Some(deadline) = tokio::time::Instant::now()
+            .into_std()
+            .checked_add(Duration::from_millis(ms))
+    {
+        run_opts = run_opts.deadline(deadline);
+    }
+
+    let started = Instant::now();
+    let run_fut = engine.run_with(&mut v4_msg, &run_opts);
+    let run = if let Some(p) = opts.profile {
+        super::profile::ORION_PROFILE
+            .scope(p.clone(), run_fut)
+            .await
+    } else {
+        run_fut.await
+    };
+    let duration = started.elapsed();
+
+    let message = v4_message_to_v3(&v4_msg, data, metadata);
+    let outcome = match run.status() {
+        RunStatus::Completed => {
+            if message.has_errors() {
+                RunOutcome::WorkflowErrors(error_summary(&message))
+            } else {
+                RunOutcome::Ok
+            }
+        }
+        RunStatus::CompletedWithErrors => RunOutcome::WorkflowErrors(error_summary(&message)),
+        RunStatus::TimedOut => RunOutcome::Timeout(opts.timeout_ms.unwrap_or(0)),
+        RunStatus::Cancelled => {
+            RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Timeout("cancelled".into()))
+        }
+        _ => match run.into_result() {
+            Ok(_) => {
+                if message.has_errors() {
+                    RunOutcome::WorkflowErrors(error_summary(&message))
+                } else {
+                    RunOutcome::Ok
+                }
+            }
+            Err(e) => RunOutcome::EngineError(dataflow_rs_v3::DataflowError::from(
+                super::HandlerError::from(e),
+            )),
+        },
+    };
+
+    Execution {
+        message,
+        task_trace: None,
+        outcome,
+        duration,
+    }
+}
+
+fn v4_message_to_v3(
+    v4_msg: &dataflow_rs::Message,
+    initial_payload: &Value,
+    initial_metadata: &Value,
+) -> dataflow_rs_v3::Message {
+    let data_val = Value::from(v4_msg.context().data());
+    let temp_val = Value::from(v4_msg.context().temp_data());
+    let meta_val = Value::from(v4_msg.context().metadata());
+    let meta_ref = if meta_val.is_null() {
+        initial_metadata
+    } else {
+        &meta_val
+    };
+
+    let mut v3_msg = dataflow_rs_v3::Message::builder()
+        .payload_json(initial_payload)
+        .metadata_json(meta_ref)
+        .capture_changes(false)
+        .audit_mode(dataflow_rs_v3::AuditMode::Off)
+        .build();
+    if !data_val.is_null() {
+        dataflow_rs_v3::engine::utils::set_nested_value(
+            &mut v3_msg.context,
+            "data",
+            dataflow_rs_v3::datavalue::OwnedDataValue::from(&data_val),
+        );
+    }
+    if !temp_val.is_null() {
+        dataflow_rs_v3::engine::utils::set_nested_value(
+            &mut v3_msg.context,
+            "temp_data",
+            dataflow_rs_v3::datavalue::OwnedDataValue::from(&temp_val),
+        );
+    }
+    for rec in v4_msg.errors() {
+        let mut eb = dataflow_rs_v3::ErrorInfo::builder(rec.code.as_str(), rec.message.as_str());
+        if let Some(task_id) = rec.task_id.as_deref() {
+            eb = eb.task_id(task_id);
+        }
+        v3_msg.add_error(eb.build());
+    }
+    v3_msg
+}
+
 /// The `code: message; code: message` summary three transports were each
 /// building from `message.errors()`.
 fn error_summary(message: &dataflow_rs_v3::Message) -> String {

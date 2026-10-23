@@ -176,7 +176,7 @@ async fn seed(client: &reqwest::Client, base: &str) {
         client.post(format!("{base}{path}")).json(&body).send()
     };
     let resp = post(
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         serde_json::json!({
             "workflow_id": "e2e-flow", "name": "E2E Flow", "tags": ["pkg:e2e"],
             "tasks": [{"id": "t1", "name": "log",
@@ -192,14 +192,14 @@ async fn seed(client: &reqwest::Client, base: &str) {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .patch(format!("{base}/api/v1/admin/workflows/e2e-flow/status"))
+        .patch(format!("{base}/api/v2/admin/workflows/e2e-flow/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
         .expect("activate workflow");
     assert_eq!(resp.status(), 200);
     let resp = post(
-        "/api/v1/admin/channels",
+        "/api/v2/admin/channels",
         serde_json::json!({
             "channel_id": "e2e-intake", "name": "e2e-intake", "channel_type": "sync",
             "protocol": "rest", "methods": ["POST"], "route_pattern": "/e2e",
@@ -210,7 +210,7 @@ async fn seed(client: &reqwest::Client, base: &str) {
     .expect("create channel");
     assert_eq!(resp.status(), 201);
     let resp = client
-        .patch(format!("{base}/api/v1/admin/channels/e2e-intake/status"))
+        .patch(format!("{base}/api/v2/admin/channels/e2e-intake/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -261,7 +261,7 @@ async fn package_promotes_between_real_instances() {
 
     // The promoted channel serves on the target.
     let resp = client
-        .post(format!("{}/api/v1/data/e2e", target.url()))
+        .post(format!("{}/api/v2/data/e2e", target.url()))
         .json(&serde_json::json!({"data": {"x": 1}}))
         .send()
         .await
@@ -286,7 +286,7 @@ async fn package_promotes_between_real_instances() {
 
     // The receipt records the applied version.
     let receipt: serde_json::Value = client
-        .get(format!("{}/api/v1/admin/packages/e2e", target.url()))
+        .get(format!("{}/api/v2/admin/packages/e2e", target.url()))
         .send()
         .await
         .expect("receipt")
@@ -300,7 +300,7 @@ async fn package_promotes_between_real_instances() {
     // both plan and apply must refuse with the bump instruction.
     let resp = client
         .post(format!(
-            "{}/api/v1/admin/workflows/e2e-flow/versions",
+            "{}/api/v2/admin/workflows/e2e-flow/versions",
             source.url()
         ))
         .send()
@@ -308,7 +308,7 @@ async fn package_promotes_between_real_instances() {
         .expect("new version");
     assert_eq!(resp.status(), 201);
     let resp = client
-        .put(format!("{}/api/v1/admin/workflows/e2e-flow", source.url()))
+        .put(format!("{}/api/v2/admin/workflows/e2e-flow", source.url()))
         .json(&serde_json::json!({
             "tasks": [{"id": "t1", "name": "log",
                        "function": {"name": "log", "input": {"message": "v2"}}}],
@@ -319,7 +319,7 @@ async fn package_promotes_between_real_instances() {
     assert_eq!(resp.status(), 200);
     let resp = client
         .patch(format!(
-            "{}/api/v1/admin/workflows/e2e-flow/status",
+            "{}/api/v2/admin/workflows/e2e-flow/status",
             source.url()
         ))
         .json(&serde_json::json!({"status": "active"}))
@@ -405,7 +405,7 @@ async fn package_promotes_between_real_instances() {
         "diff after the rollback",
     );
     let receipt: serde_json::Value = client
-        .get(format!("{}/api/v1/admin/packages/e2e", target.url()))
+        .get(format!("{}/api/v2/admin/packages/e2e", target.url()))
         .send()
         .await
         .expect("receipt")
@@ -482,7 +482,7 @@ async fn a_content_versioned_revert_rolls_back() {
     };
     let current = || async {
         let receipt: serde_json::Value = client
-            .get(format!("{}/api/v1/admin/packages/cv", target.url()))
+            .get(format!("{}/api/v2/admin/packages/cv", target.url()))
             .send()
             .await
             .expect("receipt")
@@ -619,7 +619,7 @@ async fn package_apply_attaches_signatures_from_a_directory() {
     let stored_signature = || async {
         let row: serde_json::Value = client
             .get(format!(
-                "{}/api/v1/admin/plugins/test.fixture",
+                "{}/api/v2/admin/plugins/test.fixture",
                 target.url()
             ))
             .send()
@@ -673,7 +673,7 @@ async fn package_apply_attaches_signatures_from_a_directory() {
         "the artifact file is untouched"
     );
     let resp = client
-        .post(format!("{}/api/v1/data/wrap", target.url()))
+        .post(format!("{}/api/v2/data/wrap", target.url()))
         .json(&serde_json::json!({"data": {"msg": "hi"}}))
         .send()
         .await
@@ -721,7 +721,7 @@ async fn package_apply_attaches_signatures_from_a_directory() {
     );
     assert_eq!(stored_signature().await, second.sign(&digest));
     let resp = client
-        .post(format!("{}/api/v1/data/wrap", target.url()))
+        .post(format!("{}/api/v2/data/wrap", target.url()))
         .json(&serde_json::json!({"data": {"msg": "hi"}}))
         .send()
         .await
@@ -836,7 +836,7 @@ async fn apply_fails_when_the_reload_quarantines_what_it_carries() {
         "{stderr}"
     );
     let receipts: serde_json::Value = client
-        .get(format!("{}/api/v1/admin/packages/nightly", target.url()))
+        .get(format!("{}/api/v2/admin/packages/nightly", target.url()))
         .send()
         .await
         .expect("receipts")
@@ -921,7 +921,7 @@ async fn apply_fails_when_a_carried_connector_does_not_load() {
     );
     assert!(stderr.contains("the receipt stays staged"), "{stderr}");
     let receipts: serde_json::Value = client
-        .get(format!("{}/api/v1/admin/packages/crm", target.url()))
+        .get(format!("{}/api/v2/admin/packages/crm", target.url()))
         .send()
         .await
         .expect("receipts")
@@ -990,7 +990,7 @@ async fn plan_and_apply_refuse_a_target_outside_the_declared_range() {
         );
     }
     let receipt = client
-        .get(format!("{}/api/v1/admin/packages/ranged", target.url()))
+        .get(format!("{}/api/v2/admin/packages/ranged", target.url()))
         .send()
         .await
         .expect("receipt");
@@ -1026,7 +1026,7 @@ async fn package_promotes_a_plugin_with_its_component() {
         .encode(include_bytes!("../fixtures/plugins/fixture.wasm"));
     let base = source.url();
     let resp = client
-        .post(format!("{base}/api/v1/admin/plugins"))
+        .post(format!("{base}/api/v2/admin/plugins"))
         .json(&serde_json::json!({"manifest": manifest, "component": component}))
         .send()
         .await
@@ -1038,7 +1038,7 @@ async fn package_promotes_a_plugin_with_its_component() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .patch(format!("{base}/api/v1/admin/plugins/test.fixture/status"))
+        .patch(format!("{base}/api/v2/admin/plugins/test.fixture/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -1050,7 +1050,7 @@ async fn package_promotes_a_plugin_with_its_component() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .post(format!("{base}/api/v1/admin/workflows"))
+        .post(format!("{base}/api/v2/admin/workflows"))
         .json(&serde_json::json!({
             "workflow_id": "plugin-flow", "name": "Plugin Flow", "tags": ["pkg:plugin"],
             "tasks": [
@@ -1070,7 +1070,7 @@ async fn package_promotes_a_plugin_with_its_component() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .patch(format!("{base}/api/v1/admin/workflows/plugin-flow/status"))
+        .patch(format!("{base}/api/v2/admin/workflows/plugin-flow/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -1082,7 +1082,7 @@ async fn package_promotes_a_plugin_with_its_component() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .post(format!("{base}/api/v1/admin/channels"))
+        .post(format!("{base}/api/v2/admin/channels"))
         .json(&serde_json::json!({
             "channel_id": "plugin-intake", "name": "plugin-intake", "channel_type": "sync",
             "protocol": "rest", "methods": ["POST"], "route_pattern": "/plugin-intake",
@@ -1098,7 +1098,7 @@ async fn package_promotes_a_plugin_with_its_component() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .patch(format!("{base}/api/v1/admin/channels/plugin-intake/status"))
+        .patch(format!("{base}/api/v2/admin/channels/plugin-intake/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -1181,7 +1181,7 @@ async fn package_promotes_a_plugin_with_its_component() {
     assert!(stdout.contains("applied plugin@1.0.0"), "{stdout}");
 
     let resp = client
-        .post(format!("{}/api/v1/data/plugin-intake", target.url()))
+        .post(format!("{}/api/v2/data/plugin-intake", target.url()))
         .json(&serde_json::json!({"data": {"msg": "hi"}}))
         .send()
         .await
@@ -1201,7 +1201,7 @@ async fn package_promotes_a_plugin_with_its_component() {
         "diff",
     );
     let functions: serde_json::Value = client
-        .get(format!("{}/api/v1/admin/functions", target.url()))
+        .get(format!("{}/api/v2/admin/functions", target.url()))
         .send()
         .await
         .expect("functions")
@@ -1251,7 +1251,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
     // admitted by the source's own worker and activated, and a workflow
     // calling it behind a channel.
     let resp = client
-        .post(format!("{base}/api/v1/admin/connectors"))
+        .post(format!("{base}/api/v2/admin/connectors"))
         .json(&storage_connector("bucket", bucket.addr))
         .send()
         .await
@@ -1263,7 +1263,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .post(format!("{base}/api/v1/admin/models"))
+        .post(format!("{base}/api/v2/admin/models"))
         .json(&registration("bucket", &fixture_digest()))
         .send()
         .await
@@ -1277,7 +1277,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
     let mut admitted = false;
     for _ in 0..240 {
         let row: serde_json::Value = client
-            .get(format!("{base}/api/v1/admin/models/{FIXTURE_ID}"))
+            .get(format!("{base}/api/v2/admin/models/{FIXTURE_ID}"))
             .send()
             .await
             .expect("get model")
@@ -1295,7 +1295,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
     }
     assert!(admitted, "the source's admission worker never ran");
     let resp = client
-        .patch(format!("{base}/api/v1/admin/models/{FIXTURE_ID}/status"))
+        .patch(format!("{base}/api/v2/admin/models/{FIXTURE_ID}/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -1307,7 +1307,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .post(format!("{base}/api/v1/admin/workflows"))
+        .post(format!("{base}/api/v2/admin/workflows"))
         .json(&serde_json::json!({
             "workflow_id": "score", "name": "Score", "tags": ["pkg:model"], "condition": true,
             "tasks": [
@@ -1327,7 +1327,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .patch(format!("{base}/api/v1/admin/workflows/score/status"))
+        .patch(format!("{base}/api/v2/admin/workflows/score/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -1339,7 +1339,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .post(format!("{base}/api/v1/admin/channels"))
+        .post(format!("{base}/api/v2/admin/channels"))
         .json(&serde_json::json!({
             "channel_id": "score-api", "name": "score-api", "channel_type": "sync",
             "protocol": "rest", "methods": ["POST"], "route_pattern": "/score",
@@ -1355,7 +1355,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
         resp.text().await.unwrap_or_default()
     );
     let resp = client
-        .patch(format!("{base}/api/v1/admin/channels/score-api/status"))
+        .patch(format!("{base}/api/v2/admin/channels/score-api/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -1421,7 +1421,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
     // With the connector in place: plan, apply — which waits for the
     // target's admission — and the channel serves the model.
     let resp = client
-        .post(format!("{}/api/v1/admin/connectors", target.url()))
+        .post(format!("{}/api/v2/admin/connectors", target.url()))
         .json(&storage_connector("bucket", bucket.addr))
         .send()
         .await
@@ -1456,7 +1456,7 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
     let mut planes = vec![vec![vec![0.0f32; 7]; 6]; 2];
     planes[0][5][3] = 1.0;
     let resp = client
-        .post(format!("{}/api/v1/data/score", target.url()))
+        .post(format!("{}/api/v2/data/score", target.url()))
         .json(&serde_json::json!({"data": [planes]}))
         .send()
         .await
@@ -1600,7 +1600,7 @@ async fn prune_removes_what_the_previous_version_held() {
     set.connector("spare");
     let v1 = set.compile("1.0.0");
     assert_ok(&package_cmd(&["apply", "-s", &base, "-f", &v1]), "apply v1");
-    let (_, receipt) = get_json(&client, format!("{base}/api/v1/admin/packages/orders")).await;
+    let (_, receipt) = get_json(&client, format!("{base}/api/v2/admin/packages/orders")).await;
     assert_eq!(
         receipt["data"]["current"]["inventory"]["channels"],
         serde_json::json!(["ch-a", "ch-old"]),
@@ -1644,9 +1644,9 @@ async fn prune_removes_what_the_previous_version_held() {
         stdout.contains("pruned connectors 'spare' (disabled)"),
         "{stdout}"
     );
-    let (_, old) = get_json(&client, format!("{base}/api/v1/admin/channels/ch-old")).await;
+    let (_, old) = get_json(&client, format!("{base}/api/v2/admin/channels/ch-old")).await;
     assert_eq!(old["data"]["status"], "archived", "{old}");
-    let (_, connectors) = get_json(&client, format!("{base}/api/v1/admin/connectors")).await;
+    let (_, connectors) = get_json(&client, format!("{base}/api/v2/admin/connectors")).await;
     let spare = connectors["data"]
         .as_array()
         .into_iter()
@@ -1656,13 +1656,13 @@ async fn prune_removes_what_the_previous_version_held() {
     assert_eq!(spare["enabled"], false, "{spare}");
     // The route is served by the new channel.
     let resp = client
-        .post(format!("{base}/api/v1/data/prune-moved"))
+        .post(format!("{base}/api/v2/data/prune-moved"))
         .json(&serde_json::json!({"data": {}}))
         .send()
         .await
         .expect("data call");
     assert_eq!(resp.status(), 200);
-    let (_, status) = get_json(&client, format!("{base}/api/v1/admin/engine/status")).await;
+    let (_, status) = get_json(&client, format!("{base}/api/v2/admin/engine/status")).await;
     assert!(
         status["data"]["load_issues"]["channels"]
             .as_array()
@@ -1693,9 +1693,9 @@ async fn prune_removes_what_the_previous_version_held() {
         stdout.contains("pruned workflows 'wf-b' (deleted)"),
         "{stdout}"
     );
-    let (code, _) = get_json(&client, format!("{base}/api/v1/admin/workflows/wf-b")).await;
+    let (code, _) = get_json(&client, format!("{base}/api/v2/admin/workflows/wf-b")).await;
     assert_eq!(code, 404);
-    let (code, _) = get_json(&client, format!("{base}/api/v1/admin/channels/ch-new")).await;
+    let (code, _) = get_json(&client, format!("{base}/api/v2/admin/channels/ch-new")).await;
     assert_eq!(code, 404);
 }
 
@@ -1728,7 +1728,7 @@ async fn prune_refuses_keeps_and_explains() {
 
     // A channel outside any package routes to wf-y.
     let resp = client
-        .post(format!("{base}/api/v1/admin/channels"))
+        .post(format!("{base}/api/v2/admin/channels"))
         .json(&serde_json::json!({
             "channel_id": "outside", "name": "outside", "channel_type": "sync",
             "protocol": "rest", "methods": ["POST"], "route_pattern": "/outside",
@@ -1739,7 +1739,7 @@ async fn prune_refuses_keeps_and_explains() {
         .expect("create outside channel");
     assert_eq!(resp.status(), 201);
     let resp = client
-        .patch(format!("{base}/api/v1/admin/channels/outside/status"))
+        .patch(format!("{base}/api/v2/admin/channels/outside/status"))
         .json(&serde_json::json!({"status": "active"}))
         .send()
         .await
@@ -1769,19 +1769,19 @@ async fn prune_refuses_keeps_and_explains() {
         stdout.contains("keep: now carried by billing@2.1.0"),
         "{stdout}"
     );
-    let (_, receipt) = get_json(&client, format!("{base}/api/v1/admin/packages/orders")).await;
+    let (_, receipt) = get_json(&client, format!("{base}/api/v2/admin/packages/orders")).await;
     assert_eq!(
         receipt["data"]["versions"].as_array().map(Vec::len),
         Some(1),
         "the refused apply claimed no receipt: {receipt}"
     );
-    let (_, wf) = get_json(&client, format!("{base}/api/v1/admin/workflows/wf-y")).await;
+    let (_, wf) = get_json(&client, format!("{base}/api/v2/admin/workflows/wf-y")).await;
     assert_eq!(wf["data"]["status"], "active", "{wf}");
 
     // Once the outside channel is gone, the prune goes through and keeps
     // the connector billing carries.
     let resp = client
-        .delete(format!("{base}/api/v1/admin/channels/outside"))
+        .delete(format!("{base}/api/v2/admin/channels/outside"))
         .send()
         .await
         .expect("delete outside channel");
@@ -1798,7 +1798,7 @@ async fn prune_refuses_keeps_and_explains() {
 
     // A receipt recorded before inventories: nothing to measure from.
     let resp = client
-        .put(format!("{base}/api/v1/admin/packages/legacy"))
+        .put(format!("{base}/api/v2/admin/packages/legacy"))
         .json(&serde_json::json!({
             "version": "0.9.0", "content_hash": "sha256:old", "state": "applied",
         }))
@@ -1833,7 +1833,7 @@ async fn a_node_applies_its_configured_packages_at_startup() {
     let node = Server::start_with("boot", &[("ORION_PACKAGES__APPLY", &artifact)]);
     node.wait_ready(&client).await;
     let resp = client
-        .post(format!("{}/api/v1/data/boot-e2e", node.url()))
+        .post(format!("{}/api/v2/data/boot-e2e", node.url()))
         .json(&serde_json::json!({"data": {}}))
         .send()
         .await

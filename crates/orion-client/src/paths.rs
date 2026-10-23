@@ -42,10 +42,10 @@ fn seg(value: &str) -> percent_encoding::PercentEncode<'_> {
 }
 
 // -- Admin: workflows --
-pub const WORKFLOWS: &str = "/api/v1/admin/workflows";
-pub const WORKFLOWS_EXPORT: &str = "/api/v1/admin/workflows/export";
-pub const WORKFLOWS_IMPORT: &str = "/api/v1/admin/workflows/import";
-pub const WORKFLOWS_VALIDATE: &str = "/api/v1/admin/workflows/validate";
+pub const WORKFLOWS: &str = "/api/v2/admin/workflows";
+pub const WORKFLOWS_EXPORT: &str = "/api/v2/admin/workflows/export";
+pub const WORKFLOWS_IMPORT: &str = "/api/v2/admin/workflows/import";
+pub const WORKFLOWS_VALIDATE: &str = "/api/v2/admin/workflows/validate";
 
 pub fn workflow(id: &str) -> String {
     format!("{WORKFLOWS}/{}", seg(id))
@@ -67,10 +67,10 @@ pub fn workflow_dependencies(id: &str) -> String {
 }
 
 // -- Admin: channels --
-pub const CHANNELS: &str = "/api/v1/admin/channels";
-pub const CHANNELS_EXPORT: &str = "/api/v1/admin/channels/export";
-pub const CHANNELS_IMPORT: &str = "/api/v1/admin/channels/import";
-pub const CHANNELS_VALIDATE: &str = "/api/v1/admin/channels/validate";
+pub const CHANNELS: &str = "/api/v2/admin/channels";
+pub const CHANNELS_EXPORT: &str = "/api/v2/admin/channels/export";
+pub const CHANNELS_IMPORT: &str = "/api/v2/admin/channels/import";
+pub const CHANNELS_VALIDATE: &str = "/api/v2/admin/channels/validate";
 
 pub fn channel(id: &str) -> String {
     format!("{CHANNELS}/{}", seg(id))
@@ -83,10 +83,10 @@ pub fn channel_versions(id: &str) -> String {
 }
 
 // -- Admin: plugins --
-pub const PLUGINS: &str = "/api/v1/admin/plugins";
-pub const PLUGINS_EXPORT: &str = "/api/v1/admin/plugins/export";
-pub const PLUGINS_IMPORT: &str = "/api/v1/admin/plugins/import";
-pub const PLUGINS_VALIDATE: &str = "/api/v1/admin/plugins/validate";
+pub const PLUGINS: &str = "/api/v2/admin/plugins";
+pub const PLUGINS_EXPORT: &str = "/api/v2/admin/plugins/export";
+pub const PLUGINS_IMPORT: &str = "/api/v2/admin/plugins/import";
+pub const PLUGINS_VALIDATE: &str = "/api/v2/admin/plugins/validate";
 
 pub fn plugin(id: &str) -> String {
     format!("{PLUGINS}/{}", seg(id))
@@ -102,10 +102,10 @@ pub fn plugin_dependencies(id: &str) -> String {
 }
 
 // -- Admin: models --
-pub const MODELS: &str = "/api/v1/admin/models";
-pub const MODELS_EXPORT: &str = "/api/v1/admin/models/export";
-pub const MODELS_IMPORT: &str = "/api/v1/admin/models/import";
-pub const MODELS_VALIDATE: &str = "/api/v1/admin/models/validate";
+pub const MODELS: &str = "/api/v2/admin/models";
+pub const MODELS_EXPORT: &str = "/api/v2/admin/models/export";
+pub const MODELS_IMPORT: &str = "/api/v2/admin/models/import";
+pub const MODELS_VALIDATE: &str = "/api/v2/admin/models/validate";
 
 pub fn model(id: &str) -> String {
     format!("{MODELS}/{}", seg(id))
@@ -127,11 +127,11 @@ pub fn model_dependencies(id: &str) -> String {
 }
 
 // -- Admin: connectors --
-pub const CONNECTORS: &str = "/api/v1/admin/connectors";
-pub const CONNECTORS_EXPORT: &str = "/api/v1/admin/connectors/export";
-pub const CONNECTORS_IMPORT: &str = "/api/v1/admin/connectors/import";
-pub const CONNECTORS_VALIDATE: &str = "/api/v1/admin/connectors/validate";
-pub const CIRCUIT_BREAKERS: &str = "/api/v1/admin/connectors/circuit-breakers";
+pub const CONNECTORS: &str = "/api/v2/admin/connectors";
+pub const CONNECTORS_EXPORT: &str = "/api/v2/admin/connectors/export";
+pub const CONNECTORS_IMPORT: &str = "/api/v2/admin/connectors/import";
+pub const CONNECTORS_VALIDATE: &str = "/api/v2/admin/connectors/validate";
+pub const CIRCUIT_BREAKERS: &str = "/api/v2/admin/connectors/circuit-breakers";
 
 pub fn connector(id: &str) -> String {
     format!("{CONNECTORS}/{}", seg(id))
@@ -144,16 +144,16 @@ pub fn circuit_breaker(id: &str) -> String {
 }
 
 // -- Admin: packages (promotion receipts) --
-pub const PACKAGES: &str = "/api/v1/admin/packages";
+pub const PACKAGES: &str = "/api/v2/admin/packages";
 
 pub fn package(name: &str) -> String {
     format!("{PACKAGES}/{}", seg(name))
 }
 
 // -- Admin: traces & DLQ --
-pub const TRACES: &str = "/api/v1/admin/traces";
-pub const TRACE_DLQ: &str = "/api/v1/admin/trace-dlq";
-pub const TRACE_DLQ_PURGE: &str = "/api/v1/admin/trace-dlq/purge";
+pub const TRACES: &str = "/api/v2/admin/traces";
+pub const TRACE_DLQ: &str = "/api/v2/admin/trace-dlq";
+pub const TRACE_DLQ_PURGE: &str = "/api/v2/admin/trace-dlq/purge";
 
 pub fn trace(id: &str) -> String {
     format!("{TRACES}/{}", seg(id))
@@ -168,8 +168,8 @@ pub fn trace_dlq_requeue(id: &str) -> String {
 // -- Admin: the rest --
 // -- Cron occurrences --
 
-pub const CRON_OCCURRENCES: &str = "/api/v1/admin/cron/occurrences";
-pub const CRON_STATUS: &str = "/api/v1/admin/cron/status";
+pub const CRON_OCCURRENCES: &str = "/api/v2/admin/cron/occurrences";
+pub const CRON_STATUS: &str = "/api/v2/admin/cron/status";
 
 pub fn cron_occurrence(id: &str) -> String {
     format!("{CRON_OCCURRENCES}/{id}")
@@ -189,16 +189,16 @@ pub fn channel_trigger(id: &str) -> String {
     format!("{CHANNELS}/{id}/trigger")
 }
 
-pub const AUDIT_LOGS: &str = "/api/v1/admin/audit-logs";
-pub const BACKUPS: &str = "/api/v1/admin/backups";
-pub const ENGINE_STATUS: &str = "/api/v1/admin/engine/status";
-pub const ENGINE_RELOAD: &str = "/api/v1/admin/engine/reload";
-pub const FUNCTIONS: &str = "/api/v1/admin/functions";
+pub const AUDIT_LOGS: &str = "/api/v2/admin/audit-logs";
+pub const BACKUPS: &str = "/api/v2/admin/backups";
+pub const ENGINE_STATUS: &str = "/api/v2/admin/engine/status";
+pub const ENGINE_RELOAD: &str = "/api/v2/admin/engine/reload";
+pub const FUNCTIONS: &str = "/api/v2/admin/functions";
 
 // -- Admin: response-cache invalidation --
 pub fn cache_namespace_invalidate(namespace: &str) -> String {
     format!(
-        "/api/v1/admin/cache/namespaces/{}/invalidate",
+        "/api/v2/admin/cache/namespaces/{}/invalidate",
         seg(namespace)
     )
 }
@@ -239,10 +239,10 @@ pub fn v2_deployment_convergence(revision: u64, target: Option<&str>) -> String 
 
 // -- Data plane --
 pub fn data(channel: &str) -> String {
-    format!("/api/v1/data/{}", seg(channel))
+    format!("/api/v2/data/{}", seg(channel))
 }
 pub fn data_async(channel: &str) -> String {
-    format!("/api/v1/data/{}/async", seg(channel))
+    format!("/api/v2/data/{}/async", seg(channel))
 }
 
 // -- Operational --
@@ -281,24 +281,24 @@ mod tests {
 
     #[test]
     fn parameterized_paths_interpolate() {
-        assert_eq!(workflow("wf-1"), "/api/v1/admin/workflows/wf-1");
+        assert_eq!(workflow("wf-1"), "/api/v2/admin/workflows/wf-1");
         assert_eq!(
             workflow_status("wf-1"),
-            "/api/v1/admin/workflows/wf-1/status"
+            "/api/v2/admin/workflows/wf-1/status"
         );
         assert_eq!(
             circuit_breaker("db"),
-            "/api/v1/admin/connectors/circuit-breakers/db"
+            "/api/v2/admin/connectors/circuit-breakers/db"
         );
-        assert_eq!(data_async("orders"), "/api/v1/data/orders/async");
-        assert_eq!(package("billing"), "/api/v1/admin/packages/billing");
+        assert_eq!(data_async("orders"), "/api/v2/data/orders/async");
+        assert_eq!(package("billing"), "/api/v2/admin/packages/billing");
         assert_eq!(
             model_admit("acme.fraud"),
-            "/api/v1/admin/models/acme.fraud/admit"
+            "/api/v2/admin/models/acme.fraud/admit"
         );
         assert_eq!(
             model_dependencies("acme.fraud"),
-            "/api/v1/admin/models/acme.fraud/dependencies"
+            "/api/v2/admin/models/acme.fraud/dependencies"
         );
     }
 
@@ -310,21 +310,21 @@ mod tests {
     /// plain HTTP and unreachable from this client.
     #[test]
     fn a_channel_name_is_one_segment_whatever_it_contains() {
-        // Was: `/api/v1/data/orders/v2` — two segments, matching no route, 404.
-        assert_eq!(data("orders/v2"), "/api/v1/data/orders%2Fv2");
+        // Was: `/api/v2/data/orders/v2` — two segments, matching no route, 404.
+        assert_eq!(data("orders/v2"), "/api/v2/data/orders%2Fv2");
         assert_eq!(
             data_async("orders/v2"),
-            "/api/v1/data/orders%2Fv2/async",
+            "/api/v2/data/orders%2Fv2/async",
             "the trailing /async must stay a real segment"
         );
         // Was: everything from `?` onwards became a query string.
-        assert_eq!(data("q?x=1"), "/api/v1/data/q%3Fx%3D1");
+        assert_eq!(data("q?x=1"), "/api/v2/data/q%3Fx%3D1");
         // A fragment would have truncated the path entirely.
-        assert_eq!(data("a#b"), "/api/v1/data/a%23b");
+        assert_eq!(data("a#b"), "/api/v2/data/a%23b");
         // And a traversal attempt cannot climb out of the data plane.
         assert_eq!(
             data("../admin/channels"),
-            "/api/v1/data/..%2Fadmin%2Fchannels"
+            "/api/v2/data/..%2Fadmin%2Fchannels"
         );
     }
 
@@ -334,13 +334,13 @@ mod tests {
     #[test]
     fn a_well_formed_id_encodes_to_itself() {
         for id in ["wf-1", "orders_v2", "a.b.c", "X9", "a-b_c.d~e"] {
-            assert_eq!(workflow(id), format!("/api/v1/admin/workflows/{id}"));
-            assert_eq!(channel(id), format!("/api/v1/admin/channels/{id}"));
-            assert_eq!(connector(id), format!("/api/v1/admin/connectors/{id}"));
-            assert_eq!(plugin(id), format!("/api/v1/admin/plugins/{id}"));
-            assert_eq!(model(id), format!("/api/v1/admin/models/{id}"));
-            assert_eq!(trace(id), format!("/api/v1/admin/traces/{id}"));
-            assert_eq!(package(id), format!("/api/v1/admin/packages/{id}"));
+            assert_eq!(workflow(id), format!("/api/v2/admin/workflows/{id}"));
+            assert_eq!(channel(id), format!("/api/v2/admin/channels/{id}"));
+            assert_eq!(connector(id), format!("/api/v2/admin/connectors/{id}"));
+            assert_eq!(plugin(id), format!("/api/v2/admin/plugins/{id}"));
+            assert_eq!(model(id), format!("/api/v2/admin/models/{id}"));
+            assert_eq!(trace(id), format!("/api/v2/admin/traces/{id}"));
+            assert_eq!(package(id), format!("/api/v2/admin/packages/{id}"));
         }
     }
 
@@ -350,13 +350,13 @@ mod tests {
     fn surrounding_segments_are_not_encoded() {
         assert_eq!(
             workflow_status("a/b"),
-            "/api/v1/admin/workflows/a%2Fb/status"
+            "/api/v2/admin/workflows/a%2Fb/status"
         );
         assert_eq!(
             trace_dlq_requeue("a b"),
-            "/api/v1/admin/trace-dlq/a%20b/requeue"
+            "/api/v2/admin/trace-dlq/a%20b/requeue"
         );
-        assert_eq!(model_admit("a/b"), "/api/v1/admin/models/a%2Fb/admit");
+        assert_eq!(model_admit("a/b"), "/api/v2/admin/models/a%2Fb/admit");
     }
 
     #[test]

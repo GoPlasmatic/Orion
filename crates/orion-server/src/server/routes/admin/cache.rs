@@ -20,7 +20,7 @@ use super::audit_log;
 /// a row fixed in the database.
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/cache/namespaces/{namespace}/invalidate",
+    path = "/api/v2/admin/cache/namespaces/{namespace}/invalidate",
     tag = "Cache",
     params(("namespace" = String, Path, description = "A namespace channels declare in \
         `cache.namespaces`")),

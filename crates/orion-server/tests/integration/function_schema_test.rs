@@ -5,7 +5,7 @@
 //!     and returns field-pathed details via A3's envelope
 //!   - the POST /workflows/validate endpoint reports the same issues in its
 //!     `errors[]` array
-//!   - GET /api/v1/admin/functions returns the registered schema list
+//!   - GET /api/v2/admin/functions returns the registered schema list
 
 use crate::common::{body_json, json_request, test_app};
 use axum::http::StatusCode;
@@ -19,7 +19,7 @@ async fn create_workflow_with_missing_function_input_field_returns_field_pathed_
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "broken-db-read",
                 "tasks": [{
@@ -53,7 +53,7 @@ async fn create_workflow_with_wrong_input_type_returns_type_mismatch_with_got() 
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "wrong-types",
                 "tasks": [{
@@ -87,7 +87,7 @@ async fn create_workflow_with_valid_inputs_succeeds() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "happy-path",
                 "tasks": [{
@@ -111,7 +111,7 @@ async fn validate_endpoint_returns_schema_errors_in_errors_array() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "test-validate",
                 "tasks": [{
@@ -182,7 +182,7 @@ async fn the_catalogue_matches_what_the_engine_can_dispatch() {
         .collect();
 
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .oneshot(json_request("GET", "/api/v2/admin/functions", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -273,7 +273,7 @@ async fn the_create_time_gate_agrees_with_the_running_engine() {
 async fn list_functions_serves_every_valid_name() {
     let app = test_app().await;
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .oneshot(json_request("GET", "/api/v2/admin/functions", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -319,7 +319,7 @@ async fn list_functions_serves_every_valid_name() {
 async fn list_functions_returns_registry_with_schemas() {
     let app = test_app().await;
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .oneshot(json_request("GET", "/api/v2/admin/functions", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -350,7 +350,7 @@ async fn channel_call_without_channel_or_logic_is_rejected() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "broken-channel-call",
                 "tasks": [{
@@ -384,7 +384,7 @@ async fn channel_call_without_channel_or_logic_is_rejected() {
 async fn the_catalogue_serves_retry_safety_for_every_function() {
     let app = test_app().await;
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .oneshot(json_request("GET", "/api/v2/admin/functions", None))
         .await
         .expect("request");
     assert_eq!(resp.status(), StatusCode::OK);

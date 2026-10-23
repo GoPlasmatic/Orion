@@ -40,7 +40,7 @@ pub fn data_routes() -> Router<AppState> {
 /// - REST channels: any method matched against route patterns from DB
 #[utoipa::path(
     post,
-    path = "/api/v1/data/{channel}",
+    path = "/api/v2/data/{channel}",
     tag = "Data",
     operation_id = "process_channel_request",
     summary = "Invoke a channel synchronously",
@@ -432,7 +432,7 @@ pub(crate) async fn dynamic_handler(
         req.data,
         metadata,
         sync::AdmittedOn {
-            engine: generation.engine.clone(),
+            generation,
             channel_config,
         },
         profile_requested,
@@ -783,7 +783,7 @@ async fn submit_async(
 #[allow(dead_code)]
 #[utoipa::path(
     post,
-    path = "/api/v1/data/{channel}/async",
+    path = "/api/v2/data/{channel}/async",
     tag = "Data",
     operation_id = "submit_channel_request_async",
     summary = "Submit to a channel asynchronously",

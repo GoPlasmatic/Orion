@@ -494,7 +494,7 @@ async fn test_http_method_allow_list_rejects_an_unknown_method_at_the_door() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "http-typo", "name": "http-typo", "connector_type": "http",
                 "config": {
@@ -567,7 +567,7 @@ async fn test_unknown_operation_gate_key_is_refused_for_every_type() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/connectors",
+                "/api/v2/admin/connectors",
                 Some(json!({
                     "id": format!("gate-typo-{connector_type}"),
                     "name": format!("gate-typo-{connector_type}"),

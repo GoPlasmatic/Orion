@@ -122,7 +122,7 @@ pub async fn create_storage_connector(app: &axum::Router, name: &str, addr: std:
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(storage_connector(name, addr)),
         ))
         .await
@@ -194,7 +194,7 @@ pub async fn register_fixture(app: &axum::Router) -> Value {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/models",
+            "/api/v2/admin/models",
             Some(registration("bucket", &fixture_digest())),
         ))
         .await

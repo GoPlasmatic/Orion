@@ -191,7 +191,7 @@ async fn assert_crud_roundtrip(backend: Backend) {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(json!({ "data": {} })),
         ))
         .await

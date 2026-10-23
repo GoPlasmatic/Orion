@@ -473,7 +473,7 @@ async fn the_pre_1_0_flat_envelope_is_refused_at_create() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::workflow_with_tasks(
                 "dw",
                 json!([{
@@ -563,7 +563,7 @@ async fn a_data_write_without_an_envelope_is_rejected_at_create() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::workflow_with_tasks(
                 "dw",
                 json!([{
@@ -594,7 +594,7 @@ async fn envelope_errors_are_reported_under_the_write_path() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::workflow_with_tasks(
                 "dw",
                 json!([{

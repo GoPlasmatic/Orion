@@ -109,7 +109,7 @@ async fn the_catalogue_route_serves_the_generations_registry() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .oneshot(json_request("GET", "/api/v2/admin/functions", None))
         .await
         .expect("request");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -153,7 +153,7 @@ async fn the_catalogue_route_serves_the_generations_registry() {
         generation.models.clone(),
     );
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .oneshot(json_request("GET", "/api/v2/admin/functions", None))
         .await
         .expect("request");
     let served = body_json(resp).await["data"].clone();
@@ -198,7 +198,7 @@ async fn create_time_validation_reads_the_generations_registry() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow.clone()),
         ))
         .await
@@ -228,7 +228,7 @@ async fn create_time_validation_reads_the_generations_registry() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -244,7 +244,7 @@ async fn create_time_validation_reads_the_generations_registry() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Echo via plugin, misspelled",
                 "condition": true,
@@ -323,7 +323,7 @@ fn the_builtin_registry_is_the_static_tables_and_nothing_else() {
 async fn test_app_serves_the_builtin_catalogue() {
     let app = test_app().await;
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .oneshot(json_request("GET", "/api/v2/admin/functions", None))
         .await
         .expect("request");
     assert_eq!(resp.status(), StatusCode::OK);

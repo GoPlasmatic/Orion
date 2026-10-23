@@ -94,7 +94,7 @@ async fn test_inflight_trace_completes_on_shutdown() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/shutdown-test/async",
+            "/api/v2/data/shutdown-test/async",
             Some(json!({"data": {"test": true}})),
         ))
         .await

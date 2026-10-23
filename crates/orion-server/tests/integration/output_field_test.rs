@@ -42,7 +42,7 @@ async fn app_with_mock_origin() -> axum::Router {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "mock-origin",
                 "name": "mock-origin",
@@ -89,7 +89,7 @@ async fn run_channel(app: &axum::Router, channel: &str) -> serde_json::Value {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{channel}"),
+            &format!("/api/v2/data/{channel}"),
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -151,7 +151,7 @@ async fn http_call_rejects_output_and_response_path_together() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/workflows", Some(wf)))
+        .oneshot(json_request("POST", "/api/v2/admin/workflows", Some(wf)))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -178,7 +178,7 @@ async fn http_call_rejects_a_misspelled_input_key() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/workflows", Some(wf)))
+        .oneshot(json_request("POST", "/api/v2/admin/workflows", Some(wf)))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

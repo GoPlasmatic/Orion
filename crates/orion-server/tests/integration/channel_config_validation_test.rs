@@ -1,7 +1,7 @@
 //! B2 + R3: strict per-channel validation, one table-driven rejection matrix
 //! run against both verbs.
 //!
-//! CREATE (`POST /api/v1/admin/channels`) and UPDATE (`PUT .../{id}`) share
+//! CREATE (`POST /api/v2/admin/channels`) and UPDATE (`PUT .../{id}`) share
 //! the same checks — updates are validated against the merged (stored draft ⊕
 //! request) view, so every rejection case below must hold on both paths:
 //!
@@ -23,7 +23,7 @@ async fn create_draft_channel(app: &axum::Router, name: &str) -> String {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": name,
                 "channel_type": "sync",
@@ -64,11 +64,11 @@ async fn assert_channel_rejected(
             for (key, value) in payload.as_object().unwrap() {
                 body[key] = value.clone();
             }
-            ("/api/v1/admin/channels".to_string(), body)
+            ("/api/v2/admin/channels".to_string(), body)
         }
         "PUT" => {
             let id = create_draft_channel(app, name).await;
-            (format!("/api/v1/admin/channels/{id}"), payload.clone())
+            (format!("/api/v2/admin/channels/{id}"), payload.clone())
         }
         other => panic!("unsupported method {other}"),
     };
@@ -256,7 +256,7 @@ async fn well_formed_config_still_accepts() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "happy",
                 "channel_type": "sync",
@@ -296,7 +296,7 @@ async fn a_declared_key_header_is_accepted_and_round_trips() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "per-device",
                 "channel_type": "sync",
@@ -319,7 +319,7 @@ async fn a_declared_key_header_is_accepted_and_round_trips() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/channels/{channel_id}"),
+            &format!("/api/v2/admin/channels/{channel_id}"),
             None,
         ))
         .await
@@ -340,7 +340,7 @@ async fn empty_config_object_is_accepted() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "empty-config",
                 "channel_type": "sync",
@@ -365,7 +365,7 @@ async fn put_valid_update_passes() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/channels/{id}"),
+            &format!("/api/v2/admin/channels/{id}"),
             Some(json!({
                 "name": "Updated Name",
                 "config": {
@@ -384,7 +384,7 @@ async fn put_valid_update_passes() {
     let resp = app
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/channels/{id}"),
+            &format!("/api/v2/admin/channels/{id}"),
             Some(json!({
                 "methods": ["GET", "POST"],
                 "route_pattern": "/upd-valid/{item}"
@@ -401,7 +401,7 @@ async fn put_missing_channel_returns_404() {
     let resp = app
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/channels/does-not-exist",
+            "/api/v2/admin/channels/does-not-exist",
             Some(json!({ "name": "whatever" })),
         ))
         .await

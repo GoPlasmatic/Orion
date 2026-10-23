@@ -68,6 +68,7 @@ path = "tests/cluster/main.rs"
 harness = true
 
 [dependencies]
+orion-definitions.workspace = true
 # `all-operators` turns on dataflow-rs's passthroughs to the datalogic-rs
 # feature gates: `datetime`, `ext-string`, `ext-array`, `ext-math`,
 # `ext-control`, `error-handling` and (since 3.4/5.2) `ext-object`. Without it

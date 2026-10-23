@@ -46,11 +46,11 @@ mod expand;
 pub mod fix;
 pub mod fmt;
 mod gate;
-pub mod json;
-pub mod provenance;
 mod set;
 mod shared;
 pub mod statements;
+
+pub use orion_definitions::{json, provenance};
 
 pub use check::check;
 pub use compile::{Cx, Pass, Residue};

@@ -4,7 +4,7 @@
 //! from the registry, so every workflow using it returns a 500 at request
 //! time — possibly hours after the deploy that broke it. Before this, a log
 //! line at boot was the only evidence. These tests pin the two reporting
-//! surfaces: `/health` and `GET /api/v1/admin/connectors`.
+//! surfaces: `/health` and `GET /api/v2/admin/connectors`.
 
 use crate::common::{body_json, json_request, test_app};
 use axum::http::StatusCode;
@@ -18,7 +18,7 @@ async fn create_broken_connector(app: &axum::Router, id: &str) {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": id,
                 "name": id,
@@ -85,7 +85,7 @@ async fn health_is_ok_when_every_connector_loads() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "f16-fine",
                 "name": "f16-fine",
@@ -123,7 +123,7 @@ async fn admin_list_marks_the_failed_connector() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "f16-healthy",
                 "name": "f16-healthy",
@@ -137,7 +137,7 @@ async fn admin_list_marks_the_failed_connector() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/connectors", None))
+        .oneshot(json_request("GET", "/api/v2/admin/connectors", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -170,7 +170,7 @@ async fn a_disabled_connector_is_not_a_load_failure() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "f16-disabled",
                 "name": "f16-disabled",
@@ -190,7 +190,7 @@ async fn a_disabled_connector_is_not_a_load_failure() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/f16-disabled",
+            "/api/v2/admin/connectors/f16-disabled",
             Some(json!({"enabled": false})),
         ))
         .await
@@ -210,7 +210,7 @@ async fn a_disabled_connector_is_not_a_load_failure() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/connectors", None))
+        .oneshot(json_request("GET", "/api/v2/admin/connectors", None))
         .await
         .unwrap();
     let body = body_json(resp).await;
@@ -240,7 +240,7 @@ async fn fixing_the_config_clears_the_issue() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/f16-fixable",
+            "/api/v2/admin/connectors/f16-fixable",
             Some(json!({"config": {
                 "url": "https://api.example.com",
                 "method": "GET"
@@ -295,7 +295,7 @@ async fn a_config_without_a_redundant_inner_type_loads() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/connectors",
+                "/api/v2/admin/connectors",
                 Some(json!({
                     "id": id,
                     "name": id,
@@ -332,7 +332,7 @@ async fn the_stored_type_column_wins_over_an_inner_type() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "f16-conflict",
                 "name": "f16-conflict",
@@ -470,7 +470,7 @@ async fn create_http(app: &axum::Router, name: &str, config: serde_json::Value) 
     app.clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({"id": name, "name": name, "connector_type": "http", "config": config})),
         ))
         .await

@@ -22,7 +22,7 @@ async fn put_receipt(
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/packages/{name}"),
+            &format!("/api/v2/admin/packages/{name}"),
             Some(json!({"version": version, "content_hash": hash, "state": state})),
         ))
         .await
@@ -52,7 +52,7 @@ async fn staged_receipt_updates_in_place_and_applies() {
     // The detail view names it current.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/packages/payments", None))
+        .oneshot(json_request("GET", "/api/v2/admin/packages/payments", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -97,7 +97,7 @@ async fn reapplying_an_older_version_is_the_rollback_path() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/packages/orders", None))
+        .oneshot(json_request("GET", "/api/v2/admin/packages/orders", None))
         .await
         .unwrap();
     let body = body_json(resp).await;
@@ -111,7 +111,7 @@ async fn reapplying_an_older_version_is_the_rollback_path() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/packages/orders", None))
+        .oneshot(json_request("GET", "/api/v2/admin/packages/orders", None))
         .await
         .unwrap();
     let body = body_json(resp).await;
@@ -134,7 +134,7 @@ async fn list_pages_and_missing_package_404s() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/packages?limit=2", None))
+        .oneshot(json_request("GET", "/api/v2/admin/packages?limit=2", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -144,7 +144,7 @@ async fn list_pages_and_missing_package_404s() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/packages/absent", None))
+        .oneshot(json_request("GET", "/api/v2/admin/packages/absent", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -167,7 +167,7 @@ async fn receipt_fields_are_validated() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/packages/pkg",
+            "/api/v2/admin/packages/pkg",
             Some(json!({"version": "1.0.0", "content_hash": "sha256:x", "state": "deployed"})),
         ))
         .await
@@ -189,7 +189,7 @@ async fn receipt_puts_are_audited() {
 
     let body = crate::common::wait_for_body(
         &app,
-        "/api/v1/admin/audit-logs?resource_type=package",
+        "/api/v2/admin/audit-logs?resource_type=package",
         |body| body["data"].as_array().is_some_and(|rows| !rows.is_empty()),
     )
     .await;
@@ -209,7 +209,7 @@ async fn receipts_carry_the_inventory_and_current_lists_it() {
             let resp = app
                 .oneshot(json_request(
                     "PUT",
-                    &format!("/api/v1/admin/packages/{name}"),
+                    &format!("/api/v2/admin/packages/{name}"),
                     Some(json!({"version": version, "content_hash": "sha256:x",
                         "state": "applied", "inventory": inventory})),
                 ))
@@ -240,13 +240,13 @@ async fn receipts_carry_the_inventory_and_current_lists_it() {
             body_json(resp).await
         }
     };
-    let detail = get("/api/v1/admin/packages/orders").await;
+    let detail = get("/api/v2/admin/packages/orders").await;
     assert_eq!(
         detail["data"]["current"]["inventory"]["channels"],
         json!(["a", "b"])
     );
 
-    let listed = get("/api/v1/admin/packages").await;
+    let listed = get("/api/v2/admin/packages").await;
     assert!(
         listed["data"]
             .as_array()
@@ -256,7 +256,7 @@ async fn receipts_carry_the_inventory_and_current_lists_it() {
         "{listed}"
     );
 
-    let current = get("/api/v1/admin/packages?current=true").await;
+    let current = get("/api/v2/admin/packages?current=true").await;
     let rows = current["data"].as_array().unwrap();
     assert_eq!(rows.len(), 3, "{current}");
     assert_eq!(rows[0]["name"], "billing");
@@ -273,7 +273,7 @@ async fn an_oversized_or_malformed_inventory_is_refused() {
             let resp = app
                 .oneshot(json_request(
                     "PUT",
-                    "/api/v1/admin/packages/pkg",
+                    "/api/v2/admin/packages/pkg",
                     Some(json!({"version": "1.0.0", "content_hash": "sha256:x",
                         "state": "staged", "inventory": inventory})),
                 ))

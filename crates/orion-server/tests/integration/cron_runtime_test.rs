@@ -100,7 +100,7 @@ async fn activate_cron_channel(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": name,
                 "channel_type": "async",
@@ -121,7 +121,7 @@ async fn activate_cron_channel(
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -135,7 +135,7 @@ async fn wait_for_occurrences<F>(app: &axum::Router, query: &str, pred: F) -> Ve
 where
     F: Fn(&[Value]) -> bool,
 {
-    let uri = format!("/api/v1/admin/cron/occurrences?{query}");
+    let uri = format!("/api/v2/admin/cron/occurrences?{query}");
     let body = common::wait_for_body(app, &uri, |body| {
         body["data"]
             .as_array()
@@ -180,7 +180,7 @@ async fn a_schedule_produces_an_occurrence_that_runs_and_settles() {
     // The full record carries what the summary leaves out.
     let body = common::wait_for_body(
         &app,
-        &format!("/api/v1/admin/cron/occurrences/{occurrence_id}"),
+        &format!("/api/v2/admin/cron/occurrences/{occurrence_id}"),
         |body| body["data"]["trace_id"].is_string(),
     )
     .await;
@@ -199,7 +199,7 @@ async fn a_schedule_produces_an_occurrence_that_runs_and_settles() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -239,7 +239,7 @@ async fn the_workflow_receives_the_trigger_metadata_and_the_authored_payload() {
 
     let body = common::wait_for_body(
         &app,
-        &format!("/api/v1/admin/cron/occurrences/{occurrence_id}"),
+        &format!("/api/v2/admin/cron/occurrences/{occurrence_id}"),
         |body| body["data"]["trace_id"].is_string(),
     )
     .await;
@@ -248,7 +248,7 @@ async fn the_workflow_receives_the_trigger_metadata_and_the_authored_payload() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -295,7 +295,7 @@ async fn the_status_endpoint_reports_the_cursor_and_the_last_run() {
     )
     .await;
 
-    let body = common::wait_for_body(&app, "/api/v1/admin/cron/status", |body| {
+    let body = common::wait_for_body(&app, "/api/v2/admin/cron/status", |body| {
         body["data"][0]["last_status"].is_string()
     })
     .await;
@@ -338,7 +338,7 @@ async fn archiving_stops_materialisation_and_keeps_history() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -347,12 +347,12 @@ async fn archiving_stops_materialisation_and_keeps_history() {
 
     // Let the reconciler notice and pause the cursor, then confirm the count
     // has stopped moving.
-    let settled = common::wait_for_body(&app, "/api/v1/admin/cron/occurrences?limit=200", |_| true)
+    let settled = common::wait_for_body(&app, "/api/v2/admin/cron/occurrences?limit=200", |_| true)
         .await["total"]
         .as_i64()
         .unwrap_or(0);
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    let after = common::wait_for_body(&app, "/api/v1/admin/cron/occurrences?limit=200", |_| true)
+    let after = common::wait_for_body(&app, "/api/v2/admin/cron/occurrences?limit=200", |_| true)
         .await["total"]
         .as_i64()
         .unwrap_or(0);
@@ -389,7 +389,7 @@ async fn a_manual_trigger_creates_an_occurrence_that_runs() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/channels/{channel_id}/trigger"),
+            &format!("/api/v2/admin/channels/{channel_id}/trigger"),
             None,
         ))
         .await
@@ -402,7 +402,7 @@ async fn a_manual_trigger_creates_an_occurrence_that_runs() {
 
     let body = common::wait_for_body(
         &app,
-        &format!("/api/v1/admin/cron/occurrences/{occurrence_id}"),
+        &format!("/api/v2/admin/cron/occurrences/{occurrence_id}"),
         |body| body["data"]["status"] == "completed",
     )
     .await;
@@ -424,7 +424,7 @@ async fn triggering_a_non_cron_channel_is_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/ordinary/trigger",
+            "/api/v2/admin/channels/ordinary/trigger",
             None,
         ))
         .await
@@ -454,7 +454,7 @@ async fn retry_reuses_the_occurrence_and_refuses_a_completed_one() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/cron/occurrences/{occurrence_id}/retry"),
+            &format!("/api/v2/admin/cron/occurrences/{occurrence_id}/retry"),
             None,
         ))
         .await
@@ -469,7 +469,7 @@ async fn retry_reuses_the_occurrence_and_refuses_a_completed_one() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/cron/occurrences/does-not-exist/retry",
+            "/api/v2/admin/cron/occurrences/does-not-exist/retry",
             None,
         ))
         .await
@@ -507,7 +507,7 @@ async fn cancelling_a_running_occurrence_frees_its_slot() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/cron/occurrences/{held}/cancel"),
+            &format!("/api/v2/admin/cron/occurrences/{held}/cancel"),
             None,
         ))
         .await
@@ -526,7 +526,7 @@ async fn cancelling_a_running_occurrence_frees_its_slot() {
     // would have returned.
     common::wait_for_body_within(
         &app,
-        "/api/v1/admin/cron/occurrences?status=running&limit=10",
+        "/api/v2/admin/cron/occurrences?status=running&limit=10",
         std::time::Duration::from_secs(10),
         |body| {
             body["data"]
@@ -540,24 +540,24 @@ async fn cancelling_a_running_occurrence_frees_its_slot() {
     // longer claims to be running.
     let body = common::wait_for_body(
         &app,
-        &format!("/api/v1/admin/cron/occurrences/{held}"),
+        &format!("/api/v2/admin/cron/occurrences/{held}"),
         |_| true,
     )
     .await;
     assert_eq!(body["data"]["status"], "failed", "{body}");
     let trace_id = body["data"]["trace_id"].as_str().expect("trace id");
     let trace =
-        common::wait_for_body(&app, &format!("/api/v1/admin/traces/{trace_id}"), |_| true).await;
+        common::wait_for_body(&app, &format!("/api/v2/admin/traces/{trace_id}"), |_| true).await;
     assert_eq!(trace["data"]["status"], "failed", "{trace}");
 
     // Finished is finished, and a missing id is a 404.
     for (uri, expected) in [
         (
-            format!("/api/v1/admin/cron/occurrences/{held}/cancel"),
+            format!("/api/v2/admin/cron/occurrences/{held}/cancel"),
             StatusCode::CONFLICT,
         ),
         (
-            "/api/v1/admin/cron/occurrences/does-not-exist/cancel".to_string(),
+            "/api/v2/admin/cron/occurrences/does-not-exist/cancel".to_string(),
             StatusCode::NOT_FOUND,
         ),
     ] {
@@ -691,7 +691,7 @@ async fn forbid_serialises_a_key_and_records_the_skips() {
     let body = common::wait_for_body(
         &app,
         &format!(
-            "/api/v1/admin/cron/occurrences/{}",
+            "/api/v2/admin/cron/occurrences/{}",
             skipped[0]["id"].as_str().expect("id")
         ),
         |_| true,
@@ -750,7 +750,7 @@ async fn forbid_with_slots_runs_n_and_skips_the_rest() {
     // than the default five-second wait.
     let body = common::wait_for_body_within(
         &app,
-        "/api/v1/admin/cron/occurrences?limit=200",
+        "/api/v2/admin/cron/occurrences?limit=200",
         std::time::Duration::from_secs(20),
         |body| {
             body["data"].as_array().is_some_and(|rows| {
@@ -770,7 +770,7 @@ async fn forbid_with_slots_runs_n_and_skips_the_rest() {
     let body = common::wait_for_body(
         &app,
         &format!(
-            "/api/v1/admin/cron/occurrences/{}",
+            "/api/v2/admin/cron/occurrences/{}",
             skipped[0]["id"].as_str().expect("id")
         ),
         |_| true,
@@ -792,7 +792,7 @@ async fn forbid_with_slots_runs_n_and_skips_the_rest() {
         let body = common::wait_for_body(
             &app,
             &format!(
-                "/api/v1/admin/cron/occurrences/{}",
+                "/api/v2/admin/cron/occurrences/{}",
                 row["id"].as_str().expect("id")
             ),
             |body| body["data"]["trace_id"].is_string(),
@@ -810,7 +810,7 @@ async fn forbid_with_slots_runs_n_and_skips_the_rest() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -819,7 +819,7 @@ async fn forbid_with_slots_runs_n_and_skips_the_rest() {
     assert_eq!(trace["data"]["message"]["saw_slot"], 1, "{trace}");
 
     // The status view reports the bound and what is held against it.
-    let body = common::wait_for_body(&app, "/api/v1/admin/cron/status", |_| true).await;
+    let body = common::wait_for_body(&app, "/api/v2/admin/cron/status", |_| true).await;
     let row = body["data"]
         .as_array()
         .expect("rows")
@@ -906,7 +906,7 @@ async fn a_manual_trigger_takes_the_same_singleton_a_schedule_would() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                &format!("/api/v1/admin/channels/{channel_id}/trigger"),
+                &format!("/api/v2/admin/channels/{channel_id}/trigger"),
                 None,
             ))
             .await
@@ -931,7 +931,7 @@ async fn a_manual_trigger_takes_the_same_singleton_a_schedule_would() {
 
     let body = common::wait_for_body(
         &app,
-        &format!("/api/v1/admin/cron/occurrences/{manual_id}"),
+        &format!("/api/v2/admin/cron/occurrences/{manual_id}"),
         |body| {
             matches!(
                 body["data"]["status"].as_str(),
@@ -986,7 +986,7 @@ async fn a_payload_that_fails_validation_fails_the_occurrence_visibly() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "validated-cron",
                 "channel_type": "async",
@@ -1011,7 +1011,7 @@ async fn a_payload_that_fails_validation_fails_the_occurrence_visibly() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1022,7 +1022,7 @@ async fn a_payload_that_fails_validation_fails_the_occurrence_visibly() {
     let body = common::wait_for_body(
         &app,
         &format!(
-            "/api/v1/admin/cron/occurrences/{}",
+            "/api/v2/admin/cron/occurrences/{}",
             rows[0]["id"].as_str().expect("id")
         ),
         |_| true,
@@ -1038,7 +1038,7 @@ async fn a_payload_that_fails_validation_fails_the_occurrence_visibly() {
     // Nothing completes, because the payload cannot ever satisfy the rule.
     let completed = common::wait_for_body(
         &app,
-        "/api/v1/admin/cron/occurrences?status=completed",
+        "/api/v2/admin/cron/occurrences?status=completed",
         |_| true,
     )
     .await;
@@ -1059,7 +1059,7 @@ async fn a_channel_timeout_bounds_a_scheduled_run() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "timeout-cron",
                 "channel_type": "async",
@@ -1083,7 +1083,7 @@ async fn a_channel_timeout_bounds_a_scheduled_run() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1094,7 +1094,7 @@ async fn a_channel_timeout_bounds_a_scheduled_run() {
     let body = common::wait_for_body(
         &app,
         &format!(
-            "/api/v1/admin/cron/occurrences/{}",
+            "/api/v2/admin/cron/occurrences/{}",
             rows[0]["id"].as_str().expect("id")
         ),
         |_| true,

@@ -184,13 +184,13 @@ async fn the_admin_plane_is_guarded_independently_of_the_metrics_listener() {
         let app = common::test_app_with_config(with_admin_auth(metrics_config(bind_addr))).await;
         let resp = app
             .clone()
-            .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
+            .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{bind_addr:?}");
 
         let resp = app
-            .oneshot(authed("/api/v1/admin/workflows"))
+            .oneshot(authed("/api/v2/admin/workflows"))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "{bind_addr:?}");
@@ -251,7 +251,7 @@ async fn dedicated_listener_serves_metrics_without_an_admin_key() {
     // ...and it serves nothing else. The admin plane is not reachable here,
     // credential or no credential.
     let resp = client
-        .get(format!("http://{addr}/api/v1/admin/workflows"))
+        .get(format!("http://{addr}/api/v2/admin/workflows"))
         .send()
         .await
         .expect("admin probe");

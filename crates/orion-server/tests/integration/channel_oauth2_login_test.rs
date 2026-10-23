@@ -242,7 +242,7 @@ async fn deploy_on_route(
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -259,7 +259,7 @@ async fn deploy_on_route(
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+            &format!("/api/v2/admin/workflows/{workflow_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -270,7 +270,7 @@ async fn deploy_on_route(
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "signin",
                 "channel_type": "sync",
@@ -291,7 +291,7 @@ async fn deploy_on_route(
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/channels?status=draft",
+            "/api/v2/admin/channels?status=draft",
             None,
         ))
         .await
@@ -306,7 +306,7 @@ async fn deploy_on_route(
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -348,7 +348,7 @@ fn query_param(location: &str, name: &str) -> Option<String> {
 async fn begin(app: &axum::Router) -> (String, String) {
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -375,7 +375,7 @@ async fn the_authorize_leg_redirects_with_state_and_pkce() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
 
@@ -434,7 +434,7 @@ async fn a_matching_callback_exchanges_the_code_and_runs_the_workflow() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -488,7 +488,7 @@ async fn a_callback_with_no_state_cookie_is_refused_before_anything_runs() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             None,
         ))
         .await
@@ -509,7 +509,7 @@ async fn a_state_that_does_not_match_the_cookie_is_refused() {
     let resp = app
         .clone()
         .oneshot(get(
-            "/api/v1/data/v1/auth/idp/callback?code=good-code&state=some-other-state",
+            "/api/v2/data/v1/auth/idp/callback?code=good-code&state=some-other-state",
             Some(&cookie),
         ))
         .await
@@ -534,7 +534,7 @@ async fn a_state_from_another_sign_in_is_refused() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state_a}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state_a}"),
             Some(&cookie_b),
         ))
         .await
@@ -556,7 +556,7 @@ async fn replaying_a_spent_code_is_refused() {
     deploy(&app, login_config(&url), echo_grant_workflow()).await;
 
     let (state, cookie) = begin(&app).await;
-    let uri = format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}");
+    let uri = format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}");
 
     let first = app
         .clone()
@@ -589,7 +589,7 @@ async fn a_provider_error_is_refused() {
     let resp = app
         .clone()
         .oneshot(get(
-            "/api/v1/data/v1/auth/idp/callback?error=access_denied",
+            "/api/v2/data/v1/auth/idp/callback?error=access_denied",
             Some(&cookie),
         ))
         .await
@@ -628,7 +628,7 @@ async fn return_to_is_carried_only_when_the_allow_list_permits_it() {
         let resp = app
             .clone()
             .oneshot(get(
-                &format!("/api/v1/data/v1/auth/idp?next={encoded}"),
+                &format!("/api/v2/data/v1/auth/idp?next={encoded}"),
                 None,
             ))
             .await
@@ -651,7 +651,7 @@ async fn return_to_is_carried_only_when_the_allow_list_permits_it() {
         let resp = app
             .clone()
             .oneshot(get(
-                &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+                &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
                 Some(&cookie),
             ))
             .await
@@ -683,7 +683,7 @@ async fn return_to_survives_the_workflow_on_the_authorize_leg() {
     let resp = app
         .clone()
         .oneshot(get(
-            "/api/v1/data/v1/auth/idp?next=https%3A%2F%2Fapp.example.com%2Finbox",
+            "/api/v2/data/v1/auth/idp?next=https%3A%2F%2Fapp.example.com%2Finbox",
             None,
         ))
         .await
@@ -702,7 +702,7 @@ async fn return_to_survives_the_workflow_on_the_authorize_leg() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -732,7 +732,7 @@ async fn a_caller_cannot_forge_the_grant() {
 
     let request = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/v1/auth/idp")
+        .uri("/api/v2/data/v1/auth/idp")
         .header("content-type", "application/json")
         .body(Body::from(
             json!({
@@ -784,7 +784,7 @@ async fn a_workflow_can_contribute_to_the_authorize_redirect() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -822,7 +822,7 @@ async fn a_workflow_can_refuse_the_sign_in() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "signin",
                 "condition": true,
@@ -848,7 +848,7 @@ async fn a_workflow_can_refuse_the_sign_in() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+            &format!("/api/v2/admin/workflows/{workflow_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -859,7 +859,7 @@ async fn a_workflow_can_refuse_the_sign_in() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "signin",
                 "channel_type": "sync",
@@ -884,7 +884,7 @@ async fn a_workflow_can_refuse_the_sign_in() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -893,7 +893,7 @@ async fn a_workflow_can_refuse_the_sign_in() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -917,7 +917,7 @@ async fn a_callback_cannot_be_submitted_asynchronously() {
     let resp = app
         .clone()
         .oneshot(get(
-            "/api/v1/data/v1/auth/idp/callback/async?code=good-code&state=x",
+            "/api/v2/data/v1/auth/idp/callback/async?code=good-code&state=x",
             None,
         ))
         .await
@@ -936,7 +936,7 @@ async fn assert_refused(app: &axum::Router, config: Value, expect: &str) {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": format!("refused-{}", uuid::Uuid::new_v4().simple()),
                 "channel_type": "sync",
@@ -961,7 +961,7 @@ async fn assert_refused(app: &axum::Router, config: Value, expect: &str) {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": name,
                 "channel_type": "sync",
@@ -983,7 +983,7 @@ async fn assert_refused(app: &axum::Router, config: Value, expect: &str) {
         .clone()
         .oneshot(common::json_request(
             "PUT",
-            &format!("/api/v1/admin/channels/{channel_id}"),
+            &format!("/api/v2/admin/channels/{channel_id}"),
             Some(json!({ "config": config })),
         ))
         .await
@@ -1043,7 +1043,7 @@ async fn a_non_rest_channel_cannot_declare_a_sign_in() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "kafka-signin",
                 "channel_type": "async",
@@ -1076,7 +1076,7 @@ async fn a_channel_read_masks_the_secrets_and_keeps_the_pointers() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "masked-signin",
                 "channel_type": "sync",
@@ -1098,7 +1098,7 @@ async fn a_channel_read_masks_the_secrets_and_keeps_the_pointers() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            &format!("/api/v1/admin/channels/{channel_id}"),
+            &format!("/api/v2/admin/channels/{channel_id}"),
             None,
         ))
         .await
@@ -1147,7 +1147,7 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "signin",
                 "condition": true,
@@ -1172,7 +1172,7 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+            &format!("/api/v2/admin/workflows/{workflow_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1183,7 +1183,7 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "signin",
                 "channel_type": "sync",
@@ -1208,7 +1208,7 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1219,7 +1219,7 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -1229,7 +1229,7 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
     // did-the-feature-run test.
     assert_eq!(common::body_json(resp).await["data"]["saw_a_token"], true);
 
-    let body = common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+    let body = common::wait_for_body(&app, "/api/v2/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == "signin"))
@@ -1246,7 +1246,7 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -1297,7 +1297,7 @@ async fn a_failing_callback_still_retires_the_spent_state_cookie() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -1351,7 +1351,7 @@ async fn a_failure_on_an_ordinary_channel_carries_no_platform_cookie() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/plain",
+            "/api/v2/data/plain",
             Some(json!({"data": {}})),
         ))
         .await
@@ -1384,7 +1384,7 @@ async fn the_authorize_leg_persists_a_trace_when_it_runs_a_workflow() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     // Still a redirect: routing it through the trace tail must not change what
@@ -1404,7 +1404,7 @@ async fn the_authorize_leg_persists_a_trace_when_it_runs_a_workflow() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/traces?limit=50",
+            "/api/v2/admin/traces?limit=50",
             None,
         ))
         .await
@@ -1430,7 +1430,7 @@ async fn the_authorize_leg_traces_nothing_when_no_workflow_runs() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -1439,7 +1439,7 @@ async fn the_authorize_leg_traces_nothing_when_no_workflow_runs() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/traces?limit=50",
+            "/api/v2/admin/traces?limit=50",
             None,
         ))
         .await
@@ -1493,7 +1493,7 @@ async fn a_failed_callback_does_not_burn_the_idempotency_key() {
         let mut b = Request::builder()
             .method("GET")
             .uri(format!(
-                "/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"
+                "/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"
             ))
             .header("Idempotency-Key", "retry-me");
         if let Some(c) = with_cookie {
@@ -1551,7 +1551,7 @@ async fn a_successful_callback_still_holds_the_idempotency_key() {
         Request::builder()
             .method("GET")
             .uri(format!(
-                "/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"
+                "/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"
             ))
             .header("Idempotency-Key", "once-only")
             .header("cookie", cookie.clone())
@@ -1612,7 +1612,7 @@ async fn the_documented_example_deploys_from_vars_and_env() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -1637,7 +1637,7 @@ async fn the_documented_example_deploys_from_vars_and_env() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -1672,7 +1672,7 @@ async fn redirect_uri_resolves_an_env_reference_at_load() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -1703,7 +1703,7 @@ async fn a_reference_that_resolves_to_plain_http_quarantines_the_channel() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     assert_ne!(
@@ -1786,7 +1786,7 @@ fn echo_provider_workflow() -> Value {
 async fn begin_provider(app: &axum::Router, provider: &str) -> (String, String) {
     let resp = app
         .clone()
-        .oneshot(get(&format!("/api/v1/data/v1/auth/{provider}"), None))
+        .oneshot(get(&format!("/api/v2/data/v1/auth/{provider}"), None))
         .await
         .expect("authorize");
     assert_eq!(resp.status(), StatusCode::FOUND, "authorize {provider}");
@@ -1811,7 +1811,7 @@ async fn the_slug_selects_the_provider_on_the_authorize_leg() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/github", None))
+        .oneshot(get("/api/v2/data/v1/auth/github", None))
         .await
         .expect("authorize github");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -1833,7 +1833,7 @@ async fn the_slug_selects_the_provider_on_the_authorize_leg() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/acme", None))
+        .oneshot(get("/api/v2/data/v1/auth/acme", None))
         .await
         .expect("authorize acme");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -1867,7 +1867,7 @@ async fn a_multi_provider_callback_exchanges_and_names_the_provider() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/github/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/github/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -1895,7 +1895,7 @@ async fn an_unknown_provider_slug_is_not_found() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/nope", None))
+        .oneshot(get("/api/v2/data/v1/auth/nope", None))
         .await
         .expect("authorize unknown");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1917,7 +1917,7 @@ async fn a_state_cannot_be_redeemed_at_another_providers_callback() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/acme/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/acme/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -1939,7 +1939,7 @@ async fn a_channel_read_masks_per_provider_secrets() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            &format!("/api/v1/admin/channels/{channel_id}"),
+            &format!("/api/v2/admin/channels/{channel_id}"),
             None,
         ))
         .await
@@ -2023,7 +2023,7 @@ async fn a_deployment_supplied_provider_serves_a_channel_that_opts_in() {
     // Authorize: the deployment's provider is selected and its client is used.
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/entra", None))
+        .oneshot(get("/api/v2/data/v1/auth/entra", None))
         .await
         .expect("authorize entra");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -2045,7 +2045,7 @@ async fn a_deployment_supplied_provider_serves_a_channel_that_opts_in() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/entra/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/entra/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -2058,7 +2058,7 @@ async fn a_deployment_supplied_provider_serves_a_channel_that_opts_in() {
     // A slug the deployment did not supply is still a 404.
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/nope", None))
+        .oneshot(get("/api/v2/data/v1/auth/nope", None))
         .await
         .expect("authorize unknown");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -2096,7 +2096,7 @@ async fn discovery_fills_the_authorize_endpoint() {
 
     let resp = app
         .clone()
-        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .oneshot(get("/api/v2/data/v1/auth/idp", None))
         .await
         .expect("authorize");
     assert_eq!(resp.status(), StatusCode::FOUND);
@@ -2141,7 +2141,7 @@ async fn a_discovery_provider_exchanges_then_requires_an_id_token() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -2257,7 +2257,7 @@ async fn a_userinfo_provider_stamps_a_normalised_identity() {
     let resp = app
         .clone()
         .oneshot(get(
-            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            &format!("/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"),
             Some(&cookie),
         ))
         .await
@@ -2293,7 +2293,7 @@ async fn a_caller_cannot_forge_the_identity() {
     let forged = Request::builder()
         .method("GET")
         .uri(format!(
-            "/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"
+            "/api/v2/data/v1/auth/idp/callback?code=good-code&state={state}"
         ))
         .header("cookie", &cookie)
         .header("content-type", "application/json")

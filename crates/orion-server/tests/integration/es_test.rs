@@ -76,7 +76,7 @@ async fn test_data_query_es_search() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-dq-es",
+            "/api/v2/data/ch-dq-es",
             Some(json!({ "data": {} })),
         ))
         .await
@@ -155,7 +155,7 @@ async fn test_data_query_es_returns_the_document_id() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-dq-es-id",
+            "/api/v2/data/ch-dq-es-id",
             Some(json!({ "data": {} })),
         ))
         .await
@@ -216,7 +216,7 @@ async fn test_data_query_es_without_the_id_projection_is_unchanged() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/ch-dq-es-noid",
+            "/api/v2/data/ch-dq-es-noid",
             Some(json!({ "data": {} })),
         ))
         .await

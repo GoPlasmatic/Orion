@@ -1,4 +1,4 @@
-//! Coverage for the SQLite backup endpoints (`POST`/`GET /api/v1/admin/backups`).
+//! Coverage for the SQLite backup endpoints (`POST`/`GET /api/v2/admin/backups`).
 //!
 //! There is no restore endpoint to test: restore is the offline
 //! stop → replace the database file → start procedure documented in
@@ -68,14 +68,14 @@ async fn backup_test_app(
 // 0. There is no restore endpoint (O5)
 // ============================================================
 
-/// The docs used to tell operators to `POST /api/v1/admin/restore` (and
+/// The docs used to tell operators to `POST /api/v2/admin/restore` (and
 /// `/backup`, singular). Neither route exists — pin that so the claim cannot
 /// silently reappear in the docs.
 #[tokio::test]
 async fn test_restore_endpoint_does_not_exist() {
     let app = common::test_app().await;
 
-    for path in ["/api/v1/admin/restore", "/api/v1/admin/backup"] {
+    for path in ["/api/v2/admin/restore", "/api/v2/admin/backup"] {
         let resp = app
             .clone()
             .oneshot(json_request("POST", path, None))
@@ -101,7 +101,7 @@ async fn test_create_backup() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+        .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
 
@@ -154,7 +154,7 @@ async fn test_list_backups() {
     // Create first backup
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+        .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -165,7 +165,7 @@ async fn test_list_backups() {
     // Create second backup
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+        .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -173,7 +173,7 @@ async fn test_list_backups() {
     // List backups
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/backups", None))
+        .oneshot(json_request("GET", "/api/v2/admin/backups", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -224,7 +224,7 @@ async fn test_backup_retention_prunes_oldest_backups() {
     let app = backup_test_app(&base_dir, &backup_dir, Some(2)).await;
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+        .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -251,7 +251,7 @@ async fn test_backup_retention_prunes_oldest_backups() {
     // The list endpoint agrees with the disk.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/backups", None))
+        .oneshot(json_request("GET", "/api/v2/admin/backups", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -282,7 +282,7 @@ async fn test_backup_contains_data() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(common::simple_log_workflow(&format!("Backup WF {}", i))),
             ))
             .await
@@ -298,7 +298,7 @@ async fn test_backup_contains_data() {
     // Create a backup
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+        .oneshot(json_request("POST", "/api/v2/admin/backups", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -360,7 +360,7 @@ async fn concurrent_backups_all_succeed_with_distinct_files() {
         let app = app.clone();
         requests.push(tokio::spawn(async move {
             let resp = app
-                .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+                .oneshot(json_request("POST", "/api/v2/admin/backups", None))
                 .await
                 .unwrap();
             let status = resp.status();
@@ -418,7 +418,7 @@ async fn concurrent_backups_respect_the_retention_count() {
     for _ in 0..5 {
         let app = app.clone();
         requests.push(tokio::spawn(async move {
-            app.oneshot(json_request("POST", "/api/v1/admin/backups", None))
+            app.oneshot(json_request("POST", "/api/v2/admin/backups", None))
                 .await
                 .unwrap()
                 .status()

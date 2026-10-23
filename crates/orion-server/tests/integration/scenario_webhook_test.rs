@@ -115,7 +115,7 @@ async fn test_webhook_normalization() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/webhook-receiver",
+            "/api/v2/data/webhook-receiver",
             Some(json!({
                 "data": {
                     "type": "charge.succeeded",
@@ -184,7 +184,7 @@ async fn test_webhook_async_processing() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/async-webhook/async",
+            "/api/v2/data/async-webhook/async",
             Some(json!({
                 "data": {
                     "event": "invoice.paid",
@@ -259,7 +259,7 @@ async fn test_webhook_dedup_via_idempotency() {
     // ---- Step 1: First request with X-Webhook-Id: wh-unique-001 -> 200 OK ----
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/dedup-webhook")
+        .uri("/api/v2/data/dedup-webhook")
         .header("content-type", "application/json")
         .header("X-Webhook-Id", "wh-unique-001")
         .body(Body::from(payload_str.clone()))
@@ -277,7 +277,7 @@ async fn test_webhook_dedup_via_idempotency() {
     // ---- Step 2: Duplicate request with same X-Webhook-Id -> 409 Conflict ----
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/dedup-webhook")
+        .uri("/api/v2/data/dedup-webhook")
         .header("content-type", "application/json")
         .header("X-Webhook-Id", "wh-unique-001")
         .body(Body::from(payload_str.clone()))
@@ -302,7 +302,7 @@ async fn test_webhook_dedup_via_idempotency() {
     // ---- Step 3: Different X-Webhook-Id -> 200 OK ----
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/dedup-webhook")
+        .uri("/api/v2/data/dedup-webhook")
         .header("content-type", "application/json")
         .header("X-Webhook-Id", "wh-unique-002")
         .body(Body::from(payload_str.clone()))

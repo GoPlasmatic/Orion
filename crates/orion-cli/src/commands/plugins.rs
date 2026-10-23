@@ -617,18 +617,18 @@ mod tests {
     /// wrong entity's family compiles. Asserted against literal URLs.
     #[test]
     fn the_plugin_kind_points_at_the_plugin_endpoints() {
-        assert_eq!(KIND.collection, "/api/v1/admin/plugins");
-        assert_eq!(KIND.export, "/api/v1/admin/plugins/export");
-        assert_eq!(KIND.validate, "/api/v1/admin/plugins/validate");
-        assert_eq!((KIND.item)("acme.x"), "/api/v1/admin/plugins/acme.x");
+        assert_eq!(KIND.collection, "/api/v2/admin/plugins");
+        assert_eq!(KIND.export, "/api/v2/admin/plugins/export");
+        assert_eq!(KIND.validate, "/api/v2/admin/plugins/validate");
+        assert_eq!((KIND.item)("acme.x"), "/api/v2/admin/plugins/acme.x");
         assert_eq!(KIND.id_field, "plugin_id");
         assert_eq!(
             (VERSIONED.status)("acme.x"),
-            "/api/v1/admin/plugins/acme.x/status"
+            "/api/v2/admin/plugins/acme.x/status"
         );
         assert_eq!(
             (VERSIONED.versions)("acme.x"),
-            "/api/v1/admin/plugins/acme.x/versions"
+            "/api/v2/admin/plugins/acme.x/versions"
         );
     }
 

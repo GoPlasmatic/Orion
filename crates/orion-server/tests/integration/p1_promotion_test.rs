@@ -32,7 +32,7 @@ async fn deferred_reload_batches_into_one_explicit_reload() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("Deferred Reload")),
         ))
         .await
@@ -47,7 +47,7 @@ async fn deferred_reload_batches_into_one_explicit_reload() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{id}/status?reload=defer"),
+            &format!("/api/v2/admin/workflows/{id}/status?reload=defer"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -61,7 +61,7 @@ async fn deferred_reload_batches_into_one_explicit_reload() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "deferred-ch",
                 "channel_type": "sync",
@@ -82,7 +82,7 @@ async fn deferred_reload_batches_into_one_explicit_reload() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{ch_id}/status?reload=defer"),
+            &format!("/api/v2/admin/channels/{ch_id}/status?reload=defer"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -90,10 +90,10 @@ async fn deferred_reload_batches_into_one_explicit_reload() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Both rows are active…
-    let body = get(&app, &format!("/api/v1/admin/workflows/{id}")).await;
+    let body = get(&app, &format!("/api/v2/admin/workflows/{id}")).await;
     assert_eq!(body["data"]["status"], "active");
     // …but the engine was not rebuilt: nothing is loaded, nothing serves.
-    let status = get(&app, "/api/v1/admin/engine/status").await;
+    let status = get(&app, "/api/v2/admin/engine/status").await;
     assert_eq!(
         status["data"]["workflows_count"], 0,
         "defer must leave the engine on the previous active set: {status}"
@@ -102,11 +102,11 @@ async fn deferred_reload_batches_into_one_explicit_reload() {
     // One explicit reload picks the whole batch up.
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let status = get(&app, "/api/v1/admin/engine/status").await;
+    let status = get(&app, "/api/v2/admin/engine/status").await;
     assert_eq!(status["data"]["workflows_count"], 1, "{status}");
     assert_eq!(
         status["data"]["channels"],
@@ -135,7 +135,7 @@ async fn change_context_and_per_entity_rows_reach_the_audit_trail() {
     ]);
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/admin/workflows/import")
+        .uri("/api/v2/admin/workflows/import")
         .header("content-type", "application/json")
         .header("x-orion-change-context", "package=payments@1.4.0")
         .body(Body::from(serde_json::to_vec(&items).unwrap()))
@@ -147,7 +147,7 @@ async fn change_context_and_per_entity_rows_reach_the_audit_trail() {
     // The audit queue is asynchronous — poll until the rows land.
     let body = common::wait_for_body(
         &app,
-        "/api/v1/admin/audit-logs?resource_type=workflow&action=import",
+        "/api/v2/admin/audit-logs?resource_type=workflow&action=import",
         |body| body["data"].as_array().is_some_and(|rows| rows.len() >= 3),
     )
     .await;
@@ -186,7 +186,7 @@ async fn tags_select_channels_and_connectors() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/channels",
+                "/api/v2/admin/channels",
                 Some(json!({
                     "name": name,
                     "channel_type": "sync",
@@ -208,7 +208,7 @@ async fn tags_select_channels_and_connectors() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/connectors",
+                "/api/v2/admin/connectors",
                 Some(json!({
                     "name": name,
                     "connector_type": "http",
@@ -222,7 +222,7 @@ async fn tags_select_channels_and_connectors() {
     }
 
     // List filters.
-    let body = get(&app, "/api/v1/admin/channels?tag=pkg%3Apay").await;
+    let body = get(&app, "/api/v2/admin/channels?tag=pkg%3Apay").await;
     let names: Vec<&str> = body["data"]
         .as_array()
         .unwrap()
@@ -232,7 +232,7 @@ async fn tags_select_channels_and_connectors() {
     assert_eq!(names, ["tagged-ch"], "{body}");
     assert_eq!(body["data"][0]["tags"], json!(["pkg:pay"]));
 
-    let body = get(&app, "/api/v1/admin/connectors?tag=pkg%3Apay").await;
+    let body = get(&app, "/api/v2/admin/connectors?tag=pkg%3Apay").await;
     let names: Vec<&str> = body["data"]
         .as_array()
         .unwrap()
@@ -242,11 +242,11 @@ async fn tags_select_channels_and_connectors() {
     assert_eq!(names, ["tagged-conn"], "{body}");
 
     // Export filters, and the artifact carries the tags for the next import.
-    let body = get(&app, "/api/v1/admin/channels/export?tag=pkg%3Apay").await;
+    let body = get(&app, "/api/v2/admin/channels/export?tag=pkg%3Apay").await;
     assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
     assert_eq!(body["data"][0]["tags"], json!(["pkg:pay"]));
 
-    let body = get(&app, "/api/v1/admin/connectors/export?tag=pkg%3Apay").await;
+    let body = get(&app, "/api/v2/admin/connectors/export?tag=pkg%3Apay").await;
     assert_eq!(body["data"].as_array().unwrap().len(), 1, "{body}");
     assert_eq!(body["data"][0]["tags"], json!(["pkg:pay"]));
 }
@@ -256,7 +256,7 @@ async fn tags_select_channels_and_connectors() {
 #[tokio::test]
 async fn tags_participate_in_upsert_convergence() {
     let app = test_app().await;
-    let uri = "/api/v1/admin/channels/import?on_conflict=new_version";
+    let uri = "/api/v2/admin/channels/import?on_conflict=new_version";
     let item = |tags: Value| {
         json!([{
             "channel_id": "tag-upsert",
@@ -309,7 +309,7 @@ async fn duplicate_channel_names_are_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(channel("holder", "shared-name")),
         ))
         .await
@@ -321,7 +321,7 @@ async fn duplicate_channel_names_are_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(channel("challenger", "shared-name")),
         ))
         .await
@@ -341,7 +341,7 @@ async fn duplicate_channel_names_are_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(channel("renamer", "other-name")),
         ))
         .await
@@ -351,7 +351,7 @@ async fn duplicate_channel_names_are_refused() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/channels/renamer",
+            "/api/v2/admin/channels/renamer",
             Some(json!({"name": "shared-name"})),
         ))
         .await
@@ -363,7 +363,7 @@ async fn duplicate_channel_names_are_refused() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/channels/holder",
+            "/api/v2/admin/channels/holder",
             Some(json!({"description": "still mine"})),
         ))
         .await
@@ -375,7 +375,7 @@ async fn duplicate_channel_names_are_refused() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels/import",
+            "/api/v2/admin/channels/import",
             Some(json!([channel("import-challenger", "shared-name")])),
         ))
         .await

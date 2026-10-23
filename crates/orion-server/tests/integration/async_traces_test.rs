@@ -24,7 +24,7 @@ async fn test_async_submit_returns_202_with_trace_id() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/events/async",
+            "/api/v2/data/events/async",
             Some(json!({"data": {"event": "click", "user_id": "u1"}})),
         ))
         .await
@@ -53,7 +53,7 @@ async fn test_async_trace_completes_successfully() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/orders/async",
+            "/api/v2/data/orders/async",
             Some(json!({"data": {"order_id": 42, "amount": 99.99}})),
         ))
         .await
@@ -80,7 +80,7 @@ async fn test_async_trace_with_no_matching_channel() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-workflows-channel/async",
+            "/api/v2/data/no-workflows-channel/async",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -98,7 +98,7 @@ async fn test_async_trace_empty_channel_rejected() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/%20/async",
+            "/api/v2/data/%20/async",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -130,7 +130,7 @@ async fn test_multiple_concurrent_async_traces() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/events/async",
+                "/api/v2/data/events/async",
                 Some(json!({"data": {"index": i}})),
             ))
             .await
@@ -181,7 +181,7 @@ async fn test_trace_list_pagination() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/orders/async",
+                "/api/v2/data/orders/async",
                 Some(json!({"data": {"item": i}})),
             ))
             .await
@@ -192,7 +192,7 @@ async fn test_trace_list_pagination() {
     // Wait until all five submissions are persisted, then page.
     common::wait_for_body(
         &app,
-        "/api/v1/admin/traces?limit=1&include_total=true",
+        "/api/v2/admin/traces?limit=1&include_total=true",
         |b| b["total"].as_i64().unwrap_or(0) >= 5,
     )
     .await;
@@ -202,7 +202,7 @@ async fn test_trace_list_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?limit=2&offset=0&include_total=true",
+            "/api/v2/admin/traces?limit=2&offset=0&include_total=true",
             None,
         ))
         .await
@@ -219,7 +219,7 @@ async fn test_trace_list_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?limit=2&offset=2",
+            "/api/v2/admin/traces?limit=2&offset=2",
             None,
         ))
         .await
@@ -248,7 +248,7 @@ async fn test_trace_list_keyset_pagination() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/orders/async",
+                "/api/v2/data/orders/async",
                 Some(json!({"data": {"item": i}})),
             ))
             .await
@@ -257,13 +257,13 @@ async fn test_trace_list_keyset_pagination() {
     }
     common::wait_for_body(
         &app,
-        "/api/v1/admin/traces?limit=1&include_total=true",
+        "/api/v2/admin/traces?limit=1&include_total=true",
         |b| b["total"].as_i64().unwrap_or(0) >= 5,
     )
     .await;
 
     let mut seen: Vec<String> = Vec::new();
-    let mut uri = "/api/v1/admin/traces?limit=2".to_string();
+    let mut uri = "/api/v2/admin/traces?limit=2".to_string();
     for _ in 0..10 {
         let resp = app
             .clone()
@@ -276,7 +276,7 @@ async fn test_trace_list_keyset_pagination() {
             seen.push(row["id"].as_str().unwrap().to_string());
         }
         match body["next_cursor"].as_str() {
-            Some(cursor) => uri = format!("/api/v1/admin/traces?limit=2&cursor={cursor}"),
+            Some(cursor) => uri = format!("/api/v2/admin/traces?limit=2&cursor={cursor}"),
             None => break,
         }
     }
@@ -295,7 +295,7 @@ async fn test_trace_list_keyset_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?sort_by=updated_at&cursor=1.abc",
+            "/api/v2/admin/traces?sort_by=updated_at&cursor=1.abc",
             None,
         ))
         .await
@@ -320,7 +320,7 @@ async fn test_trace_list_filter_by_status() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/events/async",
+            "/api/v2/data/events/async",
             Some(json!({"data": {"event": "test"}})),
         ))
         .await
@@ -338,7 +338,7 @@ async fn test_trace_list_filter_by_status() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?status=completed",
+            "/api/v2/admin/traces?status=completed",
             None,
         ))
         .await
@@ -376,7 +376,7 @@ async fn test_trace_list_filter_by_channel() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/channel-a/async",
+            "/api/v2/data/channel-a/async",
             Some(json!({"data": {"src": "a"}})),
         ))
         .await
@@ -387,7 +387,7 @@ async fn test_trace_list_filter_by_channel() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/channel-b/async",
+            "/api/v2/data/channel-b/async",
             Some(json!({"data": {"src": "b"}})),
         ))
         .await
@@ -395,7 +395,7 @@ async fn test_trace_list_filter_by_channel() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
     // Filter by channel-a: exactly the one submission, once persisted.
-    let body = common::wait_for_body(&app, "/api/v1/admin/traces?channel=channel-a", |b| {
+    let body = common::wait_for_body(&app, "/api/v2/admin/traces?channel=channel-a", |b| {
         b["data"].as_array().is_some_and(|a| a.len() == 1)
     })
     .await;
@@ -441,7 +441,7 @@ async fn test_get_completed_trace_with_result() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/test-ch/async",
+            "/api/v2/data/test-ch/async",
             Some(json!({"data": {"input": "world"}})),
         ))
         .await
@@ -494,7 +494,7 @@ async fn test_credential_headers_masked_at_rest_in_async_trace() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/secure-events/async")
+        .uri("/api/v2/data/secure-events/async")
         .header("content-type", "application/json")
         .header("authorization", "Bearer SUPER-SECRET-TOKEN-A")
         .header("cookie", "session=SECRET-COOKIE-A")
@@ -562,7 +562,7 @@ async fn test_trace_read_does_not_expose_request_context() {
     // Caller A submits with credentials attached.
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/s14-channel/async")
+        .uri("/api/v2/data/s14-channel/async")
         .header("content-type", "application/json")
         .header("authorization", "Bearer S14-SECRET-TOKEN")
         .header("cookie", "session=S14-SECRET-COOKIE")
@@ -594,7 +594,7 @@ async fn test_trace_read_does_not_expose_request_context() {
     // The list endpoint serves no payload fields at all.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/traces", None))
+        .oneshot(json_request("GET", "/api/v2/admin/traces", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -653,7 +653,7 @@ async fn guessing_a_trace_token_trips_the_admin_lockout() {
     for (method, uri, body) in [
         (
             "POST",
-            "/api/v1/admin/workflows".to_string(),
+            "/api/v2/admin/workflows".to_string(),
             Some(json!({
                 "workflow_id": "t-wf", "name": "T", "condition": true,
                 "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
@@ -661,12 +661,12 @@ async fn guessing_a_trace_token_trips_the_admin_lockout() {
         ),
         (
             "PATCH",
-            "/api/v1/admin/workflows/t-wf/status".to_string(),
+            "/api/v2/admin/workflows/t-wf/status".to_string(),
             Some(json!({"status": "active"})),
         ),
         (
             "POST",
-            "/api/v1/admin/channels".to_string(),
+            "/api/v2/admin/channels".to_string(),
             Some(json!({
                 "channel_id": "test-ch", "name": "test-ch", "channel_type": "async",
                 "protocol": "rest", "route_pattern": "/test-ch",
@@ -675,7 +675,7 @@ async fn guessing_a_trace_token_trips_the_admin_lockout() {
         ),
         (
             "PATCH",
-            "/api/v1/admin/channels/test-ch/status".to_string(),
+            "/api/v2/admin/channels/test-ch/status".to_string(),
             Some(json!({"status": "active"})),
         ),
     ] {
@@ -695,7 +695,7 @@ async fn guessing_a_trace_token_trips_the_admin_lockout() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/test-ch/async",
+            "/api/v2/data/test-ch/async",
             Some(json!({"data": {"input": "world"}})),
         ))
         .await
@@ -712,7 +712,7 @@ async fn guessing_a_trace_token_trips_the_admin_lockout() {
             .oneshot(
                 axum::http::Request::builder()
                     .method("GET")
-                    .uri(format!("/api/v1/admin/traces/{trace_id}"))
+                    .uri(format!("/api/v2/admin/traces/{trace_id}"))
                     .header("x-trace-token", format!("wrong-guess-{attempt}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -734,7 +734,7 @@ async fn guessing_a_trace_token_trips_the_admin_lockout() {
         .oneshot(
             axum::http::Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/admin/traces/{trace_id}"))
+                .uri(format!("/api/v2/admin/traces/{trace_id}"))
                 .header("x-trace-token", &token)
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -766,7 +766,7 @@ async fn the_query_token_still_authorises_and_says_it_is_deprecated() {
     .await;
     let (trace_id, token) = common::submit_async(
         &app,
-        "/api/v1/data/dep-token-ch/async",
+        "/api/v2/data/dep-token-ch/async",
         serde_json::json!({"data": {"x": 1}}),
     )
     .await;
@@ -775,7 +775,7 @@ async fn the_query_token_still_authorises_and_says_it_is_deprecated() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
+            &format!("/api/v2/admin/traces/{trace_id}?token={token}"),
             None,
         ))
         .await
@@ -808,14 +808,14 @@ async fn the_header_token_is_not_marked_deprecated() {
     .await;
     let (trace_id, token) = common::submit_async(
         &app,
-        "/api/v1/data/hdr-token-ch/async",
+        "/api/v2/data/hdr-token-ch/async",
         serde_json::json!({"data": {"x": 1}}),
     )
     .await;
 
     let req = axum::http::Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/traces/{trace_id}"))
+        .uri(format!("/api/v2/admin/traces/{trace_id}"))
         .header("x-trace-token", &token)
         .body(axum::body::Body::empty())
         .unwrap();
@@ -832,7 +832,7 @@ async fn the_header_token_is_not_marked_deprecated() {
     // have already migrated.
     let req = axum::http::Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/traces/{trace_id}?token={token}"))
+        .uri(format!("/api/v2/admin/traces/{trace_id}?token={token}"))
         .header("x-trace-token", &token)
         .body(axum::body::Body::empty())
         .unwrap();
@@ -858,7 +858,7 @@ async fn every_trace_read_refuses_to_be_cached() {
     .await;
     let (trace_id, token) = common::submit_async(
         &app,
-        "/api/v1/data/nostore-ch/async",
+        "/api/v2/data/nostore-ch/async",
         serde_json::json!({"data": {"x": 1}}),
     )
     .await;
@@ -866,13 +866,13 @@ async fn every_trace_read_refuses_to_be_cached() {
     // Both lanes: the body is equally sensitive whichever one let the caller in.
     let header_req = axum::http::Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/traces/{trace_id}"))
+        .uri(format!("/api/v2/admin/traces/{trace_id}"))
         .header("x-trace-token", &token)
         .body(axum::body::Body::empty())
         .unwrap();
     let query_req = common::json_request(
         "GET",
-        &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
+        &format!("/api/v2/admin/traces/{trace_id}?token={token}"),
         None,
     );
 

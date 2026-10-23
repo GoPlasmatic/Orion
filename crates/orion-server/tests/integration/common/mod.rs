@@ -363,7 +363,7 @@ pub async fn create_connector(app: &axum::Router, connector_json: serde_json::Va
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(connector_json),
         ))
         .await
@@ -441,7 +441,7 @@ pub async fn create_and_activate_channel_full(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow_json),
         ))
         .await
@@ -455,7 +455,7 @@ pub async fn create_and_activate_channel_full(
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", workflow_id),
+            &format!("/api/v2/admin/workflows/{}/status", workflow_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -467,7 +467,7 @@ pub async fn create_and_activate_channel_full(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": channel_name,
                 "channel_type": "sync",
@@ -489,7 +489,7 @@ pub async fn create_and_activate_channel_full(
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", channel_id),
+            &format!("/api/v2/admin/channels/{}/status", channel_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -608,7 +608,7 @@ pub async fn create_and_activate_workflow(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow_json),
         ))
         .await
@@ -621,7 +621,7 @@ pub async fn create_and_activate_workflow(
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -644,7 +644,7 @@ pub async fn create_rest_channel(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(serde_json::json!({
                 "name": name,
                 "channel_type": "sync",
@@ -664,7 +664,7 @@ pub async fn create_rest_channel(
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(serde_json::json!({"status": "active"})),
         ))
         .await
@@ -718,7 +718,7 @@ pub async fn poll_trace_until_done(
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let mut builder = Request::builder()
             .method("GET")
-            .uri(format!("/api/v1/admin/traces/{}", trace_id))
+            .uri(format!("/api/v2/admin/traces/{}", trace_id))
             .header("content-type", "application/json");
         if let Some(t) = token {
             builder = builder.header("x-trace-token", t);
@@ -764,7 +764,7 @@ pub async fn create_and_return_workflow_id(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow_json),
         ))
         .await

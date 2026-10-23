@@ -177,7 +177,7 @@ impl InProcessAdmin {
         );
         Self {
             router: axum::Router::new()
-                .nest("/api/v1/admin", admin)
+                .nest("/api/v2/admin", admin)
                 .with_state(state),
             principal: principal.to_string(),
             change_context,

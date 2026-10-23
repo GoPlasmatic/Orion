@@ -452,7 +452,11 @@ pub(crate) fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldErro
 /// implementations rather than a closed match in core validation.
 fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionError> {
     static REGISTRY: std::sync::LazyLock<crate::extensions::ChannelDriverRegistry> =
-        std::sync::LazyLock::new(crate::extensions::ChannelDriverRegistry::with_legacy_v1);
+        std::sync::LazyLock::new(|| {
+            let registry = crate::extensions::ChannelDriverRegistry::community();
+            registry.register(std::sync::Arc::new(crate::extensions::KafkaChannelDriver));
+            registry
+        });
 
     let driver_fields = crate::extensions::ChannelProtocolFields {
         protocol: fields.protocol.as_str(),

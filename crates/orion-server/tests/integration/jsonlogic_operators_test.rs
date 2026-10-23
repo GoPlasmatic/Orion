@@ -810,7 +810,7 @@ async fn an_unknown_operator_in_a_mapping_is_a_silent_literal() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/unknown-op-ch",
+            "/api/v2/data/unknown-op-ch",
             Some(json!({"data": {"s": "widget"}})),
         ))
         .await

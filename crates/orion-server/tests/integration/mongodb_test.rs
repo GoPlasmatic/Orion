@@ -56,7 +56,7 @@ async fn test_mongo_read_returns_documents() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mongo-read-ch",
+            "/api/v2/data/mongo-read-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -115,7 +115,7 @@ async fn test_mongo_read_with_filter() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mongo-filter-ch",
+            "/api/v2/data/mongo-filter-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -186,7 +186,7 @@ async fn test_data_query_mongo_find() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/dq-mongo-ch",
+            "/api/v2/data/dq-mongo-ch",
             Some(json!({ "data": {} })),
         ))
         .await
@@ -256,7 +256,7 @@ async fn test_mongo_read_decodes_seeded_documents() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mongo-seeded-ch",
+            "/api/v2/data/mongo-seeded-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -341,7 +341,7 @@ async fn test_mongo_write_crud_round_trip_with_nested_documents() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mw-insert",
+            "/api/v2/data/mw-insert",
             Some(json!({"data": {
                 "topic": "quarterly",
                 "payload": { "object": { "participants": [ {"name": "Ada"}, {"name": "Bob"} ] } }
@@ -382,7 +382,7 @@ async fn test_mongo_write_crud_round_trip_with_nested_documents() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mw-read",
+            "/api/v2/data/mw-read",
             Some(json!({"data": {}})),
         ))
         .await
@@ -429,7 +429,7 @@ async fn test_mongo_write_crud_round_trip_with_nested_documents() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mw-update",
+            "/api/v2/data/mw-update",
             Some(json!({"data": { "id": id }})),
         ))
         .await
@@ -471,7 +471,7 @@ async fn test_mongo_write_crud_round_trip_with_nested_documents() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                &format!("/api/v1/data/{channel}"),
+                &format!("/api/v2/data/{channel}"),
                 Some(json!({"data": {}})),
             ))
             .await
@@ -528,7 +528,7 @@ async fn test_mongo_write_partial_batch_and_upsert() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mw-bulk-ch",
+            "/api/v2/data/mw-bulk-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -571,7 +571,7 @@ async fn test_mongo_write_partial_batch_and_upsert() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mw-upsert-ch",
+            "/api/v2/data/mw-upsert-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -641,7 +641,7 @@ async fn test_mongo_aggregate_and_dialect_tagged_values() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/agg-group",
+            "/api/v2/data/agg-group",
             Some(json!({"data": {}})),
         ))
         .await
@@ -687,7 +687,7 @@ async fn test_mongo_aggregate_and_dialect_tagged_values() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                &format!("/api/v1/data/{channel}"),
+                &format!("/api/v2/data/{channel}"),
                 Some(json!({"data": { "stage": stage }})),
             ))
             .await
@@ -726,7 +726,7 @@ async fn test_mongo_aggregate_and_dialect_tagged_values() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/agg-dialect",
+            "/api/v2/data/agg-dialect",
             Some(json!({"data": {}})),
         ))
         .await
@@ -764,7 +764,7 @@ async fn test_mongo_aggregate_and_dialect_tagged_values() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/agg-readopts",
+            "/api/v2/data/agg-readopts",
             Some(json!({"data": {}})),
         ))
         .await

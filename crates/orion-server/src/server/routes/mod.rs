@@ -89,14 +89,10 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
         .route("/healthz", get(liveness_check))
         .route("/readyz", get(readiness_check))
         .nest(
-            "/api/v1/admin",
-            admin::admin_routes(max_admin_body_size, plugin_body_size),
-        )
-        .nest(
             "/api/v2/admin",
-            v2_admin::v2_admin_routes(max_admin_body_size),
+            admin::admin_routes(max_admin_body_size, plugin_body_size)
+                .merge(v2_admin::v2_admin_routes(max_admin_body_size)),
         )
-        .nest("/api/v1/data", data::data_routes())
         .nest("/api/v2/data", data::data_routes());
 
     // Extra data-plane mounts (`server.data_mounts`). `.route`, never
@@ -136,7 +132,7 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
     let router = if docs_enabled {
         router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/docs")
-                .url("/api/v1/openapi.json", openapi::ApiDoc::openapi()),
+                .url("/api/v2/openapi.json", openapi::ApiDoc::openapi()),
         )
     } else {
         router

@@ -24,7 +24,7 @@ use crate::storage::repositories::helpers::VersionFilter;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/channels",
+    path = "/api/v2/admin/channels",
     params(ChannelFilter),
     tag = "Channels",
     responses(
@@ -42,7 +42,7 @@ pub(crate) async fn list_channels(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/channels",
+    path = "/api/v2/admin/channels",
     tag = "Channels",
     request_body = CreateChannelRequest,
     responses(
@@ -71,7 +71,7 @@ pub(crate) async fn create_channel(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/channels/{id}",
+    path = "/api/v2/admin/channels/{id}",
     tag = "Channels",
     params(("id" = String, Path, description = "Channel ID")),
     responses(
@@ -90,7 +90,7 @@ pub(crate) async fn get_channel(
 
 #[utoipa::path(
     put,
-    path = "/api/v1/admin/channels/{id}",
+    path = "/api/v2/admin/channels/{id}",
     tag = "Channels",
     params(("id" = String, Path, description = "Channel ID")),
     request_body = UpdateChannelRequest,
@@ -130,7 +130,7 @@ pub(crate) async fn update_channel(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/admin/channels/{id}",
+    path = "/api/v2/admin/channels/{id}",
     tag = "Channels",
     params(("id" = String, Path, description = "Channel ID"), super::ReloadQuery),
     responses(
@@ -169,7 +169,7 @@ pub(crate) async fn delete_channel(
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/admin/channels/{id}/status",
+    path = "/api/v2/admin/channels/{id}/status",
     tag = "Channels",
     params(("id" = String, Path, description = "Channel ID"), super::StatusChangeQuery),
     request_body = ChannelStatusChangeRequest,
@@ -329,7 +329,7 @@ impl super::VersionedLifecycle for ChannelLifecycle<'_> {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/channels/{id}/versions",
+    path = "/api/v2/admin/channels/{id}/versions",
     tag = "Channels",
     params(
         ("id" = String, Path, description = "Channel ID"),
@@ -355,7 +355,7 @@ pub(crate) async fn list_channel_versions(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/channels/{id}/versions",
+    path = "/api/v2/admin/channels/{id}/versions",
     tag = "Channels",
     params(("id" = String, Path, description = "Channel ID")),
     responses(
@@ -386,7 +386,7 @@ pub(crate) async fn create_new_channel_version(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/channels/import",
+    path = "/api/v2/admin/channels/import",
     tag = "Channels",
     request_body = Vec<CreateChannelRequest>,
     params(super::ImportQuery),
@@ -500,7 +500,7 @@ impl super::VersionedUpsert for ChannelUpsert<'_> {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/channels/export",
+    path = "/api/v2/admin/channels/export",
     tag = "Channels",
     params(ChannelFilter),
     responses(
@@ -525,7 +525,7 @@ pub(crate) async fn export_channels(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/channels/validate",
+    path = "/api/v2/admin/channels/validate",
     tag = "Channels",
     request_body = CreateChannelRequest,
     responses(

@@ -231,6 +231,20 @@ impl Default for SmtpPoolCache {
     }
 }
 
+impl crate::extensions::ConnectionPoolCache for SmtpPoolCache {
+    fn cache_id(&self) -> &str {
+        "smtp_pool"
+    }
+
+    fn evict<'a>(&'a self, connector_name: &'a str) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { SmtpPoolCache::evict(self, connector_name).await })
+    }
+
+    fn evict_all<'a>(&'a self) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { SmtpPoolCache::evict_all(self).await })
+    }
+}
+
 /// Build the pool for one connector config.
 ///
 /// TLS validates against the platform trust store (mail-send builds its

@@ -107,13 +107,14 @@ pub(super) async fn apply_deployment(
         Err(e) => return deployment_err_response(e),
     };
 
-    // Reconcile this node against the newly committed revision
+    // Reconcile this node against the newly committed revision and reload RuntimeGeneration
     sync_v2_deployments_to_db(&state).await;
     state.composition.reconciler.observe_desired_head();
     let _ = state
         .composition
         .reconciler
         .build_and_publish_candidate(receipt.committed_revision, Vec::new());
+    let _ = crate::runtime::reload_engine(&state).await;
 
     (
         StatusCode::ACCEPTED,
@@ -185,6 +186,7 @@ pub(super) async fn rollback_deployment(
                 .composition
                 .reconciler
                 .build_and_publish_candidate(receipt.committed_revision, Vec::new());
+            let _ = crate::runtime::reload_engine(&state).await;
             (
                 StatusCode::ACCEPTED,
                 Json(json!({

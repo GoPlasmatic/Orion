@@ -15,7 +15,7 @@ async fn wait_for_audit_entries(app: &axum::Router, expected: &[(&str, &str)]) {
             .clone()
             .oneshot(json_request(
                 "GET",
-                "/api/v1/admin/audit-logs?limit=100",
+                "/api/v2/admin/audit-logs?limit=100",
                 None,
             ))
             .await
@@ -47,7 +47,7 @@ async fn wait_for_audit_total(app: &axum::Router, min_total: i64) {
             .clone()
             .oneshot(json_request(
                 "GET",
-                "/api/v1/admin/audit-logs?limit=1",
+                "/api/v2/admin/audit-logs?limit=1",
                 None,
             ))
             .await
@@ -78,7 +78,7 @@ async fn test_audit_workflow_crud() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("Audit WF")),
         ))
         .await
@@ -92,7 +92,7 @@ async fn test_audit_workflow_crud() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -104,7 +104,7 @@ async fn test_audit_workflow_crud() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -116,7 +116,7 @@ async fn test_audit_workflow_crud() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/workflows/{}", wf_id),
+            &format!("/api/v2/admin/workflows/{}", wf_id),
             None,
         ))
         .await
@@ -137,7 +137,7 @@ async fn test_audit_workflow_crud() {
     // Fetch audit logs
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -180,7 +180,7 @@ async fn test_audit_channel_crud() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("Chan Audit WF")),
         ))
         .await
@@ -193,7 +193,7 @@ async fn test_audit_channel_crud() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -205,7 +205,7 @@ async fn test_audit_channel_crud() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(common::sync_http_channel("audit-chan", &wf_id)),
         ))
         .await
@@ -219,7 +219,7 @@ async fn test_audit_channel_crud() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -231,7 +231,7 @@ async fn test_audit_channel_crud() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -251,7 +251,7 @@ async fn test_audit_channel_crud() {
     // Fetch audit logs
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -299,7 +299,7 @@ async fn test_audit_connector_crud() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             Some(json!({"name": "audit-conn-renamed"})),
         ))
         .await
@@ -311,7 +311,7 @@ async fn test_audit_connector_crud() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             None,
         ))
         .await
@@ -331,7 +331,7 @@ async fn test_audit_connector_crud() {
     // Fetch audit logs
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -373,7 +373,7 @@ async fn test_audit_engine_reload() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -383,7 +383,7 @@ async fn test_audit_engine_reload() {
     // Fetch audit logs
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -420,7 +420,7 @@ async fn test_audit_pagination() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(common::simple_log_workflow(&format!("Pagination WF {}", i))),
             ))
             .await
@@ -435,7 +435,7 @@ async fn test_audit_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/audit-logs?limit=2&offset=0",
+            "/api/v2/admin/audit-logs?limit=2&offset=0",
             None,
         ))
         .await
@@ -456,7 +456,7 @@ async fn test_audit_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/audit-logs?limit=2&offset=2",
+            "/api/v2/admin/audit-logs?limit=2&offset=2",
             None,
         ))
         .await
@@ -480,7 +480,7 @@ async fn test_audit_details_carries_request_id() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -489,7 +489,7 @@ async fn test_audit_details_carries_request_id() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -525,7 +525,7 @@ async fn test_audit_import() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/import",
+            "/api/v2/admin/workflows/import",
             Some(json!([
                 {
                     "workflow_id": "audit-import-1",
@@ -552,7 +552,7 @@ async fn test_audit_import() {
     // Fetch audit logs
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -583,7 +583,7 @@ async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("Filter WF")),
         ))
         .await
@@ -598,7 +598,7 @@ async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -609,7 +609,7 @@ async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(common::sync_http_channel("filter-chan", &wf_id)),
         ))
         .await
@@ -624,7 +624,7 @@ async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{ch_id}/status"),
+            &format!("/api/v2/admin/channels/{ch_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -652,7 +652,7 @@ async fn audit_query(app: &axum::Router, query: &str) -> (StatusCode, serde_json
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/audit-logs{query}"),
+            &format!("/api/v2/admin/audit-logs{query}"),
             None,
         ))
         .await
@@ -818,7 +818,7 @@ where
             .clone()
             .oneshot(authed_request(
                 "GET",
-                "/api/v1/admin/audit-logs?limit=100",
+                "/api/v2/admin/audit-logs?limit=100",
                 key,
                 None,
             ))
@@ -848,7 +848,7 @@ async fn audit_actor_distinguishes_keys_sharing_a_prefix() {
             .clone()
             .oneshot(authed_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 key,
                 Some(common::simple_log_workflow("O7 actor")),
             ))
@@ -896,7 +896,7 @@ async fn audit_records_request_context() {
         .clone()
         .oneshot(authed_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             KEY_A,
             Some(common::simple_log_workflow("O7 context")),
         ))
@@ -944,7 +944,7 @@ async fn workflow_test_emits_an_audit_event() {
         .clone()
         .oneshot(authed_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             KEY_A,
             Some(common::simple_log_workflow("O7 test-run")),
         ))
@@ -960,7 +960,7 @@ async fn workflow_test_emits_an_audit_event() {
         .clone()
         .oneshot(authed_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            &format!("/api/v2/admin/workflows/{wf_id}/test"),
             KEY_A,
             Some(json!({"data": {"x": 1}})),
         ))
@@ -1001,7 +1001,7 @@ async fn mutations_just_before_shutdown_are_still_recorded() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("O7 shutdown")),
         ))
         .await
@@ -1042,7 +1042,7 @@ async fn an_active_set_change_is_audited_before_it_answers() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("Synchronous Audit")),
         ))
         .await
@@ -1057,7 +1057,7 @@ async fn an_active_set_change_is_audited_before_it_answers() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1069,7 +1069,7 @@ async fn an_active_set_change_is_audited_before_it_answers() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/audit-logs?limit=100",
+            "/api/v2/admin/audit-logs?limit=100",
             None,
         ))
         .await

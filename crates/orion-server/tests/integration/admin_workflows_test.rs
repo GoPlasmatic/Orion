@@ -18,7 +18,7 @@ async fn test_workflows_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::workflow_with_priority("Test Workflow", 10)),
         ))
         .await
@@ -37,7 +37,7 @@ async fn test_workflows_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{}", workflow_id),
+            &format!("/api/v2/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -50,7 +50,7 @@ async fn test_workflows_crud_lifecycle() {
     // List workflows
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
+        .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
         .await
         .unwrap();
 
@@ -64,7 +64,7 @@ async fn test_workflows_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/workflows/{}", workflow_id),
+            &format!("/api/v2/admin/workflows/{}", workflow_id),
             Some(json!({"name": "Updated Workflow", "priority": 20})),
         ))
         .await
@@ -80,7 +80,7 @@ async fn test_workflows_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", workflow_id),
+            &format!("/api/v2/admin/workflows/{}/status", workflow_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -95,7 +95,7 @@ async fn test_workflows_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", workflow_id),
+            &format!("/api/v2/admin/workflows/{}/status", workflow_id),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -110,7 +110,7 @@ async fn test_workflows_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/workflows/{}", workflow_id),
+            &format!("/api/v2/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -123,7 +123,7 @@ async fn test_workflows_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{}", workflow_id),
+            &format!("/api/v2/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -141,7 +141,7 @@ async fn test_workflow_status_transitions() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "status-test",
                 "name": "Status Test",
@@ -159,7 +159,7 @@ async fn test_workflow_status_transitions() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/status-test/status",
+            "/api/v2/admin/workflows/status-test/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -173,7 +173,7 @@ async fn test_workflow_status_transitions() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/status-test/status",
+            "/api/v2/admin/workflows/status-test/status",
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -192,7 +192,7 @@ async fn test_workflow_list_with_filters() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Filter Workflow A",
                 "tags": ["production"],
@@ -210,7 +210,7 @@ async fn test_workflow_list_with_filters() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_a_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_a_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -221,7 +221,7 @@ async fn test_workflow_list_with_filters() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Filter Workflow B",
                 "tags": ["staging"],
@@ -237,7 +237,7 @@ async fn test_workflow_list_with_filters() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows?status=active",
+            "/api/v2/admin/workflows?status=active",
             None,
         ))
         .await
@@ -254,7 +254,7 @@ async fn test_workflow_list_with_filters() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows?tag=production",
+            "/api/v2/admin/workflows?tag=production",
             None,
         ))
         .await
@@ -275,7 +275,7 @@ async fn test_workflow_pagination() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(json!({
                     "name": format!("Pagination Workflow {}", i),
                     "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
@@ -291,7 +291,7 @@ async fn test_workflow_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows?limit=2&offset=0",
+            "/api/v2/admin/workflows?limit=2&offset=0",
             None,
         ))
         .await
@@ -312,7 +312,7 @@ async fn test_workflow_with_custom_id() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "my-custom-workflow",
                 "name": "Custom ID Workflow",
@@ -335,7 +335,7 @@ async fn test_cannot_update_active_workflow() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "no-update-active",
                 "name": "No Update Active",
@@ -351,7 +351,7 @@ async fn test_cannot_update_active_workflow() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/no-update-active/status",
+            "/api/v2/admin/workflows/no-update-active/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -365,7 +365,7 @@ async fn test_cannot_update_active_workflow() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/no-update-active",
+            "/api/v2/admin/workflows/no-update-active",
             Some(json!({"name": "Should Fail"})),
         ))
         .await
@@ -382,7 +382,7 @@ async fn test_create_new_version_and_edit() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "new-ver-test",
                 "name": "New Version Test",
@@ -398,7 +398,7 @@ async fn test_create_new_version_and_edit() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/new-ver-test/status",
+            "/api/v2/admin/workflows/new-ver-test/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -410,7 +410,7 @@ async fn test_create_new_version_and_edit() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/new-ver-test/versions",
+            "/api/v2/admin/workflows/new-ver-test/versions",
             None,
         ))
         .await
@@ -425,7 +425,7 @@ async fn test_create_new_version_and_edit() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/new-ver-test",
+            "/api/v2/admin/workflows/new-ver-test",
             Some(json!({"name": "New Version Test v2"})),
         ))
         .await
@@ -437,7 +437,7 @@ async fn test_create_new_version_and_edit() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/new-ver-test/versions",
+            "/api/v2/admin/workflows/new-ver-test/versions",
             None,
         ))
         .await
@@ -462,7 +462,7 @@ async fn test_engine_status_with_loaded_workflows() {
 
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .oneshot(json_request("GET", "/api/v2/admin/engine/status", None))
         .await
         .unwrap();
 
@@ -489,7 +489,7 @@ async fn test_version_list_with_pagination_params() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "ver-page-test",
                 "name": "Version Pagination",
@@ -505,7 +505,7 @@ async fn test_version_list_with_pagination_params() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/ver-page-test/status",
+            "/api/v2/admin/workflows/ver-page-test/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -516,7 +516,7 @@ async fn test_version_list_with_pagination_params() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/ver-page-test/versions",
+            "/api/v2/admin/workflows/ver-page-test/versions",
             None,
         ))
         .await
@@ -527,7 +527,7 @@ async fn test_version_list_with_pagination_params() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/ver-page-test/status",
+            "/api/v2/admin/workflows/ver-page-test/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -538,7 +538,7 @@ async fn test_version_list_with_pagination_params() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/ver-page-test/versions",
+            "/api/v2/admin/workflows/ver-page-test/versions",
             None,
         ))
         .await
@@ -549,7 +549,7 @@ async fn test_version_list_with_pagination_params() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/ver-page-test/versions?limit=1&offset=0",
+            "/api/v2/admin/workflows/ver-page-test/versions?limit=1&offset=0",
             None,
         ))
         .await
@@ -565,7 +565,7 @@ async fn test_version_list_with_pagination_params() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/ver-page-test/versions?limit=10&offset=1",
+            "/api/v2/admin/workflows/ver-page-test/versions?limit=10&offset=1",
             None,
         ))
         .await
@@ -588,7 +588,7 @@ async fn test_export_workflows_with_status_filter() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "export-a",
                 "name": "Export Workflow A",
@@ -604,7 +604,7 @@ async fn test_export_workflows_with_status_filter() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/export-a/status",
+            "/api/v2/admin/workflows/export-a/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -615,7 +615,7 @@ async fn test_export_workflows_with_status_filter() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "export-b",
                 "name": "Export Workflow B",
@@ -631,7 +631,7 @@ async fn test_export_workflows_with_status_filter() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/export?status=active",
+            "/api/v2/admin/workflows/export?status=active",
             None,
         ))
         .await
@@ -657,7 +657,7 @@ async fn test_validate_workflow_with_task_condition() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Condition Test",
                 "condition": true,
@@ -690,7 +690,7 @@ async fn validate_compiles_a_condition_as_the_serving_engine_does() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Templated Condition",
                 "condition": {"a": {"var": "data.amount"}, "b": 2},
@@ -721,7 +721,7 @@ async fn validate_warns_of_a_payload_var_defect_and_stays_valid() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Payload Read",
                 "condition": true,
@@ -759,7 +759,7 @@ async fn test_validate_workflow_with_connector_warning() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Connector Warning Test",
                 "condition": true,
@@ -799,7 +799,7 @@ async fn test_http_call_format_axes_validated_at_create() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "OAuth Token Call",
                 "condition": true,
@@ -835,7 +835,7 @@ async fn test_http_call_format_axes_validated_at_create() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Bad Formats",
                 "condition": true,
@@ -866,7 +866,7 @@ async fn test_http_call_format_axes_validated_at_create() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Nested Form Body",
                 "condition": true,
@@ -901,7 +901,7 @@ async fn test_crypto_op_envelope_validated_at_create() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Zoom CRC",
                 "condition": true,
@@ -945,7 +945,7 @@ async fn test_crypto_op_envelope_validated_at_create() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(json!({
                     "name": "Bad Crypto",
                     "condition": true,
@@ -980,7 +980,7 @@ async fn test_validate_workflow_with_empty_name() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "",
                 "condition": true,
@@ -1017,7 +1017,7 @@ async fn test_workflow_test_with_metadata() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "test-dry-run-meta",
                 "name": "Dry Run Workflow",
@@ -1033,7 +1033,7 @@ async fn test_workflow_test_with_metadata() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/test-dry-run-meta/test",
+            "/api/v2/admin/workflows/test-dry-run-meta/test",
             Some(json!({
                 "data": {"key": "value"},
                 "metadata": {"source": "test-suite"}
@@ -1067,7 +1067,7 @@ async fn workflow_test_normalizes_metadata_the_way_an_ingress_does() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "test-meta-norm",
                 "name": "Echo Metadata",
@@ -1091,7 +1091,7 @@ async fn workflow_test_normalizes_metadata_the_way_an_ingress_does() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/test-meta-norm/test",
+            "/api/v2/admin/workflows/test-meta-norm/test",
             Some(json!({
                 "data": {},
                 "metadata": {
@@ -1131,7 +1131,7 @@ async fn workflow_test_refuses_metadata_no_ingress_could_produce() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "test-meta-refuse",
                 "name": "Refuse",
@@ -1162,7 +1162,7 @@ async fn workflow_test_refuses_metadata_no_ingress_could_produce() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows/test-meta-refuse/test",
+                "/api/v2/admin/workflows/test-meta-refuse/test",
                 Some(json!({ "data": {}, "metadata": metadata })),
             ))
             .await
@@ -1183,7 +1183,7 @@ async fn test_workflow_test_with_non_object_data() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "test-non-obj",
                 "name": "Non Object Data",
@@ -1199,7 +1199,7 @@ async fn test_workflow_test_with_non_object_data() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/test-non-obj/test",
+            "/api/v2/admin/workflows/test-non-obj/test",
             Some(json!({
                 "data": "just a string"
             })),
@@ -1221,7 +1221,7 @@ async fn test_create_workflow_with_description_and_tags() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "desc-workflow",
                 "name": "Described Workflow",
@@ -1258,7 +1258,7 @@ async fn test_update_workflow_with_description() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "upd-desc-workflow",
                 "name": "Update Desc Workflow",
@@ -1274,7 +1274,7 @@ async fn test_update_workflow_with_description() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/upd-desc-workflow",
+            "/api/v2/admin/workflows/upd-desc-workflow",
             Some(json!({
                 "description": "Updated description"
             })),
@@ -1295,7 +1295,7 @@ async fn test_create_rejects_unknown_function() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "unknown-fn-wf",
                 "tasks": [{
@@ -1327,7 +1327,7 @@ async fn test_activate_rejects_missing_connector() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "needs-conn-wf",
                 "tasks": [{
@@ -1354,7 +1354,7 @@ async fn test_activate_rejects_missing_connector() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1372,7 +1372,7 @@ async fn test_activate_rejects_missing_connector() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1391,7 +1391,7 @@ async fn create_then_activate(
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({ "name": name, "tasks": tasks })),
         ))
         .await
@@ -1406,7 +1406,7 @@ async fn create_then_activate(
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            &format!("/api/v2/admin/workflows/{wf_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -1559,7 +1559,7 @@ async fn a_second_draft_cannot_be_created_for_one_workflow() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Draft One",
                 "tasks": [{"id": "t1", "name": "Log",
@@ -1577,7 +1577,7 @@ async fn a_second_draft_cannot_be_created_for_one_workflow() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{workflow_id}/versions"),
+            &format!("/api/v2/admin/workflows/{workflow_id}/versions"),
             Some(json!({
                 "name": "Draft Two",
                 "tasks": [{"id": "t1", "name": "Log",
@@ -1616,7 +1616,7 @@ async fn a_workflow_using_the_handlerless_enrich_builtin_is_refused() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "enrich-wf",
                 "channel": "enrich-ch",
@@ -1647,7 +1647,7 @@ async fn a_workflow_using_a_self_contained_builtin_is_accepted() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "filter-wf",
                 "channel": "filter-ch",
@@ -1716,7 +1716,7 @@ async fn validate_never_green_lights_what_create_rejects() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows/validate",
+                "/api/v2/admin/workflows/validate",
                 Some(payload.clone()),
             ))
             .await
@@ -1732,7 +1732,7 @@ async fn validate_never_green_lights_what_create_rejects() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(payload.clone()),
             ))
             .await
@@ -1766,7 +1766,7 @@ async fn validate_accepts_what_create_accepts() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(payload.clone()),
         ))
         .await
@@ -1777,7 +1777,7 @@ async fn validate_accepts_what_create_accepts() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(payload),
         ))
         .await
@@ -1798,7 +1798,7 @@ async fn version_pagination_bounds_are_shared_by_both_entities() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "page-bounds",
                 "name": "Page Bounds",
@@ -1814,7 +1814,7 @@ async fn version_pagination_bounds_are_shared_by_both_entities() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "channel_id": "page-bounds-ch",
                 "name": "page-bounds-ch",
@@ -1834,7 +1834,7 @@ async fn version_pagination_bounds_are_shared_by_both_entities() {
             .clone()
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/admin/{entity}/{id}/versions"),
+                &format!("/api/v2/admin/{entity}/{id}/versions"),
                 None,
             ))
             .await
@@ -1847,7 +1847,7 @@ async fn version_pagination_bounds_are_shared_by_both_entities() {
             .clone()
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/admin/{entity}/{id}/versions?limit=999999&offset=-5"),
+                &format!("/api/v2/admin/{entity}/{id}/versions?limit=999999&offset=-5"),
                 None,
             ))
             .await
@@ -1876,7 +1876,7 @@ async fn create_status_and_body(
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(wf),
         ))
         .await
@@ -1964,7 +1964,7 @@ async fn a_task_with_an_empty_name_is_accepted_and_serves_traffic() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/empty-name-ch",
+            "/api/v2/data/empty-name-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -2034,7 +2034,7 @@ async fn the_validate_endpoint_agrees_about_task_identity() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(workflow_with_tasks(
                 "v",
                 json!([{"name": "Log", "function": {"name": "log", "input": {"message": "hi"}}}]),
@@ -2096,7 +2096,7 @@ async fn workflow_loop_round_trips_and_survives_a_new_version() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(looping_workflow(
                 "Looping",
                 json!({ "counter": "i", "max": 500 }),
@@ -2116,7 +2116,7 @@ async fn workflow_loop_round_trips_and_survives_a_new_version() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{id}/status"),
+            &format!("/api/v2/admin/workflows/{id}/status"),
             Some(json!({ "status": "active" })),
         ))
         .await
@@ -2127,7 +2127,7 @@ async fn workflow_loop_round_trips_and_survives_a_new_version() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{id}/versions"),
+            &format!("/api/v2/admin/workflows/{id}/versions"),
             None,
         ))
         .await
@@ -2157,7 +2157,7 @@ async fn a_workflow_without_a_loop_is_unchanged_by_the_feature() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::workflow_with_priority("No Loop", 0)),
         ))
         .await
@@ -2193,7 +2193,7 @@ async fn an_invalid_loop_is_refused_at_write_time() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(looping_workflow("Bad Loop", loop_config.clone())),
             ))
             .await
@@ -2230,7 +2230,7 @@ async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(looping_workflow("Colliding Loop", setup("note"))),
         ))
         .await
@@ -2244,7 +2244,7 @@ async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -2260,7 +2260,7 @@ async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/setup-loop",
+            "/api/v2/admin/workflows/setup-loop",
             Some(json!({ "tasks": tasks })),
         ))
         .await
@@ -2276,7 +2276,7 @@ async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/setup-loop",
+            "/api/v2/admin/workflows/setup-loop",
             Some(json!({ "loop": setup("note") })),
         ))
         .await
@@ -2293,7 +2293,7 @@ async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/setup-loop",
+            "/api/v2/admin/workflows/setup-loop",
             Some(json!({ "tasks": tasks, "loop": null })),
         ))
         .await
@@ -2321,7 +2321,7 @@ async fn a_loops_setup_steps_are_validated_and_referenced() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(looping_workflow(
                 "Unknown In Setup",
                 setup_step(json!({ "name": "nosuch_fn", "input": {} })),
@@ -2350,7 +2350,7 @@ async fn a_loops_setup_steps_are_validated_and_referenced() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -2360,7 +2360,7 @@ async fn a_loops_setup_steps_are_validated_and_referenced() {
     let activate = || {
         json_request(
             "PATCH",
-            "/api/v1/admin/workflows/reads-in-setup/status",
+            "/api/v2/admin/workflows/reads-in-setup/status",
             Some(json!({"status": "active"})),
         )
     };
@@ -2379,7 +2379,7 @@ async fn a_loops_setup_steps_are_validated_and_referenced() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows/reads-in-setup/dependencies",
+            "/api/v2/admin/workflows/reads-in-setup/dependencies",
             None,
         ))
         .await
@@ -2394,7 +2394,7 @@ async fn a_loops_setup_steps_are_validated_and_referenced() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/connectors/{conn_id}"),
+            &format!("/api/v2/admin/connectors/{conn_id}"),
             Some(json!({"name": "setup-db-v2"})),
         ))
         .await
@@ -2423,7 +2423,7 @@ async fn a_loop_executes_one_sweep_per_iteration() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "loop-exec",
                 "name": "Loop Exec",
@@ -2467,7 +2467,7 @@ async fn a_loop_executes_one_sweep_per_iteration() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/loop-exec/test",
+            "/api/v2/admin/workflows/loop-exec/test",
             // `max` is 50, so the filter is what stops this at 3.
             Some(json!({ "data": { "count": 3 } })),
         ))
@@ -2530,7 +2530,7 @@ async fn test_validate_accepts_a_workflow_whose_tasks_are_grouped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(workflow.clone()),
         ))
         .await
@@ -2548,7 +2548,7 @@ async fn test_validate_accepts_a_workflow_whose_tasks_are_grouped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "wf-grouped",
                 "name": "Grouped",
@@ -2571,7 +2571,7 @@ async fn test_validate_reports_a_broken_task_inside_a_group() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(json!({
                 "name": "Grouped",
                 "condition": true,

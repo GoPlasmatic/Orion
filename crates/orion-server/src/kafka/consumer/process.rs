@@ -343,8 +343,8 @@ async fn process_one_kafka_message(
     // bucket per record would split one topic's traffic across canary versions
     // non-deterministically. A message with no bucket is admitted by every
     // workflow, rollout or not.
-    let execution = crate::engine::execute_admitted(
-        &generation.engine,
+    let execution = crate::engine::execute_admitted_on_generation(
+        &generation,
         channel,
         &data,
         &metadata,

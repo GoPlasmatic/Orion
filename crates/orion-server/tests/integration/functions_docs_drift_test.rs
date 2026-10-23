@@ -14,7 +14,7 @@
 //! the thing that actually rots first: the names.
 //!
 //! `engine::functions::schema::REGISTRY` is authoritative for the ten functions
-//! Orion implements itself — it is what `GET /api/v1/admin/functions` serves
+//! Orion implements itself — it is what `GET /api/v2/admin/functions` serves
 //! and what workflow-create input validation runs against. The other eight come
 //! from dataflow-rs and have no registry entry (they get no input-schema
 //! check), so the page's own summary table is the only place both sets are
@@ -369,7 +369,7 @@ fn no_documented_orion_function_is_a_ghost() {
 /// Style rule 18, which this module's header quotes, is "no hand-maintained
 /// magic numbers … **cite the generated source or omit the number**". Both
 /// halves are compliant, and the page currently takes the second one: it names
-/// no totals and points at `GET /api/v1/admin/functions` for the authoritative
+/// no totals and points at `GET /api/v2/admin/functions` for the authoritative
 /// list. Requiring a number would make the rule's own recommended option fail
 /// the build.
 ///

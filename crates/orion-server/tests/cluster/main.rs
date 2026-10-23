@@ -204,7 +204,7 @@ async fn plugin_activation_propagates_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/plugins",
+            "/api/v2/admin/plugins",
             Some(json!({
                 "manifest": manifest,
                 "component": base64::engine::general_purpose::STANDARD.encode(component),
@@ -218,7 +218,7 @@ async fn plugin_activation_propagates_across_nodes() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/plugins/test.fixture/status",
+            "/api/v2/admin/plugins/test.fixture/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -262,7 +262,7 @@ async fn plugin_activation_propagates_across_nodes() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/plugin-prop",
+                "/api/v2/data/plugin-prop",
                 Some(json!({"data": {"msg": "hi"}})),
             ))
             .await
@@ -291,7 +291,7 @@ async fn plugin_activation_propagates_across_nodes() {
                     .clone()
                     .oneshot(json_request(
                         "POST",
-                        "/api/v1/data/plugin-prop",
+                        "/api/v2/data/plugin-prop",
                         Some(json!({"data": {"msg": "hi"}})),
                     ))
                     .await
@@ -311,7 +311,7 @@ async fn plugin_activation_propagates_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/plugins/test.fixture/versions",
+            "/api/v2/admin/plugins/test.fixture/versions",
             None,
         ))
         .await
@@ -322,7 +322,7 @@ async fn plugin_activation_propagates_across_nodes() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/plugins/test.fixture/status",
+            "/api/v2/admin/plugins/test.fixture/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -368,7 +368,7 @@ async fn epoch_propagates_channel_activation_across_nodes() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/prop-ch",
+                "/api/v2/data/prop-ch",
                 Some(payload.clone()),
             ))
             .await
@@ -414,7 +414,7 @@ async fn dedup_is_shared_across_nodes() {
             .node_a
             .clone()
             .oneshot(post_with_idempotency_key(
-                "/api/v1/data/dedup-cluster-ch",
+                "/api/v2/data/dedup-cluster-ch",
                 "cluster-token",
                 payload.clone(),
             ))
@@ -432,7 +432,7 @@ async fn dedup_is_shared_across_nodes() {
             .node_b
             .clone()
             .oneshot(post_with_idempotency_key(
-                "/api/v1/data/dedup-cluster-ch",
+                "/api/v2/data/dedup-cluster-ch",
                 "cluster-token",
                 payload.clone(),
             ))
@@ -568,7 +568,7 @@ async fn rate_limit_holds_across_nodes_combined() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/rl-cluster-ch",
+                "/api/v2/data/rl-cluster-ch",
                 Some(payload.clone()),
             ))
             .await
@@ -612,7 +612,7 @@ async fn cluster_redis_recovers_after_connection_drop() {
             .node_a
             .clone()
             .oneshot(post_with_idempotency_key(
-                "/api/v1/data/reconnect-ch",
+                "/api/v2/data/reconnect-ch",
                 "reconnect-token",
                 payload.clone(),
             ))
@@ -646,7 +646,7 @@ async fn cluster_redis_recovers_after_connection_drop() {
             .node_b
             .clone()
             .oneshot(post_with_idempotency_key(
-                "/api/v1/data/reconnect-ch",
+                "/api/v2/data/reconnect-ch",
                 "reconnect-token",
                 payload.clone(),
             ))
@@ -741,7 +741,7 @@ async fn archive_and_delete_propagate_across_nodes() {
     let data = |node: axum::Router, ch: &'static str, payload: serde_json::Value| async move {
         node.oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{ch}"),
+            &format!("/api/v2/data/{ch}"),
             Some(payload),
         ))
         .await
@@ -765,7 +765,7 @@ async fn archive_and_delete_propagate_across_nodes() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{arch_id}/status"),
+            &format!("/api/v2/admin/channels/{arch_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -776,7 +776,7 @@ async fn archive_and_delete_propagate_across_nodes() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{del_id}/status"),
+            &format!("/api/v2/admin/channels/{del_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -787,7 +787,7 @@ async fn archive_and_delete_propagate_across_nodes() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/channels/{del_id}"),
+            &format!("/api/v2/admin/channels/{del_id}"),
             None,
         ))
         .await
@@ -873,7 +873,7 @@ async fn connector_update_propagates_to_other_node() {
         let resp = node
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/conn-prop-ch",
+                "/api/v2/data/conn-prop-ch",
                 Some(json!({"data": {}})),
             ))
             .await
@@ -904,7 +904,7 @@ async fn connector_update_propagates_to_other_node() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/connectors/prop-conn",
+            "/api/v2/admin/connectors/prop-conn",
             Some(json!({
                 "config": {
                     "type": "db",
@@ -979,7 +979,7 @@ async fn concurrent_admin_writes_converge() {
             node.clone()
                 .oneshot(json_request(
                     "POST",
-                    &format!("/api/v1/data/{ch}"),
+                    &format!("/api/v2/data/{ch}"),
                     Some(payload.clone()),
                 ))
                 .await
@@ -1029,7 +1029,7 @@ async fn three_node_activation_propagates() {
                 .clone()
                 .oneshot(json_request(
                     "POST",
-                    "/api/v1/data/tri-ch",
+                    "/api/v2/data/tri-ch",
                     Some(payload.clone()),
                 ))
                 .await
@@ -1089,7 +1089,7 @@ async fn breaker_reset_fans_out_across_nodes() {
     let data = |node: axum::Router, ch: &'static str| async move {
         node.oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{ch}"),
+            &format!("/api/v2/data/{ch}"),
             Some(json!({"data": {}})),
         ))
         .await
@@ -1100,7 +1100,7 @@ async fn breaker_reset_fans_out_across_nodes() {
         let resp = node
             .oneshot(json_request(
                 "GET",
-                "/api/v1/admin/connectors/circuit-breakers",
+                "/api/v2/admin/connectors/circuit-breakers",
                 None,
             ))
             .await
@@ -1146,7 +1146,7 @@ async fn breaker_reset_fans_out_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/circuit-breakers/{key}"),
+            &format!("/api/v2/admin/connectors/circuit-breakers/{key}"),
             None,
         ))
         .await
@@ -1275,7 +1275,7 @@ async fn redis_outage_window_fails_open() {
         h.node_a
             .clone()
             .oneshot(post_with_idempotency_key(
-                "/api/v1/data/outage-ch",
+                "/api/v2/data/outage-ch",
                 "outage-token",
                 payload.clone(),
             ))
@@ -1290,7 +1290,7 @@ async fn redis_outage_window_fails_open() {
         h.node_b
             .clone()
             .oneshot(post_with_idempotency_key(
-                "/api/v1/data/outage-ch",
+                "/api/v2/data/outage-ch",
                 "outage-token",
                 payload.clone(),
             ))
@@ -1315,7 +1315,7 @@ async fn redis_outage_window_fails_open() {
         let resp = node
             .clone()
             .oneshot(post_with_idempotency_key(
-                "/api/v1/data/outage-ch",
+                "/api/v2/data/outage-ch",
                 "outage-token",
                 payload.clone(),
             ))
@@ -1336,7 +1336,7 @@ async fn redis_outage_window_fails_open() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/outage-ch",
+                "/api/v2/data/outage-ch",
                 Some(payload.clone()),
             ))
             .await
@@ -1418,7 +1418,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/stale-ch",
+                "/api/v2/data/stale-ch",
                 Some(payload.clone()),
             ))
             .await
@@ -1436,7 +1436,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{ch_id}/status"),
+            &format!("/api/v2/admin/channels/{ch_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -1462,7 +1462,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
         deadline,
         node_b.clone().oneshot(json_request(
             "POST",
-            "/api/v1/data/stale-ch",
+            "/api/v2/data/stale-ch",
             Some(payload.clone()),
         )),
     )
@@ -1480,7 +1480,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
         deadline,
         node_a.clone().oneshot(json_request(
             "POST",
-            "/api/v1/data/stale-ch",
+            "/api/v2/data/stale-ch",
             Some(payload.clone()),
         )),
     )
@@ -1513,7 +1513,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
         deadline,
         node_a.clone().oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(common::simple_log_workflow("Outage Draft WF")),
         )),
     )
@@ -1537,7 +1537,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/stale-ch",
+                "/api/v2/data/stale-ch",
                 Some(payload.clone()),
             ))
             .await
@@ -1577,7 +1577,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/post-outage-ch",
+                "/api/v2/data/post-outage-ch",
                 Some(payload.clone()),
             ))
             .await
@@ -1630,7 +1630,7 @@ async fn response_cache_is_shared_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-cluster-ch",
+            "/api/v2/data/cache-cluster-ch",
             Some(json!({"data": {"user_id": "u1", "origin": "node-a"}})),
         ))
         .await
@@ -1652,7 +1652,7 @@ async fn response_cache_is_shared_across_nodes() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/cache-cluster-ch",
+                "/api/v2/data/cache-cluster-ch",
                 Some(json!({"data": {"user_id": "u1", "origin": "node-b"}})),
             ))
             .await
@@ -1681,7 +1681,7 @@ async fn response_cache_is_shared_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cache-cluster-ch",
+            "/api/v2/data/cache-cluster-ch",
             Some(json!({"data": {"user_id": "u2", "origin": "node-b-fresh"}})),
         ))
         .await
@@ -1885,7 +1885,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/canary/versions",
+            "/api/v2/admin/workflows/canary/versions",
             None,
         ))
         .await
@@ -1896,7 +1896,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/workflows/canary",
+            "/api/v2/admin/workflows/canary",
             Some(marker_workflow("v2")),
         ))
         .await
@@ -1907,7 +1907,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/canary/status",
+            "/api/v2/admin/workflows/canary/status",
             Some(json!({"status": "active", "rollout_percentage": 50})),
         ))
         .await
@@ -1922,7 +1922,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
     let version_on = |node: axum::Router, caller: String| async move {
         let resp = node
             .oneshot(post_with_sticky_caller(
-                "/api/v1/data/canary-ch",
+                "/api/v2/data/canary-ch",
                 &caller,
                 json!({"data": {}}),
             ))
@@ -1996,7 +1996,7 @@ async fn backups_refused_in_cluster_mode() {
         let resp = h
             .node_a
             .clone()
-            .oneshot(json_request(method, "/api/v1/admin/backups", None))
+            .oneshot(json_request(method, "/api/v2/admin/backups", None))
             .await
             .unwrap();
         assert_eq!(
@@ -2031,7 +2031,7 @@ async fn activate_cluster_cron_channel(
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": name,
                 "channel_type": "async",
@@ -2052,7 +2052,7 @@ async fn activate_cluster_cron_channel(
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -2067,7 +2067,7 @@ async fn cluster_occurrences(node: &axum::Router) -> Vec<serde_json::Value> {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/cron/occurrences?limit=200",
+            "/api/v2/admin/cron/occurrences?limit=200",
             None,
         ))
         .await
@@ -2322,7 +2322,7 @@ async fn cron_schedule_changes_propagate_across_nodes() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -2409,7 +2409,7 @@ async fn model_activation_propagates_across_nodes() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/models",
+            "/api/v2/admin/models",
             Some(registration("bucket", &fixture_digest())),
         ))
         .await
@@ -2423,7 +2423,7 @@ async fn model_activation_propagates_across_nodes() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/models/{FIXTURE_ID}/status"),
+            &format!("/api/v2/admin/models/{FIXTURE_ID}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -2486,7 +2486,7 @@ async fn model_activation_propagates_across_nodes() {
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/api/v1/data/model-prop",
+                "/api/v2/data/model-prop",
                 Some(json!({"data": board})),
             ))
             .await

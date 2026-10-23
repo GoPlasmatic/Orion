@@ -20,10 +20,10 @@ async fn test_rest_route_with_path_params() {
     let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
     create_rest_channel(&app, "orders.get", "/orders/{id}", vec!["GET"], &wf_id).await;
 
-    // GET /api/v1/data/orders/123 should match
+    // GET /api/v2/data/orders/123 should match
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/orders/123")
+        .uri("/api/v2/data/orders/123")
         .body(Body::empty())
         .unwrap();
 
@@ -41,10 +41,10 @@ async fn test_rest_route_method_mismatch() {
     let wf_id = create_echo_workflow(&app, "Orders POST Only").await;
     create_rest_channel(&app, "orders.create", "/orders", vec!["POST"], &wf_id).await;
 
-    // GET /api/v1/data/orders should NOT match (only POST allowed)
+    // GET /api/v2/data/orders should NOT match (only POST allowed)
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/orders")
+        .uri("/api/v2/data/orders")
         .body(Body::empty())
         .unwrap();
 
@@ -72,10 +72,10 @@ async fn test_rest_route_multi_segment_path() {
     )
     .await;
 
-    // GET /api/v1/data/orders/abc/items/xyz should match
+    // GET /api/v2/data/orders/abc/items/xyz should match
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/orders/abc/items/xyz")
+        .uri("/api/v2/data/orders/abc/items/xyz")
         .body(Body::empty())
         .unwrap();
 
@@ -92,7 +92,7 @@ async fn test_rest_route_no_match_returns_404() {
     // No channels registered — multi-segment path should 404
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/nonexistent/resource/123")
+        .uri("/api/v2/data/nonexistent/resource/123")
         .body(Body::empty())
         .unwrap();
 
@@ -117,7 +117,7 @@ async fn test_unknown_single_segment_channel_returns_404() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/no-such-channel",
+            "/api/v2/data/no-such-channel",
             Some(serde_json::json!({"data": {"x": 1}})),
         ))
         .await
@@ -145,7 +145,7 @@ async fn test_backward_compat_simple_http_channel() {
     let resp = app
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/events",
+            "/api/v2/data/events",
             Some(json!({"data": {"event_type": "click"}})),
         ))
         .await
@@ -162,12 +162,12 @@ async fn test_async_via_rest_route() {
     let wf_id = create_echo_workflow(&app, "Async REST").await;
     create_rest_channel(&app, "items.create", "/items", vec!["POST"], &wf_id).await;
 
-    // POST /api/v1/data/items/async should use async processing
+    // POST /api/v2/data/items/async should use async processing
     let resp = app
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/items/async",
+            "/api/v2/data/items/async",
             Some(json!({"data": {"item": "widget"}})),
         ))
         .await
@@ -182,9 +182,9 @@ async fn test_async_via_rest_route() {
 ///
 /// `/traces` and `/traces/{id}` used to be static routes on the data plane.
 /// Axum resolves static segments before `/{*path}`, so a channel called
-/// `traces` was permanently unreachable — `POST /api/v1/data/traces` hit the
+/// `traces` was permanently unreachable — `POST /api/v2/data/traces` hit the
 /// GET-only trace list and returned 405, with no reserved-name check anywhere
-/// to explain why. The endpoints moved to `/api/v1/admin/traces*` in 1.0,
+/// to explain why. The endpoints moved to `/api/v2/admin/traces*` in 1.0,
 /// where the admin-guarded list always belonged, leaving the data plane a
 /// single catch-all.
 #[tokio::test]
@@ -212,7 +212,7 @@ async fn a_channel_named_traces_is_reachable() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/traces",
+            "/api/v2/data/traces",
             Some(json!({"data": {}})),
         ))
         .await
@@ -241,7 +241,7 @@ async fn an_async_rest_channel_is_reachable_at_its_route_pattern() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "async.orders",
                 "channel_type": "async",
@@ -262,7 +262,7 @@ async fn an_async_rest_channel_is_reachable_at_its_route_pattern() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{id}/status"),
+            &format!("/api/v2/admin/channels/{id}/status"),
             Some(json!({ "status": "active" })),
         ))
         .await
@@ -274,7 +274,7 @@ async fn an_async_rest_channel_is_reachable_at_its_route_pattern() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/async-orders/42/async",
+            "/api/v2/data/async-orders/42/async",
             Some(json!({ "data": { "x": 1 } })),
         ))
         .await
@@ -306,7 +306,7 @@ async fn route_matching_is_case_sensitive() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/data/ORDERS/1")
+                .uri("/api/v2/data/ORDERS/1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -323,7 +323,7 @@ async fn route_matching_is_case_sensitive() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/data/orders/1")
+                .uri("/api/v2/data/orders/1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -362,7 +362,7 @@ async fn route_params_arrive_percent_decoded() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/data/orders/a%2Fb")
+                .uri("/api/v2/data/orders/a%2Fb")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -385,9 +385,9 @@ async fn invalid_percent_sequence_returns_400() {
     create_rest_channel(&app, "orders.get", "/orders/{id}", vec!["GET"], &wf_id).await;
 
     for uri in [
-        "/api/v1/data/orders/a%ZZ",
-        "/api/v1/data/orders/trailing%2",
-        "/api/v1/data/bad%GGname",
+        "/api/v2/data/orders/a%ZZ",
+        "/api/v2/data/orders/trailing%2",
+        "/api/v2/data/bad%GGname",
     ] {
         let resp = app
             .clone()
@@ -423,7 +423,7 @@ async fn try_create_rest_channel(
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": name,
                 "channel_type": "sync",
@@ -504,7 +504,7 @@ async fn a_second_channel_cannot_claim_a_route_another_already_serves() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "orders.second",
                 "channel_type": "sync",
@@ -530,7 +530,7 @@ async fn a_second_channel_cannot_claim_a_route_another_already_serves() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{ch_id}/status"),
+            &format!("/api/v2/admin/channels/{ch_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -550,7 +550,7 @@ async fn a_second_channel_cannot_claim_a_route_another_already_serves() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/v1/data/orders/123")
+                .uri("/api/v2/data/orders/123")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -574,7 +574,7 @@ async fn disjoint_methods_on_one_path_are_not_a_conflict() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/v1/data/orders/9")
+                .uri("/api/v2/data/orders/9")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -595,7 +595,7 @@ async fn a_new_version_of_the_same_channel_does_not_collide() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            &format!("/api/v1/admin/channels/{ch_id}/versions"),
+            &format!("/api/v2/admin/channels/{ch_id}/versions"),
             None,
         ))
         .await
@@ -606,7 +606,7 @@ async fn a_new_version_of_the_same_channel_does_not_collide() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{ch_id}/status"),
+            &format!("/api/v2/admin/channels/{ch_id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -642,7 +642,7 @@ async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/workflows",
+                "/api/v2/admin/workflows",
                 Some(common::workflow_with_tasks(
                     "Echo",
                     json!([{
@@ -664,7 +664,7 @@ async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
             .clone()
             .oneshot(common::json_request(
                 "PATCH",
-                &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+                &format!("/api/v2/admin/workflows/{workflow_id}/status"),
                 Some(json!({"status": "active"})),
             ))
             .await
@@ -675,7 +675,7 @@ async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                "/api/v1/admin/channels",
+                "/api/v2/admin/channels",
                 Some(json!({
                     "name": name,
                     "channel_type": "sync",
@@ -701,7 +701,7 @@ async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
             .clone()
             .oneshot(common::json_request(
                 "PATCH",
-                &format!("/api/v1/admin/channels/{channel_id}/status"),
+                &format!("/api/v2/admin/channels/{channel_id}/status"),
                 Some(json!({"status": "active"})),
             ))
             .await
@@ -712,7 +712,7 @@ async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
             .clone()
             .oneshot(common::json_request(
                 "POST",
-                &format!("/api/v1/data/{encoded}"),
+                &format!("/api/v2/data/{encoded}"),
                 Some(json!({"data": {}})),
             ))
             .await

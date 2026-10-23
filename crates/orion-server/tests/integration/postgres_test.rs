@@ -85,7 +85,7 @@ async fn test_postgres_db_write_and_read() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-rw-ch",
+            "/api/v2/data/pg-rw-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -179,7 +179,7 @@ async fn test_postgres_parameterized_queries() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/pg-params-ch",
+            "/api/v2/data/pg-params-ch",
             Some(json!({"data": {}})),
         ))
         .await

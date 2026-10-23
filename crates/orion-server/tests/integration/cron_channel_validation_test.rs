@@ -37,7 +37,7 @@ fn cron_channel(name: &str, workflow_id: &str) -> Value {
 async fn post_channel(app: &axum::Router, body: Value) -> (StatusCode, Value) {
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/channels", Some(body)))
+        .oneshot(json_request("POST", "/api/v2/admin/channels", Some(body)))
         .await
         .expect("request");
     let status = resp.status();
@@ -383,7 +383,7 @@ async fn an_update_is_validated_against_the_merged_view() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/channels/{id}"),
+            &format!("/api/v2/admin/channels/{id}"),
             Some(json!({"transport_config": {"schedule": "nope"}})),
         ))
         .await
@@ -397,7 +397,7 @@ async fn an_update_is_validated_against_the_merged_view() {
         .clone()
         .oneshot(json_request(
             "PUT",
-            &format!("/api/v1/admin/channels/{id}"),
+            &format!("/api/v2/admin/channels/{id}"),
             Some(json!({"config": {"auth": {"mode": "api_key", "keys": ["k"]}}})),
         ))
         .await
@@ -414,7 +414,7 @@ async fn an_update_is_validated_against_the_merged_view() {
 // D6: the doors a cron channel does not open
 // ============================================================
 
-/// Every channel is reachable by name at `/api/v1/data/{name}`. A cron channel
+/// Every channel is reachable by name at `/api/v2/data/{name}`. A cron channel
 /// must not be: running it there would execute the workflow outside the
 /// occurrence ledger and outside its singleton, so nothing would record that it
 /// ran and nothing would stop it overlapping the scheduled run.
@@ -432,7 +432,7 @@ async fn a_cron_channel_is_not_reachable_over_http() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{id}/status"),
+            &format!("/api/v2/admin/channels/{id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -440,7 +440,7 @@ async fn a_cron_channel_is_not_reachable_over_http() {
     assert_eq!(resp.status(), StatusCode::OK, "{:?}", resp.status());
 
     // Both the synchronous path and the submission path.
-    for path in ["/api/v1/data/unreachable", "/api/v1/data/unreachable/async"] {
+    for path in ["/api/v2/data/unreachable", "/api/v2/data/unreachable/async"] {
         let resp = app
             .clone()
             .oneshot(json_request("POST", path, Some(json!({}))))
@@ -481,7 +481,7 @@ async fn activation_is_refused_when_the_scheduler_is_off() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{id}/status"),
+            &format!("/api/v2/admin/channels/{id}/status"),
             Some(json!({"status": "active"})),
         ))
         .await

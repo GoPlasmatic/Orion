@@ -28,7 +28,7 @@ async fn workflow_activation_dry_run_reports_without_writing() {
     // Green: a clean draft would activate.
     let (code, body) = patch_status(
         &app,
-        &format!("/api/v1/admin/workflows/{id}/status?dry_run=true"),
+        &format!("/api/v2/admin/workflows/{id}/status?dry_run=true"),
         "active",
     )
     .await;
@@ -40,7 +40,7 @@ async fn workflow_activation_dry_run_reports_without_writing() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{id}"),
+            &format!("/api/v2/admin/workflows/{id}"),
             None,
         ))
         .await
@@ -49,7 +49,7 @@ async fn workflow_activation_dry_run_reports_without_writing() {
 
     let (code, body) = patch_status(
         &app,
-        &format!("/api/v1/admin/workflows/{id}/status?dry_run=true"),
+        &format!("/api/v2/admin/workflows/{id}/status?dry_run=true"),
         "archived",
     )
     .await;
@@ -78,7 +78,7 @@ async fn workflow_activation_dry_run_finds_the_missing_connector() {
 
     let (code, body) = patch_status(
         &app,
-        &format!("/api/v1/admin/workflows/{id}/status?dry_run=true"),
+        &format!("/api/v2/admin/workflows/{id}/status?dry_run=true"),
         "active",
     )
     .await;
@@ -90,7 +90,7 @@ async fn workflow_activation_dry_run_finds_the_missing_connector() {
     // The real request refuses with the same finding, as a 400.
     let (code, body) = patch_status(
         &app,
-        &format!("/api/v1/admin/workflows/{id}/status"),
+        &format!("/api/v2/admin/workflows/{id}/status"),
         "active",
     )
     .await;
@@ -108,8 +108,8 @@ async fn workflow_activation_dry_run_finds_the_missing_connector() {
 async fn dry_run_reports_a_missing_entity_as_a_finding() {
     let app = test_app().await;
     for uri in [
-        "/api/v1/admin/workflows/no-such-id/status?dry_run=true",
-        "/api/v1/admin/channels/no-such-id/status?dry_run=true",
+        "/api/v2/admin/workflows/no-such-id/status?dry_run=true",
+        "/api/v2/admin/channels/no-such-id/status?dry_run=true",
     ] {
         let (code, body) = patch_status(&app, uri, "active").await;
         assert_eq!(code, StatusCode::OK, "{uri}");
@@ -131,7 +131,7 @@ async fn channel_activation_gates_on_an_active_workflow() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "k8-gate",
                 "channel_type": "sync",
@@ -148,7 +148,7 @@ async fn channel_activation_gates_on_an_active_workflow() {
         .as_str()
         .unwrap()
         .to_string();
-    let status_uri = format!("/api/v1/admin/channels/{channel_id}/status");
+    let status_uri = format!("/api/v2/admin/channels/{channel_id}/status");
 
     // Dry-run and real request agree: the workflow is a draft.
     let (code, body) = patch_status(&app, &format!("{status_uri}?dry_run=true"), "active").await;
@@ -175,7 +175,7 @@ async fn channel_activation_gates_on_an_active_workflow() {
     // connectors → workflows → channels is the working order.
     let (code, _) = patch_status(
         &app,
-        &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/status"),
         "active",
     )
     .await;
@@ -199,7 +199,7 @@ async fn channel_activation_refuses_a_missing_or_unset_workflow() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "k8-no-workflow",
                 "channel_type": "sync",
@@ -217,7 +217,7 @@ async fn channel_activation_refuses_a_missing_or_unset_workflow() {
         .to_string();
     let (code, body) = patch_status(
         &app,
-        &format!("/api/v1/admin/channels/{id}/status"),
+        &format!("/api/v2/admin/channels/{id}/status"),
         "active",
     )
     .await;
@@ -235,7 +235,7 @@ async fn channel_activation_refuses_a_missing_or_unset_workflow() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "k8-ghost-workflow",
                 "channel_type": "sync",
@@ -253,7 +253,7 @@ async fn channel_activation_refuses_a_missing_or_unset_workflow() {
         .to_string();
     let (code, body) = patch_status(
         &app,
-        &format!("/api/v1/admin/channels/{id}/status"),
+        &format!("/api/v2/admin/channels/{id}/status"),
         "active",
     )
     .await;
@@ -288,7 +288,7 @@ async fn channel_dry_run_sees_a_route_collision() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "route-challenger",
                 "channel_type": "sync",
@@ -308,7 +308,7 @@ async fn channel_dry_run_sees_a_route_collision() {
 
     let (code, body) = patch_status(
         &app,
-        &format!("/api/v1/admin/channels/{id}/status?dry_run=true"),
+        &format!("/api/v2/admin/channels/{id}/status?dry_run=true"),
         "active",
     )
     .await;
@@ -325,7 +325,7 @@ async fn model_activation_dry_run_reports_the_admission_gate_without_writing() {
     let h = common::models::harness().await;
     common::models::register_fixture(&h.app).await;
     let uri = format!(
-        "/api/v1/admin/models/{}/status?dry_run=true",
+        "/api/v2/admin/models/{}/status?dry_run=true",
         common::models::FIXTURE_ID
     );
 
@@ -342,7 +342,7 @@ async fn model_activation_dry_run_reports_the_admission_gate_without_writing() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/models/{}", common::models::FIXTURE_ID),
+            &format!("/api/v2/admin/models/{}", common::models::FIXTURE_ID),
             None,
         ))
         .await
@@ -364,7 +364,7 @@ async fn model_activation_dry_run_reports_the_admission_gate_without_writing() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/models/{}", common::models::FIXTURE_ID),
+            &format!("/api/v2/admin/models/{}", common::models::FIXTURE_ID),
             None,
         ))
         .await
@@ -374,7 +374,7 @@ async fn model_activation_dry_run_reports_the_admission_gate_without_writing() {
     // A missing model is a finding too, like the other entities.
     let (code, body) = patch_status(
         &h.app,
-        "/api/v1/admin/models/no-such-id/status?dry_run=true",
+        "/api/v2/admin/models/no-such-id/status?dry_run=true",
         "active",
     )
     .await;

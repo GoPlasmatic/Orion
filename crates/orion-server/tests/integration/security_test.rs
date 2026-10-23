@@ -20,7 +20,7 @@ async fn test_sql_injection_in_workflow_name() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": malicious_name,
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -37,7 +37,7 @@ async fn test_sql_injection_in_workflow_name() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{}", workflow_id),
+            &format!("/api/v2/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -48,7 +48,7 @@ async fn test_sql_injection_in_workflow_name() {
 
     // Verify the workflows table still exists by listing workflows
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
+        .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -65,7 +65,7 @@ async fn test_sql_injection_in_tag_filter() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Tagged Workflow",
                 "tags": ["safe-tag"],
@@ -81,7 +81,7 @@ async fn test_sql_injection_in_tag_filter() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/workflows?tag=%25%27%20OR%201%3D1%20--",
+            "/api/v2/admin/workflows?tag=%25%27%20OR%201%3D1%20--",
             None,
         ))
         .await
@@ -106,7 +106,7 @@ async fn test_xss_in_workflow_description() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "XSS Test Workflow",
                 "description": xss_payload,
@@ -123,7 +123,7 @@ async fn test_xss_in_workflow_description() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{}", workflow_id),
+            &format!("/api/v2/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -156,7 +156,7 @@ async fn test_deeply_nested_json_payload() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/deep-json-ch",
+            "/api/v2/data/deep-json-ch",
             Some(json!({"data": nested})),
         ))
         .await
@@ -185,7 +185,7 @@ async fn test_json_past_recursion_limit_is_rejected_as_client_error() {
     let body_string = serde_json::to_string(&json!({"data": nested})).unwrap();
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/data/orders")
+        .uri("/api/v2/data/orders")
         .header("content-type", "application/json")
         .body(axum::body::Body::from(body_string))
         .unwrap();
@@ -210,7 +210,7 @@ async fn test_unicode_in_workflow_fields() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": emoji_name,
                 "description": cjk_description,
@@ -228,7 +228,7 @@ async fn test_unicode_in_workflow_fields() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/workflows/{}", workflow_id),
+            &format!("/api/v2/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -256,7 +256,7 @@ async fn test_null_bytes_in_string_fields() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": name_with_null,
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -274,7 +274,7 @@ async fn test_null_bytes_in_string_fields() {
         let resp = app
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/admin/workflows/{}", workflow_id),
+                &format!("/api/v2/admin/workflows/{}", workflow_id),
                 None,
             ))
             .await
@@ -296,7 +296,7 @@ async fn test_admin_auth_missing_token_returns_401() {
     let app = common::test_app_with_config(config).await;
 
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .oneshot(json_request("GET", "/api/v2/admin/engine/status", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -313,7 +313,7 @@ async fn test_admin_auth_wrong_token_returns_401() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer wrong-key")
         .body(Body::empty())
         .unwrap();
@@ -343,7 +343,7 @@ async fn test_401_carries_security_headers_and_request_id() {
     let app = common::test_app_with_config(config).await;
 
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .oneshot(json_request("GET", "/api/v2/admin/engine/status", None))
         .await
         .unwrap();
 
@@ -384,7 +384,7 @@ async fn test_admin_preflight_is_answered_not_rejected() {
 
     let req = Request::builder()
         .method("OPTIONS")
-        .uri("/api/v1/admin/workflows")
+        .uri("/api/v2/admin/workflows")
         .header("Origin", "https://console.example.com")
         .header("Access-Control-Request-Method", "GET")
         // A browser calling an authenticated admin route sends this. Omitting
@@ -435,7 +435,7 @@ async fn test_admin_auth_correct_token_returns_200() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer test-secret-key")
         .body(Body::empty())
         .unwrap();
@@ -458,7 +458,7 @@ async fn test_admin_auth_sha256_hashed_key_accepts_plaintext_token() {
     // Correct plaintext token → 200
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer hashed-secret-key")
         .body(Body::empty())
         .unwrap();
@@ -468,7 +468,7 @@ async fn test_admin_auth_sha256_hashed_key_accepts_plaintext_token() {
     // Presenting the digest itself must NOT authenticate
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header(
             "Authorization",
             format!("Bearer sha256:{}", hex::encode(digest)),
@@ -481,7 +481,7 @@ async fn test_admin_auth_sha256_hashed_key_accepts_plaintext_token() {
     // Wrong token → 401
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer wrong-key")
         .body(Body::empty())
         .unwrap();
@@ -500,7 +500,7 @@ async fn test_admin_auth_custom_header() {
     // Wrong header name → 401
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer my-api-key")
         .body(Body::empty())
         .unwrap();
@@ -510,7 +510,7 @@ async fn test_admin_auth_custom_header() {
     // Correct custom header → 200
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("X-API-Key", "my-api-key")
         .body(Body::empty())
         .unwrap();
@@ -530,7 +530,7 @@ async fn test_admin_auth_data_routes_not_protected() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/orders",
+            "/api/v2/data/orders",
             Some(json!({"data": {"test": true}})),
         ))
         .await
@@ -549,7 +549,7 @@ async fn test_traces_list_requires_admin_key() {
     // Without a key → 401 (traces expose full payloads)
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/traces", None))
+        .oneshot(json_request("GET", "/api/v2/admin/traces", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -557,7 +557,7 @@ async fn test_traces_list_requires_admin_key() {
     // With the admin key → 200
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/traces")
+        .uri("/api/v2/admin/traces")
         .header("Authorization", "Bearer test-secret-key")
         .body(Body::empty())
         .unwrap();
@@ -589,7 +589,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
     // Missing trace → 404 regardless of credentials.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/traces/some-id", None))
+        .oneshot(json_request("GET", "/api/v2/admin/traces/some-id", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -599,7 +599,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -609,7 +609,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
     // The admin key grants access without the token…
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/traces/{trace_id}"))
+        .uri(format!("/api/v2/admin/traces/{trace_id}"))
         .header("Authorization", "Bearer test-secret-key")
         .body(Body::empty())
         .unwrap();
@@ -620,7 +620,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
     // data-plane caller can poll its own submission under admin auth.
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/traces/{trace_id}"))
+        .uri(format!("/api/v2/admin/traces/{trace_id}"))
         .header("x-trace-token", token)
         .body(Body::empty())
         .unwrap();
@@ -639,7 +639,7 @@ async fn test_trace_token_scopes_reads_on_default_config() {
         .await;
     let (trace_id, token) = common::submit_async(
         &app,
-        "/api/v1/data/r12-open/async",
+        "/api/v2/data/r12-open/async",
         json!({"data": {"secret_payload": "for-my-eyes-only"}}),
     )
     .await;
@@ -649,7 +649,7 @@ async fn test_trace_token_scopes_reads_on_default_config() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}"),
+            &format!("/api/v2/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -659,7 +659,7 @@ async fn test_trace_token_scopes_reads_on_default_config() {
     // Wrong token → 401.
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/traces/{trace_id}"))
+        .uri(format!("/api/v2/admin/traces/{trace_id}"))
         .header("x-trace-token", "not-the-token")
         .body(Body::empty())
         .unwrap();
@@ -671,7 +671,7 @@ async fn test_trace_token_scopes_reads_on_default_config() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
+            &format!("/api/v2/admin/traces/{trace_id}?token={token}"),
             None,
         ))
         .await
@@ -699,7 +699,7 @@ async fn test_admin_auth_disabled_allows_all() {
     let app = common::test_app().await;
 
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .oneshot(json_request("GET", "/api/v2/admin/engine/status", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -723,7 +723,7 @@ async fn test_admin_auth_multiple_api_keys() {
     // Primary key should work
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer primary-key")
         .body(Body::empty())
         .unwrap();
@@ -733,7 +733,7 @@ async fn test_admin_auth_multiple_api_keys() {
     // First rotation key should work
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer rotation-key-1")
         .body(Body::empty())
         .unwrap();
@@ -743,7 +743,7 @@ async fn test_admin_auth_multiple_api_keys() {
     // Second rotation key should work
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer rotation-key-2")
         .body(Body::empty())
         .unwrap();
@@ -753,7 +753,7 @@ async fn test_admin_auth_multiple_api_keys() {
     // Unknown key should be rejected
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", "Bearer unknown-key")
         .body(Body::empty())
         .unwrap();
@@ -775,7 +775,7 @@ async fn test_connector_secret_masking() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "Secret Connector",
                 "connector_type": "http",
@@ -806,7 +806,7 @@ async fn test_connector_secret_masking() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/connectors/{}", connector_id),
+            &format!("/api/v2/admin/connectors/{}", connector_id),
             None,
         ))
         .await
@@ -865,7 +865,7 @@ async fn test_metrics_endpoint_open_when_auth_disabled() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/test-channel",
+            "/api/v2/data/test-channel",
             Some(json!({
                 "data": { "key": "value" },
                 "metadata": {}
@@ -999,7 +999,7 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
         .clone()
         .oneshot(with_key(
             "GET",
-            "/api/v1/admin/engine/status",
+            "/api/v2/admin/engine/status",
             "read-only-key-long-enough-00000000",
             None,
         ))
@@ -1016,7 +1016,7 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
         .clone()
         .oneshot(with_key(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             "read-only-key-long-enough-00000000",
             Some(create.clone()),
         ))
@@ -1038,7 +1038,7 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
         .clone()
         .oneshot(with_key(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             "full-access-key-long-enough-000000",
             Some(create),
         ))
@@ -1051,7 +1051,7 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
         .clone()
         .oneshot(with_key(
             "DELETE",
-            "/api/v1/admin/workflows/s13-wf",
+            "/api/v2/admin/workflows/s13-wf",
             "read-only-key-long-enough-00000000",
             None,
         ))
@@ -1075,7 +1075,7 @@ async fn test_read_only_role_applies_to_the_digest_form() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/admin/engine/reload")
+        .uri("/api/v2/admin/engine/reload")
         .header("Authorization", format!("Bearer {key}"))
         .body(Body::empty())
         .unwrap();
@@ -1084,7 +1084,7 @@ async fn test_read_only_role_applies_to_the_digest_form() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/admin/engine/status")
+        .uri("/api/v2/admin/engine/status")
         .header("Authorization", format!("Bearer {key}"))
         .body(Body::empty())
         .unwrap();

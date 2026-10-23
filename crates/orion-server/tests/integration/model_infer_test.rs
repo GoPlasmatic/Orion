@@ -50,7 +50,7 @@ async fn activate_fixture(h: &ModelHarness) {
     let (status, body) = send(
         &h.app,
         "PATCH",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/status"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/status"),
         Some(json!({"status": "active"})),
     )
     .await;
@@ -95,7 +95,7 @@ async fn deploy(app: &axum::Router, name: &str, tasks: Value) -> String {
     let (status, body) = send(
         app,
         "POST",
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         Some(json!({"name": name, "condition": true, "tasks": tasks})),
     )
     .await;
@@ -107,7 +107,7 @@ async fn deploy(app: &axum::Router, name: &str, tasks: Value) -> String {
     let (status, body) = send(
         app,
         "PATCH",
-        &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+        &format!("/api/v2/admin/workflows/{workflow_id}/status"),
         Some(json!({"status": "active"})),
     )
     .await;
@@ -115,7 +115,7 @@ async fn deploy(app: &axum::Router, name: &str, tasks: Value) -> String {
     let (status, body) = send(
         app,
         "POST",
-        "/api/v1/admin/channels",
+        "/api/v2/admin/channels",
         Some(json!({
             "name": name,
             "channel_type": "sync",
@@ -134,7 +134,7 @@ async fn deploy(app: &axum::Router, name: &str, tasks: Value) -> String {
     let (status, body) = send(
         app,
         "PATCH",
-        &format!("/api/v1/admin/channels/{channel_id}/status"),
+        &format!("/api/v2/admin/channels/{channel_id}/status"),
         Some(json!({"status": "active"})),
     )
     .await;
@@ -146,7 +146,7 @@ async fn call(app: &axum::Router, channel: &str, payload: Value) -> (StatusCode,
     send(
         app,
         "POST",
-        &format!("/api/v1/data/{channel}"),
+        &format!("/api/v2/data/{channel}"),
         Some(json!({"data": payload})),
     )
     .await
@@ -175,7 +175,7 @@ async fn an_inference_runs_end_to_end_and_the_node_reports_it_loaded() {
     let (_, body) = send(
         &h.app,
         "GET",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}"),
         None,
     )
     .await;
@@ -234,7 +234,7 @@ async fn an_inference_runs_end_to_end_and_the_node_reports_it_loaded() {
     let (_, body) = send(
         &h.app,
         "GET",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}"),
         None,
     )
     .await;
@@ -371,7 +371,7 @@ async fn raw_and_select_together_are_refused_at_create_time() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         Some(json!({"name": "both", "condition": true, "tasks": tasks(
             json!(FIXTURE_ID),
             json!({"raw": true, "select": {"var": "policy"}}),
@@ -436,7 +436,7 @@ async fn an_unknown_runtime_is_refused_at_create_time() {
     let (status, body) = send(
         &h.app,
         "POST",
-        "/api/v1/admin/workflows",
+        "/api/v2/admin/workflows",
         Some(json!({
             "name": "bad runtime",
             "condition": true,
@@ -584,7 +584,7 @@ async fn a_literal_reference_to_an_unserved_model_quarantines_the_channel() {
     let (status, body) = send(
         &h.app,
         "PATCH",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}/status"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}/status"),
         Some(json!({"status": "active"})),
     )
     .await;
@@ -609,7 +609,7 @@ async fn a_literal_reference_to_an_unserved_model_quarantines_the_channel() {
         )
         .await
         .expect("record");
-    let (status, body) = send(&h.app, "POST", "/api/v1/admin/engine/reload", None).await;
+    let (status, body) = send(&h.app, "POST", "/api/v2/admin/engine/reload", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = call(&h.app, &channel, board()).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -640,7 +640,7 @@ async fn a_literal_reference_to_an_unserved_model_quarantines_the_channel() {
     let (_, body) = send(
         &h.app,
         "GET",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}"),
         None,
     )
     .await;
@@ -699,7 +699,7 @@ async fn the_referenced_preload_warms_the_model_before_the_first_call() {
         let (_, body) = send(
             &h.app,
             "GET",
-            &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+            &format!("/api/v2/admin/models/{FIXTURE_ID}"),
             None,
         )
         .await;
@@ -738,7 +738,7 @@ async fn caller_input_that_does_not_marshal_is_refused_without_a_load() {
     let (_, body) = send(
         &h.app,
         "GET",
-        &format!("/api/v1/admin/models/{FIXTURE_ID}"),
+        &format!("/api/v2/admin/models/{FIXTURE_ID}"),
         None,
     )
     .await;

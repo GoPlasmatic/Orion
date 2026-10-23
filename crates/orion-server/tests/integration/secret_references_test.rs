@@ -44,7 +44,7 @@ async fn connector_with_env_reference_resolves_at_engine_load() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "secret-http",
                 "name": "secret-http",
@@ -69,7 +69,7 @@ async fn connector_with_env_reference_resolves_at_engine_load() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/connectors/{}", id),
+            &format!("/api/v2/admin/connectors/{}", id),
             None,
         ))
         .await
@@ -87,7 +87,7 @@ async fn connector_with_env_reference_resolves_at_engine_load() {
     // would actually use the secret, but here we just exercise the load).
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -102,7 +102,7 @@ async fn plain_url_passes_through_unchanged() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "name": "plain-db",
                 "connector_type": "db",

@@ -18,7 +18,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "workflow_id": "ch-test-wf",
                 "name": "Channel Test Workflow",
@@ -34,7 +34,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            "/api/v1/admin/workflows/ch-test-wf/status",
+            "/api/v2/admin/workflows/ch-test-wf/status",
             Some(json!({"status": "active"})),
         ))
         .await
@@ -46,7 +46,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "test-channel",
                 "channel_type": "sync",
@@ -70,7 +70,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/channels/{}", channel_id),
+            &format!("/api/v2/admin/channels/{}", channel_id),
             None,
         ))
         .await
@@ -83,7 +83,7 @@ async fn test_channels_crud_lifecycle() {
     // List channels
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/channels", None))
+        .oneshot(json_request("GET", "/api/v2/admin/channels", None))
         .await
         .unwrap();
 
@@ -97,7 +97,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", channel_id),
+            &format!("/api/v2/admin/channels/{}/status", channel_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -112,7 +112,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", channel_id),
+            &format!("/api/v2/admin/channels/{}/status", channel_id),
             Some(json!({"status": "archived"})),
         ))
         .await
@@ -127,7 +127,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "DELETE",
-            &format!("/api/v1/admin/channels/{}", channel_id),
+            &format!("/api/v2/admin/channels/{}", channel_id),
             None,
         ))
         .await
@@ -140,7 +140,7 @@ async fn test_channels_crud_lifecycle() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/channels/{}", channel_id),
+            &format!("/api/v2/admin/channels/{}", channel_id),
             None,
         ))
         .await
@@ -168,7 +168,7 @@ async fn archived_channel_is_not_served() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/arch-stop-ch",
+            "/api/v2/data/arch-stop-ch",
             Some(serde_json::json!({"data": {"x": 1}})),
         ))
         .await
@@ -179,7 +179,7 @@ async fn archived_channel_is_not_served() {
         .clone()
         .oneshot(common::json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            &format!("/api/v2/admin/channels/{channel_id}/status"),
             Some(serde_json::json!({"status": "archived"})),
         ))
         .await
@@ -190,7 +190,7 @@ async fn archived_channel_is_not_served() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/arch-stop-ch",
+            "/api/v2/data/arch-stop-ch",
             Some(serde_json::json!({"data": {"x": 1}})),
         ))
         .await
@@ -210,8 +210,8 @@ async fn archived_channel_is_not_served() {
 async fn unknown_channel_name_returns_404() {
     let app = common::test_app().await;
     for uri in [
-        "/api/v1/data/never-created-ch",
-        "/api/v1/data/never-created-ch/async",
+        "/api/v2/data/never-created-ch",
+        "/api/v2/data/never-created-ch/async",
     ] {
         let resp = app
             .clone()

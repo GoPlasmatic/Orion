@@ -58,7 +58,7 @@ async fn an_estate_survives_an_export_import_round_trip() {
     .await;
     let (status, body) = post(
         &source,
-        "/api/v1/admin/connectors",
+        "/api/v2/admin/connectors",
         json!({
             "id": "crm", "name": "crm", "connector_type": "http",
             "config": {
@@ -70,9 +70,9 @@ async fn an_estate_survives_an_export_import_round_trip() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
-    let workflows = get(&source, "/api/v1/admin/workflows/export").await;
-    let channels = get(&source, "/api/v1/admin/channels/export").await;
-    let connectors = get(&source, "/api/v1/admin/connectors/export").await;
+    let workflows = get(&source, "/api/v2/admin/workflows/export").await;
+    let channels = get(&source, "/api/v2/admin/channels/export").await;
+    let connectors = get(&source, "/api/v2/admin/connectors/export").await;
 
     assert!(!workflows["data"].as_array().unwrap().is_empty());
     assert!(!channels["data"].as_array().unwrap().is_empty());
@@ -81,9 +81,9 @@ async fn an_estate_survives_an_export_import_round_trip() {
     // A fresh instance, standing in for "staging promoted into production".
     let target = common::test_app().await;
     for (uri, exported) in [
-        ("/api/v1/admin/workflows/import", &workflows),
-        ("/api/v1/admin/channels/import", &channels),
-        ("/api/v1/admin/connectors/import", &connectors),
+        ("/api/v2/admin/workflows/import", &workflows),
+        ("/api/v2/admin/channels/import", &channels),
+        ("/api/v2/admin/connectors/import", &connectors),
     ] {
         let (status, body) = post(&target, uri, exported["data"].clone()).await;
         assert_eq!(status, StatusCode::OK, "{uri}: {body}");
@@ -95,7 +95,7 @@ async fn an_estate_survives_an_export_import_round_trip() {
     }
 
     // And the target now holds what the source did, references included.
-    let reimported = get(&target, "/api/v1/admin/channels/export").await;
+    let reimported = get(&target, "/api/v2/admin/channels/export").await;
     let names: Vec<&str> = reimported["data"]
         .as_array()
         .unwrap()
@@ -107,7 +107,7 @@ async fn an_estate_survives_an_export_import_round_trip() {
         "channel did not survive: {names:?}"
     );
 
-    let conns = get(&target, "/api/v1/admin/connectors/export").await;
+    let conns = get(&target, "/api/v2/admin/connectors/export").await;
     assert_eq!(
         conns["data"][0]["config"]["auth"]["token"], "env://ORION_TEST_CRM_TOKEN",
         "a secret *reference* is not a secret and must survive the trip: {conns}"
@@ -128,7 +128,7 @@ async fn a_literal_secret_is_masked_on_export_and_refused_on_import() {
     let source = common::test_app().await;
     let (status, body) = post(
         &source,
-        "/api/v1/admin/connectors",
+        "/api/v2/admin/connectors",
         json!({
             "id": "literal", "name": "literal", "connector_type": "db",
             "config": {"connection_string": "postgres://u:pw@db/orders"}
@@ -137,7 +137,7 @@ async fn a_literal_secret_is_masked_on_export_and_refused_on_import() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
-    let exported = get(&source, "/api/v1/admin/connectors/export").await;
+    let exported = get(&source, "/api/v2/admin/connectors/export").await;
     let dumped = serde_json::to_string(&exported).unwrap();
     assert!(
         !dumped.contains("pw@db"),
@@ -147,7 +147,7 @@ async fn a_literal_secret_is_masked_on_export_and_refused_on_import() {
     let target = common::test_app().await;
     let (status, body) = post(
         &target,
-        "/api/v1/admin/connectors/import",
+        "/api/v2/admin/connectors/import",
         exported["data"].clone(),
     )
     .await;
@@ -170,7 +170,7 @@ async fn an_exported_connector_has_its_secrets_masked() {
     let app = common::test_app().await;
     let (status, _) = post(
         &app,
-        "/api/v1/admin/connectors",
+        "/api/v2/admin/connectors",
         json!({
             "id": "secretive",
             "name": "secretive",
@@ -184,7 +184,7 @@ async fn an_exported_connector_has_its_secrets_masked() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let exported = get(&app, "/api/v1/admin/connectors/export").await;
+    let exported = get(&app, "/api/v2/admin/connectors/export").await;
     let dumped = serde_json::to_string(&exported).unwrap();
     assert!(
         !dumped.contains("super-secret-value"),
@@ -207,7 +207,7 @@ async fn channel_validate_agrees_with_create() {
         "protocol": "http", "workflow_id": "wf"
     });
 
-    let validated = post(&app, "/api/v1/admin/channels/validate", bad.clone()).await;
+    let validated = post(&app, "/api/v2/admin/channels/validate", bad.clone()).await;
     assert_eq!(validated.0, StatusCode::OK);
     assert_eq!(
         validated.1["data"]["valid"], false,
@@ -215,7 +215,7 @@ async fn channel_validate_agrees_with_create() {
         validated.1
     );
 
-    let created = post(&app, "/api/v1/admin/channels", bad).await;
+    let created = post(&app, "/api/v2/admin/channels", bad).await;
     assert_eq!(
         created.0,
         StatusCode::BAD_REQUEST,
@@ -235,7 +235,7 @@ async fn channel_validate_reports_an_unparseable_config() {
     let app = common::test_app().await;
     let (status, body) = post(
         &app,
-        "/api/v1/admin/channels/validate",
+        "/api/v2/admin/channels/validate",
         // Valid in every respect except the config, so the config error is what
         // the assertion below is actually reading — an otherwise-invalid payload
         // would be refused for those reasons first and never reach the config.
@@ -265,9 +265,9 @@ async fn connector_validate_agrees_with_create() {
         "connector_type": "http", "config": {}
     });
 
-    let validated = post(&app, "/api/v1/admin/connectors/validate", bad.clone()).await;
+    let validated = post(&app, "/api/v2/admin/connectors/validate", bad.clone()).await;
     assert_eq!(validated.0, StatusCode::OK);
-    let created = post(&app, "/api/v1/admin/connectors", bad).await;
+    let created = post(&app, "/api/v2/admin/connectors", bad).await;
 
     assert_eq!(
         validated.1["data"]["valid"].as_bool(),
@@ -288,7 +288,7 @@ async fn an_unresolvable_secret_reference_is_a_warning_not_an_error() {
     let app = common::test_app().await;
     let (status, body) = post(
         &app,
-        "/api/v1/admin/connectors/validate",
+        "/api/v2/admin/connectors/validate",
         json!({
             "id": "env-conn", "name": "env-conn", "connector_type": "http",
             "config": {
@@ -321,35 +321,35 @@ async fn model_validate_agrees_with_create() {
     let mut bad = good.clone();
     bad["artifact"]["key"] = json!("models/absent.onnx");
 
-    let (status, body) = post(&h.app, "/api/v1/admin/models/validate", good.clone()).await;
+    let (status, body) = post(&h.app, "/api/v2/admin/models/validate", good.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["valid"], true, "{body}");
-    let (status, body) = post(&h.app, "/api/v1/admin/models", good).await;
+    let (status, body) = post(&h.app, "/api/v2/admin/models", good).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
 
     // The bucket serves every key, so make the object vanish by pointing
     // the reference at a connector that cannot read it.
     let mut gated = common::models::storage_connector("gated", h.bucket.addr);
     gated["config"]["operations"] = json!({"presign_get": false});
-    let (status, body) = post(&h.app, "/api/v1/admin/connectors", gated).await;
+    let (status, body) = post(&h.app, "/api/v2/admin/connectors", gated).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     bad["artifact"]["connector"] = json!("gated");
     bad["manifest"]["name"] = json!("ada.gated");
-    let (status, body) = post(&h.app, "/api/v1/admin/models/validate", bad.clone()).await;
+    let (status, body) = post(&h.app, "/api/v2/admin/models/validate", bad.clone()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["valid"], false, "{body}");
     assert_eq!(body["data"]["errors"][0]["field"], "artifact.connector");
-    let (status, body) = post(&h.app, "/api/v1/admin/models", bad).await;
+    let (status, body) = post(&h.app, "/api/v2/admin/models", bad).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["details"][0]["path"], "artifact.connector");
 
     // What export produces, import accepts unchanged.
-    let exported = get(&h.app, "/api/v1/admin/models/export").await;
+    let exported = get(&h.app, "/api/v2/admin/models/export").await;
     assert_eq!(exported["data"].as_array().map(Vec::len), Some(1));
     let target = common::models::harness().await;
     let (status, body) = post(
         &target.app,
-        "/api/v1/admin/models/import",
+        "/api/v2/admin/models/import",
         exported["data"].clone(),
     )
     .await;

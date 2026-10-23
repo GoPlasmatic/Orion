@@ -34,7 +34,7 @@ async fn test_order_processing_pipeline() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "payment-api",
                 "name": "payment-api",
@@ -151,7 +151,7 @@ async fn test_order_processing_pipeline() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/process-order",
+            "/api/v2/data/process-order",
             Some(json!({"data": {"order_id": "ord-001", "quantity": 3, "price": 29.99}})),
         ))
         .await
@@ -245,7 +245,7 @@ async fn test_order_validation_rejects_invalid() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/validate-order",
+            "/api/v2/data/validate-order",
             Some(json!({"data": {"order_id": "o-1", "quantity": 5}})),
         ))
         .await
@@ -261,7 +261,7 @@ async fn test_order_validation_rejects_invalid() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/validate-order",
+            "/api/v2/data/validate-order",
             Some(json!({"data": {"quantity": 5}})),
         ))
         .await
@@ -286,7 +286,7 @@ async fn test_order_validation_rejects_invalid() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/validate-order",
+            "/api/v2/data/validate-order",
             Some(json!({"data": {"order_id": "o-1", "quantity": 0}})),
         ))
         .await
@@ -387,7 +387,7 @@ async fn test_order_lookup_via_db_read() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/order-writer",
+            "/api/v2/data/order-writer",
             Some(json!({"data": {}})),
         ))
         .await
@@ -405,7 +405,7 @@ async fn test_order_lookup_via_db_read() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/order-reader",
+            "/api/v2/data/order-reader",
             Some(json!({"data": {}})),
         ))
         .await

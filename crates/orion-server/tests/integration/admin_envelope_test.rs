@@ -74,20 +74,20 @@ async fn admin_2xx_bodies_all_carry_the_data_envelope() {
     let app = test_app().await;
 
     for uri in [
-        "/api/v1/admin/engine/status",
-        "/api/v1/admin/functions",
-        "/api/v1/admin/connectors/circuit-breakers",
-        "/api/v1/admin/backups",
+        "/api/v2/admin/engine/status",
+        "/api/v2/admin/functions",
+        "/api/v2/admin/connectors/circuit-breakers",
+        "/api/v2/admin/backups",
     ] {
         assert_data_envelope(&get(&app, uri).await, uri);
     }
 
     for uri in [
-        "/api/v1/admin/workflows",
-        "/api/v1/admin/channels",
-        "/api/v1/admin/connectors",
-        "/api/v1/admin/audit-logs",
-        "/api/v1/admin/trace-dlq",
+        "/api/v2/admin/workflows",
+        "/api/v2/admin/channels",
+        "/api/v2/admin/connectors",
+        "/api/v2/admin/audit-logs",
+        "/api/v2/admin/trace-dlq",
     ] {
         assert_paginated_envelope(&get(&app, uri).await, uri);
     }
@@ -100,7 +100,7 @@ async fn admin_2xx_bodies_all_carry_the_data_envelope() {
 async fn trace_list_omits_total_unless_asked() {
     let app = test_app().await;
 
-    let body = get(&app, "/api/v1/admin/traces").await;
+    let body = get(&app, "/api/v2/admin/traces").await;
     let mut keys: Vec<&str> = body
         .as_object()
         .expect("object body")
@@ -114,7 +114,7 @@ async fn trace_list_omits_total_unless_asked() {
         "an unasked-for `total` costs a COUNT(*) per page: {body}"
     );
 
-    let counted = get(&app, "/api/v1/admin/traces?include_total=true").await;
+    let counted = get(&app, "/api/v2/admin/traces?include_total=true").await;
     assert_eq!(
         counted["total"], 0,
         "include_total=true must restore the count: {counted}"
@@ -126,7 +126,7 @@ async fn engine_reload_is_enveloped() {
     let app = test_app().await;
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -152,7 +152,7 @@ async fn workflow_validate_and_test_are_enveloped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows/validate",
+            "/api/v2/admin/workflows/validate",
             Some(workflow.clone()),
         ))
         .await
@@ -166,7 +166,7 @@ async fn workflow_validate_and_test_are_enveloped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(workflow),
         ))
         .await
@@ -180,7 +180,7 @@ async fn workflow_validate_and_test_are_enveloped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/workflows/{id}/test"),
+            &format!("/api/v2/admin/workflows/{id}/test"),
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -209,8 +209,8 @@ async fn import_dry_run_and_real_run_share_one_shape() {
 
     let mut shapes = Vec::new();
     for uri in [
-        "/api/v1/admin/workflows/import?dry_run=true",
-        "/api/v1/admin/workflows/import",
+        "/api/v2/admin/workflows/import?dry_run=true",
+        "/api/v2/admin/workflows/import",
     ] {
         let resp = app
             .clone()
@@ -282,7 +282,7 @@ async fn single_trace_read_is_enveloped() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/envelope-trace/async",
+            "/api/v2/data/envelope-trace/async",
             Some(json!({"data": {"value": 1}})),
         ))
         .await
@@ -296,7 +296,7 @@ async fn single_trace_read_is_enveloped() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
+            &format!("/api/v2/admin/traces/{trace_id}?token={token}"),
             None,
         ))
         .await

@@ -1250,19 +1250,28 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         cron_status,
     });
 
-    // ARCH-02: Hydrate the v2 ImmutableDeploymentStore from SQLite on boot so
-    // previously committed deployment revisions and head state survive restarts.
-    if let crate::storage::DbPool::Sqlite(ref sqlite_pool) = state.db_pool
-        && let Err(e) = state
-            .composition
-            .deployments
-            .load_from_sqlite(sqlite_pool)
-            .await
+    // ARCH-02: Hydrate the v2 ImmutableDeploymentStore from the state database on boot
+    // so previously committed deployment revisions and head state survive restarts
+    // across SQLite, PostgreSQL, and MySQL.
+    if let Err(e) = state
+        .composition
+        .deployments
+        .load_from_db_pool(&state.db_pool)
+        .await
     {
         tracing::warn!(
             error = %e,
-            "Failed to hydrate v2 deployment store from SQLite at startup"
+            "Failed to hydrate v2 deployment store from database at startup"
         );
+    } else {
+        let (head_rev, _) = state.composition.deployments.current_head();
+        if head_rev > 0 {
+            state.composition.reconciler.observe_desired_head();
+            let _ = state
+                .composition
+                .reconciler
+                .build_and_publish_candidate(head_rev, Vec::new());
+        }
     }
 
     Ok(Assembled {
@@ -1321,8 +1330,14 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         &config.packages.apply,
     ));
     let boot_id = format!("boot-{}", uuid::Uuid::new_v4().simple());
-    let composition = crate::extensions::CompositionRoot::community_with_legacy_v1()
-        .with_node_identity(cluster.instance_id.clone(), boot_id);
+    let mut composition = crate::extensions::CompositionRoot::community()
+        .with_node_identity(cluster.instance_id.clone(), boot_id)
+        .with_resource_pool(sql_pool_cache.clone())
+        .with_resource_pool(mongo_pool_cache.clone())
+        .with_resource_pool(smtp_pool_cache.clone());
+    if let Some(ref kp) = kafka_producers {
+        composition = composition.with_resource_pool(kp.clone());
+    }
     let provider_pools = composition.pools.clone();
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         runtime,

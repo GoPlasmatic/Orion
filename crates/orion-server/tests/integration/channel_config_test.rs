@@ -32,7 +32,7 @@ async fn test_channel_timeout_returns_504() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/connectors",
+            "/api/v2/admin/connectors",
             Some(json!({
                 "id": "slow-api",
                 "name": "slow-api",
@@ -54,7 +54,7 @@ async fn test_channel_timeout_returns_504() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Timeout Test Workflow",
                 "tasks": [{
@@ -89,7 +89,7 @@ async fn test_channel_timeout_returns_504() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -101,7 +101,7 @@ async fn test_channel_timeout_returns_504() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "timeout-ch",
                 "channel_type": "sync",
@@ -125,7 +125,7 @@ async fn test_channel_timeout_returns_504() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -137,7 +137,7 @@ async fn test_channel_timeout_returns_504() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/timeout-ch",
+            "/api/v2/data/timeout-ch",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -162,7 +162,7 @@ async fn test_channel_without_timeout_succeeds() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-timeout-ch",
+            "/api/v2/data/no-timeout-ch",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -191,7 +191,7 @@ async fn test_response_body_carries_no_internal_rollout_key() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-leak-ch",
+            "/api/v2/data/no-leak-ch",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -220,7 +220,7 @@ async fn test_channel_validation_logic_rejects_invalid_input() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Validation Test WF",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -235,7 +235,7 @@ async fn test_channel_validation_logic_rejects_invalid_input() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -246,7 +246,7 @@ async fn test_channel_validation_logic_rejects_invalid_input() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "validated-ch",
                 "channel_type": "sync",
@@ -273,7 +273,7 @@ async fn test_channel_validation_logic_rejects_invalid_input() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -284,7 +284,7 @@ async fn test_channel_validation_logic_rejects_invalid_input() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/validated-ch",
+            "/api/v2/data/validated-ch",
             Some(json!({"data": {"order_id": "ORD-001", "quantity": 5}})),
         ))
         .await
@@ -296,7 +296,7 @@ async fn test_channel_validation_logic_rejects_invalid_input() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/validated-ch",
+            "/api/v2/data/validated-ch",
             Some(json!({"data": {"quantity": 5}})),
         ))
         .await
@@ -315,7 +315,7 @@ async fn test_channel_validation_logic_rejects_invalid_input() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/validated-ch",
+            "/api/v2/data/validated-ch",
             Some(json!({"data": {"order_id": "ORD-002", "quantity": 0}})),
         ))
         .await
@@ -338,7 +338,7 @@ async fn test_channel_without_validation_logic_passes_any_input() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-validation-ch",
+            "/api/v2/data/no-validation-ch",
             Some(json!({"data": "just a string"})),
         ))
         .await
@@ -359,7 +359,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "CORS Test WF",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -374,7 +374,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -385,7 +385,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "cors-ch",
                 "channel_type": "sync",
@@ -407,7 +407,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -416,7 +416,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
     // Request from allowed origin — should succeed
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/data/cors-ch")
+        .uri("/api/v2/data/cors-ch")
         .header("content-type", "application/json")
         .header("origin", "https://allowed.example.com")
         .body(axum::body::Body::from(r#"{"data":{"key":"value"}}"#))
@@ -427,7 +427,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
     // Request from disallowed origin — should be rejected 403
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/data/cors-ch")
+        .uri("/api/v2/data/cors-ch")
         .header("content-type", "application/json")
         .header("origin", "https://evil.example.com")
         .body(axum::body::Body::from(r#"{"data":{"key":"value"}}"#))
@@ -442,7 +442,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/cors-ch",
+            "/api/v2/data/cors-ch",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -463,7 +463,7 @@ async fn test_channel_without_cors_allows_any_origin() {
 
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v1/data/no-cors-ch")
+        .uri("/api/v2/data/no-cors-ch")
         .header("content-type", "application/json")
         .header("origin", "https://any-origin.example.com")
         .body(axum::body::Body::from(r#"{"data":{"key":"value"}}"#))
@@ -485,7 +485,7 @@ async fn test_channel_backpressure_rejects_when_at_capacity() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/workflows",
+            "/api/v2/admin/workflows",
             Some(json!({
                 "name": "Backpressure Test WF",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
@@ -500,7 +500,7 @@ async fn test_channel_backpressure_rejects_when_at_capacity() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            &format!("/api/v2/admin/workflows/{}/status", wf_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -514,7 +514,7 @@ async fn test_channel_backpressure_rejects_when_at_capacity() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/channels",
+            "/api/v2/admin/channels",
             Some(json!({
                 "name": "backpressure-ch",
                 "channel_type": "sync",
@@ -538,7 +538,7 @@ async fn test_channel_backpressure_rejects_when_at_capacity() {
         .clone()
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            &format!("/api/v2/admin/channels/{}/status", ch_id),
             Some(json!({"status": "active"})),
         ))
         .await
@@ -549,7 +549,7 @@ async fn test_channel_backpressure_rejects_when_at_capacity() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/backpressure-ch",
+            "/api/v2/data/backpressure-ch",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -580,7 +580,7 @@ async fn test_channel_without_backpressure_allows_requests() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-bp-ch",
+            "/api/v2/data/no-bp-ch",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await

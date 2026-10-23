@@ -85,7 +85,7 @@ async fn test_mysql_db_write_and_read() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mysql-rw-ch",
+            "/api/v2/data/mysql-rw-ch",
             Some(json!({"data": {}})),
         ))
         .await
@@ -179,7 +179,7 @@ async fn test_mysql_parameterized_queries() {
         .clone()
         .oneshot(common::json_request(
             "POST",
-            "/api/v1/data/mysql-params-ch",
+            "/api/v2/data/mysql-params-ch",
             Some(json!({"data": {}})),
         ))
         .await

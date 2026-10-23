@@ -535,8 +535,8 @@ async fn execute(
         occurrence.channel_id, occurrence.scheduled_for
     )));
     let engine_start = std::time::Instant::now();
-    let run = crate::engine::execute_admitted(
-        &generation.engine,
+    let run = crate::engine::execute_admitted_on_generation(
+        generation,
         channel,
         &payload,
         &metadata,

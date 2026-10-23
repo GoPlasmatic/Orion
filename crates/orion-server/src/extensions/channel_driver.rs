@@ -291,11 +291,14 @@ impl ChannelDriver for SourceChannelDriver {
     }
 }
 
-/// Legacy v1 `"kafka"` channel driver adapter.
+/// Native `"kafka"` channel driver adapter.
 ///
-/// Kept in [`ChannelDriverRegistry::with_legacy_v1`] for v1 route compatibility
-/// until the Kafka channel driver is extracted to `orion-enterprise` in Phase 3;
-/// omitted from [`ChannelDriverRegistry::community`].
+/// [`ChannelDriverRegistry::community`] is the sole default registry and
+/// contains only the foundational Community drivers (`rest`, `http`, `cron`,
+/// `source`). Enterprise composition roots and callers that exercise Kafka
+/// channel validation register [`KafkaChannelDriver`] explicitly via
+/// [`CompositionRoot::with_channel_driver`](super::CompositionRoot::with_channel_driver)
+/// or [`ChannelDriverRegistry::register`].
 pub struct KafkaChannelDriver;
 
 impl ChannelDriver for KafkaChannelDriver {
@@ -353,14 +356,6 @@ impl ChannelDriverRegistry {
         registry.register(Arc::new(HttpChannelDriver));
         registry.register(Arc::new(CronChannelDriver));
         registry.register(Arc::new(SourceChannelDriver));
-        registry
-    }
-
-    /// Community foundation drivers plus the legacy v1 `"kafka"` driver used by
-    /// existing `/api/v1/admin/channels` endpoints prior to Phase 3 extraction.
-    pub fn with_legacy_v1() -> Self {
-        let registry = Self::community();
-        registry.register(Arc::new(KafkaChannelDriver));
         registry
     }
 

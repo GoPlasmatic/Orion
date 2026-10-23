@@ -37,7 +37,7 @@ async fn send_data_request(app: &axum::Router, channel: &str) -> (StatusCode, se
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/data/{}", channel),
+            &format!("/api/v2/data/{}", channel),
             Some(json!({"data": {"x": 1}})),
         ))
         .await
@@ -99,7 +99,7 @@ async fn test_breaker_trips_after_threshold() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -158,7 +158,7 @@ async fn test_breaker_reset_via_admin_api() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -180,7 +180,7 @@ async fn test_breaker_reset_via_admin_api() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/circuit-breakers/{}", breaker_key),
+            &format!("/api/v2/admin/connectors/circuit-breakers/{}", breaker_key),
             None,
         ))
         .await
@@ -195,7 +195,7 @@ async fn test_breaker_reset_via_admin_api() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -243,7 +243,7 @@ async fn test_breaker_half_open_recovery() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -283,7 +283,7 @@ async fn test_breaker_half_open_recovery() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -311,7 +311,7 @@ async fn test_breaker_half_open_recovery() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -329,7 +329,7 @@ async fn test_breaker_half_open_recovery() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/connectors/circuit-breakers/{}", key),
+            &format!("/api/v2/admin/connectors/circuit-breakers/{}", key),
             None,
         ))
         .await
@@ -373,7 +373,7 @@ async fn test_breaker_disabled_by_default() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -427,7 +427,7 @@ async fn a_failing_db_connector_trips_the_breaker() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -477,7 +477,7 @@ async fn a_rejected_query_does_not_trip_the_breaker() {
         .clone()
         .oneshot(common::json_request(
             "GET",
-            "/api/v1/admin/connectors/circuit-breakers",
+            "/api/v2/admin/connectors/circuit-breakers",
             None,
         ))
         .await
@@ -606,7 +606,7 @@ async fn breaker_survives_reload_of_a_live_pairing() {
         let resp = app
             .oneshot(json_request(
                 "GET",
-                "/api/v1/admin/connectors/circuit-breakers",
+                "/api/v2/admin/connectors/circuit-breakers",
                 None,
             ))
             .await
@@ -624,7 +624,7 @@ async fn breaker_survives_reload_of_a_live_pairing() {
     // so its breaker must still be there afterwards.
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

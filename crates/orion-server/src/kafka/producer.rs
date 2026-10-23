@@ -68,6 +68,28 @@ impl KafkaProducerCache {
             })
             .await
     }
+
+    pub async fn evict(&self, connector_name: &str) {
+        self.cache.evict(connector_name).await;
+    }
+
+    pub async fn evict_all(&self) {
+        self.cache.evict_all().await;
+    }
+}
+
+impl crate::extensions::ConnectionPoolCache for KafkaProducerCache {
+    fn cache_id(&self) -> &str {
+        "kafka_producer"
+    }
+
+    fn evict<'a>(&'a self, connector_name: &'a str) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { KafkaProducerCache::evict(self, connector_name).await })
+    }
+
+    fn evict_all<'a>(&'a self) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { KafkaProducerCache::evict_all(self).await })
+    }
 }
 
 /// Order- and whitespace-insensitive broker-list key, so `a,b` and `b, a`
