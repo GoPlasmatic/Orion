@@ -567,8 +567,9 @@ impl Function for ChannelCallFunction {
         strip_error_records(&mut metadata);
 
         // One generation for this call: the target's guards here and the
-        // engine that runs it below come from the same build.
-        let generation = self.runtime.load();
+        // engine that runs it below come from the same build (inheriting any
+        // pinned generation from the parent run under V2-05.3).
+        let generation = self.runtime.load_pinned_or_current();
         let target_runtime = Some(serviceable_target(&generation, &target)?);
         let engine = generation
             .engine4

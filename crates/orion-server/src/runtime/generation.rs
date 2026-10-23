@@ -35,6 +35,16 @@ use crate::engine::FunctionRegistry;
 use crate::model::ModelSet;
 use crate::plugin::PluginSet;
 
+tokio::task_local! {
+    /// Pinned [`RuntimeGeneration`] for the current root run (`V2-05.2`, `V2-05.3`).
+    ///
+    /// When set via `PINNED_GENERATION.scope(Arc::clone(&generation), fut)`,
+    /// nested `channel_call`, guard stores, and model inference inside `fut`
+    /// resolve against the parent's admitted generation rather than observing
+    /// a newer generation published mid-run.
+    pub static PINNED_GENERATION: Arc<RuntimeGeneration>;
+}
+
 /// One complete, self-consistent generation of everything a request is served
 /// from.
 ///
@@ -135,6 +145,14 @@ impl RuntimeHandle {
     /// of bug as two published values, moved to the reader.
     pub fn load(&self) -> Arc<RuntimeGeneration> {
         self.current.load_full()
+    }
+
+    /// Return the task-local [`PINNED_GENERATION`] when executing inside an
+    /// admitted root run (`V2-05.3`), or load the current generation otherwise.
+    pub fn load_pinned_or_current(&self) -> Arc<RuntimeGeneration> {
+        PINNED_GENERATION
+            .try_with(Arc::clone)
+            .unwrap_or_else(|_| self.load())
     }
 
     /// Publish the next generation. Returns its id.

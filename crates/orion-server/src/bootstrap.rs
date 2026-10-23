@@ -1297,6 +1297,8 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     let packages = Arc::new(crate::runtime::boot_packages::BootPackages::new(
         &config.packages.apply,
     ));
+    let composition = crate::extensions::CompositionRoot::community_with_legacy_v1();
+    let provider_pools = composition.pools.clone();
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         runtime,
         channel_loader,
@@ -1312,6 +1314,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
             sql_pool_cache,
             mongo_pool_cache,
             smtp_pool_cache,
+            provider_pools,
         },
         trace_queue,
         db_pool: pool,
@@ -1344,5 +1347,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         admin_auth_failures: Arc::new(Default::default()),
         channel_auth_failures: Arc::new(Default::default()),
         trusted_proxies,
+        composition,
     })
 }

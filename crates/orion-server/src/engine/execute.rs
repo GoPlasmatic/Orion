@@ -209,6 +209,303 @@ fn error_summary(message: &dataflow_rs_v3::Message) -> String {
         .join("; ")
 }
 
+// ============================================================
+// Dataflow v4 Serving & Offline Execution Adapter (V2-02.2..V2-02.5)
+// ============================================================
+
+/// Normalized v2 execution outcome (`V2-02.4`).
+///
+/// Exhaustive over the 8 canonical v2 outcome classes so v1/v2 HTTP envelopes,
+/// async queues, source runners, and nested `channel_call` invocations map
+/// from one shared classification without ever reporting v2 `"success"` when
+/// task errors occurred (even under `continue_on_error`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NormalizedRunOutcome {
+    /// At least one workflow matched and completed with zero task errors.
+    Success,
+    /// Zero workflows matched the channel/condition/rollout bucket, with zero errors.
+    NoMatch,
+    /// Input or validation rule rejected the request before or during execution.
+    Rejected(String),
+    /// One or more tasks failed (`Stopped` or `CompletedWithErrors` under `continue_on_error`).
+    TaskFailure {
+        summary: String,
+        continued_after_error: bool,
+    },
+    /// Execution exceeded its deadline budget (in milliseconds).
+    DeadlineExceeded(u64),
+    /// Execution was cancelled via its [`dataflow_rs::run::CancelToken`].
+    Cancelled,
+    /// A downstream dependency or resource pool was transiently unavailable.
+    Unavailable(String),
+    /// Unrecoverable expression, budget, or internal engine failure.
+    InternalFailure(String),
+}
+
+impl NormalizedRunOutcome {
+    /// Prometheus `status` label for `orion_messages_total`.
+    ///
+    /// Note that `TaskFailure` with `continued_after_error: true` still records
+    /// `"error"` so `continue_on_error` never hides task failures in metrics.
+    pub fn status_label(&self) -> &'static str {
+        match self {
+            Self::Success | Self::NoMatch => "ok",
+            Self::DeadlineExceeded(_) => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::Rejected(_)
+            | Self::TaskFailure { .. }
+            | Self::Unavailable(_)
+            | Self::InternalFailure(_) => "error",
+        }
+    }
+
+    /// Whether the run succeeded under v2 strict semantics (never true when task errors exist).
+    pub fn is_v2_success(&self) -> bool {
+        matches!(self, Self::Success)
+    }
+
+    /// Map to the legacy v1 [`RunOutcome`] for v1 transport compatibility (`V2-02.4`).
+    pub fn to_v1_outcome(&self) -> RunOutcome {
+        match self {
+            Self::Success | Self::NoMatch => RunOutcome::Ok,
+            Self::TaskFailure { summary, .. } | Self::Rejected(summary) => {
+                RunOutcome::WorkflowErrors(summary.clone())
+            }
+            Self::DeadlineExceeded(ms) => RunOutcome::Timeout(*ms),
+            Self::Cancelled => {
+                RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Timeout("cancelled".into()))
+            }
+            Self::Unavailable(msg) | Self::InternalFailure(msg) => {
+                RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Unknown(msg.clone()))
+            }
+        }
+    }
+
+    /// Render the canonical v2 response envelope (`V2-02.4`).
+    pub fn to_v2_envelope(&self, data: &Value) -> Value {
+        match self {
+            Self::Success => serde_json::json!({
+                "status": "success",
+                "outcome": "success",
+                "data": data,
+            }),
+            Self::NoMatch => serde_json::json!({
+                "status": "no_match",
+                "outcome": "no_match",
+                "data": data,
+            }),
+            Self::Rejected(reason) => serde_json::json!({
+                "status": "error",
+                "outcome": "rejected",
+                "error": { "code": "RUN_REJECTED", "message": reason },
+            }),
+            Self::TaskFailure {
+                summary,
+                continued_after_error,
+            } => serde_json::json!({
+                "status": "error",
+                "outcome": "task_failure",
+                "continued_after_error": continued_after_error,
+                "error": { "code": "TASK_FAILURE", "message": summary },
+                "data": data,
+            }),
+            Self::DeadlineExceeded(ms) => serde_json::json!({
+                "status": "error",
+                "outcome": "deadline_exceeded",
+                "error": { "code": "DEADLINE_EXCEEDED", "timeout_ms": ms },
+            }),
+            Self::Cancelled => serde_json::json!({
+                "status": "error",
+                "outcome": "cancelled",
+                "error": { "code": "RUN_CANCELLED", "message": "execution cancelled" },
+            }),
+            Self::Unavailable(reason) => serde_json::json!({
+                "status": "error",
+                "outcome": "unavailable",
+                "error": { "code": "DEPENDENCY_UNAVAILABLE", "message": reason },
+            }),
+            Self::InternalFailure(reason) => serde_json::json!({
+                "status": "error",
+                "outcome": "internal_failure",
+                "error": { "code": "INTERNAL_FAILURE", "message": reason },
+            }),
+        }
+    }
+}
+
+/// Execution options for the Dataflow v4 serving/offline adapter (`V2-02.2`, `V2-02.3`).
+#[derive(Default)]
+pub struct ExecOptsV4<'a> {
+    pub timeout_ms: Option<u64>,
+    pub capture: Option<TraceCapture>,
+    pub routing_bucket: Option<u8>,
+    pub profile: Option<&'a Arc<super::profile::ProfileCollector>>,
+    pub accountant: Option<&'a super::budget::SharedRunAccountant>,
+    pub cancel: Option<&'a dataflow_rs::run::CancelToken>,
+    pub run_context: Option<crate::extensions::RunContext>,
+}
+
+/// Result of one Dataflow v4 execution (`V2-02.2`).
+pub struct ExecutionV4 {
+    pub message: dataflow_rs::Message,
+    pub outcome: NormalizedRunOutcome,
+    pub matched_workflows: usize,
+    pub duration: Duration,
+}
+
+/// Execute `channel`'s workflows on the Dataflow v4 [`dataflow_rs::Engine`] (`V2-02.2`, `V2-02.3`, `V2-02.4`).
+pub async fn execute_admitted_v4(
+    engine: &dataflow_rs::Engine,
+    channel: &str,
+    data: &Value,
+    metadata: &Value,
+    opts: ExecOptsV4<'_>,
+) -> ExecutionV4 {
+    use dataflow_rs::datavalue::OwnedDataValue;
+    use dataflow_rs::run::{AuditMode, RunOptions};
+
+    let traced = opts.capture.is_some();
+    let payload_dv = OwnedDataValue::from(data);
+    let data_dv = OwnedDataValue::from(data);
+    let meta_dv = OwnedDataValue::from(metadata);
+    let mut message = dataflow_rs::Message::from_parts(payload_dv, data_dv, meta_dv);
+
+    let mut run_opts = RunOptions::default()
+        .channel(channel)
+        .capture_changes(traced)
+        .audit(if traced {
+            AuditMode::Full
+        } else {
+            AuditMode::Off
+        });
+
+    if let Some(bucket) = opts.routing_bucket {
+        run_opts = run_opts.routing_bucket(bucket);
+    }
+    if let Some(ms) = opts.timeout_ms
+        && let Some(deadline) = tokio::time::Instant::now()
+            .into_std()
+            .checked_add(Duration::from_millis(ms))
+    {
+        run_opts = run_opts.deadline(deadline);
+    }
+    if let Some(cancel) = opts.cancel {
+        if cancel.is_cancelled() {
+            return ExecutionV4 {
+                message,
+                outcome: NormalizedRunOutcome::Cancelled,
+                matched_workflows: 0,
+                duration: Duration::ZERO,
+            };
+        }
+        run_opts = run_opts.cancel(cancel);
+    }
+    if opts.timeout_ms == Some(0) {
+        return ExecutionV4 {
+            message,
+            outcome: NormalizedRunOutcome::DeadlineExceeded(0),
+            matched_workflows: 0,
+            duration: Duration::ZERO,
+        };
+    }
+    if let Some(acct) = opts.accountant {
+        run_opts = run_opts.accountant(acct);
+    }
+
+    let started = Instant::now();
+    let run_fut = engine.run_with(&mut message, &run_opts);
+    let run = match (opts.profile, opts.run_context) {
+        (Some(p), Some(rc)) => {
+            super::profile::ORION_PROFILE
+                .scope(
+                    p.clone(),
+                    super::functions::connector_call::ACTIVE_RUN_CONTEXT.scope(rc, run_fut),
+                )
+                .await
+        }
+        (Some(p), None) => super::profile::ORION_PROFILE.scope(p.clone(), run_fut).await,
+        (None, Some(rc)) => {
+            super::functions::connector_call::ACTIVE_RUN_CONTEXT
+                .scope(rc, run_fut)
+                .await
+        }
+        (None, None) => run_fut.await,
+    };
+    let duration = started.elapsed();
+
+    let matched_workflows = run.matched();
+    let outcome = classify_v4_run(&run, &message, opts.timeout_ms);
+
+    ExecutionV4 {
+        message,
+        outcome,
+        matched_workflows,
+        duration,
+    }
+}
+
+fn classify_v4_run(
+    run: &dataflow_rs::Run,
+    message: &dataflow_rs::Message,
+    timeout_ms: Option<u64>,
+) -> NormalizedRunOutcome {
+    use dataflow_rs::ErrorKind;
+    use dataflow_rs::run::RunStatus;
+
+    let err_summary = || {
+        message
+            .errors()
+            .iter()
+            .map(|e| format!("{}: {}", e.code, e.message))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+
+    match run.status() {
+        RunStatus::Completed => {
+            if !message.errors().is_empty() {
+                NormalizedRunOutcome::TaskFailure {
+                    summary: err_summary(),
+                    continued_after_error: true,
+                }
+            } else if run.matched() == 0 {
+                NormalizedRunOutcome::NoMatch
+            } else {
+                NormalizedRunOutcome::Success
+            }
+        }
+        RunStatus::CompletedWithErrors => NormalizedRunOutcome::TaskFailure {
+            summary: err_summary(),
+            continued_after_error: true,
+        },
+        RunStatus::TimedOut => NormalizedRunOutcome::DeadlineExceeded(timeout_ms.unwrap_or(0)),
+        RunStatus::Cancelled => NormalizedRunOutcome::Cancelled,
+        RunStatus::Stopped(err) => match err.kind() {
+            ErrorKind::TimedOut => NormalizedRunOutcome::DeadlineExceeded(timeout_ms.unwrap_or(0)),
+            ErrorKind::Cancelled => NormalizedRunOutcome::Cancelled,
+            ErrorKind::Service { code } if code.as_ref() == "VALIDATION_ERROR" => {
+                NormalizedRunOutcome::Rejected(err.message().to_string())
+            }
+            ErrorKind::Service { .. } if err.is_retryable() => {
+                NormalizedRunOutcome::Unavailable(format!("{}: {}", err.code(), err.message()))
+            }
+            ErrorKind::Service { .. } => {
+                let summary = if !message.errors().is_empty() {
+                    err_summary()
+                } else {
+                    format!("{}: {}", err.code(), err.message())
+                };
+                NormalizedRunOutcome::TaskFailure {
+                    summary,
+                    continued_after_error: false,
+                }
+            }
+            _ => NormalizedRunOutcome::InternalFailure(format!("{}: {}", err.code(), err.message())),
+        },
+        _ => NormalizedRunOutcome::InternalFailure("unknown run status".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +588,123 @@ mod tests {
                 .all(|step| step.changes.as_ref().is_some_and(|c| c.len() == 1)),
             "the trace's per-step diff is still populated"
         );
+    }
+
+    #[tokio::test]
+    async fn v2_02_2_3_4_serving_adapter_normalizes_outcomes_and_never_reports_success_with_task_errors() {
+        let engine = dataflow_rs::Engine::builder()
+            .config(
+                dataflow_rs::run::EngineConfig::default()
+                    .error_context(crate::engine::ERROR_CONTEXT.clone())
+                    .with_condition_error_policy(dataflow_rs::run::ConditionErrorPolicy::Stop),
+            )
+            .workflow_json(&serde_json::json!({
+                "id": "wf-ok",
+                "channel": "orders",
+                "condition": { "==": [{ "var": "data.mode" }, "ok"] },
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "function": {
+                            "name": "map",
+                            "input": { "mappings": [{ "path": "data.done", "logic": true }] }
+                        }
+                    }
+                ]
+            }))
+            .workflow_json(&serde_json::json!({
+                "id": "wf-continue-err",
+                "channel": "orders",
+                "condition": { "==": [{ "var": "data.mode" }, "continue_err"] },
+                "tasks": [
+                    {
+                        "id": "t-fail",
+                        "on_failure": "continue",
+                        "function": {
+                            "name": "validation",
+                            "input": {
+                                "rules": [{ "logic": false, "message": "bad field" }]
+                            }
+                        }
+                    },
+                    {
+                        "id": "t-after",
+                        "function": {
+                            "name": "map",
+                            "input": { "mappings": [{ "path": "data.after", "logic": true }] }
+                        }
+                    }
+                ]
+            }))
+            .build()
+            .expect("v4 engine builds");
+
+        // 1. Success outcome
+        let ok_exec = execute_admitted_v4(
+            &engine,
+            "orders",
+            &serde_json::json!({ "mode": "ok" }),
+            &serde_json::json!({}),
+            ExecOptsV4::default(),
+        )
+        .await;
+        assert_eq!(ok_exec.outcome, NormalizedRunOutcome::Success);
+        assert!(ok_exec.outcome.is_v2_success());
+        assert_eq!(ok_exec.outcome.status_label(), "ok");
+
+        // 2. NoMatch outcome (v1 compat maps to Ok, v2 distinguishes NoMatch)
+        let nomatch_exec = execute_admitted_v4(
+            &engine,
+            "orders",
+            &serde_json::json!({ "mode": "unmatched" }),
+            &serde_json::json!({}),
+            ExecOptsV4::default(),
+        )
+        .await;
+        assert_eq!(nomatch_exec.outcome, NormalizedRunOutcome::NoMatch);
+        assert!(!nomatch_exec.outcome.is_v2_success());
+        assert!(nomatch_exec.outcome.to_v1_outcome().is_ok());
+
+        // 3. TaskFailure with continue_on_error: v2 never reports success and retains failure metric
+        let cont_exec = execute_admitted_v4(
+            &engine,
+            "orders",
+            &serde_json::json!({ "mode": "continue_err" }),
+            &serde_json::json!({}),
+            ExecOptsV4::default(),
+        )
+        .await;
+        assert!(matches!(
+            cont_exec.outcome,
+            NormalizedRunOutcome::TaskFailure {
+                continued_after_error: true,
+                ..
+            }
+        ));
+        assert!(!cont_exec.outcome.is_v2_success());
+        assert_eq!(cont_exec.outcome.status_label(), "error");
+        let v2_env = cont_exec
+            .outcome
+            .to_v2_envelope(&Value::from(cont_exec.message.context().data()));
+        assert_eq!(v2_env["status"], "error");
+        assert_eq!(v2_env["outcome"], "task_failure");
+        assert_eq!(v2_env["continued_after_error"], true);
+
+        // 4. Cancellation attribution
+        let token = dataflow_rs::run::CancelToken::new();
+        token.cancel();
+        let cancel_exec = execute_admitted_v4(
+            &engine,
+            "orders",
+            &serde_json::json!({ "mode": "ok" }),
+            &serde_json::json!({}),
+            ExecOptsV4 {
+                cancel: Some(&token),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(cancel_exec.outcome, NormalizedRunOutcome::Cancelled);
+        assert_eq!(cancel_exec.outcome.status_label(), "cancelled");
     }
 }

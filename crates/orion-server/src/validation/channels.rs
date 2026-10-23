@@ -302,7 +302,7 @@ pub const VALID_HTTP_METHODS: &[&str] =
     &["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
 /// Structural check on a channel's declared HTTP methods (R6).
-fn check_http_methods(methods: &[String]) -> Vec<crate::errors::FieldError> {
+pub(crate) fn check_http_methods(methods: &[String]) -> Vec<crate::errors::FieldError> {
     use crate::errors::FieldError;
     let mut out = Vec::new();
     let mut seen: Vec<String> = Vec::with_capacity(methods.len());
@@ -342,7 +342,7 @@ fn check_http_methods(methods: &[String]) -> Vec<crate::errors::FieldError> {
 /// `"{}"` as a parameter named `""`: the channel was created, activated and
 /// reloaded, and was then unreachable forever with nothing saying so. The
 /// grammar is checked here instead, at the one boundary that has a caller.
-fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldError> {
+pub(crate) fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldError> {
     use crate::errors::FieldError;
     let err = |message: String| {
         FieldError::new("channel.route_pattern", "INVALID", message)
@@ -446,66 +446,26 @@ fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldError> {
 /// field, all with `code = "REQUIRED_FOR_PROTOCOL"` so clients can
 /// distinguish "this field is conditionally required" from a generic
 /// missing-field error.
+///
+/// Delegated through [`crate::extensions::ChannelDriverRegistry`] (`V2-11.1`)
+/// so protocol-specific rules live on their respective [`crate::extensions::ChannelDriver`]
+/// implementations rather than a closed match in core validation.
 fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionError> {
-    use crate::errors::FieldError;
-    let mut out = Vec::new();
-    match fields.protocol {
-        ChannelProtocol::Rest | ChannelProtocol::Http => {
-            match fields.methods {
-                // R6: non-empty is not the same as usable.
-                Some(m) if !m.is_empty() => out.extend(check_http_methods(m)),
-                _ => out.push(
-                    FieldError::new(
-                        "channel.methods",
-                        "REQUIRED_FOR_PROTOCOL",
-                        format!(
-                            "REST/HTTP channels must specify at least one HTTP method (protocol=\"{}\")",
-                            fields.protocol
-                        ),
-                    )
-                    .with_expected(serde_json::Value::String(
-                        "non-empty array of method names".to_string(),
-                    )),
-                ),
-            }
-            match fields.route_pattern {
-                Some(r) if !r.trim().is_empty() => out.extend(check_route_pattern(r)),
-                _ => out.push(
-                    FieldError::new(
-                        "channel.route_pattern",
-                        "REQUIRED_FOR_PROTOCOL",
-                        format!(
-                            "REST/HTTP channels must specify a route_pattern (protocol=\"{}\")",
-                            fields.protocol
-                        ),
-                    )
-                    .with_expected(serde_json::Value::String(
-                        "URL path pattern (e.g. \"/orders/{id}\")".to_string(),
-                    )),
-                ),
-            }
-        }
-        ChannelProtocol::Kafka => {
-            if fields.topic.is_none_or(|t| t.trim().is_empty()) {
-                out.push(FieldError::new(
-                    "channel.topic",
-                    "REQUIRED_FOR_PROTOCOL",
-                    "Kafka channels must specify a topic",
-                ));
-            }
-        }
-        // A cron channel is the one protocol with nothing *required* here: its
-        // trigger lives entirely in `transport_config`, which
-        // `cron_transport_errors` compiles. What this arm contributes is the
-        // other half — the routing fields of the protocols it is not.
-        ChannelProtocol::Cron => out.extend(super::cron::cron_routing_errors(
-            fields.channel_type,
-            fields.methods,
-            fields.route_pattern,
-            fields.topic,
-            fields.consumer_group,
-        )),
-    }
+    static REGISTRY: std::sync::LazyLock<crate::extensions::ChannelDriverRegistry> =
+        std::sync::LazyLock::new(crate::extensions::ChannelDriverRegistry::with_legacy_v1);
+
+    let driver_fields = crate::extensions::ChannelProtocolFields {
+        protocol: fields.protocol.as_str(),
+        channel_type: fields.channel_type,
+        methods: fields.methods,
+        route_pattern: fields.route_pattern,
+        topic: fields.topic,
+        consumer_group: fields.consumer_group,
+    };
+    let mut out = match REGISTRY.get(driver_fields.protocol) {
+        Some(driver) => driver.validate_fields(&driver_fields),
+        None => Vec::new(),
+    };
     // D29: the varchar(255) caps are deliberately outside the protocol match —
     // all three fields are optional on the request and persist whatever the
     // protocol says, so an over-long `topic` on a REST channel (or

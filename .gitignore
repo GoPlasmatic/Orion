@@ -43,6 +43,9 @@ debug/
 
 # Everything docs/ generates or fetches is in docs/.gitignore.
 
+# Local design brainstorming and progress notes
+/design-docs/
+
 # Benchmark results: scratch runs stay local; each Orion release record
 # (RELEASING.md's C13 session) gets an explicit re-include line. Deliberately
 # not a blanket `v*` — dev machines hold comparison dirs named after

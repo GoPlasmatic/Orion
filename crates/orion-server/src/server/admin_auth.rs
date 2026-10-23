@@ -115,7 +115,7 @@ pub(crate) fn is_guarded_path(path: &str, metrics_on_this_listener: bool) -> boo
     if path == METRICS_PATH {
         return metrics_on_this_listener;
     }
-    path.starts_with("/api/v1/admin")
+    path.starts_with("/api/v1/admin") || path.starts_with("/api/v2/admin")
 }
 
 /// Whether a `MatchedPath` is a data-plane catch-all rather than a real route.
@@ -404,9 +404,12 @@ mod tests {
         for on_main in [true, false] {
             assert!(is_guarded_path("/api/v1/admin/workflows", on_main));
             assert!(is_guarded_path("/api/v1/admin/traces", on_main));
+            assert!(is_guarded_path("/api/v2/admin/deployments", on_main));
+            assert!(is_guarded_path("/api/v2/admin/runtime-capabilities", on_main));
             // R12: the single-trace GET authenticates in its handler.
             assert!(!is_guarded_path(SINGLE_TRACE_PATH, on_main));
             assert!(!is_guarded_path("/api/v1/data/{*path}", on_main));
+            assert!(!is_guarded_path("/api/v2/data/{*path}", on_main));
             assert!(!is_guarded_path("/health", on_main));
         }
     }

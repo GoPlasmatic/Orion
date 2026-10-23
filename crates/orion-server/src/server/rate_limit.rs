@@ -204,9 +204,12 @@ impl RouteGroup {
 /// `rate_limit.endpoints.data_rps` — the channel's own limit still applies,
 /// but the platform budget the operator configured does not.
 fn classify_route(path: &str, data_mounts: &[String]) -> RouteGroup {
-    if path.starts_with("/api/v1/admin") {
+    if path.starts_with("/api/v1/admin") || path.starts_with("/api/v2/admin") {
         RouteGroup::Admin
-    } else if path.starts_with("/api/v1/data") || under_a_data_mount(path, data_mounts) {
+    } else if path.starts_with("/api/v1/data")
+        || path.starts_with("/api/v2/data")
+        || under_a_data_mount(path, data_mounts)
+    {
         RouteGroup::Data
     } else {
         RouteGroup::Operational

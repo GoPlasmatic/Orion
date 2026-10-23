@@ -44,6 +44,7 @@ pub mod crypto;
 pub mod definitions;
 pub mod engine;
 pub mod errors;
+pub mod extensions;
 pub mod http_body;
 pub mod jwt;
 pub mod kafka;

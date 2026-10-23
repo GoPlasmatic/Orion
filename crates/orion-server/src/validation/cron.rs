@@ -90,7 +90,7 @@ const REFUSED_ROUTING_FIELDS: &[(&str, &str)] = &[
 
 /// The routing fields a cron channel must leave unset, plus the `channel_type`
 /// rule.
-pub(super) fn cron_routing_errors(
+pub(crate) fn cron_routing_errors(
     channel_type: Option<&str>,
     methods: Option<&[String]>,
     route_pattern: Option<&str>,
@@ -140,7 +140,7 @@ pub(super) fn cron_routing_errors(
 }
 
 /// Compile the `transport_config`, reporting every problem.
-pub(super) fn cron_transport_errors(
+pub(crate) fn cron_transport_errors(
     transport_config: &Value,
     channel_id: Option<&str>,
 ) -> Vec<FieldError> {
@@ -182,7 +182,7 @@ pub(super) fn cron_transport_errors(
 }
 
 /// The per-channel `config` keys a cron channel may not set.
-pub(super) fn cron_config_errors(config: &Value) -> Vec<FieldError> {
+pub(crate) fn cron_config_errors(config: &Value) -> Vec<FieldError> {
     let Some(map) = config.as_object() else {
         return Vec::new();
     };

@@ -60,6 +60,7 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str, slots: &[
             PoolSlot::Smtp => state.caches.smtp_pool_cache.evict(connector_name).await,
         }
     }
+    state.caches.provider_pools.evict_connector(connector_name).await;
     tracing::debug!(
         connector = connector_name,
         ?slots,

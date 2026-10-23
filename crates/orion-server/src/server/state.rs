@@ -47,6 +47,8 @@ pub struct Caches {
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     /// SMTP transport cache — shared so admin routes can evict stale pools.
     pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
+    /// Extensible provider-owned connection-pool caches (`V2-11.1`, `V2-05.4`).
+    pub provider_pools: crate::extensions::ResourcePoolRegistry,
 }
 
 impl Caches {
@@ -63,6 +65,8 @@ impl Caches {
     /// here. Before this, the resync path listed the caches by hand and
     /// silently omitted the SMTP one, which left a node serving through a
     /// stale SMTP transport after an SMTP connector changed on another node.
+    /// Also evicts all dynamically registered [`crate::extensions::ConnectionPoolCache`]
+    /// instances in `provider_pools`.
     pub async fn evict_all_pools(&self) {
         use crate::connector::PoolSlot;
         for slot in PoolSlot::ALL {
@@ -73,6 +77,7 @@ impl Caches {
                 PoolSlot::Smtp => self.smtp_pool_cache.evict_all().await,
             }
         }
+        self.provider_pools.evict_all().await;
     }
 }
 
@@ -252,6 +257,10 @@ pub struct AppStateInner {
     /// per-channel limit exists for, every client behind a proxy collapsed
     /// into one bucket (S15).
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
+    /// The node's composition root (`V2-11.1`): registered native Rust
+    /// `ChannelDriver`s, `ProviderBackend`s (`rust`, `workflow`, `wasm`),
+    /// `AdmissionPolicy`, and `ResourcePoolRegistry`.
+    pub composition: crate::extensions::CompositionRoot,
 }
 
 impl AppStateInner {
