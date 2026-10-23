@@ -1313,6 +1313,184 @@ impl ImmutableDeploymentStore {
         manifest.canonicalize_and_verify()?;
         Ok(manifest)
     }
+
+    /// Persist the current deployment store state (`deployment_head`, `deployment_revisions`,
+    /// `deployment_members`, `deployment_operations`, `artifact_objects`, `provider_packages`,
+    /// `provider_admissions`, and `connection_revisions`) to a SQLite pool migrated with
+    /// `023_v2_immutable_deployments.sql` (`V2-03.2`–`V2-03.4`).
+    pub async fn persist_to_sqlite(&self, pool: &sqlx::SqlitePool) -> Result<(), DeploymentError> {
+        let snapshot = {
+            let g = self.inner.lock().expect("store lock");
+            (
+                g.head_revision,
+                g.epoch,
+                g.artifacts.values().cloned().collect::<Vec<_>>(),
+                g.packages.values().cloned().collect::<Vec<_>>(),
+                g.admissions.values().cloned().collect::<Vec<_>>(),
+                g.connections.values().cloned().collect::<Vec<_>>(),
+                g.revisions.values().cloned().collect::<Vec<_>>(),
+                g.receipts
+                    .iter()
+                    .map(|((p, k), r)| (p.clone(), k.clone(), r.clone()))
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        let mut tx = pool.begin().await.map_err(|e| {
+            DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
+        })?;
+
+        sqlx::query(
+            "INSERT INTO deployment_head (singleton_id, head_revision, epoch) VALUES (1, ?1, ?2) \
+             ON CONFLICT(singleton_id) DO UPDATE SET head_revision = excluded.head_revision, epoch = excluded.epoch",
+        )
+        .bind(snapshot.0 as i64)
+        .bind(snapshot.1 as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+
+        for art in &snapshot.2 {
+            let state_str = match art.state {
+                ArtifactState::Active => "active",
+                ArtifactState::Draining => "draining",
+                ArtifactState::Deleted => "deleted",
+            };
+            sqlx::query(
+                "INSERT INTO artifact_objects (digest, size_bytes, state, drain_epoch, payload_bytes) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(digest) DO UPDATE SET state = excluded.state, drain_epoch = excluded.drain_epoch, payload_bytes = excluded.payload_bytes",
+            )
+            .bind(&art.digest)
+            .bind(art.size_bytes as i64)
+            .bind(state_str)
+            .bind(art.drain_epoch.map(|e| e as i64))
+            .bind(art.bytes.as_deref())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+        }
+
+        for pkg in &snapshot.3 {
+            let tier = pkg
+                .distribution_json
+                .get("tier")
+                .and_then(Value::as_str)
+                .unwrap_or("community");
+            let manifest_str =
+                serde_json::to_string(&pkg.manifest_json).unwrap_or_else(|_| "{}".into());
+            let inventory_str =
+                serde_json::to_string(&pkg.inventory_json).unwrap_or_else(|_| "{}".into());
+            sqlx::query(
+                "INSERT INTO provider_packages (digest, publisher, provider_id, version, implementation, tier, manifest_json, inventory_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 ON CONFLICT(digest) DO NOTHING",
+            )
+            .bind(&pkg.package_digest)
+            .bind(&pkg.publisher)
+            .bind(&pkg.provider_id)
+            .bind(&pkg.version)
+            .bind(pkg.implementation.as_str())
+            .bind(tier)
+            .bind(manifest_str)
+            .bind(inventory_str)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+        }
+
+        for adm in &snapshot.4 {
+            sqlx::query(
+                "INSERT INTO provider_admissions (package_digest, policy_id, admission_fingerprint, revoked) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(package_digest) DO UPDATE SET revoked = excluded.revoked, admission_fingerprint = excluded.admission_fingerprint",
+            )
+            .bind(&adm.package_digest)
+            .bind(&adm.policy_id)
+            .bind(&adm.admission_fingerprint)
+            .bind(adm.revoked)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+        }
+
+        for conn in &snapshot.5 {
+            let cfg_str = serde_json::to_string(&conn.public_config).unwrap_or_else(|_| "{}".into());
+            sqlx::query(
+                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(connection_id, revision) DO NOTHING",
+            )
+            .bind(&conn.connection_id)
+            .bind(conn.revision as i64)
+            .bind(&conn.provider_digest)
+            .bind(cfg_str)
+            .bind(conn.secret_locator.as_deref())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+        }
+
+        for rev in &snapshot.6 {
+            let manifest_str =
+                serde_json::to_string(&rev.manifest).unwrap_or_else(|_| "{}".into());
+            sqlx::query(
+                "INSERT INTO deployment_revisions (revision, parent_revision, manifest_digest, manifest_json, principal, reason, members_compacted) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(revision) DO UPDATE SET members_compacted = excluded.members_compacted",
+            )
+            .bind(rev.revision as i64)
+            .bind(rev.parent_revision.map(|r| r as i64))
+            .bind(&rev.manifest_digest)
+            .bind(manifest_str)
+            .bind(&rev.created_by)
+            .bind(&rev.reason)
+            .bind(rev.members_compacted)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+
+            if !rev.members_compacted {
+                for m in &rev.manifest.members {
+                    sqlx::query(
+                        "INSERT INTO deployment_members (deployment_revision, entity_kind, entity_id, entity_revision, owning_package, definition_digest) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                         ON CONFLICT(deployment_revision, entity_kind, entity_id, entity_revision) DO NOTHING",
+                    )
+                    .bind(rev.revision as i64)
+                    .bind(m.entity.kind.as_str())
+                    .bind(&m.entity.id)
+                    .bind(m.entity.revision as i64)
+                    .bind(m.owning_package.as_deref().unwrap_or(""))
+                    .bind(&m.definition_digest)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                }
+            }
+        }
+
+        for (principal, idem_key, receipt) in &snapshot.7 {
+            sqlx::query(
+                "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(principal, idempotency_key) DO NOTHING",
+            )
+            .bind(principal)
+            .bind(idem_key)
+            .bind(&receipt.request_hash)
+            .bind(receipt.committed_revision as i64)
+            .bind(&receipt.manifest_digest)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+        }
+
+        tx.commit().await.map_err(|e| {
+            DeploymentError::new("DB_COMMIT_ERROR", format!("failed to commit tx: {e}"))
+        })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1551,5 +1729,84 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, "BACKFILL_ENTERPRISE_PROVIDER_REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn v2_03_2_to_4_sqlite_migration_and_persistence_roundtrip() {
+        use std::str::FromStr;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
+            )
+            .await
+            .unwrap();
+        crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
+            .run(&pool)
+            .await
+            .expect("sqlite migrations including 023_v2_immutable_deployments must apply");
+
+        let store = ImmutableDeploymentStore::new("node-sql-1");
+        let policy = CommunityAdmissionPolicy::new();
+        let entries = sample_archive_entries();
+        let pkg = store.ingest_verified_archive(&entries).unwrap();
+        store
+            .admit_package(&pkg.package_digest, &policy, None)
+            .unwrap();
+        store
+            .store_connection_revision(
+                "orders-db",
+                1,
+                &pkg.package_digest,
+                json!({"url": "https://api.example.com"}),
+                Some("vault://secrets/orders#v1".to_string()),
+            )
+            .unwrap();
+
+        let manifest = CanonicalManifest {
+            schema_version: 2,
+            providers: vec![ProviderRef {
+                publisher: pkg.publisher.clone(),
+                provider_id: pkg.provider_id.clone(),
+                version: pkg.version.clone(),
+                digest: pkg.package_digest.clone(),
+            }],
+            provider_lock_digest: None,
+            members: vec![ManifestMember {
+                entity: EntityRef {
+                    kind: EntityKind::Workflow,
+                    id: "orders-wf".to_string(),
+                    revision: 1,
+                },
+                definition_digest: sha256_digest(b"wf-sql-v1"),
+                owning_package: None,
+                requires: Vec::new(),
+                rollouts: Vec::new(),
+            }],
+        };
+        let plan = store.plan_candidate(0, manifest).unwrap();
+        store
+            .apply_candidate("alice", "sql-idem-1", &plan, "persist test", &policy)
+            .unwrap();
+
+        store
+            .persist_to_sqlite(&pool)
+            .await
+            .expect("persist_to_sqlite succeeds");
+
+        let (head_rev, epoch): (i64, i64) =
+            sqlx::query_as("SELECT head_revision, epoch FROM deployment_head WHERE singleton_id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((head_rev, epoch), (1, 1));
+
+        let (op_rev,): (i64,) = sqlx::query_as(
+            "SELECT committed_revision FROM deployment_operations WHERE principal = 'alice' AND idempotency_key = 'sql-idem-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(op_rev, 1);
     }
 }

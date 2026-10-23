@@ -17,6 +17,7 @@ pub mod models;
 pub mod packages;
 pub mod plugins;
 pub mod traces;
+pub mod v2;
 pub mod workflows;
 
 use clap::Subcommand;
@@ -92,4 +93,14 @@ pub enum Commands {
 
     /// Inspect scheduled runs of cron channels
     Cron(cron::CronCmd),
+
+    /// Manage immutable v2 deployments, convergence, rollback, and migration preflight
+    #[command(alias = "deploy")]
+    Deployments(v2::DeploymentsCmd),
+
+    /// Author, lint, pack, upload, admit, and revoke v2 connector provider packages
+    Provider(v2::ProviderCmd),
+
+    /// Manage immutable v2 connection revisions and execute audited health probes
+    Connections(v2::ConnectionsCmd),
 }

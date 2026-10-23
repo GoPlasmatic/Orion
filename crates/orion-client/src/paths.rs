@@ -203,6 +203,40 @@ pub fn cache_namespace_invalidate(namespace: &str) -> String {
     )
 }
 
+// -- Admin V2: capabilities, packages, connections, deployments, migration --
+pub const V2_RUNTIME_CAPABILITIES: &str = "/api/v2/admin/runtime-capabilities";
+pub const V2_CONNECTOR_PACKAGES: &str = "/api/v2/admin/connector-packages";
+pub const V2_CONNECTIONS: &str = "/api/v2/admin/connections";
+pub const V2_DEPLOYMENT_PLANS: &str = "/api/v2/admin/deployment-plans";
+pub const V2_DEPLOYMENTS: &str = "/api/v2/admin/deployments";
+pub const V2_DEPLOYMENTS_ROLLBACK: &str = "/api/v2/admin/deployments/rollback";
+pub const V2_MIGRATION_REPORT: &str = "/api/v2/admin/migration-report";
+pub const V2_EDITION_TRANSITION_PREFLIGHT: &str = "/api/v2/admin/edition-transition-preflight";
+pub const V2_AUTHORING_SCAFFOLD: &str = "/api/v2/admin/authoring/scaffold";
+pub const V2_AUTHORING_LINT: &str = "/api/v2/admin/authoring/lint";
+pub const V2_AUTHORING_PACK: &str = "/api/v2/admin/authoring/pack";
+
+pub fn v2_connector_package_admit(digest: &str) -> String {
+    format!("{V2_CONNECTOR_PACKAGES}/{}/admit", seg(digest))
+}
+
+pub fn v2_connector_package_revoke(digest: &str) -> String {
+    format!("{V2_CONNECTOR_PACKAGES}/{}/revoke", seg(digest))
+}
+
+pub fn v2_connection_probe(id: &str) -> String {
+    format!("{V2_CONNECTIONS}/{}/probe", seg(id))
+}
+
+pub fn v2_deployment(revision: u64) -> String {
+    format!("{V2_DEPLOYMENTS}/{revision}")
+}
+
+pub fn v2_deployment_convergence(revision: u64, target: Option<&str>) -> String {
+    let qs = query_string(&[("target", target.map(str::to_string))]);
+    format!("{V2_DEPLOYMENTS}/{revision}/convergence{qs}")
+}
+
 // -- Data plane --
 pub fn data(channel: &str) -> String {
     format!("/api/v1/data/{}", seg(channel))

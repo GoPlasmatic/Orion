@@ -196,6 +196,18 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             let client = build_client(&cli)?;
             cmd.run(&client, &cli.output, cli.quiet).await
         }
+        Commands::Deployments(cmd) => {
+            let client = build_client(&cli)?;
+            cmd.run(&client, &cli.output, cli.quiet).await
+        }
+        Commands::Provider(cmd) => {
+            let client = build_client(&cli)?;
+            cmd.run(&client, &cli.output, cli.quiet).await
+        }
+        Commands::Connections(cmd) => {
+            let client = build_client(&cli)?;
+            cmd.run(&client, &cli.output, cli.quiet).await
+        }
         Commands::Completions(cmd) => {
             cmd.run();
             Ok(0)

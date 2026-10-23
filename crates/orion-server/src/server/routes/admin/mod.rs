@@ -720,7 +720,7 @@ fn request_details() -> Option<String> {
 /// [`crate::queue::audit_queue`] rather than into a detached `tokio::spawn`,
 /// so a mutation accepted moments before SIGTERM is still recorded and a slow
 /// database cannot spawn one writer task per admin request.
-fn audit_log(
+pub(crate) fn audit_log(
     queue: &crate::queue::audit_queue::AuditQueue,
     principal: &Option<Extension<AdminPrincipal>>,
     action: &str,

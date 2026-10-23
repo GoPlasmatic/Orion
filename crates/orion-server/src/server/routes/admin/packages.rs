@@ -195,6 +195,11 @@ pub(crate) async fn put_package(
     Path(name): Path<String>,
     OrionJson(req): OrionJson<PutPackageReceiptRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    if state.composition.deployments.current_head().0 > 0 {
+        return Err(OrionError::UpgradeRequired(
+            "Legacy v1 multi-request package promotion is disabled once v2 immutable deployments are active; use /api/v2/admin/deployments".to_string(),
+        ));
+    }
     validate_put(&name, &req)?;
     let who = principal
         .as_ref()

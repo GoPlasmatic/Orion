@@ -151,6 +151,23 @@ impl ProviderBackend for HttpProviderBackend {
                 ));
             }
 
+            if let Some(url) = input
+                .get("url")
+                .or_else(|| input.get("base_url"))
+                .and_then(Value::as_str)
+            {
+                if let Err(ssrf_reason) =
+                    crate::validation::ssrf::validate_url_not_private(url).await
+                {
+                    return Err(ConnectorError::forbidden(
+                        codes::CAPABILITY_INVALID,
+                        "ssrf_validation",
+                        format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
+                        ctx.invocation().effect_status(),
+                    ));
+                }
+            }
+
             let mut metadata = BTreeMap::new();
             metadata.insert("driver".to_string(), json!(DRIVER_HTTP));
             metadata.insert("attempt".to_string(), json!(ctx.attempt_number()));
@@ -470,6 +487,73 @@ impl SqliteProviderBackend {
 
         let resolved = self.approved_root.join(candidate);
         Ok(format!("sqlite://{}", resolved.display()))
+    }
+
+    /// Execute a real SQL statement against a sandboxed SQLite target (`V2-14.3`).
+    pub async fn execute_live_sqlite(
+        &self,
+        conn_str: &str,
+        operation: &str,
+        statement: &str,
+    ) -> Result<Value, ConnectorError> {
+        use sqlx::Column;
+        use sqlx::Row;
+
+        let target = self.resolve_sandboxed_target(conn_str)?;
+        let pool = sqlx::SqlitePool::connect(&target).await.map_err(|e| {
+            ConnectorError::invalid_input(
+                format!("Failed to connect to sandboxed SQLite target '{target}': {e}"),
+                None,
+            )
+        })?;
+        let statement_owned = statement.to_string();
+
+        match operation {
+            "query" | "data_query" => {
+                let rows = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
+                    .fetch_all(&pool)
+                    .await
+                    .map_err(|e| {
+                        ConnectorError::invalid_input(format!("SQLite query error: {e}"), None)
+                    })?;
+                let mut json_rows = Vec::with_capacity(rows.len());
+                for row in &rows {
+                    let mut map = serde_json::Map::new();
+                    for (idx, col) in row.columns().iter().enumerate() {
+                        let val: Option<String> = row.try_get_unchecked(idx).ok();
+                        map.insert(
+                            col.name().to_string(),
+                            val.map(Value::String).unwrap_or(Value::Null),
+                        );
+                    }
+                    json_rows.push(Value::Object(map));
+                }
+                Ok(json!({
+                    "rows": json_rows,
+                    "count": rows.len(),
+                    "statement": statement_owned,
+                }))
+            }
+            "execute" | "data_write" => {
+                let res = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| {
+                        ConnectorError::invalid_input(format!("SQLite write error: {e}"), None)
+                    })?;
+                Ok(json!({
+                    "rows_affected": res.rows_affected(),
+                    "last_insert_id": res.last_insert_rowid(),
+                    "statement": statement_owned,
+                }))
+            }
+            other => Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!("Unsupported SQLite operation '{other}'"),
+                EffectStatus::NotStarted,
+            )),
+        }
     }
 }
 
@@ -1083,5 +1167,36 @@ mod tests {
                 metadata: BTreeMap::new(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn v2_14_2_and_3_http_ssrf_guard_and_live_sqlite_execution() {
+        let http = HttpProviderBackend;
+        let inv = make_invocation(DRIVER_HTTP, "http-conn", 1, "get");
+        let attempt = inv.next_attempt().unwrap();
+
+        // Private loopback URL is blocked by SSRF guard (`V2-14.2`)
+        let ssrf_err = http
+            .invoke(
+                &attempt,
+                "get",
+                json!({"path": "/metadata", "url": "http://169.254.169.254/latest/meta-data"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(ssrf_err.code, codes::CAPABILITY_INVALID);
+
+        // Live SQLite execution against sqlite::memory: (`V2-14.3`)
+        let sqlite = SqliteProviderBackend::default();
+        let out = sqlite
+            .execute_live_sqlite(
+                "sqlite::memory:",
+                "query",
+                "SELECT 'orion-v2' AS edition",
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["count"], 1);
+        assert_eq!(out["rows"][0]["edition"], "orion-v2");
     }
 }

@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tokio::sync::oneshot;
 
@@ -1239,6 +1239,7 @@ impl<T> Drop for OwnedHostJob<T> {
 mod tests {
     use super::*;
     use crate::extensions::contract::ProviderReference;
+    use std::time::Duration;
 
     fn sample_connection() -> (ConnectionReference, EffectiveConnectionIdentity) {
         let provider = ProviderReference {

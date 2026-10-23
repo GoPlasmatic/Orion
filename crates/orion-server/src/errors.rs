@@ -138,6 +138,11 @@ pub enum OrionError {
     #[error("Method not allowed: {0}")]
     MethodNotAllowed(String),
 
+    /// V2-07.5: Pre-mutation 426 UPGRADE_REQUIRED for unsupported v1 deferred writes
+    /// once v2 immutable deployments are active.
+    #[error("Upgrade required: {0}")]
+    UpgradeRequired(String),
+
     #[error("Storage error: {0}")]
     Storage(#[from] sqlx::Error),
 
@@ -300,6 +305,11 @@ impl OrionError {
             OrionError::MethodNotAllowed(msg) => (
                 StatusCode::METHOD_NOT_ALLOWED,
                 codes::METHOD_NOT_ALLOWED,
+                msg.clone(),
+            ),
+            OrionError::UpgradeRequired(msg) => (
+                StatusCode::UPGRADE_REQUIRED,
+                codes::UPGRADE_REQUIRED,
                 msg.clone(),
             ),
             OrionError::ServiceUnavailable { message, .. } => (
@@ -1177,13 +1187,14 @@ mod tests {
             OrionError::Storage(_) => "Storage",
             OrionError::Engine(_) => "Engine",
             OrionError::Serialization(_) => "Serialization",
+            OrionError::UpgradeRequired(_) => "UpgradeRequired",
         }
     }
 
     /// The number of variants [`variant_name`] enumerates. Bumping this is the
     /// second half of the prompt: the compile error says "name the variant",
     /// this assertion says "and state its wire contract below".
-    const VARIANT_COUNT: usize = 19;
+    const VARIANT_COUNT: usize = 20;
 
     /// One sample per variant with the `(status, code)` it must answer with.
     ///
@@ -1303,6 +1314,11 @@ mod tests {
                 ),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "SERIALIZATION_ERROR",
+            ),
+            (
+                OrionError::UpgradeRequired("use /api/v2/admin/deployments".into()),
+                StatusCode::UPGRADE_REQUIRED,
+                "UPGRADE_REQUIRED",
             ),
         ]
     }

@@ -54,6 +54,7 @@ pub mod enums;
 pub mod envelope;
 pub mod error;
 pub mod import;
+pub mod v2;
 
 pub use dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,

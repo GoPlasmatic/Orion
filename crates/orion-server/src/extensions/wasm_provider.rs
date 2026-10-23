@@ -164,6 +164,29 @@ impl WasmComponentCache {
         format!("sha256:{}", hex::encode(hasher.finalize()))
     }
 
+    /// Validate a real WebAssembly binary or component using `wasmtime::Engine`
+    /// configured with fuel consumption and the Component Model (`V2-13.1`, `V2-13.2`).
+    pub fn validate_wasmtime_binary(bytes: &[u8]) -> Result<(), WasmVerifyError> {
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        config.wasm_component_model(true);
+        let engine = wasmtime::Engine::new(&config).map_err(|e| WasmVerifyError {
+            code: "WASM_ENGINE_INIT_FAILED",
+            message: format!("Failed to initialize wasmtime engine: {e}"),
+        })?;
+        if wasmtime::Module::validate(&engine, bytes).is_ok()
+            || wasmtime::component::Component::new(&engine, bytes).is_ok()
+        {
+            Ok(())
+        } else {
+            Err(WasmVerifyError {
+                code: "WASM_INVALID_BINARY",
+                message: "WebAssembly binary failed wasmtime validation as module or component"
+                    .to_string(),
+            })
+        }
+    }
+
     /// Verify component bytes, imports, and capabilities and insert into cache (`V2-13.1`).
     pub fn verify_and_insert(
         &self,
@@ -850,5 +873,10 @@ mod tests {
             res_bad,
             ConnectorResult::Error { ref error } if error.code == codes::CONTRACT_VIOLATION
         ));
+
+        // 4. Real wasmtime Engine validates a minimal valid WebAssembly module (`\0asm\x01\x00\x00\x00`)
+        // and rejects corrupted binaries (`V2-13.1`).
+        assert!(WasmComponentCache::validate_wasmtime_binary(b"\0asm\x01\x00\x00\x00").is_ok());
+        assert!(WasmComponentCache::validate_wasmtime_binary(b"\0asm\x01\x00\x00\x00\xff\xff").is_err());
     }
 }

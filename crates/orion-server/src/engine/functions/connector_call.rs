@@ -12,7 +12,7 @@ use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Reference, RetrySafety};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
@@ -222,6 +222,7 @@ mod tests {
     use super::*;
     use crate::extensions::CompositionRoot;
     use dataflow_rs::function::testing;
+    use serde_json::Value;
 
     #[tokio::test]
     async fn connector_call_dispatches_memory_cache_provider_in_v4_engine() {

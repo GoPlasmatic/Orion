@@ -61,14 +61,20 @@ pub fn v2_admin_routes(max_admin_body_size: usize) -> Router<AppState> {
             "/deployments",
             get(get_deployments_summary).post(apply_deployment),
         )
+        .route("/deployments/{revision}", get(get_deployment_revision))
         .route(
             "/deployments/{revision}/convergence",
             get(get_deployment_convergence),
         )
         .route("/deployments/rollback", post(rollback_deployment))
         .route("/migration-report", post(create_migration_report))
+        .route(
+            "/edition-transition-preflight",
+            post(edition_transition_preflight),
+        )
         .route("/authoring/scaffold", post(authoring_scaffold))
         .route("/authoring/lint", post(authoring_lint))
+        .route("/authoring/pack", post(authoring_pack))
         .layer(DefaultBodyLimit::max(max_admin_body_size))
 }
 
@@ -102,7 +108,13 @@ fn deployment_err_response(err: DeploymentError) -> (StatusCode, Json<Value>) {
 
 fn principal_id(ext: Option<Extension<AdminPrincipal>>) -> String {
     ext.map(|Extension(p)| p.key_id)
-        .unwrap_or_else(|| "anonymous-admin".to_string())
+        .unwrap_or_else(|| crate::server::routes::admin::ANONYMOUS_PRINCIPAL.to_string())
+}
+
+async fn sync_v2_deployments_to_db(state: &AppState) {
+    if let crate::storage::DbPool::Sqlite(ref pool) = state.db_pool {
+        let _ = state.composition.deployments.persist_to_sqlite(pool).await;
+    }
 }
 
 /// `GET /api/v2/admin/runtime-capabilities` (`V2-07.5`).
@@ -181,6 +193,7 @@ async fn list_connector_packages(State(state): State<AppState>) -> impl IntoResp
 /// `POST /api/v2/admin/connector-packages` (`V2-07.1`).
 async fn upload_connector_package(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Json(req): Json<UploadPackageRequest>,
 ) -> impl IntoResponse {
     let mut files = match decode_files_map(&req.files) {
@@ -212,7 +225,17 @@ async fn upload_connector_package(
         .deployments
         .ingest_verified_archive(&entries)
     {
-        Ok(row) => (StatusCode::CREATED, Json(json!({ "package": row }))),
+        Ok(row) => {
+            sync_v2_deployments_to_db(&state).await;
+            crate::server::routes::admin::audit_log(
+                &state.audit_queue,
+                &principal,
+                "v2_package_upload",
+                "connector_package",
+                &row.package_digest,
+            );
+            (StatusCode::CREATED, Json(json!({ "package": row })))
+        }
         Err(e) => deployment_err_response(e),
     }
 }
@@ -225,6 +248,7 @@ pub struct AdmitPackageRequest {
 /// `POST /api/v2/admin/connector-packages/{digest}/admit` (`V2-07.1`).
 async fn admit_connector_package(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(digest): Path<String>,
     req: Option<Json<AdmitPackageRequest>>,
 ) -> impl IntoResponse {
@@ -234,7 +258,17 @@ async fn admit_connector_package(
         state.composition.admission.as_ref(),
         lock.as_ref(),
     ) {
-        Ok(adm) => (StatusCode::OK, Json(json!({ "admission": adm }))),
+        Ok(adm) => {
+            sync_v2_deployments_to_db(&state).await;
+            crate::server::routes::admin::audit_log(
+                &state.audit_queue,
+                &principal,
+                "v2_package_admit",
+                "connector_package",
+                &digest,
+            );
+            (StatusCode::OK, Json(json!({ "admission": adm })))
+        }
         Err(e) => deployment_err_response(e),
     }
 }
@@ -242,13 +276,24 @@ async fn admit_connector_package(
 /// `POST /api/v2/admin/connector-packages/{digest}/revoke` (`V2-07.1`).
 async fn revoke_connector_package(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(digest): Path<String>,
 ) -> impl IntoResponse {
     match state.composition.deployments.revoke_package(&digest) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(json!({ "package_digest": digest, "revoked": true })),
-        ),
+        Ok(()) => {
+            sync_v2_deployments_to_db(&state).await;
+            crate::server::routes::admin::audit_log(
+                &state.audit_queue,
+                &principal,
+                "v2_package_revoke",
+                "connector_package",
+                &digest,
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "package_digest": digest, "revoked": true })),
+            )
+        }
         Err(e) => deployment_err_response(e),
     }
 }
@@ -281,7 +326,10 @@ async fn create_connection_revision(
         req.public_config,
         req.secret_locator,
     ) {
-        Ok(row) => (StatusCode::CREATED, Json(json!({ "connection": row }))),
+        Ok(row) => {
+            sync_v2_deployments_to_db(&state).await;
+            (StatusCode::CREATED, Json(json!({ "connection": row })))
+        }
         Err(e) => deployment_err_response(e),
     }
 }
@@ -468,6 +516,7 @@ async fn apply_deployment(
     };
 
     // Reconcile this node against the newly committed revision
+    sync_v2_deployments_to_db(&state).await;
     state.composition.reconciler.observe_desired_head();
     let _ = state
         .composition
@@ -530,6 +579,7 @@ async fn rollback_deployment(
         state.composition.admission.as_ref(),
     ) {
         Ok((receipt, warnings)) => {
+            sync_v2_deployments_to_db(&state).await;
             state.composition.reconciler.observe_desired_head();
             let _ = state
                 .composition
@@ -699,6 +749,116 @@ async fn authoring_scaffold(Json(req): Json<ScaffoldRequest>) -> impl IntoRespon
     )
 }
 
+/// `GET /api/v2/admin/deployments/{revision}` (`V2-07.4`).
+async fn get_deployment_revision(
+    State(state): State<AppState>,
+    Path(revision): Path<u64>,
+) -> impl IntoResponse {
+    let revisions = state.composition.deployments.list_revisions();
+    match revisions.into_iter().find(|r| r.revision == revision) {
+        Some(rev) => (StatusCode::OK, Json(json!({ "data": rev }))),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": {
+                    "code": "REVISION_NOT_FOUND",
+                    "message": format!("deployment revision {revision} not found")
+                }
+            })),
+        ),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct EditionTransitionPreflightRequest {
+    pub revision: Option<u64>,
+}
+
+/// `POST /api/v2/admin/edition-transition-preflight` (`V2-16.4`).
+async fn edition_transition_preflight(
+    State(state): State<AppState>,
+    req: Option<Json<EditionTransitionPreflightRequest>>,
+) -> impl IntoResponse {
+    let requested_rev = req.and_then(|Json(r)| r.revision);
+    let (head_rev, _) = state.composition.deployments.current_head();
+    let target_rev = requested_rev.unwrap_or(head_rev);
+
+    let revisions = state.composition.deployments.list_revisions();
+    let mut incompatible_providers = Vec::new();
+    let incompatible_channels: Vec<String> = Vec::new();
+    let mut findings = Vec::new();
+
+    if let Some(rev) = revisions.into_iter().find(|r| r.revision == target_rev) {
+        for p in &rev.manifest.providers {
+            let full_id = format!("{}.{}", p.publisher, p.provider_id);
+            if crate::extensions::ENTERPRISE_RUST_DRIVERS.contains(&full_id.as_str())
+                || crate::extensions::ENTERPRISE_RUST_DRIVERS.contains(&p.provider_id.as_str())
+                || p.publisher.starts_with("orion.enterprise")
+            {
+                incompatible_providers.push(full_id.clone());
+                findings.push(json!({
+                    "code": "ENTERPRISE_PROVIDER_IN_MANIFEST",
+                    "provider": full_id,
+                    "digest": p.digest,
+                    "message": "Enterprise provider must be replaced or removed before transitioning to Community Edition"
+                }));
+            }
+        }
+    }
+
+    let transition_allowed = incompatible_providers.is_empty() && incompatible_channels.is_empty();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "data": {
+                "target_edition": "community",
+                "transition_allowed": transition_allowed,
+                "inspected_revision": target_rev,
+                "incompatible_providers": incompatible_providers,
+                "incompatible_channels": incompatible_channels,
+                "findings": findings,
+                "backup_retention_checklist": [
+                    "1. Capture full database snapshot (orion-cli backups create) and verify artifact_objects checksums",
+                    "2. Export encrypted secret store backup and retain historical rollback revisions",
+                    "3. Replace or remove any Enterprise providers/channels in a new candidate revision before starting the Community binary"
+                ]
+            }
+        })),
+    )
+}
+
+/// `POST /api/v2/admin/authoring/pack` (`V2-07.2`).
+async fn authoring_pack(Json(req): Json<UploadPackageRequest>) -> impl IntoResponse {
+    let files = match decode_files_map(&req.files) {
+        Ok(f) => f,
+        Err(msg) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": { "code": "INVALID_PACKAGE_ENCODING", "message": msg } })),
+            );
+        }
+    };
+    match pack_provider_package(&files) {
+        Ok(packed) => (
+            StatusCode::OK,
+            Json(json!({
+                "data": {
+                    "package_digest": packed.package_digest,
+                    "inventory": serde_json::from_slice::<Value>(&packed.inventory_bytes).unwrap_or(Value::Null),
+                }
+            })),
+        ),
+        Err(err) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({
+                "error": {
+                    "code": "PACK_VALIDATION_FAILED",
+                    "message": err,
+                }
+            })),
+        ),
+    }
+}
 /// `POST /api/v2/admin/authoring/lint` (`V2-07.2`).
 async fn authoring_lint(Json(req): Json<UploadPackageRequest>) -> impl IntoResponse {
     let files = match decode_files_map(&req.files) {

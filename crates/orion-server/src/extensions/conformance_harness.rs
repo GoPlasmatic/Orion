@@ -15,7 +15,7 @@ use super::contract::{
     ConnectorError, ConnectorErrorClass, ConnectorResult, EffectStatus, ErrorOrigin,
     OperationEffect, OperationRetryPolicy, RetryAdvice,
 };
-use super::schema_profile::{CompiledSchemaBundle, SchemaProfileLimits};
+use super::schema_profile::CompiledSchemaBundle;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConformanceObservation {
@@ -514,6 +514,7 @@ pub fn execute_conformance_case(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::SchemaProfileLimits;
     use std::path::PathBuf;
 
     #[test]
