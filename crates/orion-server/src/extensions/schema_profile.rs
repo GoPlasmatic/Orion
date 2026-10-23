@@ -296,10 +296,7 @@ fn parse_json_number(
 ) -> Result<Value, SchemaProfileFinding> {
     let start = *idx;
     while *idx < bytes.len()
-        && matches!(
-            bytes[*idx],
-            b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
-        )
+        && matches!(bytes[*idx], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
     {
         *idx += 1;
     }
@@ -331,10 +328,16 @@ fn parse_json_number(
         Ok(Value::Number(num))
     } else {
         let check: Value = serde_json::from_str(token).map_err(|_| {
-            SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "integer outside representable range")
+            SchemaProfileFinding::new(
+                "DOCUMENT_INVALID_JSON",
+                "integer outside representable range",
+            )
         })?;
         let parsed: i128 = token.parse().map_err(|_| {
-            SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "integer outside RFC 7493 safe range")
+            SchemaProfileFinding::new(
+                "DOCUMENT_INVALID_JSON",
+                "integer outside RFC 7493 safe range",
+            )
         })?;
         if enforce_safe_int
             && !(i128::from(MIN_SAFE_INTEGER)..=i128::from(MAX_SAFE_INTEGER)).contains(&parsed)
@@ -348,10 +351,7 @@ fn parse_json_number(
     }
 }
 
-pub fn validate_safe_package_path(
-    path: &str,
-    code: &str,
-) -> Result<(), SchemaProfileFinding> {
+pub fn validate_safe_package_path(path: &str, code: &str) -> Result<(), SchemaProfileFinding> {
     if path.is_empty()
         || path.len() > 256
         || !path
@@ -381,13 +381,13 @@ pub fn parse_json_pointer(pointer: &str) -> Result<Vec<String>, SchemaProfileFin
     }
     let bytes = pointer.as_bytes();
     for i in 0..bytes.len() {
-        if bytes[i] == b'~' {
-            if i + 1 >= bytes.len() || (bytes[i + 1] != b'0' && bytes[i + 1] != b'1') {
-                return Err(SchemaProfileFinding::new(
-                    "SCHEMA_REFERENCE_DENIED",
-                    "invalid JSON Pointer",
-                ));
-            }
+        if bytes[i] == b'~'
+            && (i + 1 >= bytes.len() || (bytes[i + 1] != b'0' && bytes[i + 1] != b'1'))
+        {
+            return Err(SchemaProfileFinding::new(
+                "SCHEMA_REFERENCE_DENIED",
+                "invalid JSON Pointer",
+            ));
         }
     }
     Ok(pointer[1..]
@@ -401,7 +401,8 @@ pub fn resolve_pointer<'a>(value: &'a Value, parts: &[String]) -> Option<&'a Val
     for part in parts {
         match cur {
             Value::Array(arr) => {
-                if part != "0" && (part.starts_with('0') || !part.bytes().all(|b| b.is_ascii_digit()))
+                if part != "0"
+                    && (part.starts_with('0') || !part.bytes().all(|b| b.is_ascii_digit()))
                 {
                     return None;
                 }
@@ -481,7 +482,10 @@ impl CompiledSchemaBundle {
 
             for k in map.keys() {
                 if !allowed.contains(k.as_str()) {
-                    return Err(SchemaProfileFinding::new("SCHEMA_UNSUPPORTED_KEYWORD", path));
+                    return Err(SchemaProfileFinding::new(
+                        "SCHEMA_UNSUPPORTED_KEYWORD",
+                        path,
+                    ));
                 }
             }
             if map.contains_key("$schema") && !pointer.is_empty() {
@@ -530,7 +534,10 @@ impl CompiledSchemaBundle {
                             edges,
                             references,
                         )?;
-                        edges.get_mut(&key).unwrap().push(child_key);
+                        edges
+                            .get_mut(&key)
+                            .expect("node edge list initialized")
+                            .push(child_key);
                     }
                 }
             }
@@ -550,7 +557,10 @@ impl CompiledSchemaBundle {
                         edges,
                         references,
                     )?;
-                    edges.get_mut(&key).unwrap().push(child_key);
+                    edges
+                        .get_mut(&key)
+                        .expect("node edge list initialized")
+                        .push(child_key);
                 }
             }
 
@@ -583,7 +593,10 @@ impl CompiledSchemaBundle {
                             edges,
                             references,
                         )?;
-                        edges.get_mut(&key).unwrap().push(child_key);
+                        edges
+                            .get_mut(&key)
+                            .expect("node edge list initialized")
+                            .push(child_key);
                     }
                 }
             }
@@ -605,9 +618,8 @@ impl CompiledSchemaBundle {
                     "missing/unsupported root dialect",
                 ));
             }
-            let encoded = serde_json::to_vec(schema).map_err(|_| {
-                SchemaProfileFinding::new("SCHEMA_INVALID", "serialization error")
-            })?;
+            let encoded = serde_json::to_vec(schema)
+                .map_err(|_| SchemaProfileFinding::new("SCHEMA_INVALID", "serialization error"))?;
             bundle_bytes += encoded.len();
             if encoded.len() > limits.schema_file_bytes || bundle_bytes > limits.schema_bundle_bytes
             {
@@ -685,7 +697,10 @@ impl CompiledSchemaBundle {
                     target_path,
                 ));
             }
-            edges.get_mut(&key).unwrap().push(target_key);
+            edges
+                .get_mut(&key)
+                .expect("node edge list initialized")
+                .push(target_key);
         }
 
         // Cycle check
@@ -717,7 +732,11 @@ impl CompiledSchemaBundle {
 
     /// Validate `instance` against `schema_path`, metering validation steps
     /// against `max_steps` (`self.limits.validation_steps`).
-    pub fn validate_instance(&self, schema_path: &str, instance: &Value) -> Result<(), SchemaProfileFinding> {
+    pub fn validate_instance(
+        &self,
+        schema_path: &str,
+        instance: &Value,
+    ) -> Result<(), SchemaProfileFinding> {
         let mut steps = 0u64;
         self.validate_instance_metered(schema_path, instance, &mut steps)
     }
@@ -748,21 +767,19 @@ impl CompiledSchemaBundle {
             ));
         }
 
-        let doc = self.schemas.get(schema_path).ok_or_else(|| {
-            SchemaProfileFinding::new("SCHEMA_REFERENCE_MISSING", schema_path)
-        })?;
-        let node = resolve_pointer(doc, pointer).ok_or_else(|| {
-            SchemaProfileFinding::new("SCHEMA_REFERENCE_MISSING", schema_path)
-        })?;
+        let doc = self
+            .schemas
+            .get(schema_path)
+            .ok_or_else(|| SchemaProfileFinding::new("SCHEMA_REFERENCE_MISSING", schema_path))?;
+        let node = resolve_pointer(doc, pointer)
+            .ok_or_else(|| SchemaProfileFinding::new("SCHEMA_REFERENCE_MISSING", schema_path))?;
 
         match node {
-            Value::Bool(true) => return Ok(()),
-            Value::Bool(false) => {
-                return Err(SchemaProfileFinding::new(
-                    "CONNECTOR_INVALID_INPUT",
-                    "boolean false schema",
-                ));
-            }
+            Value::Bool(true) => Ok(()),
+            Value::Bool(false) => Err(SchemaProfileFinding::new(
+                "CONNECTOR_INVALID_INPUT",
+                "boolean false schema",
+            )),
             Value::Object(map) => {
                 if let Some(ref_str) = map.get("$ref").and_then(Value::as_str) {
                     let (relative, fragment) = match ref_str.split_once('#') {
@@ -783,13 +800,18 @@ impl CompiledSchemaBundle {
                     self.eval_node(&target_path, &target_ptr, instance, steps)?;
                 }
 
-                if let Some(ty) = map.get("type") && !matches_type(ty, instance) {
+                if let Some(ty) = map.get("type")
+                    && !matches_type(ty, instance)
+                {
                     return Err(SchemaProfileFinding::new("CONNECTOR_INVALID_INPUT", "type"));
                 }
                 if let Some(const_val) = map.get("const") {
                     *steps += 1;
                     if instance != const_val {
-                        return Err(SchemaProfileFinding::new("CONNECTOR_INVALID_INPUT", "const"));
+                        return Err(SchemaProfileFinding::new(
+                            "CONNECTOR_INVALID_INPUT",
+                            "const",
+                        ));
                     }
                 }
                 if let Some(Value::Array(enum_vals)) = map.get("enum") {
@@ -807,11 +829,21 @@ impl CompiledSchemaBundle {
                 }
 
                 if let Some(num) = instance.as_f64() {
-                    if let Some(min) = map.get("minimum").and_then(Value::as_f64) && num < min {
-                        return Err(SchemaProfileFinding::new("CONNECTOR_INVALID_INPUT", "minimum"));
+                    if let Some(min) = map.get("minimum").and_then(Value::as_f64)
+                        && num < min
+                    {
+                        return Err(SchemaProfileFinding::new(
+                            "CONNECTOR_INVALID_INPUT",
+                            "minimum",
+                        ));
                     }
-                    if let Some(max) = map.get("maximum").and_then(Value::as_f64) && num > max {
-                        return Err(SchemaProfileFinding::new("CONNECTOR_INVALID_INPUT", "maximum"));
+                    if let Some(max) = map.get("maximum").and_then(Value::as_f64)
+                        && num > max
+                    {
+                        return Err(SchemaProfileFinding::new(
+                            "CONNECTOR_INVALID_INPUT",
+                            "maximum",
+                        ));
                     }
                     if let Some(ex_min) = map.get("exclusiveMinimum").and_then(Value::as_f64)
                         && num <= ex_min
@@ -898,7 +930,9 @@ impl CompiledSchemaBundle {
                     }
                     if let Some(Value::Array(req)) = map.get("required") {
                         for r in req {
-                            if let Some(r_str) = r.as_str() && !obj.contains_key(r_str) {
+                            if let Some(r_str) = r.as_str()
+                                && !obj.contains_key(r_str)
+                            {
                                 return Err(SchemaProfileFinding::new(
                                     "CONNECTOR_INVALID_INPUT",
                                     "required",
@@ -942,7 +976,10 @@ impl CompiledSchemaBundle {
                         }
                     }
                     if !any_ok {
-                        return Err(SchemaProfileFinding::new("CONNECTOR_INVALID_INPUT", "anyOf"));
+                        return Err(SchemaProfileFinding::new(
+                            "CONNECTOR_INVALID_INPUT",
+                            "anyOf",
+                        ));
                     }
                 }
                 if let Some(Value::Array(branches)) = map.get("oneOf") {
@@ -956,7 +993,10 @@ impl CompiledSchemaBundle {
                         }
                     }
                     if matches != 1 {
-                        return Err(SchemaProfileFinding::new("CONNECTOR_INVALID_INPUT", "oneOf"));
+                        return Err(SchemaProfileFinding::new(
+                            "CONNECTOR_INVALID_INPUT",
+                            "oneOf",
+                        ));
                     }
                 }
 
@@ -968,11 +1008,7 @@ impl CompiledSchemaBundle {
 
     /// Omit configuration fields marked `x-orion-sensitive: true` (and their
     /// descendants) when building public projections.
-    pub fn project_public_configuration(
-        &self,
-        schema_path: &str,
-        config: &Value,
-    ) -> Value {
+    pub fn project_public_configuration(&self, schema_path: &str, config: &Value) -> Value {
         let Some(doc) = self.schemas.get(schema_path) else {
             return config.clone();
         };
@@ -1058,8 +1094,13 @@ fn check_instance_bounds(
     Ok(())
 }
 
-fn validate_keyword_shapes(map: &Map<String, Value>, path: &str) -> Result<(), SchemaProfileFinding> {
-    let valid_types = ["null", "boolean", "object", "array", "number", "string", "integer"];
+fn validate_keyword_shapes(
+    map: &Map<String, Value>,
+    path: &str,
+) -> Result<(), SchemaProfileFinding> {
+    let valid_types = [
+        "null", "boolean", "object", "array", "number", "string", "integer",
+    ];
     if let Some(t) = map.get("type") {
         let ok = match t {
             Value::String(s) => valid_types.contains(&s.as_str()),
@@ -1076,12 +1117,16 @@ fn validate_keyword_shapes(map: &Map<String, Value>, path: &str) -> Result<(), S
         }
     }
     for kw in ["title", "description"] {
-        if let Some(v) = map.get(kw) && !v.is_string() {
+        if let Some(v) = map.get(kw)
+            && !v.is_string()
+        {
             return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
         }
     }
     for kw in ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"] {
-        if let Some(v) = map.get(kw) && !v.is_number() {
+        if let Some(v) = map.get(kw)
+            && !v.is_number()
+        {
             return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
         }
     }
@@ -1093,7 +1138,9 @@ fn validate_keyword_shapes(map: &Map<String, Value>, path: &str) -> Result<(), S
         "minLength",
         "maxLength",
     ] {
-        if let Some(v) = map.get(kw) && v.as_u64().is_none() {
+        if let Some(v) = map.get(kw)
+            && v.as_u64().is_none()
+        {
             return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
         }
     }
@@ -1111,7 +1158,9 @@ fn validate_keyword_shapes(map: &Map<String, Value>, path: &str) -> Result<(), S
             }
         }
     }
-    if let Some(en) = map.get("enum") && !en.is_array() {
+    if let Some(en) = map.get("enum")
+        && !en.is_array()
+    {
         return Err(SchemaProfileFinding::new("SCHEMA_INVALID", path));
     }
     Ok(())
@@ -1136,10 +1185,7 @@ fn matches_type(ty: &Value, instance: &Value) -> bool {
     };
     match ty {
         Value::String(s) => check_single(s),
-        Value::Array(arr) => arr
-            .iter()
-            .filter_map(Value::as_str)
-            .any(check_single),
+        Value::Array(arr) => arr.iter().filter_map(Value::as_str).any(check_single),
         _ => false,
     }
 }
@@ -1179,7 +1225,10 @@ pub fn check_manifest_bundle(
         .get("operations")
         .and_then(Value::as_object)
         .ok_or_else(|| SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "operations"))?;
-    if operations.keys().any(|name| name.starts_with("orion.internal.")) {
+    if operations
+        .keys()
+        .any(|name| name.starts_with("orion.internal."))
+    {
         return Err(SchemaProfileFinding::new(
             "MANIFEST_OPERATION_RESERVED",
             "operations",
@@ -1193,7 +1242,9 @@ pub fn check_manifest_bundle(
     let kind = implementation
         .get("kind")
         .and_then(Value::as_str)
-        .ok_or_else(|| SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "implementation.kind"))?;
+        .ok_or_else(|| {
+            SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "implementation.kind")
+        })?;
     let is_workflow = kind == "workflow";
 
     let capabilities = obj
@@ -1259,10 +1310,9 @@ pub fn check_manifest_bundle(
         .ok_or_else(|| SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "dependencies"))?;
     let mut aliases = HashSet::new();
     for dep in dependencies {
-        let alias = dep
-            .get("alias")
-            .and_then(Value::as_str)
-            .ok_or_else(|| SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "dependency.alias"))?;
+        let alias = dep.get("alias").and_then(Value::as_str).ok_or_else(|| {
+            SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "dependency.alias")
+        })?;
         if !aliases.insert(alias) {
             return Err(SchemaProfileFinding::new(
                 "MANIFEST_DEPENDENCY_ALIAS_DUPLICATE",
@@ -1532,14 +1582,23 @@ fn validate_manifest_shape(obj: &Map<String, Value>) -> Result<(), SchemaProfile
 
     if let Some(sources) = obj.get("sources") {
         let Some(s_map) = sources.as_object() else {
-            return Err(SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "sources"));
+            return Err(SchemaProfileFinding::new(
+                "MANIFEST_SHAPE_INVALID",
+                "sources",
+            ));
         };
         if s_map.is_empty() {
-            return Err(SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "sources"));
+            return Err(SchemaProfileFinding::new(
+                "MANIFEST_SHAPE_INVALID",
+                "sources",
+            ));
         }
         for s_val in s_map.values() {
             let Some(facet) = s_val.as_object() else {
-                return Err(SchemaProfileFinding::new("MANIFEST_SHAPE_INVALID", "source"));
+                return Err(SchemaProfileFinding::new(
+                    "MANIFEST_SHAPE_INVALID",
+                    "source",
+                ));
             };
             for req in ["open", "poll", "settle", "close"] {
                 if !facet.contains_key(req) {
@@ -1580,6 +1639,7 @@ fn validate_manifest_shape(obj: &Map<String, Value>) -> Result<(), SchemaProfile
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -1630,8 +1690,8 @@ mod tests {
 
     #[test]
     fn v2_10_2_passes_all_36_schema_and_manifest_fixture_cases() {
-        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../design-docs/v2/fixtures/schema-validation");
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/schema-validation");
         let cases_raw = std::fs::read_to_string(fixture_dir.join("cases.json")).unwrap();
         let catalog: Value = serde_json::from_str(&cases_raw).unwrap();
         let base_raw = std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap();
@@ -1703,8 +1763,10 @@ mod tests {
                 }
             }),
         );
-        let mut limits = SchemaProfileLimits::default();
-        limits.validation_steps = 2;
+        let limits = SchemaProfileLimits {
+            validation_steps: 2,
+            ..Default::default()
+        };
         let bundle = CompiledSchemaBundle::compile(schemas, limits).unwrap();
         let projected = bundle.project_public_configuration(
             "schemas/config.json",

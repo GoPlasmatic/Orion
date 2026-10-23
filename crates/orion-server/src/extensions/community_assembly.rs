@@ -17,11 +17,11 @@
 
 use serde::Serialize;
 
+use super::CompositionRoot;
 use super::contract::ImplementationKind;
 use super::foundation::{
     COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
 };
-use super::CompositionRoot;
 
 /// Canonical Community Edition native Rust channel driver protocol IDs (`DEC-003`).
 pub const COMMUNITY_CHANNEL_PROTOCOLS: [&str; 4] = ["cron", "http", "rest", "source"];
@@ -159,6 +159,7 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::channel_driver::KafkaChannelDriver;
@@ -209,13 +210,9 @@ mod tests {
         let root = CompositionRoot::community().with_channel_driver(Arc::new(KafkaChannelDriver));
         let report = verify_community_assembly(&root);
         assert!(!report.is_compliant());
-        assert!(
-            report
-                .violations
-                .iter()
-                .any(|v| v.code == "ENTERPRISE_CHANNEL_LEAKED_INTO_COMMUNITY"
-                    && v.component == "kafka")
-        );
+        assert!(report.violations.iter().any(|v| v.code
+            == "ENTERPRISE_CHANNEL_LEAKED_INTO_COMMUNITY"
+            && v.component == "kafka"));
     }
 
     #[tokio::test]

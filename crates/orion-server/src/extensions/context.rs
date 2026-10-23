@@ -1,7 +1,6 @@
 //! Owned run context, atomic budget coordinator, capability handles and host jobs (`V2-05.1`).
 //!
-//! Implements the host-owned state and target interface signatures from
-//! `design-docs/v2/contracts/run-context.md`:
+//! Implements the host-owned run context and capability contract (`V2-05.1`):
 //! - [`AdmittedRun`] and [`RunContext`]: generation-pinned execution scope with
 //!   monotonic deadline clamping (`min(parent, child)`), cooperative cancellation
 //!   tree, and authority intersection (`CTX-01`, `CTX-06`).
@@ -966,18 +965,12 @@ impl Invocation {
     }
 
     pub fn effect_status(&self) -> EffectStatus {
-        *self
-            .effect_ledger
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *self.effect_ledger.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Merge newly observed effect evidence into the invocation's monotonic ledger (`V2-10.1`).
     pub fn record_effect(&self, observed: EffectStatus) -> EffectStatus {
-        let mut guard = self
-            .effect_ledger
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.effect_ledger.lock().unwrap_or_else(|e| e.into_inner());
         *guard = guard.merge(observed);
         *guard
     }
@@ -1314,7 +1307,11 @@ mod tests {
             )
             .expect("child context derived");
 
-        assert_eq!(child_ctx.generation_id(), 41, "must keep pinned generation 41");
+        assert_eq!(
+            child_ctx.generation_id(),
+            41,
+            "must keep pinned generation 41"
+        );
         assert_eq!(
             child_ctx.deadline(),
             parent_deadline,
@@ -1426,7 +1423,9 @@ mod tests {
         let expired_run = AdmittedRun::admit(
             "run-timeout",
             1,
-            Instant::now().checked_sub(Duration::from_millis(10)).unwrap_or_else(Instant::now),
+            Instant::now()
+                .checked_sub(Duration::from_millis(10))
+                .unwrap_or_else(Instant::now),
             BudgetLimits::default(),
             sample_authority(),
         );
@@ -1449,7 +1448,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(scope.snapshot().active_jobs, 0, "occupancy released on actual completion");
+        assert_eq!(
+            scope.snapshot().active_jobs,
+            0,
+            "occupancy released on actual completion"
+        );
         assert_eq!(
             scope.snapshot().spent_network_sends,
             1,
@@ -1559,7 +1562,10 @@ mod tests {
             .context()
             .start_invocation(conn, eff_id, "get", None, 2)
             .expect("inv2");
-        assert!(inv2.next_attempt().is_ok(), "uses 3rd and final root attempt");
+        assert!(
+            inv2.next_attempt().is_ok(),
+            "uses 3rd and final root attempt"
+        );
         let err = inv2
             .next_attempt()
             .expect_err("4th root attempt must be rejected even though inv2 is at 1/2");

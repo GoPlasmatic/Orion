@@ -878,10 +878,18 @@ impl TaskHandles {
     }
 }
 
+/// Structured bundle of the background queues and their drain handles (`SIMP-05`).
+pub struct BackgroundQueues {
+    pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
+    pub trace_queue: crate::queue::TraceQueue,
+    pub audit_queue: crate::queue::audit_queue::AuditQueue,
+    pub task_handles: TaskHandles,
+}
+
 /// Start the background tasks: trace persistence queue, trace queue worker
 /// pool, trace cleanup, audit-log cleanup, and the DLQ retry consumer.
-/// Returns the two queues `AppState` needs plus the [`TaskHandles`] owning
-/// the shutdown sequence.
+/// Returns the [`BackgroundQueues`] bundle owning the queues `AppState` needs
+/// plus the [`TaskHandles`] owning the shutdown sequence.
 pub fn start_background_tasks(
     config: &config::AppConfig,
     tasks: &crate::runtime::TaskRegistry,
@@ -889,12 +897,7 @@ pub fn start_background_tasks(
     repos: &Repositories,
     cluster: &crate::cluster::ClusterRuntime,
     cron: CronComponents,
-) -> (
-    crate::queue::TracePersistenceQueue,
-    crate::queue::TraceQueue,
-    crate::queue::audit_queue::AuditQueue,
-    TaskHandles,
-) {
+) -> BackgroundQueues {
     // Audit writer (O7): one bounded queue, one in-order writer, drained at
     // shutdown. Started first so no admin mutation can be accepted before
     // there is somewhere to record it.
@@ -1022,16 +1025,16 @@ pub fn start_background_tasks(
         job_lease_gate,
     );
 
-    (
+    BackgroundQueues {
         trace_persistence_queue,
         trace_queue,
         audit_queue,
-        TaskHandles {
+        task_handles: TaskHandles {
             trace_persistence_handle,
             worker_handle,
             audit_writer_handle,
         },
-    )
+    }
 }
 
 /// The pieces the cron scheduler needs that the trace pipeline does not.
@@ -1180,7 +1183,12 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     // shared too, for what its liveness does not say.
     let tasks = Arc::new(crate::runtime::TaskRegistry::new());
     let cron_status = Arc::new(crate::cron::CronStatus::new());
-    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) = start_background_tasks(
+    let BackgroundQueues {
+        trace_persistence_queue,
+        trace_queue,
+        audit_queue,
+        task_handles,
+    } = start_background_tasks(
         &config,
         &tasks,
         components.runtime.clone(),
@@ -1242,6 +1250,21 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         cron_status,
     });
 
+    // ARCH-02: Hydrate the v2 ImmutableDeploymentStore from SQLite on boot so
+    // previously committed deployment revisions and head state survive restarts.
+    if let crate::storage::DbPool::Sqlite(ref sqlite_pool) = state.db_pool
+        && let Err(e) = state
+            .composition
+            .deployments
+            .load_from_sqlite(sqlite_pool)
+            .await
+    {
+        tracing::warn!(
+            error = %e,
+            "Failed to hydrate v2 deployment store from SQLite at startup"
+        );
+    }
+
     Ok(Assembled {
         state,
         task_handles,
@@ -1297,7 +1320,9 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     let packages = Arc::new(crate::runtime::boot_packages::BootPackages::new(
         &config.packages.apply,
     ));
-    let composition = crate::extensions::CompositionRoot::community_with_legacy_v1();
+    let boot_id = format!("boot-{}", uuid::Uuid::new_v4().simple());
+    let composition = crate::extensions::CompositionRoot::community_with_legacy_v1()
+        .with_node_identity(cluster.instance_id.clone(), boot_id);
     let provider_pools = composition.pools.clone();
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         runtime,

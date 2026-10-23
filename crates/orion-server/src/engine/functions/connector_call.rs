@@ -119,7 +119,9 @@ impl Function for ConnectorCallFunction {
 
         let run_ctx = ACTIVE_RUN_CONTEXT
             .try_with(Clone::clone)
-            .unwrap_or_else(|_| default_run_context_for_call(&cfg.connection, &cfg.operation, &target_id));
+            .unwrap_or_else(|_| {
+                default_run_context_for_call(&cfg.connection, &cfg.operation, &target_id)
+            });
 
         let conn_ref = ConnectionReference {
             connection_id: cfg.connection.clone(),
@@ -210,10 +212,7 @@ fn connector_err_to_dataflow(err: crate::extensions::ConnectorError) -> dataflow
 }
 
 /// Register `connector_call` on a `dataflow-rs` 4 [`dataflow_rs::Registry`].
-pub fn register_connector_call(
-    registry: &mut dataflow_rs::Registry,
-    providers: ProviderRegistry,
-) {
+pub fn register_connector_call(registry: &mut dataflow_rs::Registry, providers: ProviderRegistry) {
     registry.register(NAME, ConnectorCallFunction { providers });
 }
 
@@ -279,7 +278,9 @@ mod tests {
         .exprs(crate::engine::kit::test_exprs())
         .name(NAME)
         .await;
-        let err = reserved_called.outcome.expect_err("reserved operation must fail");
+        let err = reserved_called
+            .outcome
+            .expect_err("reserved operation must fail");
         assert!(err.message().contains("CONNECTOR_OPERATION_FORBIDDEN"));
     }
 }

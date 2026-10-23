@@ -1,13 +1,21 @@
 //! V2-03 & V2-04 Immutable storage, canonical manifests, bounded archive
 //! ingestion, candidate planning, idempotent CAS apply, rollback by new
 //! revision, two-phase `ACTIVE -> DRAINING -> DELETED` artifact GC, and legacy
-//! snapshot backfill.
+//! snapshot backfill (`MOD-02`).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+mod manifest;
+mod sqlite;
+
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+pub use manifest::{
+    CanonicalManifest, EntityKind, EntityRef, ManifestMember, ProviderRef, RolloutInterval,
+    validate_rollout_partition,
+};
 
 use super::admission::{AdmissionPolicy, PackageAdmissionRequest};
 use super::contract::{ImplementationKind, ProviderReference};
@@ -17,346 +25,6 @@ use super::package_identity::{
     verify_inventory,
 };
 use super::schema_profile::{check_manifest_bundle, validate_safe_package_path};
-
-// ============================================================
-// V2-03.1: Typed Entity References, Rollouts & Canonical Manifests
-// ============================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EntityKind {
-    Workflow,
-    Channel,
-    Connection,
-    Source,
-    Model,
-    Plugin,
-}
-
-impl EntityKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Workflow => "workflow",
-            Self::Channel => "channel",
-            Self::Connection => "connection",
-            Self::Source => "source",
-            Self::Model => "model",
-            Self::Plugin => "plugin",
-        }
-    }
-}
-
-/// Tagged integer-revision reference to an immutable deployment entity (`V2-03.1`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EntityRef {
-    pub kind: EntityKind,
-    pub id: String,
-    pub revision: u64,
-}
-
-impl EntityRef {
-    pub fn validate(&self) -> Result<(), DeploymentError> {
-        if self.id.is_empty() || self.id.starts_with("sha256:") {
-            return Err(DeploymentError::new(
-                "ENTITY_REF_INVALID",
-                "entity id must be non-empty and must not be a digest",
-            ));
-        }
-        if self.revision == 0 {
-            return Err(DeploymentError::new(
-                "ENTITY_REF_INVALID",
-                "entity integer revision must be >= 1",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Semantic-version + content-digest reference to a provider package (`V2-03.1`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ProviderRef {
-    pub publisher: String,
-    pub provider_id: String,
-    pub version: String,
-    pub digest: String,
-}
-
-impl ProviderRef {
-    pub fn validate(&self) -> Result<(), DeploymentError> {
-        if self.publisher.is_empty() || self.provider_id.is_empty() {
-            return Err(DeploymentError::new(
-                "PROVIDER_REF_INVALID",
-                "publisher and provider_id are required",
-            ));
-        }
-        // Reject integer revision confusion: version must contain '.' (SemVer) and not be a bare integer or digest.
-        if !self.version.contains('.') || self.version.starts_with("sha256:") {
-            return Err(DeploymentError::new(
-                "PROVIDER_REF_INVALID",
-                "provider version must be a semantic version string, not an integer revision or digest",
-            ));
-        }
-        if !self.digest.starts_with("sha256:") || self.digest.len() != 71 {
-            return Err(DeploymentError::new(
-                "PROVIDER_REF_INVALID",
-                "provider digest must be sha256:<64 hex chars>",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Disjoint half-open rollout bucket interval `[start_bucket, end_bucket)` within `0..100` (`V2-03.1`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct RolloutInterval {
-    pub workflow_revision: u64,
-    pub start_bucket: u8,
-    pub end_bucket: u8,
-}
-
-/// Validate that a set of rollout intervals partitions `[0, 100)` with no gaps and no overlaps.
-pub fn validate_rollout_partition(intervals: &[RolloutInterval]) -> Result<(), DeploymentError> {
-    if intervals.is_empty() {
-        return Err(DeploymentError::new(
-            "ROLLOUT_PARTITION_INVALID",
-            "at least one rollout interval is required",
-        ));
-    }
-    let mut sorted = intervals.to_vec();
-    sorted.sort_by_key(|i| (i.start_bucket, i.end_bucket));
-    let mut seen_revisions = HashSet::new();
-    let mut cursor = 0u8;
-    for interval in &sorted {
-        if interval.workflow_revision == 0 || !seen_revisions.insert(interval.workflow_revision) {
-            return Err(DeploymentError::new(
-                "ROLLOUT_PARTITION_INVALID",
-                "duplicate or zero workflow revision in rollout",
-            ));
-        }
-        if interval.start_bucket >= interval.end_bucket || interval.end_bucket > 100 {
-            return Err(DeploymentError::new(
-                "ROLLOUT_PARTITION_INVALID",
-                "invalid bucket bounds",
-            ));
-        }
-        if interval.start_bucket != cursor {
-            return Err(DeploymentError::new(
-                "ROLLOUT_PARTITION_INVALID",
-                format!(
-                    "rollout intervals have gap or overlap at bucket {cursor} vs {}",
-                    interval.start_bucket
-                ),
-            ));
-        }
-        cursor = interval.end_bucket;
-    }
-    if cursor != 100 {
-        return Err(DeploymentError::new(
-            "ROLLOUT_PARTITION_INVALID",
-            format!("rollout intervals end at {cursor}, expected 100"),
-        ));
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManifestMember {
-    pub entity: EntityRef,
-    pub definition_digest: String,
-    pub owning_package: Option<String>,
-    pub requires: Vec<EntityRef>,
-    pub rollouts: Vec<RolloutInterval>,
-}
-
-/// Versioned canonical deployment manifest (`V2-03.1`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CanonicalManifest {
-    pub schema_version: u64,
-    pub providers: Vec<ProviderRef>,
-    pub provider_lock_digest: Option<String>,
-    pub members: Vec<ManifestMember>,
-}
-
-impl CanonicalManifest {
-    /// Validate ownership, singleton constraints, rollout partitions, and
-    /// `requires` closure, returning canonical JSON bytes and `sha256:` digest.
-    pub fn canonicalize_and_verify(&self) -> Result<(Vec<u8>, String), DeploymentError> {
-        if self.schema_version != 2 {
-            return Err(DeploymentError::new(
-                "MANIFEST_VERSION_UNSUPPORTED",
-                "deployment manifest schema_version must be 2",
-            ));
-        }
-
-        let mut provider_keys = HashSet::new();
-        let mut provider_digests = HashSet::new();
-        for p in &self.providers {
-            p.validate()?;
-            if !provider_keys.insert((p.publisher.clone(), p.provider_id.clone(), p.version.clone()))
-            {
-                return Err(DeploymentError::new(
-                    "MANIFEST_DUPLICATE_PROVIDER",
-                    format!("duplicate provider {}/{}@{}", p.publisher, p.provider_id, p.version),
-                ));
-            }
-            provider_digests.insert(p.digest.clone());
-        }
-
-        // Singleton entity check (except workflows under rollout, which are referenced via Channel rollouts)
-        let mut member_set: HashMap<(EntityKind, String), u64> = HashMap::new();
-        let mut all_entities: HashSet<EntityRef> = HashSet::new();
-        let mut owner_by_id: HashMap<(EntityKind, String), Option<String>> = HashMap::new();
-
-        for m in &self.members {
-            m.entity.validate()?;
-            if let Some(pkg) = &m.owning_package
-                && !provider_digests.contains(pkg)
-            {
-                return Err(DeploymentError::new(
-                    "MANIFEST_OWNER_MISSING",
-                    format!("owning_package '{pkg}' is not in manifest providers"),
-                ));
-            }
-            if let Some(prev_owner) = owner_by_id.get(&(m.entity.kind, m.entity.id.clone()))
-                && prev_owner != &m.owning_package
-            {
-                return Err(DeploymentError::new(
-                    "MANIFEST_OWNERSHIP_CONFLICT",
-                    format!("conflicting ownership for {}:{}", m.entity.kind.as_str(), m.entity.id),
-                ));
-            }
-            owner_by_id.insert(
-                (m.entity.kind, m.entity.id.clone()),
-                m.owning_package.clone(),
-            );
-
-            if m.entity.kind != EntityKind::Workflow {
-                if member_set
-                    .insert((m.entity.kind, m.entity.id.clone()), m.entity.revision)
-                    .is_some()
-                {
-                    return Err(DeploymentError::new(
-                        "MANIFEST_DUPLICATE_SINGLETON",
-                        format!(
-                            "multiple revisions of singleton {}:{}",
-                            m.entity.kind.as_str(),
-                            m.entity.id
-                        ),
-                    ));
-                }
-            } else if !all_entities.insert(m.entity.clone()) {
-                return Err(DeploymentError::new(
-                    "MANIFEST_DUPLICATE_MEMBER",
-                    format!("duplicate workflow revision {}:{}", m.entity.id, m.entity.revision),
-                ));
-            }
-            all_entities.insert(m.entity.clone());
-
-            if m.entity.kind == EntityKind::Channel && !m.rollouts.is_empty() {
-                validate_rollout_partition(&m.rollouts)?;
-            }
-        }
-
-        // Verify all `requires` edges exist in `all_entities`
-        for m in &self.members {
-            for req in &m.requires {
-                if !all_entities.contains(req) {
-                    return Err(DeploymentError::new(
-                        "MANIFEST_MISSING_REQUIREMENT",
-                        format!(
-                            "{}:{} requires missing {}:{}:v{}",
-                            m.entity.kind.as_str(),
-                            m.entity.id,
-                            req.kind.as_str(),
-                            req.id,
-                            req.revision
-                        ),
-                    ));
-                }
-            }
-        }
-
-        // Canonical projection sorting
-        let mut sorted_providers = self.providers.clone();
-        sorted_providers.sort();
-        let mut sorted_members = self.members.clone();
-        sorted_members.sort_by(|a, b| a.entity.cmp(&b.entity));
-
-        let providers_json: Vec<Value> = sorted_providers
-            .iter()
-            .map(|p| {
-                json!({
-                    "digest": p.digest,
-                    "provider_id": p.provider_id,
-                    "publisher": p.publisher,
-                    "version": p.version,
-                })
-            })
-            .collect();
-
-        let members_json: Vec<Value> = sorted_members
-            .iter()
-            .map(|m| {
-                let mut requires = m.requires.clone();
-                requires.sort();
-                let req_json: Vec<Value> = requires
-                    .iter()
-                    .map(|r| {
-                        json!({
-                            "id": r.id,
-                            "kind": r.kind.as_str(),
-                            "revision": r.revision,
-                        })
-                    })
-                    .collect();
-                let mut rollouts = m.rollouts.clone();
-                rollouts.sort();
-                let roll_json: Vec<Value> = rollouts
-                    .iter()
-                    .map(|ro| {
-                        json!({
-                            "end_bucket": ro.end_bucket,
-                            "start_bucket": ro.start_bucket,
-                            "workflow_revision": ro.workflow_revision,
-                        })
-                    })
-                    .collect();
-                let mut obj = serde_json::Map::new();
-                obj.insert("definition_digest".into(), json!(m.definition_digest));
-                obj.insert(
-                    "entity".into(),
-                    json!({
-                        "id": m.entity.id,
-                        "kind": m.entity.kind.as_str(),
-                        "revision": m.entity.revision,
-                    }),
-                );
-                if let Some(pkg) = &m.owning_package {
-                    obj.insert("owning_package".into(), json!(pkg));
-                }
-                obj.insert("requires".into(), Value::Array(req_json));
-                if !roll_json.is_empty() {
-                    obj.insert("rollouts".into(), Value::Array(roll_json));
-                }
-                Value::Object(obj)
-            })
-            .collect();
-
-        let mut root = serde_json::Map::new();
-        root.insert("members".into(), Value::Array(members_json));
-        if let Some(lock_digest) = &self.provider_lock_digest {
-            root.insert("provider_lock_digest".into(), json!(lock_digest));
-        }
-        root.insert("providers".into(), Value::Array(providers_json));
-        root.insert("schema_version".into(), json!(self.schema_version));
-
-        let bytes = canonical_bytes(&Value::Object(root)).map_err(|e| {
-            DeploymentError::new("MANIFEST_CANONICAL_ERROR", e.code)
-        })?;
-        let digest = sha256_digest(&bytes);
-        Ok((bytes, digest))
-    }
-}
 
 // ============================================================
 // V2-03.2..V2-03.4 & V2-04.1..V2-04.6: Immutable Storage & Lifecycle
@@ -464,7 +132,11 @@ pub struct CandidatePlan {
 impl CandidatePlan {
     /// Compute the deterministic request hash over `(operation, base_revision,
     /// candidate_digest, removals, reason)` (`V2-03.3`, `V2-04.3`).
-    pub fn compute_request_hash(&self, operation: &str, reason: &str) -> Result<String, DeploymentError> {
+    pub fn compute_request_hash(
+        &self,
+        operation: &str,
+        reason: &str,
+    ) -> Result<String, DeploymentError> {
         let removals: Vec<Value> = self
             .removed_entities
             .iter()
@@ -498,23 +170,23 @@ pub struct ArchiveEntryInput {
 }
 
 #[derive(Debug, Default)]
-struct DeploymentState {
-    head_revision: u64,
-    epoch: u64,
-    artifacts: BTreeMap<String, ArtifactObjectRow>,
-    packages: BTreeMap<String, ProviderPackageRow>,
-    publisher_bindings: BTreeMap<(String, String, String), String>,
-    admissions: BTreeMap<String, ProviderAdmissionRow>,
-    connections: BTreeMap<(String, u64), ConnectionRevisionRow>,
-    revisions: BTreeMap<u64, DeploymentRevisionRow>,
-    receipts: BTreeMap<(String, String), DeploymentReceipt>,
-    active_node_revisions: BTreeMap<String, BTreeSet<u64>>,
+pub(super) struct DeploymentState {
+    pub(super) head_revision: u64,
+    pub(super) epoch: u64,
+    pub(super) artifacts: BTreeMap<String, ArtifactObjectRow>,
+    pub(super) packages: BTreeMap<String, ProviderPackageRow>,
+    pub(super) publisher_bindings: BTreeMap<(String, String, String), String>,
+    pub(super) admissions: BTreeMap<String, ProviderAdmissionRow>,
+    pub(super) connections: BTreeMap<(String, u64), ConnectionRevisionRow>,
+    pub(super) revisions: BTreeMap<u64, DeploymentRevisionRow>,
+    pub(super) receipts: BTreeMap<(String, String), DeploymentReceipt>,
+    pub(super) active_node_revisions: BTreeMap<String, BTreeSet<u64>>,
 }
 
 /// Transactional immutable deployment and artifact store (`V2-03`, `V2-04`).
 #[derive(Clone)]
 pub struct ImmutableDeploymentStore {
-    inner: Arc<Mutex<DeploymentState>>,
+    pub(super) inner: Arc<Mutex<DeploymentState>>,
     node_id: String,
 }
 
@@ -646,9 +318,18 @@ impl ImmutableDeploymentStore {
             .as_str()
             .ok_or_else(|| DeploymentError::new("DISTRIBUTION_SHAPE_INVALID", "publisher"))?
             .to_string();
-        let provider_id = manifest_json["id"].as_str().unwrap().to_string();
-        let version = manifest_json["version"].as_str().unwrap().to_string();
-        let impl_kind = match manifest_json["implementation"]["kind"].as_str().unwrap() {
+        let provider_id = manifest_json["id"]
+            .as_str()
+            .ok_or_else(|| DeploymentError::new("MANIFEST_SHAPE_INVALID", "id"))?
+            .to_string();
+        let version = manifest_json["version"]
+            .as_str()
+            .ok_or_else(|| DeploymentError::new("MANIFEST_SHAPE_INVALID", "version"))?
+            .to_string();
+        let impl_kind = match manifest_json["implementation"]["kind"]
+            .as_str()
+            .unwrap_or("rust")
+        {
             "workflow" => ImplementationKind::Workflow,
             "wasm" => ImplementationKind::Wasm,
             _ => ImplementationKind::Rust,
@@ -664,6 +345,16 @@ impl ImmutableDeploymentStore {
             distribution_json,
             inventory_json,
         };
+
+        // Pre-compute SHA-256 digests for all payload objects outside the Mutex
+        // lock so large archives (up to 64 MiB) do not block concurrent readers.
+        let hashed_payloads: Vec<(String, Vec<u8>)> = payloads
+            .into_values()
+            .map(|bytes| {
+                let digest = sha256_digest(&bytes);
+                (digest, bytes)
+            })
+            .collect();
 
         let mut g = self.inner.lock().expect("store lock");
         let id_key = (publisher, provider_id, version);
@@ -685,16 +376,16 @@ impl ImmutableDeploymentStore {
         }
 
         // Store payload objects and package inventory as ACTIVE artifacts
-        for bytes in payloads.values() {
-            let obj_digest = sha256_digest(bytes);
+        for (obj_digest, bytes) in hashed_payloads {
+            let size_bytes = bytes.len();
             g.artifacts
                 .entry(obj_digest.clone())
                 .or_insert_with(|| ArtifactObjectRow {
                     digest: obj_digest,
-                    size_bytes: bytes.len(),
+                    size_bytes,
                     state: ArtifactState::Active,
                     drain_epoch: None,
-                    bytes: Some(bytes.clone()),
+                    bytes: Some(bytes),
                 });
         }
         g.artifacts.insert(
@@ -742,17 +433,20 @@ impl ImmutableDeploymentStore {
             for p in g.packages.values() {
                 let mut ops: Vec<String> = p.manifest_json["operations"]
                     .as_object()
-                    .unwrap()
+                    .expect("validated manifest operations object")
                     .keys()
                     .cloned()
                     .collect();
                 ops.sort();
                 let impl_str = p.manifest_json["implementation"]["kind"]
                     .as_str()
-                    .unwrap()
+                    .expect("validated manifest implementation kind")
                     .to_string();
                 let import_profile = if impl_str == "wasm" {
-                    match p.manifest_json["implementation"]["world"].as_str().unwrap() {
+                    match p.manifest_json["implementation"]["world"]
+                        .as_str()
+                        .expect("validated wasm world string")
+                    {
                         "orion:connector/connector@1.0.0" => Some("core-v1".to_string()),
                         "orion:connector/connector-http@1.0.0" => Some("http-v1".to_string()),
                         "orion:connector/connector-composition@1.0.0" => {
@@ -825,7 +519,9 @@ impl ImmutableDeploymentStore {
             "runtime_abi": "orion-v2",
             "schema_profile": "orion-json-schema/1",
         });
-        let fp = sha256_digest(&canonical_bytes(&fp_doc).unwrap());
+        let fp = sha256_digest(
+            &canonical_bytes(&fp_doc).expect("canonical fingerprint bytes serialize"),
+        );
         let admission = ProviderAdmissionRow {
             package_digest: pkg.package_digest,
             admission_fingerprint: fp,
@@ -864,7 +560,9 @@ impl ImmutableDeploymentStore {
         }
         // Reject raw secret keys inside public_config
         if let Some(obj) = public_config.as_object()
-            && obj.keys().any(|k| k.contains("secret") || k.contains("password"))
+            && obj
+                .keys()
+                .any(|k| k.contains("secret") || k.contains("password"))
         {
             return Err(DeploymentError::new(
                 "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
@@ -940,7 +638,10 @@ impl ImmutableDeploymentStore {
             let Some(adm) = g.admissions.get(&p.digest) else {
                 return Err(DeploymentError::new(
                     "PROVIDER_NOT_ADMITTED",
-                    format!("provider '{}' ({}) is not admitted", p.provider_id, p.digest),
+                    format!(
+                        "provider '{}' ({}) is not admitted",
+                        p.provider_id, p.digest
+                    ),
                 ));
             };
             if adm.revoked {
@@ -1020,7 +721,12 @@ impl ImmutableDeploymentStore {
         // 3. Transactional recheck of provider_admissions, policy revocations, and ACTIVE artifacts
         for p in &plan.candidate_manifest.providers {
             if policy
-                .check_runtime_lease(0, &p.provider_id, "", super::contract::EffectStatus::NotStarted)
+                .check_runtime_lease(
+                    0,
+                    &p.provider_id,
+                    "",
+                    super::contract::EffectStatus::NotStarted,
+                )
                 .is_err()
             {
                 return Err(DeploymentError::new(
@@ -1293,7 +999,9 @@ impl ImmutableDeploymentStore {
                     id: (*ch_id).to_string(),
                     revision: *ch_rev,
                 },
-                definition_digest: sha256_digest(format!("{ch_id}:{ch_rev}:{wf_id}:{wf_rev}").as_bytes()),
+                definition_digest: sha256_digest(
+                    format!("{ch_id}:{ch_rev}:{wf_id}:{wf_rev}").as_bytes(),
+                ),
                 owning_package: None,
                 requires: vec![wf_ref],
                 rollouts: vec![RolloutInterval {
@@ -1313,198 +1021,22 @@ impl ImmutableDeploymentStore {
         manifest.canonicalize_and_verify()?;
         Ok(manifest)
     }
-
-    /// Persist the current deployment store state (`deployment_head`, `deployment_revisions`,
-    /// `deployment_members`, `deployment_operations`, `artifact_objects`, `provider_packages`,
-    /// `provider_admissions`, and `connection_revisions`) to a SQLite pool migrated with
-    /// `023_v2_immutable_deployments.sql` (`V2-03.2`–`V2-03.4`).
-    pub async fn persist_to_sqlite(&self, pool: &sqlx::SqlitePool) -> Result<(), DeploymentError> {
-        let snapshot = {
-            let g = self.inner.lock().expect("store lock");
-            (
-                g.head_revision,
-                g.epoch,
-                g.artifacts.values().cloned().collect::<Vec<_>>(),
-                g.packages.values().cloned().collect::<Vec<_>>(),
-                g.admissions.values().cloned().collect::<Vec<_>>(),
-                g.connections.values().cloned().collect::<Vec<_>>(),
-                g.revisions.values().cloned().collect::<Vec<_>>(),
-                g.receipts
-                    .iter()
-                    .map(|((p, k), r)| (p.clone(), k.clone(), r.clone()))
-                    .collect::<Vec<_>>(),
-            )
-        };
-
-        let mut tx = pool.begin().await.map_err(|e| {
-            DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
-        })?;
-
-        sqlx::query(
-            "INSERT INTO deployment_head (singleton_id, head_revision, epoch) VALUES (1, ?1, ?2) \
-             ON CONFLICT(singleton_id) DO UPDATE SET head_revision = excluded.head_revision, epoch = excluded.epoch",
-        )
-        .bind(snapshot.0 as i64)
-        .bind(snapshot.1 as i64)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-
-        for art in &snapshot.2 {
-            let state_str = match art.state {
-                ArtifactState::Active => "active",
-                ArtifactState::Draining => "draining",
-                ArtifactState::Deleted => "deleted",
-            };
-            sqlx::query(
-                "INSERT INTO artifact_objects (digest, size_bytes, state, drain_epoch, payload_bytes) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(digest) DO UPDATE SET state = excluded.state, drain_epoch = excluded.drain_epoch, payload_bytes = excluded.payload_bytes",
-            )
-            .bind(&art.digest)
-            .bind(art.size_bytes as i64)
-            .bind(state_str)
-            .bind(art.drain_epoch.map(|e| e as i64))
-            .bind(art.bytes.as_deref())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-        }
-
-        for pkg in &snapshot.3 {
-            let tier = pkg
-                .distribution_json
-                .get("tier")
-                .and_then(Value::as_str)
-                .unwrap_or("community");
-            let manifest_str =
-                serde_json::to_string(&pkg.manifest_json).unwrap_or_else(|_| "{}".into());
-            let inventory_str =
-                serde_json::to_string(&pkg.inventory_json).unwrap_or_else(|_| "{}".into());
-            sqlx::query(
-                "INSERT INTO provider_packages (digest, publisher, provider_id, version, implementation, tier, manifest_json, inventory_json) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
-                 ON CONFLICT(digest) DO NOTHING",
-            )
-            .bind(&pkg.package_digest)
-            .bind(&pkg.publisher)
-            .bind(&pkg.provider_id)
-            .bind(&pkg.version)
-            .bind(pkg.implementation.as_str())
-            .bind(tier)
-            .bind(manifest_str)
-            .bind(inventory_str)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-        }
-
-        for adm in &snapshot.4 {
-            sqlx::query(
-                "INSERT INTO provider_admissions (package_digest, policy_id, admission_fingerprint, revoked) \
-                 VALUES (?1, ?2, ?3, ?4) \
-                 ON CONFLICT(package_digest) DO UPDATE SET revoked = excluded.revoked, admission_fingerprint = excluded.admission_fingerprint",
-            )
-            .bind(&adm.package_digest)
-            .bind(&adm.policy_id)
-            .bind(&adm.admission_fingerprint)
-            .bind(adm.revoked)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-        }
-
-        for conn in &snapshot.5 {
-            let cfg_str = serde_json::to_string(&conn.public_config).unwrap_or_else(|_| "{}".into());
-            sqlx::query(
-                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(connection_id, revision) DO NOTHING",
-            )
-            .bind(&conn.connection_id)
-            .bind(conn.revision as i64)
-            .bind(&conn.provider_digest)
-            .bind(cfg_str)
-            .bind(conn.secret_locator.as_deref())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-        }
-
-        for rev in &snapshot.6 {
-            let manifest_str =
-                serde_json::to_string(&rev.manifest).unwrap_or_else(|_| "{}".into());
-            sqlx::query(
-                "INSERT INTO deployment_revisions (revision, parent_revision, manifest_digest, manifest_json, principal, reason, members_compacted) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-                 ON CONFLICT(revision) DO UPDATE SET members_compacted = excluded.members_compacted",
-            )
-            .bind(rev.revision as i64)
-            .bind(rev.parent_revision.map(|r| r as i64))
-            .bind(&rev.manifest_digest)
-            .bind(manifest_str)
-            .bind(&rev.created_by)
-            .bind(&rev.reason)
-            .bind(rev.members_compacted)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-
-            if !rev.members_compacted {
-                for m in &rev.manifest.members {
-                    sqlx::query(
-                        "INSERT INTO deployment_members (deployment_revision, entity_kind, entity_id, entity_revision, owning_package, definition_digest) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-                         ON CONFLICT(deployment_revision, entity_kind, entity_id, entity_revision) DO NOTHING",
-                    )
-                    .bind(rev.revision as i64)
-                    .bind(m.entity.kind.as_str())
-                    .bind(&m.entity.id)
-                    .bind(m.entity.revision as i64)
-                    .bind(m.owning_package.as_deref().unwrap_or(""))
-                    .bind(&m.definition_digest)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-                }
-            }
-        }
-
-        for (principal, idem_key, receipt) in &snapshot.7 {
-            sqlx::query(
-                "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(principal, idempotency_key) DO NOTHING",
-            )
-            .bind(principal)
-            .bind(idem_key)
-            .bind(&receipt.request_hash)
-            .bind(receipt.committed_revision as i64)
-            .bind(&receipt.manifest_digest)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
-        }
-
-        tx.commit().await.map_err(|e| {
-            DeploymentError::new("DB_COMMIT_ERROR", format!("failed to commit tx: {e}"))
-        })?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::CommunityAdmissionPolicy;
     use std::path::PathBuf;
 
     fn sample_archive_entries() -> Vec<ArchiveEntryInput> {
-        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../design-docs/v2/fixtures/package-identity");
-        let bundle: Value =
-            serde_json::from_str(&std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap())
-                .unwrap();
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/package-identity");
+        let bundle: Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap(),
+        )
+        .unwrap();
         let pkg = &bundle["providers"][1]; // helper wasm package with no dependencies
         let mut entries = Vec::new();
         for (path, text) in pkg["payloads"].as_object().unwrap() {
@@ -1584,7 +1116,10 @@ mod tests {
         let mut bad_entries = sample_archive_entries();
         bad_entries[0].is_symlink = true;
         assert_eq!(
-            store.ingest_verified_archive(&bad_entries).unwrap_err().code,
+            store
+                .ingest_verified_archive(&bad_entries)
+                .unwrap_err()
+                .code,
             "ARCHIVE_SYMLINK_DENIED"
         );
 
@@ -1736,9 +1271,7 @@ mod tests {
         use std::str::FromStr;
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_with(
-                sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
-            )
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
             .await
             .unwrap();
         crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
@@ -1794,11 +1327,12 @@ mod tests {
             .await
             .expect("persist_to_sqlite succeeds");
 
-        let (head_rev, epoch): (i64, i64) =
-            sqlx::query_as("SELECT head_revision, epoch FROM deployment_head WHERE singleton_id = 1")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (head_rev, epoch): (i64, i64) = sqlx::query_as(
+            "SELECT head_revision, epoch FROM deployment_head WHERE singleton_id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!((head_rev, epoch), (1, 1));
 
         let (op_rev,): (i64,) = sqlx::query_as(
@@ -1808,5 +1342,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(op_rev, 1);
+
+        let restored = ImmutableDeploymentStore::default();
+        restored
+            .load_from_sqlite(&pool)
+            .await
+            .expect("load_from_sqlite succeeds");
+        assert_eq!(restored.current_head(), (1, 1));
+        assert_eq!(restored.list_revisions().len(), 1);
+        assert_eq!(restored.list_packages().len(), 1);
+        assert_eq!(restored.list_admissions().len(), 1);
+        assert_eq!(restored.list_connections().len(), 1);
     }
 }

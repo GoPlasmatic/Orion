@@ -1,0 +1,198 @@
+{
+  "fixture_format_version": 1,
+  "profile": "profile.json",
+  "cases": [
+    {
+      "id": "get-success",
+      "mock": {"attempts": [{"event": "response", "status": 200, "body": {"id": "123", "full_name": "Ada Example"}}]},
+      "expect": {
+        "result": {"status": "success", "data": {"contact_id": "123", "display_name": "Ada Example"}, "metadata": {}},
+        "provider_attempts": 1, "network_sends": 1
+      }
+    },
+    {
+      "id": "invalid-input-before-dispatch",
+      "call": {"input": {"contact_id": 123}},
+      "mock": {"attempts": []},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_INVALID_INPUT", "class": "invalid_input", "effect_status": "not_started", "retry_advice": "never"}},
+        "schema_path": "/contact_id", "provider_attempts": 0, "network_sends": 0
+      }
+    },
+    {
+      "id": "invalid-output-after-completed-read",
+      "mock": {"attempts": [{"event": "response", "status": 200, "body": {"id": 123, "full_name": "Ada Example"}}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "PROVIDER_CONTRACT_VIOLATION", "class": "contract_violation", "effect_status": "completed", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 1
+      }
+    },
+    {
+      "id": "downstream-authentication-is-not-ingress-authentication",
+      "mock": {"attempts": [{"event": "response", "status": 401, "body": {"error": "fixture-secret-a"}}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_DOWNSTREAM_UNAUTHORIZED", "class": "unauthorized", "effect_status": "completed", "retry_advice": "never", "origin": {"kind": "provider", "stage": "transport"}}},
+        "provider_attempts": 1, "network_sends": 1
+      }
+    },
+    {
+      "id": "connection-grant-denied",
+      "setup": {"connection_granted": false},
+      "mock": {"attempts": []},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_CONNECTION_FORBIDDEN", "class": "forbidden", "effect_status": "not_started", "retry_advice": "never"}},
+        "provider_attempts": 0, "network_sends": 0
+      }
+    },
+    {
+      "id": "operation-grant-denied",
+      "setup": {"operation_granted": false},
+      "mock": {"attempts": []},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_OPERATION_FORBIDDEN", "class": "forbidden", "effect_status": "not_started", "retry_advice": "never"}},
+        "provider_attempts": 0, "network_sends": 0
+      }
+    },
+    {
+      "id": "reserved-source-operation-denied-to-application",
+      "call": {"operation": "orion.internal.source.poll"},
+      "mock": {"attempts": []},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_OPERATION_FORBIDDEN", "class": "forbidden", "effect_status": "not_started", "retry_advice": "never"}},
+        "provider_attempts": 0, "network_sends": 0
+      }
+    },
+    {
+      "id": "egress-denied-before-send",
+      "setup": {"egress_allowed": false},
+      "mock": {"attempts": []},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_EGRESS_DENIED", "class": "forbidden", "effect_status": "not_started", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 0
+      }
+    },
+    {
+      "id": "expired-before-admission",
+      "setup": {"deadline_at_ms": 0},
+      "mock": {"attempts": []},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_DEADLINE_EXCEEDED", "class": "deadline", "effect_status": "not_started", "retry_advice": "never"}},
+        "provider_attempts": 0, "network_sends": 0, "return_at_ms": 0
+      }
+    },
+    {
+      "id": "cancelled-before-admission",
+      "setup": {"cancel_at_ms": 0},
+      "mock": {"attempts": []},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_CANCELLED", "class": "cancelled", "effect_status": "not_started", "retry_advice": "never"}},
+        "provider_attempts": 0, "network_sends": 0, "return_at_ms": 0
+      }
+    },
+    {
+      "id": "deadline-after-send-retains-work",
+      "mock": {"attempts": [{"event": "blocked_after_send", "complete_at_ms": 150}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_DEADLINE_EXCEEDED", "class": "deadline", "effect_status": "unknown", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 1, "return_at_ms": 100,
+        "owned_jobs_at_return": 1, "owned_jobs_after_completion": 0
+      }
+    },
+    {
+      "id": "cancellation-after-send-retains-work",
+      "setup": {"cancel_at_ms": 5},
+      "mock": {"attempts": [{"event": "blocked_after_send", "complete_at_ms": 150}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_CANCELLED", "class": "cancelled", "effect_status": "unknown", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 1, "return_at_ms": 5,
+        "owned_jobs_at_return": 1, "owned_jobs_after_completion": 0
+      }
+    },
+    {
+      "id": "safe-read-retries-with-original-deadline",
+      "mock": {"attempts": [
+        {"event": "fail_before_send"},
+        {"event": "response", "status": 200, "body": {"id": "123", "full_name": "Ada Example"}}
+      ]},
+      "expect": {
+        "result": {"status": "success", "data": {"contact_id": "123", "display_name": "Ada Example"}, "metadata": {}},
+        "provider_attempts": 2, "network_sends": 1, "return_at_ms": 10
+      }
+    },
+    {
+      "id": "deadline-during-retry-backoff",
+      "setup": {"deadline_at_ms": 5},
+      "mock": {"attempts": [{"event": "fail_before_send"}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_DEADLINE_EXCEEDED", "class": "deadline", "effect_status": "not_started", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 0, "return_at_ms": 5
+      }
+    },
+    {
+      "id": "write-retry-uses-downstream-idempotency",
+      "call": {"operation": "contacts.create", "input": {"display_name": "Ada Example"}, "idempotency_key": "create-contact-123"},
+      "mock": {"attempts": [
+        {"event": "fail_after_send"},
+        {"event": "response", "status": 201, "body": {"id": "123", "full_name": "Ada Example"}}
+      ]},
+      "expect": {
+        "result": {"status": "success", "data": {"contact_id": "123", "display_name": "Ada Example"}, "metadata": {}},
+        "provider_attempts": 2, "network_sends": 2, "return_at_ms": 10,
+        "same_idempotency_key": true, "external_effects": 1
+      }
+    },
+    {
+      "id": "write-without-key-does-not-retry",
+      "call": {"operation": "contacts.create", "input": {"display_name": "Ada Example"}},
+      "mock": {"attempts": [{"event": "fail_after_send"}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_UNAVAILABLE", "class": "unavailable", "effect_status": "unknown", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 1
+      }
+    },
+    {
+      "id": "never-policy-ignores-present-key",
+      "call": {"operation": "contacts.create_once", "input": {"display_name": "Ada Example"}, "idempotency_key": "create-contact-123"},
+      "mock": {"attempts": [{"event": "fail_after_send"}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_UNAVAILABLE", "class": "unavailable", "effect_status": "unknown", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 1
+      }
+    },
+    {
+      "id": "later-presend-failure-preserves-effect-uncertainty",
+      "call": {"operation": "contacts.create", "input": {"display_name": "Ada Example"}, "idempotency_key": "create-contact-123"},
+      "mock": {"attempts": [{"event": "fail_after_send"}, {"event": "fail_before_send"}]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_UNAVAILABLE", "class": "unavailable", "effect_status": "unknown", "retry_advice": "transient"}},
+        "provider_attempts": 2, "network_sends": 1, "return_at_ms": 10,
+        "effect_uncertainty_preserved": true
+      }
+    },
+    {
+      "id": "nested-calls-share-host-budget",
+      "call": {"operation": "contacts.compose"},
+      "setup": {"max_host_calls": 2},
+      "mock": {"attempts": [
+        {"event": "response", "status": 200, "body": {"id": "123", "full_name": "Ada Example"}},
+        {"event": "response", "status": 200, "body": {"id": "123", "full_name": "Support Example"}}
+      ]},
+      "expect": {
+        "result": {"status": "error", "error": {"code": "CONNECTOR_BUDGET_EXHAUSTED", "class": "provider_failure", "effect_status": "completed", "retry_advice": "never"}},
+        "provider_attempts": 1, "network_sends": 2, "secondary_binding_isolated": true
+      }
+    },
+    {
+      "id": "two-bindings-do-not-share-session-identity",
+      "mock": {"attempts": [
+        {"event": "response", "status": 200, "body": {"id": "123", "full_name": "Ada Example"}},
+        {"event": "response", "status": 200, "body": {"id": "123", "full_name": "Support Example"}}
+      ]},
+      "expect": {
+        "result": {"status": "success", "data": {"contact_id": "123", "display_name": "Ada Example"}, "metadata": {}},
+        "alternate_result": {"status": "success", "data": {"contact_id": "123", "display_name": "Support Example"}, "metadata": {}},
+        "provider_attempts": 2, "network_sends": 2, "secondary_binding_isolated": true
+      }
+    }
+  ]
+}

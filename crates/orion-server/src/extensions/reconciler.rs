@@ -89,7 +89,11 @@ pub struct NodeReconciler {
 }
 
 impl NodeReconciler {
-    pub fn new(store: ImmutableDeploymentStore, node_id: impl Into<String>, boot_id: impl Into<String>) -> Self {
+    pub fn new(
+        store: ImmutableDeploymentStore,
+        node_id: impl Into<String>,
+        boot_id: impl Into<String>,
+    ) -> Self {
         let identity = NodeIdentity {
             node_id: node_id.into(),
             boot_id: boot_id.into(),
@@ -182,7 +186,9 @@ impl NodeReconciler {
             match issue {
                 CandidateBuildIssue::WholeBuildIntegrity { code, message } => {
                     let mut g = self.nodes.lock().expect("nodes lock");
-                    let node = g.get_mut(&self.local_identity.node_id).unwrap();
+                    let node = g
+                        .get_mut(&self.local_identity.node_id)
+                        .expect("local node registered");
                     node.backoff_attempt += 1;
                     node.backoff_delay_ms =
                         compute_reconcile_backoff_ms(node.backoff_attempt, candidate_revision);
@@ -198,11 +204,14 @@ impl NodeReconciler {
         // 3. Publication barrier: verify candidate is not superseded by desired or applied revision
         let (latest_head, _) = self.store.current_head();
         let mut g = self.nodes.lock().expect("nodes lock");
-        let node = g.get_mut(&self.local_identity.node_id).unwrap();
+        let node = g
+            .get_mut(&self.local_identity.node_id)
+            .expect("local node registered");
         if latest_head > node.desired_revision {
             node.desired_revision = latest_head;
         }
-        if candidate_revision < node.desired_revision || candidate_revision <= node.applied_revision {
+        if candidate_revision < node.desired_revision || candidate_revision <= node.applied_revision
+        {
             return Err(DeploymentError::new(
                 "CANDIDATE_SUPERSEDED",
                 format!(
@@ -298,6 +307,7 @@ impl NodeReconciler {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::CommunityAdmissionPolicy;
@@ -377,10 +387,8 @@ mod tests {
         assert_eq!(status.quarantined_entities.len(), 1);
 
         // Convergence check for ThisNode("node-a")
-        let conv = reconciler.evaluate_convergence(
-            2,
-            &ConvergenceTarget::ThisNode("node-a".to_string()),
-        );
+        let conv =
+            reconciler.evaluate_convergence(2, &ConvergenceTarget::ThisNode("node-a".to_string()));
         assert!(conv.converged);
         assert_eq!(conv.degraded_nodes, vec!["node-a".to_string()]);
 

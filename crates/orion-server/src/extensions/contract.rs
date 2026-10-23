@@ -198,7 +198,7 @@ impl ErrorOrigin {
     }
 }
 
-/// Standard host error codes from `design-docs/v2/contracts/connector-invocation.md`.
+/// Standard v2 connector host error codes (`V2-10.1`).
 pub mod codes {
     pub const INVALID_INPUT: &str = "CONNECTOR_INVALID_INPUT";
     pub const CONNECTION_FORBIDDEN: &str = "CONNECTOR_CONNECTION_FORBIDDEN";

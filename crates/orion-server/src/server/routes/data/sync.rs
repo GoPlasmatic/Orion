@@ -205,27 +205,6 @@ fn append_cookies(mut response: Response, cookies: &[String]) -> Response {
     response
 }
 
-/// The `302` that begins a sign-in, when the workflow ran first.
-///
-/// Built here as well as in the guard because the two legs answer from
-/// different places; the shape is one function's worth of duplication and the
-/// alternative is threading a `Response` back through the guard layer, which
-/// is deliberately axum-free.
-fn oauth_redirect_response(redirect: crate::channel::oauth2_login::Redirect) -> Response {
-    let mut response = Response::new(axum::body::Body::empty());
-    *response.status_mut() = StatusCode::FOUND;
-    for (name, value) in [
-        (axum::http::header::LOCATION, redirect.location),
-        (axum::http::header::SET_COOKIE, redirect.set_cookie),
-        (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
-    ] {
-        if let Ok(header) = axum::http::HeaderValue::from_str(&value) {
-            response.headers_mut().insert(name, header);
-        }
-    }
-    response
-}
-
 /// Take `data._orion.oauth2.authorize` out of the workflow's output.
 ///
 /// Drained rather than read, and for the same reason `_orion.response` is: it
@@ -741,7 +720,10 @@ pub(super) async fn process_sync_for_channel(
                                 contributed.as_ref(),
                                 oauth_return_to.as_deref(),
                             ) {
-                                Ok(redirect) => Ok(oauth_redirect_response(redirect)),
+                                Ok(redirect) => Ok(super::guard_response(
+                                    crate::channel::guards::GuardResponse::from(redirect),
+                                    channel,
+                                )),
                                 Err(e) => {
                                     tracing::error!(
                                         channel = channel,

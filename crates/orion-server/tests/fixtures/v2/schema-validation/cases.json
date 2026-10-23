@@ -1,0 +1,80 @@
+{
+  "fixture_format_version": 1,
+  "base_bundle": "bundle.json",
+  "cases": [
+    {"id": "valid-workflow", "patch": [], "expect": "OK"},
+    {"id": "valid-rust", "patch": [{"op": "replace", "path": "/manifest/implementation", "value": {"kind": "rust", "driver_id": "com.example.crm", "abi": "orion-rust-provider/1"}}], "expect": "OK"},
+    {"id": "valid-wasm", "patch": [{"op": "replace", "path": "/manifest/implementation", "value": {"kind": "wasm", "component": "component.wasm", "world": "orion:connector/connector@1.0.0"}}], "expect": "OK"},
+    {"id": "valid-http-world-with-declarations", "patch": [
+      {"op": "replace", "path": "/manifest/implementation", "value": {"kind": "wasm", "component": "component.wasm", "world": "orion:connector/connector-http@1.0.0"}},
+      {"op": "add", "path": "/manifest/capabilities/logging", "value": true}
+    ], "expect": "OK"},
+    {"id": "http-world-missing-import-declaration", "patch": [{"op": "replace", "path": "/manifest/implementation", "value": {"kind": "wasm", "component": "component.wasm", "world": "orion:connector/connector-http@1.0.0"}}], "expect": "MANIFEST_IMPORT_PROFILE_CAPABILITY_MISSING"},
+    {"id": "unknown-world", "patch": [{"op": "replace", "path": "/manifest/implementation", "value": {"kind": "wasm", "component": "component.wasm", "world": "orion:connector/unknown@1.0.0"}}], "expect": "MANIFEST_SHAPE_INVALID"},
+    {"id": "unsupported-version", "patch": [{"op": "replace", "path": "/manifest/schema_version", "value": 3}], "expect": "MANIFEST_SCHEMA_VERSION_UNSUPPORTED"},
+    {"id": "missing-explicit-version", "patch": [{"op": "remove", "path": "/manifest/schema_version"}], "expect": "MANIFEST_SHAPE_INVALID"},
+    {"id": "missing-payload-limits", "patch": [{"op": "remove", "path": "/manifest/payload_limits"}], "expect": "MANIFEST_SHAPE_INVALID"},
+    {"id": "mixed-implementation", "patch": [{"op": "add", "path": "/manifest/implementation/component", "value": "component.wasm"}], "expect": "MANIFEST_SHAPE_INVALID"},
+    {"id": "unknown-capability-field", "patch": [{"op": "add", "path": "/manifest/capabilities/ambient_network", "value": true}], "expect": "MANIFEST_SHAPE_INVALID"},
+    {"id": "payload-limit-too-large", "patch": [{"op": "replace", "path": "/manifest/payload_limits/input_bytes", "value": 2097152}], "expect": "MANIFEST_LIMIT_EXCEEDS_PROFILE"},
+    {"id": "missing-action-entry", "patch": [{"op": "remove", "path": "/manifest/implementation/entries/contacts.get"}], "expect": "MANIFEST_ENTRY_MISMATCH"},
+    {"id": "reserved-public-operation", "patch": [{"op": "add", "path": "/manifest/operations/orion.internal.poll", "value": {"input_schema": "schemas/contact-request.json", "output_schema": "schemas/contact.json", "effect": "read", "retry": "safe"}}], "expect": "MANIFEST_OPERATION_RESERVED"},
+    {"id": "unsafe-workflow-path", "patch": [{"op": "replace", "path": "/manifest/implementation/workflows/0", "value": "../outside.json"}], "expect": "MANIFEST_PATH_INVALID"},
+    {"id": "missing-schema-file", "patch": [{"op": "replace", "path": "/manifest/operations/contacts.get/input_schema", "value": "schemas/missing.json"}], "expect": "MANIFEST_ARTIFACT_MISSING"},
+    {"id": "retryable-write-without-idempotency", "patch": [{"op": "replace", "path": "/manifest/operations/contacts.get/effect", "value": "write"}], "expect": "MANIFEST_RETRY_UNSAFE"},
+    {"id": "qualified-write-declaration", "patch": [
+      {"op": "replace", "path": "/manifest/operations/contacts.get/effect", "value": "write"},
+      {"op": "add", "path": "/manifest/operations/contacts.get/idempotency", "value": {"mechanism": "Mock stores result per binding, operation and stable key", "key_mapping": "HTTP Idempotency-Key"}}
+    ], "expect": "OK"},
+    {"id": "duplicate-dependency-alias", "patch": [{"op": "replace", "path": "/manifest/dependencies", "value": [
+      {"kind": "provider", "alias": "secondary", "id": "com.example.other", "requires": "^1.0.0", "operations": ["contacts.get"], "binding_slot": "support"},
+      {"kind": "provider", "alias": "secondary", "id": "com.example.other", "requires": "^1.0.0", "operations": ["contacts.get"], "binding_slot": "support"}
+    ]}], "expect": "MANIFEST_DEPENDENCY_ALIAS_DUPLICATE"},
+    {"id": "workflow-lifecycle-entry-required", "patch": [{"op": "add", "path": "/manifest/lifecycle", "value": {"probe": {"input_schema": "schemas/contact-request.json", "output_schema": "schemas/contact.json"}}}], "expect": "MANIFEST_ENTRY_MISMATCH"},
+    {"id": "source-facet-missing-settle", "patch": [{"op": "add", "path": "/manifest/sources", "value": {"events": {"open": {"input_schema": "schemas/contact-request.json", "output_schema": "schemas/contact.json"}}}}], "expect": "MANIFEST_SHAPE_INVALID"},
+    {"id": "provider-unknown-keyword", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/properties/contact_id/pattern", "value": "[0-9]+"}], "expect": "SCHEMA_UNSUPPORTED_KEYWORD"},
+    {"id": "provider-default-forbidden", "patch": [{"op": "add", "path": "/schemas/schemas~1config.json/properties/base_url/default", "value": "https://crm.invalid"}], "expect": "SCHEMA_UNSUPPORTED_KEYWORD"},
+    {"id": "invalid-sensitivity-annotation", "patch": [{"op": "add", "path": "/schemas/schemas~1config.json/properties/base_url/x-orion-sensitive", "value": "yes"}], "expect": "SCHEMA_INVALID"},
+    {"id": "instance-property-name-is-not-a-keyword", "patch": [{"op": "add", "path": "/schemas/schemas~1config.json/properties/pattern", "value": {"type": "string"}}], "expect": "OK", "instances": [
+      {"schema": "schemas/config.json", "value": {"base_url": "https://crm.invalid", "pattern": "literal value"}, "valid": true}
+    ]},
+    {"id": "remote-reference-denied", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "https://outside.invalid/schema.json"}], "expect": "SCHEMA_REFERENCE_DENIED"},
+    {"id": "reference-traversal-denied", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "../outside.json"}], "expect": "SCHEMA_REFERENCE_DENIED"},
+    {"id": "encoded-reference-denied", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "%2e%2e/outside.json"}], "expect": "SCHEMA_REFERENCE_DENIED"},
+    {"id": "malformed-pointer-escape", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "#/$defs/a~2b"}], "expect": "SCHEMA_REFERENCE_DENIED"},
+    {"id": "missing-local-reference", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "#/$defs/missing"}], "expect": "SCHEMA_REFERENCE_MISSING"},
+    {"id": "reference-target-not-schema", "patch": [
+      {"op": "add", "path": "/schemas/schemas~1contact-request.json/title", "value": "Request"},
+      {"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "#/title"}
+    ], "expect": "SCHEMA_REFERENCE_NOT_SCHEMA"},
+    {"id": "recursive-reference-denied", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "#"}], "expect": "SCHEMA_REFERENCE_CYCLE"},
+    {"id": "indirect-file-cycle-denied", "patch": [
+      {"op": "add", "path": "/schemas/schemas~1contact-request.json/$ref", "value": "contact.json"},
+      {"op": "add", "path": "/schemas/schemas~1contact.json/$ref", "value": "contact-request.json"}
+    ], "expect": "SCHEMA_REFERENCE_CYCLE"},
+    {"id": "excess-composition-branches", "patch": [{"op": "add", "path": "/schemas/schemas~1contact-request.json/anyOf", "value": [true, true, true, true, true]}], "expect": "SCHEMA_PROFILE_LIMIT"},
+    {"id": "wrong-dialect", "patch": [{"op": "replace", "path": "/schemas/schemas~1contact-request.json/$schema", "value": "http://json-schema.org/draft-07/schema#"}], "expect": "SCHEMA_INVALID"},
+    {"id": "valid-same-document-reference", "patch": [{"op": "replace", "path": "/schemas/schemas~1contact-request.json", "value": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema", "$ref": "#/$defs/request",
+      "$defs": {"request": {"type": "object", "required": ["contact_id"], "additionalProperties": false, "properties": {"contact_id": {"type": "string"}}}}
+    }}], "expect": "OK", "instances": [
+      {"schema": "schemas/contact-request.json", "value": {"contact_id": "123"}, "valid": true},
+      {"schema": "schemas/contact-request.json", "value": {}, "valid": false},
+      {"schema": "schemas/contact-request.json", "value": {"contact_id": 123}, "valid": false}
+    ]},
+    {"id": "valid-package-local-reference-with-sibling", "patch": [{"op": "replace", "path": "/schemas/schemas~1contact-request.json", "value": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema", "$ref": "contact.json", "maxProperties": 1
+    }}], "expect": "OK", "instances": [
+      {"schema": "schemas/contact-request.json", "value": {"contact_id": "123", "display_name": "Ada Example"}, "valid": false}
+    ]},
+    {"id": "valid-reference-to-boolean-schema", "patch": [{"op": "replace", "path": "/schemas/schemas~1contact-request.json", "value": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"deny": false}, "$ref": "#/$defs/deny"
+    }}], "expect": "OK", "instances": [
+      {"schema": "schemas/contact-request.json", "value": {"contact_id": "123"}, "valid": false}
+    ]},
+    {"id": "duplicate-json-key", "raw_json": "{\"schema_version\":2,\"schema_version\":2}", "expect": "DOCUMENT_INVALID_JSON"},
+    {"id": "nonfinite-json-number", "raw_json": "{\"value\":NaN}", "expect": "DOCUMENT_INVALID_JSON"},
+    {"id": "unsupported-exponent-range", "raw_json": "{\"value\":1e999}", "expect": "DOCUMENT_INVALID_JSON"},
+    {"id": "integer-above-safe-range", "raw_json": "{\"value\":9007199254740992}", "expect": "DOCUMENT_INVALID_JSON"}
+  ]
+}

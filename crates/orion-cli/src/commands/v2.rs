@@ -29,7 +29,9 @@ fn load_file_or_stdin(file: &str) -> Result<Value> {
 // ============================================================================
 
 #[derive(Args)]
-#[command(long_about = "Manage immutable v2 deployments, convergence, rollback, and migration preflight (`V2-07.4`, `V2-07.5`, `V2-16.4`).")]
+#[command(
+    long_about = "Manage immutable v2 deployments, convergence, rollback, and migration preflight (`V2-07.4`, `V2-07.5`, `V2-16.4`)."
+)]
 pub struct DeploymentsCmd {
     #[command(subcommand)]
     command: DeploymentsSubcommand,
@@ -294,7 +296,9 @@ async fn wait_for_convergence(
 // ============================================================================
 
 #[derive(Args)]
-#[command(long_about = "Author, lint, pack, upload, admit, and revoke v2 connector provider packages (`V2-07.2`, `V2-07.3`).")]
+#[command(
+    long_about = "Author, lint, pack, upload, admit, and revoke v2 connector provider packages (`V2-07.2`, `V2-07.3`)."
+)]
 pub struct ProviderCmd {
     #[command(subcommand)]
     command: ProviderSubcommand,
@@ -489,7 +493,9 @@ impl ProviderCmd {
 // ============================================================================
 
 #[derive(Args)]
-#[command(long_about = "Manage immutable v2 connection revisions and execute audited health probes (`V2-07.3`).")]
+#[command(
+    long_about = "Manage immutable v2 connection revisions and execute audited health probes (`V2-07.3`)."
+)]
 pub struct ConnectionsCmd {
     #[command(subcommand)]
     command: ConnectionsSubcommand,

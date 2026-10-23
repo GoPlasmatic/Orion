@@ -2,7 +2,7 @@
 //!
 //! Implements the four foundational Direct Rust (`ImplementationKind::Rust`)
 //! connector providers maintained in the public Community repository per
-//! [DEC-005](../../../../design-docs/v2/decisions/dec-005-provider-catalog.md):
+//! `DEC-005`:
 //! - [`HttpProviderBackend`] (`"org.orion.http"`)
 //! - [`PostgresProviderBackend`] (`"org.orion.postgresql"`)
 //! - [`SqliteProviderBackend`] (`"org.orion.sqlite"`) — enforces approved-root
@@ -114,7 +114,8 @@ impl ProviderBackend for HttpProviderBackend {
         input: Value,
     ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
 
             let method = match operation.to_ascii_lowercase().as_str() {
                 "get" | "post" | "put" | "patch" | "delete" => operation.to_ascii_uppercase(),
@@ -140,10 +141,7 @@ impl ProviderBackend for HttpProviderBackend {
                 ));
             }
 
-            let path = input
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or("/");
+            let path = input.get("path").and_then(Value::as_str).unwrap_or("/");
             if !path.starts_with('/') {
                 return Err(ConnectorError::invalid_input(
                     "HTTP request 'path' must start with '/'",
@@ -155,17 +153,15 @@ impl ProviderBackend for HttpProviderBackend {
                 .get("url")
                 .or_else(|| input.get("base_url"))
                 .and_then(Value::as_str)
-            {
-                if let Err(ssrf_reason) =
+                && let Err(ssrf_reason) =
                     crate::validation::ssrf::validate_url_not_private(url).await
-                {
-                    return Err(ConnectorError::forbidden(
-                        codes::CAPABILITY_INVALID,
-                        "ssrf_validation",
-                        format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
-                        ctx.invocation().effect_status(),
-                    ));
-                }
+            {
+                return Err(ConnectorError::forbidden(
+                    codes::CAPABILITY_INVALID,
+                    "ssrf_validation",
+                    format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
+                    ctx.invocation().effect_status(),
+                ));
             }
 
             let mut metadata = BTreeMap::new();
@@ -248,13 +244,17 @@ impl ProviderBackend for PostgresProviderBackend {
         input: Value,
     ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
 
             let identity = ctx.invocation().effective_identity();
             let handle = self
                 .sessions
                 .acquire(identity, || async move {
-                    Ok(format!("pg-session:{}:r{}", identity.connection_id, identity.revision))
+                    Ok(format!(
+                        "pg-session:{}:r{}",
+                        identity.connection_id, identity.revision
+                    ))
                 })
                 .await?;
 
@@ -335,7 +335,8 @@ impl SourceConnectorFacet for PostgresProviderBackend {
         checkpoint: Option<Value>,
     ) -> BoxProviderFuture<'a, Result<Value, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(json!({
                 "driver": DRIVER_POSTGRESQL,
                 "connection_id": ctx.invocation().connection().connection_id,
@@ -351,7 +352,8 @@ impl SourceConnectorFacet for PostgresProviderBackend {
         _max_items: u32,
     ) -> BoxProviderFuture<'a, Result<SourcePollBatch, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(SourcePollBatch {
                 items: Vec::new(),
                 next_checkpoint: cursor.get("checkpoint").cloned(),
@@ -366,7 +368,8 @@ impl SourceConnectorFacet for PostgresProviderBackend {
         _settlement: SourceSettlement,
     ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(())
         })
     }
@@ -377,7 +380,8 @@ impl SourceConnectorFacet for PostgresProviderBackend {
         _cursor: Value,
     ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(())
         })
     }
@@ -401,6 +405,7 @@ const RESERVED_ORION_DB_NAMES: &[&str] = &["orion.db", "orion.sqlite", "orion-st
 pub struct SqliteProviderBackend {
     approved_root: PathBuf,
     sessions: Arc<VersionedSessionPool<String>>,
+    live_pools: crate::connector::lru_cache::LruCache<sqlx::SqlitePool>,
 }
 
 impl SqliteProviderBackend {
@@ -411,6 +416,15 @@ impl SqliteProviderBackend {
                 DRIVER_SQLITE,
                 max_capacity_per_connection,
             )),
+            live_pools: crate::connector::lru_cache::LruCache::with_evict_handler(
+                max_capacity_per_connection.max(4),
+                "v2_sqlite",
+                |pool: sqlx::SqlitePool| {
+                    tokio::spawn(async move {
+                        pool.close().await;
+                    });
+                },
+            ),
         }
     }
 
@@ -496,16 +510,25 @@ impl SqliteProviderBackend {
         operation: &str,
         statement: &str,
     ) -> Result<Value, ConnectorError> {
-        use sqlx::Column;
-        use sqlx::Row;
+        use sqlx::{Column, Row, TypeInfo, ValueRef};
 
         let target = self.resolve_sandboxed_target(conn_str)?;
-        let pool = sqlx::SqlitePool::connect(&target).await.map_err(|e| {
-            ConnectorError::invalid_input(
-                format!("Failed to connect to sandboxed SQLite target '{target}': {e}"),
-                None,
-            )
-        })?;
+        let pool = self
+            .live_pools
+            .get_or_create(&target, || {
+                let target_url = target.clone();
+                async move {
+                    sqlx::SqlitePool::connect(&target_url).await.map_err(|e| {
+                        ConnectorError::invalid_input(
+                            format!(
+                                "Failed to connect to sandboxed SQLite target '{target_url}': {e}"
+                            ),
+                            None,
+                        )
+                    })
+                }
+            })
+            .await?;
         let statement_owned = statement.to_string();
 
         match operation {
@@ -520,11 +543,37 @@ impl SqliteProviderBackend {
                 for row in &rows {
                     let mut map = serde_json::Map::new();
                     for (idx, col) in row.columns().iter().enumerate() {
-                        let val: Option<String> = row.try_get_unchecked(idx).ok();
-                        map.insert(
-                            col.name().to_string(),
-                            val.map(Value::String).unwrap_or(Value::Null),
-                        );
+                        let cell_val = if let Ok(raw) = row.try_get_raw(idx) {
+                            if raw.is_null() {
+                                Value::Null
+                            } else {
+                                match raw.type_info().name() {
+                                    "INTEGER" | "INT" | "BIGINT" | "INT8" => row
+                                        .try_get_unchecked::<i64, _>(idx)
+                                        .map(Value::from)
+                                        .unwrap_or(Value::Null),
+                                    "REAL" | "FLOAT" | "DOUBLE" => row
+                                        .try_get_unchecked::<f64, _>(idx)
+                                        .ok()
+                                        .and_then(serde_json::Number::from_f64)
+                                        .map(Value::Number)
+                                        .unwrap_or(Value::Null),
+                                    "BOOLEAN" | "BOOL" => row
+                                        .try_get_unchecked::<bool, _>(idx)
+                                        .map(Value::Bool)
+                                        .unwrap_or(Value::Null),
+                                    _ => row
+                                        .try_get_unchecked::<Option<String>, _>(idx)
+                                        .ok()
+                                        .flatten()
+                                        .map(Value::String)
+                                        .unwrap_or(Value::Null),
+                                }
+                            }
+                        } else {
+                            Value::Null
+                        };
+                        map.insert(col.name().to_string(), cell_val);
                     }
                     json_rows.push(Value::Object(map));
                 }
@@ -590,7 +639,8 @@ impl ProviderBackend for SqliteProviderBackend {
         input: Value,
     ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
 
             let identity = ctx.invocation().effective_identity();
             let handle = self
@@ -681,7 +731,8 @@ impl SourceConnectorFacet for SqliteProviderBackend {
         checkpoint: Option<Value>,
     ) -> BoxProviderFuture<'a, Result<Value, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(json!({
                 "driver": DRIVER_SQLITE,
                 "connection_id": ctx.invocation().connection().connection_id,
@@ -697,7 +748,8 @@ impl SourceConnectorFacet for SqliteProviderBackend {
         _max_items: u32,
     ) -> BoxProviderFuture<'a, Result<SourcePollBatch, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(SourcePollBatch {
                 items: Vec::<SourceBatchItem>::new(),
                 next_checkpoint: cursor.get("checkpoint").cloned(),
@@ -712,7 +764,8 @@ impl SourceConnectorFacet for SqliteProviderBackend {
         _settlement: SourceSettlement,
     ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(())
         })
     }
@@ -723,7 +776,8 @@ impl SourceConnectorFacet for SqliteProviderBackend {
         _cursor: Value,
     ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             Ok(())
         })
     }
@@ -885,7 +939,8 @@ impl ProviderBackend for MemoryCacheProviderBackend {
         input: Value,
     ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             let identity = ctx.invocation().effective_identity();
 
             let Some(key) = input.get("key").and_then(Value::as_str) else {
@@ -969,6 +1024,7 @@ pub fn register_community_foundation_providers(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::admission::CommunityAdmissionPolicy;
@@ -1189,11 +1245,7 @@ mod tests {
         // Live SQLite execution against sqlite::memory: (`V2-14.3`)
         let sqlite = SqliteProviderBackend::default();
         let out = sqlite
-            .execute_live_sqlite(
-                "sqlite::memory:",
-                "query",
-                "SELECT 'orion-v2' AS edition",
-            )
+            .execute_live_sqlite("sqlite::memory:", "query", "SELECT 'orion-v2' AS edition")
             .await
             .unwrap();
         assert_eq!(out["count"], 1);

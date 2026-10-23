@@ -177,7 +177,11 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
 
     /// Invalidate a specific effective identity and optionally advance the minimum
     /// acceptable revision for its connection (`CTX-08`).
-    pub fn invalidate(&self, identity: &EffectiveConnectionIdentity, next_min_revision: Option<u64>) {
+    pub fn invalidate(
+        &self,
+        identity: &EffectiveConnectionIdentity,
+        next_min_revision: Option<u64>,
+    ) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.sessions.remove(identity);
         guard.invalidated.insert(identity.clone());
@@ -292,10 +296,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
     }
 
     pub fn cached_count(&self) -> usize {
-        self.state
-            .lock()
-            .map(|g| g.sessions.len())
-            .unwrap_or(0)
+        self.state.lock().map(|g| g.sessions.len()).unwrap_or(0)
     }
 }
 
@@ -362,7 +363,10 @@ mod tests {
             .acquire(&rev2_sec2, || async { Ok("session-rev2-secB".to_string()) })
             .await
             .expect_err("must enforce shared capacity ceiling of 2 across revisions");
-        assert_eq!(third_err.code, crate::extensions::contract::codes::BUDGET_EXHAUSTED);
+        assert_eq!(
+            third_err.code,
+            crate::extensions::contract::codes::BUDGET_EXHAUSTED
+        );
 
         drop(h1);
         drop(h2);

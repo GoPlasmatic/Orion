@@ -44,22 +44,35 @@ pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
 /// `OrionError::Conflict` (409), leaving everything else a `Storage` error
 /// (500). Two shapes count as a duplicate (D16):
 ///
-/// - the structured `UniqueViolation` kind — Postgres always (its single-draft
-///   rule is a partial unique index), and SQLite/MySQL primary-key collisions;
+/// - the structured `UniqueViolation` kind or SQLSTATE / vendor unique-violation
+///   codes (`23505`, `23000`, `1062`, `1555`, `2067`) — Postgres always (its
+///   single-draft rule is a partial unique index), and SQLite/MySQL primary-key
+///   collisions;
 /// - the *generic* error the single-draft triggers raise — SQLite
-///   `RAISE(ABORT, …)` and MySQL `SIGNAL SQLSTATE '45000'` carry no
-///   constraint kind sqlx can classify, so those are matched on the trigger's
-///   message text (`migrations/{sqlite,mysql}/…single_draft…`).
+///   `RAISE(ABORT, …)` (code `1819`) and MySQL `SIGNAL SQLSTATE '45000'` carry
+///   no constraint kind sqlx can classify, so those are matched via
+///   [`is_unique_or_single_draft_violation`] (`migrations/{sqlite,mysql}/…single_draft…`).
 pub fn map_duplicate(e: sqlx::Error, conflict_msg: impl FnOnce() -> String) -> OrionError {
     match &e {
-        sqlx::Error::Database(db_err)
-            if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
-                || db_err.message().contains(SINGLE_DRAFT_TRIGGER_MSG) =>
-        {
+        sqlx::Error::Database(db_err) if is_unique_or_single_draft_violation(db_err.as_ref()) => {
             OrionError::Conflict(conflict_msg())
         }
         _ => OrionError::Storage(e),
     }
+}
+
+/// Classify whether a database error represents a unique-constraint collision or
+/// a single-draft trigger rejection across PostgreSQL, MySQL, and SQLite (`QUAL-03`).
+pub fn is_unique_or_single_draft_violation(db_err: &dyn sqlx::error::DatabaseError) -> bool {
+    if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
+        return true;
+    }
+    if let Some(code) = db_err.code()
+        && matches!(code.as_ref(), "23505" | "23000" | "1062" | "1555" | "2067")
+    {
+        return true;
+    }
+    db_err.message().contains(SINGLE_DRAFT_TRIGGER_MSG)
 }
 
 /// The text the single-draft triggers raise, as far as this matches it.

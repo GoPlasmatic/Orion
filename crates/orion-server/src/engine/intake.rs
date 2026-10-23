@@ -27,15 +27,15 @@ pub use dataflow_rs::datavalue::{
 };
 
 /// Default maximum UTF-8 input byte length for untrusted JSON documents (64 KiB),
-/// matching `design-docs/v2/schemas/schema-profile.json` (`instance_bytes`).
+/// matching the `orion-json-schema/1` profile (`instance_bytes`).
 pub const DEFAULT_MAX_INPUT_BYTES: usize = 65_536;
 
 /// Default maximum container nesting depth for untrusted JSON documents (`64`),
-/// matching `design-docs/v2/schemas/schema-profile.json` (`instance_depth`).
+/// matching the `orion-json-schema/1` profile (`instance_depth`).
 pub const DEFAULT_MAX_DEPTH: u16 = 64;
 
 /// Default maximum total JSON value nodes for untrusted JSON documents (`4_096`),
-/// matching `design-docs/v2/schemas/schema-profile.json` (`instance_nodes`).
+/// matching the `orion-json-schema/1` profile (`instance_nodes`).
 pub const DEFAULT_MAX_NODES: usize = 4_096;
 
 /// Default resource ceilings for strict JSON intake (`65_536` bytes, depth `64`,

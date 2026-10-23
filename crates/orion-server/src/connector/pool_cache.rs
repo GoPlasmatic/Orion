@@ -206,6 +206,20 @@ impl Default for SqlPoolCache {
     }
 }
 
+impl crate::extensions::ConnectionPoolCache for SqlPoolCache {
+    fn cache_id(&self) -> &str {
+        "sql_pool"
+    }
+
+    fn evict<'a>(&'a self, connector_name: &'a str) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { SqlPoolCache::evict(self, connector_name).await })
+    }
+
+    fn evict_all<'a>(&'a self) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { SqlPoolCache::evict_all(self).await })
+    }
+}
+
 /// What a write reports back: rows affected, and an auto-increment id where the
 /// driver has one.
 ///

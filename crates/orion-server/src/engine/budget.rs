@@ -226,7 +226,7 @@ mod tests {
                 ]
             }))
             .build()
-            .unwrap();
+            .expect("build test engine");
 
         let acct = SharedRunAccountant::new(RunBudgetLimits {
             max_tasks: Some(10),
@@ -293,7 +293,7 @@ mod tests {
                 ]
             }))
             .build()
-            .unwrap();
+            .expect("build test engine");
 
         let acct = SharedRunAccountant::unbounded();
         let mut msg = Message::from_parts(
@@ -306,16 +306,18 @@ mod tests {
             .await;
 
         assert_eq!(calls.load(Ordering::SeqCst), 0, "later effect must not run");
-        match run.status() {
-            RunStatus::Stopped(err) => {
-                let site = err.site().expect("ErrorSite attached");
-                assert_eq!(site.kind, SiteKind::FilterCondition);
-                assert_eq!(site.workflow_id.as_ref(), "w");
-                assert_eq!(site.task_id.as_deref(), Some("guard"));
-                let cause = err.expr_cause().expect("ExprCause attached");
-                assert_eq!(cause.operator.as_deref(), Some("/"));
-            }
-            other => panic!("expected Stopped, got {other:?}"),
+        assert!(
+            matches!(run.status(), RunStatus::Stopped(_)),
+            "expected Stopped, got {:?}",
+            run.status()
+        );
+        if let RunStatus::Stopped(err) = run.status() {
+            let site = err.site().expect("ErrorSite attached");
+            assert_eq!(site.kind, SiteKind::FilterCondition);
+            assert_eq!(site.workflow_id.as_ref(), "w");
+            assert_eq!(site.task_id.as_deref(), Some("guard"));
+            let cause = err.expr_cause().expect("ExprCause attached");
+            assert_eq!(cause.operator.as_deref(), Some("/"));
         }
         assert!(
             acct.snapshot().expr_ops_charged > 0,

@@ -138,10 +138,12 @@ pub trait ProviderBackend: Send + Sync {
     }
 }
 
+type ProviderBackendMap = BTreeMap<(ImplementationKind, String), Arc<dyn ProviderBackend>>;
+
 /// Open registry of [`ProviderBackend`] implementations (`V2-11.1`).
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
-    backends: Arc<RwLock<BTreeMap<(ImplementationKind, String), Arc<dyn ProviderBackend>>>>,
+    backends: Arc<RwLock<ProviderBackendMap>>,
 }
 
 impl std::fmt::Debug for ProviderRegistry {
@@ -166,7 +168,11 @@ impl ProviderRegistry {
     }
 
     /// Look up a registered [`ProviderBackend`].
-    pub fn get(&self, kind: ImplementationKind, driver_id: &str) -> Option<Arc<dyn ProviderBackend>> {
+    pub fn get(
+        &self,
+        kind: ImplementationKind,
+        driver_id: &str,
+    ) -> Option<Arc<dyn ProviderBackend>> {
         self.backends
             .read()
             .ok()?
@@ -213,9 +219,7 @@ impl ProviderRegistry {
                 error: ConnectorError::forbidden(
                     codes::CONNECTION_FORBIDDEN,
                     "dispatch",
-                    format!(
-                        "No provider backend registered for ({kind}, '{driver_id}')"
-                    ),
+                    format!("No provider backend registered for ({kind}, '{driver_id}')"),
                     prior_effect,
                 ),
             };
@@ -226,7 +230,10 @@ impl ProviderRegistry {
             Err(err) => return ConnectorResult::Error { error: err },
         };
 
-        match backend.invoke(&attempt, invocation.operation(), input).await {
+        match backend
+            .invoke(&attempt, invocation.operation(), input)
+            .await
+        {
             Ok(output) => {
                 invocation.record_effect(EffectStatus::Completed);
                 ConnectorResult::Success {
@@ -269,10 +276,7 @@ mod tests {
             if config.get("endpoint").and_then(Value::as_str).is_some() {
                 Ok(())
             } else {
-                Err(ConnectorError::invalid_input(
-                    "endpoint is required",
-                    None,
-                ))
+                Err(ConnectorError::invalid_input("endpoint is required", None))
             }
         }
 

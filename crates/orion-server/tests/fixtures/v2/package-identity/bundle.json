@@ -1,0 +1,168 @@
+{
+  "fixture_format_version": 1,
+  "providers": [
+    {
+      "label": "root",
+      "payloads": {
+        "connector.json": "{\"capabilities\":{\"credentials\":[{\"slot\":\"api_token\",\"use\":\"http-bearer\"}],\"dependencies\":[\"secondary\"],\"http\":{\"endpoint_config\":\"base_url\",\"methods\":[\"GET\"]}},\"configuration_schema\":\"schemas/config.json\",\"contract\":\"orion:connector@1.0.0\",\"dependencies\":[{\"alias\":\"secondary\",\"binding_slot\":\"support\",\"id\":\"com.example.helper\",\"kind\":\"provider\",\"operations\":[\"contacts.get\"],\"requires\":\"=1.0.0\"}],\"id\":\"com.example.crm\",\"implementation\":{\"entries\":{\"contacts.get\":\"crm/get-contact\"},\"kind\":\"workflow\",\"workflows\":[\"workflows/get-contact.json\",\"workflows/map-contact.json\"]},\"kind\":\"connector-provider\",\"operations\":{\"contacts.get\":{\"effect\":\"read\",\"input_schema\":\"schemas/contact-request.json\",\"output_schema\":\"schemas/contact.json\",\"retry\":\"safe\"}},\"payload_limits\":{\"configuration_bytes\":4096,\"input_bytes\":4096,\"metadata_bytes\":1024,\"output_bytes\":4096},\"requires_orion\":\">=2.0.0, <3.0.0\",\"schema_profile\":\"orion-json-schema/1\",\"schema_version\":2,\"version\":\"1.0.0\"}",
+        "distribution.json": "{\"schema_version\":2,\"publisher\":\"com.example\",\"policy_requirements\":[]}",
+        "LICENSE": "Fixture-only notice: café. No executable provider included.\n",
+        "schemas/config.json": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"additionalProperties\":false,\"properties\":{\"base_url\":{\"maxLength\":2048,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"base_url\"],\"type\":\"object\"}",
+        "schemas/contact-request.json": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"additionalProperties\":false,\"properties\":{\"contact_id\":{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"contact_id\"],\"type\":\"object\"}",
+        "schemas/contact.json": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"additionalProperties\":false,\"properties\":{\"contact_id\":{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"},\"display_name\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"contact_id\",\"display_name\"],\"type\":\"object\"}",
+        "workflows/get-contact.json": "{\"fixture_placeholder\":true}",
+        "workflows/map-contact.json": "{\"fixture_placeholder\":true}"
+      },
+      "inventory": {
+        "inventory_version": 1,
+        "files": [
+          {
+            "path": "LICENSE",
+            "sha256": "1725348d800108fcb5dcd4c6dc29260af9a30b9ab60a89081ea939ddb5ab2627",
+            "size": 61
+          },
+          {
+            "path": "connector.json",
+            "sha256": "1b8f2dec2d2cabb07985156f5538c036f0e0396eca290472201937c6f78e4101",
+            "size": 969
+          },
+          {
+            "path": "distribution.json",
+            "sha256": "8e919a3610f6b70253e79de231877214c31dcda8dbebc7a8d5dc18fb74d57891",
+            "size": 71
+          },
+          {
+            "path": "schemas/config.json",
+            "sha256": "907978a1fc533e200005e3894bd04ebe13cc1c6087d077d8da226a69a9abf012",
+            "size": 202
+          },
+          {
+            "path": "schemas/contact-request.json",
+            "sha256": "519507656e2efd587793d063b4e82d8ca4b9a93066c6b0d3db91097060f61aa0",
+            "size": 205
+          },
+          {
+            "path": "schemas/contact.json",
+            "sha256": "4f883981d12b3960a5a28799de44c083d90ca6e57063f01b4483193d9f07b49a",
+            "size": 283
+          },
+          {
+            "path": "workflows/get-contact.json",
+            "sha256": "698dc85bec9613f563a32ccd6e58a9b86318b0695c07df697a53cf02cf119e7f",
+            "size": 28
+          },
+          {
+            "path": "workflows/map-contact.json",
+            "sha256": "698dc85bec9613f563a32ccd6e58a9b86318b0695c07df697a53cf02cf119e7f",
+            "size": 28
+          }
+        ]
+      },
+      "digest": "sha256:06b55b26ed2c6ff1ad9ddbefda2ca84b5f6d610b611ab33fa1b3027de3ec670c"
+    },
+    {
+      "label": "helper",
+      "payloads": {
+        "connector.json": "{\"capabilities\":{\"credentials\":[{\"slot\":\"api_token\",\"use\":\"http-bearer\"}],\"http\":{\"endpoint_config\":\"base_url\",\"methods\":[\"GET\"]},\"logging\":true},\"configuration_schema\":\"schemas/config.json\",\"contract\":\"orion:connector@1.0.0\",\"dependencies\":[],\"id\":\"com.example.helper\",\"implementation\":{\"component\":\"component.wasm\",\"kind\":\"wasm\",\"world\":\"orion:connector/connector-http@1.0.0\"},\"kind\":\"connector-provider\",\"operations\":{\"contacts.get\":{\"effect\":\"read\",\"input_schema\":\"schemas/contact-request.json\",\"output_schema\":\"schemas/contact.json\",\"retry\":\"safe\"}},\"payload_limits\":{\"configuration_bytes\":4096,\"input_bytes\":4096,\"metadata_bytes\":1024,\"output_bytes\":4096},\"requires_orion\":\">=2.0.0, <3.0.0\",\"schema_profile\":\"orion-json-schema/1\",\"schema_version\":2,\"version\":\"1.0.0\"}",
+        "distribution.json": "{\"schema_version\":2,\"publisher\":\"com.example\",\"policy_requirements\":[]}",
+        "LICENSE": "Fixture-only notice: café. No executable provider included.\n",
+        "schemas/config.json": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"additionalProperties\":false,\"properties\":{\"base_url\":{\"maxLength\":2048,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"base_url\"],\"type\":\"object\"}",
+        "schemas/contact-request.json": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"additionalProperties\":false,\"properties\":{\"contact_id\":{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"contact_id\"],\"type\":\"object\"}",
+        "schemas/contact.json": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"additionalProperties\":false,\"properties\":{\"contact_id\":{\"maxLength\":128,\"minLength\":1,\"type\":\"string\"},\"display_name\":{\"maxLength\":256,\"minLength\":1,\"type\":\"string\"}},\"required\":[\"contact_id\",\"display_name\"],\"type\":\"object\"}",
+        "component.wasm": "fixture-only non-executable bytes\n"
+      },
+      "inventory": {
+        "inventory_version": 1,
+        "files": [
+          {
+            "path": "LICENSE",
+            "sha256": "1725348d800108fcb5dcd4c6dc29260af9a30b9ab60a89081ea939ddb5ab2627",
+            "size": 61
+          },
+          {
+            "path": "component.wasm",
+            "sha256": "ee0eb42aec13fffb927f487090de8ec4b81c0b2cce50526dc22e90a9e2e054e8",
+            "size": 34
+          },
+          {
+            "path": "connector.json",
+            "sha256": "c048a6c4698bb1bca41414f2e8b87fd29484644784d7d37c7e656eac4d1d6c81",
+            "size": 773
+          },
+          {
+            "path": "distribution.json",
+            "sha256": "8e919a3610f6b70253e79de231877214c31dcda8dbebc7a8d5dc18fb74d57891",
+            "size": 71
+          },
+          {
+            "path": "schemas/config.json",
+            "sha256": "907978a1fc533e200005e3894bd04ebe13cc1c6087d077d8da226a69a9abf012",
+            "size": 202
+          },
+          {
+            "path": "schemas/contact-request.json",
+            "sha256": "519507656e2efd587793d063b4e82d8ca4b9a93066c6b0d3db91097060f61aa0",
+            "size": 205
+          },
+          {
+            "path": "schemas/contact.json",
+            "sha256": "4f883981d12b3960a5a28799de44c083d90ca6e57063f01b4483193d9f07b49a",
+            "size": 283
+          }
+        ]
+      },
+      "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813"
+    }
+  ],
+  "lock": {
+    "schema_version": 2,
+    "roots": [
+      {
+        "kind": "provider",
+        "digest": "sha256:06b55b26ed2c6ff1ad9ddbefda2ca84b5f6d610b611ab33fa1b3027de3ec670c"
+      }
+    ],
+    "packages": [
+      {
+        "kind": "provider",
+        "digest": "sha256:06b55b26ed2c6ff1ad9ddbefda2ca84b5f6d610b611ab33fa1b3027de3ec670c",
+        "publisher": "com.example",
+        "id": "com.example.crm",
+        "version": "1.0.0",
+        "contract": "orion:connector@1.0.0",
+        "schema_profile": "orion-json-schema/1",
+        "implementation": "workflow",
+        "operations": [
+          "contacts.get"
+        ],
+        "dependencies": [
+          {
+            "kind": "provider",
+            "alias": "secondary",
+            "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813",
+            "operations": [
+              "contacts.get"
+            ],
+            "binding_slot": "support"
+          }
+        ]
+      },
+      {
+        "kind": "provider",
+        "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813",
+        "publisher": "com.example",
+        "id": "com.example.helper",
+        "version": "1.0.0",
+        "contract": "orion:connector@1.0.0",
+        "schema_profile": "orion-json-schema/1",
+        "implementation": "wasm",
+        "import_profile": "http-v1",
+        "operations": [
+          "contacts.get"
+        ],
+        "dependencies": []
+      }
+    ]
+  },
+  "lock_digest": "sha256:311d2534ee5962e0879caf2ae9ef9670ec3c779740108b95f64ee94e4be7f403"
+}

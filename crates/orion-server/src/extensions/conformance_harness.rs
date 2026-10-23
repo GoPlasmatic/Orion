@@ -1,7 +1,7 @@
 //! V2-10.5 Shared Connector Conformance Harness in Rust.
 //!
 //! Executes the 20 shared invocation conformance cases from
-//! `design-docs/v2/fixtures/connector-invocation/` over `CompiledSchemaBundle`,
+//! `tests/fixtures/v2/connector-invocation/` over `CompiledSchemaBundle`,
 //! `BudgetScope`, `HostJobRegistry`, and `ConnectorResult`/`ConnectorError`
 //! to verify input/output schema boundaries, capability grants, retry &
 //! idempotency rules, effect uncertainty preservation, and owned host jobs.
@@ -83,16 +83,22 @@ pub fn execute_conformance_case(
     let idempotency_key = call.get("idempotency_key").and_then(Value::as_str);
 
     let make_err = |err: ConnectorError| -> Value {
-        serde_json::to_value(ConnectorResult::Error { error: err }).unwrap()
+        serde_json::to_value(ConnectorResult::Error { error: err })
+            .expect("ConnectorResult::Error serializes")
     };
     let make_ok = |data: Value| -> Value {
         serde_json::to_value(ConnectorResult::Success {
             data,
             metadata: BTreeMap::new(),
         })
-        .unwrap()
+        .expect("ConnectorResult::Success serializes")
     };
-    let host_err = |code: &str, class: ConnectorErrorClass, stage: &str, effect: EffectStatus, retry: RetryAdvice| -> ConnectorError {
+    let host_err = |code: &str,
+                    class: ConnectorErrorClass,
+                    stage: &str,
+                    effect: EffectStatus,
+                    retry: RetryAdvice|
+     -> ConnectorError {
         ConnectorError {
             code: code.to_string(),
             class,
@@ -179,10 +185,23 @@ pub fn execute_conformance_case(
     }
 
     let op_spec = &profile["operations"][op_name];
-    let in_schema = format!("schemas/{}.json", op_spec["input_schema"].as_str().unwrap());
-    let out_schema = format!("schemas/{}.json", op_spec["output_schema"].as_str().unwrap());
+    let in_schema = format!(
+        "schemas/{}.json",
+        op_spec["input_schema"]
+            .as_str()
+            .expect("input_schema string")
+    );
+    let out_schema = format!(
+        "schemas/{}.json",
+        op_spec["output_schema"]
+            .as_str()
+            .expect("output_schema string")
+    );
 
-    if schemas.validate_instance(&in_schema, &call["input"]).is_err() {
+    if schemas
+        .validate_instance(&in_schema, &call["input"])
+        .is_err()
+    {
         return ConformanceObservation {
             result: make_err(ConnectorError::invalid_input("Invalid input", None)),
             alternate_result: None,
@@ -208,16 +227,22 @@ pub fn execute_conformance_case(
         "requires_key" => OperationRetryPolicy::RequiresKey,
         _ => OperationRetryPolicy::Never,
     };
-    let allows_retry = |effect: OperationEffect, policy: OperationRetryPolicy, has_key: bool| -> bool {
-        match (effect, policy) {
-            (_, OperationRetryPolicy::Never) => false,
-            (OperationEffect::Read, OperationRetryPolicy::Safe) => true,
-            (OperationEffect::Read, OperationRetryPolicy::RequiresKey) => has_key,
-            (OperationEffect::Write | OperationEffect::Mixed, OperationRetryPolicy::RequiresKey | OperationRetryPolicy::Safe) => has_key,
-        }
-    };
+    let allows_retry =
+        |effect: OperationEffect, policy: OperationRetryPolicy, has_key: bool| -> bool {
+            match (effect, policy) {
+                (_, OperationRetryPolicy::Never) => false,
+                (OperationEffect::Read, OperationRetryPolicy::Safe) => true,
+                (OperationEffect::Read, OperationRetryPolicy::RequiresKey) => has_key,
+                (
+                    OperationEffect::Write | OperationEffect::Mixed,
+                    OperationRetryPolicy::RequiresKey | OperationRetryPolicy::Safe,
+                ) => has_key,
+            }
+        };
 
-    let mock_attempts = case["mock"]["attempts"].as_array().unwrap();
+    let mock_attempts = case["mock"]["attempts"]
+        .as_array()
+        .expect("mock.attempts array");
     let mut mock_idx = 0usize;
 
     // Handle composite operation (`contacts.compose`)
@@ -284,7 +309,7 @@ pub fn execute_conformance_case(
 
         let ev = &mock_attempts[mock_idx];
         mock_idx += 1;
-        let ev_kind = ev["event"].as_str().unwrap();
+        let ev_kind = ev["event"].as_str().expect("mock attempt event string");
 
         match ev_kind {
             "fail_before_send" => {
@@ -315,7 +340,8 @@ pub fn execute_conformance_case(
                             owned_jobs_after_completion: 0,
                             same_idempotency_key: false,
                             external_effects,
-                            effect_uncertainty_preserved: cumulative_effect == EffectStatus::Unknown,
+                            effect_uncertainty_preserved: cumulative_effect
+                                == EffectStatus::Unknown,
                             secondary_binding_isolated: false,
                         };
                     }
@@ -475,8 +501,7 @@ pub fn execute_conformance_case(
                     secondary_isolated = true;
                 }
 
-                let same_key = seen_keys.len() >= 2
-                    && seen_keys.windows(2).all(|w| w[0] == w[1]);
+                let same_key = seen_keys.len() >= 2 && seen_keys.windows(2).all(|w| w[0] == w[1]);
 
                 return ConformanceObservation {
                     result: make_ok(mapped),
@@ -497,7 +522,7 @@ pub fn execute_conformance_case(
     }
 
     ConformanceObservation {
-        result: make_err(last_error.unwrap()),
+        result: make_err(last_error.expect("last_error recorded before exhausting attempts")),
         alternate_result: None,
         provider_attempts,
         network_sends,
@@ -512,6 +537,7 @@ pub fn execute_conformance_case(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::SchemaProfileLimits;
@@ -520,10 +546,11 @@ mod tests {
     #[test]
     fn v2_10_5_passes_all_20_connector_invocation_conformance_cases() {
         let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../design-docs/v2/fixtures/connector-invocation");
-        let profile: Value =
-            serde_json::from_str(&std::fs::read_to_string(fixture_dir.join("profile.json")).unwrap())
-                .unwrap();
+            .join("tests/fixtures/v2/connector-invocation");
+        let profile: Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture_dir.join("profile.json")).unwrap(),
+        )
+        .unwrap();
         let catalog: Value =
             serde_json::from_str(&std::fs::read_to_string(fixture_dir.join("cases.json")).unwrap())
                 .unwrap();
@@ -559,7 +586,11 @@ mod tests {
             let expect = &case["expect"];
             let obs = execute_conformance_case(&profile, case, &compiled_schemas);
 
-            assert_json_subset(&obs.result, &expect["result"], &format!("case {id}: result"));
+            assert_json_subset(
+                &obs.result,
+                &expect["result"],
+                &format!("case {id}: result"),
+            );
             assert_eq!(
                 obs.provider_attempts,
                 expect["provider_attempts"].as_u64().unwrap() as u32,
@@ -572,7 +603,9 @@ mod tests {
             );
             if let Some(alt) = expect.get("alternate_result") {
                 assert_json_subset(
-                    obs.alternate_result.as_ref().expect("alternate_result present"),
+                    obs.alternate_result
+                        .as_ref()
+                        .expect("alternate_result present"),
                     alt,
                     &format!("case {id}: alternate_result"),
                 );

@@ -47,18 +47,11 @@ pub struct BindingSlotSpec {
 #[serde(tag = "step_kind", rename_all = "snake_case")]
 pub enum WorkflowGroupStep {
     /// Pure data projection / transform merging fields into the isolated output object.
-    Transform {
-        output_key: String,
-        template: Value,
-    },
+    Transform { output_key: String, template: Value },
     /// Call another private helper workflow in the same package.
-    CallHelper {
-        helper_id: String,
-    },
+    CallHelper { helper_id: String },
     /// Dispatch through a bundled internal sub-channel in the same package.
-    CallSubChannel {
-        sub_channel_id: String,
-    },
+    CallSubChannel { sub_channel_id: String },
     /// Invoke an external connector bound to `binding_slot` (`V2-12.4`).
     InvokeSlot {
         binding_slot: String,
@@ -166,9 +159,7 @@ impl CompiledWorkflowProviderGraph {
     /// 2. Closed helper and internal sub-channel references (no undeclared targets).
     /// 3. Closed `binding_slot` references and operation grants (no capability expansion).
     /// 4. Acyclic call graph across private workflows and internal sub-channels.
-    pub fn compile(
-        manifest: WorkflowGroupManifest,
-    ) -> Result<Self, WorkflowGraphCompileError> {
+    pub fn compile(manifest: WorkflowGroupManifest) -> Result<Self, WorkflowGraphCompileError> {
         if manifest.entries.is_empty() {
             return Err(WorkflowGraphCompileError {
                 code: "WORKFLOW_GROUP_NO_ENTRIES",
@@ -425,7 +416,8 @@ impl WorkflowGroupProviderBackend {
         workflow_json: &str,
         input: Value,
     ) -> Result<Value, ConnectorError> {
-        ctx.run_context().check_live(ctx.invocation().effect_status())?;
+        ctx.run_context()
+            .check_live(ctx.invocation().effect_status())?;
         let mut wf_val: Value = serde_json::from_str(workflow_json).map_err(|e| {
             ConnectorError::contract_violation(
                 "workflow_compile",
@@ -485,10 +477,7 @@ impl WorkflowGroupProviderBackend {
         }
 
         let data_val = Value::from(exec.message.context().data());
-        Ok(data_val
-            .get("output")
-            .cloned()
-            .unwrap_or(data_val))
+        Ok(data_val.get("output").cloned().unwrap_or(data_val))
     }
 
     async fn execute_workflow_node(
@@ -497,7 +486,8 @@ impl WorkflowGroupProviderBackend {
         wf_id: &str,
         state: &mut serde_json::Map<String, Value>,
     ) -> Result<(), ConnectorError> {
-        ctx.run_context().check_live(ctx.invocation().effect_status())?;
+        ctx.run_context()
+            .check_live(ctx.invocation().effect_status())?;
         let Some(wf) = self.graph.workflows.get(wf_id) else {
             return Err(ConnectorError::contract_violation(
                 "dispatch",
@@ -507,7 +497,8 @@ impl WorkflowGroupProviderBackend {
         };
 
         for step in &wf.steps {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             match step {
                 WorkflowGroupStep::Transform {
                     output_key,
@@ -622,7 +613,8 @@ impl ProviderBackend for WorkflowGroupProviderBackend {
         input: Value,
     ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
         Box::pin(async move {
-            ctx.run_context().check_live(ctx.invocation().effect_status())?;
+            ctx.run_context()
+                .check_live(ctx.invocation().effect_status())?;
             let Some(entry_wf_id) = self.graph.entries.get(operation) else {
                 return Err(ConnectorError::forbidden(
                     codes::OPERATION_FORBIDDEN,
@@ -668,7 +660,10 @@ impl ProviderBackend for WorkflowGroupProviderBackend {
     }
 
     fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
-        self.graph.source_entries.as_ref().map(|_| self as &dyn SourceConnectorFacet)
+        self.graph
+            .source_entries
+            .as_ref()
+            .map(|_| self as &dyn SourceConnectorFacet)
     }
 }
 
@@ -781,6 +776,7 @@ impl SourceConnectorFacet for WorkflowGroupProviderBackend {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::CompositionRoot;

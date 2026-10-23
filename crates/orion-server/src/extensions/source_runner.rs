@@ -1,7 +1,6 @@
 //! Native Rust `source` channel runner, fenced partition leases and contiguous checkpoint ledger (`V2-15.1`–`V2-15.4`).
 //!
-//! Implements the host-owned `source` channel execution lifecycle defined in
-//! §7.2 and §9 of `v2-design.md` and `design-docs/v2/work-packages/v2-15-source-lifecycle.md`:
+//! Implements the host-owned `source` channel execution lifecycle (`V2-15`):
 //! - **Bounded Privileged Source Dispatch (`V2-15.1`)**: Only [`SourceChannelRunner`]
 //!   can mint `orion.internal.source.*` invocations (`open`, `poll`, `settle`,
 //!   `close`), enforcing batch-size and cursor-byte ceilings across all three
@@ -205,6 +204,7 @@ impl SourceLeaseCoordinator {
     /// Increments the monotonic fence token so the old revision runner cannot
     /// settle in-flight items or overwrite checkpoints after handoff. Rejects
     /// checkpoint namespace changes unless `allow_incompatible_migration` is true.
+    #[allow(clippy::too_many_arguments)]
     pub fn handoff_revision(
         &self,
         key: &SourcePartitionKey,
@@ -575,6 +575,7 @@ impl SourceChannelRunner {
     }
 
     /// Authorize and execute `source.poll`, enforcing `max_batch_items` and cursor bounds (`V2-15.1`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn poll_batch(
         &self,
         run_ctx: &RunContext,
@@ -634,6 +635,7 @@ impl SourceChannelRunner {
     }
 
     /// Authorize and execute `source.settle` for a single delivery ID (`V2-15.1`, `V2-15.3`).
+    #[allow(clippy::too_many_arguments)]
     pub async fn settle_item(
         &self,
         run_ctx: &RunContext,
@@ -720,7 +722,10 @@ mod tests {
         let cp = ledger
             .confirm_settled_and_advance(&key, 1, 1_200, seq2, false)
             .expect("confirm seq2");
-        assert!(cp.is_none(), "gap at seq 1 must block checkpoint advancement");
+        assert!(
+            cp.is_none(),
+            "gap at seq 1 must block checkpoint advancement"
+        );
 
         // 3. Seq 1 settles -> contiguous advancement jumps through both seq 1 and seq 2 to lsn 102!
         ledger
@@ -748,7 +753,15 @@ mod tests {
         // 5. Revision handoff (`V2-15.4`): incompatible namespace rejected without migration flag;
         // compatible namespace advances fence to 2 and fences old runner (fence 1).
         let incompat = coord
-            .handoff_revision(&key, "node-b", 2, "pg-lsn-v2-incompatible", false, 1_500, 5_000)
+            .handoff_revision(
+                &key,
+                "node-b",
+                2,
+                "pg-lsn-v2-incompatible",
+                false,
+                1_500,
+                5_000,
+            )
             .expect_err("incompatible namespace must fail");
         assert_eq!(incompat.code, "SOURCE_CHECKPOINT_NAMESPACE_MISMATCH");
 

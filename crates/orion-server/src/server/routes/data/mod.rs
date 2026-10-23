@@ -400,12 +400,12 @@ pub(crate) async fn dynamic_handler(
         && let Some(map) = metadata.as_object_mut()
     {
         if let Some(grant) = oauth.grant.take() {
-            map.insert("oauth".to_string(), grant);
+            map.insert(crate::engine::OAUTH_KEY.to_string(), grant);
         }
         // #355: the normalised identity, at the protocol-neutral path workflows
         // key on. Stripped from caller input above, so this is Orion's.
         if let Some(identity) = oauth.identity.take() {
-            map.insert("identity".to_string(), identity);
+            map.insert(crate::engine::IDENTITY_KEY.to_string(), identity);
         }
     }
     let metadata = match admission.auth_claims.take() {
@@ -446,7 +446,7 @@ pub(crate) async fn dynamic_handler(
 /// The header rule is `sync.rs`'s: the first occurrence of a name `insert`s and
 /// every later one `append`s, so a redirect that sets a cookie keeps both, and
 /// a repeated `set-cookie` is not collapsed into the last one.
-fn guard_response(response: guards::GuardResponse, channel: &str) -> Response {
+pub(super) fn guard_response(response: guards::GuardResponse, channel: &str) -> Response {
     let status = axum::http::StatusCode::from_u16(response.status)
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     let mut out = Response::new(axum::body::Body::from(response.body));
@@ -599,20 +599,13 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
     } else {
         json!({})
     };
-    // #270: `metadata.cookies` is platform-reserved — stamped from the
-    // channel's allowlist, and STRIPPED when there is none. This function uses
-    // the caller's `req.metadata` as its base, and `params`/`query` are stamped
-    // only when non-empty, so a caller-supplied value for those survives. The
-    // same shape for cookies would be session forgery, given that the
-    // motivating use is matching the value against stored session records.
-    // Follow `channel` and `headers`, which are stamped unconditionally.
-    // #280: `metadata._orion_errors` is engine-owned. The `_orion_` prefix is
-    // a naming convention, not an enforced namespace — a caller can supply
-    // `_orion_call_depth` today and nothing strips it — so this key is cleared
-    // unconditionally at ingress, the way `channel` and `headers` are
-    // force-stamped. Without it a caller could pre-seed failures a workflow
-    // then branches on.
-    crate::engine::clear_error_context(&mut metadata);
+    // Strip all platform-reserved keys (`_orion_errors`, `cookies`, `oauth`,
+    // `identity`, `auth`, `trigger`) unconditionally before stamping server-owned
+    // values (#270, #280, #307, #354, #355). This function uses the caller's
+    // `req.metadata` as its base, so any reserved key left in place would let a
+    // caller pre-seed failure records, session cookies, OAuth grants, verified
+    // JWT claims, or cron trigger metadata.
+    crate::engine::strip_caller_reserved_metadata(&mut metadata);
     // `metadata.vars` is platform-reserved for the same reason `cookies` is:
     // this function's base is the caller's own `req.metadata`, so a value left
     // in place is a value the caller chose. Stamped from `[vars]`, and removed
@@ -627,44 +620,19 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
             crate::channel::cookies::collect(jar, names)
         })
         .unwrap_or_default();
-    if let Some(map) = metadata.as_object_mut() {
-        // Stamped from the allowlist, removed otherwise — never merged with
-        // whatever the caller sent.
-        map.remove("cookies");
-        if !cookies.is_empty() {
-            map.insert("cookies".to_string(), Value::Object(cookies));
-        }
-        // #307: `metadata.oauth` is platform-reserved for exactly the reason
-        // `cookies` is, and with more at stake. It is stamped by the sign-in
-        // guard *after* this, once the state has been verified and the code
-        // exchanged; cleared here unconditionally so a caller cannot pre-seed
-        // an access token, an `id_token`'s verified claims or a `return_to`
-        // into an envelope and have a workflow trust them as Orion's.
-        map.remove("oauth");
-        // #355: `metadata.identity` is the protocol-neutral normalised identity
-        // path. Reserved for the same reason `oauth` is — a caller must not be
-        // able to pre-seed an identity a workflow then upserts on — and cleared
-        // here unconditionally. The callback leg will populate it (the normalised
-        // identity lands in a later phase); reserving the key now fixes the
-        // workflow-facing contract before workflows depend on it.
-        map.remove("identity");
-        // #354: `metadata.auth` is platform-reserved the same way. The guard
-        // chain stamps it with the verified claims, but only when there *are*
-        // claims — a `jwt` channel with `required: false` called without a
-        // token, a party-level mode, or no `auth` at all leaves the key
-        // untouched. Left in place, a caller's `{"auth": {"claims": {"sub":
-        // "admin"}}}` read to the workflow as a verified identity, and to a
-        // response cache keyed on the subject as someone else's entry.
-        map.remove(crate::engine::AUTH_KEY);
-        // A cron occurrence's `trigger` is stamped only by the cron worker;
-        // an HTTP caller must not be able to make a run look scheduled.
-        map.remove(crate::engine::TRIGGER_KEY);
+    if !cookies.is_empty()
+        && let Some(map) = metadata.as_object_mut()
+    {
+        map.insert(
+            crate::engine::COOKIES_KEY.to_string(),
+            Value::Object(cookies),
+        );
     }
     // F4: stamp the resolved channel name (overriding any caller-supplied
     // value) so circuit-breaker keys and connector metrics are labelled
     // `channel:connector` instead of `unknown:connector`.
-    metadata["channel"] = json!(channel);
-    metadata["http_method"] = json!(method.as_str());
+    metadata["channel"] = Value::String(channel.to_string());
+    metadata["http_method"] = Value::String(method.as_str().to_string());
     if !route_params.is_empty() {
         metadata["params"] = json!(route_params);
     }
@@ -678,16 +646,18 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
     // so a plaintext value here is a plaintext credential at rest — and,
     // before S14, one readable over HTTP. The key survives so logic can
     // still test presence; the value is never recoverable downstream.
-    let header_map: serde_json::Map<String, Value> = headers
-        .iter()
-        .filter_map(|(name, value)| {
-            let name = name.as_str();
-            if crate::engine::utils::is_credential_header(name) {
-                return Some((name.to_string(), json!(crate::connector::MASK)));
-            }
-            value.to_str().ok().map(|v| (name.to_string(), json!(v)))
-        })
-        .collect();
+    let mut header_map = serde_json::Map::with_capacity(headers.len());
+    for (name, value) in headers {
+        let name_str = name.as_str();
+        if crate::engine::utils::is_credential_header(name_str) {
+            header_map.insert(
+                name_str.to_string(),
+                Value::String(crate::connector::MASK.to_string()),
+            );
+        } else if let Ok(v) = value.to_str() {
+            header_map.insert(name_str.to_string(), Value::String(v.to_string()));
+        }
+    }
     metadata["headers"] = Value::Object(header_map);
     metadata
 }
@@ -718,6 +688,11 @@ async fn submit_async(
     // `409` a second submission of the same key should get, whatever the
     // queued work turns out to do.
     let backpressure_permit = admission.backpressure_permit;
+
+    // PERF-03: fast in-memory admission check before allocating tokens or
+    // executing database round-trips (`create_pending` + compensating
+    // `update_status`) when the queue is already closed, full, or over memory.
+    state.trace_queue.check_admissible(&data, &metadata)?;
 
     let trace_headers = {
         let mut h = std::collections::HashMap::new();
@@ -750,12 +725,7 @@ async fn submit_async(
             Some(&token_hash),
         )
         .await?;
-    let trace_id = trace.id.clone();
-    let response: Response = (
-        StatusCode::ACCEPTED,
-        Json(json!({ "trace_id": trace.id, "trace_token": token })),
-    )
-        .into_response();
+    let trace_id = trace.id;
 
     let submitted = state
         .trace_queue
@@ -795,6 +765,11 @@ async fn submit_async(
         return Err(e);
     }
 
+    let response: Response = (
+        StatusCode::ACCEPTED,
+        Json(json!({ "trace_id": trace_id, "trace_token": token })),
+    )
+        .into_response();
     Ok(response)
 }
 

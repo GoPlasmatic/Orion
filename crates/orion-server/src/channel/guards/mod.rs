@@ -443,6 +443,22 @@ pub struct GuardResponse {
     pub body: String,
 }
 
+impl From<crate::channel::oauth2_login::Redirect> for GuardResponse {
+    fn from(redirect: crate::channel::oauth2_login::Redirect) -> Self {
+        Self {
+            status: 302,
+            headers: vec![
+                ("location".to_string(), redirect.location),
+                ("set-cookie".to_string(), redirect.set_cookie),
+                // A redirect that mints a per-user nonce must not sit
+                // in any cache between here and the browser.
+                ("cache-control".to_string(), "no-store".to_string()),
+            ],
+            body: String::new(),
+        }
+    }
+}
+
 /// Outcome of [`apply_guards`].
 pub enum GuardVerdict {
     /// Every guard the transport applies passed.
@@ -659,17 +675,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                 // is correct and matches `CacheHit`: the request *was*
                 // answered, so a replay of the key is a duplicate of a
                 // delivery that succeeded.
-                return Ok(GuardVerdict::Respond(GuardResponse {
-                    status: 302,
-                    headers: vec![
-                        ("location".to_string(), redirect.location),
-                        ("set-cookie".to_string(), redirect.set_cookie),
-                        // A redirect that mints a per-user nonce must not sit
-                        // in any cache between here and the browser.
-                        ("cache-control".to_string(), "no-store".to_string()),
-                    ],
-                    body: String::new(),
-                }));
+                return Ok(GuardVerdict::Respond(GuardResponse::from(redirect)));
             }
             crate::channel::OAuthLeg::Authorize => {
                 // The redirect is built after the workflow, but an unknown

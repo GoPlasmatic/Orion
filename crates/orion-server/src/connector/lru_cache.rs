@@ -4,7 +4,9 @@
 //! lazily created via caller-supplied futures and evicted LRU when the cache
 //! reaches capacity.
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
@@ -12,10 +14,99 @@ use tokio::sync::RwLock;
 
 use super::POOL_ACCESS_COUNTER;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+trait CacheKeyLookup {
+    fn name(&self) -> &str;
+    fn config(&self) -> Option<&[u8; 32]>;
+}
+
+#[derive(Clone, Eq)]
 struct CacheKey {
     name: String,
     config: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Copy)]
+struct CacheKeyRef<'a> {
+    name: &'a str,
+    config: Option<[u8; 32]>,
+}
+
+impl CacheKeyRef<'_> {
+    fn into_owned(self) -> CacheKey {
+        CacheKey {
+            name: self.name.to_string(),
+            config: self.config,
+        }
+    }
+}
+
+impl CacheKeyLookup for CacheKey {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn config(&self) -> Option<&[u8; 32]> {
+        self.config.as_ref()
+    }
+}
+
+impl CacheKeyLookup for CacheKeyRef<'_> {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn config(&self) -> Option<&[u8; 32]> {
+        self.config.as_ref()
+    }
+}
+
+impl PartialEq for CacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.config == other.config
+    }
+}
+
+impl Hash for CacheKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.as_str().hash(state);
+        self.config.as_ref().hash(state);
+    }
+}
+
+impl PartialEq for dyn CacheKeyLookup + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.name() == other.name() && self.config() == other.config()
+    }
+}
+
+impl Eq for dyn CacheKeyLookup + '_ {}
+
+impl Hash for dyn CacheKeyLookup + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name().hash(state);
+        self.config().hash(state);
+    }
+}
+
+impl<'a> Borrow<dyn CacheKeyLookup + 'a> for CacheKey {
+    fn borrow(&self) -> &(dyn CacheKeyLookup + 'a) {
+        self
+    }
+}
+
+/// Zero-allocation [`std::io::Write`] adapter that feeds serialized JSON bytes
+/// directly into a [`Sha256`] digest without materializing an intermediate `Vec<u8>`.
+struct Sha256Writer(Sha256);
+
+impl std::io::Write for Sha256Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// A cached entry with LRU tracking.
@@ -99,8 +190,8 @@ impl<V: Clone> LruCache<V> {
         Fut: std::future::Future<Output = Result<V, E>>,
     {
         self.get_or_create_key(
-            CacheKey {
-                name: key.to_string(),
+            CacheKeyRef {
+                name: key,
                 config: None,
             },
             create_fn,
@@ -122,28 +213,29 @@ impl<V: Clone> LruCache<V> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, crate::errors::OrionError>>,
     {
-        let bytes = serde_json::to_vec(config).map_err(|e| {
+        let mut hasher = Sha256Writer(Sha256::new());
+        serde_json::to_writer(&mut hasher, config).map_err(|e| {
             crate::errors::OrionError::internal_from("Cannot identify connection settings", e)
         })?;
         self.get_or_create_key(
-            CacheKey {
-                name: name.to_string(),
-                config: Some(Sha256::digest(bytes).into()),
+            CacheKeyRef {
+                name,
+                config: Some(hasher.0.finalize().into()),
             },
             create_fn,
         )
         .await
     }
 
-    async fn get_or_create_key<F, Fut, E>(&self, key: CacheKey, create_fn: F) -> Result<V, E>
+    async fn get_or_create_key<F, Fut, E>(&self, key: CacheKeyRef<'_>, create_fn: F) -> Result<V, E>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, E>>,
     {
-        // Fast path: read lock
+        // Fast path: read lock with zero-allocation borrowed lookup
         let generation = {
             let entries = self.entries.read().await;
-            if let Some(entry) = entries.get(&key) {
+            if let Some(entry) = entries.get(&key as &dyn CacheKeyLookup) {
                 entry.touch();
                 return Ok(entry.value.clone());
             }
@@ -161,7 +253,7 @@ impl<V: Clone> LruCache<V> {
         if self.invalidated.load(Ordering::Relaxed) != generation {
             return Ok(value);
         }
-        if let Some(existing) = entries.get(&key) {
+        if let Some(existing) = entries.get(&key as &dyn CacheKeyLookup) {
             existing.touch();
             let winner = existing.value.clone();
             // The race-losing value never enters the cache — hand it to the
@@ -188,7 +280,7 @@ impl<V: Clone> LruCache<V> {
             }
         }
 
-        entries.insert(key, CacheEntry::new(value.clone()));
+        entries.insert(key.into_owned(), CacheEntry::new(value.clone()));
         Ok(value)
     }
 
@@ -221,6 +313,20 @@ impl<V: Clone> LruCache<V> {
         for value in drained {
             self.dispose(value);
         }
+    }
+}
+
+impl<V: Clone + Send + Sync + 'static> crate::extensions::ConnectionPoolCache for LruCache<V> {
+    fn cache_id(&self) -> &str {
+        self.cache_label
+    }
+
+    fn evict<'a>(&'a self, connector_name: &'a str) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { LruCache::evict(self, connector_name).await })
+    }
+
+    fn evict_all<'a>(&'a self) -> crate::extensions::BoxPoolFuture<'a, ()> {
+        Box::pin(async move { LruCache::evict_all(self).await })
     }
 }
 

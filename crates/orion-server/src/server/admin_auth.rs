@@ -405,7 +405,10 @@ mod tests {
             assert!(is_guarded_path("/api/v1/admin/workflows", on_main));
             assert!(is_guarded_path("/api/v1/admin/traces", on_main));
             assert!(is_guarded_path("/api/v2/admin/deployments", on_main));
-            assert!(is_guarded_path("/api/v2/admin/runtime-capabilities", on_main));
+            assert!(is_guarded_path(
+                "/api/v2/admin/runtime-capabilities",
+                on_main
+            ));
             // R12: the single-trace GET authenticates in its handler.
             assert!(!is_guarded_path(SINGLE_TRACE_PATH, on_main));
             assert!(!is_guarded_path("/api/v1/data/{*path}", on_main));

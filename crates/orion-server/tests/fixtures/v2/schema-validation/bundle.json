@@ -1,0 +1,45 @@
+{
+  "fixture_format_version": 1,
+  "manifest": {
+    "schema_version": 2,
+    "kind": "connector-provider",
+    "id": "com.example.crm",
+    "version": "1.0.0",
+    "contract": "orion:connector@1.0.0",
+    "requires_orion": ">=2.0.0, <3.0.0",
+    "schema_profile": "orion-json-schema/1",
+    "implementation": {
+      "kind": "workflow",
+      "entries": {"contacts.get": "crm/get-contact"},
+      "workflows": ["workflows/get-contact.json", "workflows/map-contact.json"]
+    },
+    "configuration_schema": "schemas/config.json",
+    "operations": {
+      "contacts.get": {"input_schema": "schemas/contact-request.json", "output_schema": "schemas/contact.json", "effect": "read", "retry": "safe"}
+    },
+    "dependencies": [],
+    "capabilities": {"http": {"endpoint_config": "base_url", "methods": ["GET"]}, "credentials": [{"slot": "api_token", "use": "http-bearer"}]},
+    "payload_limits": {"configuration_bytes": 4096, "input_bytes": 4096, "output_bytes": 4096, "metadata_bytes": 1024}
+  },
+  "files": ["schemas/config.json", "schemas/contact-request.json", "schemas/contact.json", "workflows/get-contact.json", "workflows/map-contact.json", "component.wasm"],
+  "schemas": {
+    "schemas/config.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object", "additionalProperties": false, "required": ["base_url"],
+      "properties": {"base_url": {"type": "string", "minLength": 1, "maxLength": 2048}}
+    },
+    "schemas/contact-request.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object", "additionalProperties": false, "required": ["contact_id"],
+      "properties": {"contact_id": {"type": "string", "minLength": 1, "maxLength": 128}}
+    },
+    "schemas/contact.json": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object", "additionalProperties": false, "required": ["contact_id", "display_name"],
+      "properties": {
+        "contact_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    }
+  }
+}

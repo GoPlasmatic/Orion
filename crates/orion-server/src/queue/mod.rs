@@ -203,6 +203,28 @@ pub(crate) struct QueuedItem {
     pub(crate) payload_size: usize,
 }
 
+/// Zero-allocation [`std::io::Write`] sink that counts serialized JSON bytes
+/// without materializing an intermediate `String` or `Vec<u8>`.
+#[derive(Default)]
+struct JsonByteCounter(usize);
+
+impl std::io::Write for JsonByteCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_serialized_len(value: &serde_json::Value) -> usize {
+    let mut counter = JsonByteCounter::default();
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
+}
+
 /// In-memory trace queue backed by a tokio mpsc channel.
 ///
 /// Traces are submitted via `submit()` and processed by a semaphore-limited
@@ -242,6 +264,51 @@ impl TraceQueue {
         .await
     }
 
+    /// Fast pre-persistence admission check (`PERF-03`).
+    ///
+    /// Rejects submissions when the queue is closed, all shards are full, or
+    /// the payload + metadata would exceed `max_memory_bytes` before callers
+    /// allocate tokens or execute database `INSERT` + compensating `UPDATE`
+    /// round-trips for a pending trace row. The authoritative reservation in
+    /// [`Self::enqueue`] still runs on `submit` to close any concurrent race.
+    pub fn check_admissible(
+        &self,
+        payload: &Value,
+        metadata: &Value,
+    ) -> Result<(), crate::errors::OrionError> {
+        if self.queue.is_all_closed() {
+            return Err(crate::errors::OrionError::unavailable(
+                crate::errors::Unavailable::QueueClosed,
+                "Trace queue is closed",
+            ));
+        }
+        if !self.queue.has_capacity() {
+            metrics::record_trace_queue_rejected("full");
+            return Err(crate::errors::OrionError::unavailable(
+                crate::errors::Unavailable::AtCapacity,
+                format!(
+                    "Trace queue is full ({} messages pending)",
+                    self.queue.depth()
+                ),
+            ));
+        }
+        if self.max_memory_bytes > 0 {
+            let payload_size = json_serialized_len(payload) + json_serialized_len(metadata);
+            let current = self.memory_bytes.load(Ordering::Acquire);
+            if current.saturating_add(payload_size) > self.max_memory_bytes {
+                metrics::record_trace_queue_rejected("memory");
+                return Err(crate::errors::OrionError::unavailable(
+                    crate::errors::Unavailable::AtCapacity,
+                    format!(
+                        "Trace queue memory limit exceeded ({} + {} > {} bytes)",
+                        current, payload_size, self.max_memory_bytes
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Re-submit a message claimed from the DLQ, carrying the retry count its
     /// lineage has already spent so a repeat failure re-enters the DLQ one
     /// step closer to exhaustion instead of back at zero (Q3).
@@ -263,8 +330,11 @@ impl TraceQueue {
     /// as long as the workers stay behind, turning saturation into unbounded
     /// request latency instead of the documented 503 (Q1).
     async fn enqueue(&self, mut item: QueuedItem) -> Result<(), crate::errors::OrionError> {
-        // Estimate payload memory (approximate — excludes struct overhead).
-        let payload_size = item.msg.payload.to_string().len() + item.msg.metadata.to_string().len();
+        // Estimate payload memory (approximate — excludes struct overhead)
+        // using a zero-allocation byte counter rather than materializing two
+        // heap Strings just to read `.len()`.
+        let payload_size =
+            json_serialized_len(&item.msg.payload) + json_serialized_len(&item.msg.metadata);
         item.payload_size = payload_size;
 
         // Q2: reserve first, then validate. The previous shape was

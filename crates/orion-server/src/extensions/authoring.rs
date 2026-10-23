@@ -144,27 +144,27 @@ pub fn scaffold_provider_package(
     files.insert("LICENSE".to_string(), b"Apache-2.0\n".to_vec());
     files.insert(
         "connector.json".to_string(),
-        serde_json::to_vec(&manifest).unwrap(),
+        serde_json::to_vec(&manifest).expect("scaffold manifest serializes"),
     );
     files.insert(
         "distribution.json".to_string(),
-        serde_json::to_vec(&distribution).unwrap(),
+        serde_json::to_vec(&distribution).expect("scaffold distribution serializes"),
     );
     files.insert(
         "schemas/config.public.json".to_string(),
-        serde_json::to_vec(&config_public).unwrap(),
+        serde_json::to_vec(&config_public).expect("scaffold public config schema serializes"),
     );
     files.insert(
         "schemas/config.secret.json".to_string(),
-        serde_json::to_vec(&config_secret).unwrap(),
+        serde_json::to_vec(&config_secret).expect("scaffold secret config schema serializes"),
     );
     files.insert(
         "schemas/item.get.input.json".to_string(),
-        serde_json::to_vec(&in_schema).unwrap(),
+        serde_json::to_vec(&in_schema).expect("scaffold input schema serializes"),
     );
     files.insert(
         "schemas/item.get.output.json".to_string(),
-        serde_json::to_vec(&out_schema).unwrap(),
+        serde_json::to_vec(&out_schema).expect("scaffold output schema serializes"),
     );
 
     match implementation {
@@ -177,7 +177,7 @@ pub fn scaffold_provider_package(
             });
             files.insert(
                 "workflows/entry.json".to_string(),
-                serde_json::to_vec(&wf).unwrap(),
+                serde_json::to_vec(&wf).expect("scaffold workflow serializes"),
             );
         }
         ImplementationKind::Wasm => {

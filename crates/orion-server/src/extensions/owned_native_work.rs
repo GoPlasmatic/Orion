@@ -84,7 +84,9 @@ impl Drop for OwnedPermit {
             g.remove(&self.job_id);
         }
         self.scheduler.in_flight.fetch_sub(1, Ordering::AcqRel);
-        self.scheduler.completed_total.fetch_add(1, Ordering::AcqRel);
+        self.scheduler
+            .completed_total
+            .fetch_add(1, Ordering::AcqRel);
         self.scheduler.notify.notify_waiters();
     }
 }
@@ -193,9 +195,7 @@ impl NativeWorkScheduler {
                 Err(e) if e.code == "SCHEDULER_SHUTTING_DOWN" => return Err(e),
                 Err(_) => {
                     let rem = deadline.saturating_duration_since(Instant::now());
-                    if rem.is_zero()
-                        || tokio::time::timeout(rem, notified).await.is_err()
-                    {
+                    if rem.is_zero() || tokio::time::timeout(rem, notified).await.is_err() {
                         return Err(NativeWorkError {
                             code: "NATIVE_QUEUE_DEADLINE_EXCEEDED",
                             message: "deadline expired while waiting in native work queue"
@@ -302,13 +302,15 @@ impl NativeWorkScheduler {
     }
 }
 
+type InFlightLoadReceiver<V> = watch::Receiver<Option<Result<V, NativeWorkError>>>;
+
 /// V2-08.3: Single-flight loader where the load job is independently owned on a
 /// background task and holds its [`OwnedPermit`] until completion. Waiter
 /// cancellation removes only that waiter without aborting the running load.
 pub struct SingleFlightLoader<K, V> {
     scheduler: NativeWorkScheduler,
     cache: Arc<Mutex<BTreeMap<K, V>>>,
-    in_flight_loads: Arc<Mutex<BTreeMap<K, watch::Receiver<Option<Result<V, NativeWorkError>>>>>>,
+    in_flight_loads: Arc<Mutex<BTreeMap<K, InFlightLoadReceiver<V>>>>,
 }
 
 impl<K, V> Clone for SingleFlightLoader<K, V> {
@@ -352,15 +354,24 @@ where
             return Ok(cached);
         }
 
-        let mut rx = {
+        let existing_rx = self
+            .in_flight_loads
+            .lock()
+            .expect("in_flight_loads lock")
+            .get(&key)
+            .cloned();
+
+        let mut rx = if let Some(existing_rx) = existing_rx {
+            existing_rx
+        } else {
+            let permit = self
+                .scheduler
+                .acquire_until("single-flight-load", waiter_deadline)
+                .await?;
             let mut g = self.in_flight_loads.lock().expect("in_flight_loads lock");
             if let Some(existing_rx) = g.get(&key) {
                 existing_rx.clone()
             } else {
-                let permit = self
-                    .scheduler
-                    .acquire_until("single-flight-load", waiter_deadline)
-                    .await?;
                 let (tx, rx) = watch::channel(None);
                 g.insert(key.clone(), rx.clone());
 
@@ -395,7 +406,8 @@ where
             if rem.is_zero() || tokio::time::timeout(rem, rx.changed()).await.is_err() {
                 return Err(NativeWorkError {
                     code: "SINGLE_FLIGHT_WAITER_TIMEOUT",
-                    message: "waiter timed out while owned single-flight load continues".to_string(),
+                    message: "waiter timed out while owned single-flight load continues"
+                        .to_string(),
                 });
             }
         }
@@ -403,12 +415,14 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::Barrier;
 
     #[tokio::test]
-    async fn v2_08_1_2_4_5_blocked_native_job_retains_permit_after_caller_timeout_and_releases_on_completion() {
+    async fn v2_08_1_2_4_5_blocked_native_job_retains_permit_after_caller_timeout_and_releases_on_completion()
+     {
         let scheduler = NativeWorkScheduler::new(1);
         let gate = Arc::new(Barrier::new(2));
         let gate_worker = Arc::clone(&gate);

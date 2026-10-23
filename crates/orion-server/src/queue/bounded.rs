@@ -188,6 +188,18 @@ impl<T> BoundedWorker<T> {
         self.pending.load(Ordering::Acquire)
     }
 
+    /// Whether at least one open shard currently has spare capacity.
+    pub fn has_capacity(&self) -> bool {
+        self.senders
+            .iter()
+            .any(|s| !s.is_closed() && s.capacity() > 0)
+    }
+
+    /// Whether all shards have closed (or the worker is disabled).
+    pub fn is_all_closed(&self) -> bool {
+        self.senders.is_empty() || self.senders.iter().all(|s| s.is_closed())
+    }
+
     /// Offer an item without waiting.
     ///
     /// Sheds rather than parks: capacity is a shed threshold, not a waiting

@@ -94,6 +94,50 @@ pub const TRIGGER_KEY: &str = "trigger";
 /// never reads an identity the caller wrote.
 pub const AUTH_KEY: &str = "auth";
 
+/// The metadata key allowlisted request cookies are stamped under (#270).
+///
+/// Platform-reserved: stamped from the channel's `cookies_to_metadata`
+/// allowlist, and stripped when there is none so a caller cannot forge cookie
+/// values via the request envelope.
+pub const COOKIES_KEY: &str = "cookies";
+
+/// The metadata key verified OAuth2 grants are stamped under (#307).
+///
+/// Platform-reserved: stamped by the `oauth2_login` callback guard after state
+/// verification and code exchange, and stripped at ingress so a caller cannot
+/// pre-seed an access token or claims via the request envelope.
+pub const OAUTH_KEY: &str = "oauth";
+
+/// The metadata key normalized OAuth2/OIDC identities are stamped under (#355).
+///
+/// Platform-reserved: stamped by the `oauth2_login` callback guard and stripped
+/// at ingress so a caller cannot pre-seed an identity.
+pub const IDENTITY_KEY: &str = "identity";
+
+/// Strip all caller-supplied keys that belong to the platform's reserved
+/// ingress metadata set (`_orion_errors`, `cookies`, `oauth`, `identity`,
+/// `auth`, `trigger`).
+///
+/// Centralizing this list here ensures every HTTP/envelope ingress strips the
+/// exact same set of platform-stamped keys before guards or workflows read
+/// `metadata`. Note that `_orion_call_depth` and `_orion_call_chain` are
+/// intentionally not stripped at HTTP ingress because entry-level cycle/depth
+/// refusal is explicitly exercised over HTTP in integration tests.
+pub fn strip_caller_reserved_metadata(metadata: &mut serde_json::Value) {
+    if let Some(map) = metadata.as_object_mut() {
+        for key in [
+            ERROR_CONTEXT_KEY,
+            COOKIES_KEY,
+            OAUTH_KEY,
+            IDENTITY_KEY,
+            AUTH_KEY,
+            TRIGGER_KEY,
+        ] {
+            map.remove(key);
+        }
+    }
+}
+
 /// The metadata key the `[vars]` config section is stamped under.
 ///
 /// Platform-reserved, in the same sense as `channel` and `cookies`: an

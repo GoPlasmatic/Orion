@@ -11,9 +11,7 @@ use serde_json::Value;
 
 use super::CompositionRoot;
 use super::contract::ImplementationKind;
-use super::foundation::{
-    DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
-};
+use super::foundation::{DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE};
 
 /// Enterprise connector provider IDs defined in `DEC-005`.
 pub const ENTERPRISE_DRIVER_MYSQL: &str = "com.orion.enterprise.mysql";
@@ -303,9 +301,7 @@ pub fn check_channel_protocol_availability(
                 "Channel '{channel_name}' uses protocol '{lower}', which is an Enterprise native Rust ChannelDriver"
             )
         } else {
-            format!(
-                "Channel '{channel_name}' uses unknown protocol '{lower}'"
-            )
+            format!("Channel '{channel_name}' uses unknown protocol '{lower}'")
         },
     })
 }

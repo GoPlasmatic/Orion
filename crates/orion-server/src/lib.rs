@@ -28,6 +28,7 @@
 //! runtime).
 #![warn(clippy::unwrap_used, clippy::panic)]
 
+#[doc(hidden)]
 pub mod auth;
 /// Startup wiring shared by the binary and the test harness. Doc-hidden:
 /// reachable so tests exercise the REAL boot path (engine components,
@@ -40,12 +41,15 @@ pub mod cluster;
 pub mod config;
 pub mod connector;
 pub mod cron;
+#[doc(hidden)]
 pub mod crypto;
 pub mod definitions;
 pub mod engine;
 pub mod errors;
 pub mod extensions;
+#[doc(hidden)]
 pub mod http_body;
+#[doc(hidden)]
 pub mod jwt;
 pub mod kafka;
 pub mod metrics;
@@ -55,13 +59,17 @@ pub mod plugin;
 pub mod preflight;
 pub(crate) mod query;
 pub mod queue;
+#[doc(hidden)]
 pub mod request_context;
 pub mod runtime;
 pub mod server;
+#[doc(hidden)]
 pub mod signatures;
+#[doc(hidden)]
 pub mod sql_lex;
 pub mod storage;
 pub(crate) mod text;
+#[doc(hidden)]
 pub mod trace_context;
 pub mod validation;
 pub mod version;

@@ -67,16 +67,43 @@ impl RunOutcome {
     /// minute forever), and `channel_call` emits nothing because the request
     /// that triggered it was already counted at its own ingress.
     pub fn status_label(&self) -> &'static str {
-        match self {
-            Self::Ok => "ok",
-            Self::WorkflowErrors(_) | Self::EngineError(_) => "error",
-            Self::Timeout(_) => "timeout",
-        }
+        NormalizedRunOutcome::from(self).status_label()
     }
 
     /// Whether the run produced the result the caller asked for.
     pub fn is_ok(&self) -> bool {
         matches!(self, Self::Ok)
+    }
+}
+
+impl From<&RunOutcome> for NormalizedRunOutcome {
+    fn from(outcome: &RunOutcome) -> Self {
+        match outcome {
+            RunOutcome::Ok => Self::Success,
+            RunOutcome::WorkflowErrors(summary) => Self::TaskFailure {
+                summary: summary.clone(),
+                continued_after_error: false,
+            },
+            RunOutcome::Timeout(ms) => Self::DeadlineExceeded(*ms),
+            RunOutcome::EngineError(err) => Self::InternalFailure(err.to_string()),
+        }
+    }
+}
+
+impl From<NormalizedRunOutcome> for RunOutcome {
+    fn from(outcome: NormalizedRunOutcome) -> Self {
+        match outcome {
+            NormalizedRunOutcome::Success | NormalizedRunOutcome::NoMatch => Self::Ok,
+            NormalizedRunOutcome::TaskFailure { summary, .. }
+            | NormalizedRunOutcome::Rejected(summary) => Self::WorkflowErrors(summary),
+            NormalizedRunOutcome::DeadlineExceeded(ms) => Self::Timeout(ms),
+            NormalizedRunOutcome::Cancelled => {
+                Self::EngineError(dataflow_rs_v3::DataflowError::Timeout("cancelled".into()))
+            }
+            NormalizedRunOutcome::Unavailable(msg) | NormalizedRunOutcome::InternalFailure(msg) => {
+                Self::EngineError(dataflow_rs_v3::DataflowError::Unknown(msg))
+            }
+        }
     }
 }
 
@@ -266,19 +293,7 @@ impl NormalizedRunOutcome {
 
     /// Map to the legacy v1 [`RunOutcome`] for v1 transport compatibility (`V2-02.4`).
     pub fn to_v1_outcome(&self) -> RunOutcome {
-        match self {
-            Self::Success | Self::NoMatch => RunOutcome::Ok,
-            Self::TaskFailure { summary, .. } | Self::Rejected(summary) => {
-                RunOutcome::WorkflowErrors(summary.clone())
-            }
-            Self::DeadlineExceeded(ms) => RunOutcome::Timeout(*ms),
-            Self::Cancelled => {
-                RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Timeout("cancelled".into()))
-            }
-            Self::Unavailable(msg) | Self::InternalFailure(msg) => {
-                RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Unknown(msg.clone()))
-            }
-        }
+        RunOutcome::from(self.clone())
     }
 
     /// Render the canonical v2 response envelope (`V2-02.4`).
@@ -423,7 +438,11 @@ pub async fn execute_admitted_v4(
                 )
                 .await
         }
-        (Some(p), None) => super::profile::ORION_PROFILE.scope(p.clone(), run_fut).await,
+        (Some(p), None) => {
+            super::profile::ORION_PROFILE
+                .scope(p.clone(), run_fut)
+                .await
+        }
         (None, Some(rc)) => {
             super::functions::connector_call::ACTIVE_RUN_CONTEXT
                 .scope(rc, run_fut)
@@ -500,7 +519,9 @@ fn classify_v4_run(
                     continued_after_error: false,
                 }
             }
-            _ => NormalizedRunOutcome::InternalFailure(format!("{}: {}", err.code(), err.message())),
+            _ => {
+                NormalizedRunOutcome::InternalFailure(format!("{}: {}", err.code(), err.message()))
+            }
         },
         _ => NormalizedRunOutcome::InternalFailure("unknown run status".to_string()),
     }
@@ -591,7 +612,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_02_2_3_4_serving_adapter_normalizes_outcomes_and_never_reports_success_with_task_errors() {
+    async fn v2_02_2_3_4_serving_adapter_normalizes_outcomes_and_never_reports_success_with_task_errors()
+     {
         let engine = dataflow_rs::Engine::builder()
             .config(
                 dataflow_rs::run::EngineConfig::default()

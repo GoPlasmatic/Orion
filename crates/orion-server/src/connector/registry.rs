@@ -1,7 +1,10 @@
+use arc_swap::ArcSwap;
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::errors::OrionError;
 use crate::storage::repositories::connectors::ConnectorRepository;
@@ -18,18 +21,96 @@ static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// changes of one instance.
 static CONNECTOR_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+trait BreakerKeyLookup {
+    fn channel(&self) -> &str;
+    fn connector(&self) -> &str;
+}
+
+#[derive(Clone, Eq)]
+struct BreakerKey {
+    channel: String,
+    connector: String,
+}
+
+#[derive(Clone, Copy)]
+struct BreakerKeyRef<'a> {
+    channel: &'a str,
+    connector: &'a str,
+}
+
+impl BreakerKeyRef<'_> {
+    fn into_owned(self) -> BreakerKey {
+        BreakerKey {
+            channel: self.channel.to_string(),
+            connector: self.connector.to_string(),
+        }
+    }
+}
+
+impl BreakerKeyLookup for BreakerKey {
+    fn channel(&self) -> &str {
+        &self.channel
+    }
+
+    fn connector(&self) -> &str {
+        &self.connector
+    }
+}
+
+impl BreakerKeyLookup for BreakerKeyRef<'_> {
+    fn channel(&self) -> &str {
+        self.channel
+    }
+
+    fn connector(&self) -> &str {
+        self.connector
+    }
+}
+
+impl PartialEq for BreakerKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.channel == other.channel && self.connector == other.connector
+    }
+}
+
+impl Hash for BreakerKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.channel.as_str().hash(state);
+        self.connector.as_str().hash(state);
+    }
+}
+
+impl PartialEq for dyn BreakerKeyLookup + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.channel() == other.channel() && self.connector() == other.connector()
+    }
+}
+
+impl Eq for dyn BreakerKeyLookup + '_ {}
+
+impl Hash for dyn BreakerKeyLookup + '_ {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.channel().hash(state);
+        self.connector().hash(state);
+    }
+}
+
+impl<'a> Borrow<dyn BreakerKeyLookup + 'a> for BreakerKey {
+    fn borrow(&self) -> &(dyn BreakerKeyLookup + 'a) {
+        self
+    }
+}
+
 /// A circuit breaker entry with LRU tracking.
 struct BreakerEntry {
     breaker: Arc<CircuitBreaker>,
     last_access: AtomicU64,
-    /// The channel and connector this breaker guards. The map is keyed by the
-    /// composite `"{channel}:{connector}"` — the shape the admin API and the
-    /// cluster reset broadcast (`job_leases.breaker_key`) both speak — which
-    /// cannot be parsed back because either name may contain `:`. Keeping the
-    /// two parts here lets [`ConnectorRegistry::prune_breakers`] drop entries
-    /// for a removed connector or archived channel without that parse.
-    channel: String,
-    connector: String,
+    /// The composite `"{channel}:{connector}"` string — the shape the admin API
+    /// and the cluster reset broadcast (`job_leases.breaker_key`) both speak.
+    /// Keying the map by [`BreakerKey`] avoids allocating this formatted string
+    /// on every hot-path lookup while keeping [`ConnectorRegistry::prune_breakers`]
+    /// exact even when names contain `:`.
+    composite_key: String,
 }
 
 impl BreakerEntry {
@@ -37,8 +118,7 @@ impl BreakerEntry {
         Self {
             breaker,
             last_access: AtomicU64::new(BREAKER_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed)),
-            channel: channel.to_string(),
-            connector: connector.to_string(),
+            composite_key: format!("{channel}:{connector}"),
         }
     }
 
@@ -52,8 +132,9 @@ impl BreakerEntry {
 
 /// In-memory registry for active connector configurations.
 pub struct ConnectorRegistry {
-    configs: RwLock<HashMap<String, Arc<ConnectorConfig>>>,
-    circuit_breakers: RwLock<HashMap<String, BreakerEntry>>,
+    configs: ArcSwap<HashMap<String, Arc<ConnectorConfig>>>,
+    reload_lock: Mutex<()>,
+    circuit_breakers: RwLock<HashMap<BreakerKey, BreakerEntry>>,
     cb_config: CircuitBreakerConfig,
     load_issues: RwLock<Vec<ConnectorLoadIssue>>,
     /// See [`ConnectorRegistry::config_generation`].
@@ -104,7 +185,8 @@ impl ConnectorRegistry {
 
     pub fn new(cb_config: CircuitBreakerConfig) -> Self {
         Self {
-            configs: RwLock::new(HashMap::new()),
+            configs: ArcSwap::from_pointee(HashMap::new()),
+            reload_lock: Mutex::new(()),
             circuit_breakers: RwLock::new(HashMap::new()),
             cb_config,
             load_issues: RwLock::new(Vec::new()),
@@ -157,21 +239,20 @@ impl ConnectorRegistry {
 
     /// Get or create the circuit breaker for a `(channel, connector)` pairing.
     ///
-    /// The map is keyed by the composite `"{channel}:{connector}"` — the shape
-    /// the admin API and the cluster reset broadcast speak — and the entry
-    /// keeps the two parts so [`Self::prune_breakers`] can drop it later.
+    /// The map is keyed by [`BreakerKey`] so hot-path lookups borrow `(channel, connector)`
+    /// without allocating a formatted `String`, while the entry caches the
+    /// composite `"{channel}:{connector}"` string for admin API / cluster-reset
+    /// compatibility.
     pub async fn get_or_create_breaker(
         &self,
         channel: &str,
         connector: &str,
     ) -> Arc<CircuitBreaker> {
-        // The composite key is the API and cluster-broadcast identity; the
-        // entry additionally keeps `channel` and `connector` for pruning.
-        let key = format!("{channel}:{connector}");
-        // Fast path: read lock
+        let lookup = BreakerKeyRef { channel, connector };
+        // Fast path: read lock with zero-allocation borrowed lookup
         {
             let breakers = self.circuit_breakers.read().await;
-            if let Some(entry) = breakers.get(&key) {
+            if let Some(entry) = breakers.get(&lookup as &dyn BreakerKeyLookup) {
                 entry.touch();
                 return entry.breaker.clone();
             }
@@ -179,7 +260,7 @@ impl ConnectorRegistry {
         // Slow path: write lock on miss
         let mut breakers = self.circuit_breakers.write().await;
         // Double-check after acquiring write lock
-        if let Some(entry) = breakers.get(&key) {
+        if let Some(entry) = breakers.get(&lookup as &dyn BreakerKeyLookup) {
             entry.touch();
             return entry.breaker.clone();
         }
@@ -228,7 +309,7 @@ impl ConnectorRegistry {
 
         let breaker = Arc::new(CircuitBreaker::new(self.cb_config.clone()));
         let entry = BreakerEntry::new(breaker.clone(), channel, connector);
-        breakers.insert(key, entry);
+        breakers.insert(lookup.into_owned(), entry);
         breaker
     }
 
@@ -236,10 +317,9 @@ impl ConnectorRegistry {
     ///
     /// Called once per reload with the live channel set; the live connector
     /// set is this registry's own loaded configs (an enabled, resolvable
-    /// connector). A breaker is keyed by the composite `"{channel}:{connector}"`
-    /// — what the admin API and the cluster reset broadcast speak — which
-    /// cannot be parsed back, so each entry keeps the two parts and this
-    /// filters on them. Without it, a deleted connector's or an archived
+    /// connector). Each breaker is keyed by `(channel, connector)` so this
+    /// filters directly on the two components without parsing a composite key.
+    /// Without it, a deleted connector's or an archived
     /// channel's breaker lingered until LRU pressure at `max_breakers` reclaimed
     /// it, holding a slot a live pairing could use.
     ///
@@ -253,12 +333,11 @@ impl ConnectorRegistry {
         if !self.cb_config.enabled {
             return;
         }
-        let live_connectors: std::collections::HashSet<String> =
-            self.configs.read().await.keys().cloned().collect();
+        let live_configs = self.configs.load();
         let mut breakers = self.circuit_breakers.write().await;
-        breakers.retain(|_, entry| {
-            live_connectors.contains(&entry.connector)
-                && live_channels.contains(entry.channel.as_str())
+        breakers.retain(|key, _| {
+            live_configs.contains_key(&key.connector)
+                && live_channels.contains(key.channel.as_str())
         });
     }
 
@@ -266,15 +345,15 @@ impl ConnectorRegistry {
     pub async fn circuit_breaker_states(&self) -> HashMap<String, String> {
         let breakers = self.circuit_breakers.read().await;
         breakers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.breaker.state_name().to_string()))
+            .values()
+            .map(|v| (v.composite_key.clone(), v.breaker.state_name().to_string()))
             .collect()
     }
 
     /// Force-reset a circuit breaker by key. Returns `true` if the key existed.
     pub async fn reset_circuit_breaker(&self, key: &str) -> bool {
         let breakers = self.circuit_breakers.read().await;
-        if let Some(entry) = breakers.get(key) {
+        if let Some(entry) = breakers.values().find(|e| e.composite_key == key) {
             entry.breaker.reset();
             true
         } else {
@@ -332,8 +411,8 @@ impl ConnectorRegistry {
             }
         }
 
-        // Minimal write lock — compare, then swap only if this load actually
-        // changed something.
+        // Minimal reload lock — compare, then swap the ArcSwap snapshot only if
+        // this load actually changed something.
         //
         // The comparison is inside the lock, not before it: the token is a
         // read-modify-write of the config map, and two concurrent loads that
@@ -341,10 +420,11 @@ impl ConnectorRegistry {
         // "unchanged" while the map they wrote differed from it.
         let count = new_configs.len();
         let changed = {
-            let mut configs = self.configs.write().await;
-            let changed = *configs != new_configs;
+            let _reload_guard = self.reload_lock.lock().await;
+            let current = self.configs.load();
+            let changed = **current != new_configs;
             if changed {
-                *configs = new_configs;
+                self.configs.store(Arc::new(new_configs));
             }
             changed
         };
@@ -384,23 +464,21 @@ impl ConnectorRegistry {
     /// does `${VAR}` substitution and `env://` secret resolution first.
     #[cfg(test)]
     pub(crate) async fn insert_for_test(&self, name: &str, config: ConnectorConfig) {
-        self.configs
-            .write()
-            .await
-            .insert(name.to_string(), Arc::new(config));
+        let _reload_guard = self.reload_lock.lock().await;
+        let mut next = (**self.configs.load()).clone();
+        next.insert(name.to_string(), Arc::new(config));
+        self.configs.store(Arc::new(next));
     }
 
     /// Get a connector config by name.
     pub async fn get(&self, name: &str) -> Option<Arc<ConnectorConfig>> {
-        self.configs.read().await.get(name).cloned()
+        self.configs.load().get(name).cloned()
     }
 
-    /// Every loaded connector, by name. A snapshot: the lock is released
-    /// before the caller sees it.
+    /// Every loaded connector, by name. A snapshot: no lock is held.
     pub async fn list_all(&self) -> Vec<(String, Arc<ConnectorConfig>)> {
         self.configs
-            .read()
-            .await
+            .load()
             .iter()
             .map(|(name, cfg)| (name.clone(), cfg.clone()))
             .collect()

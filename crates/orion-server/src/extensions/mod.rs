@@ -26,6 +26,10 @@
 //!   Community uses [`CommunityAdmissionPolicy`]; Enterprise injects its signed-package
 //!   and entitlement verifier via [`CompositionRoot::with_admission_policy`].
 
+// `ConnectorError` intentionally carries structured `ErrorOrigin`, `EffectStatus`,
+// `RetryAdvice`, and optional JSON `details` inline per the v2 connector contract (`V2-10.1`).
+#![allow(clippy::result_large_err)]
+
 pub mod admission;
 pub mod authoring;
 pub mod channel_driver;
@@ -61,6 +65,7 @@ pub use community_assembly::{
     BoundaryViolation, COMMUNITY_CHANNEL_PROTOCOLS, CommunityAssemblyReport,
     verify_community_assembly,
 };
+pub use conformance_harness::{ConformanceObservation, execute_conformance_case};
 pub use context::{
     AdmittedRun, AttemptContext, AuthorityGrant, BudgetCounters, BudgetLimits, BudgetScope,
     CancellationScope, CapabilityGrant, CapabilityHandle, CapabilityTable, ChargeVector,
@@ -70,6 +75,12 @@ pub use contract::{
     ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, ConnectorResult,
     DeploymentIdentity, EffectStatus, EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind,
     OperationEffect, OperationRetryPolicy, OriginKind, ProviderReference, RetryAdvice, codes,
+};
+pub use deployment_store::{
+    ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
+    ConnectionRevisionRow, DeploymentError, DeploymentReceipt, DeploymentRevisionRow, EntityKind,
+    EntityRef, ImmutableDeploymentStore, ManifestMember, ProviderAdmissionRow, ProviderPackageRow,
+    ProviderRef, RolloutInterval, validate_rollout_partition,
 };
 pub use foundation::{
     COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
@@ -83,12 +94,32 @@ pub use migration::{
     ResolvedLegacyFunction, check_channel_protocol_availability, check_connector_availability,
     map_legacy_connector, map_legacy_function,
 };
+pub use owned_native_work::{
+    NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,
+    ShutdownDrainReport, SingleFlightLoader,
+};
+pub use package_identity::{
+    DeclaredLockDependency, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES,
+    PackageIdentityFinding, SIGNATURE_DOMAIN_PREFIX, VerifiedArtifactMetadata, build_inventory,
+    canonical_bytes, check_dependency_lock, sha256_digest, sha256_hex, signature_signing_bytes,
+    validate_payload_path, verify_inventory,
+};
 pub use provider_backend::{
     BoxProviderFuture, ProviderBackend, ProviderRegistry, SourceBatchItem, SourceConnectorFacet,
     SourcePollBatch, SourceSettlement,
 };
+pub use reconciler::{
+    CandidateBuildIssue, ConvergenceReport, ConvergenceTarget, DEFAULT_CONVERGENCE_TIMEOUT_MS,
+    DEFAULT_SECURITY_LEASE_MS, MAX_BACKOFF_MS, MIN_BACKOFF_MS, NodeIdentity, NodeReconciler,
+    QuarantinedEntity, RuntimeNodeStatus, compute_reconcile_backoff_ms,
+};
 pub use resource_pool::{
     BoxPoolFuture, ConnectionPoolCache, ResourcePoolRegistry, SessionHandle, VersionedSessionPool,
+};
+pub use schema_profile::{
+    CompiledSchemaBundle, DIALECT_URI, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, PROFILE_ID,
+    SchemaProfileFinding, SchemaProfileLimits, check_manifest_bundle, parse_json_pointer,
+    parse_strict_json, resolve_pointer, validate_safe_package_path,
 };
 pub use source_runner::{
     ContiguousCheckpointLedger, ItemSettlementState, SourceChannelRunner, SourceCoordinationError,
@@ -102,33 +133,6 @@ pub use workflow_provider::{
     BindingSlotSpec, CompiledWorkflowProviderGraph, SubChannelDef, TransitiveCapabilityReport,
     WorkflowGraphCompileError, WorkflowGroupManifest, WorkflowGroupProviderBackend,
     WorkflowGroupStep, WorkflowNodeDef, WorkflowSourceEntries,
-};
-pub use package_identity::{
-    DeclaredLockDependency, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES,
-    PackageIdentityFinding, SIGNATURE_DOMAIN_PREFIX, VerifiedArtifactMetadata, build_inventory,
-    canonical_bytes, check_dependency_lock, sha256_digest, sha256_hex, signature_signing_bytes,
-    validate_payload_path, verify_inventory,
-};
-pub use schema_profile::{
-    CompiledSchemaBundle, DIALECT_URI, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, PROFILE_ID,
-    SchemaProfileFinding, SchemaProfileLimits, check_manifest_bundle, parse_json_pointer,
-    parse_strict_json, resolve_pointer, validate_safe_package_path,
-};
-pub use conformance_harness::{ConformanceObservation, execute_conformance_case};
-pub use deployment_store::{
-    ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
-    ConnectionRevisionRow, DeploymentError, DeploymentReceipt, DeploymentRevisionRow, EntityKind,
-    EntityRef, ImmutableDeploymentStore, ManifestMember, ProviderAdmissionRow, ProviderPackageRow,
-    ProviderRef, RolloutInterval, validate_rollout_partition,
-};
-pub use owned_native_work::{
-    NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,
-    ShutdownDrainReport, SingleFlightLoader,
-};
-pub use reconciler::{
-    CandidateBuildIssue, ConvergenceReport, ConvergenceTarget, DEFAULT_CONVERGENCE_TIMEOUT_MS,
-    DEFAULT_SECURITY_LEASE_MS, MAX_BACKOFF_MS, MIN_BACKOFF_MS, NodeIdentity, NodeReconciler,
-    QuarantinedEntity, RuntimeNodeStatus, compute_reconcile_backoff_ms,
 };
 
 /// Composition root assembling the node's channel drivers, connector provider
@@ -223,6 +227,17 @@ impl CompositionRoot {
     /// Replace the package and runtime [`AdmissionPolicy`] (e.g. for Enterprise Edition).
     pub fn with_admission_policy(mut self, policy: Arc<dyn AdmissionPolicy>) -> Self {
         self.admission = policy;
+        self
+    }
+
+    /// Override the node reconciler's [`NodeIdentity`] (`node_id` and `boot_id`)
+    /// with the running instance's configured cluster/node identity.
+    pub fn with_node_identity(
+        mut self,
+        node_id: impl Into<String>,
+        boot_id: impl Into<String>,
+    ) -> Self {
+        self.reconciler = NodeReconciler::new(self.deployments.clone(), node_id, boot_id);
         self
     }
 

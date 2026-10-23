@@ -1,8 +1,7 @@
 //! WebAssembly connector component verifier, cache, store isolation and provider backend (`V2-13.1`–`V2-13.3`).
 //!
 //! Implements the Wasm (`ImplementationKind::Wasm`) connector host contract
-//! aligned with `design-docs/v2/wit/connector.wit` and
-//! `design-docs/v2/wit/import-profiles.json`:
+//! aligned with the `orion:connector@1.0.0` WIT world and import profiles:
 //! - **Verified Component Cache (`V2-13.1`)**: Verifies SHA-256 content digests,
 //!   WIT world/import profiles (`core-v1`, `http-v1`, `http-composition-v1`,
 //!   `sessions-v1`), and capability alignment, rejecting tampered bytes, stale
@@ -36,7 +35,7 @@ use super::provider_backend::{
 /// Canonical WIT contract version for v2 Wasm connector components.
 pub const CONNECTOR_WIT_CONTRACT: &str = "orion:connector@1.0.0";
 
-/// Approved WIT import profiles from `design-docs/v2/wit/import-profiles.json` (`V2-13.1`).
+/// Approved WIT import profiles (`V2-13.1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum WasmImportProfile {
     /// `core-v1` (`world connector`): imports `["types", "context"]`.
@@ -188,6 +187,7 @@ impl WasmComponentCache {
     }
 
     /// Verify component bytes, imports, and capabilities and insert into cache (`V2-13.1`).
+    #[allow(clippy::too_many_arguments)]
     pub fn verify_and_insert(
         &self,
         provider: ProviderReference,
@@ -404,7 +404,10 @@ impl<'a> WasmInvocationStore<'a> {
 
     /// Mint a scoped capability handle in the invocation's [`CapabilityTable`],
     /// enforcing the per-store handle ceiling (`V2-13.2`, `V2-13.3`).
-    pub fn acquire_handle(&mut self, grant: CapabilityGrant) -> Result<CapabilityHandle, ConnectorError> {
+    pub fn acquire_handle(
+        &mut self,
+        grant: CapabilityGrant,
+    ) -> Result<CapabilityHandle, ConnectorError> {
         let prior = self.ctx.invocation().effect_status();
         self.ctx.run_context().check_live(prior)?;
         if self.minted_handles >= self.limits.max_handles {
@@ -488,7 +491,10 @@ impl WasmProviderBackend {
     }
 
     /// Normalize a guest trap into a structured [`ConnectorError`] (`V2-13.2`).
-    pub fn normalize_guest_trap(reason: impl Into<String>, prior_effect: EffectStatus) -> ConnectorError {
+    pub fn normalize_guest_trap(
+        reason: impl Into<String>,
+        prior_effect: EffectStatus,
+    ) -> ConnectorError {
         ConnectorError {
             code: codes::CONTRACT_VIOLATION.to_string(),
             class: ConnectorErrorClass::ContractViolation,
@@ -758,7 +764,9 @@ mod tests {
                         kind: ResourceKind::Http,
                         connection: store.ctx.invocation().effective_identity().clone(),
                         allowed_operations: BTreeSet::from(["deliver".to_string()]),
-                        allowed_endpoints: BTreeSet::from(["https://hooks.example.com".to_string()]),
+                        allowed_endpoints: BTreeSet::from(
+                            ["https://hooks.example.com".to_string()],
+                        ),
                     })?;
                     let http_res =
                         store.host_http_send(&handle, "https://hooks.example.com", 128)?;
@@ -877,6 +885,8 @@ mod tests {
         // 4. Real wasmtime Engine validates a minimal valid WebAssembly module (`\0asm\x01\x00\x00\x00`)
         // and rejects corrupted binaries (`V2-13.1`).
         assert!(WasmComponentCache::validate_wasmtime_binary(b"\0asm\x01\x00\x00\x00").is_ok());
-        assert!(WasmComponentCache::validate_wasmtime_binary(b"\0asm\x01\x00\x00\x00\xff\xff").is_err());
+        assert!(
+            WasmComponentCache::validate_wasmtime_binary(b"\0asm\x01\x00\x00\x00\xff\xff").is_err()
+        );
     }
 }

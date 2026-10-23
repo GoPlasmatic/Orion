@@ -37,10 +37,7 @@ pub fn canonical_bytes(value: &Value) -> Result<Vec<u8>, PackageIdentityFinding>
     Ok(out)
 }
 
-fn encode_canonical_item(
-    value: &Value,
-    out: &mut Vec<u8>,
-) -> Result<(), PackageIdentityFinding> {
+fn encode_canonical_item(value: &Value, out: &mut Vec<u8>) -> Result<(), PackageIdentityFinding> {
     match value {
         Value::String(s) => {
             if !s.is_ascii() {
@@ -184,20 +181,24 @@ pub fn verify_inventory(
 
     for req in ["connector.json", "distribution.json", "LICENSE"] {
         if !payloads.contains_key(req) {
-            return Err(PackageIdentityFinding::new("INVENTORY_REQUIRED_FILE_MISSING"));
+            return Err(PackageIdentityFinding::new(
+                "INVENTORY_REQUIRED_FILE_MISSING",
+            ));
         }
     }
 
     let mut total_bytes = 0usize;
     for entry in files {
-        let path = entry["path"].as_str().unwrap();
+        let path = entry["path"].as_str().expect("inventory entry path string");
         let data = &payloads[path];
         total_bytes += data.len();
         if data.len() > MAX_PACKAGE_FILE_BYTES || total_bytes > MAX_PACKAGE_TOTAL_BYTES {
             return Err(PackageIdentityFinding::new("INVENTORY_LIMIT_EXCEEDED"));
         }
-        let expected_size = entry["size"].as_u64().unwrap() as usize;
-        let expected_sha = entry["sha256"].as_str().unwrap();
+        let expected_size = entry["size"].as_u64().expect("inventory entry size u64") as usize;
+        let expected_sha = entry["sha256"]
+            .as_str()
+            .expect("inventory entry sha256 string");
         if expected_size != data.len() || expected_sha != sha256_hex(data) {
             return Err(PackageIdentityFinding::new("INVENTORY_CONTENT_MISMATCH"));
         }
@@ -223,7 +224,7 @@ fn validate_inventory_shape(inventory: &Value) -> Result<(), PackageIdentityFind
     {
         return Err(PackageIdentityFinding::new("INVENTORY_SHAPE_INVALID"));
     }
-    let files = obj["files"].as_array().unwrap();
+    let files = obj["files"].as_array().expect("inventory files array");
     if files.is_empty() {
         return Err(PackageIdentityFinding::new("INVENTORY_SHAPE_INVALID"));
     }
@@ -295,15 +296,19 @@ pub fn check_dependency_lock(
 ) -> Result<String, PackageIdentityFinding> {
     validate_lock_shape(lock)?;
 
-    let packages = lock["packages"].as_array().unwrap();
+    let packages = lock["packages"].as_array().expect("lock packages array");
     let mut nodes: HashMap<(String, String), &Value> = HashMap::new();
     let mut node_order: Vec<(String, String)> = Vec::with_capacity(packages.len());
-    let mut identities: HashMap<(String, String, String, String), (String, String)> = HashMap::new();
+    let mut identities: HashMap<(String, String, String, String), (String, String)> =
+        HashMap::new();
 
     for node in packages {
         let key = (
-            node["kind"].as_str().unwrap().to_string(),
-            node["digest"].as_str().unwrap().to_string(),
+            node["kind"].as_str().expect("node kind string").to_string(),
+            node["digest"]
+                .as_str()
+                .expect("node digest string")
+                .to_string(),
         );
         if nodes.contains_key(&key) {
             return Err(PackageIdentityFinding::new("LOCK_DUPLICATE_NODE"));
@@ -312,10 +317,16 @@ pub fn check_dependency_lock(
         node_order.push(key.clone());
 
         let identity = (
-            node["kind"].as_str().unwrap().to_string(),
-            node["publisher"].as_str().unwrap().to_string(),
-            node["id"].as_str().unwrap().to_string(),
-            node["version"].as_str().unwrap().to_string(),
+            node["kind"].as_str().expect("node kind string").to_string(),
+            node["publisher"]
+                .as_str()
+                .expect("node publisher string")
+                .to_string(),
+            node["id"].as_str().expect("node id string").to_string(),
+            node["version"]
+                .as_str()
+                .expect("node version string")
+                .to_string(),
         );
         if let Some(existing) = identities.get(&identity)
             && existing != &key
@@ -327,12 +338,15 @@ pub fn check_dependency_lock(
 
     let roots: Vec<(String, String)> = lock["roots"]
         .as_array()
-        .unwrap()
+        .expect("lock roots array")
         .iter()
         .map(|r| {
             (
-                r["kind"].as_str().unwrap().to_string(),
-                r["digest"].as_str().unwrap().to_string(),
+                r["kind"].as_str().expect("root kind string").to_string(),
+                r["digest"]
+                    .as_str()
+                    .expect("root digest string")
+                    .to_string(),
             )
         })
         .collect();
@@ -345,14 +359,20 @@ pub fn check_dependency_lock(
     for (key, node) in &nodes {
         let mut node_edges = Vec::new();
         let mut aliases = HashSet::new();
-        for edge in node["dependencies"].as_array().unwrap() {
-            let alias = edge["alias"].as_str().unwrap();
+        for edge in node["dependencies"]
+            .as_array()
+            .expect("node dependencies array")
+        {
+            let alias = edge["alias"].as_str().expect("edge alias string");
             if !aliases.insert(alias) {
                 return Err(PackageIdentityFinding::new("LOCK_ALIAS_DUPLICATE"));
             }
             let target = (
-                edge["kind"].as_str().unwrap().to_string(),
-                edge["digest"].as_str().unwrap().to_string(),
+                edge["kind"].as_str().expect("edge kind string").to_string(),
+                edge["digest"]
+                    .as_str()
+                    .expect("edge digest string")
+                    .to_string(),
             );
             if !nodes.contains_key(&target) {
                 return Err(PackageIdentityFinding::new("LOCK_CLOSURE_MISSING"));
@@ -420,9 +440,9 @@ pub fn check_dependency_lock(
         if node["kind"].as_str() == Some("provider") {
             let node_ops: Vec<String> = node["operations"]
                 .as_array()
-                .unwrap()
+                .expect("node operations array")
                 .iter()
-                .map(|v| v.as_str().unwrap().to_string())
+                .map(|v| v.as_str().expect("operation string").to_string())
                 .collect();
             let mut expected_ops = artifact.operations.clone();
             expected_ops.sort();
@@ -439,9 +459,9 @@ pub fn check_dependency_lock(
         } else {
             let node_fns: Vec<String> = node["functions"]
                 .as_array()
-                .unwrap()
+                .expect("node functions array")
                 .iter()
-                .map(|v| v.as_str().unwrap().to_string())
+                .map(|v| v.as_str().expect("function string").to_string())
                 .collect();
             let mut expected_fns = artifact.functions.clone();
             expected_fns.sort();
@@ -455,10 +475,12 @@ pub fn check_dependency_lock(
             .iter()
             .map(|d| (d.alias.clone(), d))
             .collect();
-        let node_deps = node["dependencies"].as_array().unwrap();
+        let node_deps = node["dependencies"]
+            .as_array()
+            .expect("node dependencies array");
         let edge_aliases: Vec<String> = node_deps
             .iter()
-            .map(|e| e["alias"].as_str().unwrap().to_string())
+            .map(|e| e["alias"].as_str().expect("edge alias string").to_string())
             .collect();
         let edge_alias_set: BTreeSet<String> = edge_aliases.iter().cloned().collect();
         let decl_alias_set: BTreeSet<String> = declarations.keys().cloned().collect();
@@ -471,11 +493,14 @@ pub fn check_dependency_lock(
         }
 
         for edge in node_deps {
-            let alias = edge["alias"].as_str().unwrap();
+            let alias = edge["alias"].as_str().expect("edge alias string");
             let declared = declarations[alias];
             let target_key = (
-                edge["kind"].as_str().unwrap().to_string(),
-                edge["digest"].as_str().unwrap().to_string(),
+                edge["kind"].as_str().expect("edge kind string").to_string(),
+                edge["digest"]
+                    .as_str()
+                    .expect("edge digest string")
+                    .to_string(),
             );
             let target = nodes[&target_key];
             if edge["kind"].as_str() != Some(&declared.kind)
@@ -483,7 +508,10 @@ pub fn check_dependency_lock(
             {
                 return Err(PackageIdentityFinding::new("LOCK_DECLARATION_MISMATCH"));
             }
-            let expected_req = format!("={}", target["version"].as_str().unwrap());
+            let expected_req = format!(
+                "={}",
+                target["version"].as_str().expect("target version string")
+            );
             if declared.requires != expected_req {
                 return Err(PackageIdentityFinding::new(
                     "LOCK_VERSION_REQUIREMENT_UNQUALIFIED",
@@ -492,17 +520,17 @@ pub fn check_dependency_lock(
             if edge["kind"].as_str() == Some("provider") {
                 let edge_ops: Vec<String> = edge["operations"]
                     .as_array()
-                    .unwrap()
+                    .expect("edge operations array")
                     .iter()
-                    .map(|v| v.as_str().unwrap().to_string())
+                    .map(|v| v.as_str().expect("operation string").to_string())
                     .collect();
                 let mut decl_ops = declared.operations.clone();
                 decl_ops.sort();
                 let target_ops: HashSet<String> = target["operations"]
                     .as_array()
-                    .unwrap()
+                    .expect("target operations array")
                     .iter()
-                    .map(|v| v.as_str().unwrap().to_string())
+                    .map(|v| v.as_str().expect("operation string").to_string())
                     .collect();
                 if edge_ops != decl_ops || !edge_ops.iter().all(|op| target_ops.contains(op)) {
                     return Err(PackageIdentityFinding::new("LOCK_GRANT_MISMATCH"));
@@ -513,17 +541,17 @@ pub fn check_dependency_lock(
             } else {
                 let edge_fns: Vec<String> = edge["functions"]
                     .as_array()
-                    .unwrap()
+                    .expect("edge functions array")
                     .iter()
-                    .map(|v| v.as_str().unwrap().to_string())
+                    .map(|v| v.as_str().expect("function string").to_string())
                     .collect();
                 let mut decl_fns = declared.functions.clone();
                 decl_fns.sort();
                 let target_fns: HashSet<String> = target["functions"]
                     .as_array()
-                    .unwrap()
+                    .expect("target functions array")
                     .iter()
-                    .map(|v| v.as_str().unwrap().to_string())
+                    .map(|v| v.as_str().expect("function string").to_string())
                     .collect();
                 if edge_fns != decl_fns || !edge_fns.iter().all(|f| target_fns.contains(f)) {
                     return Err(PackageIdentityFinding::new("LOCK_GRANT_MISMATCH"));
@@ -540,7 +568,10 @@ fn is_sha256_digest(s: &str) -> bool {
     let Some(hex_part) = s.strip_prefix("sha256:") else {
         return false;
     };
-    hex_part.len() == 64 && hex_part.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    hex_part.len() == 64
+        && hex_part
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
@@ -554,7 +585,7 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
     {
         return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
     }
-    let roots = obj["roots"].as_array().unwrap();
+    let roots = obj["roots"].as_array().expect("lock roots array");
     if roots.is_empty() {
         return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
     }
@@ -572,7 +603,7 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
             return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
         }
     }
-    let packages = obj["packages"].as_array().unwrap();
+    let packages = obj["packages"].as_array().expect("lock packages array");
     if packages.is_empty() {
         return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
     }
@@ -601,7 +632,10 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
                     return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
                 }
                 if impl_kind == Some("wasm")
-                    && p_obj.get("import_profile").and_then(Value::as_str).is_none()
+                    && p_obj
+                        .get("import_profile")
+                        .and_then(Value::as_str)
+                        .is_none()
                 {
                     return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
                 }
@@ -619,7 +653,10 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
             }
             _ => return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID")),
         }
-        for dep in p_obj["dependencies"].as_array().unwrap() {
+        for dep in p_obj["dependencies"]
+            .as_array()
+            .expect("package dependencies array")
+        {
             let Some(d_obj) = dep.as_object() else {
                 return Err(PackageIdentityFinding::new("LOCK_SHAPE_INVALID"));
             };
@@ -652,6 +689,7 @@ fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::schema_profile::parse_json_pointer;
@@ -703,8 +741,8 @@ mod tests {
 
     #[test]
     fn v2_10_3_passes_all_package_identity_and_dependency_lock_fixture_cases() {
-        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../design-docs/v2/fixtures/package-identity");
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/package-identity");
         let bundle_raw = std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap();
         let fixture: Value = serde_json::from_str(&bundle_raw).unwrap();
         let cases_raw = std::fs::read_to_string(fixture_dir.join("cases.json")).unwrap();
@@ -721,8 +759,7 @@ mod tests {
             let actual_digest = verify_inventory(&pkg["inventory"], &payloads, None).unwrap();
             assert_eq!(actual_digest, pkg["digest"].as_str().unwrap());
 
-            let manifest: Value =
-                serde_json::from_slice(&payloads["connector.json"]).unwrap();
+            let manifest: Value = serde_json::from_slice(&payloads["connector.json"]).unwrap();
             let distribution: Value =
                 serde_json::from_slice(&payloads["distribution.json"]).unwrap();
             let impl_kind = manifest["implementation"]["kind"]
@@ -761,20 +798,12 @@ mod tests {
                     operations: d
                         .get("operations")
                         .and_then(Value::as_array)
-                        .map(|a| {
-                            a.iter()
-                                .map(|v| v.as_str().unwrap().to_string())
-                                .collect()
-                        })
+                        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
                         .unwrap_or_default(),
                     functions: d
                         .get("functions")
                         .and_then(Value::as_array)
-                        .map(|a| {
-                            a.iter()
-                                .map(|v| v.as_str().unwrap().to_string())
-                                .collect()
-                        })
+                        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
                         .unwrap_or_default(),
                     binding_slot: d
                         .get("binding_slot")
@@ -790,9 +819,7 @@ mod tests {
                     id: manifest["id"].as_str().unwrap().to_string(),
                     version: manifest["version"].as_str().unwrap().to_string(),
                     contract: manifest["contract"].as_str().unwrap().to_string(),
-                    schema_profile: Some(
-                        manifest["schema_profile"].as_str().unwrap().to_string(),
-                    ),
+                    schema_profile: Some(manifest["schema_profile"].as_str().unwrap().to_string()),
                     implementation: Some(impl_kind),
                     import_profile,
                     operations: ops,
@@ -824,18 +851,13 @@ mod tests {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.as_str().unwrap().as_bytes().to_vec()))
                     .collect();
-                let pretty_bytes = if case.get("pretty_inventory").and_then(Value::as_bool)
-                    == Some(true)
-                {
-                    Some(serde_json::to_vec_pretty(&pkg["inventory"]).unwrap())
-                } else {
-                    None
-                };
-                match verify_inventory(
-                    &pkg["inventory"],
-                    &payloads,
-                    pretty_bytes.as_deref(),
-                ) {
+                let pretty_bytes =
+                    if case.get("pretty_inventory").and_then(Value::as_bool) == Some(true) {
+                        Some(serde_json::to_vec_pretty(&pkg["inventory"]).unwrap())
+                    } else {
+                        None
+                    };
+                match verify_inventory(&pkg["inventory"], &payloads, pretty_bytes.as_deref()) {
                     Ok(digest) => {
                         if digest != pkg["digest"].as_str().unwrap() {
                             "PACKAGE_DIGEST_MISMATCH".to_string()

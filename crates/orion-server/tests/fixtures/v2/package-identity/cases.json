@@ -1,0 +1,517 @@
+{
+  "fixture_format_version": 1,
+  "cases": [
+    {
+      "id": "canonical-inventory-valid",
+      "kind": "identity",
+      "patch": [],
+      "expect": "OK"
+    },
+    {
+      "id": "archive-order-independent",
+      "kind": "identity",
+      "patch": [],
+      "expect": "OK",
+      "reorder_payloads": true
+    },
+    {
+      "id": "detached-signature-outside-content",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/detached_signature",
+          "value": "fixture-only placeholder"
+        }
+      ],
+      "expect": "OK"
+    },
+    {
+      "id": "pretty-inventory-rejected",
+      "kind": "identity",
+      "patch": [],
+      "expect": "INVENTORY_NOT_CANONICAL",
+      "pretty_inventory": true
+    },
+    {
+      "id": "payload-bytes-changed",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payloads/LICENSE",
+          "value": "Changed fixture notice\n"
+        }
+      ],
+      "expect": "INVENTORY_CONTENT_MISMATCH"
+    },
+    {
+      "id": "payload-missing",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/payloads/LICENSE"
+        }
+      ],
+      "expect": "INVENTORY_PAYLOAD_MISMATCH"
+    },
+    {
+      "id": "unlisted-payload",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payloads/unlisted.txt",
+          "value": "unexpected"
+        }
+      ],
+      "expect": "INVENTORY_PAYLOAD_MISMATCH"
+    },
+    {
+      "id": "path-traversal",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/inventory/files/0/path",
+          "value": "../outside"
+        }
+      ],
+      "expect": "INVENTORY_PATH_INVALID"
+    },
+    {
+      "id": "inventory-self-reference",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/inventory/files/0/path",
+          "value": "inventory.json"
+        }
+      ],
+      "expect": "INVENTORY_SELF_REFERENCE"
+    },
+    {
+      "id": "signature-self-reference",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/inventory/files/0/path",
+          "value": "signatures/key.sig"
+        }
+      ],
+      "expect": "INVENTORY_SELF_REFERENCE"
+    },
+    {
+      "id": "duplicate-inventory-path",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/inventory/files/1",
+          "value": {
+            "path": "LICENSE",
+            "sha256": "1725348d800108fcb5dcd4c6dc29260af9a30b9ab60a89081ea939ddb5ab2627",
+            "size": 61
+          }
+        }
+      ],
+      "expect": "INVENTORY_PATH_COLLISION"
+    },
+    {
+      "id": "inventory-order-rejected",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/inventory/files",
+          "value": [
+            {
+              "path": "workflows/map-contact.json",
+              "sha256": "698dc85bec9613f563a32ccd6e58a9b86318b0695c07df697a53cf02cf119e7f",
+              "size": 28
+            },
+            {
+              "path": "workflows/get-contact.json",
+              "sha256": "698dc85bec9613f563a32ccd6e58a9b86318b0695c07df697a53cf02cf119e7f",
+              "size": 28
+            },
+            {
+              "path": "schemas/contact.json",
+              "sha256": "4f883981d12b3960a5a28799de44c083d90ca6e57063f01b4483193d9f07b49a",
+              "size": 283
+            },
+            {
+              "path": "schemas/contact-request.json",
+              "sha256": "519507656e2efd587793d063b4e82d8ca4b9a93066c6b0d3db91097060f61aa0",
+              "size": 205
+            },
+            {
+              "path": "schemas/config.json",
+              "sha256": "907978a1fc533e200005e3894bd04ebe13cc1c6087d077d8da226a69a9abf012",
+              "size": 202
+            },
+            {
+              "path": "distribution.json",
+              "sha256": "8e919a3610f6b70253e79de231877214c31dcda8dbebc7a8d5dc18fb74d57891",
+              "size": 71
+            },
+            {
+              "path": "connector.json",
+              "sha256": "1b8f2dec2d2cabb07985156f5538c036f0e0396eca290472201937c6f78e4101",
+              "size": 969
+            },
+            {
+              "path": "LICENSE",
+              "sha256": "1725348d800108fcb5dcd4c6dc29260af9a30b9ab60a89081ea939ddb5ab2627",
+              "size": 61
+            }
+          ]
+        }
+      ],
+      "expect": "INVENTORY_ORDER_INVALID"
+    },
+    {
+      "id": "incorrect-byte-size",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/inventory/files/0/size",
+          "value": 0
+        }
+      ],
+      "expect": "INVENTORY_CONTENT_MISMATCH"
+    },
+    {
+      "id": "package-digest-mismatch",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/digest",
+          "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "expect": "PACKAGE_DIGEST_MISMATCH"
+    },
+    {
+      "id": "required-license-missing",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/payloads/LICENSE"
+        },
+        {
+          "op": "remove",
+          "path": "/inventory/files/0"
+        }
+      ],
+      "expect": "INVENTORY_REQUIRED_FILE_MISSING"
+    },
+    {
+      "id": "distribution-requirement-mutation",
+      "kind": "identity",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payloads/distribution.json",
+          "value": "{\"schema_version\":2,\"publisher\":\"com.example\",\"policy_requirements\":[\"orion.test-policy@1\"]}"
+        }
+      ],
+      "expect": "INVENTORY_CONTENT_MISMATCH"
+    },
+    {
+      "id": "complete-lock-valid",
+      "kind": "lock",
+      "patch": [],
+      "expect": "OK"
+    },
+    {
+      "id": "closure-missing",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/dependencies/0/digest",
+          "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "expect": "LOCK_CLOSURE_MISSING"
+    },
+    {
+      "id": "duplicate-node",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/packages/2",
+          "value": {
+            "kind": "provider",
+            "digest": "sha256:06b55b26ed2c6ff1ad9ddbefda2ca84b5f6d610b611ab33fa1b3027de3ec670c",
+            "publisher": "com.example",
+            "id": "com.example.crm",
+            "version": "1.0.0",
+            "contract": "orion:connector@1.0.0",
+            "schema_profile": "orion-json-schema/1",
+            "implementation": "workflow",
+            "operations": [
+              "contacts.get"
+            ],
+            "dependencies": [
+              {
+                "kind": "provider",
+                "alias": "secondary",
+                "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813",
+                "operations": [
+                  "contacts.get"
+                ],
+                "binding_slot": "support"
+              }
+            ]
+          }
+        }
+      ],
+      "expect": "LOCK_DUPLICATE_NODE"
+    },
+    {
+      "id": "root-missing",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/roots/0/digest",
+          "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "expect": "LOCK_CLOSURE_MISSING"
+    },
+    {
+      "id": "dependency-cycle",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/dependencies/0/digest",
+          "value": "sha256:06b55b26ed2c6ff1ad9ddbefda2ca84b5f6d610b611ab33fa1b3027de3ec670c"
+        }
+      ],
+      "expect": "LOCK_CYCLE"
+    },
+    {
+      "id": "unreachable-node",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/roots/0/digest",
+          "value": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813"
+        }
+      ],
+      "expect": "LOCK_UNREACHABLE_NODE"
+    },
+    {
+      "id": "noncanonical-node-order",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages",
+          "value": [
+            {
+              "kind": "provider",
+              "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813",
+              "publisher": "com.example",
+              "id": "com.example.helper",
+              "version": "1.0.0",
+              "contract": "orion:connector@1.0.0",
+              "schema_profile": "orion-json-schema/1",
+              "implementation": "wasm",
+              "import_profile": "http-v1",
+              "operations": [
+                "contacts.get"
+              ],
+              "dependencies": []
+            },
+            {
+              "kind": "provider",
+              "digest": "sha256:06b55b26ed2c6ff1ad9ddbefda2ca84b5f6d610b611ab33fa1b3027de3ec670c",
+              "publisher": "com.example",
+              "id": "com.example.crm",
+              "version": "1.0.0",
+              "contract": "orion:connector@1.0.0",
+              "schema_profile": "orion-json-schema/1",
+              "implementation": "workflow",
+              "operations": [
+                "contacts.get"
+              ],
+              "dependencies": [
+                {
+                  "kind": "provider",
+                  "alias": "secondary",
+                  "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813",
+                  "operations": [
+                    "contacts.get"
+                  ],
+                  "binding_slot": "support"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "expect": "LOCK_ORDER_INVALID"
+    },
+    {
+      "id": "artifact-unavailable",
+      "kind": "lock",
+      "patch": [],
+      "expect": "LOCK_ARTIFACT_UNAVAILABLE",
+      "artifact_unavailable": true
+    },
+    {
+      "id": "node-metadata-mismatch",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/id",
+          "value": "com.example.changed"
+        }
+      ],
+      "expect": "LOCK_METADATA_MISMATCH"
+    },
+    {
+      "id": "operation-grant-widened",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/dependencies/0/operations",
+          "value": [
+            "contacts.delete"
+          ]
+        }
+      ],
+      "expect": "LOCK_GRANT_MISMATCH"
+    },
+    {
+      "id": "binding-slot-changed",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/dependencies/0/binding_slot",
+          "value": "other"
+        }
+      ],
+      "expect": "LOCK_BINDING_SLOT_MISMATCH"
+    },
+    {
+      "id": "undeclared-alias",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/dependencies/0/alias",
+          "value": "undeclared"
+        }
+      ],
+      "expect": "LOCK_DECLARATION_MISMATCH"
+    },
+    {
+      "id": "publisher-version-content-conflict",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/packages/2",
+          "value": {
+            "kind": "provider",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "publisher": "com.example",
+            "id": "com.example.crm",
+            "version": "1.0.0",
+            "contract": "orion:connector@1.0.0",
+            "schema_profile": "orion-json-schema/1",
+            "implementation": "workflow",
+            "operations": [
+              "contacts.get"
+            ],
+            "dependencies": [
+              {
+                "kind": "provider",
+                "alias": "secondary",
+                "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813",
+                "operations": [
+                  "contacts.get"
+                ],
+                "binding_slot": "support"
+              }
+            ]
+          }
+        }
+      ],
+      "expect": "LOCK_IDENTITY_CONFLICT"
+    },
+    {
+      "id": "native-provider-kind-denied",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/kind",
+          "value": "native"
+        }
+      ],
+      "expect": "LOCK_SHAPE_INVALID"
+    },
+    {
+      "id": "digest-cannot-be-version",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/0/digest",
+          "value": "1.0.0"
+        }
+      ],
+      "expect": "LOCK_SHAPE_INVALID"
+    },
+    {
+      "id": "import-profile-mismatch",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/packages/1/import_profile",
+          "value": "core-v1"
+        }
+      ],
+      "expect": "LOCK_METADATA_MISMATCH"
+    },
+    {
+      "id": "duplicate-edge-alias",
+      "kind": "lock",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/packages/0/dependencies/1",
+          "value": {
+            "kind": "provider",
+            "alias": "secondary",
+            "digest": "sha256:48e160cb216e45efe82614af50036bf3e0813f9c1f478f7a2becd3d0cc5b4813",
+            "operations": [
+              "contacts.get"
+            ],
+            "binding_slot": "support"
+          }
+        }
+      ],
+      "expect": "LOCK_ALIAS_DUPLICATE"
+    }
+  ]
+}
