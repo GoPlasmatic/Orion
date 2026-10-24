@@ -84,8 +84,9 @@ pub use deployment_store::{
 };
 pub use foundation::{
     COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
-    HttpProviderBackend, MemoryCacheProviderBackend, PartitionedMemoryCache,
-    PostgresProviderBackend, SqliteProviderBackend, register_community_foundation_providers,
+    FoundationOptions, HttpProviderBackend, MemoryCacheProviderBackend, PartitionedMemoryCache,
+    PostgresProviderBackend, SqlLimits, SqliteProviderBackend,
+    register_community_foundation_providers,
 };
 pub use migration::{
     ENTERPRISE_DRIVER_ELASTICSEARCH, ENTERPRISE_DRIVER_KAFKA, ENTERPRISE_DRIVER_MONGODB,
@@ -176,13 +177,20 @@ impl CompositionRoot {
     ///   their version-fenced session/cache pools
     /// - [`CommunityAdmissionPolicy`]
     pub fn community() -> Self {
+        Self::community_with(&foundation::FoundationOptions::default())
+    }
+
+    /// [`Self::community`], with the foundation providers bounded by `options`
+    /// (the node's shared HTTP client and its configured caps).
+    pub fn community_with(options: &foundation::FoundationOptions) -> Self {
         let providers = ProviderRegistry::new();
         let pools = ResourcePoolRegistry::new();
         let deployments = ImmutableDeploymentStore::default();
-        foundation::register_community_foundation_providers_with_store(
+        foundation::register_community_foundation_providers_with(
             &providers,
             &pools,
             Some(deployments.clone()),
+            options,
         );
         let admission: Arc<dyn AdmissionPolicy> = Arc::new(CommunityAdmissionPolicy::new());
         providers.set_admission_policy(admission.clone());

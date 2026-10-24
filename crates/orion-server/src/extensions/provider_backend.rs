@@ -131,6 +131,14 @@ pub trait ProviderBackend: Send + Sync {
         Box::pin(async {})
     }
 
+    /// Input keys of `operation` that must be authored as literal strings:
+    /// `connector_call` refuses a task whose `input` builds one from the
+    /// message, at load. A SQL provider names its statement keys, so a
+    /// caller's values reach the database only as bind parameters.
+    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Return the optional [`SourceConnectorFacet`] if this provider supports
     /// `source` channel polling.
     fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {

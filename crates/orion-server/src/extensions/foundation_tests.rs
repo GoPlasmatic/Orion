@@ -45,6 +45,65 @@ fn make_invocation(
         .expect("invocation starts")
 }
 
+/// A store holding revision 1 of `conn_id` with `public_config`.
+fn with_connection(
+    conn_id: &str,
+    public_config: Value,
+    secret_locator: Option<&str>,
+) -> crate::extensions::ImmutableDeploymentStore {
+    let store = crate::extensions::ImmutableDeploymentStore::default();
+    store
+        .store_connection_revision(
+            conn_id,
+            1,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            public_config,
+            secret_locator.map(str::to_string),
+        )
+        .expect("connection revision stored");
+    store
+}
+
+/// A query's rows are capped while they stream, and a `secret_locator`
+/// that is not a reference is refused rather than read as a literal.
+#[tokio::test]
+async fn sql_rows_are_capped_and_a_secret_locator_must_be_a_reference() {
+    let sqlite = SqliteProviderBackend::default().with_limits(SqlLimits {
+        max_rows: 2,
+        max_result_bytes: 0,
+    });
+    let err = sqlite
+        .execute_live_sqlite(
+            "sqlite::memory:",
+            "query",
+            "SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_INPUT);
+    assert!(err.message.contains("2 rows"), "{}", err.message);
+
+    let pg = PostgresProviderBackend::with_deployment_store(
+        4,
+        with_connection("pg-literal", json!({}), Some("postgres://u:p@db/app")),
+    );
+    let inv = make_invocation(DRIVER_POSTGRESQL, "pg-literal", 1, "query");
+    let err = pg
+        .invoke(
+            &inv.next_attempt().unwrap(),
+            "query",
+            json!({"sql": "SELECT 1"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_INPUT);
+    assert!(
+        err.message.contains("not a secret reference"),
+        "{}",
+        err.message
+    );
+}
+
 #[test]
 fn sqlite_provider_enforces_approved_root_and_rejects_traversal_and_orion_db() {
     let sqlite = SqliteProviderBackend::new("/var/lib/orion/sqlite", 4);
@@ -209,13 +268,26 @@ async fn v2_14_2_and_3_http_ssrf_guard_and_live_sqlite_execution() {
         .expect_err("HTTP invocation without URL must not fabricate 200");
     assert_eq!(missing_url_err.code, codes::INVALID_INPUT);
 
-    // Private loopback URL is blocked by SSRF guard (`V2-14.2`)
-    let ssrf_err = http
+    // A target in the input is refused: it comes from the connection revision.
+    let input_target_err = http
         .invoke(
             &attempt,
             "get",
-            json!({"path": "/metadata", "url": "http://169.254.169.254/latest/meta-data"}),
+            json!({"path": "/contacts", "url": "https://api.example.com"}),
         )
+        .await
+        .unwrap_err();
+    assert_eq!(input_target_err.code, codes::CONNECTION_FORBIDDEN);
+
+    // A private address the connection revision names is blocked by the SSRF guard (`V2-14.2`)
+    let store = with_connection(
+        "http-conn",
+        json!({"url": "http://169.254.169.254/latest"}),
+        None,
+    );
+    let http = HttpProviderBackend::with_deployment_store(store);
+    let ssrf_err = http
+        .invoke(&attempt, "get", json!({"path": "/meta-data"}))
         .await
         .unwrap_err();
     assert_eq!(ssrf_err.code, codes::CAPABILITY_INVALID);
@@ -232,16 +304,32 @@ async fn v2_14_2_and_3_http_ssrf_guard_and_live_sqlite_execution() {
         );
     assert_eq!(pg_missing_err.code, codes::INVALID_INPUT);
 
+    // A connection string in the input is refused.
+    let pg_input_err = pg
+        .invoke(
+            &pg_attempt_q,
+            "query",
+            json!({"connection_string": "postgres://evil.example/db", "sql": "SELECT 1"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(pg_input_err.code, codes::CONNECTION_FORBIDDEN);
+
+    let pg = PostgresProviderBackend::with_deployment_store(
+        4,
+        with_connection(
+            "pg-conn",
+            json!({"connection_string": "postgres://127.0.0.1:1/nonexistent"}),
+            None,
+        ),
+    );
     let pg_inv_w = make_invocation(DRIVER_POSTGRESQL, "pg-conn", 1, "execute");
     let pg_attempt_w = pg_inv_w.next_attempt().unwrap();
     let pg_write_err = pg
         .invoke(
             &pg_attempt_w,
             "execute",
-            json!({
-                "connection_string": "postgres://postgres:postgres@127.0.0.1:1/nonexistent",
-                "sql": "INSERT INTO items VALUES (1)"
-            }),
+            json!({"sql": "INSERT INTO items VALUES ($1)", "params": [1]}),
         )
         .await
         .expect_err(
@@ -283,7 +371,6 @@ async fn td24_and_td29_sqlite_invoke_persists_in_memory_and_memory_cache_bounds_
             &attempt_create,
             "execute",
             json!({
-                "connection_string": "sqlite::memory:",
                 "sql": "CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT)"
             }),
         )
@@ -297,8 +384,8 @@ async fn td24_and_td29_sqlite_invoke_persists_in_memory_and_memory_cache_bounds_
             &attempt_insert,
             "execute",
             json!({
-                "connection_string": "sqlite::memory:",
-                "sql": "INSERT INTO items (id, label) VALUES (7, 'persisted')"
+                "sql": "INSERT INTO items (id, label) VALUES (?, ?)",
+                "params": [7, "persisted"]
             }),
         )
         .await
@@ -312,7 +399,6 @@ async fn td24_and_td29_sqlite_invoke_persists_in_memory_and_memory_cache_bounds_
             &attempt_select,
             "query",
             json!({
-                "connection_string": "sqlite::memory:",
                 "sql": "SELECT id, label FROM items"
             }),
         )

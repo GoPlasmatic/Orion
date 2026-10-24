@@ -44,6 +44,341 @@ pub const COMMUNITY_RUST_DRIVERS: &[&str] = &[
     DRIVER_MEMORY_CACHE,
 ];
 
+/// What the foundation providers are bounded by. Built from the node's
+/// config at boot; [`Default`] is that config's defaults.
+#[derive(Debug, Clone)]
+pub struct FoundationOptions {
+    /// The client every outbound HTTP call is made on. The node passes its
+    /// shared one: SSRF-pinned DNS, so the address the guard vetted is the
+    /// one connected to, redirects off, and the global timeout.
+    pub http_client: reqwest::Client,
+    /// Cap on one HTTP response body, read while streaming.
+    pub http_max_response_bytes: usize,
+    /// The row and byte caps a SQL query is held to.
+    pub sql: SqlLimits,
+    /// The directory file-backed SQLite connections resolve beneath.
+    pub sqlite_root: PathBuf,
+}
+
+impl Default for FoundationOptions {
+    fn default() -> Self {
+        Self {
+            http_client: default_http_client(),
+            http_max_response_bytes: 10 * 1024 * 1024,
+            sql: SqlLimits::default(),
+            sqlite_root: PathBuf::from("./data/connectors/sqlite"),
+        }
+    }
+}
+
+/// A client built the way the node builds its shared one, for a provider
+/// constructed without the node's.
+fn default_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(crate::version::USER_AGENT)
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(crate::validation::PinnedDnsResolver))
+        .build()
+        .unwrap_or_default()
+}
+
+/// The caps one SQL query is held to, as `db_read` is: `query.max_limit`
+/// rows and `query.max_result_bytes` of decoded result (`0` = unlimited).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqlLimits {
+    pub max_rows: usize,
+    pub max_result_bytes: usize,
+}
+
+impl Default for SqlLimits {
+    fn default() -> Self {
+        Self {
+            max_rows: 1000,
+            max_result_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
+/// The input keys a SQL provider reads its statement from. They must be
+/// authored as literal strings (`connector_call` refuses an expression at
+/// load), so a caller's values reach the database only through `params`,
+/// bound beside the statement.
+const SQL_STATEMENT_KEYS: &[&str] = &["sql", "source", "target"];
+
+/// Refuse `input` naming a connection target. A connection's target, and
+/// any credential it needs, come from its governed connection revision; a
+/// target in the input would let a workflow, or the message it renders,
+/// aim the provider anywhere.
+fn refuse_input_target(input: &Value, keys: &[&str]) -> Result<(), ConnectorError> {
+    match keys.iter().find(|key| input.get(**key).is_some()) {
+        Some(key) => Err(ConnectorError::forbidden(
+            codes::CONNECTION_FORBIDDEN,
+            "validation",
+            format!("input.{key} is not accepted: the target comes from the connection revision"),
+            EffectStatus::NotStarted,
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The connection revision `identity` names, or the active one for its id.
+fn governed_connection(
+    store: Option<&super::deployment_store::ImmutableDeploymentStore>,
+    identity: &EffectiveConnectionIdentity,
+) -> Option<super::deployment_store::ConnectionRevisionRow> {
+    let store = store?;
+    store
+        .get_connection(&identity.connection_id, identity.revision)
+        .or_else(|| store.get_active_connection(&identity.connection_id))
+}
+
+/// The connection string a governed revision names. A credential may live
+/// only behind the revision's `secret_locator`, which must be a reference
+/// (`env://`, `vault://`, …) and resolves to the whole connection string;
+/// without one, `public_config.connection_string` is used as written.
+async fn governed_connection_string(
+    store: Option<&super::deployment_store::ImmutableDeploymentStore>,
+    identity: &EffectiveConnectionIdentity,
+    driver: &str,
+) -> Result<Option<String>, ConnectorError> {
+    let Some(conn) = governed_connection(store, identity) else {
+        return Ok(None);
+    };
+    let Some(locator) = conn.secret_locator.as_deref() else {
+        return Ok(conn
+            .public_config
+            .get("connection_string")
+            .and_then(Value::as_str)
+            .map(str::to_string));
+    };
+    let is_reference =
+        crate::connector::secrets::parse_reference(locator).is_some_and(|(scheme, _)| {
+            crate::connector::secrets::default_resolvers()
+                .iter()
+                .any(|r| r.scheme() == scheme)
+        });
+    if !is_reference {
+        return Err(ConnectorError::invalid_input(
+            format!(
+                "{driver}: connection '{}' has a secret_locator that is not a secret reference \
+                 (such as env://VAR)",
+                identity.connection_id
+            ),
+            None,
+        ));
+    }
+    crate::connector::secrets::resolve_secret_string(locator, "secret_locator")
+        .await
+        .map(Some)
+        .map_err(|e| {
+            ConnectorError::unavailable(
+                format!(
+                    "{driver}: connection '{}' secret_locator did not resolve: {e}",
+                    identity.connection_id
+                ),
+                EffectStatus::NotStarted,
+            )
+        })
+}
+
+/// The statement of a SQL operation: the first of `keys` present, as a string.
+fn sql_statement<'a>(
+    input: &'a Value,
+    keys: &[&str],
+    driver: &str,
+) -> Result<&'a str, ConnectorError> {
+    keys.iter()
+        .find_map(|key| input.get(*key))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ConnectorError::invalid_input(
+                format!(
+                    "{driver} operation requires a string '{}'",
+                    keys.join("' or '")
+                ),
+                Some(json!({"pointer": format!("/{}", keys[0])})),
+            )
+        })
+}
+
+/// The values bound to the statement's placeholders: `input.params`, an array.
+fn sql_params(input: &Value) -> Result<Vec<Value>, ConnectorError> {
+    match input.get("params") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => Ok(items.clone()),
+        Some(_) => Err(ConnectorError::invalid_input(
+            "'params' must be an array of the values bound to the statement's placeholders",
+            Some(json!({"pointer": "/params"})),
+        )),
+    }
+}
+
+/// A read or a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SqlOperation {
+    Query,
+    Execute,
+}
+
+impl SqlOperation {
+    fn parse(operation: &str) -> Option<Self> {
+        match operation {
+            "query" | "data_query" => Some(Self::Query),
+            "execute" | "data_write" => Some(Self::Execute),
+            _ => None,
+        }
+    }
+
+    /// The input keys the statement is read from.
+    fn statement_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Query => &["sql", "source"],
+            Self::Execute => &["sql", "target"],
+        }
+    }
+}
+
+/// A driver failure, classified the way `db_read` classifies one. A
+/// transport failure is retryable; so is a serialization failure or a
+/// deadlock, which is the database asking for the retry. Anything else the
+/// database raised is about the statement, and retrying will not change it.
+/// `in_flight` is what the call may have done when the transport failed.
+fn sql_error(driver: &str, e: sqlx::Error, in_flight: EffectStatus) -> ConnectorError {
+    match &e {
+        sqlx::Error::Database(db) if matches!(db.code().as_deref(), Some("40001" | "40P01")) => {
+            ConnectorError::unavailable(format!("{driver}: {db}"), EffectStatus::NotStarted)
+        }
+        sqlx::Error::Database(db) => {
+            let mut err = ConnectorError::invalid_input(format!("{driver}: {db}"), None);
+            err.origin = super::contract::ErrorOrigin::provider("statement");
+            err
+        }
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::Protocol(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed => {
+            ConnectorError::unavailable(format!("{driver}: {e}"), in_flight)
+        }
+        _ => ConnectorError::invalid_input(format!("{driver}: {e}"), None),
+    }
+}
+
+/// Run one statement on `pool` with `params` bound beside it, through the
+/// same binders and row decoders `db_read` uses. A query's rows are counted
+/// and sized as they stream, and the call fails as soon as either cap is
+/// crossed, before the rest is held in memory.
+async fn run_sql(
+    pool: &crate::connector::pool_cache::SqlPool,
+    driver: &str,
+    operation: SqlOperation,
+    statement: &str,
+    params: &[Value],
+    limits: SqlLimits,
+) -> Result<Value, ConnectorError> {
+    use crate::connector::sql_encode::{Bound, Scalar};
+
+    let in_flight = match operation {
+        SqlOperation::Query => EffectStatus::NotStarted,
+        SqlOperation::Execute => EffectStatus::Unknown,
+    };
+    let scalars: Vec<Scalar> = params.iter().map(Into::into).collect();
+    crate::connector::pool_cache::dispatch_sql_pool!(
+        pool, p, rows_to_json, bind, typed_args, write_result => {
+            let mut conn = p
+                .acquire()
+                .await
+                .map_err(|e| sql_error(driver, e, EffectStatus::NotStarted))?;
+            let bound = typed_args(&mut conn, statement, Some(&scalars))
+                .await
+                .map_err(|e| {
+                    ConnectorError::invalid_input(
+                        e.message(driver),
+                        Some(json!({"pointer": format!("/params/{}", e.param)})),
+                    )
+                })?;
+            // The statement is authored in the definition (`connector_call`
+            // refuses one built from the message at load); the message's
+            // values travel as bind parameters beside it.
+            let query = match bound {
+                Bound::Typed(args) => sqlx::query_with(sqlx::AssertSqlSafe(statement), args),
+                Bound::Fallback { cache } => {
+                    bind(sqlx::query(sqlx::AssertSqlSafe(statement)), params).persistent(cache)
+                }
+            };
+            match operation {
+                SqlOperation::Query => {
+                    use futures::TryStreamExt;
+                    let mut stream = query.fetch(&mut *conn);
+                    let mut rows = Vec::new();
+                    let mut total_bytes = 0usize;
+                    while let Some(row) = stream
+                        .try_next()
+                        .await
+                        .map_err(|e| sql_error(driver, e, in_flight))?
+                    {
+                        if rows.len() >= limits.max_rows {
+                            return Err(ConnectorError::invalid_input(
+                                format!(
+                                    "{driver}: result exceeds {} rows; add a LIMIT to the query",
+                                    limits.max_rows
+                                ),
+                                None,
+                            ));
+                        }
+                        let Some(decoded) = rows_to_json(
+                            std::slice::from_ref(&row),
+                            crate::connector::sql_decode::RowFormat::default(),
+                        )
+                        .map_err(|e| ConnectorError::invalid_input(e.message(driver), None))?
+                        .pop() else {
+                            continue;
+                        };
+                        if limits.max_result_bytes > 0 {
+                            total_bytes = total_bytes.saturating_add(
+                                crate::connector::sql_decode::approx_json_value_bytes(&decoded),
+                            );
+                            if total_bytes > limits.max_result_bytes {
+                                return Err(ConnectorError::invalid_input(
+                                    format!(
+                                        "{driver}: result exceeds {} bytes; select fewer \
+                                         columns or add a LIMIT",
+                                        limits.max_result_bytes
+                                    ),
+                                    None,
+                                ));
+                            }
+                        }
+                        rows.push(decoded);
+                    }
+                    Ok(json!({
+                        "count": rows.len(),
+                        "rows": rows,
+                        "statement": statement,
+                    }))
+                }
+                SqlOperation::Execute => {
+                    let result = query
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|e| sql_error(driver, e, in_flight))?;
+                    let (rows_affected, last_insert_id) = write_result(&result);
+                    let mut out = json!({
+                        "rows_affected": rows_affected,
+                        "statement": statement,
+                    });
+                    if let Some(id) = last_insert_id {
+                        out["last_insert_id"] = json!(id);
+                    }
+                    Ok(out)
+                }
+            }
+        }
+    )
+}
+
 // ============================================================================
 // 1. org.orion.http (V2-14.2)
 // ============================================================================
@@ -52,6 +387,7 @@ pub const COMMUNITY_RUST_DRIVERS: &[&str] = &[
 #[derive(Default)]
 pub struct HttpProviderBackend {
     deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
+    options: FoundationOptions,
 }
 
 impl std::fmt::Debug for HttpProviderBackend {
@@ -62,7 +398,7 @@ impl std::fmt::Debug for HttpProviderBackend {
 
 impl HttpProviderBackend {
     pub fn new() -> Self {
-        Self { deployments: None }
+        Self::default()
     }
 
     pub fn with_deployment_store(
@@ -70,25 +406,19 @@ impl HttpProviderBackend {
     ) -> Self {
         Self {
             deployments: Some(deployments),
+            options: FoundationOptions::default(),
         }
     }
 
-    fn resolve_connection_url(
-        &self,
-        identity: &EffectiveConnectionIdentity,
-        input: &Value,
-    ) -> Option<String> {
-        if let Some(url) = input
-            .get("url")
-            .or_else(|| input.get("base_url"))
-            .and_then(Value::as_str)
-        {
-            return Some(url.to_string());
-        }
-        let store = self.deployments.as_ref()?;
-        let conn = store
-            .get_connection(&identity.connection_id, identity.revision)
-            .or_else(|| store.get_active_connection(&identity.connection_id))?;
+    /// The same provider, making its calls on `options.http_client`.
+    pub fn with_options(mut self, options: &FoundationOptions) -> Self {
+        self.options = options.clone();
+        self
+    }
+
+    /// The base URL the governed connection revision names.
+    fn resolve_connection_url(&self, identity: &EffectiveConnectionIdentity) -> Option<String> {
+        let conn = governed_connection(self.deployments.as_ref(), identity)?;
         conn.public_config
             .get("url")
             .or_else(|| conn.public_config.get("base_url"))
@@ -180,6 +510,7 @@ impl ProviderBackend for HttpProviderBackend {
                 ));
             }
 
+            refuse_input_target(&input, &["url", "base_url"])?;
             let path = input.get("path").and_then(Value::as_str).unwrap_or("/");
             if !path.starts_with('/') {
                 return Err(ConnectorError::invalid_input(
@@ -189,10 +520,10 @@ impl ProviderBackend for HttpProviderBackend {
             }
 
             let identity = ctx.invocation().effective_identity();
-            let Some(url) = self.resolve_connection_url(identity, &input) else {
+            let Some(url) = self.resolve_connection_url(identity) else {
                 return Err(ConnectorError::invalid_input(
                     format!(
-                        "HTTP connector invocation on '{}' requires a configured connection 'url' or input 'url'",
+                        "HTTP connector invocation on '{}' requires a connection revision with a 'url'",
                         identity.connection_id
                     ),
                     Some(json!({"pointer": "/url"})),
@@ -217,17 +548,7 @@ impl ProviderBackend for HttpProviderBackend {
                     Some(json!({"pointer": "/method"})),
                 )
             })?;
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(Duration::from_secs(10))
-                .build()
-                .map_err(|e| {
-                    ConnectorError::unavailable(
-                        format!("Failed to build HTTP client: {e}"),
-                        EffectStatus::NotStarted,
-                    )
-                })?;
-            let mut req_builder = client.request(req_method, &full_url);
+            let mut req_builder = self.options.http_client.request(req_method, &full_url);
             if let Some(body_val) = input.get("body")
                 && !body_val.is_null()
             {
@@ -236,12 +557,12 @@ impl ProviderBackend for HttpProviderBackend {
             ctx.invocation().record_effect(EffectStatus::Unknown);
             let resp = req_builder.send().await.map_err(|e| {
                 ConnectorError::unavailable(
-                    format!("HTTP request failed: {e}"),
+                    format!("HTTP request failed: {}", e.without_url()),
                     EffectStatus::Unknown,
                 )
             })?;
             let status_code = resp.status().as_u16();
-            let bytes = crate::http_body::read_bounded(resp, 4 * 1024 * 1024)
+            let bytes = crate::http_body::read_bounded(resp, self.options.http_max_response_bytes)
                 .await
                 .map_err(|e| {
                     ConnectorError::unavailable(
@@ -277,6 +598,7 @@ pub struct PostgresProviderBackend {
     sessions: Arc<VersionedSessionPool<String>>,
     live_pools: crate::connector::lru_cache::LruCache<sqlx::PgPool>,
     deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
+    limits: SqlLimits,
 }
 
 impl PostgresProviderBackend {
@@ -296,6 +618,7 @@ impl PostgresProviderBackend {
                 },
             ),
             deployments: None,
+            limits: SqlLimits::default(),
         }
     }
 
@@ -308,30 +631,23 @@ impl PostgresProviderBackend {
         backend
     }
 
+    /// The same provider, holding every query to `limits`.
+    pub fn with_limits(mut self, limits: SqlLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
     pub fn session_pool(&self) -> Arc<VersionedSessionPool<String>> {
         self.sessions.clone()
     }
 
-    fn resolve_connection_string(
+    async fn resolve_connection_string(
         &self,
         identity: &EffectiveConnectionIdentity,
-        input: &Value,
     ) -> Result<String, ConnectorError> {
-        let conn_str = if let Some(s) = input.get("connection_string").and_then(Value::as_str) {
-            Some(s.to_string())
-        } else if let Some(ref store) = self.deployments {
-            store
-                .get_connection(&identity.connection_id, identity.revision)
-                .or_else(|| store.get_active_connection(&identity.connection_id))
-                .and_then(|c| {
-                    c.public_config
-                        .get("connection_string")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-        } else {
-            None
-        };
+        let conn_str =
+            governed_connection_string(self.deployments.as_ref(), identity, DRIVER_POSTGRESQL)
+                .await?;
         let Some(conn_str) = conn_str else {
             return Err(ConnectorError::invalid_input(
                 format!(
@@ -347,15 +663,18 @@ impl PostgresProviderBackend {
 
     async fn execute_live_postgres(
         &self,
-        ctx: &AttemptContext,
         conn_key: &str,
         conn_str: &str,
-        operation: &str,
+        operation: SqlOperation,
         statement: &str,
+        params: &[Value],
     ) -> Result<Value, ConnectorError> {
-        use sqlx::{Column, Row, TypeInfo, ValueRef};
-
-        let cache_key = format!("{conn_key}::{conn_str}");
+        // Keyed by a digest of the target, never the text: a resolved
+        // connection string carries its credential.
+        let cache_key = format!(
+            "{conn_key}::{}",
+            super::package_identity::sha256_digest(conn_str.as_bytes())
+        );
         let pool = self
             .live_pools
             .get_or_create(&cache_key, || {
@@ -366,95 +685,19 @@ impl PostgresProviderBackend {
                         .acquire_timeout(Duration::from_secs(5))
                         .connect(&target_url)
                         .await
-                        .map_err(|e| {
-                            ConnectorError::unavailable(
-                                format!("Failed to connect to PostgreSQL target: {e}"),
-                                EffectStatus::NotStarted,
-                            )
-                        })
+                        .map_err(|e| sql_error(DRIVER_POSTGRESQL, e, EffectStatus::NotStarted))
                 }
             })
             .await?;
-
-        let statement_owned = statement.to_string();
-        match operation {
-            "query" | "data_query" => {
-                ctx.invocation().record_effect(EffectStatus::Unknown);
-                let rows = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(|e| {
-                        ConnectorError::invalid_input(format!("PostgreSQL query error: {e}"), None)
-                    })?;
-                ctx.invocation().record_effect(EffectStatus::Completed);
-                let mut json_rows = Vec::with_capacity(rows.len());
-                for row in &rows {
-                    let mut map = serde_json::Map::new();
-                    for (idx, col) in row.columns().iter().enumerate() {
-                        let cell_val = if let Ok(raw) = row.try_get_raw(idx) {
-                            if raw.is_null() {
-                                Value::Null
-                            } else {
-                                match raw.type_info().name() {
-                                    "INT2" | "INT4" | "INT8" => row
-                                        .try_get_unchecked::<i64, _>(idx)
-                                        .map(Value::from)
-                                        .unwrap_or(Value::Null),
-                                    "FLOAT4" | "FLOAT8" => row
-                                        .try_get_unchecked::<f64, _>(idx)
-                                        .ok()
-                                        .and_then(serde_json::Number::from_f64)
-                                        .map(Value::Number)
-                                        .unwrap_or(Value::Null),
-                                    "BOOL" => row
-                                        .try_get_unchecked::<bool, _>(idx)
-                                        .map(Value::Bool)
-                                        .unwrap_or(Value::Null),
-                                    "JSON" | "JSONB" => row
-                                        .try_get_unchecked::<Value, _>(idx)
-                                        .unwrap_or(Value::Null),
-                                    _ => row
-                                        .try_get_unchecked::<Option<String>, _>(idx)
-                                        .ok()
-                                        .flatten()
-                                        .map(Value::String)
-                                        .unwrap_or(Value::Null),
-                                }
-                            }
-                        } else {
-                            Value::Null
-                        };
-                        map.insert(col.name().to_string(), cell_val);
-                    }
-                    json_rows.push(Value::Object(map));
-                }
-                Ok(json!({
-                    "rows": json_rows,
-                    "count": rows.len(),
-                    "statement": statement_owned,
-                }))
-            }
-            "execute" | "data_write" => {
-                ctx.invocation().record_effect(EffectStatus::Unknown);
-                let res = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| {
-                        ConnectorError::invalid_input(format!("PostgreSQL write error: {e}"), None)
-                    })?;
-                ctx.invocation().record_effect(EffectStatus::Completed);
-                Ok(json!({
-                    "rows_affected": res.rows_affected(),
-                    "statement": statement_owned,
-                }))
-            }
-            other => Err(ConnectorError::forbidden(
-                codes::OPERATION_FORBIDDEN,
-                "dispatch",
-                format!("Unsupported PostgreSQL operation '{other}'"),
-                ctx.invocation().effect_status(),
-            )),
-        }
+        run_sql(
+            &crate::connector::pool_cache::SqlPool::Postgres(pool),
+            DRIVER_POSTGRESQL,
+            operation,
+            statement,
+            params,
+            self.limits,
+        )
+        .await
     }
 }
 
@@ -512,55 +755,32 @@ impl ProviderBackend for PostgresProviderBackend {
                 .await?;
 
             let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
-            match operation {
-                "query" | "data_query" => {
-                    let statement = input
-                        .get("sql")
-                        .or_else(|| input.get("source"))
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            ConnectorError::invalid_input(
-                                "PostgreSQL query requires 'sql' or 'source'",
-                                Some(json!({"pointer": "/sql"})),
-                            )
-                        })?;
-                    let conn_str = self.resolve_connection_string(identity, &input)?;
-                    let data = self
-                        .execute_live_postgres(ctx, &conn_key, &conn_str, operation, statement)
-                        .await?;
-                    let mut metadata = BTreeMap::new();
-                    metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
-                    metadata.insert("session".to_string(), json!(handle.session()));
-                    Ok(ConnectorOutput::with_metadata(data, metadata))
-                }
-                "execute" | "data_write" => {
-                    let statement = input
-                        .get("sql")
-                        .or_else(|| input.get("target"))
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            ConnectorError::invalid_input(
-                                "PostgreSQL write requires 'sql' or 'target'",
-                                Some(json!({"pointer": "/sql"})),
-                            )
-                        })?;
-                    let conn_str = self.resolve_connection_string(identity, &input)?;
-                    let data = self
-                        .execute_live_postgres(ctx, &conn_key, &conn_str, operation, statement)
-                        .await?;
-                    let mut metadata = BTreeMap::new();
-                    metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
-                    metadata.insert("session".to_string(), json!(handle.session()));
-                    Ok(ConnectorOutput::with_metadata(data, metadata))
-                }
-                other => Err(ConnectorError::forbidden(
+            let Some(sql_op) = SqlOperation::parse(operation) else {
+                return Err(ConnectorError::forbidden(
                     codes::OPERATION_FORBIDDEN,
                     "dispatch",
-                    format!("Unsupported PostgreSQL operation '{other}'"),
+                    format!("Unsupported PostgreSQL operation '{operation}'"),
                     ctx.invocation().effect_status(),
-                )),
-            }
+                ));
+            };
+            refuse_input_target(&input, &["connection_string"])?;
+            let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_POSTGRESQL)?;
+            let params = sql_params(&input)?;
+            let conn_str = self.resolve_connection_string(identity).await?;
+            ctx.invocation().record_effect(EffectStatus::Unknown);
+            let data = self
+                .execute_live_postgres(&conn_key, &conn_str, sql_op, statement, &params)
+                .await?;
+            ctx.invocation().record_effect(EffectStatus::Completed);
+            let mut metadata = BTreeMap::new();
+            metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
+            metadata.insert("session".to_string(), json!(handle.session()));
+            Ok(ConnectorOutput::with_metadata(data, metadata))
         })
+    }
+
+    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
+        SQL_STATEMENT_KEYS
     }
 
     fn dispose<'a>(
@@ -656,6 +876,7 @@ pub struct SqliteProviderBackend {
     sessions: Arc<VersionedSessionPool<String>>,
     live_pools: crate::connector::lru_cache::LruCache<sqlx::SqlitePool>,
     deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
+    limits: SqlLimits,
 }
 
 impl SqliteProviderBackend {
@@ -676,7 +897,14 @@ impl SqliteProviderBackend {
                 },
             ),
             deployments: None,
+            limits: SqlLimits::default(),
         }
+    }
+
+    /// The same provider, holding every query to `limits`.
+    pub fn with_limits(mut self, limits: SqlLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     pub fn with_deployment_store(
@@ -689,26 +917,17 @@ impl SqliteProviderBackend {
         backend
     }
 
-    fn resolve_connection_string(
+    /// The governed revision's connection string, or an in-memory database
+    /// private to the connection when no revision names one.
+    async fn resolve_connection_string(
         &self,
         identity: &EffectiveConnectionIdentity,
-        input: &Value,
-    ) -> String {
-        if let Some(s) = input.get("connection_string").and_then(Value::as_str) {
-            return s.to_string();
-        }
-        if let Some(ref store) = self.deployments
-            && let Some(conn) = store
-                .get_connection(&identity.connection_id, identity.revision)
-                .or_else(|| store.get_active_connection(&identity.connection_id))
-            && let Some(s) = conn
-                .public_config
-                .get("connection_string")
-                .and_then(Value::as_str)
-        {
-            return s.to_string();
-        }
-        "sqlite::memory:".to_string()
+    ) -> Result<String, ConnectorError> {
+        Ok(
+            governed_connection_string(self.deployments.as_ref(), identity, DRIVER_SQLITE)
+                .await?
+                .unwrap_or_else(|| "sqlite::memory:".to_string()),
+        )
     }
 
     pub fn session_pool(&self) -> Arc<VersionedSessionPool<String>> {
@@ -793,22 +1012,30 @@ impl SqliteProviderBackend {
         operation: &str,
         statement: &str,
     ) -> Result<Value, ConnectorError> {
-        self.execute_live_sqlite_for_connection(None, conn_str, operation, statement)
+        self.execute_live_sqlite_for_connection(None, conn_str, operation, statement, &[])
             .await
     }
 
-    /// Execute a real SQL statement against a sandboxed SQLite target, optionally
-    /// partitioning `sqlite::memory:` pools by `connection_key` so tables persist
-    /// across statements on the same connection (`TD-24`, `V2-14.3`).
+    /// Execute a real SQL statement against a sandboxed SQLite target, with
+    /// `params` bound to its placeholders, optionally partitioning
+    /// `sqlite::memory:` pools by `connection_key` so tables persist across
+    /// statements on the same connection (`TD-24`, `V2-14.3`).
     pub async fn execute_live_sqlite_for_connection(
         &self,
         connection_key: Option<&str>,
         conn_str: &str,
         operation: &str,
         statement: &str,
+        params: &[Value],
     ) -> Result<Value, ConnectorError> {
-        use sqlx::{Column, Row, TypeInfo, ValueRef};
-
+        let Some(sql_op) = SqlOperation::parse(operation) else {
+            return Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!("Unsupported SQLite operation '{operation}'"),
+                EffectStatus::NotStarted,
+            ));
+        };
         let target = self.resolve_sandboxed_target(conn_str)?;
         let cache_key = match connection_key {
             Some(key) if target == "sqlite::memory:" => format!("{key}::{target}"),
@@ -835,80 +1062,15 @@ impl SqliteProviderBackend {
                 }
             })
             .await?;
-        let statement_owned = statement.to_string();
-
-        match operation {
-            "query" | "data_query" => {
-                let rows = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(|e| {
-                        ConnectorError::invalid_input(format!("SQLite query error: {e}"), None)
-                    })?;
-                let mut json_rows = Vec::with_capacity(rows.len());
-                for row in &rows {
-                    let mut map = serde_json::Map::new();
-                    for (idx, col) in row.columns().iter().enumerate() {
-                        let cell_val = if let Ok(raw) = row.try_get_raw(idx) {
-                            if raw.is_null() {
-                                Value::Null
-                            } else {
-                                match raw.type_info().name() {
-                                    "INTEGER" | "INT" | "BIGINT" | "INT8" => row
-                                        .try_get_unchecked::<i64, _>(idx)
-                                        .map(Value::from)
-                                        .unwrap_or(Value::Null),
-                                    "REAL" | "FLOAT" | "DOUBLE" => row
-                                        .try_get_unchecked::<f64, _>(idx)
-                                        .ok()
-                                        .and_then(serde_json::Number::from_f64)
-                                        .map(Value::Number)
-                                        .unwrap_or(Value::Null),
-                                    "BOOLEAN" | "BOOL" => row
-                                        .try_get_unchecked::<bool, _>(idx)
-                                        .map(Value::Bool)
-                                        .unwrap_or(Value::Null),
-                                    _ => row
-                                        .try_get_unchecked::<Option<String>, _>(idx)
-                                        .ok()
-                                        .flatten()
-                                        .map(Value::String)
-                                        .unwrap_or(Value::Null),
-                                }
-                            }
-                        } else {
-                            Value::Null
-                        };
-                        map.insert(col.name().to_string(), cell_val);
-                    }
-                    json_rows.push(Value::Object(map));
-                }
-                Ok(json!({
-                    "rows": json_rows,
-                    "count": rows.len(),
-                    "statement": statement_owned,
-                }))
-            }
-            "execute" | "data_write" => {
-                let res = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
-                    .execute(&pool)
-                    .await
-                    .map_err(|e| {
-                        ConnectorError::invalid_input(format!("SQLite write error: {e}"), None)
-                    })?;
-                Ok(json!({
-                    "rows_affected": res.rows_affected(),
-                    "last_insert_id": res.last_insert_rowid(),
-                    "statement": statement_owned,
-                }))
-            }
-            other => Err(ConnectorError::forbidden(
-                codes::OPERATION_FORBIDDEN,
-                "dispatch",
-                format!("Unsupported SQLite operation '{other}'"),
-                EffectStatus::NotStarted,
-            )),
-        }
+        run_sql(
+            &crate::connector::pool_cache::SqlPool::Sqlite(pool),
+            DRIVER_SQLITE,
+            sql_op,
+            statement,
+            params,
+            self.limits,
+        )
+        .await
     }
 }
 
@@ -960,65 +1122,38 @@ impl ProviderBackend for SqliteProviderBackend {
                 .await?;
 
             let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
-            let target_conn = self.resolve_connection_string(identity, &input);
-
-            match operation {
-                "query" | "data_query" => {
-                    let statement = input
-                        .get("sql")
-                        .or_else(|| input.get("source"))
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            ConnectorError::invalid_input(
-                                "SQLite query requires 'sql' or 'source'",
-                                Some(json!({"pointer": "/sql"})),
-                            )
-                        })?;
-                    let mut metadata = BTreeMap::new();
-                    metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
-                    metadata.insert("session".to_string(), json!(handle.session()));
-                    let data = self
-                        .execute_live_sqlite_for_connection(
-                            Some(&conn_key),
-                            &target_conn,
-                            operation,
-                            statement,
-                        )
-                        .await?;
-                    Ok(ConnectorOutput::with_metadata(data, metadata))
-                }
-                "execute" | "data_write" => {
-                    let statement = input
-                        .get("sql")
-                        .or_else(|| input.get("target"))
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            ConnectorError::invalid_input(
-                                "SQLite write requires 'sql' or 'target'",
-                                Some(json!({"pointer": "/sql"})),
-                            )
-                        })?;
-                    let mut metadata = BTreeMap::new();
-                    metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
-                    metadata.insert("session".to_string(), json!(handle.session()));
-                    let data = self
-                        .execute_live_sqlite_for_connection(
-                            Some(&conn_key),
-                            &target_conn,
-                            operation,
-                            statement,
-                        )
-                        .await?;
-                    Ok(ConnectorOutput::with_metadata(data, metadata))
-                }
-                other => Err(ConnectorError::forbidden(
+            let Some(sql_op) = SqlOperation::parse(operation) else {
+                return Err(ConnectorError::forbidden(
                     codes::OPERATION_FORBIDDEN,
                     "dispatch",
-                    format!("Unsupported SQLite operation '{other}'"),
+                    format!("Unsupported SQLite operation '{operation}'"),
                     ctx.invocation().effect_status(),
-                )),
-            }
+                ));
+            };
+            refuse_input_target(&input, &["connection_string"])?;
+            let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_SQLITE)?;
+            let params = sql_params(&input)?;
+            let target_conn = self.resolve_connection_string(identity).await?;
+            ctx.invocation().record_effect(EffectStatus::Unknown);
+            let data = self
+                .execute_live_sqlite_for_connection(
+                    Some(&conn_key),
+                    &target_conn,
+                    operation,
+                    statement,
+                    &params,
+                )
+                .await?;
+            ctx.invocation().record_effect(EffectStatus::Completed);
+            let mut metadata = BTreeMap::new();
+            metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
+            metadata.insert("session".to_string(), json!(handle.session()));
+            Ok(ConnectorOutput::with_metadata(data, metadata))
         })
+    }
+
+    fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
+        SQL_STATEMENT_KEYS
     }
 
     fn dispose<'a>(
@@ -1407,22 +1542,38 @@ pub fn register_community_foundation_providers_with_store(
     pools: &ResourcePoolRegistry,
     deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
 ) {
+    register_community_foundation_providers_with(
+        providers,
+        pools,
+        deployments,
+        &FoundationOptions::default(),
+    );
+}
+
+/// [`register_community_foundation_providers_with_store`], bounded by `options`.
+pub fn register_community_foundation_providers_with(
+    providers: &ProviderRegistry,
+    pools: &ResourcePoolRegistry,
+    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
+    options: &FoundationOptions,
+) {
     let http = match deployments.clone() {
-        Some(store) => Arc::new(HttpProviderBackend::with_deployment_store(store)),
-        None => Arc::new(HttpProviderBackend::new()),
+        Some(store) => HttpProviderBackend::with_deployment_store(store),
+        None => HttpProviderBackend::new(),
     };
+    let http = Arc::new(http.with_options(options));
     let pg = match deployments.clone() {
-        Some(store) => Arc::new(PostgresProviderBackend::with_deployment_store(16, store)),
-        None => Arc::new(PostgresProviderBackend::default()),
+        Some(store) => PostgresProviderBackend::with_deployment_store(16, store),
+        None => PostgresProviderBackend::default(),
     };
+    let pg = Arc::new(pg.with_limits(options.sql));
     let sqlite = match deployments {
-        Some(store) => Arc::new(SqliteProviderBackend::with_deployment_store(
-            "./data/connectors/sqlite",
-            8,
-            store,
-        )),
-        None => Arc::new(SqliteProviderBackend::default()),
+        Some(store) => {
+            SqliteProviderBackend::with_deployment_store(options.sqlite_root.clone(), 8, store)
+        }
+        None => SqliteProviderBackend::new(options.sqlite_root.clone(), 8),
     };
+    let sqlite = Arc::new(sqlite.with_limits(options.sql));
     let mem_cache = Arc::new(MemoryCacheProviderBackend::default());
 
     pools.register(pg.session_pool());

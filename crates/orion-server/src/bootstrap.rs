@@ -357,7 +357,15 @@ pub async fn build_engine_components(
         None
     };
 
-    let composition = crate::extensions::CompositionRoot::community()
+    let foundation = crate::extensions::FoundationOptions {
+        http_client: http_client.clone(),
+        sql: crate::extensions::SqlLimits {
+            max_rows: usize::try_from(config.query.max_limit).unwrap_or(usize::MAX),
+            max_result_bytes: config.query.max_result_bytes,
+        },
+        ..Default::default()
+    };
+    let composition = crate::extensions::CompositionRoot::community_with(&foundation)
         .with_resource_pool(sql_pool_cache.clone())
         .with_resource_pool(mongo_pool_cache.clone())
         .with_resource_pool(smtp_pool_cache.clone());

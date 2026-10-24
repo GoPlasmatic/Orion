@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
-use dataflow_rs::function::{FunctionConfig, FunctionSpec};
-use dataflow_rs::{Ctx, Expr, Function, Outcome};
+use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
+use dataflow_rs::program::{AuthoredPath, IssueCode};
+use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 use serde_json::{Value, json};
 
 use super::schema::{FieldKind, FieldSchema};
@@ -113,6 +114,47 @@ impl Function for ConnectorCallFunction {
         kit::spec(NAME)
     }
 
+    /// The input keys the provider names as statements
+    /// ([`ProviderBackend::literal_input_keys`](crate::extensions::ProviderBackend::literal_input_keys))
+    /// must be authored as literal strings, so the message reaches the
+    /// backend only through the values bound beside them. A provider not
+    /// registered on this node is judged when the call runs.
+    fn prepare(&self, cfg: &mut ConnectorCallConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
+        let Some(input) = cfg.input.as_ref() else {
+            return Ok(());
+        };
+        let target = cfg.target_id.as_deref().unwrap_or(&cfg.connection);
+        let Some(backend) = self
+            .providers
+            .get(implementation_kind(cfg.kind.as_deref()), target)
+        else {
+            return Ok(());
+        };
+        let issues: Vec<Issue> = backend
+            .literal_input_keys(&cfg.operation)
+            .iter()
+            .filter(|key| input.raw().get(**key).is_some_and(|v| !v.is_string()))
+            .map(|key| {
+                let mut at = AuthoredPath::root();
+                at.push("input");
+                at.push(*key);
+                Issue::new(
+                    IssueCode::InputParse,
+                    at,
+                    format!(
+                        "`input.{key}` must be a literal string: the statement is authored in \
+                         the definition, and the message reaches it only through `input.params`"
+                    ),
+                )
+            })
+            .collect();
+        if issues.is_empty() {
+            Ok(())
+        } else {
+            Err(issues)
+        }
+    }
+
     async fn call(
         &self,
         ctx: &mut Ctx<'_>,
@@ -166,11 +208,7 @@ async fn execute_connector_call(
         ));
     }
 
-    let impl_kind = match kind.unwrap_or("rust") {
-        "workflow" => ImplementationKind::Workflow,
-        "wasm" => ImplementationKind::Wasm,
-        _ => ImplementationKind::Rust,
-    };
+    let impl_kind = implementation_kind(kind);
     let target_id = target_id.unwrap_or(connection).to_string();
 
     let Some(_backend) = providers.get(impl_kind, &target_id) else {
@@ -270,6 +308,15 @@ async fn execute_connector_call(
     }
 }
 
+/// The implementation kind a task names; `rust` when it names none.
+fn implementation_kind(kind: Option<&str>) -> ImplementationKind {
+    match kind.unwrap_or("rust") {
+        "workflow" => ImplementationKind::Workflow,
+        "wasm" => ImplementationKind::Wasm,
+        _ => ImplementationKind::Rust,
+    }
+}
+
 fn default_run_context_for_call(
     connection_id: &str,
     operation: &str,
@@ -330,6 +377,74 @@ mod tests {
     use crate::extensions::CompositionRoot;
     use dataflow_rs::function::testing;
     use serde_json::Value;
+
+    /// A SQL statement built from the message is refused when the task
+    /// compiles, so a caller's values reach the database only as binds.
+    #[tokio::test]
+    async fn a_statement_built_from_the_message_is_refused_at_load() {
+        let root = CompositionRoot::community();
+        let func = ConnectorCallFunction {
+            providers: root.providers.clone(),
+        };
+        let called = testing::call(
+            func,
+            json!({
+                "connection": "local-db",
+                "target_id": "org.orion.sqlite",
+                "operation": "query",
+                "input": { "sql": {"var": "data.q"} },
+                "output": "data.rows"
+            }),
+        )
+        .exprs(crate::engine::kit::test_exprs())
+        .name(NAME)
+        .await;
+        assert!(called.outcome.is_err(), "{:?}", called.outcome);
+        assert!(
+            called
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::InputParse && i.message.contains("input.sql")),
+            "{:?}",
+            called.issues
+        );
+    }
+
+    /// A literal statement runs, with the message's values bound to its
+    /// placeholders.
+    #[tokio::test]
+    async fn a_literal_statement_runs_with_the_message_bound_as_params() {
+        let root = CompositionRoot::community();
+        let func = ConnectorCallFunction {
+            providers: root.providers.clone(),
+        };
+        let message = dataflow_rs::Message::from_parts(
+            OwnedDataValue::from(&json!({})),
+            OwnedDataValue::from(&json!({"n": 41, "label": "x'; DROP TABLE t; --"})),
+            OwnedDataValue::Null,
+        );
+        let called = testing::call(
+            func,
+            json!({
+                "connection": "bound-params-db",
+                "target_id": "org.orion.sqlite",
+                "operation": "query",
+                "input": {
+                    "sql": "SELECT ? + 1 AS n, ? AS label",
+                    "params": [{"var": "data.n"}, {"var": "data.label"}]
+                },
+                "output": "data.result"
+            }),
+        )
+        .message(message)
+        .exprs(crate::engine::kit::test_exprs())
+        .name(NAME)
+        .await;
+        assert!(called.outcome.is_ok(), "{:?}", called.outcome);
+        let result = called.message.to_json()["context"]["data"]["result"].clone();
+        assert_eq!(result["rows"][0]["n"], 42);
+        assert_eq!(result["rows"][0]["label"], "x'; DROP TABLE t; --");
+    }
 
     #[tokio::test]
     async fn connector_call_dispatches_memory_cache_provider_in_v4_engine() {
