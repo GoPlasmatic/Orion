@@ -587,6 +587,38 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     } else {
         None
     };
+    // Every guard below runs with the idempotency key claimed. A refusal from
+    // any of them means nothing ran, so the key goes back — once, here, for
+    // every refusal, so a new refusal cannot forget to: held, it would answer
+    // the caller's retry (or, on Kafka, the redelivery of an offset that was
+    // never committed) `409` for the rest of the window instead of judging it
+    // on its merits. An answer — a cache hit, the sign-in redirect — leaves it
+    // standing: a replay of the key is a duplicate of a delivery that
+    // succeeded.
+    match after_dedup(&req, set, guard_metadata, auth_claims).await {
+        Ok(GuardVerdict::Admitted(admission)) => Ok(GuardVerdict::Admitted(Admission {
+            dedup_claim,
+            ..admission
+        })),
+        Ok(answered) => Ok(answered),
+        Err(e) => {
+            if let Some(claim) = dedup_claim {
+                claim.release().await;
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The guards [`apply_guards`] runs after claiming the idempotency key: the
+/// response cache, the backpressure permit and the OAuth2 sign-in legs. An
+/// admission it returns carries no claim; the caller attaches it.
+async fn after_dedup(
+    req: &GuardRequest<'_>,
+    set: GuardSet,
+    guard_metadata: &Value,
+    auth_claims: Option<Value>,
+) -> Result<GuardVerdict, OrionError> {
     let cache_store = if set.response_cache {
         match check_response_cache(
             req.channel,
@@ -606,19 +638,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         None
     };
     let backpressure_permit = if set.backpressure {
-        match acquire_backpressure(req.channel, req.runtime) {
-            Ok(permit) => permit,
-            Err(e) => {
-                // Nothing ran. Hand the key back so the caller's retry — or,
-                // on Kafka, the redelivery of an offset that was never
-                // committed — is judged on its own merits rather than as a
-                // duplicate of an attempt that was shed.
-                if let Some(claim) = dedup_claim {
-                    claim.release().await;
-                }
-                return Err(e);
-            }
-        }
+        acquire_backpressure(req.channel, req.runtime)?
     } else {
         None
     };
@@ -651,13 +671,6 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                 let redirect = match login.begin(ingress.provider, None, return_to.as_deref()) {
                     Ok(redirect) => redirect,
                     Err(e) => {
-                        // Nothing ran, so hand the key back — the same rule the
-                        // backpressure branch above states and for the same
-                        // reason. A sign-in that could not even be started must
-                        // not make the user's retry a duplicate of it.
-                        if let Some(claim) = dedup_claim {
-                            claim.release().await;
-                        }
                         // An unknown provider is the caller's 404; anything else
                         // (a URL that will not parse, a signing failure) is ours.
                         if matches!(e, OrionError::NotFound(_)) {
@@ -671,22 +684,15 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                         return Err(OrionError::internal("could not begin the sign-in"));
                     }
                 };
-                // The permit and the claim both drop here. The claim standing
-                // is correct and matches `CacheHit`: the request *was*
-                // answered, so a replay of the key is a duplicate of a
-                // delivery that succeeded.
+                // The permit drops here; the caller leaves the claim standing,
+                // as for `CacheHit`: the request *was* answered.
                 return Ok(GuardVerdict::Respond(GuardResponse::from(redirect)));
             }
             crate::channel::OAuthLeg::Authorize => {
                 // The redirect is built after the workflow, but an unknown
                 // provider must 404 before the workflow runs — a sign-in to a
                 // provider this channel does not serve should execute nothing.
-                if let Err(e) = login.require_provider(ingress.provider) {
-                    if let Some(claim) = dedup_claim {
-                        claim.release().await;
-                    }
-                    return Err(e);
-                }
+                login.require_provider(ingress.provider)?;
                 // Checked here, where the request's own query string is, and
                 // carried to the redirect that is built after the workflow.
                 oauth_return_to = login.accepted_return_to(ingress.query);
@@ -694,25 +700,13 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                 oauth_authorize = Some(std::sync::Arc::clone(login));
             }
             crate::channel::OAuthLeg::Callback => {
-                let grant = match login
+                // Every failure here — a missing or mismatched state, a bad
+                // nonce, a rejected exchange — happens before the workflow, so
+                // the caller hands the key back: a sign-in that failed its
+                // CSRF check must stay one the user can attempt again.
+                let grant = login
                     .complete(ingress.provider, ingress.query, &ingress.jar)
-                    .await
-                {
-                    Ok(grant) => grant,
-                    Err(e) => {
-                        // Every failure here — a missing or mismatched state, a
-                        // bad nonce, a rejected exchange — happens *before* the
-                        // workflow, so nothing ran and the key goes back. Held,
-                        // it would answer the user's retry `409` for the rest of
-                        // the dedup window rather than judging it on its merits:
-                        // a sign-in that failed its CSRF check would become a
-                        // sign-in that cannot be attempted again.
-                        if let Some(claim) = dedup_claim {
-                            claim.release().await;
-                        }
-                        return Err(e);
-                    }
-                };
+                    .await?;
                 response_cookies.push(grant.clear_cookie);
                 oauth_metadata = Some(grant.metadata);
                 oauth_identity = grant.identity;
@@ -735,7 +729,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         backpressure_permit,
         cache_store,
         timeout_ms: effective_timeout_ms(req.runtime, req.default_timeout_ms, req.max_timeout_ms),
-        dedup_claim,
+        dedup_claim: None,
         auth_claims,
         oauth,
     }))
