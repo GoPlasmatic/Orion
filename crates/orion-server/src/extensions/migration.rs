@@ -22,22 +22,7 @@ pub const ENTERPRISE_DRIVER_KAFKA: &str = "com.orion.enterprise.kafka";
 pub const ENTERPRISE_DRIVER_SMTP: &str = "com.orion.enterprise.smtp";
 pub const ENTERPRISE_DRIVER_STORAGE: &str = "com.orion.enterprise.storage";
 
-/// Distribution tier per `DEC-005`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EditionTier {
-    Community,
-    Enterprise,
-}
-
-impl EditionTier {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Community => "community",
-            Self::Enterprise => "enterprise",
-        }
-    }
-}
+pub use super::admission::EditionTier;
 
 /// Resolved v2 provider target for a legacy v1 connector definition (`V2-14.1`, `V2-14.5`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

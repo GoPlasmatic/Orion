@@ -738,23 +738,32 @@ impl ImmutableDeploymentStore {
                 .map_err(|f| DeploymentError::new(f.code, "dependency lock check failed"))?;
         }
 
-        let tier = pkg
-            .distribution_json
-            .get("tier")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                if pkg
-                    .distribution_json
-                    .get("policy_requirements")
-                    .and_then(Value::as_array)
-                    .is_some_and(|reqs| !reqs.is_empty())
-                {
-                    Some("enterprise".to_string())
-                } else {
-                    Some("community".to_string())
-                }
-            });
+        // A package states its tier, or implies Enterprise by declaring policy
+        // requirements; a tier it names that is not one is refused rather
+        // than read as Community.
+        let tier = match pkg.distribution_json.get("tier") {
+            Some(Value::String(name)) => EditionTier::parse(name).ok_or_else(|| {
+                DeploymentError::new(
+                    "PACKAGE_INVALID_TIER",
+                    format!("package declares tier '{name}'; expected 'community' or 'enterprise'"),
+                )
+            })?,
+            Some(other) => {
+                return Err(DeploymentError::new(
+                    "PACKAGE_INVALID_TIER",
+                    format!("package tier must be a string, got {other}"),
+                ));
+            }
+            None if pkg
+                .distribution_json
+                .get("policy_requirements")
+                .and_then(Value::as_array)
+                .is_some_and(|reqs| !reqs.is_empty()) =>
+            {
+                EditionTier::Enterprise
+            }
+            None => EditionTier::Community,
+        };
 
         let req = PackageAdmissionRequest {
             provider: ProviderReference {

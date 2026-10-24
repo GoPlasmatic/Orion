@@ -305,7 +305,7 @@ mod tests {
             },
             implementation: ImplementationKind::Rust,
             target_id: "orion.kafka".to_string(),
-            tier: Some("enterprise".to_string()),
+            tier: crate::extensions::EditionTier::Enterprise,
             signature: None,
         };
         let err = root
@@ -325,7 +325,7 @@ mod tests {
             },
             implementation: ImplementationKind::Rust,
             target_id: "orion.http".to_string(),
-            tier: Some("community".to_string()),
+            tier: crate::extensions::EditionTier::Community,
             signature: None,
         };
         let verdict = root

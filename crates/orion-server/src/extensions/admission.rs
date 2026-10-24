@@ -5,8 +5,8 @@
 //! enforcing monotonic runtime revocation across all live generations (`CTX-09`).
 
 use std::collections::BTreeSet;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,10 +22,36 @@ pub struct PackageAdmissionRequest {
     pub implementation: ImplementationKind,
     /// Driver identifier for `rust` providers, entry workflow for `workflow`, or component path for `wasm`.
     pub target_id: String,
-    /// Optional distribution tier tag (`"community"` or `"enterprise"`).
-    pub tier: Option<String>,
+    /// The distribution tier the package declares.
+    pub tier: EditionTier,
     /// Optional detached signature payload verified by Enterprise admission policies.
     pub signature: Option<String>,
+}
+
+/// Distribution tier per `DEC-005`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditionTier {
+    Community,
+    Enterprise,
+}
+
+impl EditionTier {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Community => "community",
+            Self::Enterprise => "enterprise",
+        }
+    }
+
+    /// The tier named `name`, or `None` for a name that is not one.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "community" => Some(Self::Community),
+            "enterprise" => Some(Self::Enterprise),
+            _ => None,
+        }
+    }
 }
 
 /// Successful admission verdict returned by [`AdmissionPolicy::verify_package`].
@@ -80,30 +106,28 @@ pub trait AdmissionPolicy: Send + Sync {
         prior_effect: EffectStatus,
     ) -> Result<(), ConnectorError>;
 
-    /// Monotonically revoke a package digest across all active and retained generations (`CTX-09`).
-    fn revoke_digest(&self, _digest: &str) -> u64 {
-        0
-    }
+    // The revocation and lease methods have no defaults on purpose: a
+    // policy that does not implement them would silently disable
+    // revocation, so every policy must say what it does.
+
+    /// Monotonically revoke a package digest across all active and retained
+    /// generations (`CTX-09`). Returns the new revocation watermark.
+    fn revoke_digest(&self, digest: &str) -> u64;
 
     /// Check whether a package digest has been monotonically revoked (`CTX-09`).
-    fn is_digest_revoked(&self, _digest: &str) -> bool {
-        false
-    }
+    fn is_digest_revoked(&self, digest: &str) -> bool;
 
-    /// Monotonically revoke a provider ID across all active and retained generations (`CTX-09`).
-    fn revoke_provider(&self, _provider_id: &str) -> u64 {
-        0
-    }
+    /// Monotonically revoke a provider ID across all active and retained
+    /// generations (`CTX-09`). Returns the new revocation watermark.
+    fn revoke_provider(&self, provider_id: &str) -> u64;
 
-    /// Monotonically revoke a connection ID across all active and retained generations (`CTX-09`).
-    fn revoke_connection(&self, _connection_id: &str) -> u64 {
-        0
-    }
+    /// Monotonically revoke a connection ID across all active and retained
+    /// generations (`CTX-09`). Returns the new revocation watermark.
+    fn revoke_connection(&self, connection_id: &str) -> u64;
 
     /// Update the node's runtime security lease validity (`CTX-09`).
-    fn set_lease_valid(&self, _valid: bool) -> u64 {
-        0
-    }
+    /// Returns the new revocation watermark.
+    fn set_lease_valid(&self, valid: bool) -> u64;
 }
 
 /// Community Edition admission and runtime revocation policy (`V2-11.1`, `CTX-09`).
@@ -137,41 +161,20 @@ impl CommunityAdmissionPolicy {
         }
     }
 
-    /// Monotonically revoke a package digest across all active and retained generations (`CTX-09`).
-    pub fn revoke_digest(&self, digest: impl Into<String>) -> u64 {
-        if let Ok(mut set) = self.revoked_digests.write() {
-            set.insert(digest.into());
-        }
+    /// Add `value` to `set`. A poisoned lock still takes the write: a
+    /// revocation that was dropped would fail open.
+    fn revoke_into(&self, set: &RwLock<BTreeSet<String>>, value: &str) -> u64 {
+        set.write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(value.to_string());
         self.watermark.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Check whether a package digest has been monotonically revoked (`CTX-09`).
-    pub fn is_digest_revoked(&self, digest: &str) -> bool {
-        self.revoked_digests
-            .read()
-            .is_ok_and(|set| set.contains(digest))
-    }
-
-    /// Monotonically revoke a provider ID across all active and retained generations (`CTX-09`).
-    pub fn revoke_provider(&self, provider_id: impl Into<String>) -> u64 {
-        if let Ok(mut set) = self.revoked_providers.write() {
-            set.insert(provider_id.into());
-        }
-        self.watermark.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    /// Monotonically revoke a connection ID across all active and retained generations (`CTX-09`).
-    pub fn revoke_connection(&self, connection_id: impl Into<String>) -> u64 {
-        if let Ok(mut set) = self.revoked_connections.write() {
-            set.insert(connection_id.into());
-        }
-        self.watermark.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    /// Mark the node's security lease as expired or restored (`CTX-09`).
-    pub fn set_lease_valid(&self, valid: bool) -> u64 {
-        self.lease_valid.store(valid, Ordering::SeqCst);
-        self.watermark.fetch_add(1, Ordering::SeqCst) + 1
+    /// Whether `set` holds `value`, reading through a poisoned lock.
+    fn revoked_in(set: &RwLock<BTreeSet<String>>, value: &str) -> bool {
+        set.read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(value)
     }
 
     pub fn watermark(&self) -> u64 {
@@ -219,11 +222,7 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
                 message: "Implementation target_id must not be empty".to_string(),
             });
         }
-        if request
-            .tier
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case("enterprise"))
-        {
+        if request.tier == EditionTier::Enterprise {
             return Err(AdmissionRejection {
                 code: "ENTERPRISE_TIER_NOT_ENABLED".to_string(),
                 message: format!(
@@ -251,23 +250,24 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
     }
 
     fn revoke_digest(&self, digest: &str) -> u64 {
-        CommunityAdmissionPolicy::revoke_digest(self, digest)
+        self.revoke_into(&self.revoked_digests, digest)
     }
 
     fn is_digest_revoked(&self, digest: &str) -> bool {
-        CommunityAdmissionPolicy::is_digest_revoked(self, digest)
+        Self::revoked_in(&self.revoked_digests, digest)
     }
 
     fn revoke_provider(&self, provider_id: &str) -> u64 {
-        CommunityAdmissionPolicy::revoke_provider(self, provider_id)
+        self.revoke_into(&self.revoked_providers, provider_id)
     }
 
     fn revoke_connection(&self, connection_id: &str) -> u64 {
-        CommunityAdmissionPolicy::revoke_connection(self, connection_id)
+        self.revoke_into(&self.revoked_connections, connection_id)
     }
 
     fn set_lease_valid(&self, valid: bool) -> u64 {
-        CommunityAdmissionPolicy::set_lease_valid(self, valid)
+        self.lease_valid.store(valid, Ordering::SeqCst);
+        self.watermark.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     fn check_runtime_lease(
@@ -290,11 +290,7 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
                 details: None,
             });
         }
-        if self
-            .revoked_providers
-            .read()
-            .is_ok_and(|set| set.contains(provider_id))
-        {
+        if Self::revoked_in(&self.revoked_providers, provider_id) {
             return Err(ConnectorError::forbidden(
                 codes::CONNECTION_FORBIDDEN,
                 "admission",
@@ -302,11 +298,7 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
                 prior_effect,
             ));
         }
-        if self
-            .revoked_connections
-            .read()
-            .is_ok_and(|set| set.contains(connection_id))
-        {
+        if Self::revoked_in(&self.revoked_connections, connection_id) {
             return Err(ConnectorError::forbidden(
                 codes::CONNECTION_FORBIDDEN,
                 "admission",
@@ -319,8 +311,38 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A revocation lands, and is seen, even through a lock a panicking
+    /// writer poisoned: dropping it would fail open.
+    #[test]
+    fn revocation_holds_through_a_poisoned_lock() {
+        let policy = std::sync::Arc::new(CommunityAdmissionPolicy::new());
+        let poisoner = std::sync::Arc::clone(&policy);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.revoked_digests.write().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(policy.revoked_digests.is_poisoned());
+        policy.revoke_digest("sha256:dead");
+        assert!(policy.is_digest_revoked("sha256:dead"));
+    }
+
+    #[test]
+    fn a_tier_is_one_of_two_names() {
+        assert_eq!(
+            EditionTier::parse("community"),
+            Some(EditionTier::Community)
+        );
+        assert_eq!(
+            EditionTier::parse("enterprise"),
+            Some(EditionTier::Enterprise)
+        );
+        assert_eq!(EditionTier::parse("enterprize"), None);
+    }
 
     #[test]
     fn ctx_09_revocation_and_lease_expiry_block_live_old_generation() {

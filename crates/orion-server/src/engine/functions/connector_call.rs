@@ -387,6 +387,7 @@ pub fn register_connector_call(registry: &mut dataflow_rs::Registry, providers: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::AdmissionPolicy;
     use crate::extensions::CompositionRoot;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use dataflow_rs::function::testing;
