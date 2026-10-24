@@ -87,6 +87,45 @@ pub struct RuntimeGeneration {
         Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
     /// Run-wide resource budget ceilings configured for this generation (`TD-03`).
     pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
+    /// Which connections each workflow may call through `connector_call`.
+    /// Empty unless the generation was built from a deployment manifest.
+    pub connector_authority: Arc<super::authority::ConnectorAuthority>,
+}
+
+/// Everything one generation is built from, published together by
+/// [`RuntimeHandle::publish_parts`]. The first five are what every
+/// generation needs; the rest default.
+pub struct GenerationParts {
+    pub engine: dataflow_rs::Engine,
+    pub channels: Arc<ChannelSnapshot>,
+    pub functions: Arc<FunctionRegistry>,
+    pub plugins: Arc<PluginSet>,
+    pub models: Arc<ModelSet>,
+    pub connectors:
+        Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
+    pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
+    pub connector_authority: Arc<super::authority::ConnectorAuthority>,
+}
+
+impl GenerationParts {
+    pub fn new(
+        engine: dataflow_rs::Engine,
+        channels: Arc<ChannelSnapshot>,
+        functions: Arc<FunctionRegistry>,
+        plugins: Arc<PluginSet>,
+        models: Arc<ModelSet>,
+    ) -> Self {
+        Self {
+            engine,
+            channels,
+            functions,
+            plugins,
+            models,
+            connectors: None,
+            run_budget_limits: Default::default(),
+            connector_authority: Default::default(),
+        }
+    }
 }
 
 impl RuntimeGeneration {
@@ -143,6 +182,7 @@ impl RuntimeHandle {
                 models: Arc::new(ModelSet::empty()),
                 connectors: None,
                 run_budget_limits: Default::default(),
+                connector_authority: Default::default(),
             }),
             published: AtomicU64::new(0),
         }
@@ -181,32 +221,23 @@ impl RuntimeHandle {
         plugins: Arc<PluginSet>,
         models: Arc<ModelSet>,
     ) -> u64 {
-        self.publish_with_estate(
+        self.publish_parts(GenerationParts::new(
+            engine, channels, functions, plugins, models,
+        ))
+    }
+
+    /// [`Self::publish`], with every part of the generation stated.
+    pub fn publish_parts(&self, parts: GenerationParts) -> u64 {
+        let GenerationParts {
             engine,
             channels,
             functions,
             plugins,
             models,
-            None,
-            Default::default(),
-        )
-    }
-
-    /// Publish the next generation together with its immutable connector
-    /// snapshot (`TD-07`) and configured run budget limits (`TD-03`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish_with_estate(
-        &self,
-        engine: dataflow_rs::Engine,
-        channels: Arc<ChannelSnapshot>,
-        functions: Arc<FunctionRegistry>,
-        plugins: Arc<PluginSet>,
-        models: Arc<ModelSet>,
-        connectors: Option<
-            Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>,
-        >,
-        run_budget_limits: crate::engine::budget::RunBudgetLimits,
-    ) -> u64 {
+            connectors,
+            run_budget_limits,
+            connector_authority,
+        } = parts;
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
         self.current.store(Arc::new(RuntimeGeneration {
             id,
@@ -217,6 +248,7 @@ impl RuntimeHandle {
             models,
             connectors,
             run_budget_limits,
+            connector_authority,
         }));
         id
     }

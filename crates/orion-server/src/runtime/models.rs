@@ -491,6 +491,7 @@ mod tests {
             models: Arc::new(set(&rows)),
             connectors: None,
             run_budget_limits: Default::default(),
+            connector_authority: Default::default(),
         };
         let workflows = [
             workflow(
@@ -537,6 +538,7 @@ mod tests {
             models: Arc::new(set(&rows)),
             connectors: None,
             run_budget_limits: Default::default(),
+            connector_authority: Default::default(),
         };
         let workflows = [workflow(
             "router",

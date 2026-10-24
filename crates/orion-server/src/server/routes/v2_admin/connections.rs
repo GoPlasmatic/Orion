@@ -126,6 +126,7 @@ pub(crate) async fn create_connection_revision(
     request_body(content = Option<ProbeConnectionRequest>, description = "Optional target revision or driver override"),
     responses(
         (status = 200, description = "Connection healthy", body = ConnectionProbeResponse),
+        (status = 400, description = "Unsupported implementation kind"),
         (status = 403, description = "Provider package revoked"),
         (status = 404, description = "Connection or provider not found"),
         (status = 503, description = "Connection unhealthy", body = ConnectionProbeResponse),
@@ -183,10 +184,16 @@ pub(crate) async fn probe_connection(
         .as_deref()
         .or_else(|| stored_pkg.as_ref().map(|p| p.implementation.as_str()))
         .unwrap_or("rust");
-    let kind = match kind_str {
-        "workflow" => ImplementationKind::Workflow,
-        "wasm" => ImplementationKind::Wasm,
-        _ => ImplementationKind::Rust,
+    let Some(kind) = ImplementationKind::parse(kind_str) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(crate::errors::error_envelope_json(
+                "INVALID_IMPLEMENTATION_KIND",
+                format!(
+                    "unsupported implementation kind '{kind_str}'; expected 'rust', 'workflow', or 'wasm'"
+                ),
+            )),
+        );
     };
 
     let driver_id = req

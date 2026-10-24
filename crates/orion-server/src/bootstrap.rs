@@ -600,15 +600,19 @@ impl EngineComponents {
         // flag is set by the caller afterwards — but publishing them as a pair
         // is what makes the boot path and the reload path the same shape, and
         // there is only one way to publish.
-        serving.runtime.publish_with_estate(
-            engine,
-            Arc::new(channels_snapshot),
-            functions,
-            plugins,
-            models,
-            Some(serving.connector_registry.snapshot_configs()),
-            config.engine.run_budget_limits(),
-        );
+        serving
+            .runtime
+            .publish_parts(crate::runtime::generation::GenerationParts {
+                connectors: Some(serving.connector_registry.snapshot_configs()),
+                run_budget_limits: config.engine.run_budget_limits(),
+                ..crate::runtime::generation::GenerationParts::new(
+                    engine,
+                    Arc::new(channels_snapshot),
+                    functions,
+                    plugins,
+                    models,
+                )
+            });
 
         // Warm what `models.preload` selects, in the background — the same
         // step the reload path takes after its publish.

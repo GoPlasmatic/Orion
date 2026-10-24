@@ -565,6 +565,19 @@ async fn reload_with_manifest(
             None => state.repos.active_definitions().await?,
         };
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
+        // A generation built from a manifest grants each workflow the
+        // connections its member requires; any other grants none.
+        let connector_authority = Arc::new(
+            manifest_revision
+                .and_then(|rev| state.composition.deployments.get_revision(rev))
+                .map(|rev| {
+                    super::authority::ConnectorAuthority::from_manifest(
+                        &rev.manifest,
+                        &active_workflows,
+                    )
+                })
+                .unwrap_or_default(),
+        );
         // The outgoing generation, read once: the base the new engine is built
         // from and the reuse cache the new channel estate is built against.
         // Reading it once is what makes those agree.
@@ -726,15 +739,20 @@ async fn reload_with_manifest(
         // before the Kafka restart below — and no window in which a request is
         // admitted by one generation and executed by another, which is what
         // two stores here could not avoid however they were ordered.
-        let generation = state.runtime.publish_with_estate(
-            new_engine,
-            Arc::new(new_channels),
-            functions,
-            plugins,
-            models,
-            Some(state.connector_registry.snapshot_configs()),
-            state.config.engine.run_budget_limits(),
-        );
+        let generation = state
+            .runtime
+            .publish_parts(super::generation::GenerationParts {
+                connectors: Some(state.connector_registry.snapshot_configs()),
+                run_budget_limits: state.config.engine.run_budget_limits(),
+                connector_authority,
+                ..super::generation::GenerationParts::new(
+                    new_engine,
+                    Arc::new(new_channels),
+                    functions,
+                    plugins,
+                    models,
+                )
+            });
         let published = state.runtime.load();
 
         // Sweep the plugin compile cache down to what this generation serves.

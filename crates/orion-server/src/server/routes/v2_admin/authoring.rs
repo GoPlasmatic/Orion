@@ -18,14 +18,10 @@ use crate::extensions::authoring::{
 };
 
 fn parse_implementation_kind(kind_str: &str) -> Result<ImplementationKind, String> {
-    match kind_str.trim().to_ascii_lowercase().as_str() {
-        "rust" => Ok(ImplementationKind::Rust),
-        "workflow" => Ok(ImplementationKind::Workflow),
-        "wasm" => Ok(ImplementationKind::Wasm),
-        other => Err(format!(
-            "unsupported implementation kind '{other}'; expected 'rust', 'workflow', or 'wasm'"
-        )),
-    }
+    let name = kind_str.trim().to_ascii_lowercase();
+    ImplementationKind::parse(&name).ok_or_else(|| {
+        format!("unsupported implementation kind '{name}'; expected 'rust', 'workflow', or 'wasm'")
+    })
 }
 
 /// `POST /api/v2/admin/authoring/scaffold` (`V2-07.2`).

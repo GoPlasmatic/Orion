@@ -186,15 +186,20 @@ async fn execute_admitted_on_generation_inner(
 ) -> Execution {
     match &generation.engine {
         Some(engine) => {
-            execute_on(
-                engine,
-                channel,
-                data,
-                metadata,
-                opts,
-                generation.run_budget_limits,
-            )
-            .await
+            let run = connector_run_context(generation, opts.timeout_ms);
+            super::functions::connector_call::ACTIVE_RUN_CONTEXT
+                .scope(
+                    run,
+                    execute_on(
+                        engine,
+                        channel,
+                        data,
+                        metadata,
+                        opts,
+                        generation.run_budget_limits,
+                    ),
+                )
+                .await
         }
         // The boot generation, before the first publish, holds no workflow:
         // nothing matches, and the message is returned as it started.
@@ -205,6 +210,31 @@ async fn execute_admitted_on_generation_inner(
             duration: Duration::ZERO,
         },
     }
+}
+
+/// How far out the deadline of a run with no timeout is put. The run itself
+/// has none; the context needs an instant, so it gets one that is never the
+/// bound that fires.
+const UNBOUNDED_RUN_HORIZON: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The context every `connector_call` of one run shares: the generation's
+/// connector authority as its ceiling, the run's deadline, and one budget,
+/// so the run's calls draw down the same attempts and sends.
+fn connector_run_context(
+    generation: &crate::runtime::RuntimeGeneration,
+    timeout_ms: Option<u64>,
+) -> crate::extensions::RunContext {
+    let horizon = timeout_ms.map_or(UNBOUNDED_RUN_HORIZON, Duration::from_millis);
+    let now = Instant::now();
+    let deadline = now.checked_add(horizon).unwrap_or(now);
+    crate::extensions::context::AdmittedRun::admit(
+        uuid::Uuid::now_v7().to_string(),
+        generation.id,
+        deadline,
+        crate::extensions::context::BudgetLimits::default(),
+        generation.connector_authority.union(),
+    )
+    .context()
 }
 
 fn v4_trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOptions {
@@ -984,18 +1014,19 @@ mod tests {
             .expect("v4 engine builds");
 
         let handle = crate::runtime::generation::test_handle();
-        handle.publish_with_estate(
-            v4_engine,
-            std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
-            crate::engine::FunctionRegistry::builtin().clone(),
-            std::sync::Arc::new(crate::plugin::PluginSet::empty()),
-            std::sync::Arc::new(crate::model::ModelSet::empty()),
-            None,
-            super::super::budget::RunBudgetLimits {
+        handle.publish_parts(crate::runtime::generation::GenerationParts {
+            run_budget_limits: super::super::budget::RunBudgetLimits {
                 max_tasks: Some(3),
                 ..Default::default()
             },
-        );
+            ..crate::runtime::generation::GenerationParts::new(
+                v4_engine,
+                std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
+                crate::engine::FunctionRegistry::builtin().clone(),
+                std::sync::Arc::new(crate::plugin::PluginSet::empty()),
+                std::sync::Arc::new(crate::model::ModelSet::empty()),
+            )
+        });
         let generation = handle.load();
 
         let exec = execute_admitted_on_generation(
@@ -1030,17 +1061,18 @@ mod tests {
         registry.insert_for_test("shared-cache", initial_cfg).await;
 
         let handle = crate::runtime::generation::test_handle();
-        handle.publish_with_estate(
-            dataflow_rs::Engine::builder()
-                .build()
-                .expect("an empty engine builds"),
-            std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
-            crate::engine::FunctionRegistry::builtin().clone(),
-            std::sync::Arc::new(crate::plugin::PluginSet::empty()),
-            std::sync::Arc::new(crate::model::ModelSet::empty()),
-            Some(registry.snapshot_configs()),
-            Default::default(),
-        );
+        handle.publish_parts(crate::runtime::generation::GenerationParts {
+            connectors: Some(registry.snapshot_configs()),
+            ..crate::runtime::generation::GenerationParts::new(
+                dataflow_rs::Engine::builder()
+                    .build()
+                    .expect("an empty engine builds"),
+                std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
+                crate::engine::FunctionRegistry::builtin().clone(),
+                std::sync::Arc::new(crate::plugin::PluginSet::empty()),
+                std::sync::Arc::new(crate::model::ModelSet::empty()),
+            )
+        });
         let pinned_gen = handle.load();
 
         // Rotate connector in the live registry to a different URL.

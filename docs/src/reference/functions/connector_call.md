@@ -28,6 +28,12 @@ Invokes a v2 connector provider operation (`rust`, `workflow`, or `wasm`) under 
 
 `connector_call` dispatches a public operation on a registered v2 provider backend (`rust`, `workflow`, or `wasm`). Internal lifecycle operations prefixed with `orion.internal.` are forbidden from workflow steps and fail immediately with `CONNECTOR_OPERATION_FORBIDDEN`.
 
+### Which calls a workflow may make
+
+A call runs only in a generation built from a deployment manifest, and only when the workflow's manifest member `requires` the connection. The operations granted are the ones the workflow's own `connector_call` tasks name for it. The connection must have a revision in the deployment store: the one the active manifest names, or the latest. Every call of one run shares that run's deadline and budget. Anything else is refused with `CONNECTOR_CONNECTION_FORBIDDEN`: a call outside a served run, a connection the member does not require, a connection with no revision, or a provider package that is not uploaded.
+
+`kind` must be `rust`, `workflow` or `wasm`. Any other value is refused when the task loads.
+
 ### The foundation SQL and HTTP providers
 
 The Community providers `org.orion.postgresql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP). A credential may live only behind its `secret_locator`, a reference such as `env://ORDERS_DB_URL`, which resolves to the whole connection string.

@@ -633,7 +633,7 @@ impl CancellationScope {
 }
 
 /// Authority projection carried by a [`RunContext`] (`V2-05.1`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthorityGrant {
     /// Allowed `(connection_id, operation)` pairs in this context.
     pub allowed_operations: BTreeMap<String, BTreeSet<String>>,
@@ -644,6 +644,30 @@ pub struct AuthorityGrant {
 }
 
 impl AuthorityGrant {
+    /// Whether `operation` on `connection_id` is granted.
+    pub fn allows(&self, connection_id: &str, operation: &str) -> bool {
+        self.allowed_operations
+            .get(connection_id)
+            .is_some_and(|ops| ops.contains(operation))
+    }
+
+    /// Add every operation `other` grants.
+    pub fn extend(&mut self, other: &AuthorityGrant) {
+        for (conn, ops) in &other.allowed_operations {
+            self.allowed_operations
+                .entry(conn.clone())
+                .or_default()
+                .extend(ops.iter().cloned());
+        }
+        for (alias, dep) in &other.declared_dependencies {
+            self.declared_dependencies
+                .entry(alias.clone())
+                .or_insert_with(|| dep.clone());
+        }
+        self.allowed_channels
+            .extend(other.allowed_channels.iter().cloned());
+    }
+
     pub fn intersect(&self, requested: &AuthorityGrant) -> Self {
         let mut allowed_operations = BTreeMap::new();
         for (conn_id, req_ops) in &requested.allowed_operations {

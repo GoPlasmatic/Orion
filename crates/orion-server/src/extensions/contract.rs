@@ -28,6 +28,16 @@ pub enum ImplementationKind {
 }
 
 impl ImplementationKind {
+    /// The kind named `name` (`rust`, `workflow` or `wasm`), or `None`.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "rust" => Some(Self::Rust),
+            "workflow" => Some(Self::Workflow),
+            "wasm" => Some(Self::Wasm),
+            _ => None,
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Rust => "rust",

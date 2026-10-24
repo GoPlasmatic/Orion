@@ -5,9 +5,6 @@
 //! enforcing reserved operation denial (`orion.internal.*`), deadline/cancellation
 //! propagation, and normalized [`ConnectorResult`] / [`ConnectorError`](crate::extensions::ConnectorError) outcomes.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
-
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
@@ -19,9 +16,9 @@ use super::schema::{FieldKind, FieldSchema};
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::extensions::{
-    AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionReference, ConnectorErrorClass,
-    ConnectorResult, EffectiveConnectionIdentity, ImplementationKind, ProviderReference,
-    ProviderRegistry, RetryAdvice, RunContext, sha256_digest,
+    ConnectionReference, ConnectorErrorClass, ConnectorResult, EffectiveConnectionIdentity,
+    ImplementationKind, ProviderReference, ProviderRegistry, RetryAdvice, RunContext,
+    sha256_digest,
 };
 
 pub const NAME: &str = "connector_call";
@@ -120,14 +117,20 @@ impl Function for ConnectorCallFunction {
     /// backend only through the values bound beside them. A provider not
     /// registered on this node is judged when the call runs.
     fn prepare(&self, cfg: &mut ConnectorCallConfig, _p: &Prepare<'_>) -> Result<(), Vec<Issue>> {
-        let Some(input) = cfg.input.as_ref() else {
-            return Ok(());
+        let Some(kind) = implementation_kind(cfg.kind.as_deref()) else {
+            let mut at = AuthoredPath::root();
+            at.push("kind");
+            return Err(vec![Issue::new(
+                IssueCode::InputParse,
+                at,
+                unknown_kind(cfg.kind.as_deref()).to_string(),
+            )]);
         };
         let target = cfg.target_id.as_deref().unwrap_or(&cfg.connection);
-        let Some(backend) = self
-            .providers
-            .get(implementation_kind(cfg.kind.as_deref()), target)
-        else {
+        let Some(backend) = self.providers.get(kind, target) else {
+            return Ok(());
+        };
+        let Some(input) = cfg.input.as_ref() else {
             return Ok(());
         };
         let issues: Vec<Issue> = backend
@@ -176,10 +179,8 @@ impl Function for ConnectorCallFunction {
 
         let data = execute_connector_call(
             &self.providers,
-            &cfg.connection,
-            &cfg.operation,
-            cfg.kind.as_deref(),
-            cfg.target_id.as_deref(),
+            ctx.info().workflow_id,
+            cfg,
             input_val,
             idempotency_key,
         )
@@ -190,15 +191,21 @@ impl Function for ConnectorCallFunction {
     }
 }
 
+/// One `connector_call`, refused unless every fact it rests on is governed:
+/// the run's context, the workflow's grant, the connection's revision and
+/// the provider's identity. Nothing is assumed when one is missing.
 async fn execute_connector_call(
     providers: &ProviderRegistry,
-    connection: &str,
-    operation: &str,
-    kind: Option<&str>,
-    target_id: Option<&str>,
+    workflow_id: &str,
+    cfg: &ConnectorCallConfig,
     input_val: Value,
     idempotency_key: Option<String>,
 ) -> Result<Value, HandlerError> {
+    let (connection, operation, kind) = (
+        cfg.connection.as_str(),
+        cfg.operation.as_str(),
+        cfg.kind.as_deref(),
+    );
     if operation.starts_with("orion.internal.") {
         return Err(HandlerError::new(
             ErrorClass::CallerInput,
@@ -208,8 +215,8 @@ async fn execute_connector_call(
         ));
     }
 
-    let impl_kind = implementation_kind(kind);
-    let target_id = target_id.unwrap_or(connection).to_string();
+    let impl_kind = implementation_kind(kind).ok_or_else(|| unknown_kind(kind))?;
+    let target_id = cfg.target_id.as_deref().unwrap_or(connection).to_string();
 
     let Some(_backend) = providers.get(impl_kind, &target_id) else {
         return Err(HandlerError::new(
@@ -220,44 +227,49 @@ async fn execute_connector_call(
         ));
     };
 
-    let run_ctx = ACTIVE_RUN_CONTEXT
-        .try_with(Clone::clone)
-        .unwrap_or_else(|_| default_run_context_for_call(connection, operation, &target_id));
+    let run_ctx = ACTIVE_RUN_CONTEXT.try_with(Clone::clone).map_err(|_| {
+        forbidden(format!(
+            "CONNECTOR_CONNECTION_FORBIDDEN: connector_call runs only inside a served run; \
+             '{operation}' on '{connection}' was called outside one"
+        ))
+    })?;
+    let granted = crate::runtime::generation::PINNED_GENERATION
+        .try_with(|generation| {
+            generation
+                .connector_authority
+                .for_workflow(workflow_id)
+                .is_some_and(|grant| grant.allows(connection, operation))
+        })
+        .unwrap_or(false);
+    if !granted {
+        return Err(forbidden(format!(
+            "CONNECTOR_CONNECTION_FORBIDDEN: workflow '{workflow_id}' may not call '{operation}' \
+             on '{connection}': its deployment manifest member does not require that connection"
+        )));
+    }
 
-    // Resolve real stored connection revision and package admission status when available (`TD-25`).
-    let mut resolved_revision = 1u64;
-    let mut resolved_package_digest = if target_id.starts_with("sha256:") {
-        target_id.clone()
-    } else {
-        "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string()
+    let Some(store) = providers.deployment_store() else {
+        return Err(forbidden(format!(
+            "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' cannot be resolved: \
+             this node has no deployment store"
+        )));
     };
-    let mut resolved_provider_id = target_id.clone();
-    let mut resolved_version = "2.0.0".to_string();
-    let mut resolved_secret_hash = "sha256:none".to_string();
-
-    if let Some(store) = providers.deployment_store() {
-        if let Some(conn_row) = store
-            .list_connections()
-            .into_iter()
-            .filter(|c| c.connection_id == connection)
-            .max_by_key(|c| c.revision)
-        {
-            resolved_revision = conn_row.revision;
-            resolved_package_digest = conn_row.provider_digest.clone();
-            if let Some(loc) = conn_row.secret_locator.as_deref() {
-                resolved_secret_hash = sha256_digest(loc.as_bytes());
-            }
-        }
-        if let Some(pkg) = store
-            .list_packages()
-            .into_iter()
-            .find(|p| p.package_digest == resolved_package_digest || p.provider_id == target_id)
-        {
-            let is_revoked = store
+    let Some(conn_row) = store.get_active_connection(connection) else {
+        return Err(forbidden(format!(
+            "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' has no connection revision"
+        )));
+    };
+    let provider = match store
+        .list_packages()
+        .into_iter()
+        .find(|p| p.package_digest == conn_row.provider_digest)
+    {
+        Some(pkg) => {
+            let revoked = store
                 .list_admissions()
                 .into_iter()
                 .any(|a| a.package_digest == pkg.package_digest && a.revoked);
-            if is_revoked {
+            if revoked {
                 return Err(HandlerError::new(
                     ErrorClass::CallerInput,
                     format!(
@@ -266,26 +278,42 @@ async fn execute_connector_call(
                     ),
                 ));
             }
-            resolved_provider_id = pkg.provider_id;
-            resolved_version = pkg.version;
-            resolved_package_digest = pkg.package_digest;
+            ProviderReference {
+                provider_id: pkg.provider_id,
+                version: pkg.version,
+                package_digest: pkg.package_digest,
+            }
         }
-    }
+        // A provider built into this binary has no uploaded package: it is
+        // what this build is, at the digest the connection revision names.
+        None if impl_kind == ImplementationKind::Rust => ProviderReference {
+            provider_id: target_id.clone(),
+            version: crate::version::ORION_VERSION.to_string(),
+            package_digest: conn_row.provider_digest.clone(),
+        },
+        None => {
+            return Err(forbidden(format!(
+                "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names provider \
+                 package '{}', which is not uploaded",
+                conn_row.provider_digest
+            )));
+        }
+    };
 
+    let effective_conn = EffectiveConnectionIdentity {
+        provider_digest: provider.package_digest.clone(),
+        connection_id: connection.to_string(),
+        revision: conn_row.revision,
+        secret_hash: conn_row
+            .secret_locator
+            .as_deref()
+            .map(|loc| sha256_digest(loc.as_bytes()))
+            .unwrap_or_default(),
+    };
     let conn_ref = ConnectionReference {
         connection_id: connection.to_string(),
-        revision: resolved_revision,
-        provider: ProviderReference {
-            provider_id: resolved_provider_id,
-            version: resolved_version,
-            package_digest: resolved_package_digest.clone(),
-        },
-    };
-    let effective_conn = EffectiveConnectionIdentity {
-        provider_digest: resolved_package_digest,
-        connection_id: connection.to_string(),
-        revision: resolved_revision,
-        secret_hash: resolved_secret_hash,
+        revision: conn_row.revision,
+        provider,
     };
 
     let invocation = run_ctx
@@ -308,39 +336,24 @@ async fn execute_connector_call(
     }
 }
 
-/// The implementation kind a task names; `rust` when it names none.
-fn implementation_kind(kind: Option<&str>) -> ImplementationKind {
-    match kind.unwrap_or("rust") {
-        "workflow" => ImplementationKind::Workflow,
-        "wasm" => ImplementationKind::Wasm,
-        _ => ImplementationKind::Rust,
-    }
+fn forbidden(message: String) -> HandlerError {
+    HandlerError::new(ErrorClass::CallerInput, message)
 }
 
-fn default_run_context_for_call(
-    connection_id: &str,
-    operation: &str,
-    target_id: &str,
-) -> RunContext {
-    let mut allowed_operations = BTreeMap::new();
-    let ops_set: BTreeSet<String> = [operation.to_string()].into_iter().collect();
-    allowed_operations.insert(connection_id.to_string(), ops_set.clone());
-    if target_id != connection_id {
-        allowed_operations.insert(target_id.to_string(), ops_set);
-    }
-    let grant = AuthorityGrant {
-        allowed_operations,
-        declared_dependencies: BTreeMap::new(),
-        allowed_channels: BTreeSet::new(),
-    };
-    let admitted = AdmittedRun::admit(
-        "workflow",
-        1,
-        Instant::now() + Duration::from_secs(30),
-        BudgetLimits::default(),
-        grant,
-    );
-    admitted.context()
+fn unknown_kind(kind: Option<&str>) -> HandlerError {
+    HandlerError::new(
+        ErrorClass::CallerInput,
+        format!(
+            "connector_call: unknown kind '{}' (one of rust, workflow, wasm)",
+            kind.unwrap_or_default()
+        ),
+    )
+}
+
+/// The implementation kind a task names; `rust` when it names none, and
+/// `None` for a name that is not one.
+fn implementation_kind(kind: Option<&str>) -> Option<ImplementationKind> {
+    ImplementationKind::parse(kind.unwrap_or("rust"))
 }
 
 fn connector_err_to_handler(err: crate::extensions::ConnectorError) -> HandlerError {
@@ -375,8 +388,130 @@ pub fn register_connector_call(registry: &mut dataflow_rs::Registry, providers: 
 mod tests {
     use super::*;
     use crate::extensions::CompositionRoot;
+    use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use dataflow_rs::function::testing;
     use serde_json::Value;
+    use std::sync::Arc;
+
+    const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    /// Run `call` as a served run would: inside a run context and a
+    /// generation granting the harness's workflow (`test`) `grants`, each
+    /// connection with a revision in `root`'s store.
+    async fn served(
+        root: &CompositionRoot,
+        grants: &[(&str, &str)],
+        call: testing::Call<ConnectorCallFunction>,
+    ) -> testing::Called {
+        let mut grant = AuthorityGrant::default();
+        for (connection, operation) in grants {
+            let _ =
+                root.deployments
+                    .store_connection_revision(connection, 1, DIGEST, json!({}), None);
+            grant
+                .allowed_operations
+                .entry((*connection).to_string())
+                .or_default()
+                .insert((*operation).to_string());
+        }
+        let handle = crate::runtime::generation::test_handle();
+        handle.publish_parts(crate::runtime::generation::GenerationParts {
+            connector_authority: Arc::new(crate::runtime::authority::ConnectorAuthority::for_test(
+                "test",
+                grant.clone(),
+            )),
+            ..crate::runtime::generation::GenerationParts::new(
+                dataflow_rs::Engine::builder()
+                    .build()
+                    .expect("an empty engine builds"),
+                Arc::new(crate::channel::ChannelSnapshot::empty()),
+                crate::engine::FunctionRegistry::builtin().clone(),
+                Arc::new(crate::plugin::PluginSet::empty()),
+                Arc::new(crate::model::ModelSet::empty()),
+            )
+        });
+        let run = AdmittedRun::admit(
+            "run",
+            1,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            BudgetLimits::default(),
+            grant,
+        )
+        .context();
+        crate::runtime::generation::PINNED_GENERATION
+            .scope(
+                handle.load(),
+                ACTIVE_RUN_CONTEXT.scope(run, std::future::IntoFuture::into_future(call)),
+            )
+            .await
+    }
+
+    fn cache_call(
+        func: &ConnectorCallFunction,
+        operation: &str,
+        input: Value,
+    ) -> testing::Call<ConnectorCallFunction> {
+        testing::call(
+            func.clone(),
+            json!({
+                "connection": "local-cache",
+                "target_id": "org.orion.memory-cache",
+                "operation": operation,
+                "input": input,
+                "output": "data.res"
+            }),
+        )
+        .exprs(crate::engine::kit::test_exprs())
+        .name(NAME)
+    }
+
+    /// Outside a served run, without a grant for its workflow, or naming a
+    /// connection with no revision, a call is refused rather than run on
+    /// an invented context.
+    #[tokio::test]
+    async fn a_call_without_governed_facts_is_refused() {
+        let root = CompositionRoot::community();
+        let func = ConnectorCallFunction {
+            providers: root.providers.clone(),
+        };
+        let outside = cache_call(&func, "cache.get", json!({"key": "k"})).await;
+        let err = outside.outcome.expect_err("refused outside a run");
+        assert!(
+            err.message().contains("inside a served run"),
+            "{}",
+            err.message()
+        );
+
+        let ungranted = served(
+            &root,
+            &[("local-cache", "cache.set")],
+            cache_call(&func, "cache.get", json!({"key": "k"})),
+        )
+        .await;
+        let err = ungranted.outcome.expect_err("refused without a grant");
+        assert!(
+            err.message().contains("does not require that connection"),
+            "{}",
+            err.message()
+        );
+
+        let unknown_kind = testing::call(
+            func.clone(),
+            json!({"connection": "c", "operation": "o", "kind": "python", "output": "data.x"}),
+        )
+        .exprs(crate::engine::kit::test_exprs())
+        .name(NAME)
+        .await;
+        assert!(unknown_kind.outcome.is_err());
+        assert!(
+            unknown_kind
+                .issues
+                .iter()
+                .any(|i| i.message.contains("unknown kind 'python'")),
+            "{:?}",
+            unknown_kind.issues
+        );
+    }
 
     /// A SQL statement built from the message is refused when the task
     /// compiles, so a caller's values reach the database only as binds.
@@ -423,22 +558,26 @@ mod tests {
             OwnedDataValue::from(&json!({"n": 41, "label": "x'; DROP TABLE t; --"})),
             OwnedDataValue::Null,
         );
-        let called = testing::call(
-            func,
-            json!({
-                "connection": "bound-params-db",
-                "target_id": "org.orion.sqlite",
-                "operation": "query",
-                "input": {
-                    "sql": "SELECT ? + 1 AS n, ? AS label",
-                    "params": [{"var": "data.n"}, {"var": "data.label"}]
-                },
-                "output": "data.result"
-            }),
+        let called = served(
+            &root,
+            &[("bound-params-db", "query")],
+            testing::call(
+                func,
+                json!({
+                    "connection": "bound-params-db",
+                    "target_id": "org.orion.sqlite",
+                    "operation": "query",
+                    "input": {
+                        "sql": "SELECT ? + 1 AS n, ? AS label",
+                        "params": [{"var": "data.n"}, {"var": "data.label"}]
+                    },
+                    "output": "data.result"
+                }),
+            )
+            .message(message)
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME),
         )
-        .message(message)
-        .exprs(crate::engine::kit::test_exprs())
-        .name(NAME)
         .await;
         assert!(called.outcome.is_ok(), "{:?}", called.outcome);
         let result = called.message.to_json()["context"]["data"]["result"].clone();
@@ -454,34 +593,42 @@ mod tests {
         };
 
         // 1. Set a value in org.orion.memory-cache via connector_call
-        let set_called = testing::call(
-            func.clone(),
-            json!({
-                "connection": "local-cache",
-                "target_id": "org.orion.memory-cache",
-                "operation": "cache.set",
-                "input": { "key": "greeting", "value": "hello v2", "ttl_ms": 60000 },
-                "output": "data.set_res"
-            }),
+        let set_called = served(
+            &root,
+            &[("local-cache", "cache.set"), ("local-cache", "cache.get")],
+            testing::call(
+                func.clone(),
+                json!({
+                    "connection": "local-cache",
+                    "target_id": "org.orion.memory-cache",
+                    "operation": "cache.set",
+                    "input": { "key": "greeting", "value": "hello v2", "ttl_ms": 60000 },
+                    "output": "data.set_res"
+                }),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME),
         )
-        .exprs(crate::engine::kit::test_exprs())
-        .name(NAME)
         .await;
         assert!(set_called.outcome.is_ok(), "{:?}", set_called.outcome);
 
         // 2. Read it back via connector_call
-        let get_called = testing::call(
-            func.clone(),
-            json!({
-                "connection": "local-cache",
-                "target_id": "org.orion.memory-cache",
-                "operation": "cache.get",
-                "input": { "key": "greeting" },
-                "output": "data.get_res"
-            }),
+        let get_called = served(
+            &root,
+            &[("local-cache", "cache.set"), ("local-cache", "cache.get")],
+            testing::call(
+                func.clone(),
+                json!({
+                    "connection": "local-cache",
+                    "target_id": "org.orion.memory-cache",
+                    "operation": "cache.get",
+                    "input": { "key": "greeting" },
+                    "output": "data.get_res"
+                }),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME),
         )
-        .exprs(crate::engine::kit::test_exprs())
-        .name(NAME)
         .await;
         assert!(get_called.outcome.is_ok(), "{:?}", get_called.outcome);
         let data = Value::from(get_called.message.context().data());
@@ -489,17 +636,21 @@ mod tests {
         assert_eq!(data["get_res"]["value"], "hello v2");
 
         // 3. Verify reserved operation is rejected
-        let reserved_called = testing::call(
-            func.clone(),
-            json!({
-                "connection": "local-cache",
-                "target_id": "org.orion.memory-cache",
-                "operation": "orion.internal.poll",
-                "output": "data.err"
-            }),
+        let reserved_called = served(
+            &root,
+            &[("local-cache", "cache.set"), ("local-cache", "cache.get")],
+            testing::call(
+                func.clone(),
+                json!({
+                    "connection": "local-cache",
+                    "target_id": "org.orion.memory-cache",
+                    "operation": "orion.internal.poll",
+                    "output": "data.err"
+                }),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME),
         )
-        .exprs(crate::engine::kit::test_exprs())
-        .name(NAME)
         .await;
         let err = reserved_called
             .outcome
@@ -510,18 +661,22 @@ mod tests {
         let custom_policy = std::sync::Arc::new(crate::extensions::CommunityAdmissionPolicy::new());
         custom_policy.revoke_provider("org.orion.memory-cache");
         root.providers.set_admission_policy(custom_policy);
-        let revoked_called = testing::call(
-            func,
-            json!({
-                "connection": "local-cache",
-                "target_id": "org.orion.memory-cache",
-                "operation": "cache.get",
-                "input": { "key": "greeting" },
-                "output": "data.revoked_res"
-            }),
+        let revoked_called = served(
+            &root,
+            &[("local-cache", "cache.set"), ("local-cache", "cache.get")],
+            testing::call(
+                func,
+                json!({
+                    "connection": "local-cache",
+                    "target_id": "org.orion.memory-cache",
+                    "operation": "cache.get",
+                    "input": { "key": "greeting" },
+                    "output": "data.revoked_res"
+                }),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME),
         )
-        .exprs(crate::engine::kit::test_exprs())
-        .name(NAME)
         .await;
         let rev_err = revoked_called
             .outcome

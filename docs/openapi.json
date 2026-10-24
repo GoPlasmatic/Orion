@@ -1892,6 +1892,16 @@
               }
             }
           },
+          "400": {
+            "description": "Unsupported implementation kind",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
             "content": {
