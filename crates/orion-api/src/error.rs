@@ -37,11 +37,11 @@ pub mod codes {
     pub const SERIALIZATION_ERROR: &str = "SERIALIZATION_ERROR";
     /// An open circuit breaker shed the request before it reached a connector.
     pub const CIRCUIT_OPEN: &str = "CIRCUIT_OPEN";
-    /// V2 deferred-write incompatibility (`426 Upgrade Required`, `V2-07.5`).
+    /// V2 deferred-write incompatibility (`426 Upgrade Required`).
     pub const UPGRADE_REQUIRED: &str = "UPGRADE_REQUIRED";
-    /// Enterprise tier package or feature rejected on Community Edition (`V2-11.3`, `V2-16.1`).
+    /// Enterprise tier package or feature rejected on Community Edition.
     pub const ENTERPRISE_TIER_NOT_ENABLED: &str = "ENTERPRISE_TIER_NOT_ENABLED";
-    /// Edition transition blocked by active Enterprise dependencies (`V2-16.4`).
+    /// Edition transition blocked by active Enterprise dependencies.
     pub const EDITION_TRANSITION_BLOCKED: &str = "EDITION_TRANSITION_BLOCKED";
 }
 

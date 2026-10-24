@@ -2,7 +2,7 @@
 //!
 //! # The rule
 //!
-//! **A row struct never derives `Serialize` or `ToSchema`** (D27, D28). It is a
+//! **A row struct never derives `Serialize` or `ToSchema`**. It is a
 //! picture of a table, so it holds whatever the table holds — including columns
 //! that exist to be compared, never shown, like [`Trace::access_token_hash`].
 //! The moment such a struct is also a wire type, "does this field leave the
@@ -36,7 +36,7 @@ pub struct Workflow {
     pub rollout_percentage: i64,
     pub condition_json: String,
     pub tasks_json: String,
-    /// JSON array of tag strings. Named for the column (D26), not for the
+    /// JSON array of tag strings. Named for the column, not for the
     /// `tags` field the admin API publishes — that lives on
     /// [`super::dto::WorkflowResponse`] and is a `Value`, already decoded.
     pub tags_json: String,
@@ -155,7 +155,7 @@ pub struct Channel {
     pub channel_type: String,
     pub protocol: String,
     /// JSON array of HTTP method names, `None` for non-REST channels. Named
-    /// for the column (D26); the admin API's `methods` field lives on
+    /// for the column; the admin API's `methods` field lives on
     /// [`super::dto::ChannelResponse`].
     pub methods_json: Option<String>,
     pub route_pattern: Option<String>,
@@ -166,7 +166,7 @@ pub struct Channel {
     pub config_json: String,
     pub status: String,
     pub priority: i64,
-    /// JSON array of tag strings (K6), same contract as
+    /// JSON array of tag strings, same contract as
     /// [`Workflow::tags_json`]: the column is `tags_json`, the wire says
     /// `tags`.
     pub tags_json: String,
@@ -218,7 +218,7 @@ pub struct Connector {
     pub connector_type: String,
     pub config_json: String,
     pub enabled: bool,
-    /// JSON array of tag strings (K6); the wire says `tags`.
+    /// JSON array of tag strings; the wire says `tags`.
     pub tags_json: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -236,7 +236,7 @@ pub struct Connector {
 pub struct Trace {
     pub id: String,
     /// The channel **name** as it was at execution time — an immutable
-    /// snapshot, not a lookup key (D26). It is deliberately kept alongside
+    /// snapshot, not a lookup key. It is deliberately kept alongside
     /// `channel_id` and deliberately not refreshed: renaming a channel must
     /// not rewrite the history of what already ran, and a trace has to stay
     /// readable after its channel is deleted. Filter and group by
@@ -261,7 +261,7 @@ pub struct Trace {
     /// can inspect intermediate inputs/outputs for each task to debug
     /// pipelines without re-running them in dry-run.
     pub task_trace_json: Option<String>,
-    /// SHA-256 hash of the capability token returned with the async 202 (R12).
+    /// SHA-256 hash of the capability token returned with the async 202.
     /// A credential verifier: compared against a presented token, never shown.
     /// It is safe to hold here precisely because this struct cannot be
     /// serialized — see the module rule.
@@ -269,7 +269,7 @@ pub struct Trace {
 }
 
 /// List-view projection over `traces`. Deliberately omits `input_json`,
-/// `result_json`, `task_trace_json` and `access_token_hash` (D27): a trace
+/// `result_json`, `task_trace_json` and `access_token_hash`: a trace
 /// listing would otherwise carry every caller's request body, the full engine
 /// message, and one credential verifier per row — all of it read out of the
 /// database and into process memory for rows the response never shows.
@@ -438,7 +438,7 @@ pub struct CronSingleton {
 
 #[cfg(test)]
 mod tests {
-    /// The module rule, checked against the module (D27, D28).
+    /// The module rule, checked against the module.
     ///
     /// There is no way to write "`T` does *not* implement `Serialize`" as a
     /// bound in stable Rust, so the rule is enforced against the source: every

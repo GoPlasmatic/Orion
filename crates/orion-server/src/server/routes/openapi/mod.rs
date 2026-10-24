@@ -30,7 +30,7 @@ const SCHEME_BEARER: &str = "admin_bearer";
 const SCHEME_API_KEY: &str = "admin_api_key";
 
 /// Registers the admin auth schemes and stamps `security` onto exactly the
-/// operations the admin-auth middleware guards (C8).
+/// operations the admin-auth middleware guards.
 ///
 /// Applying this programmatically rather than per-`#[utoipa::path]` is
 /// deliberate. The middleware authorizes by **path prefix**
@@ -39,8 +39,8 @@ const SCHEME_API_KEY: &str = "admin_api_key";
 /// added without it would silently publish as an open endpoint, which is the
 /// exact regression C8 exists to close.
 ///
-/// While walking every operation it also attaches the shared error responses
-/// (C9): a `401` on guarded operations and a `500` everywhere, both referencing
+/// While walking every operation it also attaches the shared error responses:
+/// a `401` on guarded operations and a `500` everywhere, both referencing
 /// [`ErrorResponse`], which was previously a registered-but-unreferenced schema.
 /// Existing declarations are never overwritten.
 pub(crate) struct SecurityAddon;
@@ -74,7 +74,7 @@ fn error_response(description: &str) -> RefOr<Response> {
     )
 }
 
-/// Give every declared-but-empty 4xx/5xx the `ErrorResponse` body (R22).
+/// Give every declared-but-empty 4xx/5xx the `ErrorResponse` body.
 ///
 /// A `(status = 404, description = "…")` in a `#[utoipa::path]` emits a
 /// response with no `content` — utoipa only fills one in when the annotation
@@ -246,7 +246,7 @@ validation failures.",
         (name = "Cache", description = "Channel response-cache invalidation by namespace"),
         (name = "Backups", description = "Database backup management (SQLite only)"),
         (name = "Packages", description = "Package receipts — what package versions are \
-            staged or applied here (K14)"),
+            staged or applied here"),
         (name = "Deployments", description = "Immutable v2 deployment planning, CAS apply, convergence, rollback, and migration/edition preflight"),
         (name = "Providers", description = "V2 connector provider package authoring, upload, admission, and revocation"),
         (name = "Connections", description = "Immutable v2 connection revisions and audited health probes"),
@@ -509,7 +509,7 @@ mod tests {
     /// and each is listed explicitly so a *new* unguarded-but-401 route still
     /// fails this test until someone reviews it:
     ///
-    /// * `GET /api/v2/admin/traces/{id}` (R12) authenticates in its handler,
+    /// * `GET /api/v2/admin/traces/{id}` authenticates in its handler,
     ///   accepting either an admin credential or the per-submission
     ///   `trace_token`.
     /// * The two data-plane paths authenticate per *channel*, in the ingress
@@ -566,7 +566,7 @@ mod tests {
         }
     }
 
-    /// R22: a response that names a status but no body is a spec that says
+    /// A response that names a status but no body is a spec that says
     /// "an error happens here" without saying what it looks like. 44 of the 48
     /// 2xx responses and 30 of the 4xx/5xx were published that way. `204` is
     /// exempt — a body would be a protocol violation.
@@ -605,7 +605,7 @@ mod tests {
         );
     }
 
-    /// No row struct's name may reach the published document (R22, D17, D28).
+    /// No row struct's name may reach the published document.
     ///
     /// A row struct describes storage, not the wire: publishing one advertises
     /// `condition_json` / `tasks_json` as opaque strings on a shape no client

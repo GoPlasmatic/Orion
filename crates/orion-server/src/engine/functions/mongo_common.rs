@@ -230,7 +230,7 @@ pub(super) fn report_static(
 }
 
 /// The refusal of a document field an op requires and the task leaves unset
-/// or `null`, in 1.12's words, on both engines.
+/// or `null`, in 1.12's words.
 pub(super) fn requires(field: &str, handler_name: &str) -> HandlerError {
     HandlerError::new(
         ErrorClass::CallerInput,
@@ -274,7 +274,7 @@ pub(super) async fn drain_capped(
 ///
 /// # Errors
 ///
-/// [`DataflowError`] naming the offending document's index.
+/// A [`HandlerError`] naming the offending document's index.
 pub(super) fn docs_to_json(docs: &[Document], handler_name: &str) -> Result<Value, HandlerError> {
     docs.iter()
         .enumerate()

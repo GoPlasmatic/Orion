@@ -225,10 +225,9 @@ pub fn retry(safety: schema::RetrySafety) -> dataflow_rs::function::RetrySafety 
     }
 }
 
-/// The connector gates and lookups every connector function opens with,
-/// shared with the dataflow-rs 3 handlers: their [`HandlerError`] converts
-/// into either engine's error, so the refusal a caller sees does not depend
-/// on which engine ran the task.
+/// The connector gates and lookups every connector function opens with. They
+/// return a [`HandlerError`], which converts into the engine's error with the
+/// code and retryability its class names.
 ///
 /// [`HandlerError`]: crate::engine::HandlerError
 pub use crate::engine::functions::connector_helpers::{
@@ -419,8 +418,7 @@ impl OfflineDeps {
         }
     }
 
-    /// The dependencies, as `register_functions` and
-    /// `build_custom_functions` take them. No model runtime: `model_infer`
+    /// The dependencies, as `register_functions` takes them. No model runtime: `model_infer`
     /// answers `unavailable`, as with `models.enabled = false`.
     pub fn deps(&self) -> HandlerDeps<'_> {
         HandlerDeps {

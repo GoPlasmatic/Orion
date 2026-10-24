@@ -28,9 +28,7 @@ pub(crate) const NAME: &str = "mongo_read";
 /// folded: `{"var": ..}` nodes may sit at any depth of the filter, so a
 /// per-request query is expressible.
 ///
-/// Owned by the dataflow-rs 3 handler, which reads the names off the
-/// authored input per call; the names borrowed from the compiled config by
-/// the dataflow-rs 4 function.
+/// The names are borrowed from the function's compiled config.
 #[derive(Debug)]
 pub struct MongoFind<'a> {
     database: Cow<'a, str>,

@@ -22,20 +22,20 @@ use crate::server::state::AppState;
 /// compile and silently unregister the wrong surface.
 #[derive(Debug, Clone)]
 pub struct RouteOptions {
-    /// Bounds admin request bodies independently of the data plane (R16) —
+    /// Bounds admin request bodies independently of the data plane —
     /// see [`admin::admin_routes`].
     pub max_admin_body_size: usize,
     /// The admin body limit for the plugin routes alone: base64 of the
     /// largest component plus room for the manifest and import framing.
     pub plugin_body_size: usize,
-    /// Gates `/docs` and `/api/v2/openapi.json` (S17, resolved by
+    /// Gates `/docs` and `/api/v2/openapi.json` (resolved by
     /// [`crate::config::AppConfig::docs_enabled`]): the spec publishes the
     /// whole admin API surface anonymously, so production deployments keep it
     /// off by default. When disabled the routes are simply not registered —
     /// both paths fall through to the 404 fallback rather than answering 401,
     /// so their very existence is not advertised.
     pub docs_enabled: bool,
-    /// Gates `/metrics` on **this** listener (O12). False both when
+    /// Gates `/metrics` on **this** listener. False both when
     /// `metrics.enabled = false` and when `metrics.bind_addr` has moved the
     /// endpoint to its own listener; in either case the path 404s here rather
     /// than answering 200 with an empty body.
@@ -491,7 +491,7 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
 
 /// How many workflows the running engine holds.
 ///
-/// O16: this used to acquire the engine read lock under
+/// This used to acquire the engine read lock under
 /// `engine.health_check_timeout_secs` and report `None` on timeout — a real
 /// check in the `RwLock` era. The engine is an `ArcSwap` now: `load()` is
 /// lock-free and infallible, so the probe cannot fail and there is nothing
@@ -505,7 +505,7 @@ fn workflows_loaded(generation: &crate::runtime::RuntimeGeneration) -> usize {
 
 /// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:
 /// `None` when Kafka is disabled, so non-Kafka deployments carry no `kafka`
-/// component at all (O10).
+/// component at all.
 ///
 /// `"ok"` covers both a running consumer and one intentionally not started
 /// (no topics to consume). `"error"` means ingestion should be running and

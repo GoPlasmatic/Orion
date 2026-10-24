@@ -73,29 +73,15 @@ workspace = true
 
 [dependencies]
 orion-definitions.workspace = true
-# `all-operators` turns on dataflow-rs's passthroughs to the datalogic-rs
-# feature gates: `datetime`, `ext-string`, `ext-array`, `ext-math`,
-# `ext-control`, `error-handling` and (since 3.4/5.2) `ext-object`. Without it
-# datalogic compiles with only the core opcode set, and a workflow cannot call
-# `now`, format a date, uppercase a string, measure a length or group a list —
-# see docs/src/reference/expressions.md#available-operators for the resulting
-# vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
-# engine is reached through dataflow-rs, never pinned alongside it), so this is
-# the only lever, and it arrived in dataflow-rs 3.2.
-# `tensor` and `budget` (3.13) are on as well, since 1.8. `tensor` adds the
-# 20 marshalling operators a model adapter is written in (`engine::operators::
-# TENSOR_OPERATORS`), and with them a rule: in templating mode a single-key
-# object whose key is a live operator evaluates instead of passing through as
-# data, so a stored `map` mapping emitting a literal `{"shape": ...}` must
-# spell it `{"$shape": ...}` — the `$` key escape dataflow-rs sets on every
-# engine. `preflight` and `lint` list every such key (`logic.tensor_operator_key`).
-# `budget` charges an add-and-compare per dispatched node and installs no
-# ceiling until `engine.ops_budget` is set; a ceiling crossed in a *condition*
-# fails closed to `false` with no error channel, which is why the setting is
-# documented next to that caveat rather than defaulted on.
-# v4 selects extension families on ExprEngineBuilder at runtime. `datetime`
-# and `tensor` still need their Cargo gates; `budget` enables the ops ceiling.
-# Use the published crate so builds do not require a developer's checkout.
+# dataflow-rs 4 selects the JSONLogic extension families (string, array,
+# math, control, error handling, object) on its ExprEngineBuilder at runtime;
+# only `datetime` and `tensor` still need Cargo features, and `budget`
+# enables the `engine.ops_budget` ceiling. The vocabulary that results is
+# docs/src/reference/expressions.md#available-operators, asserted against the
+# engine by jsonlogic_operators_test. `tensor` adds the marshalling operators
+# a model adapter is written in, so a stored `map` emitting a literal
+# `{"shape": ...}` must spell it `{"$shape": ...}`. A budget crossed in a
+# condition fails closed to `false`, which is why it is not on by default.
 dataflow-rs = { version = "4.0.1", features = ["datetime", "tensor", "budget"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a

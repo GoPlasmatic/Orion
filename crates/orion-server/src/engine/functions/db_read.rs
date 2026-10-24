@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td09_result_byte_cap_refuses_oversized_rows_as_400_limit_error() {
+    async fn result_byte_cap_refuses_oversized_rows_as_400_limit_error() {
         let input = json!({
             "connector": "db",
             "query": "SELECT id, name, price, blob FROM items ORDER BY id",

@@ -39,7 +39,7 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
     }
 }
 
-/// `GET /api/v2/admin/connections` (`V2-07.1`).
+/// `GET /api/v2/admin/connections`.
 #[utoipa::path(
     get,
     path = "/api/v2/admin/connections",
@@ -60,7 +60,7 @@ pub(crate) async fn list_connections(State(state): State<AppState>) -> impl Into
     })
 }
 
-/// `POST /api/v2/admin/connections` (`V2-07.1`).
+/// `POST /api/v2/admin/connections`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/connections",
@@ -113,7 +113,7 @@ pub(crate) async fn create_connection_revision(
     }
 }
 
-/// `POST /api/v2/admin/connections/{id}/probe` (`V2-07.1`, `TD-30`).
+/// `POST /api/v2/admin/connections/{id}/probe`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/connections/{id}/probe",

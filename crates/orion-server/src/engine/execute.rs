@@ -729,8 +729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_02_2_3_4_serving_adapter_normalizes_outcomes_and_never_reports_success_with_task_errors()
-     {
+    async fn serving_adapter_normalizes_outcomes_and_never_reports_success_with_task_errors() {
         let engine = dataflow_rs::Engine::builder()
             .config(
                 dataflow_rs::run::EngineConfig::default()
@@ -913,7 +912,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td02_traced_execution_runs_on_v4_engine_and_redacts_sensitive_metadata() {
+    async fn traced_execution_runs_on_v4_engine_and_redacts_sensitive_metadata() {
         let v4_engine = dataflow_rs::Engine::builder()
             .config(
                 dataflow_rs::run::EngineConfig::default()
@@ -986,7 +985,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td03_generation_run_budget_halts_excessive_task_dispatches() {
+    async fn generation_run_budget_halts_excessive_task_dispatches() {
         let v4_engine = dataflow_rs::Engine::builder()
             .config(
                 dataflow_rs::run::EngineConfig::default()
@@ -1049,7 +1048,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td07_pinned_generation_isolates_connector_snapshot_across_rotation() {
+    async fn pinned_generation_isolates_connector_snapshot_across_rotation() {
         let registry = crate::connector::ConnectorRegistry::default();
         let initial_cfg = crate::connector::ConnectorConfig::Cache(
             serde_json::from_value(serde_json::json!({

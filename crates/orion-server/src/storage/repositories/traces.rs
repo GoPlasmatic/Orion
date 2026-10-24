@@ -27,12 +27,12 @@ pub struct TraceFilter {
     pub sort_by: Option<String>,
     /// Sort direction: asc or desc (default).
     pub sort_order: Option<String>,
-    /// Keyset cursor from a previous page's `next_cursor` (D8): pass it back
+    /// Keyset cursor from a previous page's `next_cursor`: pass it back
     /// unmodified. Valid only with the default `created_at` ordering, and
     /// mutually exclusive with `offset`; cheaper than `offset` on a large
     /// table because it never skips rows.
     pub cursor: Option<String>,
-    /// Compute `total` for this page (default false). Off by default (D8):
+    /// Compute `total` for this page (default false). Off by default:
     /// the count is a full scan of the filtered set on Postgres and InnoDB,
     /// paid on every page even though the number rarely changes what the
     /// caller does next.
@@ -49,12 +49,12 @@ impl TraceFilter {
 
 /// One page of traces.
 ///
-/// Deliberately not [`super::helpers::PaginatedResult`] (D8): `total` is
+/// Deliberately not [`super::helpers::PaginatedResult`]: `total` is
 /// optional here because computing it is opt-in, and `next_cursor` has no
 /// meaning for the other list endpoints.
 #[derive(Debug)]
 pub struct TracePage {
-    /// [`TraceListRow`], not [`Trace`] (D27) — the listing reads neither the
+    /// [`TraceListRow`], not [`Trace`] — the listing reads neither the
     /// payloads nor `access_token_hash`.
     pub data: Vec<TraceListRow>,
     /// `Some` only when the request asked for it with `include_total=true`.
@@ -146,7 +146,7 @@ pub struct TraceCompletedRow {
     pub result_json: String,
     pub duration_ms: f64,
     /// Optional per-task execution trace JSON. Populated only when the
-    /// channel has `config.tracing.task_details = true` (A2).
+    /// channel has `config.tracing.task_details = true`.
     pub task_trace_json: Option<String>,
 }
 
@@ -167,7 +167,7 @@ pub struct TraceCompletedRef<'a> {
     pub result_json: &'a str,
     pub duration_ms: f64,
     /// Optional per-task execution trace JSON. Populated only when the
-    /// channel has `config.tracing.task_details = true` (A2).
+    /// channel has `config.tracing.task_details = true`.
     pub task_trace_json: Option<&'a str>,
 }
 
@@ -195,7 +195,7 @@ pub struct TraceResultRow {
     pub result_json: String,
     pub duration_ms: f64,
     /// Optional per-task execution trace JSON. Populated only when the
-    /// channel has `config.tracing.task_details = true` (A2).
+    /// channel has `config.tracing.task_details = true`.
     pub task_trace_json: Option<String>,
 }
 
@@ -242,7 +242,7 @@ fn completed_values(
 }
 
 /// The 11 columns a trace *listing* reads, in
-/// [`crate::storage::models::TraceListRow`] order (D27).
+/// [`crate::storage::models::TraceListRow`] order.
 ///
 /// Named explicitly so the four columns that are not here — `input_json`,
 /// `result_json`, `task_trace_json` and `access_token_hash` — cannot come back
@@ -305,7 +305,7 @@ fn list_page(filter: &TraceFilter) -> Page {
 }
 
 /// `SELECT * FROM traces WHERE id = ?` — the single-row read shape, shared by
-/// `get_by_id` and the read-back arm of the write-returning paths (D23).
+/// `get_by_id` and the read-back arm of the write-returning paths.
 fn trace_select(id: &str) -> sea_query::SelectStatement {
     Query::select()
         .column(Asterisk)
@@ -413,7 +413,7 @@ pub trait TraceReader: Send + Sync {
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError>;
     /// One page of the trace listing, payload- and credential-free.
     ///
-    /// Carries [`TraceListRow`], not [`Trace`] (D27): the list used to be a
+    /// Carries [`TraceListRow`], not [`Trace`]: the list used to be a
     /// `SELECT *`, which read every caller's request body, the full engine
     /// message and one `access_token_hash` per row out of the database for a
     /// response that shows none of them.
@@ -782,7 +782,7 @@ mod tests {
         crate::storage::test_sqlite_pool().await
     }
 
-    /// D27: the listing must never read the payload columns or the capability
+    /// The listing must never read the payload columns or the capability
     /// -token hash. `TraceListRow` cannot hold them, but sqlx ignores extra
     /// columns — so a revert to `SELECT *` would still decode, and would still
     /// pull one credential verifier per row across the wire from the database.
@@ -1205,7 +1205,7 @@ mod tests {
             assert!(
                 names.iter().any(|n| n == expected),
                 "{expected} must exist — sorting on an unindexed column \
-                 full-scans the traces table (D8). Have: {names:?}"
+                 full-scans the traces table. Have: {names:?}"
             );
         }
     }

@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td28_evict_fences_in_flight_creator_and_typed_registry_preserves_distinct_cache_ids() {
+    async fn evict_fences_in_flight_creator_and_typed_registry_preserves_distinct_cache_ids() {
         let registry = ResourcePoolRegistry::new();
         let pg_pool = Arc::new(VersionedSessionPool::<String>::new(
             "org.orion.postgresql",

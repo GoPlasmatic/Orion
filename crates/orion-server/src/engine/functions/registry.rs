@@ -3,7 +3,7 @@
 //! Three static tables used to answer "may a workflow name this, and what does
 //! it accept?": `schema::REGISTRY` (the Orion handlers' field tables),
 //! `ENGINE_BUILTINS` (the engine's own eight) and `CUSTOM_HANDLER_FUNCTIONS`
-//! (the names `build_custom_functions` registers) — plus three more keyed by
+//! (the names `register_functions` registers) — plus three more keyed by
 //! name in `handlers.rs` for the connector rules. Nine readers consulted them
 //! through nine free functions, each a linear scan over `&'static` rows, and
 //! the set was closed at compile time by construction: nothing that was not a
@@ -310,7 +310,7 @@ impl FunctionRegistry {
     /// registration (`enrich` needs a handler Orion never registers, so it is
     /// absent — F54, the case where a hand-copied list accepted it and every
     /// `enrich` workflow failed its every request), and a handler-backed name
-    /// is here only if `build_custom_functions` registers it.
+    /// is here only if `register_functions` registers it.
     /// `the_create_time_gate_agrees_with_the_running_engine` pins that to a
     /// live engine's `can_dispatch` in both directions.
     pub fn contains(&self, name: &str) -> bool {

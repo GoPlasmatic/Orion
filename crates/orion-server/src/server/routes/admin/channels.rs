@@ -178,11 +178,11 @@ pub(crate) async fn delete_channel(
             written and the body is instead the `/validate` envelope \
             (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate \
             the real transition would run: draft existence, route collisions against \
-            active channels, and the workflow-active gate (K3). With `?reload=defer` \
+            active channels, and the workflow-active gate. With `?reload=defer` \
             the row commits but the engine (and every cluster peer) keeps serving the \
-            previous active set until `POST /engine/reload` (K4).", body = DataEnvelope<ChannelResponse>),
+            previous active set until `POST /engine/reload`.", body = DataEnvelope<ChannelResponse>),
         (status = 400, description = "Invalid status transition, route collision, or \
-            the channel's workflow is missing or not active (K8)"),
+            the channel's workflow is missing or not active"),
         (status = 404, description = "Channel not found"),
     )
 )]
@@ -244,7 +244,7 @@ struct ChannelLifecycle<'a> {
     workflows: &'a dyn crate::storage::repositories::workflows::WorkflowRepository,
     data_mounts: &'a [String],
     /// The whole config, for the gates that ask what this *instance* can run —
-    /// currently only whether its cron scheduler is on (D3).
+    /// currently only whether its cron scheduler is on.
     config: &'a crate::config::AppConfig,
 }
 
@@ -395,7 +395,7 @@ pub(crate) async fn create_new_channel_version(
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
             `errors` and the rest of the batch still applies. Dry-run additionally probes for id \
             conflicts against stored rows and duplicates within the batch, without writing. \
-            `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing \
+            `?on_conflict=new_version` upserts instead of refusing an existing id: an existing \
             draft is replaced, an active channel whose content differs gets a new draft version, \
             and identical content is reported `unchanged` — re-importing the same artifact is a \
             no-op. Per-item outcomes are in `results`.", body = DataEnvelope<ImportResult>),

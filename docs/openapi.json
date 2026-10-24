@@ -641,7 +641,7 @@
           {
             "name": "tag",
             "in": "query",
-            "description": "Only channels carrying this tag (K6).",
+            "description": "Only channels carrying this tag.",
             "required": false,
             "schema": {
               "type": "string"
@@ -846,7 +846,7 @@
           {
             "name": "tag",
             "in": "query",
-            "description": "Only channels carrying this tag (K6).",
+            "description": "Only channels carrying this tag.",
             "required": false,
             "schema": {
               "type": "string"
@@ -941,7 +941,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch, and under `on_conflict=new_version` reports\nthe per-item action the real import would take.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -972,7 +972,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for id conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing draft is replaced, an active channel whose content differs gets a new draft version, and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for id conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing id: an existing draft is replaced, an active channel whose content differs gets a new draft version, and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1273,7 +1273,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -1363,7 +1363,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -1382,7 +1382,7 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, route collisions against active channels, and the workflow-active gate (K3). With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload` (K4).",
+            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, route collisions against active channels, and the workflow-active gate. With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1392,7 +1392,7 @@
             }
           },
           "400": {
-            "description": "Invalid status transition, route collision, or the channel's workflow is missing or not active (K8)",
+            "description": "Invalid status transition, route collision, or the channel's workflow is missing or not active",
             "content": {
               "application/json": {
                 "schema": {
@@ -2307,7 +2307,7 @@
           {
             "name": "tag",
             "in": "query",
-            "description": "Only connectors carrying this tag (K6).",
+            "description": "Only connectors carrying this tag.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2605,7 +2605,7 @@
           {
             "name": "tag",
             "in": "query",
-            "description": "Only connectors carrying this tag (K6).",
+            "description": "Only connectors carrying this tag.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2700,7 +2700,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch, and under `on_conflict=new_version` reports\nthe per-item action the real import would take.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -2731,7 +2731,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing name (K2): connectors are unversioned, so an existing connector is updated in place (`updated`), and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing name: connectors are unversioned, so an existing connector is updated in place (`updated`), and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4647,7 +4647,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch, and under `on_conflict=new_version` reports\nthe per-item action the real import would take.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -4979,7 +4979,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -5256,7 +5256,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -6084,7 +6084,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch, and under `on_conflict=new_version` reports\nthe per-item action the real import would take.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -6416,7 +6416,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -6585,7 +6585,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -7289,7 +7289,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Keyset cursor from a previous page's `next_cursor` (D8): pass it back\nunmodified. Valid only with the default `created_at` ordering, and\nmutually exclusive with `offset`; cheaper than `offset` on a large\ntable because it never skips rows.",
+            "description": "Keyset cursor from a previous page's `next_cursor`: pass it back\nunmodified. Valid only with the default `created_at` ordering, and\nmutually exclusive with `offset`; cheaper than `offset` on a large\ntable because it never skips rows.",
             "required": false,
             "schema": {
               "type": "string"
@@ -7298,7 +7298,7 @@
           {
             "name": "include_total",
             "in": "query",
-            "description": "Compute `total` for this page (default false). Off by default (D8):\nthe count is a full scan of the filtered set on Postgres and InnoDB,\npaid on every page even though the number rarely changes what the\ncaller does next.",
+            "description": "Compute `total` for this page (default false). Off by default:\nthe count is a full scan of the filtered set on Postgres and InnoDB,\npaid on every page even though the number rarely changes what the\ncaller does next.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -7362,7 +7362,7 @@
         "tags": [
           "Traces"
         ],
-        "description": "Fetch one trace. Access follows a two-lane rule (R12): present either a valid admin credential, or — for async submissions — the `trace_token` returned with the 202, in the `x-trace-token` header. Traces without a token (sync traces, DLQ retries, rows from before 1.0.0) are admin-plane only when admin auth is enabled.\n\nThe `?token=` query parameter is a **deprecated** alternative for clients that cannot set headers. Prefer the header: a URL is not a private place, and the token leaks into browser history, proxy and CDN logs, `Referer` headers and anywhere a link is pasted. Reads authorised that way answer with a `Deprecation` header.\n\nEvery response carries `Cache-Control: no-store` — the body is the submission's result and the capability is not an `Authorization` header, so nothing else stops a shared cache storing it.",
+        "description": "Fetch one trace. Access follows a two-lane rule: present either a valid admin credential, or — for async submissions — the `trace_token` returned with the 202, in the `x-trace-token` header. Traces without a token (sync traces, DLQ retries, rows from before 1.0.0) are admin-plane only when admin auth is enabled.\n\nThe `?token=` query parameter is a **deprecated** alternative for clients that cannot set headers. Prefer the header: a URL is not a private place, and the token leaks into browser history, proxy and CDN logs, `Referer` headers and anywhere a link is pasted. Reads authorised that way answer with a `Deprecation` header.\n\nEvery response carries `Cache-Control: no-store` — the body is the submission's result and the capability is not an `Authorization` header, so nothing else stops a shared cache storing it.",
         "operationId": "get_trace",
         "parameters": [
           {
@@ -7728,7 +7728,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch, and under `on_conflict=new_version` reports\nthe per-item action the real import would take.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -7759,7 +7759,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing draft is replaced, an active workflow whose content differs gets a new draft version, and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing id: an existing draft is replaced, an active workflow whose content differs gets a new draft version, and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8060,7 +8060,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -8141,7 +8141,7 @@
         ],
         "responses": {
           "200": {
-            "description": "What the workflow's tasks reference (K9): connector names (with the referencing function) and statically-known `channel_call` targets. The API twin of the reference walk activation runs, for tooling that computes a package's dependency closure without re-implementing the task-walk.",
+            "description": "What the workflow's tasks reference: connector names (with the referencing function) and statically-known `channel_call` targets. The API twin of the reference walk activation runs, for tooling that computes a package's dependency closure without re-implementing the task-walk.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8210,7 +8210,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -8229,7 +8229,7 @@
         },
         "responses": {
           "200": {
-            "description": "Rollout percentage updated. With `?reload=defer` the row commits but the engine keeps serving the previous rollout until `POST /engine/reload` (K4).",
+            "description": "Rollout percentage updated. With `?reload=defer` the row commits but the engine keeps serving the previous rollout until `POST /engine/reload`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8317,7 +8317,7 @@
           {
             "name": "reload",
             "in": "query",
-            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload`.",
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/ReloadMode"
@@ -8336,7 +8336,7 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, connector existence and type match, MongoDB `database` presence, and rollout arithmetic (K3). With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload` (K4).",
+            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, connector existence and type match, MongoDB `database` presence, and rollout arithmetic. With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8830,7 +8830,7 @@
           "Data"
         ],
         "summary": "Submit to a channel asynchronously",
-        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v2/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: the origin allow-list, the rate limit, `validation_logic`, deduplication and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v2/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.\n\n`trace_id` is always present. Async submission is a request for a result to be fetched later, so the trace row is written before the 202 is sent even when `trace_storage.mode` is `off` — that setting still applies in full to the synchronous endpoint, where the caller already has the answer.",
+        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v2/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: the origin allow-list, the rate limit, `validation_logic`, deduplication and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v2/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission; an admin credential also works.\n\n`trace_id` is always present. Async submission is a request for a result to be fetched later, so the trace row is written before the 202 is sent even when `trace_storage.mode` is `off` — that setting still applies in full to the synchronous endpoint, where the caller already has the answer.",
         "operationId": "submit_channel_request_async",
         "parameters": [
           {
@@ -9152,7 +9152,7 @@
       },
       "ApplyDeploymentRequest": {
         "type": "object",
-        "description": "Request body to atomically apply a candidate deployment (`POST /api/v2/admin/deployments`, `V2-07.4`).",
+        "description": "Request body to atomically apply a candidate deployment (`POST /api/v2/admin/deployments`).",
         "required": [
           "idempotency_key",
           "base_revision",
@@ -9182,7 +9182,7 @@
       },
       "ApplyDeploymentResponse": {
         "type": "object",
-        "description": "Response from applying a candidate deployment (`POST /api/v2/admin/deployments`, `V2-07.4`).",
+        "description": "Response from applying a candidate deployment (`POST /api/v2/admin/deployments`).",
         "properties": {
           "committed_revision": {
             "type": "integer",
@@ -9217,7 +9217,7 @@
       },
       "ArchiveEntryDto": {
         "type": "object",
-        "description": "A single file entry inside a provider package archive (`V2-07.3`, `V2-10.3`).",
+        "description": "A single file entry inside a provider package archive.",
         "required": [
           "path",
           "content"
@@ -9263,11 +9263,11 @@
         "properties": {
           "trace_id": {
             "type": "string",
-            "description": "Id to poll via `GET /api/v2/admin/traces/{id}`. Always present: a 202\nis a receipt for a result, so the row it names is written before this\nresponse is sent (R11)."
+            "description": "Id to poll via `GET /api/v2/admin/traces/{id}`. Always present: a 202\nis a receipt for a result, so the row it names is written before this\nresponse is sent."
           },
           "trace_token": {
             "type": "string",
-            "description": "Capability token scoping the poll to this submission (R12): present\nit via the `x-trace-token` header or `?token=` query parameter.\nShown once, here — only its hash is stored."
+            "description": "Capability token scoping the poll to this submission: present\nit via the `x-trace-token` header or `?token=` query parameter.\nShown once, here — only its hash is stored."
           }
         }
       },
@@ -9442,7 +9442,7 @@
             "type": "string"
           },
           "config": {
-            "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+            "description": "Channel config with `auth.keys` / `auth.secret` values masked —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
           },
           "consumer_group": {
             "type": [
@@ -9452,7 +9452,7 @@
           },
           "content_hash": {
             "type": "string",
-            "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
+            "description": "`sha256:…` over the canonical importable content. Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
           },
           "created_at": {
             "type": "string"
@@ -9484,7 +9484,7 @@
             "type": "string"
           },
           "tags": {
-            "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+            "description": "Wire name `tags`, stored column `tags_json` — the same contract\nworkflows have carried since 0.x."
           },
           "topic": {
             "type": [
@@ -9537,7 +9537,7 @@
         "properties": {
           "found_on_this_node": {
             "type": "boolean",
-            "description": "Whether the breaker existed on the node that served the request.\nBreakers are node-local; in cluster mode the reset is broadcast over\nthe epoch bus regardless, so `false` here is not a failure (F21)."
+            "description": "Whether the breaker existed on the node that served the request.\nBreakers are node-local; in cluster mode the reset is broadcast over\nthe epoch bus regardless, so `false` here is not a failure."
           },
           "key": {
             "type": "string"
@@ -9577,13 +9577,13 @@
           },
           "scope": {
             "type": "string",
-            "description": "Always `\"node\"` — breaker state is per-replica, never cluster-wide (F21)."
+            "description": "Always `\"node\"` — breaker state is per-replica, never cluster-wide."
           }
         }
       },
       "ConnectionProbeResponse": {
         "type": "object",
-        "description": "Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`, `V2-07.3`, `TD-31`).",
+        "description": "Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`).",
         "properties": {
           "connection_id": {
             "type": "string"
@@ -9612,7 +9612,7 @@
       },
       "ConnectionRevisionResponse": {
         "type": "object",
-        "description": "Summary of an immutable connection revision (`GET /api/v2/admin/connections`, `V2-07.3`).",
+        "description": "Summary of an immutable connection revision (`GET /api/v2/admin/connections`).",
         "properties": {
           "config": {},
           "config_fingerprint": {
@@ -9696,7 +9696,7 @@
           },
           "content_hash": {
             "type": "string",
-            "description": "`sha256:…` over the canonical importable content (K10), computed on the\nstored (unmasked) config. Ignored by `/import`, like the other extras."
+            "description": "`sha256:…` over the canonical importable content, computed on the\nstored (unmasked) config. Ignored by `/import`, like the other extras."
           },
           "enabled": {
             "type": "boolean"
@@ -9708,7 +9708,7 @@
             "type": "string"
           },
           "tags": {
-            "description": "Selection labels (K6); filter the export with `?tag=`."
+            "description": "Selection labels; filter the export with `?tag=`."
           }
         }
       },
@@ -9741,7 +9741,7 @@
           },
           "content_hash": {
             "type": "string",
-            "description": "`sha256:…` over the canonical importable content (K10)."
+            "description": "`sha256:…` over the canonical importable content."
           },
           "created_at": {
             "type": "string"
@@ -9779,7 +9779,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Selection labels (K6); filter the list with `?tag=`."
+            "description": "Selection labels; filter the list with `?tag=`."
           },
           "updated_at": {
             "type": "string"
@@ -9814,7 +9814,7 @@
       },
       "ConnectorPackageSummary": {
         "type": "object",
-        "description": "Summary of an uploaded/admitted connector provider package (`GET /api/v2/admin/connector-packages`, `V2-07.3`).",
+        "description": "Summary of an uploaded/admitted connector provider package (`GET /api/v2/admin/connector-packages`).",
         "properties": {
           "admitted": {
             "type": "boolean"
@@ -9875,7 +9875,7 @@
       },
       "ConnectorResponse": {
         "type": "object",
-        "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized (D27), so a handler that forgets to mask does not compile.",
+        "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized, so a handler that forgets to mask does not compile.",
         "required": [
           "id",
           "name",
@@ -9901,7 +9901,7 @@
           },
           "content_hash": {
             "type": "string",
-            "description": "`sha256:…` over the canonical importable content (K10), computed on\nthe stored (unmasked) config — see the note on\n[`ChannelResponse::content_hash`]. Empty for a row whose stored JSON\nno longer parses: corrupt content equals nothing."
+            "description": "`sha256:…` over the canonical importable content, computed on\nthe stored (unmasked) config — see the note on\n[`ChannelResponse::content_hash`]. Empty for a row whose stored JSON\nno longer parses: corrupt content equals nothing."
           },
           "created_at": {
             "type": "string"
@@ -9916,7 +9916,7 @@
             "type": "string"
           },
           "tags": {
-            "description": "Wire name `tags`, stored column `tags_json` (K6)."
+            "description": "Wire name `tags`, stored column `tags_json`."
           },
           "updated_at": {
             "type": "string"
@@ -9938,7 +9938,7 @@
       },
       "ConvergenceStatusResponse": {
         "type": "object",
-        "description": "Node/cluster convergence report for a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`, `V2-07.4`).",
+        "description": "Node/cluster convergence report for a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`).",
         "properties": {
           "converged": {
             "type": "boolean"
@@ -10028,7 +10028,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Selection labels (K6), same contract as workflow tags — filter with\n`?tag=` on list and export."
+            "description": "Selection labels, same contract as workflow tags — filter with\n`?tag=` on list and export."
           },
           "topic": {
             "type": [
@@ -10102,7 +10102,7 @@
               "boolean",
               "null"
             ],
-            "description": "Whether the connector loads into the registry. Defaults to true (K1).\n\n`/export` has always emitted this field; until K1 the create path\nsilently dropped it, so a *disabled* connector promoted through\nexport → import came back **enabled** in the target environment."
+            "description": "Whether the connector loads into the registry. Defaults to true.\n\n`/export` has always emitted this field; until K1 the create path\nsilently dropped it, so a *disabled* connector promoted through\nexport → import came back **enabled** in the target environment."
           },
           "id": {
             "type": [
@@ -10118,13 +10118,13 @@
             "items": {
               "type": "string"
             },
-            "description": "Selection labels (K6), same contract as workflow tags — filter with\n`?tag=` on list and export."
+            "description": "Selection labels, same contract as workflow tags — filter with\n`?tag=` on list and export."
           }
         }
       },
       "CreateDeploymentPlanRequest": {
         "type": "object",
-        "description": "Request body for planning a candidate deployment (`POST /api/v2/admin/deployment-plans`, `V2-07.4`).",
+        "description": "Request body for planning a candidate deployment (`POST /api/v2/admin/deployment-plans`).",
         "required": [
           "base_revision",
           "manifest"
@@ -10551,7 +10551,7 @@
       },
       "DataEnvelope_BackupFile": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -10587,7 +10587,7 @@
       },
       "DataEnvelope_CacheInvalidatedResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -10616,7 +10616,7 @@
       },
       "DataEnvelope_ChannelResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -10647,7 +10647,7 @@
                 "type": "string"
               },
               "config": {
-                "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+                "description": "Channel config with `auth.keys` / `auth.secret` values masked —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
               },
               "consumer_group": {
                 "type": [
@@ -10657,7 +10657,7 @@
               },
               "content_hash": {
                 "type": "string",
-                "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
+                "description": "`sha256:…` over the canonical importable content. Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
               },
               "created_at": {
                 "type": "string"
@@ -10689,7 +10689,7 @@
                 "type": "string"
               },
               "tags": {
-                "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+                "description": "Wire name `tags`, stored column `tags_json` — the same contract\nworkflows have carried since 0.x."
               },
               "topic": {
                 "type": [
@@ -10717,7 +10717,7 @@
       },
       "DataEnvelope_CircuitBreakerReset": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -10733,7 +10733,7 @@
             "properties": {
               "found_on_this_node": {
                 "type": "boolean",
-                "description": "Whether the breaker existed on the node that served the request.\nBreakers are node-local; in cluster mode the reset is broadcast over\nthe epoch bus regardless, so `false` here is not a failure (F21)."
+                "description": "Whether the breaker existed on the node that served the request.\nBreakers are node-local; in cluster mode the reset is broadcast over\nthe epoch bus regardless, so `false` here is not a failure."
               },
               "key": {
                 "type": "string"
@@ -10747,7 +10747,7 @@
       },
       "DataEnvelope_CircuitBreakerStates": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -10782,7 +10782,7 @@
               },
               "scope": {
                 "type": "string",
-                "description": "Always `\"node\"` — breaker state is per-replica, never cluster-wide (F21)."
+                "description": "Always `\"node\"` — breaker state is per-replica, never cluster-wide."
               }
             }
           }
@@ -10790,14 +10790,14 @@
       },
       "DataEnvelope_ConnectorResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
         "properties": {
           "data": {
             "type": "object",
-            "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized (D27), so a handler that forgets to mask does not compile.",
+            "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized, so a handler that forgets to mask does not compile.",
             "required": [
               "id",
               "name",
@@ -10823,7 +10823,7 @@
               },
               "content_hash": {
                 "type": "string",
-                "description": "`sha256:…` over the canonical importable content (K10), computed on\nthe stored (unmasked) config — see the note on\n[`ChannelResponse::content_hash`]. Empty for a row whose stored JSON\nno longer parses: corrupt content equals nothing."
+                "description": "`sha256:…` over the canonical importable content, computed on\nthe stored (unmasked) config — see the note on\n[`ChannelResponse::content_hash`]. Empty for a row whose stored JSON\nno longer parses: corrupt content equals nothing."
               },
               "created_at": {
                 "type": "string"
@@ -10838,7 +10838,7 @@
                 "type": "string"
               },
               "tags": {
-                "description": "Wire name `tags`, stored column `tags_json` (K6)."
+                "description": "Wire name `tags`, stored column `tags_json`."
               },
               "updated_at": {
                 "type": "string"
@@ -10849,7 +10849,7 @@
       },
       "DataEnvelope_CronOccurrenceResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -10986,7 +10986,7 @@
       },
       "DataEnvelope_DlqPurgeResult": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11016,7 +11016,7 @@
       },
       "DataEnvelope_EngineReloadedResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11061,7 +11061,7 @@
       },
       "DataEnvelope_EngineStatusResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11136,14 +11136,14 @@
       },
       "DataEnvelope_ImportResult": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
         "properties": {
           "data": {
             "type": "object",
-            "description": "Result of a bulk import, in both dry-run and real modes (R18, K2) — the\nbody under `{\"data\": …}` that all three `/import` endpoints answer with.",
+            "description": "Result of a bulk import, in both dry-run and real modes — the\nbody under `{\"data\": …}` that all three `/import` endpoints answer with.",
             "required": [
               "dry_run",
               "imported",
@@ -11182,18 +11182,18 @@
                 "items": {
                   "$ref": "#/components/schemas/ImportItemResult"
                 },
-                "description": "One `{index, id, action}` entry per non-failed item (K2)."
+                "description": "One `{index, id, action}` entry per non-failed item."
               },
               "skipped": {
                 "type": "integer",
                 "format": "int64",
-                "description": "Items skipped under `on_conflict=skip` (K2).",
+                "description": "Items skipped under `on_conflict=skip`.",
                 "minimum": 0
               },
               "unchanged": {
                 "type": "integer",
                 "format": "int64",
-                "description": "Content-identical items under `on_conflict=new_version` (K2): nothing\nwritten, not counted in `imported`. Re-importing the same artifact\ntherefore reports 0 imports and N unchanged.",
+                "description": "Content-identical items under `on_conflict=new_version`: nothing\nwritten, not counted in `imported`. Re-importing the same artifact\ntherefore reports 0 imports and N unchanged.",
                 "minimum": 0
               }
             }
@@ -11202,7 +11202,7 @@
       },
       "DataEnvelope_ModelDependencies": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11241,7 +11241,7 @@
       },
       "DataEnvelope_ModelResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11361,7 +11361,7 @@
       },
       "DataEnvelope_PackageDetail": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11401,14 +11401,14 @@
       },
       "DataEnvelope_PackageReceiptResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
         "properties": {
           "data": {
             "type": "object",
-            "description": "A package receipt as the admin API shows it (K14).",
+            "description": "A package receipt as the admin API shows it.",
             "required": [
               "name",
               "version",
@@ -11461,7 +11461,7 @@
       },
       "DataEnvelope_PluginDependencies": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11502,7 +11502,7 @@
       },
       "DataEnvelope_PluginResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11589,7 +11589,7 @@
       },
       "DataEnvelope_TraceDetail": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11641,7 +11641,7 @@
                 "type": "string"
               },
               "message": {
-                "description": "The full engine message. Present only when `status = \"completed\"`.\n`context.metadata` is stripped from the projection (S14)."
+                "description": "The full engine message. Present only when `status = \"completed\"`.\n`context.metadata` is stripped from the projection."
               },
               "mode": {
                 "type": "string"
@@ -11664,7 +11664,7 @@
       },
       "DataEnvelope_TraceDlqEntryResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11727,7 +11727,7 @@
       },
       "DataEnvelope_Vec_BackupListItem": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11761,7 +11761,7 @@
       },
       "DataEnvelope_Vec_ChannelResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11794,7 +11794,7 @@
                   "type": "string"
                 },
                 "config": {
-                  "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+                  "description": "Channel config with `auth.keys` / `auth.secret` values masked —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
                 },
                 "consumer_group": {
                   "type": [
@@ -11804,7 +11804,7 @@
                 },
                 "content_hash": {
                   "type": "string",
-                  "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
+                  "description": "`sha256:…` over the canonical importable content. Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
                 },
                 "created_at": {
                   "type": "string"
@@ -11836,7 +11836,7 @@
                   "type": "string"
                 },
                 "tags": {
-                  "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+                  "description": "Wire name `tags`, stored column `tags_json` — the same contract\nworkflows have carried since 0.x."
                 },
                 "topic": {
                   "type": [
@@ -11865,7 +11865,7 @@
       },
       "DataEnvelope_Vec_ConnectorExportItem": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -11893,7 +11893,7 @@
                 },
                 "content_hash": {
                   "type": "string",
-                  "description": "`sha256:…` over the canonical importable content (K10), computed on the\nstored (unmasked) config. Ignored by `/import`, like the other extras."
+                  "description": "`sha256:…` over the canonical importable content, computed on the\nstored (unmasked) config. Ignored by `/import`, like the other extras."
                 },
                 "enabled": {
                   "type": "boolean"
@@ -11905,7 +11905,7 @@
                   "type": "string"
                 },
                 "tags": {
-                  "description": "Selection labels (K6); filter the export with `?tag=`."
+                  "description": "Selection labels; filter the export with `?tag=`."
                 }
               }
             }
@@ -11914,7 +11914,7 @@
       },
       "DataEnvelope_Vec_CronScheduleStatusResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -12023,7 +12023,7 @@
       },
       "DataEnvelope_Vec_FunctionSchemaItem": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -12073,7 +12073,7 @@
       },
       "DataEnvelope_Vec_ModelResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -12196,7 +12196,7 @@
       },
       "DataEnvelope_Vec_PluginResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -12286,7 +12286,7 @@
       },
       "DataEnvelope_Vec_WorkflowResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -12315,7 +12315,7 @@
                 "condition": {},
                 "content_hash": {
                   "type": "string",
-                  "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+                  "description": "`sha256:…` over the canonical importable content — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
                 },
                 "continue_on_error": {
                   "type": "boolean"
@@ -12365,14 +12365,14 @@
       },
       "DataEnvelope_WorkflowDependencies": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
         "properties": {
           "data": {
             "type": "object",
-            "description": "`GET /api/v2/admin/workflows/{id}/dependencies` (K9).",
+            "description": "`GET /api/v2/admin/workflows/{id}/dependencies`.",
             "required": [
               "workflow_id",
               "version",
@@ -12427,7 +12427,7 @@
       },
       "DataEnvelope_WorkflowResponse": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -12454,7 +12454,7 @@
               "condition": {},
               "content_hash": {
                 "type": "string",
-                "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+                "description": "`sha256:…` over the canonical importable content — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
               },
               "continue_on_error": {
                 "type": "boolean"
@@ -12503,7 +12503,7 @@
       },
       "DataEnvelope_WorkflowTestResult": {
         "type": "object",
-        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries.\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
           "data"
         ],
@@ -12538,7 +12538,7 @@
       },
       "DeploymentPlanResponse": {
         "type": "object",
-        "description": "Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`, `V2-07.4`, `TD-31`).",
+        "description": "Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`).",
         "properties": {
           "added_entities": {
             "type": "array",
@@ -12582,7 +12582,7 @@
       },
       "DeploymentReceiptResponse": {
         "type": "object",
-        "description": "Durable deployment apply/rollback receipt (`POST /api/v2/admin/deployments`, `V2-07.4`).",
+        "description": "Durable deployment apply/rollback receipt (`POST /api/v2/admin/deployments`).",
         "properties": {
           "committed_revision": {
             "type": "integer",
@@ -12625,7 +12625,7 @@
       },
       "DeploymentRevisionResponse": {
         "type": "object",
-        "description": "Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`, `V2-07.4`).",
+        "description": "Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`).",
         "properties": {
           "created_at": {
             "type": "string"
@@ -12708,7 +12708,7 @@
       },
       "EditionTransitionPreflightRequest": {
         "type": "object",
-        "description": "Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`, `V2-16.4`).",
+        "description": "Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`).",
         "properties": {
           "revision": {
             "type": [
@@ -12722,7 +12722,7 @@
       },
       "EditionTransitionPreflightResponse": {
         "type": "object",
-        "description": "Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`, `V2-16.4`).",
+        "description": "Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`).",
         "properties": {
           "backup_retention_checklist": {
             "type": "array",
@@ -13039,14 +13039,14 @@
         ],
         "properties": {
           "components": {
-            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled` (O10), `cluster_redis` in\ncluster mode, and `packages` when `[packages] apply` names artifacts."
+            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled`, `cluster_redis` in\ncluster mode, and `packages` when `[packages] apply` names artifacts."
           },
           "git_hash": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Build provenance and detail, served only to an admin caller (O9)."
+            "description": "Build provenance and detail, served only to an admin caller."
           },
           "status": {
             "type": "string",
@@ -13081,7 +13081,7 @@
       },
       "ImportItemResult": {
         "type": "object",
-        "description": "One entry of `results[]`: what a non-failed item did (K2).\n\n`action` stays a `String` on the wire so a client one release behind the\nserver still parses a report whose vocabulary grew; compare it against\n[`ImportAction::as_str`] values.",
+        "description": "One entry of `results[]`: what a non-failed item did.\n\n`action` stays a `String` on the wire so a client one release behind the\nserver still parses a report whose vocabulary grew; compare it against\n[`ImportAction::as_str`] values.",
         "required": [
           "index",
           "action"
@@ -13107,7 +13107,7 @@
       },
       "ImportResult": {
         "type": "object",
-        "description": "Result of a bulk import, in both dry-run and real modes (R18, K2) — the\nbody under `{\"data\": …}` that all three `/import` endpoints answer with.",
+        "description": "Result of a bulk import, in both dry-run and real modes — the\nbody under `{\"data\": …}` that all three `/import` endpoints answer with.",
         "required": [
           "dry_run",
           "imported",
@@ -13146,18 +13146,18 @@
             "items": {
               "$ref": "#/components/schemas/ImportItemResult"
             },
-            "description": "One `{index, id, action}` entry per non-failed item (K2)."
+            "description": "One `{index, id, action}` entry per non-failed item."
           },
           "skipped": {
             "type": "integer",
             "format": "int64",
-            "description": "Items skipped under `on_conflict=skip` (K2).",
+            "description": "Items skipped under `on_conflict=skip`.",
             "minimum": 0
           },
           "unchanged": {
             "type": "integer",
             "format": "int64",
-            "description": "Content-identical items under `on_conflict=new_version` (K2): nothing\nwritten, not counted in `imported`. Re-importing the same artifact\ntherefore reports 0 imports and N unchanged.",
+            "description": "Content-identical items under `on_conflict=new_version`: nothing\nwritten, not counted in `imported`. Re-importing the same artifact\ntherefore reports 0 imports and N unchanged.",
             "minimum": 0
           }
         }
@@ -13224,7 +13224,7 @@
       },
       "LintResponse": {
         "type": "object",
-        "description": "Response from linting a provider package (`POST /api/v2/admin/authoring/lint`, `V2-07.2`).",
+        "description": "Response from linting a provider package (`POST /api/v2/admin/authoring/lint`).",
         "properties": {
           "errors": {
             "type": "array",
@@ -13275,7 +13275,7 @@
       },
       "MigrationReportRequest": {
         "type": "object",
-        "description": "Request body for generating a legacy v1 -> v2 migration report (`POST /api/v2/admin/migration-report`, `V2-07.5`).",
+        "description": "Request body for generating a legacy v1 -> v2 migration report (`POST /api/v2/admin/migration-report`).",
         "properties": {
           "channels": {
             "type": "array",
@@ -13299,7 +13299,7 @@
       },
       "MigrationReportResponse": {
         "type": "object",
-        "description": "Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`, `V2-07.5`, `TD-31`).",
+        "description": "Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`).",
         "properties": {
           "blocking_findings": {
             "type": "array",
@@ -13744,7 +13744,7 @@
       },
       "PackResponse": {
         "type": "object",
-        "description": "Response from deterministically packing a provider package (`POST /api/v2/admin/authoring/pack`, `V2-07.2`).",
+        "description": "Response from deterministically packing a provider package (`POST /api/v2/admin/authoring/pack`).",
         "properties": {
           "files": {
             "type": "object",
@@ -13830,7 +13830,7 @@
       },
       "PackageReceiptResponse": {
         "type": "object",
-        "description": "A package receipt as the admin API shows it (K14).",
+        "description": "A package receipt as the admin API shows it.",
         "required": [
           "name",
           "version",
@@ -13991,7 +13991,7 @@
                   "type": "string"
                 },
                 "config": {
-                  "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+                  "description": "Channel config with `auth.keys` / `auth.secret` values masked —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
                 },
                 "consumer_group": {
                   "type": [
@@ -14001,7 +14001,7 @@
                 },
                 "content_hash": {
                   "type": "string",
-                  "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
+                  "description": "`sha256:…` over the canonical importable content. Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
                 },
                 "created_at": {
                   "type": "string"
@@ -14033,7 +14033,7 @@
                   "type": "string"
                 },
                 "tags": {
-                  "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+                  "description": "Wire name `tags`, stored column `tags_json` — the same contract\nworkflows have carried since 0.x."
                 },
                 "topic": {
                   "type": [
@@ -14114,7 +14114,7 @@
                 },
                 "content_hash": {
                   "type": "string",
-                  "description": "`sha256:…` over the canonical importable content (K10)."
+                  "description": "`sha256:…` over the canonical importable content."
                 },
                 "created_at": {
                   "type": "string"
@@ -14152,7 +14152,7 @@
                   "items": {
                     "type": "string"
                   },
-                  "description": "Selection labels (K6); filter the list with `?tag=`."
+                  "description": "Selection labels; filter the list with `?tag=`."
                 },
                 "updated_at": {
                   "type": "string"
@@ -14415,7 +14415,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "A package receipt as the admin API shows it (K14).",
+              "description": "A package receipt as the admin API shows it.",
               "required": [
                 "name",
                 "version",
@@ -14694,7 +14694,7 @@
                 "condition": {},
                 "content_hash": {
                   "type": "string",
-                  "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+                  "description": "`sha256:…` over the canonical importable content — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
                 },
                 "continue_on_error": {
                   "type": "boolean"
@@ -15019,7 +15019,7 @@
           },
           "supported": {
             "type": "boolean",
-            "description": "R29: `false` when no probe exists for this connector (`es`, `kafka`,\nor a `db` connector with a `mongodb://` URL) — a permanent capability\ngap, not an outage. Without this field the two were indistinguishable\nin the response shape, and operator tooling read \"not implemented\" as\ndowntime."
+            "description": "`false` when no probe exists for this connector (`es`, `kafka`,\nor a `db` connector with a `mongodb://` URL) — a permanent capability\ngap, not an outage. Without this field the two were indistinguishable\nin the response shape, and operator tooling read \"not implemented\" as\ndowntime."
           }
         }
       },
@@ -15036,7 +15036,7 @@
       },
       "ProcessResponse": {
         "type": "object",
-        "description": "Synchronous data-plane response envelope.\n\nR23: deserializable under `cfg(test)` with `deny_unknown_fields`, so\n`sync::tests` can round-trip what `response_envelope` actually emits back\nthrough this struct. A field added to the envelope and not to the mirror —\nor vice versa — fails the test instead of shipping a spec that describes a\nshape nothing sends.",
+        "description": "Synchronous data-plane response envelope.\n\nDeserializable under `cfg(test)` with `deny_unknown_fields`, so\n`sync::tests` can round-trip what `response_envelope` actually emits back\nthrough this struct. A field added to the envelope and not to the mirror —\nor vice versa — fails the test instead of shipping a spec that describes a\nshape nothing sends.",
         "required": [
           "id",
           "status",
@@ -15200,7 +15200,7 @@
       },
       "RollbackDeploymentRequest": {
         "type": "object",
-        "description": "Request body to roll back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`, `V2-07.4`).",
+        "description": "Request body to roll back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).",
         "required": [
           "idempotency_key",
           "expected_head_revision",
@@ -15227,7 +15227,7 @@
       },
       "RollbackDeploymentResponse": {
         "type": "object",
-        "description": "Response from rolling back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`, `V2-07.4`).",
+        "description": "Response from rolling back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).",
         "properties": {
           "committed_revision": {
             "type": "integer",
@@ -15280,7 +15280,7 @@
       },
       "RuntimeCapabilitiesResponse": {
         "type": "object",
-        "description": "Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`, `V2-07.1`, `TD-31`).",
+        "description": "Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`).",
         "properties": {
           "active_deployment_revision": {
             "type": "integer",
@@ -15353,7 +15353,7 @@
       },
       "ScaffoldRequest": {
         "type": "object",
-        "description": "Request body to scaffold a new provider package (`POST /api/v2/admin/authoring/scaffold`, `V2-07.2`).",
+        "description": "Request body to scaffold a new provider package (`POST /api/v2/admin/authoring/scaffold`).",
         "required": [
           "publisher",
           "provider_id",
@@ -15376,7 +15376,7 @@
       },
       "ScaffoldResponse": {
         "type": "object",
-        "description": "Response from scaffolding a provider package (`POST /api/v2/admin/authoring/scaffold`, `V2-07.2`).",
+        "description": "Response from scaffolding a provider package (`POST /api/v2/admin/authoring/scaffold`).",
         "properties": {
           "files": {
             "type": "object",
@@ -15479,7 +15479,7 @@
             "type": "string"
           },
           "message": {
-            "description": "The full engine message. Present only when `status = \"completed\"`.\n`context.metadata` is stripped from the projection (S14)."
+            "description": "The full engine message. Present only when `status = \"completed\"`.\n`context.metadata` is stripped from the projection."
           },
           "mode": {
             "type": "string"
@@ -15600,7 +15600,7 @@
       },
       "TraceListItem": {
         "type": "object",
-        "description": "One row of `GET /api/v2/admin/traces` — payload-free by design (S14).\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every\ncaller's request body and the full engine message in one response. The\nserver's `SELECT` already omits those columns, so this type is the second\nhalf of that guarantee rather than a filter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
+        "description": "One row of `GET /api/v2/admin/traces` — payload-free by design.\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every\ncaller's request body and the full engine message in one response. The\nserver's `SELECT` already omits those columns, so this type is the second\nhalf of that guarantee rather than a filter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
         "required": [
           "id",
           "channel",
@@ -15660,7 +15660,7 @@
       },
       "TracePageEnvelope": {
         "type": "object",
-        "description": "`GET /api/v2/admin/traces` — a page of trace rows.\n\nNot [`PaginatedEnvelope`] (D8): `total` is present only when the request\nasked for it with `include_total=true`, because the count scans the whole\nfiltered set; and `next_cursor` carries the keyset position of the last row\nso the next page can be fetched without an `offset` skip.",
+        "description": "`GET /api/v2/admin/traces` — a page of trace rows.\n\nNot [`PaginatedEnvelope`]: `total` is present only when the request\nasked for it with `include_total=true`, because the count scans the whole\nfiltered set; and `next_cursor` carries the keyset position of the last row\nso the next page can be fetched without an `offset` skip.",
         "required": [
           "data",
           "limit",
@@ -16018,7 +16018,7 @@
       },
       "WorkflowDependencies": {
         "type": "object",
-        "description": "`GET /api/v2/admin/workflows/{id}/dependencies` (K9).",
+        "description": "`GET /api/v2/admin/workflows/{id}/dependencies`.",
         "required": [
           "workflow_id",
           "version",
@@ -16091,7 +16091,7 @@
           "condition": {},
           "content_hash": {
             "type": "string",
-            "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+            "description": "`sha256:…` over the canonical importable content — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
           },
           "continue_on_error": {
             "type": "boolean"
@@ -16232,7 +16232,7 @@
     },
     {
       "name": "Packages",
-      "description": "Package receipts — what package versions are staged or applied here (K14)"
+      "description": "Package receipts — what package versions are staged or applied here"
     },
     {
       "name": "Deployments",

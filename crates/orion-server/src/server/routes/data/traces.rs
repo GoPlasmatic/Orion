@@ -1,5 +1,5 @@
-//! Trace listing & polling: the payload-free list projection (S14) and the
-//! token- or admin-gated single-trace read (R12).
+//! Trace listing & polling: the payload-free list projection and the
+//! token- or admin-gated single-trace read.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -102,7 +102,7 @@ enum TraceLane {
     path = "/api/v2/admin/traces/{id}",
     tag = "Traces",
     description = "\
-Fetch one trace. Access follows a two-lane rule (R12): present either a \
+Fetch one trace. Access follows a two-lane rule: present either a \
 valid admin credential, or — for async submissions — the `trace_token` \
 returned with the 202, in the `x-trace-token` header. Traces without a token \
 (sync traces, DLQ retries, rows from before 1.0.0) are admin-plane only when \

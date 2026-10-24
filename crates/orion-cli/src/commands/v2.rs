@@ -1,4 +1,4 @@
-//! Orion v2 CLI commands (`V2-07.2`–`V2-07.5`, `V2-16.4`).
+//! Orion v2 CLI commands.
 //!
 //! Exposes first-class CLI subcommands for:
 //! - `deployments`: `capabilities`, `plan`, `apply`, `get`, `wait`, `rollback`, `migration-report`, `edition-preflight`
@@ -41,7 +41,7 @@ fn load_file_or_stdin(file: &str) -> Result<serde_json::Value> {
 
 #[derive(Args)]
 #[command(
-    long_about = "Manage immutable v2 deployments, candidate plans, CAS apply, convergence polling, rollback, and migration/edition preflight (`V2-07.4`, `V2-07.5`, `V2-16.4`)."
+    long_about = "Manage immutable v2 deployments, candidate plans, CAS apply, convergence polling, rollback, and migration/edition preflight."
 )]
 pub struct DeploymentsCmd {
     #[command(subcommand)]
@@ -125,7 +125,7 @@ pub enum DeploymentsSubcommand {
         #[arg(short, long)]
         file: String,
     },
-    /// Run Enterprise-to-Community edition transition preflight check (`V2-16.4`)
+    /// Run Enterprise-to-Community edition transition preflight check
     EditionPreflight {
         /// Optional revision to inspect (defaults to active head revision)
         #[arg(long)]
@@ -350,7 +350,7 @@ async fn wait_for_convergence(
 
 #[derive(Args)]
 #[command(
-    long_about = "Author, lint, pack, upload, admit, and revoke v2 connector provider packages (`V2-07.2`, `V2-07.3`)."
+    long_about = "Author, lint, pack, upload, admit, and revoke v2 connector provider packages."
 )]
 pub struct ProviderCmd {
     #[command(subcommand)]
@@ -380,7 +380,7 @@ pub enum ProviderSubcommand {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Generate a deterministic v2 provider package scaffold (`V2-07.2`)
+    /// Generate a deterministic v2 provider package scaffold
     Scaffold {
         /// Publisher namespace (e.g. `org.acme`)
         #[arg(long)]
@@ -395,13 +395,13 @@ pub enum ProviderSubcommand {
         #[arg(long, default_value = "wasm")]
         kind: String,
     },
-    /// Lint a provider package manifest and schema bundle (`V2-07.2`)
+    /// Lint a provider package manifest and schema bundle
     Lint {
         /// Path to package bundle JSON file (or '-' for stdin)
         #[arg(short, long)]
         file: String,
     },
-    /// Pack a provider package into a deterministic content-addressed archive (`V2-07.2`)
+    /// Pack a provider package into a deterministic content-addressed archive
     Pack {
         /// Path to package bundle JSON file (or '-' for stdin)
         #[arg(short, long)]
@@ -586,7 +586,7 @@ impl ProviderCmd {
 
 #[derive(Args)]
 #[command(
-    long_about = "Manage immutable v2 connection revisions and execute audited health probes (`V2-07.3`)."
+    long_about = "Manage immutable v2 connection revisions and execute audited health probes."
 )]
 pub struct ConnectionsCmd {
     #[command(subcommand)]
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim7_cli_v2_commands_exercise_full_flow_against_http_server() {
+    async fn cli_v2_commands_exercise_full_flow_against_http_server() {
         let client = OrionClient::with_mock_transport(handle_v2_request).unwrap();
         let fmt = OutputFormat::Json;
 

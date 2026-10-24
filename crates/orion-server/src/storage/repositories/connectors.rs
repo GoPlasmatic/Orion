@@ -17,13 +17,13 @@ pub struct CreateConnectorRequest {
     pub connector_type: crate::connector::ConnectorType,
     #[serde(default = "default_config")]
     pub config: serde_json::Value,
-    /// Whether the connector loads into the registry. Defaults to true (K1).
+    /// Whether the connector loads into the registry. Defaults to true.
     ///
     /// `/export` has always emitted this field; until K1 the create path
     /// silently dropped it, so a *disabled* connector promoted through
     /// export → import came back **enabled** in the target environment.
     pub enabled: Option<bool>,
-    /// Selection labels (K6), same contract as workflow tags — filter with
+    /// Selection labels, same contract as workflow tags — filter with
     /// `?tag=` on list and export.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -45,7 +45,7 @@ pub struct UpdateConnectorRequest {
 #[derive(Debug, Default, Deserialize, serde::Serialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ConnectorFilter {
-    /// Only connectors carrying this tag (K6).
+    /// Only connectors carrying this tag.
     pub tag: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
@@ -58,7 +58,7 @@ pub struct ConnectorFilter {
     pub sort_order: Option<String>,
 }
 
-/// The one connector filter: `?tag=` (K6). Shared by `list_paginated` and
+/// The one connector filter: `?tag=`. Shared by `list_paginated` and
 /// `snapshot`, the pattern the two versioned repositories already use.
 fn build_condition(filter: &ConnectorFilter) -> sea_query::Condition {
     let mut cond = sea_query::Condition::all();
@@ -107,18 +107,18 @@ pub trait ConnectorRepository: Send + Sync {
     async fn list_enabled(&self) -> Result<Vec<Connector>, OrionError>;
     /// Whether a connector with this name is already stored.
     ///
-    /// R15: `name` carries the unique constraint, so it is what a bulk import
+    /// `name` carries the unique constraint, so it is what a bulk import
     /// collides on. Dry-run used to skip the database entirely and therefore
     /// could not see the single most common real failure.
     async fn exists_by_name(&self, name: &str) -> Result<bool, OrionError>;
-    /// Fetch a connector by its unique `name` (K2).
+    /// Fetch a connector by its unique `name`.
     ///
     /// The upsert import matches on `name` — the column the unique constraint
     /// lives on — and needs the stored row to compare content and address the
     /// update, which takes the `id`.
     async fn get_by_name(&self, name: &str) -> Result<Connector, OrionError>;
     /// Every connector matching `filter` (`tag`; the filter's own page
-    /// bounds are ignored), read as one consistent snapshot (K12) — the
+    /// bounds are ignored), read as one consistent snapshot — the
     /// export contract.
     async fn snapshot(&self, filter: &ConnectorFilter) -> Result<Vec<Connector>, OrionError>;
 
@@ -178,7 +178,7 @@ fn oauth_state_delete(connector_name: &str) -> sea_query::DeleteStatement {
 
 pub struct SqlConnectorRepository {
     pool: DbPool,
-    /// H3: present when `storage.connector_encryption_key` is set. Writes
+    /// Present when `storage.connector_encryption_key` is set. Writes
     /// encrypt `config_json`; reads decrypt (with plaintext pass-through for
     /// rows written before the key existed).
     cipher: Option<std::sync::Arc<crate::storage::config_encryption::ConfigCipher>>,
@@ -189,7 +189,7 @@ impl SqlConnectorRepository {
         Self { pool, cipher: None }
     }
 
-    /// H3: construct with the optional at-rest cipher.
+    /// Construct with the optional at-rest cipher.
     pub fn with_cipher(
         pool: DbPool,
         cipher: Option<std::sync::Arc<crate::storage::config_encryption::ConfigCipher>>,
@@ -209,7 +209,7 @@ impl SqlConnectorRepository {
     ///
     /// The update path reads the stored row before it writes, and both halves
     /// have to see one snapshot — on the pooled twin that is what
-    /// `begin_write_tx` buys (D30), and it is lost if the read runs on the
+    /// `begin_write_tx` buys, and it is lost if the read runs on the
     /// pool while the write runs on the transaction.
     async fn get_by_id_tx(
         &self,
@@ -742,7 +742,7 @@ mod tests {
         );
     }
 
-    /// H3: with a key configured the credential is not in the table, and the
+    /// With a key configured the credential is not in the table, and the
     /// repository is the only thing that can read it back. Asserted on the
     /// *stored bytes*, because "we call encrypt somewhere" is not the claim —
     /// "a database dump does not carry the credential" is.

@@ -12,8 +12,8 @@
 //! serving everything else.
 //!
 //! The adapters are compiled **here and not at upload**, on the one
-//! [`ExprEngine`] the process evaluates with (I188), which both engines'
-//! `model_infer` evaluate them on. That engine outlives every generation, so
+//! [`ExprEngine`] the process evaluates with (I188), which `model_infer`
+//! evaluates them on. That engine outlives every generation, so
 //! a reload carries a model whose manifest has not changed with its compiled
 //! adapters ([`ModelSet::reload`]), and compiles only what is new. Nothing is
 //! loaded into a runtime at this point; that is the [`LoadedCache`]'s, on

@@ -30,7 +30,7 @@ fn sample_archive_entries() -> Vec<ArchiveEntryInput> {
 }
 
 #[test]
-fn v2_03_1_typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
+fn typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
     // Reject integer/digest confusion on ProviderRef
     let bad_provider = ProviderRef {
         publisher: "org.orion".to_string(),
@@ -79,7 +79,7 @@ fn v2_03_1_typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
 }
 
 #[test]
-fn v2_04_1_2_3_4_5_6_end_to_end_archive_admit_plan_apply_rollback_and_gc() {
+fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     let store = ImmutableDeploymentStore::new("node-test-1");
     let policy = CommunityAdmissionPolicy::new();
 
@@ -221,7 +221,7 @@ fn v2_04_1_2_3_4_5_6_end_to_end_archive_admit_plan_apply_rollback_and_gc() {
 }
 
 #[test]
-fn v2_03_5_legacy_backfill_converts_community_estate_and_blocks_enterprise_connectors() {
+fn legacy_backfill_converts_community_estate_and_blocks_enterprise_connectors() {
     let http_cfg = json!({ "type": "http", "base_url": "https://api.example.com" });
     let wf_json = json!({ "id": "wf1", "tasks": [] });
     let manifest = ImmutableDeploymentStore::build_legacy_bootstrap_manifest(
@@ -247,7 +247,7 @@ fn v2_03_5_legacy_backfill_converts_community_estate_and_blocks_enterprise_conne
 }
 
 #[tokio::test]
-async fn v2_03_2_to_4_sqlite_migration_and_persistence_roundtrip() {
+async fn sqlite_migration_and_persistence_roundtrip() {
     use std::str::FromStr;
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -391,7 +391,7 @@ async fn v2_03_2_to_4_sqlite_migration_and_persistence_roundtrip() {
 }
 
 #[test]
-fn td19_td20_td22_connection_secret_rejection_canonical_digests_and_staged_gc_protection() {
+fn connection_secret_rejection_canonical_digests_and_staged_gc_protection() {
     let store = ImmutableDeploymentStore::new("node-sec-1");
     let policy = CommunityAdmissionPolicy::new();
     let entries = sample_archive_entries();
@@ -468,7 +468,7 @@ fn td19_td20_td22_connection_secret_rejection_canonical_digests_and_staged_gc_pr
 }
 
 #[tokio::test]
-async fn claim2_cross_replica_db_transactional_cas_and_revocation_enforcement() {
+async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
     use std::str::FromStr;
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(2)
@@ -580,7 +580,7 @@ async fn claim2_cross_replica_db_transactional_cas_and_revocation_enforcement() 
 }
 
 #[tokio::test]
-async fn claim3_failed_persistence_never_undoes_committed_in_memory_state() {
+async fn failed_persistence_never_undoes_committed_in_memory_state() {
     use std::str::FromStr;
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)

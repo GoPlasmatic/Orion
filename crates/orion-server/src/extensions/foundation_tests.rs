@@ -256,7 +256,7 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
 }
 
 #[tokio::test]
-async fn v2_14_2_and_3_http_ssrf_guard_and_live_sqlite_execution() {
+async fn http_ssrf_guard_and_live_sqlite_execution() {
     let http = HttpProviderBackend::new();
     let inv = make_invocation(DRIVER_HTTP, "http-conn", 1, "get");
     let attempt = inv.next_attempt().unwrap();
@@ -361,8 +361,7 @@ async fn v2_14_2_and_3_http_ssrf_guard_and_live_sqlite_execution() {
 }
 
 #[tokio::test]
-async fn td24_and_td29_sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and_ttl_ms()
- {
+async fn sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and_ttl_ms() {
     let sqlite = SqliteProviderBackend::default();
     let inv_create = make_invocation(DRIVER_SQLITE, "sqlite-conn", 1, "execute");
     let attempt_create = inv_create.next_attempt().unwrap();

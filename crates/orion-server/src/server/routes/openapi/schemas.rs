@@ -1,4 +1,4 @@
-//! OpenAPI schema-only response envelope and DTO definitions (`MOD-04`).
+//! OpenAPI schema-only response envelope and DTO definitions.
 //!
 //! These endpoints build their responses with `json!`, so there is no runtime
 //! struct to point `body =` at. Declaring the shape here is what makes the
@@ -36,7 +36,7 @@ pub(crate) use orion_api::ImportResult;
 // Response envelopes (R17 shape, R22 schemas)
 // ============================================================
 
-/// The `{"data": …}` envelope every admin 2xx carries (R17).
+/// The `{"data": …}` envelope every admin 2xx carries.
 ///
 /// Generic so each resource gets a described response without a hand-written
 /// wrapper struct per endpoint. utoipa inlines the type parameter, so
@@ -79,9 +79,9 @@ pub(crate) struct ConnectorListItem {
     /// The same masked config, parsed — the shape `POST`/`PUT` accept.
     config: serde_json::Value,
     enabled: bool,
-    /// Selection labels (K6); filter the list with `?tag=`.
+    /// Selection labels; filter the list with `?tag=`.
     tags: Vec<String>,
-    /// `sha256:…` over the canonical importable content (K10).
+    /// `sha256:…` over the canonical importable content.
     content_hash: String,
     created_at: String,
     updated_at: String,
@@ -115,9 +115,9 @@ pub(crate) struct ConnectorExportItem {
     /// `env://`-style references survive the masking as references.
     config: serde_json::Value,
     enabled: bool,
-    /// Selection labels (K6); filter the export with `?tag=`.
+    /// Selection labels; filter the export with `?tag=`.
     tags: serde_json::Value,
-    /// `sha256:…` over the canonical importable content (K10), computed on the
+    /// `sha256:…` over the canonical importable content, computed on the
     /// stored (unmasked) config. Ignored by `/import`, like the other extras.
     content_hash: String,
 }
@@ -129,7 +129,7 @@ pub(crate) struct CircuitBreakerStates {
     /// Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`
     /// is empty because nothing is tracked.
     enabled: bool,
-    /// Always `"node"` — breaker state is per-replica, never cluster-wide (F21).
+    /// Always `"node"` — breaker state is per-replica, never cluster-wide.
     scope: String,
     /// Which node's map this is.
     instance_id: String,
@@ -145,7 +145,7 @@ pub(crate) struct CircuitBreakerReset {
     key: String,
     /// Whether the breaker existed on the node that served the request.
     /// Breakers are node-local; in cluster mode the reset is broadcast over
-    /// the epoch bus regardless, so `false` here is not a failure (F21).
+    /// the epoch bus regardless, so `false` here is not a failure.
     found_on_this_node: bool,
 }
 
@@ -197,7 +197,7 @@ pub(crate) struct BackupListItem {
 
 /// `GET /api/v2/admin/traces` — a page of trace rows.
 ///
-/// Not [`PaginatedEnvelope`] (D8): `total` is present only when the request
+/// Not [`PaginatedEnvelope`]: `total` is present only when the request
 /// asked for it with `include_total=true`, because the count scans the whole
 /// filtered set; and `next_cursor` carries the keyset position of the last row
 /// so the next page can be fetched without an `offset` skip.
@@ -229,7 +229,7 @@ pub(crate) struct TraceDetail {
     channel_id: Option<String>,
     created_at: String,
     /// The full engine message. Present only when `status = "completed"`.
-    /// `context.metadata` is stripped from the projection (S14).
+    /// `context.metadata` is stripped from the projection.
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<Value>,
     /// Present only when `status = "failed"`.
@@ -283,10 +283,10 @@ pub(crate) struct HealthStatus {
     version: String,
     uptime_seconds: i64,
     /// Per-subsystem state: `database`, `engine`, `connectors`, `channels`,
-    /// plus `kafka` when `kafka.enabled` (O10), `cluster_redis` in
+    /// plus `kafka` when `kafka.enabled`, `cluster_redis` in
     /// cluster mode, and `packages` when `[packages] apply` names artifacts.
     components: Value,
-    /// Build provenance and detail, served only to an admin caller (O9).
+    /// Build provenance and detail, served only to an admin caller.
     #[serde(skip_serializing_if = "Option::is_none")]
     git_hash: Option<String>,
 }

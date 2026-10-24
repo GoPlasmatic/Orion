@@ -1689,7 +1689,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_10_2_passes_all_36_schema_and_manifest_fixture_cases() {
+    fn passes_all_36_schema_and_manifest_fixture_cases() {
         let fixture_dir =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/schema-validation");
         let cases_raw = std::fs::read_to_string(fixture_dir.join("cases.json")).unwrap();
@@ -1750,7 +1750,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_10_2_enforces_step_metering_and_sensitive_projection() {
+    fn enforces_step_metering_and_sensitive_projection() {
         let mut schemas = BTreeMap::new();
         schemas.insert(
             "schemas/config.json".to_string(),

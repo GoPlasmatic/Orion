@@ -105,7 +105,7 @@ fn slots_across(before: &str, after: &str) -> Vec<PoolSlot> {
 /// Names of active workflows whose steps, a loop's `setup` included,
 /// reference `connector_name`.
 ///
-/// F18: workflows address connectors by *name*, and nothing tied the two
+/// Workflows address connectors by *name*, and nothing tied the two
 /// together — renaming a connector left every referencing workflow pointing at
 /// a name that no longer resolves, which is a runtime 500 per request with no
 /// error at rename time and no load issue (that list covers connectors that
@@ -406,7 +406,7 @@ pub(crate) async fn delete_connector(
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
             `errors` and the rest of the batch still applies. Dry-run additionally probes for name \
             conflicts against stored rows and duplicates within the batch, without writing. \
-            `?on_conflict=new_version` upserts instead of refusing an existing name (K2): connectors \
+            `?on_conflict=new_version` upserts instead of refusing an existing name: connectors \
             are unversioned, so an existing connector is updated in place (`updated`), and identical \
             content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item \
             outcomes are in `results`.", body = DataEnvelope<ImportResult>),
@@ -483,7 +483,7 @@ async fn import_connector_create(
     Ok(())
 }
 
-/// K2: one connector item under `on_conflict=new_version`.
+/// One connector item under `on_conflict=new_version`.
 ///
 /// Connectors are unversioned, so "new version" degrades to an in-place
 /// update — the same wholesale config replacement `PUT /connectors/{id}`
@@ -764,7 +764,7 @@ pub(crate) async fn validate_connector(
 pub(crate) struct ProbeResult {
     /// `true` when the backend answered.
     reachable: bool,
-    /// R29: `false` when no probe exists for this connector (`es`, `kafka`,
+    /// `false` when no probe exists for this connector (`es`, `kafka`,
     /// or a `db` connector with a `mongodb://` URL) — a permanent capability
     /// gap, not an outage. Without this field the two were indistinguishable
     /// in the response shape, and operator tooling read "not implemented" as

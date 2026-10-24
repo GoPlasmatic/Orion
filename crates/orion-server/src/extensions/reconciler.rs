@@ -497,7 +497,7 @@ mod tests {
     use crate::extensions::package_identity::sha256_digest;
 
     #[test]
-    fn v2_06_1_2_3_4_5_reconciler_quarantines_per_entity_discards_superseded_and_enforces_lease() {
+    fn reconciler_quarantines_per_entity_discards_superseded_and_enforces_lease() {
         let store = ImmutableDeploymentStore::new("node-a");
         let policy = CommunityAdmissionPolicy::new();
         let reconciler = NodeReconciler::new(store.clone(), "node-a", "boot-1");
@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td18_td34_runtime_nodes_sqlite_persistence_and_observed_convergence() {
+    async fn runtime_nodes_sqlite_persistence_and_observed_convergence() {
         use std::str::FromStr;
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)

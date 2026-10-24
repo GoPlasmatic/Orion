@@ -799,8 +799,8 @@ returns a cached body.
 
 Poll `GET /api/v2/admin/traces/{id}` with the returned `trace_id` for the \
 result, presenting the returned `trace_token` via the `x-trace-token` header \
-or `?token=` query parameter. The token scopes the poll to this submission \
-(R12); an admin credential also works.
+or `?token=` query parameter. The token scopes the poll to this \
+submission; an admin credential also works.
 
 `trace_id` is always present. Async submission is a request for a result to be \
 fetched later, so the trace row is written before the 202 is sent even when \
@@ -885,7 +885,7 @@ pub(crate) struct ProcessRequest {
 impl ProcessRequest {
     /// Read the request body, which may be the envelope or the payload itself.
     ///
-    /// R13: this endpoint had three behaviours for three body shapes, and only
+    /// This endpoint had three behaviours for three body shapes, and only
     /// one was documented. `{"data": …}` was the envelope; an **empty** body
     /// became `{"data":{},"metadata":{}}`; and a **bare object** — `{"amount":
     /// 5}`, the obvious thing to send, and what every other JSON API accepts —
@@ -963,7 +963,7 @@ impl ProcessRequest {
 
 /// Synchronous data-plane response envelope.
 ///
-/// R23: deserializable under `cfg(test)` with `deny_unknown_fields`, so
+/// Deserializable under `cfg(test)` with `deny_unknown_fields`, so
 /// `sync::tests` can round-trip what `response_envelope` actually emits back
 /// through this struct. A field added to the envelope and not to the mirror —
 /// or vice versa — fails the test instead of shipping a spec that describes a
@@ -1010,9 +1010,9 @@ pub(crate) struct ProcessTaskError {
 pub(crate) struct AsyncSubmitResponse {
     /// Id to poll via `GET /api/v2/admin/traces/{id}`. Always present: a 202
     /// is a receipt for a result, so the row it names is written before this
-    /// response is sent (R11).
+    /// response is sent.
     trace_id: String,
-    /// Capability token scoping the poll to this submission (R12): present
+    /// Capability token scoping the poll to this submission: present
     /// it via the `x-trace-token` header or `?token=` query parameter.
     /// Shown once, here — only its hash is stored.
     trace_token: String,

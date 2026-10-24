@@ -24,7 +24,7 @@ fn parse_implementation_kind(kind_str: &str) -> Result<ImplementationKind, Strin
     })
 }
 
-/// `POST /api/v2/admin/authoring/scaffold` (`V2-07.2`).
+/// `POST /api/v2/admin/authoring/scaffold`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/authoring/scaffold",
@@ -81,7 +81,7 @@ pub(crate) async fn authoring_scaffold(Json(req): Json<ScaffoldRequest>) -> impl
     )
 }
 
-/// `POST /api/v2/admin/authoring/pack` (`V2-07.2`).
+/// `POST /api/v2/admin/authoring/pack`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/authoring/pack",
@@ -143,7 +143,7 @@ pub(crate) async fn authoring_pack(Json(req): Json<UploadPackageRequest>) -> imp
     }
 }
 
-/// `POST /api/v2/admin/authoring/lint` (`V2-07.2`).
+/// `POST /api/v2/admin/authoring/lint`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/authoring/lint",

@@ -1,4 +1,4 @@
-//! Package receipts (K14): the storage half of the applied-version
+//! Package receipts: the storage half of the applied-version
 //! immutability rule.
 //!
 //! A receipt records that a package artifact — a bundle of connectors,

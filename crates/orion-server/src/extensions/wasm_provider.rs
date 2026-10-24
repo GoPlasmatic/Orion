@@ -691,7 +691,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn v2_13_1_component_cache_rejects_tampered_bytes_ambient_wasi_and_stale_fingerprints() {
+    fn component_cache_rejects_tampered_bytes_ambient_wasi_and_stale_fingerprints() {
         let cache = WasmComponentCache::new("wasmtime-49.0.4:profile-v1", 1024 * 1024);
         // Valid minimal WebAssembly binary with a custom section `\0\x05\x04mock`.
         let wasm_bytes = b"\0asm\x01\x00\x00\x00\x00\x05\x04mock";
@@ -773,7 +773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_13_2_and_3_wasm_provider_enforces_fuel_memory_capabilities_and_output_contract() {
+    async fn wasm_provider_enforces_fuel_memory_capabilities_and_output_contract() {
         let root = CompositionRoot::community();
         let cache = WasmComponentCache::new("wasmtime-49.0.4:profile-v1", 1024 * 1024);
         let wasm_bytes = b"\0asm\x01\x00\x00\x00\x00\x06\x05guest";

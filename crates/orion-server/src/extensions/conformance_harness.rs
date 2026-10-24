@@ -544,7 +544,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn v2_10_5_passes_all_20_connector_invocation_conformance_cases() {
+    fn passes_all_20_connector_invocation_conformance_cases() {
         let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/v2/connector-invocation");
         let profile: Value = serde_json::from_str(

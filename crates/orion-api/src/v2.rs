@@ -1,4 +1,4 @@
-//! Orion v2 Admin API wire contract (`V2-07.1`–`V2-07.5`, `V2-16.4`).
+//! Orion v2 Admin API wire contract.
 //!
 //! Versioned request and response DTOs shared by `orion-server` and `orion-cli` for `/api/v2/admin/*` endpoints:
 //! - Runtime capabilities & edition boundary discovery (`/runtime-capabilities`)
@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`, `V2-07.1`, `TD-31`).
+/// Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RuntimeCapabilitiesResponse {
@@ -53,7 +53,7 @@ pub struct RuntimeCapabilitiesResponse {
     pub node_status: Value,
 }
 
-/// A single file entry inside a provider package archive (`V2-07.3`, `V2-10.3`).
+/// A single file entry inside a provider package archive.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ArchiveEntryDto {
@@ -61,7 +61,7 @@ pub struct ArchiveEntryDto {
     pub content: String,
 }
 
-/// Summary of an uploaded/admitted connector provider package (`GET /api/v2/admin/connector-packages`, `V2-07.3`).
+/// Summary of an uploaded/admitted connector provider package (`GET /api/v2/admin/connector-packages`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectorPackageSummary {
@@ -200,7 +200,7 @@ pub struct RevokePackageResponse {
     pub reason: Option<String>,
 }
 
-/// Summary of an immutable connection revision (`GET /api/v2/admin/connections`, `V2-07.3`).
+/// Summary of an immutable connection revision (`GET /api/v2/admin/connections`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionRevisionResponse {
@@ -271,7 +271,7 @@ pub struct ProbeConnectionRequest {
     pub kind: Option<String>,
 }
 
-/// Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`, `V2-07.3`, `TD-31`).
+/// Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionProbeResponse {
@@ -291,7 +291,7 @@ pub struct ConnectionProbeResponse {
     pub details: Value,
 }
 
-/// Request body for planning a candidate deployment (`POST /api/v2/admin/deployment-plans`, `V2-07.4`).
+/// Request body for planning a candidate deployment (`POST /api/v2/admin/deployment-plans`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CreateDeploymentPlanRequest {
@@ -302,7 +302,7 @@ pub struct CreateDeploymentPlanRequest {
     pub reason: Option<String>,
 }
 
-/// Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`, `V2-07.4`, `TD-31`).
+/// Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentPlanResponse {
@@ -326,7 +326,7 @@ pub struct DeploymentPlanResponse {
     pub findings: Vec<Value>,
 }
 
-/// Request body to atomically apply a candidate deployment (`POST /api/v2/admin/deployments`, `V2-07.4`).
+/// Request body to atomically apply a candidate deployment (`POST /api/v2/admin/deployments`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ApplyDeploymentRequest {
@@ -339,7 +339,7 @@ pub struct ApplyDeploymentRequest {
     pub reviewed_manifest_digest: Option<String>,
 }
 
-/// Durable deployment apply/rollback receipt (`POST /api/v2/admin/deployments`, `V2-07.4`).
+/// Durable deployment apply/rollback receipt (`POST /api/v2/admin/deployments`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentReceiptResponse {
@@ -367,7 +367,7 @@ pub struct DeploymentReceiptResponse {
     pub created_at: String,
 }
 
-/// Node/cluster convergence report for a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`, `V2-07.4`).
+/// Node/cluster convergence report for a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConvergenceStatusResponse {
@@ -383,7 +383,7 @@ pub struct ConvergenceStatusResponse {
     pub degraded_nodes: Vec<String>,
 }
 
-/// Response from applying a candidate deployment (`POST /api/v2/admin/deployments`, `V2-07.4`).
+/// Response from applying a candidate deployment (`POST /api/v2/admin/deployments`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ApplyDeploymentResponse {
@@ -403,7 +403,7 @@ pub struct ApplyDeploymentResponse {
     pub local_error: Option<String>,
 }
 
-/// Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`, `V2-07.4`).
+/// Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentRevisionResponse {
@@ -443,7 +443,7 @@ fn default_rollback_reason() -> String {
     "rollback".to_string()
 }
 
-/// Request body to roll back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`, `V2-07.4`).
+/// Request body to roll back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RollbackDeploymentRequest {
@@ -454,7 +454,7 @@ pub struct RollbackDeploymentRequest {
     pub reason: String,
 }
 
-/// Response from rolling back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`, `V2-07.4`).
+/// Response from rolling back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RollbackDeploymentResponse {
@@ -478,7 +478,7 @@ fn default_scaffold_version() -> String {
     "1.0.0".to_string()
 }
 
-/// Request body to scaffold a new provider package (`POST /api/v2/admin/authoring/scaffold`, `V2-07.2`).
+/// Request body to scaffold a new provider package (`POST /api/v2/admin/authoring/scaffold`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ScaffoldRequest {
@@ -490,7 +490,7 @@ pub struct ScaffoldRequest {
     pub kind: String,
 }
 
-/// Response from scaffolding a provider package (`POST /api/v2/admin/authoring/scaffold`, `V2-07.2`).
+/// Response from scaffolding a provider package (`POST /api/v2/admin/authoring/scaffold`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ScaffoldResponse {
@@ -508,7 +508,7 @@ pub struct ScaffoldResponse {
     pub files: BTreeMap<String, String>,
 }
 
-/// Response from linting a provider package (`POST /api/v2/admin/authoring/lint`, `V2-07.2`).
+/// Response from linting a provider package (`POST /api/v2/admin/authoring/lint`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct LintResponse {
@@ -530,7 +530,7 @@ pub struct LintResponse {
     pub warnings: Vec<String>,
 }
 
-/// Response from deterministically packing a provider package (`POST /api/v2/admin/authoring/pack`, `V2-07.2`).
+/// Response from deterministically packing a provider package (`POST /api/v2/admin/authoring/pack`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct PackResponse {
@@ -581,7 +581,7 @@ pub struct LegacyChannelItem {
     pub workflow_version: u64,
 }
 
-/// Request body for generating a legacy v1 -> v2 migration report (`POST /api/v2/admin/migration-report`, `V2-07.5`).
+/// Request body for generating a legacy v1 -> v2 migration report (`POST /api/v2/admin/migration-report`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct MigrationReportRequest {
@@ -593,7 +593,7 @@ pub struct MigrationReportRequest {
     pub channels: Vec<LegacyChannelItem>,
 }
 
-/// Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`, `V2-07.5`, `TD-31`).
+/// Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct MigrationReportResponse {
@@ -617,7 +617,7 @@ pub struct MigrationReportResponse {
     pub bootstrap_manifest_digest: Option<String>,
 }
 
-/// Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`, `V2-16.4`).
+/// Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct EditionTransitionPreflightRequest {
@@ -625,7 +625,7 @@ pub struct EditionTransitionPreflightRequest {
     pub revision: Option<u64>,
 }
 
-/// Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`, `V2-16.4`).
+/// Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct EditionTransitionPreflightResponse {

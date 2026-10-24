@@ -7,7 +7,7 @@
 //!
 //! - [`handlers`] — the function-name vocabulary and the handler construction
 //!   behind Orion's own entries.
-//! - [`loader`] — stored channels + workflows → both engines' workflow sets,
+//! - [`loader`] — stored channels + workflows → the engine's workflow set,
 //!   dataflow-rs 4's verdict deciding which load (I182),
 //!   with the per-channel quarantine.
 //! - [`runner`] — the trace-capture policy every transport shares.

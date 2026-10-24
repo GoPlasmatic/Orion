@@ -57,7 +57,7 @@ fn revision_row_to_dto(row: &DeploymentRevisionRow) -> DeploymentRevisionRespons
     }
 }
 
-/// `POST /api/v2/admin/deployment-plans` (`V2-07.4`, `V2-04.3`).
+/// `POST /api/v2/admin/deployment-plans`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/deployment-plans",
@@ -130,7 +130,7 @@ pub(crate) async fn create_deployment_plan(
     }
 }
 
-/// `GET /api/v2/admin/deployments` (`V2-07.4`).
+/// `GET /api/v2/admin/deployments`.
 #[utoipa::path(
     get,
     path = "/api/v2/admin/deployments",
@@ -158,7 +158,7 @@ pub(crate) async fn get_deployments_summary(State(state): State<AppState>) -> im
     })
 }
 
-/// `POST /api/v2/admin/deployments` (`V2-07.4`, `V2-04.4`).
+/// `POST /api/v2/admin/deployments`.
 ///
 /// Commits the candidate manifest under CAS on `base_revision` and returns
 /// `202 Accepted` with the durable `DeploymentReceipt`.
@@ -282,7 +282,7 @@ async fn reconcile_locally(
     (evaluation, local_error)
 }
 
-/// `GET /api/v2/admin/deployments/{revision}` (`V2-07.4`).
+/// `GET /api/v2/admin/deployments/{revision}`.
 #[utoipa::path(
     get,
     path = "/api/v2/admin/deployments/{revision}",
@@ -324,7 +324,7 @@ pub(crate) async fn get_deployment_revision(
     }
 }
 
-/// `GET /api/v2/admin/deployments/{revision}/convergence` (`V2-07.4`, `V2-06.4`).
+/// `GET /api/v2/admin/deployments/{revision}/convergence`.
 #[utoipa::path(
     get,
     path = "/api/v2/admin/deployments/{revision}/convergence",
@@ -371,7 +371,7 @@ pub(crate) async fn get_deployment_convergence(
     (StatusCode::OK, Json(dto))
 }
 
-/// `POST /api/v2/admin/deployments/rollback` (`V2-07.4`, `V2-04.5`).
+/// `POST /api/v2/admin/deployments/rollback`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/deployments/rollback",

@@ -419,7 +419,7 @@ mod tests {
         assert!(prune_old_backups("/nonexistent/orion-prune-test", 1).is_empty());
     }
 
-    /// B4: two backups in the same millisecond must not choose the same
+    /// Two backups in the same millisecond must not choose the same
     /// destination. `VACUUM INTO` refuses an existing file, so a shared name
     /// is one backup and one 500 — and with second precision that was every
     /// pair of requests inside the same second.

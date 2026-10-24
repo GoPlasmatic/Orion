@@ -796,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_12_1_and_2_rejects_cycles_undeclared_helpers_and_capability_expansion() {
+    fn rejects_cycles_undeclared_helpers_and_capability_expansion() {
         let mut workflows = BTreeMap::new();
         workflows.insert(
             "entry_a".to_string(),
@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_12_3_and_4_executes_composite_workflow_with_sub_channel_and_binding_slot() {
+    async fn executes_composite_workflow_with_sub_channel_and_binding_slot() {
         let root = CompositionRoot::community();
 
         // Build a composite Workflow-Group connector that:
@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_12_3_execute_authored_workflow_v4_on_dataflow_engine() {
+    async fn execute_authored_workflow_v4_on_dataflow_engine() {
         let root = CompositionRoot::community();
         let mut workflows = BTreeMap::new();
         workflows.insert(

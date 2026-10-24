@@ -47,8 +47,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// One handler invocation sample.
 #[derive(Debug, Clone)]
 pub struct HandlerSample {
-    /// The function's name: a dataflow-rs 3 handler's own constant, or the
-    /// name a dataflow-rs 4 call was made by.
+    /// The name the call was made by.
     pub function: Cow<'static, str>,
     pub connector: Option<String>,
     /// When the handler body started, so nesting can be resolved by interval

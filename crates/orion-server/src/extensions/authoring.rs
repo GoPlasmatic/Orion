@@ -287,7 +287,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v2_07_2_scaffold_lint_and_pack_all_three_implementation_kinds() {
+    fn scaffold_lint_and_pack_all_three_implementation_kinds() {
         for kind in [
             ImplementationKind::Rust,
             ImplementationKind::Workflow,

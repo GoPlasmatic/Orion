@@ -25,9 +25,7 @@ use crate::engine::{ErrorClass, HandlerError};
 pub(crate) const NAME: &str = "storage_head";
 
 /// The signed HEAD, against a resolved and gated storage connector: the
-/// object's metadata, `{ "exists": false }` for a 404. Shared by the
-/// dataflow-rs 3 handler and the dataflow-rs 4 function, so both ask the
-/// same question.
+/// object's metadata, `{ "exists": false }` for a 404.
 async fn head(
     client: &reqwest::Client,
     storage: &StorageConnectorConfig,

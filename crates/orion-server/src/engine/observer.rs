@@ -1,19 +1,19 @@
 //! Per-task engine timing, fed straight into Prometheus.
 //!
-//! Orion could already time its own handlers — `observed_handler_named` wraps
-//! all nine connector handlers and emits
-//! `orion_connector_request_duration_seconds{connector,channel}`. What it could
-//! not time, at any price, is dataflow-rs's eight *sync built-ins*: `map`,
-//! `validate`, `filter`, `parse_json`, `parse_xml`, `publish_json`,
-//! `publish_xml` and `log` are dispatched inside a private executor method and
-//! never reach the handler registry, so there is no seam to wrap. Their cost
-//! was visible only as `workflow_overhead_ms` in the opt-in profile surface —
-//! a residual computed by subtraction (`profile.rs`), not a measurement.
+//! Orion times its own connector functions in the connector shell
+//! (`kit::guarded`), which emits
+//! `orion_connector_request_duration_seconds{connector,channel}`. What that
+//! cannot time is dataflow-rs's sync built-ins — `map`, `validation`,
+//! `filter`, `parse_json`, `parse_xml`, `publish_json`, `publish_xml` and
+//! `log` — which never pass through a host function. Their cost was visible
+//! only as `workflow_overhead_ms` in the opt-in profile surface: a residual
+//! computed by subtraction (`profile.rs`), not a measurement.
 //!
-//! The engine's `Observer` is the callback that closes it. Unlike
-//! an `ExecutionTrace` this is always on and allocates nothing per request:
-//! traces are gated on `config.tracing.task_details` and deep-clone the whole
-//! message per step, so they can never be a metrics source.
+//! The engine's `Observer` is the callback that closes it. Unlike a run's
+//! trace it is always on: traces are gated on `config.tracing.task_details`
+//! and copy the message per step, so they can never be a metrics source.
+//! Per task it costs one lookup of the function's interned name and the
+//! metric record.
 //!
 //! The workflow lifecycle, on the same callback, closes the other half. Engine overhead — condition evaluation, group
 //! gating, loop bookkeeping, audit writes, arena management — was reachable

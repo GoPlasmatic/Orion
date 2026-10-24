@@ -8,7 +8,7 @@ use crate::storage::models::AuditLogEntry;
 use crate::storage::schema::AuditLogs;
 use crate::storage::{DbPool, build_sqlx};
 
-/// Server-side filter for audit-log reads (O8). Every field is an exact match
+/// Server-side filter for audit-log reads. Every field is an exact match
 /// except the half-open time window `[start_time, end_time)`; unset fields do
 /// not constrain the query.
 ///
@@ -335,7 +335,7 @@ pub(crate) mod tests {
 
         assert!(
             serde_json::from_value::<AuditLogFilter>(json!({"actoin": "activate"})).is_err(),
-            "a misspelled key must be refused, not silently dropped (O8)"
+            "a misspelled key must be refused, not silently dropped"
         );
         assert!(
             serde_json::from_value::<AuditLogFilter>(json!({"start_time": "yesterday"})).is_err()
@@ -379,7 +379,7 @@ pub(crate) mod tests {
         assert!(page.data[0].details.is_none());
     }
 
-    /// D3: `columns()` replaces rather than appends, so the old two-call form
+    /// `columns()` replaces rather than appends, so the old two-call form
     /// produced `INSERT INTO audit_logs ("details") VALUES (5 values), (1 value)`.
     #[tokio::test]
     async fn test_insert_with_details_persists_and_reads_back() {
@@ -400,7 +400,7 @@ pub(crate) mod tests {
         assert_eq!(entry.details.as_deref(), Some(details));
     }
 
-    /// D2: nothing removed audit rows before this, so the table grew forever.
+    /// Nothing removed audit rows before this, so the table grew forever.
     #[tokio::test]
     async fn test_delete_older_than_removes_only_expired_rows() {
         let pool = crate::storage::test_sqlite_pool().await;

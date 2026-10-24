@@ -166,7 +166,7 @@ impl PluginFunctionHandler {
         })
     }
 
-    /// One invocation's end, on either engine: its metrics, the operator
+    /// One invocation's end: its metrics, the operator
     /// log of a failure's detail, and the failure as the error a client
     /// sees, prefixed with the function's name. `started` is when the call
     /// began, its prologue included; `workflow` and `task` name the call

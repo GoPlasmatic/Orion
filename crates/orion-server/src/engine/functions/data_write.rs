@@ -44,9 +44,7 @@ pub(super) const PARTIAL_STATUS: u16 = 207;
 /// entity registry, which is built from the connector's own schema guards, so
 /// there is nothing to resolve until the connector is in hand.
 ///
-/// Owned by the dataflow-rs 3 handler, which reads it off the authored input
-/// per call; the literals borrowed from the compiled config by the
-/// dataflow-rs 4 function.
+/// The literals are borrowed from the function's compiled config.
 pub struct DataWrite<'a> {
     params: Map<String, Value>,
     /// How a decimal and a binary column in a `returning` row render. SQL
@@ -69,8 +67,7 @@ struct Backends<'a> {
 
 /// The write's answer and its outcome, `Success` or F28's partial 207,
 /// against a resolved `db` or `es` connector: the envelope resolved, its
-/// operation gated, then written. Shared by the dataflow-rs 3 handler and
-/// the dataflow-rs 4 function. `run_deadline` is the deadline of the run the
+/// operation gated, then written. `run_deadline` is the deadline of the run the
 /// call belongs to, which bounds every SQL and MongoDB leg with the
 /// connector's `query_timeout_ms` ([`QueryBudget::within`]).
 async fn run_write(

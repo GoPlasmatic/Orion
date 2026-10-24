@@ -1,4 +1,4 @@
-//! Package receipts (K14): the single package-aware point of the admin API.
+//! Package receipts: the single package-aware point of the admin API.
 //!
 //! Packaging itself lives in the `orion-server package` CLI, which stages and
 //! activates artifacts through the per-kind endpoints. What the server keeps

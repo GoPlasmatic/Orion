@@ -29,7 +29,7 @@ pub struct TraceDlqFilter {
 
 /// Exhaustion is a column-to-column comparison, built from the Iden enum in
 /// one place so the filter, `claim_pending` and `purge_exhausted` can never
-/// drift apart (and a rename in `schema.rs` cannot fail only at runtime, D25).
+/// drift apart (and a rename in `schema.rs` cannot fail only at runtime).
 fn exhausted() -> SimpleExpr {
     Expr::col(TraceDlq::RetryCount).gte(Expr::col(TraceDlq::MaxRetries))
 }
@@ -41,7 +41,7 @@ fn not_exhausted() -> SimpleExpr {
 /// pair every UPDATE that hands an entry back has to clear.
 ///
 /// `claimed_until` is a timestamp: a NULL *string* param is a 42804 type
-/// mismatch on postgres (D1). Bind the chrono NULL, same as `next_retry_at`
+/// mismatch on postgres. Bind the chrono NULL, same as `next_retry_at`
 /// binds a chrono value.
 fn clear_lease(q: &mut sea_query::UpdateStatement) -> &mut sea_query::UpdateStatement {
     q.value(
@@ -125,7 +125,7 @@ pub struct DlqEnqueue<'a> {
     /// Seeds the new row rather than always starting at 0: the retry loop
     /// deletes a row once resubmission succeeds, so a message that fails again
     /// must re-enter carrying what its lineage already spent, or `max_retries`
-    /// is never reached (Q3). A row seeded at `retry_count >= max_retries` is
+    /// is never reached. A row seeded at `retry_count >= max_retries` is
     /// born exhausted — `claim_pending` skips it, which is exactly the state
     /// `mark_exhausted` writes.
     pub retry_count: i64,
@@ -139,7 +139,7 @@ pub trait TraceDlqRepository: Send + Sync {
     /// `retry_count` seeds the new row rather than always starting at 0: the
     /// retry loop deletes a row once resubmission succeeds, so a message that
     /// fails again must re-enter carrying what its lineage already spent, or
-    /// `max_retries` is never reached (Q3). A row seeded at
+    /// `max_retries` is never reached. A row seeded at
     /// `retry_count >= max_retries` is born exhausted — `claim_pending` skips
     /// it, which is exactly the state `mark_exhausted` writes.
     async fn enqueue(&self, row: DlqEnqueue<'_>) -> Result<TraceDlqEntry, OrionError>;
@@ -227,7 +227,7 @@ fn due_condition(now: &'static str) -> Condition {
 /// (Postgres, SQLite): lease the `limit` oldest due rows and return them.
 /// `skip_locked` adds `FOR UPDATE SKIP LOCKED` to the inner select — required
 /// on Postgres so two nodes cannot claim the same rows even mid-transaction;
-/// SQLite is single-host by construction (D2) and serializes writes itself.
+/// SQLite is single-host by construction and serializes writes itself.
 fn claim_update_query(
     claimant: &str,
     limit: i64,
@@ -294,7 +294,7 @@ fn lease_claimed_query<'a>(
 // -- SQL implementation --
 
 /// `SELECT * FROM trace_dlq WHERE id = ?` — the single-row read shape, shared
-/// by `get_by_id` and the read-back arm of the write-returning paths (D23).
+/// by `get_by_id` and the read-back arm of the write-returning paths.
 fn dlq_select(id: &str) -> sea_query::SelectStatement {
     Query::select()
         .column(Asterisk)
@@ -750,7 +750,7 @@ mod tests {
     /// The Postgres/MySQL arms cannot execute without containers (CI covers
     /// that); pin the rendered SQL shapes so a sea-query upgrade, a schema
     /// rename, or a regression to formatting `limit` into the statement text
-    /// fails here first (D25).
+    /// fails here first.
     #[test]
     fn per_backend_sql_shapes() {
         use sea_query::{MysqlQueryBuilder, PostgresQueryBuilder, SqliteQueryBuilder};

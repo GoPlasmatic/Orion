@@ -76,8 +76,8 @@ pub struct RuntimeGeneration {
     /// on the process's expression engine, which the set holds and every
     /// reload keeps, so a model whose manifest is unchanged carries its
     /// compiled adapters into the next generation (I188) — and the reasons
-    /// any active row did not load. `model_infer` resolves through it on
-    /// both engines; `/health` and `GET /models/{id}` read it.
+    /// any active row did not load. `model_infer` resolves through it;
+    /// `/health` and `GET /models/{id}` read it.
     pub models: Arc<ModelSet>,
     /// Immutable snapshot of resolved connector configurations published with
     /// this generation (`TD-07`). When `Some`, connector tasks executing under

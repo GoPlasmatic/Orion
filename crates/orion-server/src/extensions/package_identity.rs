@@ -740,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_10_3_passes_all_package_identity_and_dependency_lock_fixture_cases() {
+    fn passes_all_package_identity_and_dependency_lock_fixture_cases() {
         let fixture_dir =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/package-identity");
         let bundle_raw = std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap();

@@ -193,10 +193,10 @@ pub(crate) async fn delete_workflow(
             written and the body is instead the `/validate` envelope \
             (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate \
             the real transition would run: draft existence, connector existence and \
-            type match, MongoDB `database` presence, and rollout arithmetic (K3). \
+            type match, MongoDB `database` presence, and rollout arithmetic. \
             With `?reload=defer` the row commits but the engine (and every cluster \
             peer) keeps serving the previous active set until \
-            `POST /engine/reload` (K4).", body = DataEnvelope<WorkflowResponse>),
+            `POST /engine/reload`.", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid status transition"),
         (status = 404, description = "Workflow not found"),
     )
@@ -381,7 +381,7 @@ async fn dry_run_status_change(
 // CLI's offline lint all share one implementation.
 pub(crate) use crate::engine::refs::{channel_call_targets, connector_refs};
 
-/// `GET /api/v2/admin/workflows/{id}/dependencies` (K9).
+/// `GET /api/v2/admin/workflows/{id}/dependencies`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct WorkflowDependencies {
     workflow_id: String,
@@ -435,7 +435,7 @@ pub(crate) struct PluginDependency {
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
-        (status = 200, description = "What the workflow's tasks reference (K9): connector \
+        (status = 200, description = "What the workflow's tasks reference: connector \
             names (with the referencing function) and statically-known `channel_call` \
             targets. The API twin of the reference walk activation runs, for tooling \
             that computes a package's dependency closure without re-implementing the \
@@ -540,7 +540,7 @@ pub(crate) async fn workflow_dependencies(
     responses(
         (status = 200, description = "Rollout percentage updated. With `?reload=defer` \
             the row commits but the engine keeps serving the previous rollout until \
-            `POST /engine/reload` (K4).", body = DataEnvelope<WorkflowResponse>),
+            `POST /engine/reload`.", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid rollout configuration"),
     )
 )]
@@ -773,7 +773,7 @@ pub(crate) async fn test_workflow(
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
             `errors` and the rest of the batch still applies. Dry-run additionally probes for name \
             conflicts against stored rows and duplicates within the batch, without writing. \
-            `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing \
+            `?on_conflict=new_version` upserts instead of refusing an existing id: an existing \
             draft is replaced, an active workflow whose content differs gets a new draft version, \
             and identical content is reported `unchanged` — re-importing the same artifact is a \
             no-op. Per-item outcomes are in `results`.", body = DataEnvelope<ImportResult>),
@@ -885,7 +885,7 @@ impl super::VersionedUpsert for WorkflowUpsert<'_> {
 /// Turn a `get_by_id` result into an existence answer.
 ///
 /// `NotFound` is the "no conflict" answer, not a failure; anything else is a
-/// probe that could not run, which must not be reported as a clean item (R15).
+/// probe that could not run, which must not be reported as a clean item.
 pub(crate) fn exists_or_err<T>(result: Result<T, OrionError>) -> Result<bool, OrionError> {
     match result {
         Ok(_) => Ok(true),
@@ -939,7 +939,7 @@ pub(crate) async fn validate_workflow(
     Ok(Json(run_validation(&req, &state).await))
 }
 
-/// R20: `valid: true` must mean `POST /api/v2/admin/workflows` would accept
+/// `valid: true` must mean `POST /api/v2/admin/workflows` would accept
 /// this payload.
 ///
 /// It did not. `validate_workflow_tasks_schema` carried the doc comment *"Public
@@ -1105,7 +1105,7 @@ const MAX_UNWRITTEN_READ_WARNINGS: usize = 10;
 /// legitimate in ways this walk cannot see — a `continue_on_error` predecessor
 /// whose write did not happen, a path built by a connector response shape, or
 /// simply a workflow that is correct and a heuristic that is not. `valid: true`
-/// has to keep meaning "create would accept this" (R20), so a false positive
+/// has to keep meaning "create would accept this", so a false positive
 /// here must cost the author a glance and never a refusal.
 ///
 /// Writes are accumulated across the walk and matched by path prefix in both
@@ -1282,11 +1282,11 @@ fn validate_workflow_condition(
 }
 
 /// What dataflow-rs 4 reports about the workflow at load and loads anyway: a
-/// Defect that does not quarantine its channel (I182), such as a
+/// Defect that does not quarantine its channel, such as a
 /// `PAYLOAD_VAR`, a `var` rooted at `payload`, which reads nothing. The
 /// loader logs each at `warn`; this is where an author sees one before the
-/// workflow serves. Warnings, so `valid` keeps meaning what create accepts
-/// (R20). Compiled as the serving generation's loader compiles a row: its
+/// workflow serves. Warnings, so `valid` keeps meaning what create accepts.
+/// Compiled as the serving generation's loader compiles a row: its
 /// JSON, on its dataflow-rs 4 compiler.
 fn load_defects(
     req: &CreateWorkflowRequest,

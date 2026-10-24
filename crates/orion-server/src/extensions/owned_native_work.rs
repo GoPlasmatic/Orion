@@ -421,8 +421,7 @@ mod tests {
     use std::sync::Barrier;
 
     #[tokio::test]
-    async fn v2_08_1_2_4_5_blocked_native_job_retains_permit_after_caller_timeout_and_releases_on_completion()
-     {
+    async fn blocked_native_job_retains_permit_after_caller_timeout_and_releases_on_completion() {
         let scheduler = NativeWorkScheduler::new(1);
         let gate = Arc::new(Barrier::new(2));
         let gate_worker = Arc::clone(&gate);
@@ -453,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_08_3_single_flight_load_continues_and_populates_cache_when_creator_times_out() {
+    async fn single_flight_load_continues_and_populates_cache_when_creator_times_out() {
         let scheduler = NativeWorkScheduler::new(2);
         let loader = SingleFlightLoader::<String, String>::new(scheduler.clone());
 

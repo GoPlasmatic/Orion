@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td10_flights_pruned_on_failure_and_gone_tombstones_bounded() {
+    async fn flights_pruned_on_failure_and_gone_tombstones_bounded() {
         let cache = LoadedCache::new(50);
         for i in 0..(MAX_GONE_ENTRIES + 64) {
             let d = format!("failed-{i}");

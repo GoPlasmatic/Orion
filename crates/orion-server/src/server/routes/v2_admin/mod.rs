@@ -1,6 +1,6 @@
 //! V2 Admin API routes (`/api/v2/admin/*`) — `V2-07.1`, `V2-07.2`, `V2-07.3`, `V2-07.4`, `V2-07.5`.
 //!
-//! Exposes the v2 control-plane surface across focused domain modules (`MOD-03`):
+//! Exposes the v2 control-plane surface across focused domain modules:
 //! - Runtime capability discovery (`/runtime-capabilities`)
 //! - `packages`: Connector package ingestion, admission & revocation (`/connector-packages`)
 //! - `connections`: Immutable connection revisions & health probes (`/connections`)
@@ -147,7 +147,7 @@ pub(super) fn decode_files_map(
     Ok(out)
 }
 
-/// `GET /api/v2/admin/runtime-capabilities` (`V2-07.5`, `TD-32`).
+/// `GET /api/v2/admin/runtime-capabilities`.
 #[utoipa::path(
     get,
     path = "/api/v2/admin/runtime-capabilities",
@@ -236,7 +236,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn td31_td32_v2_admin_capabilities_and_dtos_match_wire_contract() {
+    fn v2_admin_capabilities_and_dtos_match_wire_contract() {
         let comp = crate::extensions::CompositionRoot::community();
         let (head_rev, epoch) = comp.deployments.current_head();
         let local_status = comp.reconciler.local_status();
@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim7_cli_and_server_contract_end_to_end_against_running_server() {
+    async fn cli_and_server_contract_end_to_end_against_running_server() {
         use axum::body::{Body, to_bytes};
         use axum::http::{Method, Request, StatusCode};
         use orion_api::v2::*;

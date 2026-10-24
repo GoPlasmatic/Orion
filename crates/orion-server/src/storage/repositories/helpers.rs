@@ -17,7 +17,7 @@ pub struct PaginatedResult<T> {
 /// Page bounds for a version-history listing, shared by the channel and
 /// workflow `list_versions` endpoints.
 ///
-/// D22: the trait methods took bare `(limit, offset)` positionals — the one
+/// The trait methods took bare `(limit, offset)` positionals — the one
 /// pagination surface that did — with the route layer resolving defaults on
 /// one side and `versioned::list_versions` clamping inline on the other. It
 /// is a filter DTO like every other list, resolved once through
@@ -42,7 +42,7 @@ pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
 
 /// Map a driver-level "this row already exists" error from a `create` to
 /// `OrionError::Conflict` (409), leaving everything else a `Storage` error
-/// (500). Two shapes count as a duplicate (D16):
+/// (500). Two shapes count as a duplicate:
 ///
 /// - the structured `UniqueViolation` kind or specific SQLSTATE / vendor
 ///   unique-violation codes (`23505`, `1062`, `1555`, `2067`) — Postgres
@@ -168,7 +168,7 @@ pub enum Projection {
     All,
     /// A named subset, for a row type deliberately narrower than its table.
     /// `traces` and `trace_dlq` both use this to keep request payloads — and,
-    /// for traces, a capability-token hash — out of a list page (D27).
+    /// for traces, a capability-token hash — out of a list page.
     Columns(Vec<DynIden>),
 }
 
@@ -193,7 +193,7 @@ pub struct Page {
 
 /// Count matching rows, then read one page of them.
 ///
-/// The single implementation of count-then-page (D18). Seven call sites —
+/// The single implementation of count-then-page. Seven call sites —
 /// workflows, channels, version history, traces, the trace DLQ, audit logs and
 /// connectors — each used to spell it out, so every pagination fix had to land
 /// six more times than it should have. It lives here and not in `versioned`
@@ -291,7 +291,7 @@ pub fn parse_sort_order(sort_order: Option<&str>) -> sea_query::Order {
 /// per D7, and within the `1..=1000` window [`snapshot_pages`] asserts.
 pub(crate) const EXPORT_PAGE_SIZE: i64 = 500;
 
-/// Read every matching row in bounded pages **inside one transaction** (K12).
+/// Read every matching row in bounded pages **inside one transaction**.
 ///
 /// The export endpoints used to page with independent pool queries, so rows
 /// mutated mid-export could be skipped or duplicated — a documented
@@ -334,7 +334,7 @@ pub async fn snapshot_pages<T: DbRow>(
     }
 }
 
-/// The `LIKE` pattern for "this JSON array of strings contains `tag`" (K6).
+/// The `LIKE` pattern for "this JSON array of strings contains `tag`".
 ///
 /// One implementation for the three tagged entities (workflows, channels,
 /// connectors): the stored form is `serde_json::to_string(&Vec<String>)`, so
@@ -450,7 +450,7 @@ impl WriteStatement<'_> {
     }
 }
 
-/// Run an INSERT or UPDATE that must yield the row it wrote (D23).
+/// Run an INSERT or UPDATE that must yield the row it wrote.
 ///
 /// Where `RETURNING *` reflects the stored row (see
 /// `WriteStatement::supports_returning` — a private detail, hence not a doc
@@ -639,7 +639,7 @@ where
 /// a big backlog drains in a sane number of round trips.
 const DELETE_CHUNK_ROWS: u64 = 1_000;
 
-/// Hard stop on chunks per call, so one tick cannot run unboundedly (D6).
+/// Hard stop on chunks per call, so one tick cannot run unboundedly.
 ///
 /// At the default chunk size this is 5M rows per tick. Anything past it is
 /// left for the next tick rather than held open — in cluster mode the job

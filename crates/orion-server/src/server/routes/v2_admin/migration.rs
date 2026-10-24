@@ -14,7 +14,7 @@ use crate::extensions::deployment_store::ImmutableDeploymentStore;
 use crate::extensions::{EditionTier, check_connector_availability, map_legacy_connector};
 use crate::server::state::AppState;
 
-/// `POST /api/v2/admin/migration-report` (`V2-07.3`, `V2-14.5`, `V2-03.5`).
+/// `POST /api/v2/admin/migration-report`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/migration-report",
@@ -117,7 +117,7 @@ pub(crate) async fn create_migration_report(
     (StatusCode::OK, Json(resp))
 }
 
-/// `POST /api/v2/admin/edition-transition-preflight` (`V2-16.4`).
+/// `POST /api/v2/admin/edition-transition-preflight`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/edition-transition-preflight",

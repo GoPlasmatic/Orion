@@ -1,7 +1,7 @@
 //! Response DTOs: exactly what the HTTP API serves for a stored entity.
 //!
 //! Every type here is what an endpoint returns, so it is what the OpenAPI
-//! document describes (R22) and what a client deserializes. The server builds
+//! document describes and what a client deserializes. The server builds
 //! each one from its database row through a `From`/`TryFrom` conversion that
 //! lives server-side (in `orion-server`'s `storage::models::dto`), next to
 //! the row types — that conversion is the only door between the database and
@@ -73,7 +73,7 @@ pub struct WorkflowResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub continue_on_error: bool,
-    /// `sha256:…` over the canonical importable content (K10) — the same
+    /// `sha256:…` over the canonical importable content — the same
     /// projection the upsert import compares and the package CLI hashes, so
     /// equal hashes mean "importing one over the other is a no-op".
     #[serde(default)]
@@ -423,7 +423,7 @@ pub struct ChannelResponse {
     pub transport_config: Value,
     #[serde(default)]
     pub workflow_id: Option<String>,
-    /// Channel config with `auth.keys` / `auth.secret` values masked (H3) —
+    /// Channel config with `auth.keys` / `auth.secret` values masked —
     /// the server's conversion is the only constructor of this shape, so
     /// masking is a step no handler can skip.
     #[serde(default)]
@@ -435,12 +435,12 @@ pub struct ChannelResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub priority: i64,
-    /// Wire name `tags`, stored column `tags_json` (K6) — the same contract
+    /// Wire name `tags`, stored column `tags_json` — the same contract
     /// workflows have carried since 0.x.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub tags: Value,
-    /// `sha256:…` over the canonical importable content (K10). Computed on
+    /// `sha256:…` over the canonical importable content. Computed on
     /// the stored (unmasked) config: entities authored with `env://`
     /// references hash identically to their exported artifact; entities
     /// holding literal secrets hash over what they store, which a masked
@@ -461,7 +461,7 @@ pub struct ChannelResponse {
 /// `config_json` stays a string — it is the stored document verbatim — but
 /// with every secret replaced by `******`: the server's `mask_connector` is
 /// the only supported way to build one, and the unmasked row struct cannot be
-/// serialized (D27), so a handler that forgets to mask does not compile.
+/// serialized, so a handler that forgets to mask does not compile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectorResponse {
@@ -494,11 +494,11 @@ pub struct ConnectorResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub enabled: bool,
-    /// Wire name `tags`, stored column `tags_json` (K6).
+    /// Wire name `tags`, stored column `tags_json`.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub tags: Value,
-    /// `sha256:…` over the canonical importable content (K10), computed on
+    /// `sha256:…` over the canonical importable content, computed on
     /// the stored (unmasked) config — see the note on
     /// [`ChannelResponse::content_hash`]. Empty for a row whose stored JSON
     /// no longer parses: corrupt content equals nothing.
@@ -513,7 +513,7 @@ pub struct ConnectorResponse {
     pub updated_at: NaiveDateTime,
 }
 
-/// A package receipt as the admin API shows it (K14).
+/// A package receipt as the admin API shows it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct PackageReceiptResponse {
@@ -866,7 +866,7 @@ pub struct CronScheduleStatusResponse {
     pub slots_held: Option<u32>,
 }
 
-/// One row of `GET /api/v2/admin/traces` — payload-free by design (S14).
+/// One row of `GET /api/v2/admin/traces` — payload-free by design.
 ///
 /// The narrower sibling of the single-trace read, for the same reason
 /// [`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a

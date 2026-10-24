@@ -211,18 +211,16 @@ pub fn es_write_error(status: reqwest::StatusCode, body: &Value) -> HandlerError
 /// The backend was reached and the operation failed.
 ///
 /// Kept as a named constructor because `.map_err(to_exec_error)` reads better
-/// at a call site than a struct literal; the variant it becomes, and the retry
-/// policy that variant implies, are decided once in [`HandlerError`]'s
-/// `Into<DataflowError>`.
+/// at a call site than a struct literal; the code it becomes, and its
+/// retryability, are decided once, by [`HandlerError`]'s class.
 pub fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
     HandlerError::new(ErrorClass::Backend, e)
 }
 
 /// A failure to *reach* a backend — pool acquisition, connection setup, DNS.
 ///
-/// `DataflowError::Io` rather than `FunctionExecution` because dataflow-rs
-/// classifies the latter (with `source: None`) as **not retryable**, while
-/// `Io` is. Before F42 every non-HTTP connector failure went through
+/// [`ErrorClass::Connector`] rather than [`ErrorClass::Backend`] because the
+/// first is retryable and the second is not. Before F42 every non-HTTP connector failure went through
 /// [`to_exec_error`], so a dead Postgres, Redis or MongoDB was a non-retryable
 /// 500 while the *identical* HTTP outage was a retryable `Io` — DLQ retry
 /// policy diverged by backend for no principled reason.
@@ -539,13 +537,13 @@ impl QueryBudget {
             .map_err(|e| {
                 // F42: a limit the caller can fix is a 400 with its text
                 // intact, not a 500 with the guidance replaced. Both arms name
-                // a class; which `DataflowError` that becomes is decided once.
+                // a class; which engine error that becomes is decided once.
                 match e.into() {
                     QueryFailure::Limit(detail) => to_limit_error(detail),
                     // Built as a service error rather than through an
                     // `ErrorClass`: no class carries a code of its own, and
                     // the kind is what a workflow branches on. `HandlerError`
-                    // keeps it as its original, so either engine gets back
+                    // keeps it as its original, so the engine gets back
                     // exactly this error.
                     //
                     // The handler name goes on the operator-only side; what

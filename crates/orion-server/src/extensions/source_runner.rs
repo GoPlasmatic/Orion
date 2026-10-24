@@ -902,7 +902,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn v2_15_2_3_4_fenced_leases_contiguous_checkpoints_dlq_guard_and_revision_handoff() {
+    fn fenced_leases_contiguous_checkpoints_dlq_guard_and_revision_handoff() {
         let coord = SourceLeaseCoordinator::new();
         let ledger = ContiguousCheckpointLedger::new(coord.clone());
         let key = SourcePartitionKey::new("orders-source", "part-0");
@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_15_1_source_runner_executes_privileged_facet_while_app_boundary_blocks_it() {
+    async fn source_runner_executes_privileged_facet_while_app_boundary_blocks_it() {
         let root = CompositionRoot::community();
         let runner = SourceChannelRunner::new(
             root.providers.clone(),
@@ -1081,7 +1081,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn td27_source_claims_and_checkpoints_persist_to_sqlite() {
+    async fn source_claims_and_checkpoints_persist_to_sqlite() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")

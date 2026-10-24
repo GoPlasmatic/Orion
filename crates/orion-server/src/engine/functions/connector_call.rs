@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim6_connector_call_registered_across_serving_validation_and_offline_stubbing() {
+    async fn connector_call_registered_across_serving_validation_and_offline_stubbing() {
         let builtin = crate::engine::FunctionRegistry::builtin();
         assert!(builtin.contains(NAME));
         assert!(

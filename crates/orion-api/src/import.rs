@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How an `/import` treats an item whose conflict key is already stored (K2).
+/// How an `/import` treats an item whose conflict key is already stored.
 /// Rides on the request as `?on_conflict=`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -91,7 +91,7 @@ pub struct ImportItemError {
     pub error: String,
 }
 
-/// One entry of `results[]`: what a non-failed item did (K2).
+/// One entry of `results[]`: what a non-failed item did.
 ///
 /// `action` stays a `String` on the wire so a client one release behind the
 /// server still parses a report whose vocabulary grew; compare it against
@@ -113,7 +113,7 @@ pub struct ImportItemResult {
     pub action: String,
 }
 
-/// Result of a bulk import, in both dry-run and real modes (R18, K2) — the
+/// Result of a bulk import, in both dry-run and real modes — the
 /// body under `{"data": …}` that all three `/import` endpoints answer with.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -132,13 +132,13 @@ pub struct ImportResult {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub failed: u64,
-    /// Content-identical items under `on_conflict=new_version` (K2): nothing
+    /// Content-identical items under `on_conflict=new_version`: nothing
     /// written, not counted in `imported`. Re-importing the same artifact
     /// therefore reports 0 imports and N unchanged.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub unchanged: u64,
-    /// Items skipped under `on_conflict=skip` (K2).
+    /// Items skipped under `on_conflict=skip`.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub skipped: u64,
@@ -146,7 +146,7 @@ pub struct ImportResult {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub errors: Vec<ImportItemError>,
-    /// One `{index, id, action}` entry per non-failed item (K2).
+    /// One `{index, id, action}` entry per non-failed item.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub results: Vec<ImportItemResult>,

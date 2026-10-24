@@ -138,7 +138,7 @@ pub trait WorkflowRepository: Send + Sync {
     ) -> Result<PaginatedResult<Workflow>, OrionError>;
     /// Every current workflow matching `filter` (`status`/`tag`; the
     /// filter's own page bounds are ignored), read as one consistent
-    /// snapshot (K12) — the export contract.
+    /// snapshot — the export contract.
     async fn snapshot(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError>;
     /// Update the draft version of a workflow. Errors if no draft exists.
     async fn update_draft(
@@ -146,7 +146,7 @@ pub trait WorkflowRepository: Send + Sync {
         workflow_id: &str,
         req: &UpdateWorkflowRequest,
     ) -> Result<Workflow, OrionError>;
-    /// Replace the draft's entire content with a create-shaped request (K2).
+    /// Replace the draft's entire content with a create-shaped request.
     ///
     /// The upsert import needs full-replacement semantics: `update_draft`
     /// merges `Option` fields, so a field the incoming artifact *omits* would
@@ -972,8 +972,8 @@ pub fn synthetic_workflow(
 /// `rollout` is the half-open bucket range `(start, end)` the version serves,
 /// `None` for a workflow that takes all of its channel's traffic.
 ///
-/// The `continue_on_error` column is written as dataflow-rs 4 spells it
-/// (I186): `"on_failure": "continue"` when it is set, and nothing when it is
+/// The `continue_on_error` column is written as dataflow-rs 4 spells it:
+/// `"on_failure": "continue"` when it is set, and nothing when it is
 /// not, which is the default. A task's own keys, inside `tasks_json`, are the
 /// author's and are left as written.
 ///
@@ -1145,7 +1145,7 @@ mod tests {
         assert!(!rollout.accepts(50) && !rollout.accepts(99));
     }
 
-    /// I186: the `continue_on_error` column is spelled as dataflow-rs 4
+    /// The `continue_on_error` column is spelled as dataflow-rs 4
     /// reads it, `"on_failure": "continue"` when set and absent when not
     /// (the default). A task's own keys are the author's and are left as
     /// written.

@@ -46,7 +46,7 @@ fn package_row_to_summary(
     }
 }
 
-/// `GET /api/v2/admin/connector-packages` (`V2-07.1`).
+/// `GET /api/v2/admin/connector-packages`.
 #[utoipa::path(
     get,
     path = "/api/v2/admin/connector-packages",
@@ -97,7 +97,7 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
     })
 }
 
-/// `POST /api/v2/admin/connector-packages` (`V2-07.1`).
+/// `POST /api/v2/admin/connector-packages`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/connector-packages",
@@ -200,7 +200,7 @@ pub(crate) async fn upload_connector_package(
     )
 }
 
-/// `POST /api/v2/admin/connector-packages/{digest}/admit` (`V2-07.1`).
+/// `POST /api/v2/admin/connector-packages/{digest}/admit`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/connector-packages/{digest}/admit",
@@ -261,7 +261,7 @@ pub(crate) async fn admit_connector_package(
     }
 }
 
-/// `POST /api/v2/admin/connector-packages/{digest}/revoke` (`V2-07.1`).
+/// `POST /api/v2/admin/connector-packages/{digest}/revoke`.
 #[utoipa::path(
     post,
     path = "/api/v2/admin/connector-packages/{digest}/revoke",

@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashMap};
 /// [`crate::connector::ConnectorRegistry::load_from_repo`] compares the map it
 /// just built against the one it holds and only advances
 /// `config_generation` when they differ, which is what keeps an epoch resync
-/// that touched no connector from invalidating every channel's cached runtime
-/// (N17). Every field of every variant therefore has to take part — a field
+/// that touched no connector from invalidating every channel's cached runtime.
+/// Every field of every variant therefore has to take part — a field
 /// left out of the comparison would be a config change the channel loader
 /// never notices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +111,7 @@ impl ConnectorConfig {
 }
 
 /// Operator-owned bounds on what the portable dialect (`data_query` /
-/// `data_write`) may reach through this connector (F24).
+/// `data_write`) may reach through this connector.
 ///
 /// [`OperationGates`] answers *which verbs*; this answers *which tables*. The
 /// two are separate because a read-only connector still needs bounding: `read`
@@ -203,7 +203,7 @@ impl OperationGates {
     }
 }
 
-/// Cache-connector operation gates (F22e). Everything defaults to allowed;
+/// Cache-connector operation gates. Everything defaults to allowed;
 /// disabling an operation turns the corresponding handler call into a located
 /// validation error, so a cache connector can be made read-only in its config
 /// without touching workflows.
@@ -231,7 +231,7 @@ impl Default for CacheOperationGates {
     }
 }
 
-/// Kafka-connector operation gates (F22e). The connector is producer-only, so
+/// Kafka-connector operation gates. The connector is producer-only, so
 /// `publish` — gating `publish_kafka` — is the whole surface. Ingest consumers
 /// are configured under `[kafka]` in the server config, not here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,7 +246,7 @@ impl Default for KafkaOperationGates {
     }
 }
 
-/// HTTP-connector method allow-list (F22e).
+/// HTTP-connector method allow-list.
 ///
 /// The db/es gates are booleans because their operation set is fixed; an HTTP
 /// connector's is its method, so the gate is a list. Empty — the default —
@@ -309,7 +309,7 @@ pub struct HttpConnectorConfig {
     #[serde(default)]
     pub retry: RetryConfig,
     /// Maximum response body size in bytes (default 10 MB). Prevents OOM from large responses.
-    /// Retry non-idempotent methods (POST, PATCH) too (F8). Default false:
+    /// Retry non-idempotent methods (POST, PATCH) too. Default false:
     /// a timed-out POST may already have been applied, so re-sending it can
     /// duplicate the side effect. Enable only when the endpoint is
     /// idempotent in practice — e.g. it honours an idempotency key the
@@ -512,7 +512,7 @@ pub struct KafkaConnectorConfig {
     pub brokers: Vec<String>,
     pub topic: String,
     /// Allow brokers on private/internal IP addresses. Default false (SSRF
-    /// protection, S6). Brokers are bare `host:port` rather than URLs, so
+    /// protection). Brokers are bare `host:port` rather than URLs, so
     /// they are checked as host/port pairs rather than parsed as a URL.
     #[serde(default)]
     pub allow_private_urls: bool,
@@ -546,7 +546,7 @@ pub struct DbConnectorConfig {
     #[serde(default)]
     pub query_timeout_ms: Option<u64>,
     /// Allow connecting to private/internal IP addresses. Default false
-    /// (SSRF protection, S6) — the same opt-out the HTTP and ES connectors
+    /// (SSRF protection) — the same opt-out the HTTP and ES connectors
     /// carry. A database on a private network is the normal case, so this is
     /// the field most deployments will set; it exists so that reaching
     /// `169.254.169.254` or a neighbouring service is a deliberate act rather
@@ -581,7 +581,7 @@ pub struct CacheConnectorConfig {
     #[serde(default)]
     pub url: Option<String>,
     /// Allow connecting to private/internal IP addresses. Default false
-    /// (SSRF protection, S6). Redis is usually private, so this is commonly
+    /// (SSRF protection). Redis is usually private, so this is commonly
     /// set; the point is that it is stated rather than assumed. Ignored for
     /// `backend = "memory"`, which opens no socket.
     #[serde(default)]
@@ -608,7 +608,7 @@ pub struct EsConnectorConfig {
     /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
     #[serde(default)]
     pub allow_private_urls: bool,
-    /// Maximum response body size in bytes (F12), same default as the HTTP
+    /// Maximum response body size in bytes, same default as the HTTP
     /// connector — an unbounded ES response was the one egress read left
     /// without a cap.
     #[serde(default = "default_max_response_size")]
@@ -784,7 +784,7 @@ pub enum StorageProvider {
     S3,
 }
 
-/// Storage-connector operation gates (F22e). Everything defaults to allowed;
+/// Storage-connector operation gates. Everything defaults to allowed;
 /// `presign_put: false` makes a media connector read-only in its config
 /// without touching workflows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1137,7 +1137,7 @@ mod tests {
         }
     }
 
-    /// F7: `retry` on a db/es connector was declared, validated and documented
+    /// `retry` on a db/es connector was declared, validated and documented
     /// while the only reader of a `RetryConfig` is `http_call`. An operator who
     /// set `max_retries: 5` on their Postgres connector got exactly nothing.
     /// It now belongs to the HTTP connector alone, and the round-trip is where
@@ -1178,7 +1178,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// `storage` spent 0.x as an accepted type with no handler (F15) and was
+    /// `storage` spent 0.x as an accepted type with no handler and was
     /// removed in 1.0. #265 reinstates the name *with* a handler — which is
     /// what the removal message said was missing — behind a real config
     /// shape, so a bare 0.x-style row (no endpoint/region/credentials) still

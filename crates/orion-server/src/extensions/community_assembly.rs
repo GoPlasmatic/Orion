@@ -180,7 +180,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn v2_11_3_default_community_assembly_passes_boundary_audit() {
+    fn default_community_assembly_passes_boundary_audit() {
         let root = CompositionRoot::community();
         let report = verify_community_assembly(&root);
         assert!(
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_11_3_detects_enterprise_channel_leak_in_community_audit() {
+    fn detects_enterprise_channel_leak_in_community_audit() {
         let root = CompositionRoot::community().with_channel_driver(Arc::new(KafkaChannelDriver));
         let report = verify_community_assembly(&root);
         assert!(!report.is_compliant());
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_11_3_community_assembly_admits_and_runs_workflow_and_wasm_packages() {
+    async fn community_assembly_admits_and_runs_workflow_and_wasm_packages() {
         let root = CompositionRoot::community();
 
         // 1. Compile and register a custom Workflow-Group connector on the Community root

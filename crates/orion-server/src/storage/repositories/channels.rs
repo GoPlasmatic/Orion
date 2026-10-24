@@ -56,7 +56,7 @@ pub struct CreateChannelRequest {
     pub config: Value,
     #[serde(default)]
     pub priority: i64,
-    /// Selection labels (K6), same contract as workflow tags — filter with
+    /// Selection labels, same contract as workflow tags — filter with
     /// `?tag=` on list and export.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -92,7 +92,7 @@ pub struct ChannelFilter {
     pub status: Option<String>,
     pub channel_type: Option<String>,
     pub protocol: Option<String>,
-    /// Only channels carrying this tag (K6).
+    /// Only channels carrying this tag.
     pub tag: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
@@ -117,7 +117,7 @@ pub trait ChannelRepository: Send + Sync {
     ) -> Result<PaginatedResult<Channel>, OrionError>;
     /// Every current channel matching `filter` (`status`/`channel_type`/
     /// `protocol`/`tag`; the filter's own page bounds are ignored), read as
-    /// one consistent snapshot (K12) — the export contract.
+    /// one consistent snapshot — the export contract.
     async fn snapshot(&self, filter: &ChannelFilter) -> Result<Vec<Channel>, OrionError>;
     /// Update the draft version of a channel. Errors if no draft exists.
     async fn update_draft(
@@ -125,7 +125,7 @@ pub trait ChannelRepository: Send + Sync {
         channel_id: &str,
         req: &UpdateChannelRequest,
     ) -> Result<Channel, OrionError>;
-    /// Replace the draft's entire content with a create-shaped request (K2).
+    /// Replace the draft's entire content with a create-shaped request.
     ///
     /// The upsert import needs full-replacement semantics: `update_draft`
     /// merges `Option` fields (and cannot clear one, or change
@@ -162,7 +162,7 @@ pub trait ChannelRepository: Send + Sync {
     async fn delete_tx(&self, tx: &mut DbTransaction, channel_id: &str) -> Result<(), OrionError>;
     /// Create a new draft version by copying the latest version.
     async fn create_new_version(&self, channel_id: &str) -> Result<Channel, OrionError>;
-    /// The id of a *different* active channel holding `name`, if any (K7).
+    /// The id of a *different* active channel holding `name`, if any.
     ///
     /// The activation-time half of the unique-name rule: the write-time gate
     /// keeps new collisions out, and this catches rows that predate it — as
@@ -191,7 +191,7 @@ impl SqlChannelRepository {
         Self { pool }
     }
 
-    /// K7: refuse a channel name another `channel_id` already holds.
+    /// Refuse a channel name another `channel_id` already holds.
     ///
     /// The data plane and `channel_call` address channels by **name**, and the
     /// registry keeps one entry per name — a second channel sharing one

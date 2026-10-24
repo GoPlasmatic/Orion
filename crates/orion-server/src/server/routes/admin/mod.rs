@@ -29,7 +29,7 @@ use crate::server::state::AppState;
 /// A status-change request narrowed to the two transitions the API offers,
 /// so the handler's `match` is exhaustive over what can actually happen.
 ///
-/// Lives here rather than in `storage::models` (D28): nothing below the route
+/// Lives here rather than in `storage::models`: nothing below the route
 /// layer has an opinion about which transitions an operator may request —
 /// `EntityStatus` is the domain vocabulary, this is the handler's reading of a
 /// request body.
@@ -95,7 +95,7 @@ pub(crate) struct ImportOps<V, K, E, C, U> {
     pub exists: E,
     /// Persist the item as a fresh entity.
     pub create: C,
-    /// K2: resolve one item against the store under `on_conflict=new_version`
+    /// Resolve one item against the store under `on_conflict=new_version`
     /// — create / update draft / new version / unchanged — writing only when
     /// its second argument (`dry_run`) is false. Per-kind because the four
     /// outcomes are made of per-kind repository verbs.
@@ -108,14 +108,14 @@ pub(crate) struct ImportOutcome {
     /// Items that wrote (or would write): created / updated / new version.
     pub imported: u64,
     pub failed: u64,
-    /// Content-identical items (K2) — nothing written, and deliberately not
+    /// Content-identical items — nothing written, and deliberately not
     /// counted as `imported`: a re-run of the same artifact reports 0 imports.
     pub unchanged: u64,
     /// Items skipped under `on_conflict=skip`.
     pub skipped: u64,
     /// One `{index, error}` entry per failed item.
     pub errors: Vec<ImportItemError>,
-    /// One `{index, id, action}` entry per non-failed item (K2) — the
+    /// One `{index, id, action}` entry per non-failed item — the
     /// per-item report a packaging CLI turns into its plan/apply output.
     pub results: Vec<ImportItemResult>,
     /// Ids of the items that wrote, collected as `record` classifies them —
@@ -125,7 +125,7 @@ pub(crate) struct ImportOutcome {
 }
 
 impl ImportOutcome {
-    /// The id of every written item, for the per-entity audit rows (K5).
+    /// The id of every written item, for the per-entity audit rows.
     /// Items with no conflict key have no client-visible id to audit and are
     /// covered by the summary row alone.
     pub(crate) fn written(&self) -> impl Iterator<Item = &str> {
@@ -161,7 +161,7 @@ impl ImportOutcome {
 
 /// The one per-item driver behind all three `/import` endpoints.
 ///
-/// R19: there used to be two. Workflows took `OrionJson<Vec<CreateWorkflowRequest>>`
+/// There used to be two. Workflows took `OrionJson<Vec<CreateWorkflowRequest>>`
 /// and drove via `bulk_create`, so **one malformed item aborted the whole batch
 /// with a 400**; channels and connectors took `OrionJson<Vec<Value>>` and
 /// produced **one failed entry**. All three declared
@@ -170,14 +170,14 @@ impl ImportOutcome {
 /// bulk endpoint that already reports `{imported, failed, errors[]}` — a batch
 /// that reports counts should produce them.
 ///
-/// R15: `?dry_run=true` reads. It used to skip the database entirely, as
+/// `?dry_run=true` reads. It used to skip the database entirely, as
 /// its own doc comment said — but the stated use case is CI pre-flight, and the
 /// most common real failure is a **name conflict**, which is exactly what a
 /// no-DB dry-run cannot see. A green dry-run therefore said nothing. Conflicts
 /// against stored rows and duplicates *within the batch* are both reported now;
 /// the second was free and previously missed entirely.
 ///
-/// K2: `on_conflict` selects what an already-stored key means — `fail` (the
+/// `on_conflict` selects what an already-stored key means — `fail` (the
 /// default), `skip`, or `new_version` (upsert via `ops.upsert`). In the two
 /// non-default modes an in-batch duplicate key is refused in *both* dry-run
 /// and real runs: the second item would silently rewrite what the first just
@@ -288,7 +288,7 @@ where
     out
 }
 
-/// K2: what `on_conflict=new_version` does with an item whose id is already
+/// What `on_conflict=new_version` does with an item whose id is already
 /// stored, given the latest version's status and whether the stored content
 /// equals the item's. One definition for both versioned kinds, because it
 /// carries the one non-obvious invariant: an **archived** entity with
@@ -443,9 +443,9 @@ pub(crate) async fn check_activation<T: VersionedLifecycle>(
     }
 }
 
-/// K3: every gate the real transition runs, as findings instead of failures.
+/// Every gate the real transition runs, as findings instead of failures.
 ///
-/// The rule that keeps this honest is the `/validate` rule (R20) one endpoint
+/// The rule that keeps this honest is the `/validate` rule one endpoint
 /// over: the checks are the *same functions* the real path calls, so
 /// `valid: true` cannot come to mean something weaker than "the un-dry-run
 /// request would succeed". Findings the real path reports as a 4xx arrive here
@@ -525,7 +525,7 @@ pub(crate) struct ValidationResponse {
     pub(crate) warnings: Vec<ValidationIssue>,
 }
 
-/// The `{"data": …}` envelope (R17) around a [`ValidationResponse`]. Typed
+/// The `{"data": …}` envelope around a [`ValidationResponse`]. Typed
 /// rather than a `json!` literal so the declared `body =` below cannot drift
 /// from what the handler actually sends.
 impl ValidationEnvelope {
@@ -570,7 +570,7 @@ pub(crate) fn issues_from_error(err: OrionError) -> Vec<ValidationIssue> {
 }
 
 /// The response envelope shared by all three import endpoints, dry-run and
-/// real (R18): the same fields either way, distinguished only by `dry_run`.
+/// real: the same fields either way, distinguished only by `dry_run`.
 /// Pre-1.0 the dry-run shape returned six fields for two facts —
 /// `would_create`/`would_fail` alongside a hardcoded `imported: 0` and a
 /// `failed` that always equalled `would_fail`.
@@ -592,9 +592,9 @@ pub(crate) fn import_response(
     axum::Json(json!({ "data": report }))
 }
 
-/// Query parameters accepted by all three `/import` endpoints (B6).
+/// Query parameters accepted by all three `/import` endpoints.
 ///
-/// R27: lived in `workflows.rs` while its sibling helpers
+/// Lived in `workflows.rs` while its sibling helpers
 /// (`check_import_batch_size`, `import_items`, `import_response`) lived here,
 /// so channels and connectors imported it from a module they otherwise have
 /// nothing to do with.
@@ -603,8 +603,8 @@ pub(crate) fn import_response(
 pub(crate) struct ImportQuery {
     /// When true, validate each item and report what would happen without
     /// writing. Probes for conflicts against stored rows and for duplicates
-    /// within the batch (R15), and under `on_conflict=new_version` reports
-    /// the per-item action the real import would take (K2).
+    /// within the batch, and under `on_conflict=new_version` reports
+    /// the per-item action the real import would take.
     #[serde(default)]
     pub dry_run: bool,
     /// What an already-stored conflict key means: `fail` (default — the item
@@ -615,7 +615,7 @@ pub(crate) struct ImportQuery {
     pub on_conflict: OnConflict,
 }
 
-/// When an active-set mutation rebuilds the engine (K4).
+/// When an active-set mutation rebuilds the engine.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ReloadMode {
@@ -638,8 +638,8 @@ impl ReloadMode {
     }
 }
 
-/// Query parameters accepted by the two `PATCH /{id}/status` endpoints
-/// (K3, K4).
+/// Query parameters accepted by the two `PATCH /{id}/status` endpoints.
+///
 ///
 /// `?dry_run=true` runs every activation (or archive) gate — the same checks
 /// the real transition runs, in the same order — reports the findings as a
@@ -657,12 +657,12 @@ pub(crate) struct StatusChangeQuery {
     pub dry_run: bool,
     /// `now` (default) reloads the engine as part of this request; `defer`
     /// commits the row and leaves the reload to a later
-    /// `POST /engine/reload` (K4).
+    /// `POST /engine/reload`.
     #[serde(default)]
     pub reload: ReloadMode,
 }
 
-/// Query parameter accepted by `PATCH /workflows/{id}/rollout` (K4) and by
+/// Query parameter accepted by `PATCH /workflows/{id}/rollout` and by
 /// the channel, workflow, plugin and model `DELETE`s — the other active-set
 /// mutations a bundle apply performs per entity.
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
@@ -670,7 +670,7 @@ pub(crate) struct StatusChangeQuery {
 pub(crate) struct ReloadQuery {
     /// `now` (default) reloads the engine as part of this request; `defer`
     /// commits the row and leaves the reload to a later
-    /// `POST /engine/reload` (K4).
+    /// `POST /engine/reload`.
     #[serde(default)]
     pub reload: ReloadMode,
 }
@@ -681,7 +681,7 @@ pub(crate) struct ReloadQuery {
 /// the audit trail, and the two spellings must not drift.
 pub(crate) const ANONYMOUS_PRINCIPAL: &str = "anonymous";
 
-/// The request context recorded alongside every audit row (O7).
+/// The request context recorded alongside every audit row.
 ///
 /// An audit trail whose only fields are *who* and *what* cannot answer the
 /// question an investigation actually asks — *from where, and as part of which
@@ -716,7 +716,7 @@ fn request_details() -> Option<String> {
 
 /// Emit a structured audit log event for admin mutations.
 ///
-/// O7: the row goes onto the bounded, shutdown-drained
+/// The row goes onto the bounded, shutdown-drained
 /// [`crate::queue::audit_queue`] rather than into a detached `tokio::spawn`,
 /// so a mutation accepted moments before SIGTERM is still recorded and a slow
 /// database cannot spawn one writer task per admin request.
@@ -820,7 +820,7 @@ fn audit_log_draft_only(
 /// audit row to misrepresent. Drafts do NOT reload — use
 /// [`audit_log_draft_only`] in those code paths.
 ///
-/// K4: `reload` is [`ReloadMode::Defer`] only where the caller opted in via
+/// `reload` is [`ReloadMode::Defer`] only where the caller opted in via
 /// query parameter (status changes, rollout, and the channel, workflow,
 /// plugin and model deletes `package apply --prune` batches); the row is
 /// committed and the audit event recorded, but the engine keeps serving the
@@ -909,7 +909,7 @@ async fn reload_after_commit(
 
 /// The admin API, with its own body limit.
 ///
-/// R16: `DefaultBodyLimit::max(ingest.max_payload_size)` — a name that says
+/// `DefaultBodyLimit::max(ingest.max_payload_size)` — a name that says
 /// *data plane* — was a single global layer, so bulk import, connector config
 /// PUTs and `POST /workflows/{id}/test` shared a ceiling with anonymous channel
 /// traffic. Raising it for a big import raised it for the unauthenticated plane
