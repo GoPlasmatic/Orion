@@ -1871,6 +1871,34 @@ impl ImmutableDeploymentStore {
         Ok(())
     }
 
+    /// The persisted `(head_revision, epoch)`, one row: what a node polls to
+    /// learn whether anything it serves from has changed. `None` before the
+    /// first commit, or before the table exists.
+    pub async fn persisted_head(
+        pool: &crate::storage::DbPool,
+    ) -> Result<Option<(u64, u64)>, DeploymentError> {
+        const SQL: &str = "SELECT head_revision, epoch FROM deployment_head WHERE singleton_id = 1";
+        let row: Result<Option<(i64, i64)>, sqlx::Error> = match pool {
+            crate::storage::DbPool::Sqlite(p) => sqlx::query_as(SQL).fetch_optional(p).await,
+            crate::storage::DbPool::Postgres(p) => sqlx::query_as(SQL).fetch_optional(p).await,
+            crate::storage::DbPool::Mysql(p) => sqlx::query_as(SQL).fetch_optional(p).await,
+        };
+        match row {
+            Ok(row) => Ok(row.map(|(h, e)| (h.max(0) as u64, e.max(0) as u64))),
+            Err(e) => {
+                let text = e.to_string();
+                if ["no such table", "does not exist", "doesn't exist"]
+                    .iter()
+                    .any(|missing| text.contains(missing))
+                {
+                    Ok(None)
+                } else {
+                    Err(DeploymentError::new("DB_READ_ERROR", text))
+                }
+            }
+        }
+    }
+
     /// Hydrate the deployment store from any configured [`crate::storage::DbPool`] backend (`ARCH-02`).
     pub async fn load_from_db_pool(
         &self,

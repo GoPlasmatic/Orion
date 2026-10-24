@@ -815,6 +815,10 @@ impl ImmutableDeploymentStore {
         };
         adm.revoked = true;
         g.dirty.admissions.insert(package_digest.to_string());
+        // A revocation moves the epoch, so a peer polling the head sees it
+        // and re-reads the store, as it does for a new revision.
+        g.epoch += 1;
+        g.dirty.head = true;
         Ok(())
     }
 

@@ -89,12 +89,26 @@ pub fn sync_v2_revocations(state: &AppState) {
 /// Execute one pass of the v2 state reconciliation loop (`V2-06`, `TD-18`).
 pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     let now_ms = unix_now_ms();
-    if let Err(e) = state
-        .composition
-        .deployments
-        .load_from_db_pool(&state.db_pool)
-        .await
-    {
+    // One row says whether anything committed has changed: every apply,
+    // rollback and revocation moves the head or the epoch. The whole store
+    // is re-read only when it did.
+    let hydrated =
+        match crate::extensions::ImmutableDeploymentStore::persisted_head(&state.db_pool).await {
+            Ok(persisted)
+                if persisted.unwrap_or((0, 0)) == state.composition.deployments.current_head() =>
+            {
+                Ok(())
+            }
+            Ok(_) => {
+                state
+                    .composition
+                    .deployments
+                    .load_from_db_pool(&state.db_pool)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+    if let Err(e) = hydrated {
         if !state.composition.reconciler.is_security_lease_valid(now_ms) {
             state.composition.admission.set_lease_valid(false);
         }
