@@ -209,6 +209,11 @@ pub struct CacheStoreCtx {
 }
 
 impl CacheStoreCtx {
+    /// Whether the store is an in-process write with no I/O.
+    pub fn is_in_process(&self) -> bool {
+        self.backend.is_in_process()
+    }
+
     /// Store the response body this request produced.
     pub async fn store(&self, body: &str) -> Result<(), crate::errors::OrionError> {
         match &self.versions {

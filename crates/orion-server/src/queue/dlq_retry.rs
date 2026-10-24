@@ -478,14 +478,12 @@ mod tests {
             id: &str,
             status: &str,
             _error_message: Option<&str>,
-        ) -> Result<Trace, OrionError> {
+        ) -> Result<(), OrionError> {
             self.settled
                 .lock()
                 .expect("test")
                 .push((id.to_string(), status.to_string()));
-            let mut trace = make_trace(id, "mock");
-            trace.status = status.to_string();
-            Ok(trace)
+            Ok(())
         }
         async fn set_result(
             &self,

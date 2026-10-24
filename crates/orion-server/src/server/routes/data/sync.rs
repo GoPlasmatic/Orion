@@ -33,10 +33,16 @@ fn json_response(status: StatusCode, body: String) -> Response {
     response
 }
 
-/// Persist the completed trace through the configured storage mode and
-/// fire-and-forget cache the serialized response if a cache context was
-/// produced by [`check_response_cache`]. Records the trace-store phase in
-/// the per-request profile when one is in scope.
+/// Persist the completed trace through the configured storage mode, and
+/// cache the serialized response when a cache context was produced by
+/// [`check_response_cache`]. Records the trace-store phase in the
+/// per-request profile when one is in scope.
+///
+/// The cache store does not hold up the response: a store that does I/O
+/// (Redis) runs in the background, alongside the trace insert, and carries
+/// the coalescing guard with it, so callers waiting on this key are released
+/// once the value is there. An in-process store is a map insert and runs
+/// inline, so the next request for the key always sees it.
 ///
 /// `cache_body` is the client-facing serialization: cache hits are returned
 /// to callers verbatim, so the cached copy must be the sanitized envelope
@@ -47,11 +53,40 @@ async fn persist_trace_and_cache(
     plan: &TracePlan,
     trace: &CompletedTrace<'_>,
     cache_body: &str,
-    cache_context: &Option<CacheStoreCtx>,
+    cache_context: Option<CacheStoreCtx>,
     profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
 ) {
-    // The cache store below is not part of the trace decision: a sampled-out or
-    // `errors_only` trace still populates the response cache.
+    // N2: never cache a response carrying task errors — one transient
+    // downstream failure would otherwise be pinned for the full TTL and
+    // replayed to every caller, long after the dependency recovered.
+    let cache_context = match cache_context {
+        Some(_) if trace.has_errors => {
+            tracing::debug!(
+                channel = trace.channel,
+                "Response has task errors; not caching"
+            );
+            None
+        }
+        other => other,
+    };
+    if let Some(ctx) = cache_context {
+        if ctx.is_in_process() {
+            if let Err(e) = ctx.store(cache_body).await {
+                tracing::debug!(channel = trace.channel, error = %e, "Failed to cache response");
+            }
+        } else {
+            let body = cache_body.to_string();
+            let channel = trace.channel.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = ctx.store(&body).await {
+                    tracing::debug!(channel = %channel, error = %e, "Failed to cache response");
+                }
+            });
+        }
+    }
+
+    // The cache store above is not part of the trace decision: a sampled-out
+    // or `errors_only` trace still populates the response cache.
     if plan.persists() {
         let effective_trace = channel_config.trace_storage;
         let trace_store_start = Instant::now();
@@ -65,23 +100,6 @@ async fn persist_trace_and_cache(
         if let Some(p) = profile {
             p.set_trace_store(trace_store_start.elapsed());
         }
-    }
-
-    // Fire-and-forget cache store. N2: never cache a response carrying task
-    // errors — one transient downstream failure would otherwise be pinned
-    // for the full TTL and replayed to every caller, long after the
-    // dependency recovered.
-    if trace.has_errors {
-        tracing::debug!(
-            channel = trace.channel,
-            "Response has task errors; not caching"
-        );
-        return;
-    }
-    if let Some(ctx) = cache_context
-        && let Err(e) = ctx.store(cache_body).await
-    {
-        tracing::debug!(channel = trace.channel, error = %e, "Failed to cache response");
     }
 }
 
@@ -894,7 +912,7 @@ pub(super) async fn process_sync_for_channel(
                         task_trace_json: task_trace_json.as_deref(),
                     },
                     cache_body,
-                    &cache_context,
+                    cache_context,
                     profile.as_ref(),
                 )
                 .await;

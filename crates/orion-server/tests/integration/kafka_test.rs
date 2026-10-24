@@ -77,7 +77,7 @@ impl orion::storage::repositories::traces::TraceSink for NoopTraceRepo {
         _id: &str,
         _status: &str,
         _error_message: Option<&str>,
-    ) -> Result<orion::storage::models::Trace, orion::errors::OrionError> {
+    ) -> Result<(), orion::errors::OrionError> {
         Err(orion::errors::OrionError::internal(
             "not used by the consumer",
         ))

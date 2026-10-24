@@ -1062,30 +1062,13 @@ mod tests {
             id: &str,
             status: &str,
             error_message: Option<&str>,
-        ) -> Result<models::Trace, crate::errors::OrionError> {
+        ) -> Result<(), crate::errors::OrionError> {
             self.updates.lock().expect("test").push((
                 id.to_string(),
                 status.to_string(),
                 error_message.map(str::to_string),
             ));
-            let now = chrono::Utc::now().naive_utc();
-            Ok(models::Trace {
-                id: id.to_string(),
-                channel: "orders".to_string(),
-                channel_id: None,
-                mode: "async".to_string(),
-                status: status.to_string(),
-                input_json: None,
-                result_json: None,
-                error_message: error_message.map(str::to_string),
-                duration_ms: None,
-                started_at: None,
-                completed_at: None,
-                created_at: now,
-                updated_at: now,
-                task_trace_json: None,
-                access_token_hash: None,
-            })
+            Ok(())
         }
 
         async fn set_result(

@@ -357,12 +357,16 @@ pub trait TraceSink: Send + Sync {
         input_json: Option<&str>,
         access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError>;
+    /// Set a trace's status (and its start or completion time). `NotFound`
+    /// when no trace has `id`. Answers nothing else: every caller only needs
+    /// to know the write landed, and reading the row back cost a SELECT of
+    /// its input, result and task trace.
     async fn update_status(
         &self,
         id: &str,
         status: &str,
         error_message: Option<&str>,
-    ) -> Result<Trace, OrionError>;
+    ) -> Result<(), OrionError>;
     async fn set_result(
         &self,
         id: &str,
@@ -503,7 +507,7 @@ impl TraceSink for SqlTraceRepository {
         id: &str,
         status: &str,
         error_message: Option<&str>,
-    ) -> Result<Trace, OrionError> {
+    ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("traces.update_status", async {
             // Bind chrono values, not strings: postgres rejects TEXT
             // parameters against timestamp columns (42804).
@@ -534,16 +538,11 @@ impl TraceSink for SqlTraceRepository {
 
             update.and_where(Expr::col(Traces::Id).eq(id));
 
-            // D23: the UPDATE and the row it wrote travel together; an id
-            // that matched nothing stays the NotFound `get_by_id` gave.
-            super::helpers::write_returning_row(
-                &self.pool,
-                super::helpers::WriteStatement::Update(&mut update),
-                &mut trace_select(id),
-                OrionError::Storage,
-                || trace_not_found(id),
-            )
-            .await
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut update);
+            match self.pool.execute_query(&sql, values).await? {
+                0 => Err(trace_not_found(id)),
+                _ => Ok(()),
+            }
         })
         .await
     }

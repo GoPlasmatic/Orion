@@ -41,7 +41,7 @@ impl TraceSink for FailFirstRunningWrite {
         id: &str,
         status: &str,
         error_message: Option<&str>,
-    ) -> Result<Trace, OrionError> {
+    ) -> Result<(), OrionError> {
         if status == "running" && self.armed.swap(false, Ordering::SeqCst) {
             return Err(OrionError::Storage(sqlx::Error::PoolTimedOut));
         }
@@ -193,7 +193,7 @@ impl TraceSink for FailAllResultWrites {
         id: &str,
         status: &str,
         error_message: Option<&str>,
-    ) -> Result<Trace, OrionError> {
+    ) -> Result<(), OrionError> {
         self.inner.update_status(id, status, error_message).await
     }
     async fn set_result(
@@ -377,27 +377,6 @@ struct ConcurrencyProbeRepo {
     max_seen: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-fn fake_trace(id: &str) -> Trace {
-    let now = chrono::Utc::now().naive_utc();
-    Trace {
-        id: id.to_string(),
-        channel: "probe".to_string(),
-        channel_id: None,
-        mode: "async".to_string(),
-        status: "running".to_string(),
-        input_json: None,
-        result_json: None,
-        error_message: None,
-        duration_ms: None,
-        started_at: None,
-        completed_at: None,
-        created_at: now,
-        updated_at: now,
-        task_trace_json: None,
-        access_token_hash: None,
-    }
-}
-
 #[async_trait]
 impl TraceSink for ConcurrencyProbeRepo {
     async fn create_pending(
@@ -412,15 +391,15 @@ impl TraceSink for ConcurrencyProbeRepo {
     }
     async fn update_status(
         &self,
-        id: &str,
+        _id: &str,
         _status: &str,
         _error_message: Option<&str>,
-    ) -> Result<Trace, OrionError> {
+    ) -> Result<(), OrionError> {
         let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_seen.fetch_max(now, Ordering::SeqCst);
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         self.current.fetch_sub(1, Ordering::SeqCst);
-        Ok(fake_trace(id))
+        Ok(())
     }
     async fn set_result(
         &self,
@@ -500,10 +479,10 @@ impl TraceSink for FlakyUpdateStatusRepo {
     }
     async fn update_status(
         &self,
-        id: &str,
+        _id: &str,
         _status: &str,
         _error_message: Option<&str>,
-    ) -> Result<Trace, OrionError> {
+    ) -> Result<(), OrionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self
             .fails_remaining
@@ -512,7 +491,7 @@ impl TraceSink for FlakyUpdateStatusRepo {
         {
             return Err(OrionError::Storage(sqlx::Error::PoolTimedOut));
         }
-        Ok(fake_trace(id))
+        Ok(())
     }
     async fn set_result(
         &self,
@@ -590,7 +569,7 @@ impl TraceSink for BatchSizeProbeRepo {
         _id: &str,
         _status: &str,
         _error_message: Option<&str>,
-    ) -> Result<Trace, OrionError> {
+    ) -> Result<(), OrionError> {
         unimplemented!()
     }
     async fn set_result(

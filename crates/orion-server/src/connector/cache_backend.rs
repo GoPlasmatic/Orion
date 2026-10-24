@@ -27,6 +27,13 @@ use crate::errors::OrionError;
 /// Implemented by both in-memory (DashMap) and Redis backends.
 #[async_trait]
 pub trait CacheBackend: Send + Sync {
+    /// Whether a write is an in-process operation with no I/O. A caller off
+    /// the response path writes such a backend inline, and anything else in
+    /// the background.
+    fn is_in_process(&self) -> bool {
+        false
+    }
+
     async fn get(&self, key: &str) -> Result<Option<String>, OrionError>;
     async fn set(&self, key: &str, value: &str) -> Result<(), OrionError>;
     async fn set_ex(&self, key: &str, value: &str, ttl_secs: u64) -> Result<(), OrionError>;
@@ -232,6 +239,10 @@ impl MemoryCacheBackend {
 
 #[async_trait]
 impl CacheBackend for MemoryCacheBackend {
+    fn is_in_process(&self) -> bool {
+        true
+    }
+
     async fn get(&self, key: &str) -> Result<Option<String>, OrionError> {
         let Some(entry) = self.entries.get(key) else {
             return Ok(None);
