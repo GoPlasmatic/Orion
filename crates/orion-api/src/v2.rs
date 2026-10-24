@@ -393,8 +393,14 @@ pub struct ApplyDeploymentResponse {
     pub committed_revision: u64,
     #[serde(default)]
     pub receipt: DeploymentReceiptResponse,
+    /// This node's convergence on the committed revision, once it tried to
+    /// build it.
     #[serde(default)]
     pub evaluation: Option<ConvergenceStatusResponse>,
+    /// Why this node could not build the committed revision, when it could
+    /// not. The revision stays committed; the node keeps serving what it had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_error: Option<String>,
 }
 
 /// Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`, `V2-07.4`).
@@ -460,6 +466,12 @@ pub struct RollbackDeploymentResponse {
     pub receipt: DeploymentReceiptResponse,
     #[serde(default, alias = "external_effect_warnings")]
     pub warnings: Vec<String>,
+    /// This node's convergence on the new revision, once it tried to build it.
+    #[serde(default)]
+    pub evaluation: Option<ConvergenceStatusResponse>,
+    /// Why this node could not build the new revision, when it could not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_error: Option<String>,
 }
 
 fn default_scaffold_version() -> String {

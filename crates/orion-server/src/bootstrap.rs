@@ -1138,7 +1138,8 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
             }),
         });
 
-    // Readiness flag — set once the first generation is published.
+    // Readiness flag — set once the first generation is published and the
+    // committed deployment head, if there is one, has been built.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Load active channels and workflows, build both halves of the first
@@ -1148,7 +1149,6 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     let (components, channels, active_workflow_count) = components
         .load_channels_and_build_engine(&config, &repos, &channel_loader)
         .await?;
-    ready.store(true, std::sync::atomic::Ordering::Release);
 
     // One supervisor for every long-lived background task, so `/health` and
     // `/readyz` can report their liveness; the scheduler's own status is
@@ -1215,49 +1215,47 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         audit_queue,
         rate_limit_state,
         metrics_handle,
-        ready,
+        ready: ready.clone(),
         kafka_consumer_handle,
         cluster,
         tasks,
         cron_status,
     });
 
-    // ARCH-02: Hydrate the v2 ImmutableDeploymentStore from the state database on boot
-    // so previously committed deployment revisions and head state survive restarts
-    // across SQLite, PostgreSQL, and MySQL. Fail closed if persisted state is corrupt (`TD-16`).
-    match state
+    // Hydrate the v2 deployment store from the state database, so committed
+    // revisions and the head survive a restart, then build the head. Either
+    // failing stops the boot: a node that cannot read or build what is
+    // committed must not report ready while serving something else.
+    state
         .composition
         .deployments
         .load_from_db_pool(&state.db_pool)
         .await
-    {
-        Err(e) if e.code == "CORRUPT_PERSISTED_STATE" => {
-            return Err(Box::new(e));
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "Failed to hydrate v2 deployment store from database at startup"
-            );
-        }
-        Ok(()) => {
-            crate::cluster::epoch_watcher::sync_v2_revocations(&state);
-            let (head_rev, _) = state.composition.deployments.current_head();
-            if head_rev > 0 {
-                let _ = crate::runtime::reconcile_deployment_revision(&state, head_rev).await;
-            }
-            let _ = state
-                .composition
-                .reconciler
-                .refresh_observed_nodes_from_db_pool(&state.db_pool)
-                .await;
-            let _ = state
-                .composition
-                .reconciler
-                .persist_local_status_to_db_pool(&state.db_pool)
-                .await;
-        }
+        .map_err(|e| format!("reading the committed deployments failed: {e}"))?;
+    crate::cluster::epoch_watcher::sync_v2_revocations(&state);
+    let (head_rev, _) = state.composition.deployments.current_head();
+    if head_rev > 0 {
+        crate::runtime::reconcile_deployment_revision(&state, head_rev)
+            .await
+            .map_err(|e| format!("deployment revision {head_rev} could not be built: {e}"))?;
     }
+    if let Err(e) = state
+        .composition
+        .reconciler
+        .refresh_observed_nodes_from_db_pool(&state.db_pool)
+        .await
+    {
+        tracing::warn!(error = %e, "could not read the other nodes' deployment status");
+    }
+    if let Err(e) = state
+        .composition
+        .reconciler
+        .persist_local_status_to_db_pool(&state.db_pool)
+        .await
+    {
+        tracing::warn!(error = %e, "could not record this node's deployment status");
+    }
+    ready.store(true, std::sync::atomic::Ordering::Release);
     crate::cluster::start_v2_reconciler(&state);
 
     Ok(Assembled {

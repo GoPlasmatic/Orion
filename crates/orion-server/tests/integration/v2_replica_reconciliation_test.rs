@@ -404,3 +404,96 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         .shutdown(std::time::Duration::from_secs(1))
         .await;
 }
+
+/// A committed head this node cannot build stops the boot, rather than the
+/// node reporting ready while serving something else. Applying it answers
+/// `202` (the revision is committed) and says why this node could not build
+/// it.
+#[tokio::test]
+async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
+    use std::str::FromStr;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
+        .await
+        .unwrap();
+    orion::storage::migrator_for(orion::storage::DbBackend::Sqlite)
+        .run(&pool)
+        .await
+        .unwrap();
+    let db_pool = orion::storage::DbPool::Sqlite(pool);
+    let metrics_handle = orion::metrics::init_metrics_with_instance(None);
+    let assemble = |instance: &str| {
+        let mut cfg = orion::config::AppConfig::default();
+        cfg.cluster.instance_id = instance.to_string();
+        orion::bootstrap::assemble(orion::bootstrap::AssembleParams {
+            config: std::sync::Arc::new(cfg),
+            pool: db_pool.clone(),
+            metrics_handle: metrics_handle.clone(),
+        })
+    };
+    let state_a = assemble("replica-a")
+        .await
+        .expect("boots on an empty store")
+        .state;
+
+    // A workflow revision no table holds: the manifest commits, and no node
+    // can build it.
+    let manifest = CanonicalManifest {
+        schema_version: 2,
+        providers: Vec::new(),
+        provider_lock_digest: None,
+        members: vec![ManifestMember {
+            entity: EntityRef {
+                kind: EntityKind::Workflow,
+                id: "ghost-wf".to_string(),
+                revision: 1,
+            },
+            definition_digest: sha256_digest(b"ghost-wf-v1"),
+            owning_package: None,
+            requires: Vec::new(),
+            rollouts: Vec::new(),
+        }],
+    };
+    let app = orion::server::build_router(state_a.clone());
+    let resp = tower::ServiceExt::oneshot(
+        app,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v2/admin/deployments")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "base_revision": 0,
+                    "idempotency_key": "idem-ghost",
+                    "reason": "deploy an unbuildable revision",
+                    "manifest": manifest,
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["committed_revision"], 1);
+    assert!(
+        body["local_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("ghost-wf")),
+        "{body}"
+    );
+    assert_eq!(body["evaluation"]["converged"], false, "{body}");
+
+    let err = match assemble("replica-b").await {
+        Ok(_) => panic!("a node must not boot on a head it cannot build"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("deployment revision 1"), "{err}");
+}

@@ -238,19 +238,48 @@ pub(crate) async fn apply_deployment(
         &receipt.committed_revision.to_string(),
     );
 
-    // Reconcile this node against the newly committed revision and reload RuntimeGeneration (`TD-17`, `TD-18`)
-    let _ = crate::runtime::reconcile_deployment_revision(&state, receipt.committed_revision).await;
-
+    let (evaluation, local_error) = reconcile_locally(&state, receipt.committed_revision).await;
     let resp = ApplyDeploymentResponse {
         status: "accepted".to_string(),
         committed_revision: receipt.committed_revision,
         receipt: receipt_to_dto(&receipt),
-        evaluation: None,
+        evaluation: Some(evaluation),
+        local_error,
     };
     (
         StatusCode::ACCEPTED,
         Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
     )
+}
+
+/// Build `revision` on this node, and say how that went: the node's
+/// convergence on it, and the error when it could not be built. The
+/// revision is committed either way; a node that cannot build it keeps
+/// serving what it had, and its reconciler retries.
+async fn reconcile_locally(
+    state: &AppState,
+    revision: u64,
+) -> (ConvergenceStatusResponse, Option<String>) {
+    let local_error = match crate::runtime::reconcile_deployment_revision(state, revision).await {
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %e, revision, "this node could not build the committed deployment revision");
+            Some(e.to_string())
+        }
+    };
+    let node = state.composition.reconciler.local_status().identity.node_id;
+    let report = state
+        .composition
+        .reconciler
+        .evaluate_convergence(revision, &ConvergenceTarget::ThisNode(node));
+    let evaluation = ConvergenceStatusResponse {
+        converged: report.converged,
+        target_revision: report.target_revision,
+        converged_nodes: report.converged_nodes,
+        pending_nodes: report.pending_nodes,
+        degraded_nodes: report.degraded_nodes,
+    };
+    (evaluation, local_error)
 }
 
 /// `GET /api/v2/admin/deployments/{revision}` (`V2-07.4`).
@@ -387,14 +416,15 @@ pub(crate) async fn rollback_deployment(
                 "deployment",
                 &format!("{}->{}", req.target_revision, receipt.committed_revision),
             );
-            let _ =
-                crate::runtime::reconcile_deployment_revision(&state, receipt.committed_revision)
-                    .await;
+            let (evaluation, local_error) =
+                reconcile_locally(&state, receipt.committed_revision).await;
             let resp = RollbackDeploymentResponse {
                 status: "accepted".to_string(),
                 committed_revision: receipt.committed_revision,
                 receipt: receipt_to_dto(&receipt),
                 warnings,
+                evaluation: Some(evaluation),
+                local_error,
             };
             (
                 StatusCode::ACCEPTED,

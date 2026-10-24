@@ -9182,12 +9182,20 @@
           "evaluation": {
             "oneOf": [
               {
-                "$ref": "#/components/schemas/ConvergenceStatusResponse"
+                "$ref": "#/components/schemas/ConvergenceStatusResponse",
+                "description": "This node's convergence on the committed revision, once it tried to\nbuild it."
               },
               {
                 "type": "null"
               }
             ]
+          },
+          "local_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why this node could not build the committed revision, when it could\nnot. The revision stays committed; the node keeps serving what it had."
           },
           "receipt": {
             "$ref": "#/components/schemas/DeploymentReceiptResponse"
@@ -15215,6 +15223,24 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "evaluation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConvergenceStatusResponse",
+                "description": "This node's convergence on the new revision, once it tried to build it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "local_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why this node could not build the new revision, when it could not."
           },
           "receipt": {
             "$ref": "#/components/schemas/DeploymentReceiptResponse"
