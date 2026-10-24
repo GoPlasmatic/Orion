@@ -189,5 +189,8 @@ pub(crate) async fn authoring_lint(Json(req): Json<UploadPackageRequest>) -> imp
             valid: report.valid,
             ..LintResponse::default()
         });
-    (status, Json(serde_json::to_value(dto).unwrap_or(Value::Null)))
+    (
+        status,
+        Json(serde_json::to_value(dto).unwrap_or(Value::Null)),
+    )
 }

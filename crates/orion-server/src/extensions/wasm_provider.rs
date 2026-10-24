@@ -9,8 +9,8 @@
 //! - **Per-Invocation Store & Resource Limits (`V2-13.2`)**: Enforces per-call
 //!   fuel budgets, memory ceilings, and handle table limits, normalizing traps
 //!   into [`ConnectorError`].
-//! - **Common Scoped Host Services (`V2-13.3`)**: Uses [`CapabilityTable`] and
-//!   [`BudgetScope`] for HTTP, credential, dependency, and session handles with
+//! - **Common Scoped Host Services (`V2-13.3`)**: Uses [`CapabilityTable`](crate::extensions::context::CapabilityTable) and
+//!   [`BudgetScope`](crate::extensions::context::BudgetScope) for HTTP, credential, dependency, and session handles with
 //!   the exact same authority intersection as Workflow-Group and Direct Rust providers.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -434,7 +434,7 @@ impl<'a> WasmInvocationStore<'a> {
         Ok(())
     }
 
-    /// Mint a scoped capability handle in the invocation's [`CapabilityTable`],
+    /// Mint a scoped capability handle in the invocation's [`CapabilityTable`](crate::extensions::context::CapabilityTable),
     /// enforcing the per-store handle ceiling (`V2-13.2`, `V2-13.3`).
     pub fn acquire_handle(
         &mut self,

@@ -734,4 +734,61 @@ mod tests {
             );
         }
     }
+
+    /// How an engine error this module builds reaches an HTTP caller,
+    /// through `OrionError`'s mapping. Here rather than in `errors.rs`,
+    /// which sits below `engine` and may not name it.
+    mod http_mapping {
+        use super::*;
+        use crate::errors::OrionError;
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        use orion_api::codes;
+
+        #[test]
+        fn a_caller_input_failure_answers_400() {
+            let err =
+                OrionError::Engine(HandlerError::new(ErrorClass::CallerInput, "bad input").into());
+            let (status, code, message) = err.response_parts();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(code, codes::VALIDATION_ERROR);
+            assert_eq!(message, "bad input", "the class label is taken off");
+        }
+
+        #[test]
+        fn a_timeout_answers_504() {
+            let err =
+                OrionError::Engine(HandlerError::new(ErrorClass::Timeout, "timed out").into());
+            let (status, code, message) = err.response_parts();
+            assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+            assert_eq!(code, codes::TIMEOUT);
+            assert_eq!(message, "timed out", "the class label is taken off");
+        }
+
+        /// An HTTP error from a downstream call keeps the generic engine
+        /// mapping — the `kind`, not the status, is what identifies an
+        /// Orion-side channel refusal, and a relayed 429 carries none.
+        #[test]
+        fn a_downstream_429_is_not_reported_as_a_channel_refusal() {
+            let err = OrionError::Engine(http_error(429, "Too Many Requests"));
+            assert_eq!(
+                err.into_response().status(),
+                StatusCode::INTERNAL_SERVER_ERROR
+            );
+        }
+
+        /// A genuine 503 relayed by `http_call` keeps the generic engine
+        /// mapping rather than reading as an open circuit.
+        #[tokio::test]
+        async fn a_downstream_503_is_not_reported_as_circuit_open() {
+            let err = OrionError::Engine(http_error(503, "Service Unavailable"));
+            let response = err.into_response();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("body");
+            let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+            assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+        }
+    }
 }

@@ -397,7 +397,7 @@ impl ChannelDriverRegistry {
         let Some(driver) = self.get(fields.protocol) else {
             return Err(OrionError::invalid_field(
                 "channel.protocol",
-                "UNSUPPORTED_PROTOCOL",
+                "INVALID",
                 format!(
                     "Channel protocol '{}' is not registered on this node (registered: {})",
                     fields.protocol,

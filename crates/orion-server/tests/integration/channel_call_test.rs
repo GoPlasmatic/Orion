@@ -447,12 +447,12 @@ async fn self_call_is_refused_as_a_cycle() {
         .await
         .unwrap();
 
-    // Refused (sanitized to a generic 500 by G1) — not a 200 silent success,
-    // not a hang. The "cycle detected" text is asserted at entry level in
-    // injected_call_chain_surfaces_cycle_refusal_message.
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Refused — not a 200 silent success, not a hang. The child's refusal is
+    // passed on with its own code, so this answers as the entry-level refusal
+    // in injected_call_chain_surfaces_cycle_refusal_message does.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
 
 /// A -> B -> A must be refused by cycle detection. The chain records call
@@ -483,9 +483,9 @@ async fn mutual_recursion_is_refused_as_a_cycle() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
 
 /// A linear chain of distinct channels deeper than `max_channel_call_depth`
@@ -538,11 +538,12 @@ async fn call_depth_beyond_configured_max_is_refused() {
         .await
         .unwrap();
 
-    // chain-3's call runs at depth 2 and must be refused (sanitized 500).
-    // If the guard regressed, the chain completes and this returns 200 ok.
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // chain-3's call runs at depth 2 and must be refused; the refusal is
+    // passed up the chain with its code. If the guard regressed, the chain
+    // completes and this returns 200 ok.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
 
 /// Entry-level cycle refusal: caller-supplied `metadata` is merged into the

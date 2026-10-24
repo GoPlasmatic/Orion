@@ -851,18 +851,6 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_validation_returns_400() {
-        let err = OrionError::Engine(
-            crate::engine::HandlerError::new(crate::engine::ErrorClass::CallerInput, "bad input")
-                .into(),
-        );
-        let (status, code, message) = err.response_parts();
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(code, codes::VALIDATION_ERROR);
-        assert_eq!(message, "bad input", "the class label is taken off");
-    }
-
-    #[test]
     fn test_engine_budget_returns_400_with_the_message() {
         let err = OrionError::Engine(dataflow_rs::Error::budget(
             "crypto: Operation budget exceeded: 86 charged against 20",
@@ -871,18 +859,6 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(code, codes::VALIDATION_ERROR);
         assert!(message.contains("budget"), "{message}");
-    }
-
-    #[test]
-    fn test_engine_timeout_returns_504() {
-        let err = OrionError::Engine(
-            crate::engine::HandlerError::new(crate::engine::ErrorClass::Timeout, "timed out")
-                .into(),
-        );
-        let (status, code, message) = err.response_parts();
-        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(code, codes::TIMEOUT);
-        assert_eq!(message, "timed out", "the class label is taken off");
     }
 
     #[test]
@@ -1507,16 +1483,6 @@ mod tests {
         }
     }
 
-    /// An HTTP error from a downstream call keeps the generic engine
-    /// mapping — the `kind`, not the status, is what identifies an Orion-side
-    /// channel refusal, and a relayed 429 carries none.
-    #[tokio::test]
-    async fn test_downstream_429_is_not_reported_as_a_channel_refusal() {
-        let err = OrionError::Engine(crate::engine::http_error(429, "Too Many Requests"));
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
     #[test]
     fn test_engine_circuit_open_is_retryable() {
         let err = OrionError::Engine(service::circuit_open("api", "orders"));
@@ -1524,16 +1490,6 @@ mod tests {
             err.is_retryable(),
             "DLQ retry must classify a shed dependency as retryable"
         );
-    }
-
-    #[tokio::test]
-    async fn test_downstream_503_is_not_reported_as_circuit_open() {
-        // A genuine 503 relayed by http_call keeps the generic engine mapping.
-        let err = OrionError::Engine(crate::engine::http_error(503, "Service Unavailable"));
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = body_to_value(response).await;
-        assert_eq!(body["error"]["code"], "ENGINE_ERROR");
     }
 
     /// No classification token survives into any persisted text.

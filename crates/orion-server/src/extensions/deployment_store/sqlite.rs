@@ -2,13 +2,13 @@
 
 use serde_json::{Value, json};
 
-use crate::extensions::AdmissionPolicy;
 use super::{
     ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
     ConnectionRevisionRow, DeploymentDirtySet, DeploymentError, DeploymentReceipt,
     DeploymentRevisionRow, DeploymentState, ImmutableDeploymentStore, ProviderAdmissionRow,
-    ProviderPackageRow,
+    ProviderPackageRow, Rollback,
 };
+use crate::extensions::AdmissionPolicy;
 use crate::extensions::contract::ImplementationKind;
 use crate::extensions::package_identity::{canonical_bytes, sha256_digest};
 
@@ -405,8 +405,15 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        for (rev, parent_rev, manifest_digest, manifest_str, principal, reason, members_compacted) in
-            rev_rows
+        for (
+            rev,
+            parent_rev,
+            manifest_digest,
+            manifest_str,
+            principal,
+            reason,
+            members_compacted,
+        ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
             if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64)
@@ -512,8 +519,15 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        for (rev, parent_rev, manifest_digest, manifest_str, principal, reason, members_compacted) in
-            rev_rows
+        for (
+            rev,
+            parent_rev,
+            manifest_digest,
+            manifest_str,
+            principal,
+            reason,
+            members_compacted,
+        ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
             if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64)
@@ -619,8 +633,15 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        for (rev, parent_rev, manifest_digest, manifest_str, principal, reason, members_compacted) in
-            rev_rows
+        for (
+            rev,
+            parent_rev,
+            manifest_digest,
+            manifest_str,
+            principal,
+            reason,
+            members_compacted,
+        ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
             if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64)
@@ -1704,7 +1725,14 @@ impl ImmutableDeploymentStore {
         policy: &dyn AdmissionPolicy,
     ) -> Result<DeploymentReceipt, DeploymentError> {
         self.transactional_mutate(pool, |staged| {
-            Self::apply_candidate_into_state(staged, principal, idempotency_key, plan, reason, policy)
+            Self::apply_candidate_into_state(
+                staged,
+                principal,
+                idempotency_key,
+                plan,
+                reason,
+                policy,
+            )
         })
         .await
     }
@@ -1712,23 +1740,11 @@ impl ImmutableDeploymentStore {
     pub async fn rollback_to_revision_in_db(
         &self,
         pool: &crate::storage::DbPool,
-        principal: &str,
-        idempotency_key: &str,
-        expected_head_revision: u64,
-        target_revision: u64,
-        reason: &str,
+        rollback: &Rollback<'_>,
         policy: &dyn AdmissionPolicy,
     ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
         self.transactional_mutate(pool, |staged| {
-            Self::rollback_to_revision_into_state(
-                staged,
-                principal,
-                idempotency_key,
-                expected_head_revision,
-                target_revision,
-                reason,
-                policy,
-            )
+            Self::rollback_to_revision_into_state(staged, rollback, policy)
         })
         .await
     }

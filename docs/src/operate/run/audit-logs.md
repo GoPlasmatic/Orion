@@ -59,6 +59,12 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `retry` | `cron_occurrence` | `POST /cron/occurrences/{id}/retry` |
 | `cancel` | `cron_occurrence` | `POST /cron/occurrences/{id}/cancel` |
 | `trigger` | `channel` | `POST /channels/{id}/trigger` — a manual run of a cron channel |
+| `v2_package_upload` | `connector_package` | `POST /connector-packages`; `resource_id` is the package digest |
+| `v2_package_admit` | `connector_package` | `POST /connector-packages/{digest}/admit` |
+| `v2_package_revoke` | `connector_package` | `POST /connector-packages/{digest}/revoke` |
+| `v2_connection_create` | `connection` | `POST /connections` — one row per connection revision; `resource_id` is `{connection_id}@{revision}` |
+| `v2_deployment_apply` | `deployment` | `POST /deployments`; `resource_id` is the committed revision |
+| `v2_deployment_rollback` | `deployment` | `POST /deployments/rollback`; `resource_id` is `{target_revision}->{committed_revision}` |
 
 Reads are not recorded: only mutations, and the two `test` calls that behave like one.
 

@@ -2,12 +2,12 @@
 //!
 //! Exposes the v2 control-plane surface across focused domain modules (`MOD-03`):
 //! - Runtime capability discovery (`/runtime-capabilities`)
-//! - [`packages`]: Connector package ingestion, admission & revocation (`/connector-packages`)
-//! - [`connections`]: Immutable connection revisions & health probes (`/connections`)
-//! - [`deployments`]: Candidate deployment planning, idempotent CAS apply (`202 Accepted`),
+//! - `packages`: Connector package ingestion, admission & revocation (`/connector-packages`)
+//! - `connections`: Immutable connection revisions & health probes (`/connections`)
+//! - `deployments`: Candidate deployment planning, idempotent CAS apply (`202 Accepted`),
 //!   convergence polling (`?target=this-node|observed`), and rollback by new revision (`/deployments`)
-//! - [`migration`]: Legacy v1 -> v2 migration report & edition transition preflight (`/migration-report`)
-//! - [`authoring`]: Provider package authoring scaffold, pack & lint (`/authoring/*`)
+//! - `migration`: Legacy v1 -> v2 migration report & edition transition preflight (`/migration-report`)
+//! - `authoring`: Provider package authoring scaffold, pack & lint (`/authoring/*`)
 
 pub(crate) mod authoring;
 pub(crate) mod connections;
@@ -235,6 +235,7 @@ pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> i
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

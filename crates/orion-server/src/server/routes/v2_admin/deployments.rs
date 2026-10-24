@@ -368,11 +368,13 @@ pub(crate) async fn rollback_deployment(
         .deployments
         .rollback_to_revision_in_db(
             &state.db_pool,
-            &actor,
-            &req.idempotency_key,
-            req.expected_head_revision,
-            req.target_revision,
-            &req.reason,
+            &crate::extensions::deployment_store::Rollback {
+                principal: &actor,
+                idempotency_key: &req.idempotency_key,
+                expected_head_revision: req.expected_head_revision,
+                target_revision: req.target_revision,
+                reason: &req.reason,
+            },
             state.composition.admission.as_ref(),
         )
         .await

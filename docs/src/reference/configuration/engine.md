@@ -1,4 +1,4 @@
-<!-- description: The [engine] settings: channel_call depth and timeout, loop and cache bounds, sticky rollouts, connector load failures, the ops budget and the circuit breaker. -->
+<!-- description: The [engine] settings: channel_call depth and timeout, loop and cache bounds, sticky rollouts, connector load failures, the ops and run budgets and the circuit breaker. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-10-01 -->
 
@@ -21,6 +21,10 @@ max_memory_cache_entries = 100000
 rollout_sticky_header = ""
 fail_on_connector_load_error = false
 ops_budget = 0
+max_run_tasks = 0
+max_run_expr_ops = 0
+max_run_custom_units = 0
+max_run_in_flight = 0
 
 [engine.circuit_breaker]
 enabled = false
@@ -48,6 +52,16 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 | `engine.rollout_sticky_header` | `""` | `ORION_ENGINE__ROLLOUT_STICKY_HEADER` | Set to the header that identifies a caller (for example `"x-user-id"`) so canary rollouts are stable per caller; see [`rollout_sticky_header`](#rollout_sticky_header). |
 | `engine.fail_on_connector_load_error` | `false` | `ORION_ENGINE__FAIL_ON_CONNECTOR_LOAD_ERROR` | **Set to `true` in production.** Refuse to start when an enabled connector cannot be loaded; see [Connector load failures](#connector-load-failures). |
 | `engine.ops_budget` | `0` | `ORION_ENGINE__OPS_BUDGET` | Ceiling on the operations one JSONLogic evaluation may perform, on every engine this node builds; `0` installs none. Set it when expressions come from someone other than the operator, such as a tenant's rules or a competitor's model adapters; see [`ops_budget`](#ops_budget). |
+| `engine.max_run_tasks` | `0` | `ORION_ENGINE__MAX_RUN_TASKS` | Ceiling on task dispatches across one run, counted over loop sweeps, task groups and nested `channel_call` runs; `0` installs none. See [Run budgets](#run-budgets). |
+| `engine.max_run_expr_ops` | `0` | `ORION_ENGINE__MAX_RUN_EXPR_OPS` | Ceiling on JSONLogic operations summed across one run; `0` installs none. `ops_budget` bounds one evaluation, this bounds their total. |
+| `engine.max_run_custom_units` | `0` | `ORION_ENGINE__MAX_RUN_CUSTOM_UNITS` | Ceiling on the host units functions charge across one run; `0` installs none. No built-in function charges units yet, so today it has no effect. |
+| `engine.max_run_in_flight` | `0` | `ORION_ENGINE__MAX_RUN_IN_FLIGHT` | Ceiling on tasks running at once within one run; `0` installs none. |
+
+### Run budgets
+
+The four `max_run_*` settings bound one *run*: everything a request, a Kafka record or a cron occurrence starts, including the `channel_call` runs it makes, which share their caller's counters. A run that crosses a ceiling stops, and the caller gets `400` with code `VALIDATION_ERROR` and a message naming the budget, for example `run task budget exceeded (101 > 100 max tasks)`.
+
+They complement `ops_budget`, which bounds a single expression evaluation: a workflow can stay under `ops_budget` on every evaluation and still loop through millions of them.
 
 ### Connector load failures
 

@@ -151,7 +151,7 @@ pub async fn send_es(
 
 /// Redact secret-bearing keys and URL credentials/query secrets from an
 /// upstream JSON error body and format a bounded preview capped at
-/// [`crate::http_body::ERROR_BODY_PREVIEW_LIMIT`] (512 bytes) (`TD-12`).
+/// `http_body::ERROR_BODY_PREVIEW_LIMIT` (512 bytes) (`TD-12`).
 pub fn format_upstream_error_preview(body: &Value) -> String {
     let redacted = redact_error_json(body, 0);
     let raw = redacted.to_string();
@@ -693,6 +693,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod error_taxonomy_tests {
     use super::*;
 

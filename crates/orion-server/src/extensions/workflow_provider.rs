@@ -14,7 +14,7 @@
 //!   expansion, and call-graph cycles at compile time before admission.
 //! - **Isolated Invocation State & Scoped Dependencies (`V2-12.3`, `V2-12.4`)**:
 //!   Each invocation runs on a fresh state envelope and dispatches declared
-//!   `binding_slot` calls through [`Invocation::derive_dependency`] and
+//!   `binding_slot` calls through [`Invocation::derive_dependency`](crate::extensions::context::Invocation::derive_dependency) and
 //!   [`ProviderRegistry::dispatch_attempt`], sharing the root budget and deadline.
 
 use std::collections::{BTreeMap, BTreeSet};

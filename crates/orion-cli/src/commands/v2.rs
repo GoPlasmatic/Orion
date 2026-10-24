@@ -134,7 +134,8 @@ pub enum DeploymentsSubcommand {
 }
 
 impl DeploymentsCmd {
-    pub fn new(command: DeploymentsSubcommand) -> Self {
+    #[cfg(test)]
+    fn new(command: DeploymentsSubcommand) -> Self {
         Self { command }
     }
 
@@ -264,8 +265,9 @@ impl DeploymentsCmd {
                     target_revision: *target_revision,
                     reason: reason.clone().unwrap_or_else(|| "rollback".to_string()),
                 };
-                let resp: RollbackDeploymentResponse =
-                    client.post_dto(paths::V2_DEPLOYMENTS_ROLLBACK, &body).await?;
+                let resp: RollbackDeploymentResponse = client
+                    .post_dto(paths::V2_DEPLOYMENTS_ROLLBACK, &body)
+                    .await?;
                 let committed_rev = if resp.committed_revision > 0 {
                     resp.committed_revision
                 } else {
@@ -424,7 +426,8 @@ struct ProviderRow {
 }
 
 impl ProviderCmd {
-    pub fn new(command: ProviderSubcommand) -> Self {
+    #[cfg(test)]
+    fn new(command: ProviderSubcommand) -> Self {
         Self { command }
     }
 
@@ -611,7 +614,8 @@ pub enum ConnectionsSubcommand {
 }
 
 impl ConnectionsCmd {
-    pub fn new(command: ConnectionsSubcommand) -> Self {
+    #[cfg(test)]
+    fn new(command: ConnectionsSubcommand) -> Self {
         Self { command }
     }
 
@@ -656,8 +660,9 @@ impl ConnectionsCmd {
                     driver_id: None,
                     kind: None,
                 };
-                let resp: ConnectionProbeResponse =
-                    client.post_dto(&paths::v2_connection_probe(id), &body).await?;
+                let resp: ConnectionProbeResponse = client
+                    .post_dto(&paths::v2_connection_probe(id), &body)
+                    .await?;
                 if quiet {
                     let s = if !resp.status.is_empty() {
                         resp.status.as_str()
@@ -708,7 +713,9 @@ mod tests {
                 "inventory": {},
                 "files": {"manifest.json": "{}", "inventory.json": "{}"},
             })),
-            ("POST", p) if p.starts_with("/api/v2/admin/connector-packages/") && p.ends_with("/admit") => {
+            ("POST", p)
+                if p.starts_with("/api/v2/admin/connector-packages/") && p.ends_with("/admit") =>
+            {
                 Ok(json!({
                     "status": "admitted",
                     "admission": {
@@ -773,10 +780,7 @@ mod tests {
             ("POST", "/api/v2/admin/deployments") => {
                 let req: ApplyDeploymentRequest = serde_json::from_value(body_val)?;
                 assert!(!req.reason.is_empty(), "apply must send required reason");
-                assert_eq!(
-                    req.reviewed_manifest_digest.as_deref(),
-                    Some("sha256:3333")
-                );
+                assert_eq!(req.reviewed_manifest_digest.as_deref(), Some("sha256:3333"));
                 Ok(json!({
                     "status": "accepted",
                     "committed_revision": 1,
@@ -933,4 +937,3 @@ mod tests {
         assert_eq!(code, 0);
     }
 }
-

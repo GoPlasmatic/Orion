@@ -4,7 +4,7 @@
 
 # Query and write bounds
 
-Safety bounds for the portable `data_query` / `data_write` handlers. Requests over a bound are rejected, never silently clamped or truncated.
+Safety bounds for the portable `data_query` / `data_write` handlers, plus the result-size cap `db_read` shares. Requests over a bound are rejected, never silently clamped or truncated.
 
 ## Synopsis
 
@@ -13,6 +13,7 @@ Safety bounds for the portable `data_query` / `data_write` handlers. Requests ov
 default_limit = 100
 max_limit = 1000
 max_skip = 10000
+max_result_bytes = 16777216
 
 [write]
 max_rows = 1000
@@ -26,6 +27,7 @@ allow_unfiltered = false
 | `query.default_limit` | `100` | `ORION_QUERY__DEFAULT_LIMIT` | Page size applied when a query omits `limit`. |
 | `query.max_limit` | `1000` | `ORION_QUERY__MAX_LIMIT` | Hard cap on page size. Must be ≥ `default_limit`. |
 | `query.max_skip` | `10000` | `ORION_QUERY__MAX_SKIP` | Hard cap on the `skip` offset, enforced on every backend. A query skipping more is rejected, never clamped. |
+| `query.max_result_bytes` | `16777216` | `ORION_QUERY__MAX_RESULT_BYTES` | Cap on the decoded size of one `db_read` or `data_query` result (16 MiB). SQL rows are counted as they stream, so a wide result fails the task before it is held in memory. `0` removes the cap. |
 | `write.max_rows` | `1000` | `ORION_WRITE__MAX_ROWS` | Hard cap on rows per bulk insert or upsert. |
 | `write.allow_unfiltered` | `false` | `ORION_WRITE__ALLOW_UNFILTERED` | Leave `false` unless a workflow genuinely needs unfiltered `update`/`delete` — which still also requires `"all": true` on the call itself. |
 

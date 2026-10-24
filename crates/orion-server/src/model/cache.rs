@@ -300,6 +300,7 @@ fn total(inner: &Inner) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use dataflow_rs::datavalue::OwnedDataTensor;

@@ -153,7 +153,7 @@ impl Execution {
 
 /// Run `channel`'s workflows over `data` on the admitted [`crate::runtime::RuntimeGeneration`].
 ///
-/// Pins `generation` in [`crate::runtime::PINNED_GENERATION`] for the duration
+/// Pins `generation` in [`crate::runtime::generation::PINNED_GENERATION`] for the duration
 /// of the execution so nested in-process `channel_call` invocations, guard
 /// stores, and model inference resolve against the same generation (`V2-05.2`,
 /// `V2-05.3`).
@@ -619,6 +619,7 @@ fn classify_v4_run(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

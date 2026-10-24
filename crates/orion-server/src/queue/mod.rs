@@ -277,7 +277,7 @@ impl TraceQueue {
     /// the payload + metadata would exceed `max_memory_bytes` before callers
     /// allocate tokens or execute database `INSERT` + compensating `UPDATE`
     /// round-trips for a pending trace row. The authoritative reservation in
-    /// [`Self::enqueue`] still runs on `submit` to close any concurrent race.
+    /// `enqueue` still runs on `submit` to close any concurrent race.
     pub fn check_admissible(
         &self,
         payload: &Value,

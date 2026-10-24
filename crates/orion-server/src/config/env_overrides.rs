@@ -314,6 +314,7 @@ where
     ov!(query.default_limit: u64);
     ov!(query.max_limit: u64);
     ov!(query.max_skip: u64);
+    ov!(query.max_result_bytes: usize);
 
     // Write dialect
     ov!(write.max_rows: u64);
@@ -364,6 +365,10 @@ where
     ov!(engine.default_channel_call_timeout_ms: u64);
     ov!(engine.max_loop_iterations: i64);
     ov!(engine.ops_budget: u64);
+    ov!(engine.max_run_tasks: u64);
+    ov!(engine.max_run_expr_ops: u64);
+    ov!(engine.max_run_custom_units: u64);
+    ov!(engine.max_run_in_flight: u64);
     ov!(engine.global_http_timeout_secs: u64);
     ov!(engine.max_pool_cache_entries: usize);
     ov!(engine.max_memory_cache_entries: usize);

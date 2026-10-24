@@ -1,9 +1,9 @@
 //! `connector_call` — unified v2 connector invocation function for `dataflow-rs` 4 (`V2-10.1`, `V2-11.1`, `V2-14`).
 //!
-//! Dispatches any registered [`ProviderBackend`] (`rust`, `workflow`, or `wasm`)
-//! through [`ProviderRegistry`] under an owned [`RunContext`] / [`AttemptContext`],
+//! Dispatches any registered [`ProviderBackend`](crate::extensions::ProviderBackend) (`rust`, `workflow`, or `wasm`)
+//! through [`ProviderRegistry`] under an owned [`RunContext`] / [`AttemptContext`](crate::extensions::context::AttemptContext),
 //! enforcing reserved operation denial (`orion.internal.*`), deadline/cancellation
-//! propagation, and normalized [`ConnectorResult`] / [`ConnectorError`] outcomes.
+//! propagation, and normalized [`ConnectorResult`] / [`ConnectorError`](crate::extensions::ConnectorError) outcomes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};

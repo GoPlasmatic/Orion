@@ -199,8 +199,7 @@ impl ProviderBackend for HttpProviderBackend {
                 ));
             };
 
-            if let Err(ssrf_reason) =
-                crate::validation::ssrf::validate_url_not_private(&url).await
+            if let Err(ssrf_reason) = crate::validation::ssrf::validate_url_not_private(&url).await
             {
                 return Err(ConnectorError::forbidden(
                     codes::CAPABILITY_INVALID,
@@ -251,9 +250,8 @@ impl ProviderBackend for HttpProviderBackend {
                     )
                 })?;
             ctx.invocation().record_effect(EffectStatus::Completed);
-            let parsed_body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-                Value::String(String::from_utf8_lossy(&bytes).into_owned())
-            });
+            let parsed_body: Value = serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
             let mut metadata = BTreeMap::new();
             metadata.insert("driver".to_string(), json!(DRIVER_HTTP));
             metadata.insert("attempt".to_string(), json!(ctx.attempt_number()));
@@ -1318,7 +1316,8 @@ impl ProviderBackend for MemoryCacheProviderBackend {
                 }
                 "set" | "cache_write" | "cache.set" => {
                     let value = input.get("value").cloned().unwrap_or(Value::Null);
-                    let approx_bytes = crate::connector::sql_decode::approx_json_value_bytes(&value);
+                    let approx_bytes =
+                        crate::connector::sql_decode::approx_json_value_bytes(&value);
                     if approx_bytes > self.store.max_value_bytes() {
                         return Err(ConnectorError::invalid_input(
                             format!(

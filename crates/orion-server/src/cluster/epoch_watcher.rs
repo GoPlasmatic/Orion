@@ -62,10 +62,16 @@ pub fn sync_v2_revocations(state: &AppState) {
     let connections = state.composition.deployments.list_connections();
     for adm in state.composition.deployments.list_admissions() {
         if adm.revoked {
-            state.composition.admission.revoke_digest(&adm.package_digest);
+            state
+                .composition
+                .admission
+                .revoke_digest(&adm.package_digest);
             for pkg in &packages {
                 if pkg.package_digest == adm.package_digest {
-                    state.composition.admission.revoke_provider(&pkg.provider_id);
+                    state
+                        .composition
+                        .admission
+                        .revoke_provider(&pkg.provider_id);
                 }
             }
             for conn in &connections {
@@ -109,17 +115,18 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     let local = state.composition.reconciler.local_status();
     let mut tick_ok = true;
 
-    if desired_rev > 0 && local.applied_revision != desired_rev {
-        if let Err(e) = crate::runtime::reconcile_deployment_revision(state, desired_rev).await {
-            crate::metrics::record_error("v2_reconciler");
-            tracing::warn!(
-                error = %e,
-                desired_rev,
-                applied_rev = local.applied_revision,
-                "V2 reconciler: failed to reconcile deployment revision; will retry"
-            );
-            tick_ok = false;
-        }
+    if desired_rev > 0
+        && local.applied_revision != desired_rev
+        && let Err(e) = crate::runtime::reconcile_deployment_revision(state, desired_rev).await
+    {
+        crate::metrics::record_error("v2_reconciler");
+        tracing::warn!(
+            error = %e,
+            desired_rev,
+            applied_rev = local.applied_revision,
+            "V2 reconciler: failed to reconcile deployment revision; will retry"
+        );
+        tick_ok = false;
     }
 
     if let Err(e) = state

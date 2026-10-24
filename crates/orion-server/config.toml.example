@@ -186,6 +186,18 @@
                                            # *condition* fails closed to false and is only
                                            # logged. Size it from the heaviest legitimate
                                            # expression.
+# max_run_tasks = 0                        # Ceiling on task dispatches across one run, counted
+                                           # over loops, groups and nested channel_call runs.
+                                           # 0 installs none. Crossing it fails the run with
+                                           # 400 VALIDATION_ERROR.
+# max_run_expr_ops = 0                     # Ceiling on JSONLogic operations summed across one
+                                           # run (ops_budget bounds a single evaluation). 0
+                                           # installs none.
+# max_run_custom_units = 0                 # Ceiling on host units functions charge across one
+                                           # run. No built-in function charges any yet. 0
+                                           # installs none.
+# max_run_in_flight = 0                    # Ceiling on tasks running at once within one run.
+                                           # 0 installs none.
 # fail_on_connector_load_error = false     # Refuse to start when an enabled connector cannot be
                                            # loaded (missing env://VAR, unparseable config,
                                            # unresolvable secret). Default false skips it with a
@@ -274,6 +286,8 @@
 # max_limit = 1000                   # Hard cap; a larger request is rejected, never clamped
 # max_skip = 10000                   # Hard cap on the `skip` offset, on every backend; a larger
                                      # offset is rejected, never clamped
+# max_result_bytes = 16777216        # Cap on one db_read/data_query result's decoded size
+                                     # (16 MiB); a larger result fails the task. 0 = unlimited
 
 [write]                              # Safety bounds for the portable `data_write` handler
 # max_rows = 1000                    # Hard cap on rows per bulk insert/upsert

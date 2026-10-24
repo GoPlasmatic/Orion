@@ -239,7 +239,7 @@ impl ConnectorRegistry {
 
     /// Get or create the circuit breaker for a `(channel, connector)` pairing.
     ///
-    /// The map is keyed by [`BreakerKey`] so hot-path lookups borrow `(channel, connector)`
+    /// The map is keyed by `BreakerKey` so hot-path lookups borrow `(channel, connector)`
     /// without allocating a formatted `String`, while the entry caches the
     /// composite `"{channel}:{connector}"` string for admin API / cluster-reset
     /// compatibility.

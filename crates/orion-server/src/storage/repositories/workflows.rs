@@ -1037,6 +1037,16 @@ pub fn workflow_json(
 mod tests {
     use super::*;
 
+    /// The strict reader the engine loads every stored definition with (the
+    /// v3 compat reader off). Spelled here rather than borrowed from
+    /// `engine`, which sits above storage.
+    fn strict_parse(json: &serde_json::Value) -> dataflow_rs::def::Parsed {
+        dataflow_rs::def::parse(
+            json,
+            dataflow_rs::def::ParseOptions::default().compat(false),
+        )
+    }
+
     #[test]
     fn test_workflow_json_basic() {
         let workflow = Workflow {
@@ -1062,7 +1072,7 @@ mod tests {
         assert_eq!(json["name"], "Test Workflow");
         assert_eq!(json["channel"], "default");
         assert_eq!(json["priority"], 10);
-        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
+        let parsed = strict_parse(&json);
         assert!(parsed.def.is_some(), "{:?}", parsed.issues);
     }
 
@@ -1119,7 +1129,7 @@ mod tests {
             Some((0, 50)),
         )
         .expect("test");
-        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
+        let parsed = strict_parse(&json);
         let df_workflow = parsed.def.expect("parses");
         assert_eq!(df_workflow.id(), "rollout-wf:v3");
         assert_eq!(df_workflow.channel(), "default");
@@ -1182,7 +1192,7 @@ mod tests {
         );
 
         // The engine reads the row with nothing to report.
-        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
+        let parsed = strict_parse(&json);
         assert!(parsed.def.is_some(), "{:?}", parsed.issues);
         assert!(parsed.issues.is_empty(), "{:?}", parsed.issues);
     }
@@ -1210,7 +1220,7 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
         let json = workflow_json(&workflow, "orders", "wf-orders", "active", None).expect("test");
-        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
+        let parsed = strict_parse(&json);
         assert_eq!(parsed.def.expect("parses").rollout(), None);
     }
 

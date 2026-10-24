@@ -663,12 +663,11 @@ impl ContiguousCheckpointLedger {
             let fence_token = r.get::<i64, _>("fence_token") as u64;
             let contiguous_offset = r.get::<i64, _>("contiguous_offset") as u64;
             let cursor_json: String = r.get("cursor_json");
-            let cp: Value = serde_json::from_str(&cursor_json).map_err(|e| {
-                SourceCoordinationError {
+            let cp: Value =
+                serde_json::from_str(&cursor_json).map_err(|e| SourceCoordinationError {
                     code: "CORRUPT_PERSISTED_STATE",
                     message: format!("Corrupt cursor_json in source_checkpoints: {e}"),
-                }
-            })?;
+                })?;
             let key = SourcePartitionKey::new(channel_id, partition_id);
             let ledger = guard.entry(key).or_default();
             ledger.committed_seq = contiguous_offset;
@@ -1126,7 +1125,10 @@ mod tests {
         // Hydrate into a fresh coordinator and ledger
         let coord2 = SourceLeaseCoordinator::new();
         let ledger2 = ContiguousCheckpointLedger::new(coord2.clone());
-        assert_eq!(coord2.load_from_sqlite(&pool).await.expect("load claims"), 1);
+        assert_eq!(
+            coord2.load_from_sqlite(&pool).await.expect("load claims"),
+            1
+        );
         assert_eq!(
             ledger2
                 .load_from_sqlite(&pool)

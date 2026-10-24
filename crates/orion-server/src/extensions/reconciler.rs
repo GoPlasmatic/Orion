@@ -415,7 +415,9 @@ impl NodeReconciler {
             crate::storage::DbPool::Sqlite(p) => match sqlx::query_as(query_sql).fetch_all(p).await
             {
                 Ok(r) => r,
-                Err(e) if e.to_string().contains("no such table") => return Ok(self.observed_node_ids()),
+                Err(e) if e.to_string().contains("no such table") => {
+                    return Ok(self.observed_node_ids());
+                }
                 Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
             },
             crate::storage::DbPool::Postgres(p) => {
@@ -427,13 +429,15 @@ impl NodeReconciler {
                     Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
                 }
             }
-            crate::storage::DbPool::Mysql(p) => match sqlx::query_as(query_sql).fetch_all(p).await {
-                Ok(r) => r,
-                Err(e) if e.to_string().contains("doesn't exist") => {
-                    return Ok(self.observed_node_ids());
+            crate::storage::DbPool::Mysql(p) => {
+                match sqlx::query_as(query_sql).fetch_all(p).await {
+                    Ok(r) => r,
+                    Err(e) if e.to_string().contains("doesn't exist") => {
+                        return Ok(self.observed_node_ids());
+                    }
+                    Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
                 }
-                Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
-            },
+            }
         };
 
         let mut retained_updates = Vec::new();
@@ -449,11 +453,10 @@ impl NodeReconciler {
                 retained_str,
             ) in rows
             {
-                let retained: BTreeSet<u64> =
-                    serde_json::from_str::<Vec<u64>>(&retained_str)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect();
+                let retained: BTreeSet<u64> = serde_json::from_str::<Vec<u64>>(&retained_str)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
                 retained_updates.push((node_id.clone(), retained.clone()));
 
                 if node_id == self.local_identity.node_id {
@@ -478,7 +481,8 @@ impl NodeReconciler {
             }
         }
         for (node_id, retained) in retained_updates {
-            self.store.update_node_retained_revisions(&node_id, retained);
+            self.store
+                .update_node_retained_revisions(&node_id, retained);
         }
         Ok(self.observed_node_ids())
     }
@@ -639,10 +643,9 @@ mod tests {
         assert!(observed.contains("node-alpha"));
         assert!(observed.contains("node-beta"));
 
-        let conv_pending =
-            root_a
-                .reconciler
-                .evaluate_convergence(1, &ConvergenceTarget::ObservedNodes(observed.clone()));
+        let conv_pending = root_a
+            .reconciler
+            .evaluate_convergence(1, &ConvergenceTarget::ObservedNodes(observed.clone()));
         assert!(!conv_pending.converged);
         assert_eq!(conv_pending.pending_nodes, vec!["node-beta".to_string()]);
     }

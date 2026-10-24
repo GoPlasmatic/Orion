@@ -100,8 +100,7 @@ pub(crate) async fn create_migration_report(
     let bootstrap_manifest_digest = bootstrap_manifest
         .as_ref()
         .and_then(|m| m.canonicalize_and_verify().ok().map(|(_, d)| d));
-    let bootstrap_manifest_val =
-        bootstrap_manifest.and_then(|m| serde_json::to_value(m).ok());
+    let bootstrap_manifest_val = bootstrap_manifest.and_then(|m| serde_json::to_value(m).ok());
     let compatible = findings.is_empty() && bootstrap_manifest_val.is_some();
 
     let resp = MigrationReportResponse {

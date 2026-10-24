@@ -57,9 +57,7 @@ fn validate_no_secrets_in_public_config(value: &Value) -> Result<(), DeploymentE
                 if is_public_config_secret_key(k) {
                     return Err(DeploymentError::new(
                         "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
-                        format!(
-                            "secret key '{k}' must use secret_locator, not public_config"
-                        ),
+                        format!("secret key '{k}' must use secret_locator, not public_config"),
                     ));
                 }
                 validate_no_secrets_in_public_config(v)?;
@@ -331,6 +329,17 @@ impl Default for ImmutableDeploymentStore {
     fn default() -> Self {
         Self::new("node-local-1")
     }
+}
+
+/// A rollback request: re-deploy `target_revision`'s manifest as a new
+/// revision on top of `expected_head_revision`.
+#[derive(Debug, Clone, Copy)]
+pub struct Rollback<'a> {
+    pub principal: &'a str,
+    pub idempotency_key: &'a str,
+    pub expected_head_revision: u64,
+    pub target_revision: u64,
+    pub reason: &'a str,
 }
 
 impl ImmutableDeploymentStore {
@@ -777,9 +786,7 @@ impl ImmutableDeploymentStore {
             policy_id: verdict.policy_id,
             revoked: false,
         };
-        g.dirty
-            .admissions
-            .insert(admission.package_digest.clone());
+        g.dirty.admissions.insert(admission.package_digest.clone());
         g.admissions
             .insert(admission.package_digest.clone(), admission.clone());
         Ok(admission)
@@ -1010,9 +1017,7 @@ impl ImmutableDeploymentStore {
                 }
             }
             if m.entity.kind == EntityKind::Connection {
-                let Some(conn_row) = g
-                    .connections
-                    .get(&(m.entity.id.clone(), m.entity.revision))
+                let Some(conn_row) = g.connections.get(&(m.entity.id.clone(), m.entity.revision))
                 else {
                     return Err(DeploymentError::new(
                         "CONNECTION_REVISION_NOT_FOUND",
@@ -1249,34 +1254,25 @@ impl ImmutableDeploymentStore {
     /// current compatibility, admissions, and revocations.
     pub fn rollback_to_revision(
         &self,
-        principal: &str,
-        idempotency_key: &str,
-        expected_head_revision: u64,
-        target_revision: u64,
-        reason: &str,
+        rollback: &Rollback<'_>,
         policy: &dyn AdmissionPolicy,
     ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
         let mut g = self.inner.lock().expect("store lock");
-        Self::rollback_to_revision_into_state(
-            &mut g,
+        Self::rollback_to_revision_into_state(&mut g, rollback, policy)
+    }
+
+    pub(super) fn rollback_to_revision_into_state(
+        g: &mut DeploymentState,
+        rollback: &Rollback<'_>,
+        policy: &dyn AdmissionPolicy,
+    ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
+        let &Rollback {
             principal,
             idempotency_key,
             expected_head_revision,
             target_revision,
             reason,
-            policy,
-        )
-    }
-
-    pub(super) fn rollback_to_revision_into_state(
-        g: &mut DeploymentState,
-        principal: &str,
-        idempotency_key: &str,
-        expected_head_revision: u64,
-        target_revision: u64,
-        reason: &str,
-        policy: &dyn AdmissionPolicy,
-    ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
+        } = rollback;
         let target_manifest = {
             let Some(target) = g.revisions.get(&target_revision) else {
                 return Err(DeploymentError::new(
@@ -1447,7 +1443,9 @@ impl ImmutableDeploymentStore {
         for d in newly_draining.iter().chain(newly_deleted.iter()) {
             g.dirty.artifacts.insert(d.clone());
         }
-        if !newly_draining.is_empty() || !newly_deleted.is_empty() || !compacted_revisions.is_empty()
+        if !newly_draining.is_empty()
+            || !newly_deleted.is_empty()
+            || !compacted_revisions.is_empty()
         {
             g.epoch += 1;
             g.dirty.head = true;
@@ -1497,7 +1495,10 @@ impl ImmutableDeploymentStore {
                 },
             );
             let cfg_bytes = canonical_bytes(cfg).map_err(|e| {
-                DeploymentError::new("CONNECTION_CONFIG_INVALID", format!("{conn_id}: {}", e.code))
+                DeploymentError::new(
+                    "CONNECTION_CONFIG_INVALID",
+                    format!("{conn_id}: {}", e.code),
+                )
             })?;
             members.push(ManifestMember {
                 entity: EntityRef {
@@ -1566,4 +1567,5 @@ impl ImmutableDeploymentStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests;

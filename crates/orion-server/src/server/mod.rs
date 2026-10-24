@@ -372,6 +372,19 @@ pub async fn shutdown_signal() {
     tracing::info!("Shutdown signal received, starting graceful shutdown");
 }
 
+/// Extract a query-free URI path for HTTP request tracing spans (`TD-11`).
+///
+/// Prefers the matched route template (`MatchedPath`) when available and falls
+/// back to `req.uri().path()`, ensuring query parameters such as `?token=` on
+/// trace detail routes or `?code=&state=` on OAuth callbacks never enter span
+/// attributes or log lines.
+fn request_span_uri<B>(req: &axum::http::Request<B>) -> &str {
+    req.extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(axum::extract::MatchedPath::as_str)
+        .unwrap_or_else(|| req.uri().path())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,17 +617,4 @@ mod tests {
         assert!(!oauth_uri.contains("oauth-secret-code"));
         assert!(!oauth_uri.contains("oauth-secret-state"));
     }
-}
-
-/// Extract a query-free URI path for HTTP request tracing spans (`TD-11`).
-///
-/// Prefers the matched route template (`MatchedPath`) when available and falls
-/// back to `req.uri().path()`, ensuring query parameters such as `?token=` on
-/// trace detail routes or `?code=&state=` on OAuth callbacks never enter span
-/// attributes or log lines.
-fn request_span_uri<B>(req: &axum::http::Request<B>) -> &str {
-    req.extensions()
-        .get::<axum::extract::MatchedPath>()
-        .map(axum::extract::MatchedPath::as_str)
-        .unwrap_or_else(|| req.uri().path())
 }
