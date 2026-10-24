@@ -40,6 +40,10 @@ impl Observer for MetricsObserver {
     }
 
     fn on(&self, event: &Event<'_>) {
+        // Nothing to record into: skip the name lookup as well.
+        if !crate::metrics::is_enabled() {
+            return;
+        }
         match event {
             Event::TaskFinished {
                 info,

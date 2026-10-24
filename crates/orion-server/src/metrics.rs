@@ -322,21 +322,58 @@ pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs:
     if !is_enabled() {
         return;
     }
-    let status = status.to_string();
+    // A client chooses the method, so it is not a closed set: an extension
+    // method shares one `OTHER` series rather than minting its own.
+    let method = match method {
+        "GET" => "GET",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "PATCH" => "PATCH",
+        "DELETE" => "DELETE",
+        "HEAD" => "HEAD",
+        "OPTIONS" => "OPTIONS",
+        _ => "OTHER",
+    };
+    let (path, status) = (static_label(path), status_label(status));
     counter!(
         "orion_http_requests_total",
-        "method" => method.to_owned(),
-        "path" => path.to_owned(),
-        "status" => status.clone()
+        "method" => method,
+        "path" => path,
+        "status" => status
     )
     .increment(1);
     histogram!(
         "orion_http_request_duration_seconds",
-        "method" => method.to_owned(),
-        "path" => path.to_owned(),
+        "method" => method,
+        "path" => path,
         "status" => status
     )
     .record(duration_secs);
+}
+
+/// `label` as a `&'static str`, interned on first sight, so recording a
+/// sample allocates nothing. Only for label values from a set the operator
+/// controls — route templates (`unmatched` for everything else), deployed
+/// workflow and task ids — never from a value a caller chooses: each one
+/// stays interned, as its Prometheus series does.
+fn static_label(label: &str) -> &'static str {
+    static INTERNED: std::sync::LazyLock<dashmap::DashMap<Box<str>, &'static str>> =
+        std::sync::LazyLock::new(dashmap::DashMap::new);
+    if let Some(found) = INTERNED.get(label) {
+        return *found;
+    }
+    *INTERNED
+        .entry(label.into())
+        .or_insert_with(|| Box::leak(label.into()))
+}
+
+/// The status code as a label, from a table built once.
+fn status_label(status: u16) -> &'static str {
+    static STATUSES: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| (0..1000).map(|code| code.to_string()).collect());
+    STATUSES
+        .get(usize::from(status))
+        .map_or("other", String::as_str)
 }
 
 /// Record DB query duration.
@@ -967,8 +1004,8 @@ pub fn record_task_duration(workflow: &str, task: &str, function: &'static str, 
     }
     histogram!(
         "orion_task_duration_seconds",
-        "workflow" => workflow.to_owned(),
-        "task" => task.to_owned(),
+        "workflow" => static_label(workflow),
+        "task" => static_label(task),
         "function" => function
     )
     .record(secs);
@@ -1000,7 +1037,8 @@ pub fn record_workflow_duration(workflow: &str, secs: f64) {
     if !is_enabled() {
         return;
     }
-    histogram!("orion_workflow_duration_seconds", "workflow" => workflow.to_owned()).record(secs);
+    histogram!("orion_workflow_duration_seconds", "workflow" => static_label(workflow))
+        .record(secs);
 }
 
 // ---------------------------------------------------------------------------
