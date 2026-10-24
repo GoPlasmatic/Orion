@@ -274,16 +274,11 @@ async fn execute_connector_call(
             "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' has no connection revision"
         )));
     };
-    let provider = match store
-        .list_packages()
-        .into_iter()
-        .find(|p| p.package_digest == conn_row.provider_digest)
-    {
+    let provider = match store.get_package(&conn_row.provider_digest) {
         Some(pkg) => {
             let revoked = store
-                .list_admissions()
-                .into_iter()
-                .any(|a| a.package_digest == pkg.package_digest && a.revoked);
+                .get_admission(&pkg.package_digest)
+                .is_some_and(|a| a.revoked);
             if revoked {
                 return Err(HandlerError::new(
                     ErrorClass::CallerInput,

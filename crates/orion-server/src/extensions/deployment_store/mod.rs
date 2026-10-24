@@ -399,6 +399,12 @@ impl ImmutableDeploymentStore {
         g.artifacts.get(digest).cloned()
     }
 
+    /// The package stored under `package_digest`.
+    pub fn get_package(&self, package_digest: &str) -> Option<ProviderPackageRow> {
+        let g = self.inner.lock().expect("store lock");
+        g.packages.get(package_digest).cloned()
+    }
+
     pub fn get_admission(&self, package_digest: &str) -> Option<ProviderAdmissionRow> {
         let g = self.inner.lock().expect("store lock");
         g.admissions.get(package_digest).cloned()
