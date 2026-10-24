@@ -1171,7 +1171,7 @@ mod tests {
     fn test_record_http_request() {
         ensure_recorder();
         record_http_request("GET", "/health", 200, 0.005);
-        record_http_request("POST", "/api/v1/data/orders", 201, 0.010);
+        record_http_request("POST", "/api/v2/data/orders", 201, 0.010);
     }
 
     #[test]

@@ -91,9 +91,9 @@ use response_cache::{CacheLookup, check_response_cache};
 /// Which ingress carried a message to a channel. Selects the [`GuardSet`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
-    /// `POST /api/v1/data/{channel}` — the synchronous HTTP data plane.
+    /// `POST /api/v2/data/{channel}` — the synchronous HTTP data plane.
     HttpSync,
-    /// `POST /api/v1/data/{channel}/async` — HTTP submission to the trace queue.
+    /// `POST /api/v2/data/{channel}/async` — HTTP submission to the trace queue.
     HttpAsync,
     /// Kafka ingest (`kafka.topics`, or a channel's own `topic`).
     Kafka,

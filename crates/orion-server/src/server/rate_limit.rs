@@ -199,7 +199,7 @@ impl RouteGroup {
 /// Which platform budget a request is metered against.
 ///
 /// `data_mounts` participates because the data plane may answer outside
-/// `/api/v1/data`: without it, root-mounted data traffic falls through to
+/// `/api/v2/data`: without it, root-mounted data traffic falls through to
 /// `Operational` and is metered against the default limiter rather than
 /// `rate_limit.endpoints.data_rps` — the channel's own limit still applies,
 /// but the platform budget the operator configured does not.

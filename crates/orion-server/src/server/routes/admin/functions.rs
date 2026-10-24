@@ -1,4 +1,4 @@
-//! `GET /api/v1/admin/functions` — the catalogue of every function a workflow
+//! `GET /api/v2/admin/functions` — the catalogue of every function a workflow
 //! may name, with the input schema of each one that declares one. Powers
 //! tooling (CLI, IDEs, docs) that needs to know what exists and what it
 //! accepts.

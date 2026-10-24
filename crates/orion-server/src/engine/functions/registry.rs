@@ -184,7 +184,7 @@ impl FunctionEntry {
     }
 }
 
-/// One entry of `GET /api/v1/admin/functions`.
+/// One entry of `GET /api/v2/admin/functions`.
 ///
 /// The endpoint used to serve the schema registry directly, which meant it
 /// listed only the functions Orion input-schema validates — 18 of the 27 valid
@@ -357,7 +357,7 @@ impl FunctionRegistry {
             .map(|(_, candidate)| candidate)
     }
 
-    /// What `GET /api/v1/admin/functions` serves: every entry, sorted by name.
+    /// What `GET /api/v2/admin/functions` serves: every entry, sorted by name.
     pub fn catalogue(&self) -> Vec<CatalogueEntry> {
         self.entries
             .iter()

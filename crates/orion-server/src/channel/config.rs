@@ -134,7 +134,7 @@ impl ChannelConfig {
 /// Who may call a channel over HTTP.
 ///
 /// Before this existed the data plane had no authentication at all: `admin_auth`
-/// covers `/api/v1/admin` and nothing else, and the two controls the docs
+/// covers `/api/v2/admin` and nothing else, and the two controls the docs
 /// pointed at are not authentication. `origin_allow_list` reads a
 /// client-supplied header, and a `validation_logic` header comparison means the
 /// credential sits in the channel's stored config in plain text and is compared

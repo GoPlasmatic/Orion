@@ -250,7 +250,7 @@ stop_bench_server() {
 create_workflow() {
     local workflow_file="$1"
     local response
-    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/workflows" \
+    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/workflows" \
         -H "Content-Type: application/json" \
         -d @"$workflow_file" 2>/dev/null) || {
         log_error "Failed to create workflow from $workflow_file"
@@ -268,7 +268,7 @@ create_workflow() {
 
 activate_workflow() {
     local workflow_id="$1"
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/workflows/${workflow_id}/status" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v2/admin/workflows/${workflow_id}/status" \
         -H "Content-Type: application/json" \
         -d '{"status": "active"}' >/dev/null 2>&1 || {
         log_error "Failed to activate workflow $workflow_id"
@@ -287,7 +287,7 @@ create_and_activate_workflow() {
 import_workflows() {
     local workflows_file="$1"
     local response
-    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/workflows/import" \
+    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/workflows/import" \
         -H "Content-Type: application/json" \
         -d @"$workflows_file" 2>/dev/null) || {
         log_error "Failed to import workflows from $workflows_file"
@@ -301,7 +301,7 @@ import_workflows() {
 
     # Activate all imported (draft) workflows
     local workflows_json
-    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/workflows?status=draft" 2>/dev/null) || return 0
+    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/workflows?status=draft" 2>/dev/null) || return 0
 
     local ids
     ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
@@ -313,7 +313,7 @@ import_workflows() {
 }
 
 reload_engine() {
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/engine/reload" >/dev/null 2>&1 || true
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/engine/reload" >/dev/null 2>&1 || true
 }
 
 # Bind a channel to a workflow.
@@ -337,13 +337,13 @@ create_and_activate_channel() {
         '{channel_id: $n, name: $n, channel_type: "sync", protocol: "http",
           methods: ["POST"], route_pattern: ("/" + $n), workflow_id: $w}')
 
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/channels" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/channels" \
         -H "Content-Type: application/json" \
         -d "$payload" >/dev/null 2>&1 || {
         log_error "Failed to create channel $channel_name"
         return 1
     }
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/channels/${channel_name}/status" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v2/admin/channels/${channel_name}/status" \
         -H "Content-Type: application/json" \
         -d '{"status": "active"}' >/dev/null 2>&1 || {
         log_error "Failed to activate channel $channel_name"
@@ -354,14 +354,14 @@ create_and_activate_channel() {
 # Remove every channel, so a scenario's channel does not outlive it.
 clear_channels() {
     local channels_json
-    channels_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/channels" 2>/dev/null) || return 0
+    channels_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/channels" 2>/dev/null) || return 0
 
     local ids
     ids=$(echo "$channels_json" | jq -r '.data[]?.channel_id // empty' 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
-        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v1/admin/channels/${id}" >/dev/null 2>&1 || true
+        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v2/admin/channels/${id}" >/dev/null 2>&1 || true
     done <<< "$ids"
 }
 
@@ -369,14 +369,14 @@ clear_workflows() {
     clear_channels
 
     local workflows_json
-    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/workflows" 2>/dev/null) || return 0
+    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/workflows" 2>/dev/null) || return 0
 
     local ids
     ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
-        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v1/admin/workflows/${id}" >/dev/null 2>&1 || true
+        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v2/admin/workflows/${id}" >/dev/null 2>&1 || true
     done <<< "$ids"
 
     reload_engine
@@ -550,7 +550,7 @@ scenario_simple() {
     wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
     create_and_activate_channel "bench" "$wf"
 
-    run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
+    run_hey POST "${BENCH_URL}/api/v2/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "B: Simple workflow (1 log task)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
@@ -564,7 +564,7 @@ scenario_complex() {
     wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_complex_ecommerce.json")
     create_and_activate_channel "orders" "$wf"
 
-    run_hey POST "${BENCH_URL}/api/v1/data/orders" "$FIXTURES_DIR/data/complex_payload.json"
+    run_hey POST "${BENCH_URL}/api/v2/data/orders" "$FIXTURES_DIR/data/complex_payload.json"
     record_result "C: Complex workflow (4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
@@ -596,7 +596,7 @@ scenario_multi() {
     import_workflows "$FIXTURES_DIR/workflows/bench_multi_rules.json"
 
     local ids
-    ids=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows?status=active&limit=100" 2>/dev/null \
+    ids=$(curl -sf "${BENCH_URL}/api/v2/admin/workflows?status=active&limit=100" 2>/dev/null \
         | jq -r '.data[]?.workflow_id // empty')
 
     local n=0
@@ -616,7 +616,7 @@ scenario_multi() {
     fi
     log_info "  Estate: $n active channels"
 
-    run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
+    run_hey POST "${BENCH_URL}/api/v2/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "D: Loaded estate (${n} channels)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
@@ -633,7 +633,7 @@ scenario_concurrency() {
         CURRENT_SCENARIO="E_concurrency_${c}"
         log_info "  Concurrency: $c"
 
-        run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json" "$c"
+        run_hey POST "${BENCH_URL}/api/v2/data/bench" "$FIXTURES_DIR/data/simple_payload.json" "$c"
         record_result "E: Concurrency c=${c}" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
     done
 }
@@ -654,14 +654,14 @@ scenario_reload() {
     hey -z "$BENCH_DURATION" -c "$BENCH_CONCURRENCY" -m POST \
         -T "application/json" \
         -D "$FIXTURES_DIR/data/simple_payload.json" \
-        "${BENCH_URL}/api/v1/data/bench" > "$hey_output_file" 2>&1 &
+        "${BENCH_URL}/api/v2/data/bench" > "$hey_output_file" 2>&1 &
     local hey_pid=$!
 
     # Reload engine every 500ms while hey runs
     local reload_count=0
     while kill -0 "$hey_pid" 2>/dev/null; do
         sleep 0.5
-        curl -sf -X POST "${BENCH_URL}/api/v1/admin/engine/reload" >/dev/null 2>&1 || true
+        curl -sf -X POST "${BENCH_URL}/api/v2/admin/engine/reload" >/dev/null 2>&1 || true
         reload_count=$((reload_count + 1))
     done
 
@@ -732,7 +732,7 @@ scenario_cluster() {
     # out, or the not-yet-synced replica answers 404s into the numbers.
     sleep 3
 
-    run_hey POST "${cluster_url}/api/v1/data/bench-cluster" "$FIXTURES_DIR/data/simple_payload.json"
+    run_hey POST "${cluster_url}/api/v2/data/bench-cluster" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "G: Cluster via LB (simple workflow)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 
     # Leave the stack as found.
@@ -773,13 +773,13 @@ create_and_activate_plugin() {
 manifest = open(sys.argv[1]).read()
 component = base64.b64encode(open(sys.argv[2], "rb").read()).decode()
 json.dump({"manifest": manifest, "component": component}, sys.stdout)' "$manifest" "$component" \
-        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/plugins" \
+        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/plugins" \
             -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || true
     local id
     id=$(manifest_field "$manifest" name)
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/plugins/${id}/status" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v2/admin/plugins/${id}/status" \
         -H "Content-Type: application/json" -d '{"status": "active"}' >/dev/null 2>&1 || true
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/functions" 2>/dev/null \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/functions" 2>/dev/null \
         | jq -e --arg id "$id" '.data[] | select(.plugin.id == $id)' >/dev/null || {
         log_error "Plugin '$id' is not served — is plugins.enabled on?"
         return 1
@@ -795,14 +795,14 @@ scenario_plugin() {
     wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_plugin_echo.json")
     create_and_activate_channel "bench-plugin" "$wf"
     CURRENT_SCENARIO="H_plugin_echo"
-    run_hey POST "${BENCH_URL}/api/v1/data/bench-plugin" "$FIXTURES_DIR/data/simple_payload.json"
+    run_hey POST "${BENCH_URL}/api/v2/data/bench-plugin" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "H: Plugin echo (test.fixture.identity)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 
     clear_workflows
     wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_jsonlogic_echo.json")
     create_and_activate_channel "bench-logic" "$wf"
     CURRENT_SCENARIO="H_jsonlogic_echo"
-    run_hey POST "${BENCH_URL}/api/v1/data/bench-logic" "$FIXTURES_DIR/data/simple_payload.json"
+    run_hey POST "${BENCH_URL}/api/v2/data/bench-logic" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "H: JSONLogic echo (map)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
@@ -872,12 +872,12 @@ register_and_activate_model() {
         config: { type: "storage", endpoint: $endpoint, region: "us-east-1", bucket: "models",
                   access_key: "AKIAEXAMPLE", secret_key: "example-secret",
                   force_path_style: true, allow_private_urls: true } }' \
-        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/connectors" \
+        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/connectors" \
             -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || true
 
     jq -n --slurpfile manifest "$manifest" --arg digest "sha256:$(digest_of "$ENTRANT_DIR/c4-tiny.onnx")" \
         '{manifest: $manifest[0], artifact: {connector: "bench-bucket", key: "c4-tiny.onnx", digest: $digest}}' \
-        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/models" \
+        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v2/admin/models" \
             -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || {
         log_error "Failed to register $id — is models.enabled on?"
         return 1
@@ -887,7 +887,7 @@ register_and_activate_model() {
     while [[ "$state" == "pending" ]]; do
         sleep 0.5
         waited=$((waited + 1))
-        state=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/models/${id}" 2>/dev/null \
+        state=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v2/admin/models/${id}" 2>/dev/null \
             | jq -r '.data.admission.state // "pending"')
         if [[ $waited -gt 120 ]]; then
             log_error "Admission of $id did not settle within 60s"
@@ -895,16 +895,16 @@ register_and_activate_model() {
         fi
     done
     if [[ "$state" != "passed" ]]; then
-        log_error "Admission of $id failed: $(curl -sf "${BENCH_URL}/api/v1/admin/models/${id}" | jq -c '.data.admission')"
+        log_error "Admission of $id failed: $(curl -sf "${BENCH_URL}/api/v2/admin/models/${id}" | jq -c '.data.admission')"
         return 1
     fi
 
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/models/${id}/status" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v2/admin/models/${id}/status" \
         -H "Content-Type: application/json" -d '{"status": "active"}' >/dev/null 2>&1 || {
         log_error "Failed to activate $id"
         return 1
     }
-    log_info "  $id admitted and active ($(curl -sf "${BENCH_URL}/api/v1/admin/models/${id}" | jq -r '.data.stats.parameters') parameters)"
+    log_info "  $id admitted and active ($(curl -sf "${BENCH_URL}/api/v2/admin/models/${id}" | jq -r '.data.stats.parameters') parameters)"
 }
 
 scenario_model() {
@@ -917,19 +917,19 @@ scenario_model() {
     wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_model_infer.json")
     create_and_activate_channel "bench-model" "$wf"
     CURRENT_SCENARIO="I_model_infer"
-    run_hey POST "${BENCH_URL}/api/v1/data/bench-model" "$FIXTURES_DIR/data/model_payload.json"
+    run_hey POST "${BENCH_URL}/api/v2/data/bench-model" "$FIXTURES_DIR/data/model_payload.json"
     record_result "I: Model inference (example.c4-tiny)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 
     # The graph alone, engine-side, for one more request at rest.
     local stats
-    stats=$(curl -sf -X POST "${BENCH_URL}/api/v1/data/bench-model" -H "Content-Type: application/json" \
+    stats=$(curl -sf -X POST "${BENCH_URL}/api/v2/data/bench-model" -H "Content-Type: application/json" \
         --data @"$FIXTURES_DIR/data/model_payload.json" 2>/dev/null | jq -c '.data.inference | {inference_ms, queued_ms, cold_load, runtime, device}')
     log_info "  stats_output: ${stats:-unavailable} — inference_ms is the graph, the row above is the whole request"
 
     # The model outlives the workflows otherwise: a delete is refused while
     # an active workflow names it, so the workflows go first.
     clear_workflows
-    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v1/admin/models/example.c4-tiny" >/dev/null 2>&1 || true
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v2/admin/models/example.c4-tiny" >/dev/null 2>&1 || true
     stop_bench_bucket
 }
 

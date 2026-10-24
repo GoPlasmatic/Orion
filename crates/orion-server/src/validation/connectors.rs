@@ -499,7 +499,7 @@ pub fn reject_masked_values(config: &serde_json::Value) -> Result<(), OrionError
     if let Some(path) = crate::connector::find_masked_value(config) {
         return Err(OrionError::validation(format!(
             "Connector config field '{path}' is the masked placeholder that \
-             GET /api/v1/admin/connectors returns, not a real value. Send the \
+             GET /api/v2/admin/connectors returns, not a real value. Send the \
              actual secret, or omit the field to keep the stored one."
         )));
     }

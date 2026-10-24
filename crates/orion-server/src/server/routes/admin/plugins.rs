@@ -1,4 +1,4 @@
-//! `/api/v1/admin/plugins` — the plugin entity, mirroring the workflow
+//! `/api/v2/admin/plugins` — the plugin entity, mirroring the workflow
 //! surface: create as a draft, list, get, update, delete, status, versions,
 //! dependencies, import, export, validate.
 //!

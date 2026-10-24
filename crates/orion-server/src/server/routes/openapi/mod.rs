@@ -509,7 +509,7 @@ mod tests {
     /// and each is listed explicitly so a *new* unguarded-but-401 route still
     /// fails this test until someone reviews it:
     ///
-    /// * `GET /api/v1/admin/traces/{id}` (R12) authenticates in its handler,
+    /// * `GET /api/v2/admin/traces/{id}` (R12) authenticates in its handler,
     ///   accepting either an admin credential or the per-submission
     ///   `trace_token`.
     /// * The two data-plane paths authenticate per *channel*, in the ingress

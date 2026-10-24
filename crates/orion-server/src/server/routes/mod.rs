@@ -28,7 +28,7 @@ pub struct RouteOptions {
     /// The admin body limit for the plugin routes alone: base64 of the
     /// largest component plus room for the manifest and import framing.
     pub plugin_body_size: usize,
-    /// Gates `/docs` and `/api/v1/openapi.json` (S17, resolved by
+    /// Gates `/docs` and `/api/v2/openapi.json` (S17, resolved by
     /// [`crate::config::AppConfig::docs_enabled`]): the spec publishes the
     /// whole admin API surface anonymously, so production deployments keep it
     /// off by default. When disabled the routes are simply not registered —
@@ -40,7 +40,7 @@ pub struct RouteOptions {
     /// endpoint to its own listener; in either case the path 404s here rather
     /// than answering 200 with an empty body.
     pub metrics_enabled: bool,
-    /// Extra prefixes the data plane is served at, beyond `/api/v1/data`
+    /// Extra prefixes the data plane is served at, beyond `/api/v2/data`
     /// (`server.data_mounts`). Empty is the default and registers nothing.
     pub data_mounts: Vec<String>,
 }

@@ -676,7 +676,7 @@ pub struct TraceDlqSummaryResponse {
     pub updated_at: NaiveDateTime,
 }
 
-/// One row of `GET /api/v1/admin/cron/occurrences`.
+/// One row of `GET /api/v2/admin/cron/occurrences`.
 ///
 /// The list projection: what happened and when, without the diagnostic detail.
 /// Narrower than [`CronOccurrenceResponse`] for readability rather than for
@@ -723,7 +723,7 @@ pub struct CronOccurrenceSummaryResponse {
     pub created_at: NaiveDateTime,
 }
 
-/// One occurrence in full: `GET /api/v1/admin/cron/occurrences/{id}`.
+/// One occurrence in full: `GET /api/v2/admin/cron/occurrences/{id}`.
 ///
 /// Adds what the summary leaves out — the failure reason, the trace to read the
 /// run in, and the lease bookkeeping that answers "which node has it, and until
@@ -784,7 +784,7 @@ pub struct CronOccurrenceResponse {
     #[serde(default)]
     pub singleton_slot: Option<i64>,
     /// The trace this attempt wrote, readable at
-    /// `GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace
+    /// `GET /api/v2/admin/traces/{id}`. `null` before admission, and when trace
     /// storage dropped the row — the occurrence is kept either way, because it
     /// is scheduling correctness state rather than optional observability.
     #[serde(default)]
@@ -804,7 +804,7 @@ pub struct CronOccurrenceResponse {
 }
 
 /// One channel's schedule as the runtime sees it right now:
-/// `GET /api/v1/admin/cron/status`.
+/// `GET /api/v2/admin/cron/status`.
 ///
 /// Deliberately a separate response rather than fields on the channel. The
 /// channel row is an immutable authored definition; where its cursor has got to
@@ -866,7 +866,7 @@ pub struct CronScheduleStatusResponse {
     pub slots_held: Option<u32>,
 }
 
-/// One row of `GET /api/v1/admin/traces` — payload-free by design (S14).
+/// One row of `GET /api/v2/admin/traces` — payload-free by design (S14).
 ///
 /// The narrower sibling of the single-trace read, for the same reason
 /// [`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a
@@ -917,7 +917,7 @@ pub struct TraceListItemResponse {
     pub updated_at: NaiveDateTime,
 }
 
-/// One row of `GET /api/v1/admin/audit-logs`.
+/// One row of `GET /api/v2/admin/audit-logs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AuditLogEntryResponse {

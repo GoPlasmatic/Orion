@@ -486,7 +486,7 @@ impl ChannelSnapshot {
     }
 
     /// Match a request (method, path) against REST channel route patterns.
-    /// Path should NOT include the `/api/v1/data/` prefix.
+    /// Path should NOT include the `/api/v2/data/` prefix.
     ///
     /// `Err(BadRequest)` when the path carries an invalid percent-sequence
     /// (N10) — the request is malformed however it would have resolved.

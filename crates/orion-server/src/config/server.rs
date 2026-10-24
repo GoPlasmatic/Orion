@@ -20,7 +20,7 @@ pub struct ServerConfig {
     pub tls: TlsConfig,
     /// Response compression configuration.
     pub compression: CompressionConfig,
-    /// Interactive API documentation (`/docs`, `/api/v1/openapi.json`).
+    /// Interactive API documentation (`/docs`, `/api/v2/openapi.json`).
     pub docs: DocsConfig,
     /// Return real task-failure messages on the data plane instead of the
     /// generic placeholder.
@@ -49,7 +49,7 @@ pub struct ServerConfig {
     pub max_admin_body_size: usize,
 
     /// Additional path prefixes the data plane is served at, on top of the
-    /// always-present `/api/v1/data`.
+    /// always-present `/api/v2/data`.
     ///
     /// For fronting deployed clients that call paths at the server root
     /// (`/zoom/meetings/user`, `/Legacy-App/api/public/...`) — today every such
@@ -57,7 +57,7 @@ pub struct ServerConfig {
     /// prefix. `route_pattern`s are already multi-segment and unrestricted, so
     /// only the mount point was missing.
     ///
-    /// **Additive, never a movable prefix.** `/api/v1/data` stays mounted, so
+    /// **Additive, never a movable prefix.** `/api/v2/data` stays mounted, so
     /// every existing client, doc example, test and `orion-client` path keeps
     /// working — a moved prefix would break `orion-cli`
     /// against that server with no discovery mechanism.
@@ -248,7 +248,7 @@ pub struct CompressionConfig {
 }
 
 /// Gate for the interactive API documentation surface: Swagger UI at `/docs`
-/// and the spec at `/api/v1/openapi.json` (S17).
+/// and the spec at `/api/v2/openapi.json` (S17).
 ///
 /// The spec publishes the complete admin API surface — route shapes, request
 /// schemas, the `admin_auth.header` semantics — and both endpoints are
@@ -258,7 +258,7 @@ pub struct CompressionConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DocsConfig {
-    /// Serve `/docs` and `/api/v1/openapi.json`. Unset (the default) means
+    /// Serve `/docs` and `/api/v2/openapi.json`. Unset (the default) means
     /// "enabled outside production": the same `environment` prefix rule that
     /// gates the admin-auth and CORS production checks decides. An explicit
     /// `true`/`false` always wins. When disabled the routes are not
@@ -323,9 +323,9 @@ mod tests {
     fn a_mount_cannot_claim_a_platform_route() {
         for mount in [
             "/api",
-            "/api/v1",
-            "/api/v1/data",
-            "/api/v1/admin",
+            "/api/v2",
+            "/api/v2/data",
+            "/api/v2/admin",
             "/health",
             "/healthz",
             "/readyz",

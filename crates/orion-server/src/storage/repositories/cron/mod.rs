@@ -80,7 +80,7 @@ pub mod status {
 pub mod trigger {
     /// Materialised by the reconciler from the channel's schedule.
     pub const CRON: &str = "cron";
-    /// Created by `POST /api/v1/admin/channels/{id}/trigger`. Runs through the
+    /// Created by `POST /api/v2/admin/channels/{id}/trigger`. Runs through the
     /// identical claim, singleton and execution path.
     pub const MANUAL: &str = "manual";
 }

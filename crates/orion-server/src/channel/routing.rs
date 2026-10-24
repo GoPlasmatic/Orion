@@ -470,7 +470,7 @@ impl RouteTable {
     }
 
     /// Match a request (method, path) against the route table.
-    /// Path should NOT include the `/api/v1/data/` prefix.
+    /// Path should NOT include the `/api/v2/data/` prefix.
     ///
     /// `Ok(None)` = no route claims the path; `Err(BadRequest)` = the path
     /// carries an invalid percent-sequence and the request must be answered

@@ -3,7 +3,7 @@
 //! This lived in `server::routes::data::sync` and served only the HTTP sync
 //! path. The Kafka consumer shares admission (`channel::guards::admit`) and
 //! dispatch (`engine::execute_admitted`) with HTTP but wrote no trace at all,
-//! so a Kafka-ingested message was invisible to `GET /api/v1/data/traces` and
+//! so a Kafka-ingested message was invisible to `GET /api/v2/data/traces` and
 //! to DLQ retry — a silent data loss in the one subsystem whose job is to
 //! record what happened.
 //!

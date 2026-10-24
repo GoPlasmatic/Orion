@@ -403,7 +403,7 @@ pub trait TraceSink: Send + Sync {
     }
 }
 
-/// Reading traces back: the `/api/v1/data/traces` endpoints.
+/// Reading traces back: the `/api/v2/data/traces` endpoints.
 #[async_trait]
 pub trait TraceReader: Send + Sync {
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError>;

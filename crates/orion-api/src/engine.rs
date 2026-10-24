@@ -147,7 +147,7 @@ pub struct EngineCapabilities {
     pub models: bool,
 }
 
-/// `POST /api/v1/admin/engine/reload`.
+/// `POST /api/v2/admin/engine/reload`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct EngineReloadedResponse {
@@ -168,7 +168,7 @@ pub struct EngineReloadedResponse {
     pub load_issues: Option<EngineLoadIssues>,
 }
 
-/// `GET /api/v1/admin/engine/status`.
+/// `GET /api/v2/admin/engine/status`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct EngineStatusResponse {
@@ -229,7 +229,7 @@ mod tests {
     }
 }
 
-/// `POST /api/v1/admin/cache/namespaces/{namespace}/invalidate`.
+/// `POST /api/v2/admin/cache/namespaces/{namespace}/invalidate`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CacheInvalidatedResponse {

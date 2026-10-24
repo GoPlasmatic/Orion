@@ -1,4 +1,4 @@
-//! `/api/v1/admin/models` — the model entity, mirroring the plugin surface:
+//! `/api/v2/admin/models` — the model entity, mirroring the plugin surface:
 //! register as a draft, list, get, update, delete, status, versions,
 //! dependencies, import, export, validate — plus `admit`, which is the one
 //! verb a model has that a plugin does not.

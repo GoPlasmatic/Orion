@@ -35,7 +35,7 @@ pub struct Paginated<T> {
 
 /// The trace list's envelope, which [`Paginated`] cannot represent.
 ///
-/// `GET /api/v1/admin/traces` differs from every other list in two ways, both
+/// `GET /api/v2/admin/traces` differs from every other list in two ways, both
 /// deliberate and both invisible to `Paginated`:
 ///
 /// - **`total` is opt-in.** Counting rows across a large trace table is the

@@ -613,7 +613,7 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
 /// redacted at any depth.
 ///
 /// Serves `validate-config`'s server-config dump only — `GET
-/// /api/v1/admin/connectors` uses the allowlist walk in
+/// /api/v2/admin/connectors` uses the allowlist walk in
 /// `mask_connector_secrets` instead (H3), so the denylist here is kept as
 /// one list of secret-key patterns rather than a drifting copy (O15) —
 /// `kafka.auth.sasl_password` and `admin_auth.api_keys` mask by key,

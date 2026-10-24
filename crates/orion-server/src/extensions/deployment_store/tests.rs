@@ -298,7 +298,7 @@ async fn v2_03_2_to_4_sqlite_migration_and_persistence_roundtrip() {
         }],
     };
     let plan = store.plan_candidate(0, manifest).unwrap();
-    store
+    let committed = store
         .apply_candidate("alice", "sql-idem-1", &plan, "persist test", &policy)
         .unwrap();
 
@@ -338,6 +338,10 @@ async fn v2_03_2_to_4_sqlite_migration_and_persistence_roundtrip() {
         .apply_candidate("alice", "sql-idem-1", &plan, "persist test", &policy)
         .expect("idempotent replay after restart must return hydrated receipt");
     assert_eq!(replay_receipt.committed_revision, 1);
+    // The receipt reads back as it was committed, not rebuilt from the revision.
+    assert_eq!(replay_receipt.operation_id, committed.operation_id);
+    assert_eq!(replay_receipt.epoch, committed.epoch);
+    assert_eq!(replay_receipt.receiving_node_id, "node-sql-1");
 
     // Re-planning with the hydrated package must succeed (proving artifact_objects hydrated as ACTIVE)
     let manifest_v2 = CanonicalManifest {

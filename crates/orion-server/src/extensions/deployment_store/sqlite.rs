@@ -14,7 +14,53 @@ use crate::extensions::package_identity::{canonical_bytes, sha256_digest};
 
 type PersistedArtifactTuple = (String, i64, String, Option<i64>, Option<Vec<u8>>);
 type PersistedRevisionTuple = (i64, Option<i64>, String, String, String, String, bool);
-type PersistedOperationTuple = (String, String, String, i64, String);
+type PersistedOperationTuple = (
+    String,
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+const SELECT_OPERATIONS: &str = "SELECT principal, idempotency_key, request_hash, committed_revision, \
+     manifest_digest, operation_id, epoch, receiving_node_id FROM deployment_operations";
+
+/// A stored row the store cannot read back. A read that skipped it would
+/// serve a store missing what was committed.
+fn corrupt(message: String) -> DeploymentError {
+    DeploymentError::new("CORRUPT_PERSISTED_STATE", message)
+}
+
+/// A receipt as it was stored. A row written before the store recorded
+/// `operation_id`, `epoch` and `receiving_node_id` gets the values it was
+/// read back with until then: the revision for the epoch, and this node.
+fn receipt_from_row(row: PersistedOperationTuple, legacy_node: &str) -> DeploymentReceipt {
+    let (
+        principal,
+        idempotency_key,
+        request_hash,
+        committed_revision,
+        manifest_digest,
+        operation_id,
+        epoch,
+        receiving_node_id,
+    ) = row;
+    let rev = committed_revision.max(0) as u64;
+    let epoch = epoch.map_or(rev, |e| e.max(0) as u64);
+    DeploymentReceipt {
+        operation_id: operation_id.unwrap_or_else(|| format!("op-{rev}-{epoch}")),
+        principal,
+        idempotency_key,
+        request_hash,
+        committed_revision: rev,
+        manifest_digest,
+        epoch,
+        receiving_node_id: receiving_node_id.unwrap_or_else(|| legacy_node.to_string()),
+    }
+}
 type PersistedPackageTuple = (
     String,
     String,
@@ -240,12 +286,17 @@ impl ImmutableDeploymentStore {
         art_rows: Vec<PersistedArtifactTuple>,
         pkg_rows: Vec<PersistedPackageTuple>,
         conn_rows: Vec<(String, i64, String, String, Option<String>)>,
-    ) {
+    ) -> Result<(), DeploymentError> {
         for (digest, size_bytes, state_str, drain_epoch, payload_bytes) in art_rows {
             let state = match state_str.as_str() {
+                "active" | "ACTIVE" => ArtifactState::Active,
                 "draining" | "DRAINING" => ArtifactState::Draining,
                 "deleted" | "DELETED" => ArtifactState::Deleted,
-                _ => ArtifactState::Active,
+                other => {
+                    return Err(corrupt(format!(
+                        "unknown artifact state '{other}' for '{digest}'"
+                    )));
+                }
             };
             staged
                 .artifacts
@@ -269,75 +320,88 @@ impl ImmutableDeploymentStore {
             inventory_str,
         ) in pkg_rows
         {
-            let implementation = match impl_str.as_str() {
-                "wasm" => ImplementationKind::Wasm,
-                "rust" => ImplementationKind::Rust,
-                _ => ImplementationKind::Workflow,
-            };
-            if let Ok(manifest_json) = serde_json::from_str::<Value>(&manifest_str)
-                && let Ok(inventory_json) = serde_json::from_str::<Value>(&inventory_str)
-            {
-                staged
-                    .artifacts
-                    .entry(digest.clone())
-                    .or_insert_with(|| ArtifactObjectRow {
-                        digest: digest.clone(),
-                        size_bytes: inventory_str.len(),
-                        state: ArtifactState::Active,
-                        drain_epoch: None,
-                        bytes: None,
-                    });
-                staged
-                    .publisher_bindings
-                    .entry((publisher.clone(), provider_id.clone(), version.clone()))
-                    .or_insert_with(|| digest.clone());
-                staged
-                    .packages
-                    .entry(digest.clone())
-                    .or_insert_with(|| ProviderPackageRow {
-                        package_digest: digest,
-                        publisher: publisher.clone(),
-                        provider_id,
-                        version,
-                        implementation,
-                        manifest_json,
-                        distribution_json: json!({
-                            "publisher": publisher,
-                            "tier": tier,
-                        }),
-                        inventory_json,
-                    });
-            }
+            let implementation = ImplementationKind::parse(&impl_str).ok_or_else(|| {
+                corrupt(format!(
+                    "unknown package implementation '{impl_str}' for '{digest}'"
+                ))
+            })?;
+            let manifest_json: Value = serde_json::from_str(&manifest_str).map_err(|e| {
+                corrupt(format!("corrupt manifest_json for package '{digest}': {e}"))
+            })?;
+            let inventory_json: Value = serde_json::from_str(&inventory_str).map_err(|e| {
+                corrupt(format!(
+                    "corrupt inventory_json for package '{digest}': {e}"
+                ))
+            })?;
+            staged
+                .artifacts
+                .entry(digest.clone())
+                .or_insert_with(|| ArtifactObjectRow {
+                    digest: digest.clone(),
+                    size_bytes: inventory_str.len(),
+                    state: ArtifactState::Active,
+                    drain_epoch: None,
+                    bytes: None,
+                });
+            staged
+                .publisher_bindings
+                .entry((publisher.clone(), provider_id.clone(), version.clone()))
+                .or_insert_with(|| digest.clone());
+            staged
+                .packages
+                .entry(digest.clone())
+                .or_insert_with(|| ProviderPackageRow {
+                    package_digest: digest,
+                    publisher: publisher.clone(),
+                    provider_id,
+                    version,
+                    implementation,
+                    manifest_json,
+                    distribution_json: json!({
+                        "publisher": publisher,
+                        "tier": tier,
+                    }),
+                    inventory_json,
+                });
         }
         for (connection_id, rev, provider_digest, cfg_str, secret_locator) in conn_rows {
             let revision = rev.max(1) as u64;
-            if let Ok(public_config) = serde_json::from_str::<Value>(&cfg_str)
-                && let Ok(cfg_bytes) = canonical_bytes(&public_config)
-            {
-                let configuration_digest = sha256_digest(&cfg_bytes);
-                staged
-                    .artifacts
-                    .entry(configuration_digest.clone())
-                    .or_insert_with(|| ArtifactObjectRow {
-                        digest: configuration_digest.clone(),
-                        size_bytes: cfg_bytes.len(),
-                        state: ArtifactState::Active,
-                        drain_epoch: None,
-                        bytes: Some(cfg_bytes),
-                    });
-                staged
-                    .connections
-                    .entry((connection_id.clone(), revision))
-                    .or_insert_with(|| ConnectionRevisionRow {
-                        connection_id,
-                        revision,
-                        provider_digest,
-                        public_config,
-                        secret_locator,
-                        configuration_digest,
-                    });
-            }
+            let public_config: Value = serde_json::from_str(&cfg_str).map_err(|e| {
+                corrupt(format!(
+                    "corrupt public_config_json for connection '{connection_id}' revision {revision}: {e}"
+                ))
+            })?;
+            let cfg_bytes = canonical_bytes(&public_config).map_err(|e| {
+                corrupt(format!(
+                    "public_config_json for connection '{connection_id}' revision {revision} \
+                     is not canonicalizable: {}",
+                    e.code
+                ))
+            })?;
+            let configuration_digest = sha256_digest(&cfg_bytes);
+            staged
+                .artifacts
+                .entry(configuration_digest.clone())
+                .or_insert_with(|| ArtifactObjectRow {
+                    digest: configuration_digest.clone(),
+                    size_bytes: cfg_bytes.len(),
+                    state: ArtifactState::Active,
+                    drain_epoch: None,
+                    bytes: Some(cfg_bytes),
+                });
+            staged
+                .connections
+                .entry((connection_id.clone(), revision))
+                .or_insert_with(|| ConnectionRevisionRow {
+                    connection_id,
+                    revision,
+                    provider_digest,
+                    public_config,
+                    secret_locator,
+                    configuration_digest,
+                });
         }
+        Ok(())
     }
 
     async fn sync_staged_from_postgres_tx(
@@ -375,28 +439,15 @@ impl ImmutableDeploymentStore {
                 },
             );
         }
-        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(
-            "SELECT principal, idempotency_key, request_hash, committed_revision, manifest_digest FROM deployment_operations",
-        )
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        for (principal, idempotency_key, request_hash, committed_revision, manifest_digest) in
-            op_rows
-        {
-            let rev = committed_revision.max(0) as u64;
+        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(SELECT_OPERATIONS)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
+        for row in op_rows {
+            let receipt = receipt_from_row(row, &staged.node_id);
             staged.receipts.insert(
-                (principal.clone(), idempotency_key.clone()),
-                DeploymentReceipt {
-                    operation_id: format!("op-{rev}-{rev}"),
-                    principal,
-                    idempotency_key,
-                    request_hash,
-                    committed_revision: rev,
-                    manifest_digest,
-                    epoch: rev,
-                    receiving_node_id: staged.node_id.clone(),
-                },
+                (receipt.principal.clone(), receipt.idempotency_key.clone()),
+                receipt,
             );
         }
         let rev_rows: Vec<PersistedRevisionTuple> = sqlx::query_as(
@@ -416,10 +467,16 @@ impl ImmutableDeploymentStore {
         ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
-            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64)
-                && let Ok(manifest) = serde_json::from_str::<CanonicalManifest>(&manifest_str)
-                && let Ok((manifest_bytes, _)) = manifest.canonicalize_and_verify()
-            {
+            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64) {
+                let manifest =
+                    serde_json::from_str::<CanonicalManifest>(&manifest_str).map_err(|err| {
+                        corrupt(format!("corrupt manifest for revision {rev_u64}: {err}"))
+                    })?;
+                let (manifest_bytes, _) = manifest.canonicalize_and_verify().map_err(|err| {
+                    corrupt(format!(
+                        "manifest for revision {rev_u64} does not verify: {err}"
+                    ))
+                })?;
                 e.insert(DeploymentRevisionRow {
                     revision: rev_u64,
                     parent_revision: parent_rev.map(|r| r.max(0) as u64),
@@ -450,7 +507,7 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        Self::merge_catalog_rows(staged, art_rows, pkg_rows, conn_rows);
+        Self::merge_catalog_rows(staged, art_rows, pkg_rows, conn_rows)?;
         Ok(())
     }
 
@@ -489,28 +546,15 @@ impl ImmutableDeploymentStore {
                 },
             );
         }
-        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(
-            "SELECT principal, idempotency_key, request_hash, committed_revision, manifest_digest FROM deployment_operations",
-        )
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        for (principal, idempotency_key, request_hash, committed_revision, manifest_digest) in
-            op_rows
-        {
-            let rev = committed_revision.max(0) as u64;
+        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(SELECT_OPERATIONS)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
+        for row in op_rows {
+            let receipt = receipt_from_row(row, &staged.node_id);
             staged.receipts.insert(
-                (principal.clone(), idempotency_key.clone()),
-                DeploymentReceipt {
-                    operation_id: format!("op-{rev}-{rev}"),
-                    principal,
-                    idempotency_key,
-                    request_hash,
-                    committed_revision: rev,
-                    manifest_digest,
-                    epoch: rev,
-                    receiving_node_id: staged.node_id.clone(),
-                },
+                (receipt.principal.clone(), receipt.idempotency_key.clone()),
+                receipt,
             );
         }
         let rev_rows: Vec<PersistedRevisionTuple> = sqlx::query_as(
@@ -530,10 +574,16 @@ impl ImmutableDeploymentStore {
         ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
-            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64)
-                && let Ok(manifest) = serde_json::from_str::<CanonicalManifest>(&manifest_str)
-                && let Ok((manifest_bytes, _)) = manifest.canonicalize_and_verify()
-            {
+            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64) {
+                let manifest =
+                    serde_json::from_str::<CanonicalManifest>(&manifest_str).map_err(|err| {
+                        corrupt(format!("corrupt manifest for revision {rev_u64}: {err}"))
+                    })?;
+                let (manifest_bytes, _) = manifest.canonicalize_and_verify().map_err(|err| {
+                    corrupt(format!(
+                        "manifest for revision {rev_u64} does not verify: {err}"
+                    ))
+                })?;
                 e.insert(DeploymentRevisionRow {
                     revision: rev_u64,
                     parent_revision: parent_rev.map(|r| r.max(0) as u64),
@@ -564,7 +614,7 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        Self::merge_catalog_rows(staged, art_rows, pkg_rows, conn_rows);
+        Self::merge_catalog_rows(staged, art_rows, pkg_rows, conn_rows)?;
         Ok(())
     }
 
@@ -603,28 +653,15 @@ impl ImmutableDeploymentStore {
                 },
             );
         }
-        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(
-            "SELECT principal, idempotency_key, request_hash, committed_revision, manifest_digest FROM deployment_operations",
-        )
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        for (principal, idempotency_key, request_hash, committed_revision, manifest_digest) in
-            op_rows
-        {
-            let rev = committed_revision.max(0) as u64;
+        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(SELECT_OPERATIONS)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
+        for row in op_rows {
+            let receipt = receipt_from_row(row, &staged.node_id);
             staged.receipts.insert(
-                (principal.clone(), idempotency_key.clone()),
-                DeploymentReceipt {
-                    operation_id: format!("op-{rev}-{rev}"),
-                    principal,
-                    idempotency_key,
-                    request_hash,
-                    committed_revision: rev,
-                    manifest_digest,
-                    epoch: rev,
-                    receiving_node_id: staged.node_id.clone(),
-                },
+                (receipt.principal.clone(), receipt.idempotency_key.clone()),
+                receipt,
             );
         }
         let rev_rows: Vec<PersistedRevisionTuple> = sqlx::query_as(
@@ -644,10 +681,16 @@ impl ImmutableDeploymentStore {
         ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
-            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64)
-                && let Ok(manifest) = serde_json::from_str::<CanonicalManifest>(&manifest_str)
-                && let Ok((manifest_bytes, _)) = manifest.canonicalize_and_verify()
-            {
+            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64) {
+                let manifest =
+                    serde_json::from_str::<CanonicalManifest>(&manifest_str).map_err(|err| {
+                        corrupt(format!("corrupt manifest for revision {rev_u64}: {err}"))
+                    })?;
+                let (manifest_bytes, _) = manifest.canonicalize_and_verify().map_err(|err| {
+                    corrupt(format!(
+                        "manifest for revision {rev_u64} does not verify: {err}"
+                    ))
+                })?;
                 e.insert(DeploymentRevisionRow {
                     revision: rev_u64,
                     parent_revision: parent_rev.map(|r| r.max(0) as u64),
@@ -678,7 +721,7 @@ impl ImmutableDeploymentStore {
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
-        Self::merge_catalog_rows(staged, art_rows, pkg_rows, conn_rows);
+        Self::merge_catalog_rows(staged, art_rows, pkg_rows, conn_rows)?;
         Ok(())
     }
 
@@ -714,10 +757,10 @@ impl ImmutableDeploymentStore {
                 .get("tier")
                 .and_then(Value::as_str)
                 .unwrap_or("community");
-            let manifest_str =
-                serde_json::to_string(&pkg.manifest_json).unwrap_or_else(|_| "{}".into());
-            let inventory_str =
-                serde_json::to_string(&pkg.inventory_json).unwrap_or_else(|_| "{}".into());
+            let manifest_str = serde_json::to_string(&pkg.manifest_json)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
+            let inventory_str = serde_json::to_string(&pkg.inventory_json)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
                 "INSERT INTO provider_packages (digest, publisher, provider_id, version, implementation, tier, manifest_json, inventory_json) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
@@ -752,8 +795,8 @@ impl ImmutableDeploymentStore {
         }
 
         for conn in &batch.connections {
-            let cfg_str =
-                serde_json::to_string(&conn.public_config).unwrap_or_else(|_| "{}".into());
+            let cfg_str = serde_json::to_string(&conn.public_config)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
                 "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
                  VALUES ($1, $2, $3, $4, $5) \
@@ -795,14 +838,17 @@ impl ImmutableDeploymentStore {
                 }
             } else {
                 sqlx::query(
-                    "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest) \
-                     VALUES ($1, $2, $3, $4, $5)",
+                    "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest, \
+                     operation_id, epoch, receiving_node_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 )
                 .bind(principal)
                 .bind(idem_key)
                 .bind(&receipt.request_hash)
                 .bind(receipt.committed_revision as i64)
                 .bind(&receipt.manifest_digest)
+                .bind(&receipt.operation_id)
+                .bind(receipt.epoch as i64)
+                .bind(&receipt.receiving_node_id)
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -925,8 +971,8 @@ impl ImmutableDeploymentStore {
                 .await
                 .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
             } else {
-                let manifest_str =
-                    serde_json::to_string(&rev.manifest).unwrap_or_else(|_| "{}".into());
+                let manifest_str = serde_json::to_string(&rev.manifest)
+                    .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
                 sqlx::query(
                     "INSERT INTO deployment_revisions (revision, parent_revision, manifest_digest, manifest_json, principal, reason, members_compacted) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -1006,10 +1052,10 @@ impl ImmutableDeploymentStore {
                 .get("tier")
                 .and_then(Value::as_str)
                 .unwrap_or("community");
-            let manifest_str =
-                serde_json::to_string(&pkg.manifest_json).unwrap_or_else(|_| "{}".into());
-            let inventory_str =
-                serde_json::to_string(&pkg.inventory_json).unwrap_or_else(|_| "{}".into());
+            let manifest_str = serde_json::to_string(&pkg.manifest_json)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
+            let inventory_str = serde_json::to_string(&pkg.inventory_json)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
                 "INSERT IGNORE INTO provider_packages (digest, publisher, provider_id, version, implementation, tier, manifest_json, inventory_json) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1043,8 +1089,8 @@ impl ImmutableDeploymentStore {
         }
 
         for conn in &batch.connections {
-            let cfg_str =
-                serde_json::to_string(&conn.public_config).unwrap_or_else(|_| "{}".into());
+            let cfg_str = serde_json::to_string(&conn.public_config)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
                 "INSERT IGNORE INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
                  VALUES (?, ?, ?, ?, ?)",
@@ -1085,14 +1131,17 @@ impl ImmutableDeploymentStore {
                 }
             } else {
                 sqlx::query(
-                    "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest) \
-                     VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest, \
+                     operation_id, epoch, receiving_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(principal)
                 .bind(idem_key)
                 .bind(&receipt.request_hash)
                 .bind(receipt.committed_revision as i64)
                 .bind(&receipt.manifest_digest)
+                .bind(&receipt.operation_id)
+                .bind(receipt.epoch as i64)
+                .bind(&receipt.receiving_node_id)
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1215,8 +1264,8 @@ impl ImmutableDeploymentStore {
                 .await
                 .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
             } else {
-                let manifest_str =
-                    serde_json::to_string(&rev.manifest).unwrap_or_else(|_| "{}".into());
+                let manifest_str = serde_json::to_string(&rev.manifest)
+                    .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
                 sqlx::query(
                     "INSERT INTO deployment_revisions (revision, parent_revision, manifest_digest, manifest_json, principal, reason, members_compacted) \
                      VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1295,10 +1344,10 @@ impl ImmutableDeploymentStore {
                 .get("tier")
                 .and_then(Value::as_str)
                 .unwrap_or("community");
-            let manifest_str =
-                serde_json::to_string(&pkg.manifest_json).unwrap_or_else(|_| "{}".into());
-            let inventory_str =
-                serde_json::to_string(&pkg.inventory_json).unwrap_or_else(|_| "{}".into());
+            let manifest_str = serde_json::to_string(&pkg.manifest_json)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
+            let inventory_str = serde_json::to_string(&pkg.inventory_json)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
                 "INSERT INTO provider_packages (digest, publisher, provider_id, version, implementation, tier, manifest_json, inventory_json) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
@@ -1333,8 +1382,8 @@ impl ImmutableDeploymentStore {
         }
 
         for conn in &batch.connections {
-            let cfg_str =
-                serde_json::to_string(&conn.public_config).unwrap_or_else(|_| "{}".into());
+            let cfg_str = serde_json::to_string(&conn.public_config)
+                .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
                 "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
                  VALUES (?1, ?2, ?3, ?4, ?5) \
@@ -1376,14 +1425,17 @@ impl ImmutableDeploymentStore {
                 }
             } else {
                 sqlx::query(
-                    "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO deployment_operations (principal, idempotency_key, request_hash, committed_revision, manifest_digest, \
+                     operation_id, epoch, receiving_node_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 )
                 .bind(principal)
                 .bind(idem_key)
                 .bind(&receipt.request_hash)
                 .bind(receipt.committed_revision as i64)
                 .bind(&receipt.manifest_digest)
+                .bind(&receipt.operation_id)
+                .bind(receipt.epoch as i64)
+                .bind(&receipt.receiving_node_id)
                 .execute(&mut **tx)
                 .await
                 .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1506,8 +1558,8 @@ impl ImmutableDeploymentStore {
                 .await
                 .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
             } else {
-                let manifest_str =
-                    serde_json::to_string(&rev.manifest).unwrap_or_else(|_| "{}".into());
+                let manifest_str = serde_json::to_string(&rev.manifest)
+                    .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
                 sqlx::query(
                     "INSERT INTO deployment_revisions (revision, parent_revision, manifest_digest, manifest_json, principal, reason, members_compacted) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1884,12 +1936,10 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
-        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(
-            "SELECT principal, idempotency_key, request_hash, committed_revision, manifest_digest FROM deployment_operations",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
+        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(SELECT_OPERATIONS)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
         self.hydrate_rows(
             head_rev, epoch, art_rows, rev_rows, pkg_rows, adm_rows, conn_rows, op_rows,
@@ -1949,12 +1999,10 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
-        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(
-            "SELECT principal, idempotency_key, request_hash, committed_revision, manifest_digest FROM deployment_operations",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
+        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(SELECT_OPERATIONS)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
         self.hydrate_rows(
             head_rev, epoch, art_rows, rev_rows, pkg_rows, adm_rows, conn_rows, op_rows,
@@ -2018,12 +2066,10 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
-        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(
-            "SELECT principal, idempotency_key, request_hash, committed_revision, manifest_digest FROM deployment_operations",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
+        let op_rows: Vec<PersistedOperationTuple> = sqlx::query_as(SELECT_OPERATIONS)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
         self.hydrate_rows(
             head_rev, epoch, art_rows, rev_rows, pkg_rows, adm_rows, conn_rows, op_rows,
@@ -2258,20 +2304,11 @@ impl ImmutableDeploymentStore {
         }
 
         let node_id = g.node_id.clone();
-        for (principal, idempotency_key, request_hash, committed_rev, manifest_digest) in op_rows {
-            let rev_u64 = committed_rev.max(0) as u64;
+        for row in op_rows {
+            let receipt = receipt_from_row(row, &node_id);
             g.receipts.insert(
-                (principal.clone(), idempotency_key.clone()),
-                DeploymentReceipt {
-                    operation_id: format!("op-{rev_u64}-{epoch}"),
-                    principal,
-                    idempotency_key,
-                    request_hash,
-                    committed_revision: rev_u64,
-                    manifest_digest,
-                    epoch,
-                    receiving_node_id: node_id.clone(),
-                },
+                (receipt.principal.clone(), receipt.idempotency_key.clone()),
+                receipt,
             );
         }
 

@@ -158,7 +158,7 @@ impl AppConfig {
         self.environment.to_lowercase().starts_with("prod")
     }
 
-    /// Whether `/docs` and `/api/v1/openapi.json` are served (S17).
+    /// Whether `/docs` and `/api/v2/openapi.json` are served (S17).
     ///
     /// `server.docs.enabled` when set; otherwise enabled exactly when the
     /// environment is not a production variant — the same prefix rule that

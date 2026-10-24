@@ -1,7 +1,7 @@
 //! Admin API authentication middleware.
 //!
-//! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints
-//! — including the trace read endpoints under `/api/v1/admin/traces`, which
+//! When enabled, requires a valid API key for all `/api/v2/admin/*` endpoints
+//! — including the trace read endpoints under `/api/v2/admin/traces`, which
 //! expose full request/response payloads — and for `/metrics` when this
 //! listener is the one serving it (O12). Supports `Authorization: Bearer
 //! <token>` or a custom header (e.g. `X-API-Key: <token>`).
@@ -75,7 +75,7 @@ impl AdminPrincipal {
 }
 
 /// True when `path` — an Axum `MatchedPath` template such as
-/// `/api/v1/admin/channels/{id}` — is behind admin authentication.
+/// `/api/v2/admin/channels/{id}` — is behind admin authentication.
 ///
 /// The whole admin plane is guarded, with exactly one carve-out: the
 /// single-trace GET (R12). Its handler enforces its own two-lane rule — a
@@ -86,7 +86,7 @@ impl AdminPrincipal {
 ///
 /// The trace *list* returns rows for every caller and stays fully guarded.
 ///
-/// Both endpoints moved from `/api/v1/data/traces*` to `/api/v1/admin/traces*`
+/// Both endpoints moved from `/api/v2/data/traces*` to `/api/v2/admin/traces*`
 /// in 1.0 (R8). The carve-out is why this predicate did not simplify to a bare
 /// prefix test on the move: the exception moved with the route rather than
 /// disappearing. What the move does buy is a data plane with no static

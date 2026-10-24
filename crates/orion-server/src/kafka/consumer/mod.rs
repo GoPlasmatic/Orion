@@ -92,7 +92,7 @@ pub struct ConsumerDeps {
 /// used to. A Kafka-ingested message shares admission
 /// (`channel::guards::admit`) and dispatch (`engine::execute_admitted`) with
 /// HTTP, but wrote no `traces` row — so it was invisible to
-/// `/api/v1/data/traces` and to the trace DLQ, while the HTTP `/async` path was
+/// `/api/v2/data/traces` and to the trace DLQ, while the HTTP `/async` path was
 /// fully traced. The reason recorded here was that closing it meant writing a
 /// fifth copy of the trace-plan/serialize/route sequence in
 /// `routes/data/sync.rs`, and that it would close "when that step becomes one
@@ -114,7 +114,7 @@ struct ConsumeLoopContext {
     ///
     /// The consumer shares admission and dispatch with HTTP but wrote no trace
     /// at all, so a Kafka-ingested message never appeared in
-    /// `GET /api/v1/data/traces` and could not be retried from the DLQ. These
+    /// `GET /api/v2/data/traces` and could not be retried from the DLQ. These
     /// three are what the shared `queue::trace_record` needs.
     trace_repo: Arc<dyn crate::storage::repositories::traces::TraceSink>,
     persistence_queue: crate::queue::TracePersistenceQueue,

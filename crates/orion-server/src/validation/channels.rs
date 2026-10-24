@@ -183,7 +183,7 @@ pub fn validate_update_channel(
 ///
 /// Both legs of the flow are routes, so a channel with no route has no flow:
 /// reachable only by name, it would answer a redirect at
-/// `/api/v1/data/{name}` and have nowhere for the identity provider to send
+/// `/api/v2/data/{name}` and have nowhere for the identity provider to send
 /// the browser back to.
 fn validate_oauth2_login_routing(
     config: &serde_json::Value,

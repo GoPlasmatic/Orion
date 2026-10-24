@@ -1,6 +1,6 @@
 //! Per-channel authentication for the HTTP data plane.
 //!
-//! `admin_auth` guards `/api/v1/admin` and nothing else, so before this module
+//! `admin_auth` guards `/api/v2/admin` and nothing else, so before this module
 //! every data channel was open to anyone who could reach the port. The two
 //! controls the documentation pointed at are not substitutes:
 //! `origin_allow_list` reads a client-supplied header, and a `validation_logic`

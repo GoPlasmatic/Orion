@@ -9273,7 +9273,7 @@
       },
       "AuditLogEntryResponse": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/audit-logs`.",
+        "description": "One row of `GET /api/v2/admin/audit-logs`.",
         "required": [
           "id",
           "principal",
@@ -9360,7 +9360,7 @@
       },
       "CacheInvalidatedResponse": {
         "type": "object",
-        "description": "`POST /api/v1/admin/cache/namespaces/{namespace}/invalidate`.",
+        "description": "`POST /api/v2/admin/cache/namespaces/{namespace}/invalidate`.",
         "required": [
           "namespace",
           "stores"
@@ -10267,7 +10267,7 @@
       },
       "CronOccurrenceResponse": {
         "type": "object",
-        "description": "One occurrence in full: `GET /api/v1/admin/cron/occurrences/{id}`.\n\nAdds what the summary leaves out — the failure reason, the trace to read the\nrun in, and the lease bookkeeping that answers \"which node has it, and until\nwhen?\".",
+        "description": "One occurrence in full: `GET /api/v2/admin/cron/occurrences/{id}`.\n\nAdds what the summary leaves out — the failure reason, the trace to read the\nrun in, and the lease bookkeeping that answers \"which node has it, and until\nwhen?\".",
         "required": [
           "id",
           "channel_id",
@@ -10377,7 +10377,7 @@
               "string",
               "null"
             ],
-            "description": "The trace this attempt wrote, readable at\n`GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace\nstorage dropped the row — the occurrence is kept either way, because it\nis scheduling correctness state rather than optional observability."
+            "description": "The trace this attempt wrote, readable at\n`GET /api/v2/admin/traces/{id}`. `null` before admission, and when trace\nstorage dropped the row — the occurrence is kept either way, because it\nis scheduling correctness state rather than optional observability."
           },
           "trigger": {
             "type": "string"
@@ -10395,7 +10395,7 @@
       },
       "CronOccurrenceSummaryResponse": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/cron/occurrences`.\n\nThe list projection: what happened and when, without the diagnostic detail.\nNarrower than [`CronOccurrenceResponse`] for readability rather than for\ncost — an occurrence carries no payload column, unlike a trace — so a page\nof a hundred reads as a schedule's history instead of as a wall of lease\nbookkeeping.",
+        "description": "One row of `GET /api/v2/admin/cron/occurrences`.\n\nThe list projection: what happened and when, without the diagnostic detail.\nNarrower than [`CronOccurrenceResponse`] for readability rather than for\ncost — an occurrence carries no payload column, unlike a trace — so a page\nof a hundred reads as a schedule's history instead of as a wall of lease\nbookkeeping.",
         "required": [
           "id",
           "channel_id",
@@ -10454,7 +10454,7 @@
       },
       "CronScheduleStatusResponse": {
         "type": "object",
-        "description": "One channel's schedule as the runtime sees it right now:\n`GET /api/v1/admin/cron/status`.\n\nDeliberately a separate response rather than fields on the channel. The\nchannel row is an immutable authored definition; where its cursor has got to\nis runtime state that changes every minute, and writing it into the active\nrow would make an immutable record mutable.",
+        "description": "One channel's schedule as the runtime sees it right now:\n`GET /api/v2/admin/cron/status`.\n\nDeliberately a separate response rather than fields on the channel. The\nchannel row is an immutable authored definition; where its cursor has got to\nis runtime state that changes every minute, and writing it into the active\nrow would make an immutable record mutable.",
         "required": [
           "channel_id",
           "channel_name",
@@ -10594,7 +10594,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`POST /api/v1/admin/cache/namespaces/{namespace}/invalidate`.",
+            "description": "`POST /api/v2/admin/cache/namespaces/{namespace}/invalidate`.",
             "required": [
               "namespace",
               "stores"
@@ -10856,7 +10856,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "One occurrence in full: `GET /api/v1/admin/cron/occurrences/{id}`.\n\nAdds what the summary leaves out — the failure reason, the trace to read the\nrun in, and the lease bookkeeping that answers \"which node has it, and until\nwhen?\".",
+            "description": "One occurrence in full: `GET /api/v2/admin/cron/occurrences/{id}`.\n\nAdds what the summary leaves out — the failure reason, the trace to read the\nrun in, and the lease bookkeeping that answers \"which node has it, and until\nwhen?\".",
             "required": [
               "id",
               "channel_id",
@@ -10966,7 +10966,7 @@
                   "string",
                   "null"
                 ],
-                "description": "The trace this attempt wrote, readable at\n`GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace\nstorage dropped the row — the occurrence is kept either way, because it\nis scheduling correctness state rather than optional observability."
+                "description": "The trace this attempt wrote, readable at\n`GET /api/v2/admin/traces/{id}`. `null` before admission, and when trace\nstorage dropped the row — the occurrence is kept either way, because it\nis scheduling correctness state rather than optional observability."
               },
               "trigger": {
                 "type": "string"
@@ -11023,7 +11023,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`POST /api/v1/admin/engine/reload`.",
+            "description": "`POST /api/v2/admin/engine/reload`.",
             "required": [
               "reloaded",
               "workflows_count",
@@ -11068,7 +11068,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`GET /api/v1/admin/engine/status`.",
+            "description": "`GET /api/v2/admin/engine/status`.",
             "required": [
               "version",
               "uptime_seconds",
@@ -11923,7 +11923,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One channel's schedule as the runtime sees it right now:\n`GET /api/v1/admin/cron/status`.\n\nDeliberately a separate response rather than fields on the channel. The\nchannel row is an immutable authored definition; where its cursor has got to\nis runtime state that changes every minute, and writing it into the active\nrow would make an immutable record mutable.",
+              "description": "One channel's schedule as the runtime sees it right now:\n`GET /api/v2/admin/cron/status`.\n\nDeliberately a separate response rather than fields on the channel. The\nchannel row is an immutable authored definition; where its cursor has got to\nis runtime state that changes every minute, and writing it into the active\nrow would make an immutable record mutable.",
               "required": [
                 "channel_id",
                 "channel_name",
@@ -12820,7 +12820,7 @@
       },
       "EngineReloadedResponse": {
         "type": "object",
-        "description": "`POST /api/v1/admin/engine/reload`.",
+        "description": "`POST /api/v2/admin/engine/reload`.",
         "required": [
           "reloaded",
           "workflows_count",
@@ -12856,7 +12856,7 @@
       },
       "EngineStatusResponse": {
         "type": "object",
-        "description": "`GET /api/v1/admin/engine/status`.",
+        "description": "`GET /api/v2/admin/engine/status`.",
         "required": [
           "version",
           "uptime_seconds",
@@ -13901,7 +13901,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One row of `GET /api/v1/admin/audit-logs`.",
+              "description": "One row of `GET /api/v2/admin/audit-logs`.",
               "required": [
                 "id",
                 "principal",
@@ -14189,7 +14189,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One row of `GET /api/v1/admin/cron/occurrences`.\n\nThe list projection: what happened and when, without the diagnostic detail.\nNarrower than [`CronOccurrenceResponse`] for readability rather than for\ncost — an occurrence carries no payload column, unlike a trace — so a page\nof a hundred reads as a schedule's history instead of as a wall of lease\nbookkeeping.",
+              "description": "One row of `GET /api/v2/admin/cron/occurrences`.\n\nThe list projection: what happened and when, without the diagnostic detail.\nNarrower than [`CronOccurrenceResponse`] for readability rather than for\ncost — an occurrence carries no payload column, unlike a trace — so a page\nof a hundred reads as a schedule's history instead of as a wall of lease\nbookkeeping.",
               "required": [
                 "id",
                 "channel_id",
@@ -15133,7 +15133,7 @@
       },
       "PutPackageReceiptRequest": {
         "type": "object",
-        "description": "Body of `PUT /api/v1/admin/packages/{name}`.",
+        "description": "Body of `PUT /api/v2/admin/packages/{name}`.",
         "required": [
           "version",
           "content_hash",
@@ -15600,7 +15600,7 @@
       },
       "TraceListItem": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every\ncaller's request body and the full engine message in one response. The\nserver's `SELECT` already omits those columns, so this type is the second\nhalf of that guarantee rather than a filter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
+        "description": "One row of `GET /api/v2/admin/traces` — payload-free by design (S14).\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every\ncaller's request body and the full engine message in one response. The\nserver's `SELECT` already omits those columns, so this type is the second\nhalf of that guarantee rather than a filter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
         "required": [
           "id",
           "channel",

@@ -22,7 +22,7 @@ use super::helpers::{fetch_required_tx, sql_now};
 
 // -- DTOs --
 
-/// Body of `PUT /api/v1/admin/packages/{name}`.
+/// Body of `PUT /api/v2/admin/packages/{name}`.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PutPackageReceiptRequest {
     /// Package version this receipt records, e.g. `1.4.0`.

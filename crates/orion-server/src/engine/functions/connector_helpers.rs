@@ -137,13 +137,18 @@ pub async fn send_es(
     req: reqwest::RequestBuilder,
     max_response_size: usize,
 ) -> Result<(reqwest::StatusCode, Value), HandlerError> {
+    // A send that fails never reached Elasticsearch: retryable, and what the
+    // breaker counts, as a SQL, Redis or MongoDB connect failure is (F42).
     // `without_url`: a transport failure's `Display` carries the endpoint it
     // was given, and an ES connector URL can hold credentials in userinfo or
     // the query (#281). The connector name is the diagnostic here.
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| to_exec_error(e.without_url()))?;
+    let resp = req.send().await.map_err(|e| {
+        if e.is_timeout() {
+            HandlerError::new(ErrorClass::Timeout, e.without_url())
+        } else {
+            to_connect_error(e.without_url())
+        }
+    })?;
     let status = resp.status();
     let body: Value = read_es_body(resp, max_response_size).await?;
     Ok((status, body))
@@ -696,6 +701,16 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod error_taxonomy_tests {
     use super::*;
+
+    /// An Elasticsearch outage is retryable, as every other connector's is.
+    #[tokio::test]
+    async fn an_unreachable_elasticsearch_is_retryable() {
+        let client = reqwest::Client::new();
+        let err = send_es(client.get("http://127.0.0.1:1/_search"), 1024)
+            .await
+            .expect_err("nothing listens on port 1");
+        assert!(dataflow_rs::Error::from(err).is_retryable());
+    }
 
     type DataflowError = dataflow_rs::Error;
 

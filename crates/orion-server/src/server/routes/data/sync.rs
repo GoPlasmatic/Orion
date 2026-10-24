@@ -703,7 +703,7 @@ pub(super) async fn process_sync_for_channel(
                 // no trace row under any `trace_storage.mode`, `sync` included,
                 // even though the workflow really ran: it can write rows, call
                 // connectors and emit task errors, and a failing sign-in was
-                // invisible to `GET /api/v1/data/traces`. The `record_response_drop`
+                // invisible to `GET /api/v2/data/traces`. The `record_response_drop`
                 // entries logged just above went with it, having no envelope to
                 // ride on.
                 let mut authorize_outcome: Option<Result<Response, OrionError>> = None;

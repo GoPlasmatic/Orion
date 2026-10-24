@@ -23,9 +23,9 @@ pub fn data_routes() -> Router<AppState> {
     // A single catch-all, with no static segments to shadow it. The trace
     // reads used to sit here as `/traces` and `/traces/{id}`; static routes
     // win over `/{*path}` in axum, so a channel named `traces` was
-    // permanently unreachable (`POST /api/v1/data/traces` returned 405) and
+    // permanently unreachable (`POST /api/v2/data/traces` returned 405) and
     // the rate limiter carried a special case to skip the name. They moved to
-    // `/api/v1/admin/traces` in 1.0 (R8), where the admin-guarded list
+    // `/api/v2/admin/traces` in 1.0 (R8), where the admin-guarded list
     // endpoint always belonged.
     Router::new().route("/{*path}", any(dynamic_handler))
 }
@@ -118,7 +118,7 @@ pub(crate) async fn dynamic_handler(
     OrionBody(body): OrionBody,
 ) -> Result<impl IntoResponse, OrionError> {
     // N10: the raw, still-encoded path (the nested router has stripped the
-    // `/api/v1/data` prefix). `Path<String>` would hand us the wildcard
+    // `/api/v2/data` prefix). `Path<String>` would hand us the wildcard
     // percent-decoded once by axum — leniently, with invalid sequences
     // passed through — which made `%2F` act as a segment separator before
     // matching and would double-decode anything the matcher then decoded.
@@ -248,7 +248,7 @@ pub(crate) async fn dynamic_handler(
     {
         return Err(OrionError::MethodNotAllowed(format!(
             "channel '{channel}' is a cron channel: it runs on its schedule, not on \
-             request. To run it now, POST /api/v1/admin/channels/{}/trigger — that \
+             request. To run it now, POST /api/v2/admin/channels/{}/trigger — that \
              records an occurrence and respects the channel's concurrency policy.",
             runtime.channel.channel_id
         )));

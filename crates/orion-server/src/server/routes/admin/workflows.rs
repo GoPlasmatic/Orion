@@ -939,7 +939,7 @@ pub(crate) async fn validate_workflow(
     Ok(Json(run_validation(&req, &state).await))
 }
 
-/// R20: `valid: true` must mean `POST /api/v1/admin/workflows` would accept
+/// R20: `valid: true` must mean `POST /api/v2/admin/workflows` would accept
 /// this payload.
 ///
 /// It did not. `validate_workflow_tasks_schema` carried the doc comment *"Public

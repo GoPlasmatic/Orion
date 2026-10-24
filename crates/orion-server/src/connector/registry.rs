@@ -154,7 +154,7 @@ pub struct ConnectorRegistry {
 /// A connector that fails to load does not fail anything at load time — it is
 /// simply absent, so every workflow using it returns a 500 at request time,
 /// possibly hours later. Recording the failures makes the degraded set
-/// visible on `/health` and on `GET /api/v1/admin/connectors` instead of
+/// visible on `/health` and on `GET /api/v2/admin/connectors` instead of
 /// leaving a log line as the only evidence.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConnectorLoadIssue {
@@ -451,7 +451,7 @@ impl ConnectorRegistry {
                 loaded = count,
                 "Some enabled connectors failed to load; every workflow using \
                  one will fail at request time. See /health and \
-                 GET /api/v1/admin/connectors for the list."
+                 GET /api/v2/admin/connectors for the list."
             );
         }
         *self.load_issues.write().await = issues;
