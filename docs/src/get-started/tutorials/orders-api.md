@@ -8,7 +8,7 @@ This tutorial follows one orders service from source files to a safe update. It 
 
 ## What you will learn
 
-- How `halt_on: "failure"` keeps invalid input away from a write.
+- How `on_rejection: "halt"` keeps invalid input away from a write.
 - How to prove a connector-backed workflow offline, with the database stubbed.
 - What a trace shows after a live request.
 - How to update an active workflow without editing it.
@@ -49,7 +49,7 @@ cat examples/packages/postgres-orders/workflow.json
 cat examples/packages/postgres-orders/connector.json
 ```
 
-The workflow's `validation` task has `halt_on: "failure"`, so an invalid order cannot reach the write task. The connector takes its URL from `ORDERS_DB_URL` and sets `operations.delete: false`.
+The workflow's `validation` task has `on_rejection: "halt"`, so an invalid order cannot reach the write task. The connector takes its URL from `ORDERS_DB_URL` and sets `operations.delete: false`.
 
 ## 2. Validate and test without a database
 
@@ -169,7 +169,7 @@ Your repository checkout is untouched.
 
 ## Recap
 
-- A `validation` task with `halt_on: "failure"` is the barrier between input and a write.
+- A `validation` task with `on_rejection: "halt"` is the barrier between input and a write.
 - `lint`, `test` and `dry-run` prove a connector-backed workflow with no database, because stubs answer the connector calls.
 - Every live request leaves a trace, and the trace names each task that ran.
 - An active workflow is immutable. Change ships as a new version, tested and preflighted before it serves.

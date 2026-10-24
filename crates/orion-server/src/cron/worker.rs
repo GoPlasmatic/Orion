@@ -578,8 +578,7 @@ async fn execute(
         &occurrence.id,
     );
     let has_errors = !execution.outcome.is_ok();
-    let result_json =
-        serde_json::to_string(execution.message.data()).unwrap_or_else(|_| "{}".to_string());
+    let result_json = serde_json::to_string(&execution.data()).unwrap_or_else(|_| "{}".to_string());
 
     if let Some(ref id) = trace_id
         && crate::queue::trace_record::TracePlan::decide(&effective_trace, has_errors).persists()

@@ -12023,13 +12023,6 @@
                 "retry_safety"
               ],
               "properties": {
-                "aliases": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "description": "Other accepted spellings — `validation` carries `validate`. Omitted\nwhen there are none."
-                },
                 "category": {
                   "type": "string",
                   "description": "`connector`, `control`, `data`, `compute`, or `utility`."
@@ -12990,13 +12983,6 @@
           "retry_safety"
         ],
         "properties": {
-          "aliases": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Other accepted spellings — `validation` carries `validate`. Omitted\nwhen there are none."
-          },
           "category": {
             "type": "string",
             "description": "`connector`, `control`, `data`, `compute`, or `utility`."

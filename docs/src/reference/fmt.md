@@ -62,7 +62,7 @@ Known keys of known shapes are written in the order in the table. Keys not in a 
 | Shape | Order |
 |---|---|
 | Workflow | `workflow_id`, `name`, `description`, `tags`, `priority`, `condition`, `loop`, `continue_on_error`, `activate`, `tasks` |
-| Task | `id`, `name`, `description`, `condition`, `terminal`, `halt_on`, `continue_on_error`, `for_each`, `function` |
+| Task | `id`, `name`, `description`, `condition`, `terminal`, `on_rejection`, `on_failure`, `for_each`, `function` |
 | Task group | `id`, `name`, `description`, `condition`, `terminal`, `tasks` |
 | Fragment call site | `id`, `use`, `with` |
 | `function` | `name`, `input` |

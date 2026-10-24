@@ -34,13 +34,13 @@ depth prevent runaway recursion.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `channel` | string \| JSONLogic | yes | — | Target channel. Accepts the pre-1.0 name `channel_logic` |
-| `data` | any \| JSONLogic | no | request payload | Payload passed to the target channel. Accepts the pre-1.0 name `data_logic` |
-| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the called channel's response is stored. Accepts the pre-1.0 name `response_path` |
+| `channel` | string \| JSONLogic | yes | — | Target channel |
+| `data` | any \| JSONLogic | no | request payload | Payload passed to the target channel |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the called channel's response is stored |
 | `timeout_ms` | number | no | from config | Per-call timeout in milliseconds |
 
 `channel` and `data` are each one field, not the `channel`/`channel_logic` and
-`data`/`data_logic` pairs they were before 1.5. A literal is JSONLogic for itself, so the static spelling is unchanged and still folds once when the engine is built. An expression in the same field is what makes the target or the payload depend on the message. The old names remain accepted as aliases. Supplying both spellings of one field is an error, not a precedence rule.
+`data`/`data_logic` pairs they were before 1.5. A literal is JSONLogic for itself, so the static spelling is unchanged and still folds once when the engine is built. An expression in the same field is what makes the target or the payload depend on the message. The old names are no longer read: each is an unknown key, refused at create.
 
 ## Examples
 

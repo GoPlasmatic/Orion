@@ -1,5 +1,4 @@
 use super::*;
-use crate::engine::functions::run_test_task;
 use crate::model::ModelSet;
 use crate::model::fixture;
 use serde_json::json;
@@ -19,9 +18,9 @@ fn config() -> ModelsConfig {
     }
 }
 
-fn handler(models: Option<Arc<ModelsRuntime>>, config: ModelsConfig) -> ModelInferHandler {
+fn function(models: Option<Arc<ModelsRuntime>>, config: ModelsConfig) -> ModelInferFunction {
     let config = Arc::new(config);
-    ModelInferHandler {
+    ModelInferFunction {
         source: ModelSource::Node(crate::runtime::generation::test_handle()),
         host: models.map(|m| {
             Arc::new(InferenceHost::node(
@@ -35,29 +34,38 @@ fn handler(models: Option<Arc<ModelsRuntime>>, config: ModelsConfig) -> ModelInf
     }
 }
 
-async fn refused(handler: ModelInferHandler, input: Value) -> String {
-    run_test_task(NAME, Box::new(handler), input, json!({"board": [1]}))
+async fn refused(function: ModelInferFunction, input: Value) -> String {
+    twin::v4(NAME, function, input, json!({"board": [1]}))
         .await
         .expect_err("the task must fail")
+        .message
+}
+
+/// An engine with no workflows, for a generation that only carries a set.
+fn empty_engine() -> dataflow_rs::Engine {
+    dataflow_rs::Engine::builder()
+        .build()
+        .expect("an empty engine builds")
 }
 
 /// Every refusal before a model runs names the handler and what the
 /// caller can act on: the node without the runtime, an id the
 /// generation does not serve, the id's own load issue, the fields the
-/// task must carry.
+/// task must carry. (A task with no `model` is refused at load; see
+/// `refusals_are_1_12s`.)
 #[tokio::test]
 async fn refusals_name_the_handler_and_the_reason() {
     let config = config();
     let good = json!({"model": "ada.c4-tiny", "input": {"var": ""}});
 
-    let err = refused(handler(None, config.clone()), good.clone()).await;
+    let err = refused(function(None, config.clone()), good.clone()).await;
     assert!(
         err.contains("model_infer: models are disabled on this node"),
         "{err}"
     );
 
     let models = models_runtime(&config);
-    let err = refused(handler(Some(models.clone()), config.clone()), good.clone()).await;
+    let err = refused(function(Some(models.clone()), config.clone()), good.clone()).await;
     assert!(
         err.contains("model 'ada.c4-tiny' is unavailable on this node")
             && err.contains("unknown or not active"),
@@ -65,20 +73,14 @@ async fn refusals_name_the_handler_and_the_reason() {
     );
 
     let err = refused(
-        handler(Some(models.clone()), config.clone()),
-        json!({"input": {"var": ""}}),
-    )
-    .await;
-    assert!(err.contains("requires 'model'"), "{err}");
-    let err = refused(
-        handler(Some(models.clone()), config.clone()),
+        function(Some(models.clone()), config.clone()),
         json!({"model": 7, "input": {"var": ""}}),
     )
     .await;
     assert!(err.contains("'model' must evaluate to a model id"), "{err}");
 
     // A generation carrying the model's load issue hands the reason on.
-    let h = handler(Some(models.clone()), config.clone());
+    let h = function(Some(models.clone()), config.clone());
     let ModelSource::Node(runtime) = &h.source else {
         unreachable!("built on a node source")
     };
@@ -103,8 +105,7 @@ async fn refusals_name_the_handler_and_the_reason() {
     };
     let set = ModelSet::load_active(&[row], &config, true, &crate::engine::kit::test_exprs());
     runtime.publish(
-        generation.engine.clone(),
-        generation.engine4.clone(),
+        empty_engine(),
         generation.channels.clone(),
         generation.functions.clone(),
         generation.plugins.clone(),
@@ -266,7 +267,7 @@ fn messages_spell_shapes_and_kinds() {
     assert_eq!(kind_of(&OwnedDataValue::from(&json!("s"))), "a string");
 }
 
-// -- dataflow-rs 4: `ModelInferFunction`, twinned against the handler --
+// -- `ModelInferFunction`, against 1.12's records --
 
 use crate::engine::ResolvedSecrets;
 use crate::engine::functions::twin::{self, Seen};
@@ -331,14 +332,6 @@ impl Rig {
             load_permits: None,
             artifacts: Arc::new(Graph(self.delay)),
         })
-    }
-
-    fn handler(&self) -> ModelInferHandler {
-        ModelInferHandler {
-            source: self.source(),
-            host: Some(self.host()),
-            config: self.config.clone(),
-        }
     }
 
     fn function(&self) -> ModelInferFunction {
@@ -554,7 +547,7 @@ fn data() -> Value {
     json!({"board": [planes], "which": "ada.c4-tiny", "cols": [3, 5]})
 }
 
-/// A dataflow-rs 4 message whose `data` is `data`.
+/// A message whose `data` is `data`.
 fn message(data: &Value) -> dataflow_rs::Message {
     dataflow_rs::Message::from_parts(
         OwnedDataValue::Null,
@@ -593,15 +586,12 @@ fn steady(seen: Seen) -> Seen {
     })
 }
 
-/// One task through each engine, each over a rig of its own: a fresh
-/// host, so each call's load is cold.
-async fn both(rig: &Rig, input: Value) -> (Seen, Seen) {
-    let v3 = twin::v3(NAME, Box::new(rig.handler()), input.clone(), data()).await;
-    let v4 = twin::v4(NAME, rig.function(), input, data()).await;
-    (steady(v3), steady(v4))
+/// One task over a fresh host of `rig`'s, so its load is cold.
+async fn run(rig: &Rig, input: Value) -> Seen {
+    steady(twin::v4(NAME, rig.function(), input, data()).await)
 }
 
-/// One dataflow-rs 4 call of `rig`'s function over [`data`], on Orion's
+/// One call of `rig`'s function over [`data`], on Orion's
 /// expressions, under the run deadline `deadline` from now.
 async fn call_v4(rig: &Rig, input: Value, deadline: Option<Duration>) -> testing::Called {
     let call = testing::call(rig.function(), input)
@@ -617,8 +607,8 @@ async fn call_v4(rig: &Rig, input: Value, deadline: Option<Duration>) -> testing
     }
 }
 
-/// The fixture runs for real on both engines and writes the same thing:
-/// the manifest's result, the outputs `raw`, a `select`'s reduction with
+/// The fixture runs for real and writes what 1.12 wrote: the manifest's
+/// result, the outputs `raw`, a `select`'s reduction with
 /// operands from the message, and the stats beside the result.
 #[tokio::test]
 async fn an_inference_writes_what_1_12_wrote() {
@@ -642,8 +632,8 @@ async fn an_inference_writes_what_1_12_wrote() {
             "stats_output": "data.stats"
         })),
     ] {
-        let (v3, v4) = both(&rig, input.clone()).await;
-        assert_eq!(v4, v3, "{input}");
+        let v4 = run(&rig, input.clone()).await;
+        twin::pinned(&v4, format!("inference/{input}"));
         let data = v4.expect("the inference ran");
         assert!(
             data.get("result").is_some_and(|r| !r.is_null()),
@@ -705,29 +695,19 @@ async fn stats_output_is_written_beside_output() {
     );
 }
 
-/// `refusals_name_the_handler_and_the_reason` on both engines: every
-/// refusal before and after a model runs, with the same code, text and
-/// retryability, the generation's load issue included. A missing
-/// `model` is refused at load on dataflow-rs 4 (I183), where 1.12
-/// refused each call.
+/// Every refusal before and after a model runs, with 1.12's code, text
+/// and retryability, the generation's load issue included. A missing
+/// `model` is refused at load (I183), where 1.12 refused each call.
 #[tokio::test]
-async fn refusals_are_1_12s_on_v4() {
+async fn refusals_are_1_12s() {
     let rig = Rig::new();
-    let disabled = (
-        ModelInferHandler {
-            source: rig.source(),
-            host: None,
-            config: rig.config.clone(),
-        },
-        ModelInferFunction {
-            source: rig.source(),
-            host: None,
-            config: rig.config.clone(),
-        },
-    );
-    let v3 = twin::v3(NAME, Box::new(disabled.0), infer(json!({})), data()).await;
-    let v4 = twin::v4(NAME, disabled.1, infer(json!({})), data()).await;
-    assert_eq!(v4, v3);
+    let disabled = ModelInferFunction {
+        source: rig.source(),
+        host: None,
+        config: rig.config.clone(),
+    };
+    let v4 = twin::v4(NAME, disabled, infer(json!({})), data()).await;
+    twin::pinned(&v4, "refusals/disabled");
     assert!(
         v4.expect_err("disabled")
             .message
@@ -743,8 +723,8 @@ async fn refusals_are_1_12s_on_v4() {
         infer(json!({"timeout_ms": {"-": [5, 5]}})),
         infer(json!({"select": {"reshape": [{"var": "policy"}, [5]]}})),
     ] {
-        let (v3, v4) = both(&rig, input.clone()).await;
-        assert_eq!(v4, v3, "{input}");
+        let v4 = run(&rig, input.clone()).await;
+        twin::pinned(&v4, format!("refusals/{input}"));
         assert!(v4.is_err(), "{input}");
     }
 
@@ -770,8 +750,7 @@ async fn refusals_are_1_12s_on_v4() {
         updated_at: now,
     };
     runtime.publish(
-        generation.engine.clone(),
-        generation.engine4.clone(),
+        empty_engine(),
         generation.channels.clone(),
         generation.functions.clone(),
         generation.plugins.clone(),
@@ -791,30 +770,21 @@ async fn refusals_are_1_12s_on_v4() {
             Arc::new(ConnectorRegistry::new(Default::default())),
             reqwest::Client::new(),
         )));
-        (
-            ModelInferHandler {
-                source: ModelSource::Node(runtime.clone()),
-                host: host.clone(),
-                config: config.clone(),
-            },
-            ModelInferFunction {
-                source: ModelSource::Node(runtime.clone()),
-                host,
-                config,
-            },
-        )
+        ModelInferFunction {
+            source: ModelSource::Node(runtime.clone()),
+            host,
+            config,
+        }
     };
-    let (handler, function) = node(&runtime);
-    let v3 = twin::v3(NAME, Box::new(handler), infer(json!({})), data()).await;
-    let v4 = twin::v4(NAME, function, infer(json!({})), data()).await;
-    assert_eq!(v4, v3);
+    let v4 = twin::v4(NAME, node(&runtime), infer(json!({})), data()).await;
+    twin::pinned(&v4, "refusals/load_issue");
     assert!(v4.expect_err("not served").message.contains(
         "unavailable on this node: admission: admission is 'failed' at stage 'digest': \
                  mismatch"
     ));
     let _ = std::fs::remove_dir_all(&config.cache_dir);
 
-    // A task with no `model` never loads on dataflow-rs 4.
+    // A task with no `model` never loads.
     let called = call_v4(&rig, json!({"input": {"var": ""}}), None).await;
     assert_eq!(
         *called.outcome.expect_err("refused at load").kind(),
@@ -831,15 +801,15 @@ async fn refusals_are_1_12s_on_v4() {
 }
 
 /// An `engine.ops_budget` crossed in an adapter is `ErrorKind::Budget`,
-/// where 1.12 matched the error's `BudgetExceeded` tag: the same code,
-/// text and retryability on both engines, under the adapter's name.
+/// where 1.12 matched the error's `BudgetExceeded` tag: 1.12's code, text
+/// and retryability, under the adapter's name.
 #[tokio::test]
 async fn a_budget_crossed_in_an_adapter_is_errorkind_budget() {
     let mut rig = Rig::new();
     rig.exprs =
         crate::engine::operators::orion_exprs(&ResolvedSecrets::empty(), 20).expect("builds");
-    let (v3, v4) = both(&rig, infer(json!({}))).await;
-    assert_eq!(v4, v3);
+    let v4 = run(&rig, infer(json!({}))).await;
+    twin::pinned(&v4, "budget/adapter");
     let failure = v4.expect_err("over the ceiling");
     assert_eq!(failure.code, "BUDGET_EXCEEDED");
     assert!(
@@ -859,59 +829,21 @@ async fn a_budget_crossed_in_an_adapter_is_errorkind_budget() {
     assert!(called.writes.is_empty());
 }
 
-/// dataflow-rs 3's engine with an operation ceiling, running `handler`
-/// as `twin::v3` runs one.
-async fn v3_budgeted(handler: ModelInferHandler, input: Value, budget: u64) -> Seen {
-    let mut fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
-        Default::default();
-    fns.insert(NAME.to_string(), Box::new(handler));
-    let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
-        "id": "w", "name": "w", "condition": true,
-        "tasks": [{"id": "t", "name": "t", "function": {"name": NAME, "input": input}}]
-    }))
-    .expect("a workflow");
-    let engine =
-        crate::engine::operators::with_ops_budget(dataflow_rs_v3::Engine::builder(), budget)
-            .with_handlers(fns)
-            .with_workflow(workflow)
-            .build()
-            .expect("the engine builds");
-    let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-    dataflow_rs_v3::engine::utils::set_nested_value(
-        &mut message.context,
-        "data",
-        OwnedDataValue::from(&data()),
-    );
-    match engine.process_message(&mut message).await {
-        Ok(()) => Ok(message.data().into()),
-        Err(e) => {
-            let record = message.errors().first().expect("the failure is recorded");
-            Err(twin::Failure {
-                code: record.code.clone(),
-                message: e.to_string(),
-                retryable: e.retryable(),
-                detail: record.detail.clone(),
-            })
-        }
-    }
-}
-
 /// A ceiling crossed in a field of the task's own keeps its kind under
-/// the field's name, on both engines.
+/// the field's name.
 #[tokio::test]
 async fn a_budget_crossed_in_a_field_keeps_its_kind() {
     let rig = Rig::new();
     let input = infer(json!({
         "input": {"+": [{"+": [{"+": [{"+": [1, {"var": "data.cols.0"}]}, 1]}, 1]}, 1]}
     }));
-    let v3 = v3_budgeted(rig.handler(), input.clone(), 3).await;
     let called = testing::call(rig.function(), input)
         .exprs(crate::engine::operators::orion_exprs(&ResolvedSecrets::empty(), 3).expect("builds"))
         .name(NAME)
         .message(message(&data()))
         .await;
     let v4 = twin::seen(&called);
-    assert_eq!(v4, v3);
+    twin::pinned(&v4, "budget/field");
     let failure = v4.expect_err("over the ceiling");
     assert_eq!(failure.code, "BUDGET_EXCEEDED");
     assert!(
@@ -944,10 +876,8 @@ async fn the_models_own_deadline_first_fails_as_1_12_did() {
         (&slow, infer(json!({"timeout_ms": 100}))),
         (&capped, infer(json!({}))),
     ] {
-        let v3 = twin::v3(NAME, Box::new(rig.handler()), input.clone(), data()).await;
         let called = call_v4(rig, input.clone(), Some(Duration::from_secs(60))).await;
         let v4 = twin::seen(&called);
-        assert_eq!(v4, v3, "{input}");
         let failure = v4.expect_err("timed out");
         assert_eq!(failure.code, "TIMEOUT_ERROR");
         assert_eq!(
@@ -995,10 +925,8 @@ async fn a_full_slot_waits_under_the_earlier_deadline() {
     let mut rig = Rig::new();
     rig.slots = 0;
     let input = infer(json!({"timeout_ms": 150}));
-    let v3 = twin::v3(NAME, Box::new(rig.handler()), input.clone(), data()).await;
     let called = call_v4(&rig, input, Some(Duration::from_secs(60))).await;
-    assert_eq!(twin::seen(&called), v3);
-    let failure = v3.expect_err("no slot");
+    let failure = twin::seen(&called).expect_err("no slot");
     assert_eq!(failure.code, "VALIDATION_ERROR");
     assert_eq!(
         failure.message,

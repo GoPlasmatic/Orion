@@ -1,0 +1,467 @@
+{
+  "computed_output/data.at": {
+    "ok": {
+      "n": 3,
+      "word": "result",
+      "at": "data.r",
+      "r": {
+        "ok": true
+      }
+    }
+  },
+  "connector_and_gate/{\"connector\":\"api\",\"method\":\"GET\",\"output\":\"data.r\"}": {
+    "ok": {
+      "r": {
+        "method": "GET",
+        "uri": "/",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "connector_and_gate/{\"connector\":\"api\",\"method\":\"POST\"}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "HTTP method 'POST' is not allowed on connector 'api' (allowed: GET)"
+    }
+  },
+  "connector_and_gate/{\"connector\":\"mail\"}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "Connector 'mail' is not an HTTP connector"
+    }
+  },
+  "connector_and_gate/{\"connector\":\"missing\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'missing' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"body\":7,\"body_format\":\"text\",\"output\":\"data.r\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: body_format 'text' requires the body to be a string, got a number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"body\":[1],\"body_format\":\"form\",\"output\":\"data.r\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: body_format 'form' requires the body to be an object of key/value pairs, got an array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"body_format\":\"xml\",\"output\":\"data.r\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: unknown body_format 'xml' — expected one of 'json', 'form', 'text'",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"headers\":{\"X-Id\":{\"var\":\"data.id\"},\"X-Num\":7,\"X-Null\":null,\"X-Obj\":{\"var\":\"data.obj\"},\"X-Missing\":{\"var\":\"data.none\"}},\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "GET",
+        "uri": "/",
+        "headers": {
+          "x-null": "null",
+          "x-obj": "{\"k\":[1,2]}",
+          "x-id": "7",
+          "x-missing": "null",
+          "x-num": "7"
+        },
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"method\":\"DELETE\",\"body\":[1,2],\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "DELETE",
+        "uri": "/",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "[1,2]"
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"method\":\"PATCH\",\"body\":\"raw text\",\"body_format\":{\"cat\":[\"te\",\"xt\"]},\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "PATCH",
+        "uri": "/",
+        "headers": {
+          "content-type": "text/plain; charset=utf-8"
+        },
+        "body": "raw text"
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"method\":\"POST\",\"body\":{\"var\":\"data.order\"},\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "POST",
+        "uri": "/",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"sku\":\"A1\",\"qty\":2}"
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"method\":\"PUT\",\"body\":{\"var\":\"data.order\"},\"body_format\":\"form\",\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "PUT",
+        "uri": "/",
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "body": "sku=A1&qty=2"
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "GET",
+        "uri": "/",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"output\":{\"cat\":[\"data.\",\"computed\"]}}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "computed": {
+        "method": "GET",
+        "uri": "/",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"path\":\"/plain\",\"response_format\":\"text\",\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": "plain text"
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"path\":\"/search?q=1\",\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "GET",
+        "uri": "/search?q=1",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"path\":\"/teapot\",\"output\":\"data.r\"}": {
+    "err": {
+      "code": "HTTP_ERROR",
+      "message": "HTTP error: 418 - HTTP 418 I'm a teapot from <upstream>/teapot: short and stout",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"path\":null,\"body\":null,\"body_format\":null,\"response_format\":null,\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "GET",
+        "uri": "/",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"path\":{\"cat\":[\"/orders/\",{\"var\":\"data.id\"}]},\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "GET",
+        "uri": "/orders/7",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"path\":{\"var\":\"data.id\"},\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "GET",
+        "uri": "/7",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"path\":{\"var\":\"data.obj\"},\"output\":\"data.r\"}": {
+    "ok": {
+      "id": 7,
+      "obj": {
+        "k": [
+          1,
+          2
+        ]
+      },
+      "order": {
+        "sku": "A1",
+        "qty": 2
+      },
+      "r": {
+        "method": "GET",
+        "uri": "/%7B%22k%22:[1,2]%7D",
+        "headers": {},
+        "body": ""
+      }
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"response_format\":\"yaml\",\"output\":\"data.r\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: unknown response_format 'yaml' — expected one of 'json', 'text'",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"timeout_ms\":\"soon\",\"output\":\"data.r\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: http_call timeout_ms must evaluate to a non-negative number, got \"soon\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"timeout_ms\":-1,\"output\":\"data.r\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: http_call timeout_ms must evaluate to a non-negative number, got -1",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_field/{\"connector\":\"api\",\"timeout_ms\":{\"var\":\"data.none\"},\"output\":\"data.r\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: http_call timeout_ms must evaluate to a non-negative number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "oauth/0": {
+    "err": {
+      "code": "HTTP_ERROR",
+      "message": "HTTP error: 401 - HTTP 401 Unauthorized from <upstream>/: revoked",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "oauth/1": {
+    "ok": {
+      "r": {
+        "token": "Bearer tok-2"
+      }
+    }
+  },
+  "oauth/2": {
+    "ok": {
+      "r": {
+        "token": "Bearer tok-2"
+      }
+    }
+  },
+  "retry/GET/false/2": {
+    "ok": {
+      "r": {
+        "ok": true
+      }
+    }
+  },
+  "retry/GET/false/5": {
+    "err": {
+      "code": "HTTP_ERROR",
+      "message": "HTTP error: 503 - HTTP 503 Service Unavailable from <upstream>/: busy",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "retry/POST/false/2": {
+    "err": {
+      "code": "HTTP_ERROR",
+      "message": "HTTP error: 503 - HTTP 503 Service Unavailable from <upstream>/: busy",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "retry/POST/true/2": {
+    "ok": {
+      "r": {
+        "ok": true
+      }
+    }
+  },
+  "retry/PUT/false/2": {
+    "ok": {
+      "r": {
+        "ok": true
+      }
+    }
+  },
+  "timeout/{\"connector\":\"api\",\"path\":\"/slow\",\"timeout_ms\":100,\"output\":\"data.r\"}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: HTTP request to <upstream>/slow timed out",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "timeout/{\"connector\":\"api\",\"path\":\"/slow\",\"timeout_ms\":{\"+\":[50,50]},\"output\":\"data.r\"}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: HTTP request to <upstream>/slow timed out",
+      "retryable": true,
+      "detail": null
+    }
+  }
+}

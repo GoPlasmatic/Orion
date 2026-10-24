@@ -1,32 +1,26 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Function, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
 use serde_json::{Map, Value, json};
 
-use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure,
-    encode_failure, es_request, es_write_error, is_mongo, require_op_allowed, resolve_params,
-    resolve_row_format, send_es, to_connect_error, to_exec_error,
+    QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure, encode_failure,
+    es_request, es_write_error, is_mongo, require_op_allowed, send_es, to_connect_error,
+    to_exec_error,
 };
 use super::db_read::rendered_row_format;
 use super::mongo_common::{delete_envelope, empty_insert_envelope, update_envelope};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
 use crate::query::backend::es::{EsWrite, bulk_ndjson};
 use crate::query::backend::mongo::MongoWrite;
 use crate::query::write::{ResolvedWrite, WriteOp};
@@ -35,38 +29,13 @@ use crate::storage::detect_backend;
 
 /// This handler's name, for the helpers that take it as an argument — a
 /// reference to the one place it is written (F48).
-const NAME: &str = <DataWriteHandler as ConnectorHandler>::NAME;
+pub(crate) const NAME: &str = "data_write";
 
 /// Audit status for a bulk write that applied some but not all of its items
 /// (F28) — HTTP 207 Multi-Status, the code that exists for exactly this. Below
 /// 400, so the workflow continues; not 200, so the trace shows it happened.
 /// Shared with `mongo_write` (#263), whose bulk inserts classify identically.
 pub(super) const PARTIAL_STATUS: u16 = 207;
-
-/// Executes a portable `data_write` — one backend-neutral mutation envelope
-/// (`op`/`target`/`values`/`set`/`filter`/`on_conflict`/`returning`) that renders
-/// to a native SQL `INSERT`/`UPDATE`/`DELETE`/upsert, a MongoDB write, or an
-/// Elasticsearch write — against a SQL, Mongo, or ES connector. The translation
-/// — including the write-safety guards (bulk cap, unfiltered mutation; W15) —
-/// lives in `src/query/write.rs` and the per-backend renderers; this handler
-/// wires it to the connector/pool machinery (ES runs over the HTTP client).
-pub struct DataWriteHandler {
-    pub pool_cache: Arc<SqlPoolCache>,
-    pub mongo_pool_cache: Arc<MongoPoolCache>,
-    pub http_client: reqwest::Client,
-    pub registry: Arc<ConnectorRegistry>,
-    /// Safety bounds (`max_rows` / `allow_unfiltered`) from `[write]`,
-    /// enforced inside `resolve_write`.
-    pub write_config: crate::config::WriteConfig,
-    /// Hard cap on rows a `returning` clause may hand back, from
-    /// `query.max_limit` — the same knob and the same reject-never-truncate
-    /// rule `db_read` and `mongo_read` apply to a result set.
-    ///
-    /// `write.max_rows` bounds the rows going *in*; nothing bounded the rows
-    /// coming back, so an acknowledged unfiltered `update … returning` read a
-    /// whole table into memory.
-    pub max_returning: usize,
-}
 
 /// The mutation as the task states it, with `params` folded against the
 /// message.
@@ -98,93 +67,6 @@ struct Backends<'a> {
     max_returning: usize,
 }
 
-#[async_trait]
-impl ConnectorHandler for DataWriteHandler {
-    const NAME: &'static str = "data_write";
-    /// Like `data_query`: a `db` or an `es` connector, dispatched on the
-    /// variant.
-    type Kind = crate::connector::DataBackend;
-    type Input = TemplatedInput;
-    type Parsed = DataWrite<'static>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        _call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        // W7: the mutation envelope is nested under `write`, mirroring
-        // `data_query`'s `query`. Before 1.0 it was flat, sharing a namespace
-        // with the handler keys (`connector`, `schema`, `params`, `database`,
-        // `output`) — so those five names could never be used by the dialect,
-        // and there was no single JSON value that *was* the envelope. The flat
-        // form is not accepted: `write` is `required` in the field schema, so
-        // the shared validator refuses it at create, update, import, `POST
-        // /admin/workflows/validate` and `orion-server lint`, and `orion-server
-        // preflight` names any task already stored in that shape.
-        let envelope = input
-            .get("write")
-            .ok_or_else(|| {
-                DataflowError::from(query::write::WriteError::Query(
-                    query::QueryError::InvalidEnvelope(
-                        "missing `write`: the mutation envelope (op/target/values/set/filter/\
-                         on_conflict/returning/all) is nested under `write`, alongside the \
-                         handler's `connector`/`schema`/`params`/`database`/`output`"
-                            .to_string(),
-                    ),
-                ))
-            })?
-            .clone();
-
-        Ok(DataWrite {
-            // Resolved against the message context (the only point the message
-            // touches the mutation); it produces literals, not SQL.
-            params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
-            format: resolve_row_format(input, <Self as ConnectorHandler>::NAME, ctx)?,
-            // Optional inline schema (privileged config): renames, allowlist,
-            // and the per-column `writable` flag.
-            schema: input.get("schema").cloned().map(Cow::Owned),
-            envelope: Cow::Owned(envelope),
-            database: input
-                .get("database")
-                .and_then(Value::as_str)
-                .map(|database| Cow::Owned(database.to_string())),
-        })
-    }
-
-    // No `gate` impl, and this is the one handler for which that is a statement
-    // rather than an omission. Which operation to gate is `resolved.op()`, and
-    // resolving the envelope needs the entity registry, which is built from the
-    // connector's schema guards — so the answer does not exist until after the
-    // connector is resolved, which is where `gate` runs from. `run` therefore
-    // applies it itself, and the property that matters is kept by construction
-    // there: the gate is checked before any pool is touched.
-
-    async fn run(
-        &self,
-        parsed: Self::Parsed,
-        conn: &ConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        let backends = Backends {
-            pool_cache: &self.pool_cache,
-            mongo_pool_cache: &self.mongo_pool_cache,
-            http_client: &self.http_client,
-            write_config: &self.write_config,
-            max_returning: self.max_returning,
-        };
-        let (result, outcome) = run_write(backends, &parsed, conn, call.connector, None).await?;
-        // F28: a partially applied bulk write is a 207, not a success.
-        Ok(Produced::with_outcome(result, outcome))
-    }
-}
-
 /// The write's answer and its outcome, `Success` or F28's partial 207,
 /// against a resolved `db` or `es` connector: the envelope resolved, its
 /// operation gated, then written. Shared by the dataflow-rs 3 handler and
@@ -197,7 +79,7 @@ async fn run_write(
     conn: &ConnectorConfig,
     connector: &str,
     run_deadline: Option<dataflow_rs::run::Instant>,
-) -> Result<(Value, TaskOutcome), HandlerError> {
+) -> Result<(Value, Outcome), HandlerError> {
     // F24: with no schema the registry rejects rather than passing every
     // name through, and the connector's own guards apply on top.
     let registry = build_entity_registry(parsed.schema.as_deref(), conn, connector)?;
@@ -211,7 +93,7 @@ async fn run_write(
         &registry,
         backends.write_config,
     )
-    .map_err(DataflowError::from)?;
+    .map_err(HandlerError::from)?;
 
     // The gate, before anything is dialled: a connector config can disable
     // individual ops (e.g. delete) regardless of what workflows ask for.
@@ -224,9 +106,12 @@ async fn run_write(
             // A MongoDB connection string carries no default database, so
             // this is the one branch that requires the task to name one.
             let database = parsed.database.as_deref().ok_or_else(|| {
-                DataflowError::Validation(format!("{NAME} requires 'database' field"))
+                HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!("{NAME} requires 'database' field"),
+                )
             })?;
-            let mw = query::backend::mongo::render_write(&resolved).map_err(DataflowError::from)?;
+            let mw = query::backend::mongo::render_write(&resolved).map_err(HandlerError::from)?;
             let client = backends
                 .mongo_pool_cache
                 .get_client(connector, db)
@@ -246,7 +131,7 @@ async fn run_write(
                 .map_err(to_exec_error)?
                 .into();
             let (sql, values) = query::backend::sql::render_write(&resolved, dialect)
-                .map_err(DataflowError::from)?;
+                .map_err(HandlerError::from)?;
             let pool = backends
                 .pool_cache
                 .get_pool(connector, db)
@@ -264,7 +149,7 @@ async fn run_write(
             .await?
         }
         ConnectorConfig::Es(es) => {
-            let ew = query::backend::es::render_write(&resolved).map_err(DataflowError::from)?;
+            let ew = query::backend::es::render_write(&resolved).map_err(HandlerError::from)?;
             run_es_write(backends.http_client, es, ew).await?
         }
         // `DataBackend` admits `db` and `es` and nothing else; the
@@ -318,17 +203,6 @@ pub struct DataWriteFunction {
     pub max_returning: usize,
 }
 
-/// A dataflow-rs 3 outcome of the shared write, as dataflow-rs 4's. Shared
-/// with `mongo_write`, whose writes answer in the same outcomes.
-pub(super) fn outcome(outcome: TaskOutcome) -> Outcome {
-    match outcome {
-        TaskOutcome::Success => Outcome::Ok,
-        TaskOutcome::Status(status) => Outcome::Status(status),
-        TaskOutcome::Skip => Outcome::Skip,
-        TaskOutcome::Halt => Outcome::Halt,
-    }
-}
-
 impl Function for DataWriteFunction {
     type Config = DataWriteConfig;
 
@@ -378,7 +252,7 @@ impl Function for DataWriteFunction {
             let (result, done) =
                 run_write(backends, &parsed, conn, &cfg.connector, run_deadline).await?;
             answer = Some(result);
-            Ok(outcome(done))
+            Ok(done)
         })
         .await?;
         if let Some(answer) = answer {
@@ -427,7 +301,7 @@ async fn execute_sql(
     budget: QueryBudget,
     format: crate::connector::sql_decode::RowFormat,
     max_returning: usize,
-) -> Result<(Value, TaskOutcome), DataflowError> {
+) -> Result<(Value, Outcome), HandlerError> {
     // The transaction is per driver, so the whole statement runs inside the
     // dispatch rather than behind an `Executor` bound — `sqlx::Any` was the
     // only thing that made one generic body possible, and it is what capped
@@ -483,7 +357,7 @@ async fn execute_sql(
     // SQL is the atomic member of the three write models, so its status is
     // never `partial`; it carries the key so one check works on every backend.
     out["status"] = json!("ok");
-    Ok((out, TaskOutcome::Success))
+    Ok((out, Outcome::Ok))
 }
 
 /// Settle a [`Bound`] into the arguments to send and whether the statement may
@@ -523,7 +397,7 @@ async fn run_write_statement<'e, E, R, F, G>(
     write_result: G,
     format: crate::connector::sql_decode::RowFormat,
     max_returning: usize,
-) -> Result<Value, DataflowError>
+) -> Result<Value, HandlerError>
 where
     E: sqlx::Executor<'e, Database = R>,
     R: sqlx::Database + sqlx::database::HasStatementCache,
@@ -587,12 +461,12 @@ async fn execute_mongo(
     client: &mongodb::Client,
     database: &str,
     mw: MongoWrite,
-) -> Result<(Value, TaskOutcome), DataflowError> {
+) -> Result<(Value, Outcome), HandlerError> {
     let db = client.database(database);
     match mw {
         MongoWrite::Insert { collection, docs } => {
             if docs.is_empty() {
-                return Ok((empty_insert_envelope(), TaskOutcome::Success));
+                return Ok((empty_insert_envelope(), Outcome::Ok));
             }
             let sent = docs.len();
             let coll = db.collection::<Document>(&collection);
@@ -652,7 +526,7 @@ async fn execute_mongo(
                     .await
                     .map_err(super::mongo_common::mongo_error)?
             };
-            Ok((update_envelope(&res), TaskOutcome::Success))
+            Ok((update_envelope(&res), Outcome::Ok))
         }
         MongoWrite::Delete { collection, filter } => {
             let coll = db.collection::<Document>(&collection);
@@ -660,7 +534,7 @@ async fn execute_mongo(
                 .delete_many(filter)
                 .await
                 .map_err(super::mongo_common::mongo_error)?;
-            Ok((delete_envelope(res.deleted_count), TaskOutcome::Success))
+            Ok((delete_envelope(res.deleted_count), Outcome::Ok))
         }
     }
 }
@@ -703,28 +577,33 @@ pub(super) fn mongo_write_errors(e: &mongodb::error::Error) -> Option<Vec<(usize
 pub(super) fn bulk_result(
     outcome: query::bulk::BulkOutcome,
     what: &str,
-) -> Result<(Value, TaskOutcome), DataflowError> {
+) -> Result<(Value, Outcome), HandlerError> {
     if outcome.nothing_applied() {
         let first = outcome.first_error().cloned().unwrap_or(Value::Null);
-        return Err(DataflowError::function_execution(
+        return Err(HandlerError::new(
+            ErrorClass::Backend,
             format!("{what} failed, no documents were written: {first}"),
-            None,
         ));
     }
     let task = if outcome.is_partial() {
-        TaskOutcome::Status(PARTIAL_STATUS)
+        Outcome::Status(PARTIAL_STATUS)
     } else {
-        TaskOutcome::Success
+        Outcome::Ok
     };
     Ok((outcome.to_json(), task))
 }
 
 /// Build `{base}/{segments...}?{query...}` with percent-encoded path segments
 /// (the document `_id` travels in the path).
-fn es_url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Result<String, DataflowError> {
+fn es_url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Result<String, HandlerError> {
     let mut url = url::Url::parse(base).map_err(to_exec_error)?;
     url.path_segments_mut()
-        .map_err(|_| DataflowError::Validation("es connector url cannot be a base".to_string()))?
+        .map_err(|_| {
+            HandlerError::new(
+                ErrorClass::CallerInput,
+                "es connector url cannot be a base".to_string(),
+            )
+        })?
         .pop_if_empty()
         .extend(segments);
     for (k, v) in query {
@@ -744,13 +623,13 @@ async fn run_es_write(
     client: &reqwest::Client,
     es: &EsConnectorConfig,
     ew: EsWrite,
-) -> Result<(Value, TaskOutcome), DataflowError> {
+) -> Result<(Value, Outcome), HandlerError> {
     match ew {
         EsWrite::BulkInsert { index, docs } => {
             if docs.is_empty() {
                 return Ok((
                     json!({ "status": "ok", "inserted": 0, "ids": [] }),
-                    TaskOutcome::Success,
+                    Outcome::Ok,
                 ));
             }
             let sent = docs.len();
@@ -774,14 +653,14 @@ async fn run_es_write(
             let resp = run_by_query(client, es, &index, "_update_by_query", &body).await?;
             Ok((
                 json!({ "status": "ok", "matched": resp["total"], "modified": resp["updated"] }),
-                TaskOutcome::Success,
+                Outcome::Ok,
             ))
         }
         EsWrite::DeleteByQuery { index, body } => {
             let resp = run_by_query(client, es, &index, "_delete_by_query", &body).await?;
             Ok((
                 json!({ "status": "ok", "deleted": resp["deleted"] }),
-                TaskOutcome::Success,
+                Outcome::Ok,
             ))
         }
         EsWrite::UpdateDoc { index, id, body } => {
@@ -804,7 +683,7 @@ async fn run_es_write(
                 Some("noop") => json!({ "status": "ok", "matched": 1, "modified": 0 }),
                 _ => json!({ "status": "ok", "matched": 1, "modified": 1 }),
             };
-            Ok((out, TaskOutcome::Success))
+            Ok((out, Outcome::Ok))
         }
         EsWrite::CreateDoc { index, id, doc } => {
             let url = es_url(
@@ -820,7 +699,7 @@ async fn run_es_write(
                 // The document exists — `action: "nothing"` semantics.
                 return Ok((
                     json!({ "status": "ok", "matched": 1, "modified": 0 }),
-                    TaskOutcome::Success,
+                    Outcome::Ok,
                 ));
             }
             if !status.is_success() {
@@ -828,7 +707,7 @@ async fn run_es_write(
             }
             Ok((
                 json!({ "status": "ok", "matched": 0, "modified": 0, "upserted_id": id }),
-                TaskOutcome::Success,
+                Outcome::Ok,
             ))
         }
     }
@@ -843,7 +722,7 @@ async fn run_by_query(
     index: &str,
     endpoint: &str,
     body: &Value,
-) -> Result<Value, DataflowError> {
+) -> Result<Value, HandlerError> {
     let url = es_url(&es.url, &[index, endpoint], &[("refresh", "true")])?;
     let req = es_request(client, es, reqwest::Method::POST, &url)
         .await?
@@ -863,9 +742,9 @@ async fn run_by_query(
             > 0;
     if failed {
         let preview = super::connector_helpers::format_upstream_error_preview(&resp);
-        return Err(DataflowError::function_execution(
+        return Err(HandlerError::new(
+            ErrorClass::Backend,
             format!("Elasticsearch {endpoint} had failures: {preview}"),
-            None,
         ));
     }
     Ok(resp)
@@ -1018,7 +897,7 @@ mod tests {
             "MongoDB insert",
         )
         .expect("a clean bulk is not an error");
-        assert_eq!(task, TaskOutcome::Success);
+        assert_eq!(task, Outcome::Ok);
         assert_eq!(out["status"], "ok", "{out}");
         assert_eq!(out["inserted"], 2, "{out}");
     }
@@ -1040,7 +919,7 @@ mod tests {
         .expect("a partial write must not fail the task");
         assert_eq!(
             task,
-            TaskOutcome::Status(PARTIAL_STATUS),
+            Outcome::Status(PARTIAL_STATUS),
             "a partial write must be visible in the audit trail as 207"
         );
         assert_eq!(out["status"], "partial", "{out}");
@@ -1067,8 +946,8 @@ mod tests {
         assert!(msg.contains("duplicate key"), "must name why: {msg}");
     }
 
-    // -- dataflow-rs 4: the config, and twins of the handler over in-memory
-    // SQLite and a mock Elasticsearch node --
+    // -- the config, and calls over in-memory SQLite and a mock
+    // Elasticsearch node, against 1.12's records --
 
     use std::time::Duration;
 
@@ -1081,22 +960,6 @@ mod tests {
         "CREATE TABLE users (id TEXT PRIMARY KEY, status TEXT, avatar BLOB)",
         "INSERT INTO users VALUES ('u1', 'active', X'00FF')",
     ];
-
-    fn handler(
-        pool_cache: Arc<SqlPoolCache>,
-        registry: Arc<ConnectorRegistry>,
-    ) -> dataflow_rs_v3::BoxedFunctionHandler {
-        Box::new(super::super::connector_handler::Connector(
-            DataWriteHandler {
-                pool_cache,
-                mongo_pool_cache: Arc::new(MongoPoolCache::new(8)),
-                http_client: reqwest::Client::new(),
-                registry,
-                write_config: crate::config::WriteConfig::default(),
-                max_returning: 1000,
-            },
-        ))
-    }
 
     fn function(
         pool_cache: Arc<SqlPoolCache>,
@@ -1122,35 +985,20 @@ mod tests {
         json!(rows)
     }
 
-    /// One task through each engine, each against a database of its own
-    /// seeded with [`SEED`], its connector configured with `config`; and
-    /// each database's rows after it.
-    async fn both(input: Value, data: Value, config: Value) -> ((Seen, Value), (Seen, Value)) {
-        let mut sides = Vec::new();
-        for v4 in [false, true] {
-            let db = twin::sqlite(config.clone(), SEED).await;
-            let (pool_cache, registry) = (db.pool_cache.clone(), db.registry.clone());
-            let seen = if v4 {
-                twin::v4(
-                    NAME,
-                    function(pool_cache, registry),
-                    input.clone(),
-                    data.clone(),
-                )
-                .await
-            } else {
-                twin::v3(
-                    NAME,
-                    handler(pool_cache, registry),
-                    input.clone(),
-                    data.clone(),
-                )
-                .await
-            };
-            sides.push((seen, users(&db).await));
-        }
-        let v4 = sides.pop().expect("v4");
-        (sides.pop().expect("v3"), v4)
+    /// One task against a database of its own seeded with [`SEED`], its
+    /// connector configured with `config`; and the database's rows after it.
+    async fn run(input: Value, data: Value, config: Value) -> (Seen, Value) {
+        let db = twin::sqlite(config, SEED).await;
+        let (pool_cache, registry) = (db.pool_cache.clone(), db.registry.clone());
+        let seen = twin::v4(NAME, function(pool_cache, registry), input, data).await;
+        (seen, users(&db).await)
+    }
+
+    /// `seen` and the rows after it, each against 1.12's record under `key`.
+    #[track_caller]
+    fn pinned(seen: &(Seen, Value), key: &str) {
+        twin::pinned(&seen.0, key);
+        twin::pinned(&Ok(seen.1.clone()), format!("{key}/rows"));
     }
 
     /// A `data_write` task of `envelope` over `users`, every column
@@ -1217,9 +1065,9 @@ mod tests {
 
     /// An insert, a bulk insert (in its transaction), an update folding
     /// params from the message, and a delete with `returning`, each
-    /// answered at `output`, each database ending the same.
+    /// answered at `output`, each database ending as 1.12's did.
     #[tokio::test]
-    async fn a_write_answers_as_on_v3() {
+    async fn a_write_answers_as_1_12_did() {
         let data = json!({"status": "banned", "who": "u1"});
         let mut update = write(json!({
             "op": "update", "target": "users",
@@ -1240,8 +1088,8 @@ mod tests {
                 "filter": {"==": [{"field": "id"}, "u1"]}, "returning": ["id", "avatar"]
             })),
         ] {
-            let (v3, v4) = both(input.clone(), data.clone(), json!({})).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), data.clone(), json!({})).await;
+            pinned(&v4, &format!("a_write_answers/{input}"));
             assert_eq!(v4.0.expect("written")["w"]["status"], "ok", "{input}");
         }
         // `binary_as` folds into a `returning` row's rendering.
@@ -1250,8 +1098,8 @@ mod tests {
             "filter": {"==": [{"field": "id"}, "u1"]}, "returning": ["avatar"]
         }));
         input["binary_as"] = json!({"var": "data.enc"});
-        let (v3, v4) = both(input, json!({"enc": "base64"}), json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({"enc": "base64"}), json!({})).await;
+        pinned(&v4, "a_write_answers/binary_as");
         assert_eq!(
             v4.0.expect("deleted")["w"]["returning"],
             json!([{"avatar": "AP8="}])
@@ -1287,8 +1135,9 @@ mod tests {
             (computed, json!({})),
             (binary, json!({})),
         ] {
-            let (v3, v4) = both(input.clone(), json!({"n": 1}), config).await;
-            assert_eq!(v4, v3, "{input}");
+            let key = format!("refusals/{input} {config}");
+            let v4 = run(input.clone(), json!({"n": 1}), config).await;
+            pinned(&v4, &key);
             assert!(v4.0.is_err(), "{input}");
             assert_eq!(v4.1, json!([["u1", "active"]]), "{input}");
         }
@@ -1316,7 +1165,7 @@ mod tests {
         (addr, seen)
     }
 
-    /// F28 on dataflow-rs 4: a bulk insert that applied some of its items
+    /// F28: a bulk insert that applied some of its items
     /// answers `Outcome::Status(207)` with the applied and failed items at
     /// `output`, where 1.12 recorded status 207; one that applied all is a
     /// plain success, and one that applied none a hard error, as on 1.12.
@@ -1328,57 +1177,43 @@ mod tests {
         let input = write(json!({"op": "insert", "target": "events", "values": [
             {"id": "a", "n": 1}, {"id": "b", "n": "x"}
         ]}));
-        for (items, outcome, status) in [
+        for (label, items, outcome) in [
             (
+                "partial",
                 json!([ok("a"), failed.clone()]),
                 Some(Outcome::Status(207)),
-                Some(207),
             ),
-            (json!([ok("a"), ok("b")]), Some(Outcome::Ok), Some(200)),
-            (json!([failed.clone(), failed]), None, None),
+            ("all", json!([ok("a"), ok("b")]), Some(Outcome::Ok)),
+            ("none", json!([failed.clone(), failed]), None),
         ] {
-            let mut sides = Vec::new();
-            for v4 in [false, true] {
-                let (addr, seen) = es_node(items.clone()).await;
-                let connector = json!({
-                    "type": "es", "url": format!("http://{addr}"), "allow_private_urls": true
-                });
-                let registry = twin::connectors(&[("db", connector)]).await;
-                let pool_cache = Arc::new(SqlPoolCache::new(8));
-                if v4 {
-                    let called = testing::call(function(pool_cache, registry), input.clone())
-                        .exprs(crate::engine::kit::test_exprs())
-                        .name(NAME)
-                        .await;
-                    let done = called.outcome.as_ref().ok().copied();
-                    assert_eq!(done, outcome, "{items}");
-                    sides.push((
-                        twin::seen(&called),
-                        seen.load(std::sync::atomic::Ordering::SeqCst),
-                    ));
-                } else {
-                    let (v3, audit) = twin::v3_status(
-                        NAME,
-                        handler(pool_cache, registry),
-                        input.clone(),
-                        Value::Null,
-                    )
-                    .await;
-                    if v3.is_ok() {
-                        assert_eq!(audit, status, "{items}");
-                    }
-                    sides.push((v3, seen.load(std::sync::atomic::Ordering::SeqCst)));
-                }
-            }
-            assert_eq!(sides[1], sides[0], "{items}");
-            assert_eq!(sides[1].1, 1, "one bulk request");
+            let (addr, requests) = es_node(items.clone()).await;
+            let connector = json!({
+                "type": "es", "url": format!("http://{addr}"), "allow_private_urls": true
+            });
+            let registry = twin::connectors(&[("db", connector)]).await;
+            let pool_cache = Arc::new(SqlPoolCache::new(8));
+            let called = testing::call(function(pool_cache, registry), input.clone())
+                .exprs(crate::engine::kit::test_exprs())
+                .name(NAME)
+                .await;
+            // The outcome is the status 1.12's audit entry recorded: 207 for
+            // a partial write, 200 for a whole one.
+            let done = called.outcome.as_ref().ok().copied();
+            assert_eq!(done, outcome, "{items}");
+            let v4 = twin::seen(&called);
+            twin::pinned(&v4, format!("a_partial_bulk_write/{label}"));
+            assert_eq!(
+                requests.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "one bulk request"
+            );
             match outcome {
                 Some(Outcome::Status(207)) => {
-                    let answer = sides[1].0.clone().expect("a partial write is not an error");
+                    let answer = v4.clone().expect("a partial write is not an error");
                     assert_eq!(answer["w"]["status"], "partial", "{answer}");
                 }
-                Some(_) => assert_eq!(sides[1].0.clone().expect("written")["w"]["status"], "ok"),
-                None => assert!(sides[1].0.is_err(), "nothing applied"),
+                Some(_) => assert_eq!(v4.clone().expect("written")["w"]["status"], "ok"),
+                None => assert!(v4.is_err(), "nothing applied"),
             }
         }
     }
@@ -1431,16 +1266,6 @@ mod tests {
         );
         for input in [insert_one(), bulk] {
             let db = twin::sqlite(config.clone(), SEED).await;
-            let held = db.pool.acquire().await.expect("the one connection");
-            let v3 = twin::v3(
-                NAME,
-                handler(db.pool_cache.clone(), db.registry.clone()),
-                input.clone(),
-                Value::Null,
-            )
-            .await;
-            drop(held);
-            let db = twin::sqlite(config.clone(), SEED).await;
             let _held = db.pool.acquire().await.expect("the one connection");
             let called = testing::call(
                 function(db.pool_cache.clone(), db.registry.clone()),
@@ -1451,7 +1276,10 @@ mod tests {
             .deadline(dataflow_rs::run::Instant::now() + Duration::from_secs(60))
             .await;
             let v4 = twin::seen(&called);
-            assert_eq!(v4, v3, "{input}");
+            twin::pinned(
+                &v4,
+                format!("a_query_timeout_before_the_run_deadline/{input}"),
+            );
             let failure = v4.expect_err("the write timed out");
             assert_eq!(failure.code, "TIMEOUT_ERROR");
             assert_eq!(

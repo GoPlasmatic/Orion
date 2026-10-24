@@ -147,7 +147,7 @@ pub enum OrionError {
     Storage(#[from] sqlx::Error),
 
     #[error("Engine error: {0}")]
-    Engine(#[from] dataflow_rs_v3::DataflowError),
+    Engine(#[from] dataflow_rs::Error),
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -206,7 +206,7 @@ impl OrionError {
     pub fn is_retryable(&self) -> bool {
         match self {
             OrionError::Storage(_) => true,
-            OrionError::Engine(e) => e.retryable(),
+            OrionError::Engine(e) => e.is_retryable(),
             OrionError::RateLimited(_) => true,
             OrionError::ServiceUnavailable { reason, .. } => reason.is_transient(),
             OrionError::Timeout { .. } => true,
@@ -547,20 +547,11 @@ impl IntoResponse for OrionError {
     }
 }
 
-/// The classifications Orion's function handlers attach to a
-/// [`dataflow_rs_v3::DataflowError::Service`].
-///
-/// These used to be **prefixes on the error message**, matched back out with
-/// `starts_with` in an order-sensitive `match`: `AsyncFunctionHandler` has to
-/// return a `DataflowError`, and before 3.1 that enum was closed with no
-/// extension point, so a handler's own classification had nowhere to live but
-/// the text. The markers leaked verbatim into `message.errors`, trace rows and
-/// DLQ payloads, because nothing on the async path stripped them.
-///
-/// `kind` is now a first-class field the engine never interprets, and it
-/// survives being wrapped in `FunctionExecution` for context. `detail` is the
-/// operator-only channel that `Display` never renders, so `to_string()` on one
-/// of these is always safe to hand to an untrusted caller.
+/// The codes Orion's functions give a service error
+/// ([`dataflow_rs::Error::service`]). The engine never interprets them; the
+/// error's `Display` is its caller-safe message alone, and the operator-only
+/// detail rides as its source, so `to_string()` on one of these is always
+/// safe to hand to an untrusted caller.
 pub mod kind {
     /// An open circuit breaker shed the request before it reached a connector.
     pub const CIRCUIT_OPEN: &str = "circuit_open";
@@ -609,22 +600,8 @@ pub enum IntegrityKind {
     Check,
 }
 
-/// Build the error a `channel_call` returns when the target channel's guards
-/// refused it, preserving the refusal's own meaning (over limit, forbidden,
-/// conflicting, or at capacity / fail-closed).
-pub fn channel_refused_dataflow_error(
-    status: StatusCode,
-    message: String,
-) -> dataflow_rs_v3::DataflowError {
-    let (kind, retryable) = channel_refusal(status);
-    dataflow_rs_v3::DataflowError::service(kind, message)
-        .retryable(retryable)
-        .build()
-}
-
-/// A guard refusal's kind, and whether a retry may clear it: the one table
-/// behind both [`channel_refused_dataflow_error`] and
-/// [`service::channel_refused`].
+/// A guard refusal's kind, and whether a retry may clear it: the table
+/// behind [`service::channel_refused`].
 fn channel_refusal(status: StatusCode) -> (&'static str, bool) {
     let kind = match status.as_u16() {
         429 => kind::CHANNEL_RATE_LIMITED,
@@ -637,75 +614,20 @@ fn channel_refusal(status: StatusCode) -> (&'static str, bool) {
     (kind, !matches!(status.as_u16(), 403 | 409))
 }
 
-/// Build the error an open breaker returns from a function handler.
-///
-/// The connector and channel names stay in the caller-facing message, as they
-/// were under the marker. That is arguably at odds with the redaction
-/// [`kind::CONNECTOR_DETAIL`] applies to the same kind of names, but it is the
-/// shipped behaviour of `503 CIRCUIT_OPEN` and changing it is a data-plane
-/// contract decision, not part of swapping the mechanism underneath it.
-pub fn circuit_open_dataflow_error(
-    connector: &str,
-    channel: &str,
-) -> dataflow_rs_v3::DataflowError {
-    dataflow_rs_v3::DataflowError::service(
-        kind::CIRCUIT_OPEN,
-        circuit_open_message(connector, channel),
-    )
-    // Retryable: a shed dependency is transient, and the DLQ retry loop must
-    // re-attempt it — by the time it does, the breaker may well have closed.
-    // Nothing retries it *within* the request: `guarded_handler` checks the
-    // breaker outside `retry_with_policy`, so this never drives that loop.
-    .retryable(true)
-    .build()
-}
-
-/// What an open breaker tells the caller, for both error types.
+/// What an open breaker tells the caller.
 fn circuit_open_message(connector: &str, channel: &str) -> String {
     format!("Circuit breaker open for connector '{connector}' on channel '{channel}'")
 }
 
-/// The caller-facing half of a [`kind::CONNECTOR_DETAIL`] refusal.
+/// The caller-facing half of a [`kind::CONNECTOR_DETAIL`] refusal: the caller
+/// gets this, and the text naming internal topology (G3) is logged and kept
+/// on the trace.
 const CONNECTOR_DETAIL_MESSAGE: &str = "Request validation failed";
-
-/// Build a refusal whose text names internal topology (G3).
-///
-/// The caller gets `public`; `detail` is logged and kept on the trace.
-pub fn connector_detail_error(detail: impl std::fmt::Display) -> dataflow_rs_v3::DataflowError {
-    dataflow_rs_v3::DataflowError::service(kind::CONNECTOR_DETAIL, CONNECTOR_DETAIL_MESSAGE)
-        .detail(detail.to_string())
-        .build()
-}
-
-/// Build the error a SQL handler returns when the backend refused a statement
-/// against a constraint the schema declares.
-///
-/// The caller-facing message is generic per kind and the driver's text rides
-/// in `detail`, for the same reason [`connector_detail_error`] exists: a
-/// driver message names tables, columns, index names and often the value that
-/// conflicted, and `engine_error_response` hands a `Service` error's
-/// `Display` straight to the caller.
-///
-/// Not retryable — the conflicting row will still be there next time. That is
-/// also what keeps an integrity failure off a connector's circuit breaker,
-/// since `guarded_handler` only counts failures that declare themselves
-/// retryable: a stream of duplicate submissions must not shed a healthy
-/// database.
-pub fn integrity_dataflow_error(
-    integrity: IntegrityKind,
-    detail: impl std::fmt::Display,
-) -> dataflow_rs_v3::DataflowError {
-    let (kind, message) = integrity.kind_and_message();
-    dataflow_rs_v3::DataflowError::service(kind, message)
-        .detail(detail.to_string())
-        .retryable(false)
-        .build()
-}
 
 impl IntegrityKind {
     /// The service kind a workflow branches on, and the generic sentence the
-    /// caller gets in place of the driver's text: the one table behind both
-    /// [`integrity_dataflow_error`] and [`service::integrity`].
+    /// caller gets in place of the driver's text: the table behind
+    /// [`service::integrity`].
     fn kind_and_message(self) -> (&'static str, &'static str) {
         match self {
             IntegrityKind::Unique => (
@@ -725,14 +647,11 @@ impl IntegrityKind {
     }
 }
 
-/// The four service-classified failures above, built as dataflow-rs 4
-/// errors for the v4 functions.
-///
-/// Each is its dataflow-rs 3 twin's kind, caller-facing message and
-/// retryability, read from the same table, so the code a client sees does not
-/// depend on which engine ran the task. v4's `Error` has no `detail` field:
-/// the operator-only text rides as the error's [`source`](std::error::Error::source),
-/// a [`ServiceDetail`](service::ServiceDetail), which its JSON never carries.
+/// The four service-classified failures Orion's functions raise, each with
+/// its kind, caller-facing message and retryability. An `Error` has no
+/// `detail` field: the operator-only text rides as the error's
+/// [`source`](std::error::Error::source), a
+/// [`ServiceDetail`](service::ServiceDetail), which its JSON never carries.
 pub mod service {
     use super::{IntegrityKind, StatusCode, kind};
     use dataflow_rs::Error;
@@ -762,14 +681,17 @@ pub mod service {
             .map(|detail| detail.0.as_str())
     }
 
-    /// [`super::channel_refused_dataflow_error`], as a v4 error.
+    /// A `channel_call` the target channel's guards refused, keeping the
+    /// refusal's meaning: over limit, forbidden, conflicting, or at capacity.
     pub fn channel_refused(status: StatusCode, message: String) -> Error {
         let (kind, retryable) = super::channel_refusal(status);
         Error::service(kind, message).with_retryable(retryable)
     }
 
-    /// [`super::circuit_open_dataflow_error`], as a v4 error: retryable, for
-    /// the reason given there.
+    /// An open breaker shed the request. Retryable: a shed dependency is
+    /// transient, and the DLQ retry loop must re-attempt it. The connector
+    /// and channel names stay in the caller-facing message, the shipped
+    /// behaviour of `503 CIRCUIT_OPEN`.
     pub fn circuit_open(connector: &str, channel: &str) -> Error {
         Error::service(
             kind::CIRCUIT_OPEN,
@@ -778,7 +700,7 @@ pub mod service {
         .with_retryable(true)
     }
 
-    /// [`super::connector_detail_error`], as a v4 error: the caller gets the
+    /// A refusal whose text names internal topology (G3): the caller gets the
     /// generic message, and `detail` rides as the source.
     pub fn connector_detail(detail: impl std::fmt::Display) -> Error {
         with_detail(
@@ -787,84 +709,100 @@ pub mod service {
         )
     }
 
-    /// [`super::integrity_dataflow_error`], as a v4 error: never retryable.
+    /// The backend refused a statement against a constraint its schema
+    /// declares. The caller gets a generic sentence per kind and the driver's
+    /// text rides as the source, since it names tables, columns and often the
+    /// conflicting value. Never retryable — the conflicting row is still
+    /// there next time — which also keeps it off a connector's breaker.
     pub fn integrity(integrity: IntegrityKind, detail: impl std::fmt::Display) -> Error {
         let (kind, message) = integrity.kind_and_message();
         with_detail(Error::service(kind, message), detail)
     }
 }
 
-/// Map DataflowError variants to appropriate HTTP status codes and sanitized messages.
-fn engine_error_response(e: &dataflow_rs_v3::DataflowError) -> (StatusCode, &'static str, String) {
-    use dataflow_rs_v3::DataflowError;
+/// The label a class code's message opens with, written by
+/// `engine::HandlerError`: taken off, the message is what the caller reads.
+fn without_label<'m>(message: &'m str, label: &str) -> &'m str {
+    message.strip_prefix(label).unwrap_or(message)
+}
 
-    // A handler-classified failure answers for itself, with no ordering hazard
-    // between guards and no risk of a genuine downstream 503 relayed by
-    // `http_call` being mistaken for one of Orion's own refusals.
-    //
-    // `Display` on a `Service` error is the caller-safe message alone, so
-    // `to_string()` here can never leak the operator-only `detail`.
-    if let Some(k) = e.kind() {
-        let (status, code) = match k {
-            kind::CIRCUIT_OPEN => (StatusCode::SERVICE_UNAVAILABLE, codes::CIRCUIT_OPEN),
-            kind::CONNECTOR_DETAIL => (StatusCode::BAD_REQUEST, codes::VALIDATION_ERROR),
-            kind::CHANNEL_RATE_LIMITED => (StatusCode::TOO_MANY_REQUESTS, codes::RATE_LIMITED),
-            kind::CHANNEL_FORBIDDEN => (StatusCode::FORBIDDEN, codes::FORBIDDEN),
-            kind::CHANNEL_CONFLICT => (StatusCode::CONFLICT, codes::CONFLICT),
-            kind::CHANNEL_UNAVAILABLE => {
-                (StatusCode::SERVICE_UNAVAILABLE, codes::SERVICE_UNAVAILABLE)
-            }
-            // A duplicate or a dangling reference is a conflict of state: the
-            // request was well-formed and the caller retries it differently.
-            kind::INTEGRITY_UNIQUE | kind::INTEGRITY_FOREIGN_KEY => {
-                (StatusCode::CONFLICT, codes::CONFLICT)
-            }
-            // A missing required value or a failed CHECK is a value the caller
-            // sent wrong — the same shape as a failed field rule, so the same
-            // answer.
-            kind::INTEGRITY_NOT_NULL | kind::INTEGRITY_CHECK => {
-                (StatusCode::BAD_REQUEST, codes::VALIDATION_ERROR)
-            }
-            _ => {
-                tracing::error!(kind = %k, "unhandled service error kind; mapped to 500");
-                (StatusCode::INTERNAL_SERVER_ERROR, codes::ENGINE_ERROR)
-            }
-        };
-        return (status, code, e.to_string());
-    }
+/// Map an engine error to its HTTP status, code and caller-safe message.
+fn engine_error_response(e: &dataflow_rs::Error) -> (StatusCode, &'static str, String) {
+    use dataflow_rs::ErrorKind;
 
-    match e {
-        // Untagged validation messages are workflow-structural and safe —
-        // "max call depth 10 exceeded", "'delete' has no filter" — and stay
-        // verbatim, because they are what makes a misconfigured workflow
-        // diagnosable from the response. Anything naming a connector goes
-        // through `connector_detail_error` and is handled above.
-        DataflowError::Validation(msg) => (
+    let message = e.message();
+    match e.kind() {
+        // A function-classified failure answers for itself, with no ordering
+        // hazard between guards and no risk of a genuine downstream 503
+        // relayed by `http_call` being mistaken for one of Orion's own
+        // refusals.
+        ErrorKind::Service { code } => {
+            let (status, wire) = match code.as_ref() {
+                kind::CIRCUIT_OPEN => (StatusCode::SERVICE_UNAVAILABLE, codes::CIRCUIT_OPEN),
+                kind::CONNECTOR_DETAIL => (StatusCode::BAD_REQUEST, codes::VALIDATION_ERROR),
+                kind::CHANNEL_RATE_LIMITED => (StatusCode::TOO_MANY_REQUESTS, codes::RATE_LIMITED),
+                kind::CHANNEL_FORBIDDEN => (StatusCode::FORBIDDEN, codes::FORBIDDEN),
+                kind::CHANNEL_CONFLICT => (StatusCode::CONFLICT, codes::CONFLICT),
+                kind::CHANNEL_UNAVAILABLE => {
+                    (StatusCode::SERVICE_UNAVAILABLE, codes::SERVICE_UNAVAILABLE)
+                }
+                // A duplicate or a dangling reference is a conflict of state:
+                // the request was well-formed and the caller retries it
+                // differently.
+                kind::INTEGRITY_UNIQUE | kind::INTEGRITY_FOREIGN_KEY => {
+                    (StatusCode::CONFLICT, codes::CONFLICT)
+                }
+                // A missing required value or a failed CHECK is a value the
+                // caller sent wrong — the same shape as a failed field rule.
+                kind::INTEGRITY_NOT_NULL | kind::INTEGRITY_CHECK => {
+                    (StatusCode::BAD_REQUEST, codes::VALIDATION_ERROR)
+                }
+                // A caller-fixable refusal or a configured cap: workflow
+                // structural and safe — "max call depth 10 exceeded", "'delete'
+                // has no filter" — and verbatim, because it is what makes a
+                // misconfigured workflow diagnosable from the response.
+                "VALIDATION_ERROR" => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        codes::VALIDATION_ERROR,
+                        without_label(message, "Validation error: ").to_string(),
+                    );
+                }
+                // G13: same wire code as `OrionError::Timeout` — a caller keying
+                // on the 504 `code` must not have to know which layer timed out.
+                "TIMEOUT_ERROR" => {
+                    return (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        codes::TIMEOUT,
+                        without_label(message, "Timeout error: ").to_string(),
+                    );
+                }
+                other => {
+                    tracing::error!(code = %other, error = %e, "engine error mapped to 500");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        codes::ENGINE_ERROR,
+                        "An internal engine error occurred".to_string(),
+                    );
+                }
+            };
+            (status, wire, message.to_string())
+        }
+        // `engine.ops_budget` crossed: a configured cap, so the same `400`
+        // with the message preserved that every other limit gets, because
+        // "N operations charged against a budget of M" is the guidance.
+        ErrorKind::Budget => (
             StatusCode::BAD_REQUEST,
             codes::VALIDATION_ERROR,
-            msg.clone(),
+            message.to_string(),
         ),
-        // G13: same wire code as `OrionError::Timeout` — a caller keying on
-        // the 504 `code` must not have to know which layer timed out.
-        DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, codes::TIMEOUT, msg.clone()),
-        // `engine.ops_budget` crossed while a handler resolved one of its
-        // template fields or a model adapter. A configured cap, like a result
-        // set over `max_limit`: the same `400` with the message preserved that
-        // every other `Limit`-class refusal gets, because "N operations
-        // charged against a budget of M" is the guidance, and the task-level
-        // code `BUDGET_EXCEEDED` stays on the trace. It used to fall through
-        // to the arm below and go out as a sanitised 500.
-        DataflowError::BudgetExceeded(msg) => (
-            StatusCode::BAD_REQUEST,
-            codes::VALIDATION_ERROR,
-            msg.clone(),
+        ErrorKind::TimedOut => (
+            StatusCode::GATEWAY_TIMEOUT,
+            codes::TIMEOUT,
+            message.to_string(),
         ),
-        other => {
-            // Surface unhandled DataflowError variants so a dataflow-rs upgrade
-            // that adds new variants doesn't silently degrade them to a generic
-            // 500. Add an explicit arm above if a variant deserves its own
-            // status/code.
-            tracing::error!(error = ?other, "unhandled DataflowError variant; mapped to 500");
+        _ => {
+            tracing::error!(error = %e, "engine error mapped to 500");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::ENGINE_ERROR,
@@ -914,17 +852,20 @@ mod tests {
 
     #[test]
     fn test_engine_validation_returns_400() {
-        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::Validation(
-            "bad input".to_string(),
-        ));
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let err = OrionError::Engine(
+            crate::engine::HandlerError::new(crate::engine::ErrorClass::CallerInput, "bad input")
+                .into(),
+        );
+        let (status, code, message) = err.response_parts();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, codes::VALIDATION_ERROR);
+        assert_eq!(message, "bad input", "the class label is taken off");
     }
 
     #[test]
     fn test_engine_budget_returns_400_with_the_message() {
-        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::BudgetExceeded(
-            "crypto: Operation budget exceeded: 86 charged against 20".to_string(),
+        let err = OrionError::Engine(dataflow_rs::Error::budget(
+            "crypto: Operation budget exceeded: 86 charged against 20",
         ));
         let (status, code, message) = err.response_parts();
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -934,11 +875,14 @@ mod tests {
 
     #[test]
     fn test_engine_timeout_returns_504() {
-        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::Timeout(
-            "timed out".to_string(),
-        ));
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        let err = OrionError::Engine(
+            crate::engine::HandlerError::new(crate::engine::ErrorClass::Timeout, "timed out")
+                .into(),
+        );
+        let (status, code, message) = err.response_parts();
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(code, codes::TIMEOUT);
+        assert_eq!(message, "timed out", "the class label is taken off");
     }
 
     #[test]
@@ -1143,11 +1087,14 @@ mod tests {
 
     #[test]
     fn test_engine_generic_error_status() {
-        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::Unknown(
-            "unknown issue".to_string(),
+        let err = OrionError::Engine(dataflow_rs::Error::service(
+            "UNKNOWN_ERROR",
+            "unknown issue",
         ));
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let (status, code, message) = err.response_parts();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(code, codes::ENGINE_ERROR);
+        assert_eq!(message, "An internal engine error occurred", "sanitised");
     }
 
     #[test]
@@ -1321,9 +1268,9 @@ mod tests {
                 "STORAGE_ERROR",
             ),
             // `Engine` delegates to `engine_error_response`; the arms that
-            // branch on the inner DataflowError are covered by the tests above.
+            // branch on the inner engine error are covered by the tests above.
             (
-                OrionError::Engine(dataflow_rs_v3::DataflowError::Unknown("x".into())),
+                OrionError::Engine(dataflow_rs::Error::service("UNKNOWN_ERROR", "x")),
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "ENGINE_ERROR",
             ),
@@ -1518,7 +1465,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_circuit_open_returns_503_with_code() {
-        let err = OrionError::Engine(circuit_open_dataflow_error("orders-api", "orders"));
+        let err = OrionError::Engine(service::circuit_open("orders-api", "orders"));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = body_to_value(response).await;
@@ -1543,7 +1490,7 @@ mod tests {
             (StatusCode::FORBIDDEN, "FORBIDDEN"),
             (StatusCode::CONFLICT, "CONFLICT"),
         ] {
-            let err = OrionError::Engine(channel_refused_dataflow_error(
+            let err = OrionError::Engine(service::channel_refused(
                 status,
                 "channel_call to 'billing': refused".to_string(),
             ));
@@ -1560,22 +1507,19 @@ mod tests {
         }
     }
 
-    /// A plain `Http` error from a downstream call keeps the generic engine
+    /// An HTTP error from a downstream call keeps the generic engine
     /// mapping — the `kind`, not the status, is what identifies an Orion-side
     /// channel refusal, and a relayed 429 carries none.
     #[tokio::test]
     async fn test_downstream_429_is_not_reported_as_a_channel_refusal() {
-        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::http(
-            429,
-            "Too Many Requests",
-        ));
+        let err = OrionError::Engine(crate::engine::http_error(429, "Too Many Requests"));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
     fn test_engine_circuit_open_is_retryable() {
-        let err = OrionError::Engine(circuit_open_dataflow_error("api", "orders"));
+        let err = OrionError::Engine(service::circuit_open("api", "orders"));
         assert!(
             err.is_retryable(),
             "DLQ retry must classify a shed dependency as retryable"
@@ -1585,10 +1529,7 @@ mod tests {
     #[tokio::test]
     async fn test_downstream_503_is_not_reported_as_circuit_open() {
         // A genuine 503 relayed by http_call keeps the generic engine mapping.
-        let err = OrionError::Engine(dataflow_rs_v3::DataflowError::http(
-            503,
-            "Service Unavailable",
-        ));
+        let err = OrionError::Engine(crate::engine::http_error(503, "Service Unavailable"));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = body_to_value(response).await;
@@ -1606,12 +1547,12 @@ mod tests {
     #[test]
     fn no_classification_token_reaches_persisted_error_text() {
         let errors = [
-            circuit_open_dataflow_error("billing-api", "orders"),
-            channel_refused_dataflow_error(
+            service::circuit_open("billing-api", "orders"),
+            service::channel_refused(
                 StatusCode::TOO_MANY_REQUESTS,
                 "channel_call to 'billing': over limit".to_string(),
             ),
-            connector_detail_error("operation 'delete' is disabled on connector 'prod-billing'"),
+            service::connector_detail("operation 'delete' is disabled on connector 'prod-billing'"),
         ];
         for e in errors {
             // This is exactly what the DLQ and the failed-trace row store.
@@ -1620,7 +1561,10 @@ mod tests {
                 !persisted.contains("orion."),
                 "classification leaked into persisted text: {persisted}"
             );
-            assert!(e.kind().is_some(), "each of these must carry a kind");
+            assert!(
+                matches!(e.kind(), dataflow_rs::ErrorKind::Service { .. }),
+                "each of these must carry a kind"
+            );
         }
     }
 
@@ -1630,8 +1574,8 @@ mod tests {
     #[tokio::test]
     async fn connector_detail_is_kept_off_the_wire_but_not_lost() {
         let secret = "operation 'delete' is disabled on connector 'prod-billing-db'";
-        let e = connector_detail_error(secret);
-        assert_eq!(e.detail(), Some(secret));
+        let e = service::connector_detail(secret);
+        assert_eq!(service::detail_of(&e), Some(secret));
         assert!(!e.to_string().contains("prod-billing-db"));
 
         let response = OrionError::Engine(e).into_response();
@@ -1673,22 +1617,12 @@ mod tests {
 }
 
 #[cfg(test)]
-mod service_twin_tests {
+mod service_error_tests {
     use super::*;
 
-    /// What a client could see of a dataflow-rs 3 error: its recorded code,
-    /// its caller-facing message, its retryability and its operator-only
-    /// detail.
-    fn v3_seen(e: dataflow_rs_v3::DataflowError) -> (String, String, bool, Option<String>) {
-        let retryable = e.retryable();
-        let detail = e.detail().map(str::to_string);
-        let message = e.to_string();
-        let code = dataflow_rs_v3::ErrorInfo::new(None, None, e).code;
-        (code, message, retryable, detail)
-    }
-
-    /// The same four facts of a dataflow-rs 4 error.
-    fn v4_seen(e: &dataflow_rs::Error) -> (String, String, bool, Option<String>) {
+    /// What a client could see of an error: its recorded code, its
+    /// caller-facing message, its retryability and its operator-only detail.
+    fn seen(e: &dataflow_rs::Error) -> (String, String, bool, Option<String>) {
         (
             e.code().to_string(),
             e.message().to_string(),
@@ -1697,41 +1631,144 @@ mod service_twin_tests {
         )
     }
 
+    fn facts(
+        code: &str,
+        message: &str,
+        retryable: bool,
+        detail: Option<&str>,
+    ) -> (String, String, bool, Option<String>) {
+        (
+            code.to_string(),
+            message.to_string(),
+            retryable,
+            detail.map(str::to_string),
+        )
+    }
+
+    /// Each service error records 1.12's code, message, retryability and
+    /// detail, and answers with the status and wire code 1.12 gave it.
     #[test]
-    fn each_service_error_is_its_v3_twin() {
-        for status in [
-            StatusCode::TOO_MANY_REQUESTS,
-            StatusCode::FORBIDDEN,
-            StatusCode::CONFLICT,
-            StatusCode::SERVICE_UNAVAILABLE,
-            StatusCode::BAD_GATEWAY,
+    fn each_service_error_is_what_1_12_recorded() {
+        for (status, code, retryable, wire) in [
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                kind::CHANNEL_RATE_LIMITED,
+                true,
+                codes::RATE_LIMITED,
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                kind::CHANNEL_FORBIDDEN,
+                false,
+                codes::FORBIDDEN,
+            ),
+            (
+                StatusCode::CONFLICT,
+                kind::CHANNEL_CONFLICT,
+                false,
+                codes::CONFLICT,
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                kind::CHANNEL_UNAVAILABLE,
+                true,
+                codes::SERVICE_UNAVAILABLE,
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                kind::CHANNEL_UNAVAILABLE,
+                true,
+                codes::SERVICE_UNAVAILABLE,
+            ),
         ] {
+            let e = service::channel_refused(status, "refused".into());
             assert_eq!(
-                v4_seen(&service::channel_refused(status, "refused".into())),
-                v3_seen(channel_refused_dataflow_error(status, "refused".into())),
+                seen(&e),
+                facts(code, "refused", retryable, None),
                 "{status}"
             );
-        }
-        assert_eq!(
-            v4_seen(&service::circuit_open("billing", "orders")),
-            v3_seen(circuit_open_dataflow_error("billing", "orders")),
-        );
-        assert_eq!(
-            v4_seen(&service::connector_detail("operation 'read' is disabled")),
-            v3_seen(connector_detail_error("operation 'read' is disabled")),
-        );
-        for integrity in [
-            IntegrityKind::Unique,
-            IntegrityKind::ForeignKey,
-            IntegrityKind::NotNull,
-            IntegrityKind::Check,
-        ] {
+            let (answered, wire_code, message) = engine_error_response(&e);
+            let expected = if status == StatusCode::BAD_GATEWAY {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                status
+            };
             assert_eq!(
-                v4_seen(&service::integrity(integrity, "UNIQUE constraint failed")),
-                v3_seen(integrity_dataflow_error(
-                    integrity,
-                    "UNIQUE constraint failed"
-                )),
+                (answered, wire_code, message.as_str()),
+                (expected, wire, "refused")
+            );
+        }
+
+        let e = service::circuit_open("billing", "orders");
+        let message = "Circuit breaker open for connector 'billing' on channel 'orders'";
+        assert_eq!(seen(&e), facts(kind::CIRCUIT_OPEN, message, true, None));
+        assert_eq!(
+            engine_error_response(&e),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                codes::CIRCUIT_OPEN,
+                message.to_string()
+            )
+        );
+
+        let e = service::connector_detail("operation 'read' is disabled");
+        assert_eq!(
+            seen(&e),
+            facts(
+                kind::CONNECTOR_DETAIL,
+                "Request validation failed",
+                false,
+                Some("operation 'read' is disabled")
+            )
+        );
+        assert_eq!(
+            engine_error_response(&e),
+            (
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_ERROR,
+                "Request validation failed".to_string()
+            )
+        );
+
+        for (integrity, code, message, status, wire) in [
+            (
+                IntegrityKind::Unique,
+                kind::INTEGRITY_UNIQUE,
+                "The request conflicts with an existing record",
+                StatusCode::CONFLICT,
+                codes::CONFLICT,
+            ),
+            (
+                IntegrityKind::ForeignKey,
+                kind::INTEGRITY_FOREIGN_KEY,
+                "The request references a record that does not exist",
+                StatusCode::CONFLICT,
+                codes::CONFLICT,
+            ),
+            (
+                IntegrityKind::NotNull,
+                kind::INTEGRITY_NOT_NULL,
+                "A required value is missing",
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_ERROR,
+            ),
+            (
+                IntegrityKind::Check,
+                kind::INTEGRITY_CHECK,
+                "A value in the request is not allowed",
+                StatusCode::BAD_REQUEST,
+                codes::VALIDATION_ERROR,
+            ),
+        ] {
+            let e = service::integrity(integrity, "UNIQUE constraint failed");
+            assert_eq!(
+                seen(&e),
+                facts(code, message, false, Some("UNIQUE constraint failed")),
+                "{integrity:?}"
+            );
+            assert_eq!(
+                engine_error_response(&e),
+                (status, wire, message.to_string()),
                 "{integrity:?}"
             );
         }

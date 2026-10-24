@@ -51,7 +51,7 @@ test_a_caller_cannot_forge_a_var() {
     cli_quiet engine reload
 
     local response
-    response=$(curl -sf -X POST "$ORION_URL/api/v1/data/forge-ch" \
+    response=$(curl -sf -X POST "$ORION_URL/api/v2/data/forge-ch" \
         -H 'content-type: application/json' \
         -d '{"data":{},"metadata":{"vars":{"topic_prefix":"attacker"}}}')
     assert_json_eq "$response" '.data.topic' 'eu-west.order.placed'
@@ -93,13 +93,13 @@ test_a_secret_reaches_no_response_or_trace() {
         "the secret reached the response body"
 
     local traces
-    traces=$(curl -sf "$ORION_URL/api/v1/admin/traces?limit=50")
+    traces=$(curl -sf "$ORION_URL/api/v2/admin/traces?limit=50")
     assert_not_contains "$traces" "$ORION_SECRET_E2E_PARTNER_HMAC" \
         "the secret reached a trace listing"
 
     local trace_id detail
     trace_id=$(echo "$traces" | jq -r '.data[0].id')
-    detail=$(curl -sf "$ORION_URL/api/v1/admin/traces/$trace_id")
+    detail=$(curl -sf "$ORION_URL/api/v2/admin/traces/$trace_id")
     assert_not_contains "$detail" "$ORION_SECRET_E2E_PARTNER_HMAC" \
         "the secret reached a per-step trace"
 

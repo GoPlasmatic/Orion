@@ -337,7 +337,7 @@ async fn test_error_response_is_not_cached() {
             json!([{
                 "id": "t1",
                 "name": "Read",
-                "continue_on_error": true,
+                "on_failure": "continue",
                 "function": { "name": "db_read", "input": {
                     "connector": "n2-flaky-db",
                     "query": "SELECT 1",
@@ -361,7 +361,7 @@ async fn test_error_response_is_not_cached() {
 
     let payload = json!({"data": {"k": "v"}});
 
-    // First request fails at the task level (continue_on_error → 200 + errors[]).
+    // First request fails at the task level (on_failure: continue → 200 + errors[]).
     let resp = app
         .clone()
         .oneshot(json_request(

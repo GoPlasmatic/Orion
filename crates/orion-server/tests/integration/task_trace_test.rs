@@ -1,11 +1,11 @@
 //! A2 (Tier-1 ergonomics): per-task trace data (intermediate inputs/outputs).
 //!
 //! Verifies that:
-//!   - the dry-run `/test` endpoint already returns per-step `message` snapshots
-//!     from `dataflow_rs_v3::ExecutionTrace` (no code change — locks in the behaviour)
+//!   - the dry-run `/test` endpoint returns the run's trace: the context the
+//!     run started from, and each step with the changes it made
 //!   - opting into `config.tracing.task_details = true` causes the engine to
-//!     capture an `ExecutionTrace` and persist it as `task_trace_json` on the
-//!     resulting trace row
+//!     capture that trace and persist it as `task_trace_json` on the resulting
+//!     trace row
 
 use crate::common::{
     body_json, create_and_activate_channel_with_config, create_and_activate_workflow, json_request,
@@ -16,7 +16,7 @@ use serde_json::json;
 use tower::ServiceExt;
 
 #[tokio::test]
-async fn dry_run_test_endpoint_returns_per_step_message_snapshots() {
+async fn dry_run_test_endpoint_returns_a_replayable_trace() {
     let app = test_app().await;
     // Create a draft workflow with a single log task (avoids needing connectors).
     let create_resp = app
@@ -51,9 +51,17 @@ async fn dry_run_test_endpoint_returns_per_step_message_snapshots() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
 
-    // dataflow_rs_v3::ExecutionTrace exposes steps[] with per-step task_id +
-    // message snapshot. Confirm the shape so workflow authors can rely on it.
-    let steps = body["data"]["trace"]["steps"]
+    // The trace is `{initial, steps, truncated}`: the context the run started
+    // from, then each step with its task id and the changes it made, which
+    // replay to the context after it. Confirm the shape so tooling can rely
+    // on it.
+    let trace = &body["data"]["trace"];
+    assert_eq!(
+        trace["initial"]["data"],
+        json!({"x": 1}),
+        "the run starts from the request's data: {trace}"
+    );
+    let steps = trace["steps"]
         .as_array()
         .expect("trace.steps must be an array");
     assert!(
@@ -65,11 +73,11 @@ async fn dry_run_test_endpoint_returns_per_step_message_snapshots() {
         .find(|s| s["result"] == "executed")
         .expect("expected at least one executed step");
     assert_eq!(executed["task_id"], "t1");
-    // The full per-step message snapshot is included — this is what makes
-    // multi-step workflows debuggable.
+    // The step's changes are what make a multi-step workflow debuggable:
+    // replayed from `initial`, they give the context after every step.
     assert!(
-        executed.get("message").is_some(),
-        "executed step must include `message` snapshot, got {executed:?}"
+        executed["changes"].is_array(),
+        "executed step must carry its changes, got {executed:?}"
     );
 }
 

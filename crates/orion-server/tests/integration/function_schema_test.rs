@@ -169,16 +169,14 @@ async fn the_catalogue_matches_what_the_engine_can_dispatch() {
     let state = crate::common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
 
-    let dispatchable: BTreeSet<String> = state
-        .runtime
-        .load()
-        .engine
-        .dispatchable_functions()
-        .flat_map(|f| {
-            std::iter::once(f.name.to_string())
-                .chain(f.aliases.iter().map(|a| a.to_string()))
-                .collect::<Vec<_>>()
-        })
+    // What the engine dispatches: its registry's catalogue.
+    let generation = state.runtime.load();
+    let engine = generation.engine.as_ref().expect("an engine");
+    let dispatchable: BTreeSet<String> = engine
+        .program()
+        .registry()
+        .catalogue()
+        .map(|f| f.name.to_string())
         .collect();
 
     let resp = app
@@ -191,21 +189,11 @@ async fn the_catalogue_matches_what_the_engine_can_dispatch() {
 
     let catalogued: BTreeSet<String> = data
         .iter()
-        .flat_map(|f| {
-            let name = f["name"]
+        .map(|f| {
+            f["name"]
                 .as_str()
                 .expect("every entry has a name")
-                .to_string();
-            let aliases = f["aliases"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            std::iter::once(name).chain(aliases)
+                .to_string()
         })
         .collect();
 
@@ -229,8 +217,8 @@ async fn the_catalogue_matches_what_the_engine_can_dispatch() {
 /// `FunctionRegistry::contains` decides whether a workflow may *name* a
 /// function, and it has to answer without an engine — validation runs before
 /// one exists, and the registry is Orion's declaration of what it registers.
-/// dataflow-rs 3.7's `can_dispatch` answers the same question against a real
-/// registry, so the two can finally be checked against each other instead of
+/// The serving engine's registry catalogue answers the same question against
+/// a real registry, so the two can be checked against each other instead of
 /// only against themselves.
 ///
 /// Both directions matter and each has bitten before. A name create accepts
@@ -244,22 +232,27 @@ async fn the_create_time_gate_agrees_with_the_running_engine() {
 
     let state = crate::common::test_state_with_config(orion::config::AppConfig::default()).await;
     let generation = state.runtime.load();
-    let engine = &generation.engine;
+    let engine = generation.engine.as_ref().expect("an engine");
+    let catalogue: BTreeSet<&str> = engine
+        .program()
+        .registry()
+        .catalogue()
+        .map(|f| f.name)
+        .collect();
+    let builtin = orion::engine::FunctionRegistry::builtin();
 
-    for name in orion::engine::FunctionRegistry::builtin().accepted_names() {
+    for name in builtin.names() {
         assert!(
-            engine.can_dispatch(name),
+            catalogue.contains(name),
             "create accepts '{name}', but the serving engine would fail every \
              message that reaches it with FunctionNotFound"
         );
     }
 
-    // The other way: every spelling the gate accepts, aliases included, so
-    // whichever one the engine reports as canonical is found.
-    let declared: BTreeSet<&str> = orion::engine::FunctionRegistry::builtin()
-        .accepted_names()
-        .collect();
-    for f in engine.dispatchable_functions() {
+    // The other way: every name the engine dispatches is one the gate
+    // accepts.
+    let declared: BTreeSet<&str> = builtin.names().collect();
+    for f in engine.program().registry().catalogue() {
         assert!(
             declared.contains(f.name),
             "the engine dispatches '{}', but create would refuse a workflow \
@@ -291,16 +284,16 @@ async fn list_functions_serves_every_valid_name() {
     );
     assert_eq!(map["category"], "data");
 
-    // The alias rides on its function rather than becoming a second entry.
+    // `validate`, 1.12's spelling of `validation`, is not served.
     assert!(
         !names.contains(&"validate"),
-        "an alias must not be catalogued as its own function"
+        "1.12's spelling must not be catalogued"
     );
     let validation = data
         .iter()
         .find(|f| f["name"] == "validation")
         .expect("validation");
-    assert_eq!(validation["aliases"][0], "validate");
+    assert!(validation.get("aliases").is_none(), "{validation}");
 
     // An Orion handler is unchanged: source `orion`, schema present.
     let cache_read = data

@@ -17,16 +17,13 @@
 //! [`FunctionRegistry::builtin`] converts them into owned entries once and is
 //! what every offline surface and the boot generation read.
 //!
-//! What the registry deliberately does **not** own is the handlers. An
-//! [`EngineBuilder::with_handlers`] takes boxed handlers by value and a
+//! What the registry deliberately does **not** own is the functions. A
 //! generation builds more than one engine (the serving one, the
 //! `POST /workflows/{id}/test` one), so an entry describes a function and
-//! whoever builds an engine supplies the handler behind it — from
-//! `build_custom_functions` for an Orion entry, from a loaded plugin for a
-//! plugin entry. The `functions_docs_drift_test` and `function_schema_test`
+//! whoever builds an engine's `dataflow_rs::Registry` supplies the function
+//! behind it — `engine::register_functions` for an Orion entry, a loaded
+//! plugin for a plugin entry. The `functions_docs_drift_test` and `function_schema_test`
 //! guards pin the two halves to each other against a live engine.
-//!
-//! [`EngineBuilder::with_handlers`]: dataflow_rs_v3::engine::EngineBuilder::with_handlers
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock, RwLock};
@@ -56,13 +53,12 @@ pub struct FieldSpec {
     pub resolvable: bool,
     pub secret_at: &'static [&'static str],
     pub template_at: &'static [&'static str],
-    pub alias: Option<String>,
 }
 
 impl FieldSpec {
-    /// Whether `key` names this field, under either spelling.
+    /// Whether `key` names this field.
     pub fn answers_to(&self, key: &str) -> bool {
-        self.name == key || self.alias.as_deref() == Some(key)
+        self.name == key
     }
 
     /// Whether the field's own value is a `Template`, so its authored JSON may
@@ -101,7 +97,6 @@ impl From<&FieldSchema> for FieldSpec {
             resolvable: f.resolvable,
             secret_at: f.secret_at,
             template_at: f.template_at,
-            alias: f.alias.map(str::to_string),
         }
     }
 }
@@ -125,9 +120,6 @@ pub struct FunctionEntry {
     pub description: String,
     pub category: String,
     pub source: Source,
-    /// Other accepted spellings of the name. An alias resolves to this entry
-    /// and is never catalogued as an entry of its own.
-    pub aliases: Vec<String>,
     /// `None` for an engine built-in, which declares no schema and is not
     /// input-validated at create time. A consumer branches on presence.
     pub input_fields: Option<Vec<FieldSpec>>,
@@ -147,7 +139,6 @@ impl FunctionEntry {
             description: schema.description.to_string(),
             category: schema.category.to_string(),
             source: Source::Orion,
-            aliases: Vec::new(),
             input_fields: Some(schema.input_fields.iter().map(FieldSpec::from).collect()),
             writes: schema.writes,
             retry_safety: schema.retry_safety,
@@ -162,7 +153,6 @@ impl FunctionEntry {
     fn engine(
         name: &str,
         description: &str,
-        aliases: &[&str],
         writes: WriteShape,
         retry_safety: RetrySafety,
     ) -> Self {
@@ -171,7 +161,6 @@ impl FunctionEntry {
             description: description.to_string(),
             category: "data".to_string(),
             source: Source::Engine,
-            aliases: aliases.iter().map(|a| a.to_string()).collect(),
             input_fields: None,
             writes,
             retry_safety,
@@ -215,10 +204,6 @@ pub struct CatalogueEntry {
     pub description: String,
     pub category: String,
     pub source: Source,
-    /// Other accepted spellings of this name. Serving an alias as its own
-    /// entry would tell a completion tool there are two functions.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub aliases: Vec<String>,
     /// **Absent**, not null, when the function declares no input schema —
     /// which is the honest JSON encoding of "there is nothing here", and what
     /// a consumer branches on.
@@ -243,7 +228,7 @@ pub struct FunctionRegistry {
     /// Sorted by canonical name — a catalogue is browsed, and the static
     /// tables' own order groups by implementation concern.
     entries: Vec<Arc<FunctionEntry>>,
-    /// Canonical name *and* every alias → index into `entries`.
+    /// Name → index into `entries`.
     index: HashMap<String, usize>,
 }
 
@@ -261,8 +246,8 @@ impl FunctionRegistry {
                 .iter()
                 .map(FunctionEntry::orion)
                 .chain(schema::ENGINE_BUILTINS.iter().map(
-                    |&(name, description, aliases, writes, retry_safety)| {
-                        FunctionEntry::engine(name, description, aliases, writes, retry_safety)
+                    |&(name, description, writes, retry_safety)| {
+                        FunctionEntry::engine(name, description, writes, retry_safety)
                     },
                 ))
                 .collect();
@@ -273,8 +258,7 @@ impl FunctionRegistry {
         })
     }
 
-    /// Build a registry over `entries`, refusing a name or alias that two
-    /// entries claim.
+    /// Build a registry over `entries`, refusing a name two entries claim.
     ///
     /// Refused rather than last-wins because every reader assumes a name means
     /// one function: validation would check one schema and the engine would
@@ -284,19 +268,18 @@ impl FunctionRegistry {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         let mut index = HashMap::new();
         for (i, entry) in entries.iter().enumerate() {
-            for name in std::iter::once(&entry.name).chain(&entry.aliases) {
-                if let Some(prior) = index.insert(name.clone(), i) {
-                    let prior: &FunctionEntry = &entries[prior];
-                    return Err(format!(
-                        "function name '{name}' is claimed twice: by '{}' ({}) and '{}' ({})",
-                        prior.name,
-                        prior.source.as_str(),
-                        entry.name,
-                        entry.source.as_str()
-                    ));
-                }
-                intern(name);
+            let name = &entry.name;
+            if let Some(prior) = index.insert(name.clone(), i) {
+                let prior: &FunctionEntry = &entries[prior];
+                return Err(format!(
+                    "function name '{name}' is claimed twice: by '{}' ({}) and '{}' ({})",
+                    prior.name,
+                    prior.source.as_str(),
+                    entry.name,
+                    entry.source.as_str()
+                ));
             }
+            intern(name);
         }
         Ok(Self { entries, index })
     }
@@ -313,7 +296,7 @@ impl FunctionRegistry {
         Self::from_entries(entries)
     }
 
-    /// The entry `name` resolves to, under its canonical name or an alias.
+    /// The entry named `name`.
     pub fn get(&self, name: &str) -> Option<&FunctionEntry> {
         self.index.get(name).map(|&i| &*self.entries[i])
     }
@@ -338,13 +321,6 @@ impl FunctionRegistry {
     /// [`CatalogueEntry`] carries its own.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|e| e.name.as_str())
-    }
-
-    /// Every spelling [`Self::contains`] accepts: the canonical names and
-    /// their aliases. The vocabulary the create-time gate admits, for the
-    /// tests that hold it against a live engine's `dispatchable_functions`.
-    pub fn accepted_names(&self) -> impl Iterator<Item = &str> {
-        self.index.keys().map(String::as_str)
     }
 
     /// Every entry, sorted by name.
@@ -390,7 +366,6 @@ impl FunctionRegistry {
                 description: e.description.clone(),
                 category: e.category.clone(),
                 source: e.source,
-                aliases: e.aliases.clone(),
                 input_fields: e.input_fields.clone(),
                 retry_safety: e.retry_safety,
                 plugin: e.plugin.clone(),
@@ -707,25 +682,7 @@ fn check_fields(
         return errors;
     };
     for field in fields {
-        // An aliased field may be supplied under either name — but not both.
-        // Upstream's alias makes that a `duplicate field` parse error, so
-        // there is no precedence to fall back on.
-        let alias_value = field.alias.as_deref().and_then(|alias| obj.get(alias));
-        if let Some(alias) = field.alias.as_deref()
-            && obj.contains_key(field.name.as_str())
-            && alias_value.is_some()
-        {
-            errors.push(FieldError::new(
-                format!("{path_prefix}.{}", field.name),
-                "DUPLICATE_FIELD",
-                format!(
-                    "'{}' and its alias '{alias}' are both set; supply exactly one",
-                    field.name
-                ),
-            ));
-            continue;
-        }
-        match (obj.get(field.name.as_str()).or(alias_value), field.required) {
+        match (obj.get(field.name.as_str()), field.required) {
             (None, true) => errors.push(FieldError::new(
                 format!("{path_prefix}.{}", field.name),
                 "REQUIRED",
@@ -866,7 +823,6 @@ fn write_shape(function: &str) -> Option<WriteShape> {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
-    use dataflow_rs_v3::BuiltinKind;
 
     fn plugin_entry(name: &str) -> FunctionEntry {
         FunctionEntry {
@@ -874,7 +830,6 @@ mod registry_tests {
             description: "a plugin function".to_string(),
             category: "transform".to_string(),
             source: Source::Plugin,
-            aliases: Vec::new(),
             input_fields: Some(vec![FieldSpec {
                 name: "message".to_string(),
                 description: "the message".to_string(),
@@ -883,7 +838,6 @@ mod registry_tests {
                 resolvable: true,
                 secret_at: &[],
                 template_at: &[],
-                alias: None,
             }]),
             writes: WriteShape::OutputPath {
                 default_root: Some("data"),
@@ -901,54 +855,36 @@ mod registry_tests {
         }
     }
 
-    /// Every self-contained dataflow-rs built-in is accepted.
+    /// Every dataflow-rs built-in is accepted.
     ///
     /// This used to build a probe engine, let it fail, and **string-parse the
     /// built-in list out of the `FunctionNotFound` Display impl** — because
-    /// the crate kept `BUILTIN_FUNCTION_NAMES` `pub(crate)` and the error
-    /// message was the only public surface that enumerated it. 3.1 publishes
-    /// the const and a classifier, and documents that message as explicitly
-    /// unpinned.
+    /// the error message was the only public surface that enumerated it. The
+    /// engine publishes the list (`def::BUILTIN_FUNCTIONS`); every name on it
+    /// runs inline with no registration.
     #[test]
-    fn every_self_contained_builtin_is_accepted() {
+    fn every_builtin_is_accepted() {
         let registry = FunctionRegistry::builtin();
-        let mut checked = 0;
-        for name in dataflow_rs_v3::BUILTIN_FUNCTION_NAMES {
-            if dataflow_rs_v3::builtin_function_kind(name) == Some(BuiltinKind::SelfContained) {
-                assert!(
-                    registry.contains(name),
-                    "'{name}' runs with no registration, so rejecting it at create \
-                     refuses a workflow the engine would happily execute"
-                );
-                checked += 1;
-            }
-        }
-        assert!(checked >= 8, "implausibly few self-contained built-ins");
-    }
-
-    /// A built-in that needs a handler is accepted only if Orion registered
-    /// one — and `enrich` is the case that proves it matters.
-    ///
-    /// `enrich` deserializes into a typed built-in variant, so `Engine::new`
-    /// accepts it and `check_custom_inputs` skips it by construction: it never
-    /// becomes `FunctionConfig::Custom`. It was added to the old hand-copied
-    /// name list to stop create rejecting it, which meant every `enrich`
-    /// workflow activated cleanly and then failed *every* request with
-    /// `FunctionNotFound`. Nothing registers a handler for it.
-    #[test]
-    fn a_builtin_needing_a_handler_is_accepted_only_when_one_is_registered() {
-        let registry = FunctionRegistry::builtin();
-        for name in dataflow_rs_v3::BUILTIN_FUNCTION_NAMES {
-            if dataflow_rs_v3::builtin_function_kind(name) != Some(BuiltinKind::RequiresHandler) {
-                continue;
-            }
-            assert_eq!(
+        for name in dataflow_rs::def::BUILTIN_FUNCTIONS {
+            assert!(
                 registry.contains(name),
-                schema::registry().iter().any(|s| s.name == *name),
-                "'{name}' needs a registered handler; accepting it without one \
-                 green-lights a workflow that 500s on every request"
+                "'{name}' runs with no registration, so rejecting it at create \
+                 refuses a workflow the engine would happily execute"
             );
         }
+    }
+
+    /// A function outside the engine's built-ins is accepted only if Orion
+    /// registered one — and `enrich` is the case that proves it matters.
+    ///
+    /// 1.12's engine parsed `enrich` into a typed built-in, so it was accepted
+    /// and skipped by the custom-input check by construction. It was added to
+    /// the old hand-copied name list to stop create rejecting it, which meant
+    /// every `enrich` workflow activated cleanly and then failed *every*
+    /// request with `FunctionNotFound`. Nothing registers a handler for it.
+    #[test]
+    fn a_function_without_a_handler_is_refused() {
+        let registry = FunctionRegistry::builtin();
         assert!(registry.contains("http_call"));
         assert!(registry.contains("publish_kafka"));
         assert!(
@@ -982,16 +918,14 @@ mod registry_tests {
         assert!(registry.get("__not_a_function__").is_none());
     }
 
-    /// An alias resolves to its function and is not an entry of its own.
+    /// `validate`, 1.12's spelling of `validation`, names nothing: v3
+    /// spellings are no longer read.
     #[test]
-    fn an_alias_resolves_to_its_function() {
+    fn the_v3_spelling_of_validation_names_nothing() {
         let registry = FunctionRegistry::builtin();
-        assert_eq!(
-            registry.get("validate").map(|e| e.name.as_str()),
-            Some("validation")
-        );
-        assert!(registry.names().all(|n| n != "validate"));
-        assert!(registry.catalogue().iter().all(|e| e.name != "validate"));
+        assert!(registry.get("validate").is_none());
+        assert!(!registry.contains("validate"));
+        assert!(registry.contains("validation"));
     }
 
     #[test]
@@ -1148,11 +1082,6 @@ mod registry_tests {
         assert!(err.contains("orion") && err.contains("plugin"), "{err}");
 
         let err = registry
-            .with_entries(vec![plugin_entry("validate")])
-            .expect_err("a plugin may not shadow an alias either");
-        assert!(err.contains("'validate'"), "{err}");
-
-        let err = registry
             .with_entries(vec![plugin_entry("acme.a"), plugin_entry("acme.a")])
             .expect_err("two plugin entries of one name");
         assert!(err.contains("'acme.a'"), "{err}");
@@ -1218,7 +1147,7 @@ mod registry_tests {
         }
     }
 
-    /// Names are interned once, aliases included, and an unregistered name
+    /// Names are interned once, and an unregistered name
     /// interns to nothing — the observer's cardinality bound.
     #[test]
     fn registered_names_intern_and_unregistered_ones_do_not() {
@@ -1226,7 +1155,6 @@ mod registry_tests {
         for name in registry.names() {
             assert_eq!(interned(name), Some(name), "'{name}' not interned");
         }
-        assert_eq!(interned("validate"), Some("validate"));
         assert_eq!(interned("__never_registered__"), None);
         assert_eq!(registry.get("map").expect("map").label(), "map");
     }
@@ -1250,17 +1178,11 @@ mod write_shape_tests {
                 schema.name
             );
         }
-        for (name, _, aliases, _, _) in schema::ENGINE_BUILTINS {
+        for (name, ..) in schema::ENGINE_BUILTINS {
             assert!(
                 write_shape(name).is_some(),
                 "built-in '{name}' has no WriteShape"
             );
-            for alias in *aliases {
-                assert!(
-                    write_shape(alias).is_some(),
-                    "built-in alias '{alias}' has no WriteShape"
-                );
-            }
         }
     }
 
@@ -1475,15 +1397,19 @@ mod validate_input_tests {
             && e.message.contains("channel_call")));
     }
 
-    /// The pre-1.0 spelling is an alias of that field, so it satisfies it.
+    /// The pre-1.0 spelling names nothing, so the target is still missing.
     #[test]
-    fn the_pre_1_0_channel_logic_spelling_still_names_a_target() {
+    fn the_pre_1_0_channel_logic_spelling_names_no_target() {
         let errs = validate_input(
             "channel_call",
             &json!({"channel_logic": {"var": "data.target"}}),
             "tasks[0]",
         );
-        assert!(errs.is_empty(), "{errs:?}");
+        assert!(
+            errs.iter()
+                .any(|e| e.code == "REQUIRED" && e.path == "tasks[0].function.input.channel"),
+            "{errs:?}"
+        );
     }
 
     /// A computed channel is an expression, so its kind describes what it must
@@ -1524,7 +1450,7 @@ mod validate_input_tests {
     fn channel_call_with_dynamic_logic_is_ok() {
         let errs = validate_input(
             "channel_call",
-            &json!({"channel_logic": {"var": "data.target"}}),
+            &json!({"channel": {"var": "data.target"}}),
             "tasks[0]",
         );
         assert!(errs.is_empty(), "{:?}", errs);
@@ -1592,10 +1518,10 @@ mod validate_input_tests {
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].code, "INVALID");
 
-        // A body_logic body only exists per message — nothing to check here.
+        // A computed body only exists per message — nothing to check here.
         let errs = validate_input(
             "http_call",
-            &json!({"connector": "c", "body_format": "form", "body_logic": {"var": "data.form"}}),
+            &json!({"connector": "c", "body_format": "form", "body": {"var": "data.form"}}),
             "tasks[0]",
         );
         assert!(errs.is_empty(), "{errs:?}");

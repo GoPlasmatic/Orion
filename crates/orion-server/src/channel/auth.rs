@@ -303,7 +303,7 @@ impl CompiledAuth {
                     // property `validate_channel_config_blob` checks for
                     // validation_logic.
                     let engine = crate::engine::operators::add_to_datalogic(
-                        dataflow_rs_v3::datalogic_rs::Engine::builder(),
+                        dataflow_rs::datalogic_rs::Engine::builder(),
                     )
                     .build();
                     engine

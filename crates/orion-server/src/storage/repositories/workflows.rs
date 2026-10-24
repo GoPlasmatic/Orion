@@ -1,6 +1,5 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use dataflow_rs_v3::Workflow as DataflowWorkflow;
 use sea_query::{Asterisk, Condition, Expr, ExprTrait, Order, Query};
 use serde::{Deserialize, Serialize};
 
@@ -939,7 +938,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
 /// Build an in-memory, never-persisted `Workflow` (active v1, 100% rollout)
 /// from a create request. For the dry-run and validate paths, which need to
-/// exercise `workflow_to_dataflow` without touching the database.
+/// build its [`workflow_json`] without touching the database.
 pub fn synthetic_workflow(
     req: &CreateWorkflowRequest,
     id: &str,
@@ -965,9 +964,8 @@ pub fn synthetic_workflow(
     })
 }
 
-/// The workflow definition `channel` serves `workflow` as: the JSON both
-/// engines read a stored row through (dataflow-rs 4's `def::parse` takes it
-/// as it is; [`workflow_to_dataflow`] reads it into dataflow-rs 3's type).
+/// The workflow definition `channel` serves `workflow` as: the JSON the
+/// engine reads a stored row through, which `def::parse` takes as it is.
 ///
 /// `id` and `status` are the row's own for a workflow taking all of its
 /// channel's traffic, and version-qualified for one version of a rollout;
@@ -976,18 +974,14 @@ pub fn synthetic_workflow(
 ///
 /// The `continue_on_error` column is written as dataflow-rs 4 spells it
 /// (I186): `"on_failure": "continue"` when it is set, and nothing when it is
-/// not, which is the default, so a stored row raises no `V3_SPELLING`
-/// Advisory on every load. A task's own `continue_on_error`, inside
-/// `tasks_json`, is the author's and is left as written.
+/// not, which is the default. A task's own keys, inside `tasks_json`, are the
+/// author's and are left as written.
 ///
 /// `http_call`'s destination path used to be rewritten here from Orion's
 /// `output` spelling to the upstream `response_path`, because
 /// `{"name": "http_call"}` deserializes into dataflow-rs's own
-/// `HttpCallConfig` and Orion could not annotate it. dataflow-rs 3.1 carries
-/// `alias = "output"` on the field, so the rewrite is gone and a storage
-/// repository no longer deep-walks task JSON to rename a function input; the
-/// aliases dataflow-rs 4 has no spelling for are rewritten by the loader
-/// (`engine::loader::rewrite_aliases`), which leaves a stored row as it is.
+/// `HttpCallConfig` and Orion could not annotate it. No function input has
+/// an alias any more: a row is read as it is stored.
 ///
 /// # Errors
 ///
@@ -1003,7 +997,7 @@ pub fn workflow_json(
     let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
     let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
-    // `null` rather than an omitted key: both engines read it as no loop,
+    // `null` rather than an omitted key: the engine reads it as no loop,
     // and being explicit keeps the built JSON's shape the same for every
     // workflow.
     let loop_config: serde_json::Value = match workflow.loop_json.as_deref() {
@@ -1039,87 +1033,12 @@ pub fn workflow_json(
     Ok(json)
 }
 
-/// Shared body of the two dataflow-rs 3 converters below: [`workflow_json`],
-/// with the column spelled as dataflow-rs 3 reads it, `continue_on_error`.
-fn workflow_to_dataflow_inner(
-    workflow: &Workflow,
-    channel_name: &str,
-    id: String,
-    status: &str,
-    rollout: Option<dataflow_rs_v3::Rollout>,
-) -> Result<DataflowWorkflow, OrionError> {
-    let mut json = workflow_json(
-        workflow,
-        channel_name,
-        &id,
-        status,
-        rollout.map(|r| (r.bucket_start, r.bucket_end)),
-    )?;
-    if let Some(object) = json.as_object_mut() {
-        object.remove("on_failure");
-        object.insert(
-            "continue_on_error".to_string(),
-            serde_json::Value::Bool(workflow.continue_on_error),
-        );
-    }
-    let df_workflow: DataflowWorkflow = serde_json::from_value(json)?;
-    Ok(df_workflow)
-}
-
-/// Convert a Workflow DB model to a dataflow-rs Workflow via JSON deserialization.
-/// The `channel_name` parameter is supplied externally (from the Channel entity).
-pub fn workflow_to_dataflow(
-    workflow: &Workflow,
-    channel_name: &str,
-) -> Result<DataflowWorkflow, OrionError> {
-    workflow_to_dataflow_inner(
-        workflow,
-        channel_name,
-        workflow.workflow_id.clone(),
-        EntityStatus::Active.as_str(),
-        None,
-    )
-}
-
-/// Convert a Workflow to a dataflow-rs Workflow serving `rollout`'s half-open
-/// bucket range, under a version-qualified id.
-///
-/// The range is produced by [`dataflow_rs_v3::Rollout::partition`] in
-/// `build_engine_workflows`, so it is already known to be representable and
-/// to be one slice of a set covering `0..100` — this used to take two `i64`
-/// bounds and re-derive that here, which meant the "unrepresentable span"
-/// arm could never be reached by any caller.
-///
-/// The range used to be spliced into the author's condition as
-/// `{"and": [condition, {">=": [{"var": "_rollout_bucket"}, min]}, ...]}`,
-/// against a `data._rollout_bucket` key every ingress injected and then had to
-/// strip back out. That wiring was stringly-typed across a namespace boundary
-/// and had been misspelled since it shipped: the condition's `var` addressed
-/// the context root while the injection wrote under `data`, so the lookup
-/// resolved to null, coerced to `0`, and every version whose range did not
-/// start at 0 was unreachable. dataflow-rs 3.1 routes on `Workflow::rollout`
-/// against `Message::routing_bucket` instead, which is checked before any
-/// arena work and never touches the caller-visible `data` namespace.
-pub fn workflow_to_dataflow_with_rollout(
-    workflow: &Workflow,
-    channel_name: &str,
-    rollout: dataflow_rs_v3::Rollout,
-) -> Result<DataflowWorkflow, OrionError> {
-    workflow_to_dataflow_inner(
-        workflow,
-        channel_name,
-        format!("{}:v{}", workflow.workflow_id, workflow.version),
-        &workflow.status,
-        Some(rollout),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_workflow_to_dataflow_basic() {
+    fn test_workflow_json_basic() {
         let workflow = Workflow {
             workflow_id: "test-workflow".to_string(),
             name: "Test Workflow".to_string(),
@@ -1137,15 +1056,18 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
 
-        let df_workflow = workflow_to_dataflow(&workflow, "default").expect("test");
-        assert_eq!(df_workflow.id, "test-workflow");
-        assert_eq!(df_workflow.name, "Test Workflow");
-        assert_eq!(df_workflow.channel, "default");
-        assert_eq!(df_workflow.priority, 10);
+        let json =
+            workflow_json(&workflow, "default", "test-workflow", "active", None).expect("test");
+        assert_eq!(json["id"], "test-workflow");
+        assert_eq!(json["name"], "Test Workflow");
+        assert_eq!(json["channel"], "default");
+        assert_eq!(json["priority"], 10);
+        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
+        assert!(parsed.def.is_some(), "{:?}", parsed.issues);
     }
 
     #[test]
-    fn test_workflow_to_dataflow_custom_channel() {
+    fn test_workflow_json_custom_channel() {
         let workflow = Workflow {
             workflow_id: "wf-orders".to_string(),
             name: "Order Workflow".to_string(),
@@ -1164,13 +1086,13 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
 
-        let df_workflow = workflow_to_dataflow(&workflow, "orders").expect("test");
-        assert_eq!(df_workflow.channel, "orders");
-        assert_eq!(df_workflow.id, "wf-orders");
+        let json = workflow_json(&workflow, "orders", "wf-orders", "active", None).expect("test");
+        assert_eq!(json["channel"], "orders");
+        assert_eq!(json["id"], "wf-orders");
     }
 
     #[test]
-    fn test_workflow_to_dataflow_with_rollout_carries_a_typed_range() {
+    fn test_workflow_json_with_rollout_carries_a_typed_range() {
         let workflow = Workflow {
             workflow_id: "rollout-wf".to_string(),
             name: "Rollout Test".to_string(),
@@ -1189,24 +1111,25 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
 
-        let df_workflow = workflow_to_dataflow_with_rollout(
+        let json = workflow_json(
             &workflow,
             "default",
-            dataflow_rs_v3::Rollout {
-                bucket_start: 0,
-                bucket_end: 50,
-            },
+            "rollout-wf:v3",
+            "active",
+            Some((0, 50)),
         )
         .expect("test");
-        assert_eq!(df_workflow.id, "rollout-wf:v3");
-        assert_eq!(df_workflow.channel, "default");
+        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
+        let df_workflow = parsed.def.expect("parses");
+        assert_eq!(df_workflow.id(), "rollout-wf:v3");
+        assert_eq!(df_workflow.channel(), "default");
 
         // The author's condition is passed through untouched. It used to be
         // wrapped in an `and` with two synthetic bucket comparisons against a
         // key the ingress injected into `data`; the range is a typed field the
         // engine gates on before it builds an arena.
-        assert_eq!(df_workflow.condition, serde_json::json!(true));
-        let rollout = df_workflow.rollout.expect("rollout range");
+        assert_eq!(json["condition"], serde_json::json!(true));
+        let rollout = df_workflow.rollout().expect("rollout range");
         assert_eq!((rollout.bucket_start, rollout.bucket_end), (0, 50));
         assert!(rollout.accepts(0) && rollout.accepts(49));
         assert!(!rollout.accepts(50) && !rollout.accepts(99));
@@ -1214,10 +1137,8 @@ mod tests {
 
     /// I186: the `continue_on_error` column is spelled as dataflow-rs 4
     /// reads it, `"on_failure": "continue"` when set and absent when not
-    /// (the default), so no stored row raises a `V3_SPELLING` Advisory on
-    /// every load; dataflow-rs 3's converter still reads it as
-    /// `continue_on_error`. A task's own spelling is the author's and is
-    /// left as written.
+    /// (the default). A task's own keys are the author's and are left as
+    /// written.
     #[test]
     fn workflow_json_writes_on_failure_from_the_column() {
         let mut workflow = Workflow {
@@ -1229,7 +1150,7 @@ mod tests {
             status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 100,
             condition_json: "true".to_string(),
-            tasks_json: r#"[{"id":"t","name":"t","continue_on_error":true,
+            tasks_json: r#"[{"id":"t","name":"t","on_failure":"continue",
                 "function":{"name":"log","input":{"message":"x"}}}]"#
                 .to_string(),
             tags_json: r#"["a"]"#.to_string(),
@@ -1242,18 +1163,13 @@ mod tests {
         let json = workflow_json(&workflow, "orders", "wf", "active", None).expect("test");
         assert_eq!(json["on_failure"], "continue");
         assert!(json.get("continue_on_error").is_none(), "{json}");
-        assert_eq!(json["tasks"][0]["continue_on_error"], true);
+        assert_eq!(json["tasks"][0]["on_failure"], "continue");
         assert_eq!(json["channel"], "orders");
         assert_eq!(
             (json["priority"].clone(), json["version"].clone()),
             (3.into(), 2.into())
         );
         assert!(json["rollout"].is_null() && json["loop"].is_null());
-        assert!(
-            workflow_to_dataflow(&workflow, "orders")
-                .expect("test")
-                .continue_on_error
-        );
 
         workflow.continue_on_error = false;
         let json =
@@ -1264,25 +1180,18 @@ mod tests {
             json["rollout"],
             serde_json::json!({"bucket_start": 20, "bucket_end": 70})
         );
-        assert!(
-            !workflow_to_dataflow(&workflow, "orders")
-                .expect("test")
-                .continue_on_error
-        );
 
-        // dataflow-rs 4 reads the row with nothing to report but the task's
-        // own v3 spelling.
-        let parsed = dataflow_rs::def::parse(&json, dataflow_rs::def::ParseOptions::default());
+        // The engine reads the row with nothing to report.
+        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
         assert!(parsed.def.is_some(), "{:?}", parsed.issues);
-        let codes: Vec<_> = parsed.issues.iter().map(|i| i.path.to_string()).collect();
-        assert_eq!(codes, ["tasks[0].continue_on_error"]);
+        assert!(parsed.issues.is_empty(), "{:?}", parsed.issues);
     }
 
     /// The plain converter must leave `rollout` unset — a workflow with no
     /// range takes all of its channel's traffic, which is what the single
     /// version at 100% case means.
     #[test]
-    fn test_workflow_to_dataflow_has_no_rollout_range() {
+    fn test_workflow_json_has_no_rollout_range() {
         let workflow = Workflow {
             workflow_id: "wf-orders".to_string(),
             name: "Orders".to_string(),
@@ -1292,15 +1201,17 @@ mod tests {
             status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 100,
             condition_json: "true".to_string(),
-            tasks_json: "[]".to_string(),
+            tasks_json: r#"[{"id":"t","function":{"name":"log","input":{"message":"x"}}}]"#
+                .to_string(),
             tags_json: "[]".to_string(),
             loop_json: None,
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
         };
-        let df_workflow = workflow_to_dataflow(&workflow, "orders").expect("test");
-        assert_eq!(df_workflow.rollout, None);
+        let json = workflow_json(&workflow, "orders", "wf-orders", "active", None).expect("test");
+        let parsed = dataflow_rs::def::parse(&json, crate::engine::parse_options());
+        assert_eq!(parsed.def.expect("parses").rollout(), None);
     }
 
     #[test]

@@ -295,35 +295,28 @@ fn the_catalogue_marks_which_entries_carry_a_schema() {
             ),
         }
     }
-    // The alias is expressed on its function, not as a second entry.
+    // `validate`, 1.12's spelling of `validation`, is not served.
     let names: BTreeSet<String> = catalogue()
         .into_iter()
         .map(|e| e.name.to_string())
         .collect();
     assert!(
         !names.contains("validate"),
-        "an alias must not be its own entry"
-    );
-    assert!(
-        catalogue()
-            .iter()
-            .any(|e| e.name == "validation" && e.aliases.iter().any(|a| a == "validate")),
-        "'validation' must carry 'validate' as an alias"
+        "1.12's spelling of `validation` names nothing"
     );
 }
 
 /// The catalogue is the accepted vocabulary, so it must agree with the gate
 /// that accepts it — every served name loads, and every loadable name is
-/// served (modulo the alias, which is served on its function).
+/// served.
 #[test]
 fn the_catalogue_matches_what_a_workflow_may_actually_name() {
     let mut served: BTreeSet<String> = BTreeSet::new();
     for entry in catalogue() {
         served.insert(entry.name.to_string());
-        served.extend(entry.aliases.iter().map(|a| a.to_string()));
     }
     let accepted: BTreeSet<String> = FunctionRegistry::builtin()
-        .accepted_names()
+        .names()
         .map(|n| n.to_string())
         .collect();
     assert_eq!(

@@ -752,22 +752,24 @@ async fn a_burst_of_large_traces_flushes_on_the_byte_budget() {
 /// or the engine does.
 struct AlwaysPanic;
 
-#[async_trait]
-impl dataflow_rs_v3::engine::functions::AsyncFunctionHandler for AlwaysPanic {
-    type Input = serde_json::Value;
+impl dataflow_rs::Function for AlwaysPanic {
+    type Config = ();
 
-    async fn execute(
+    async fn call(
         &self,
-        _ctx: &mut dataflow_rs_v3::engine::task_context::TaskContext<'_>,
-        _input: &Self::Input,
-    ) -> dataflow_rs_v3::Result<dataflow_rs_v3::engine::task_outcome::TaskOutcome> {
+        _ctx: &mut dataflow_rs::Ctx<'_>,
+        _cfg: &(),
+    ) -> dataflow_rs::Result<dataflow_rs::Outcome> {
         panic!("a handler panicked mid-trace");
     }
 }
 
 fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
-    let workflow = dataflow_rs_v3::Workflow::from_json(
-        r#"{
+    let mut registry = dataflow_rs::Registry::new(orion::engine::kit::test_exprs());
+    registry.register("always_panic", AlwaysPanic);
+    let engine = dataflow_rs::Engine::builder()
+        .registry(registry)
+        .workflow_json(&serde_json::json!({
             "id": "panic-wf",
             "name": "Panic",
             "priority": 0,
@@ -775,21 +777,20 @@ fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
             "tasks": [
                 {"id": "t1", "name": "Boom", "function": {"name": "always_panic", "input": {}}}
             ]
-        }"#,
-    )
-    .expect("panic workflow parses");
-
-    let engine = dataflow_rs_v3::Engine::builder()
-        .with_workflow(workflow)
-        .register("always_panic", AlwaysPanic)
+        }))
         .build()
         .expect("engine builds");
 
-    Arc::new(orion::runtime::RuntimeHandle::new(
-        Arc::new(engine),
-        Arc::new(orion::channel::ChannelSnapshot::empty()),
-        orion::engine::FunctionRegistry::builtin().clone(),
-    ))
+    let runtime = crate::common::empty_runtime();
+    let generation = runtime.load();
+    runtime.publish(
+        engine,
+        generation.channels.clone(),
+        generation.functions.clone(),
+        generation.plugins.clone(),
+        generation.models.clone(),
+    );
+    runtime
 }
 
 /// Q6: the queue's memory reservation survives a panicking trace.

@@ -64,7 +64,7 @@ pub fn rollout_identity<'a>(metadata: &'a Value, sticky_header: &str) -> Option<
     first_forwarded_value(|name| headers.get(name).and_then(|v| v.as_str()))
 }
 
-/// Serialize a captured `ExecutionTrace`, dropping it (with a warn and an
+/// Serialize a captured trace, dropping it (with a warn and an
 /// error metric) when it exceeds `max_bytes` (N15). `result_json` is capped
 /// by `queue.max_result_size_bytes` on both the sync and async paths, but the
 /// per-task trace rode along uncapped — a workflow with large intermediate
@@ -72,7 +72,7 @@ pub fn rollout_identity<'a>(metadata: &'a Value, sticky_header: &str) -> Option<
 /// aid, so an oversized one is dropped rather than failing the request.
 /// `max_bytes = 0` disables the cap, mirroring the result cap's semantics.
 pub fn serialize_task_trace_capped(
-    trace: Option<&dataflow_rs_v3::ExecutionTrace>,
+    trace: Option<&dataflow_rs::observe::Trace>,
     max_bytes: usize,
     context: &str,
 ) -> Option<String> {
@@ -98,8 +98,8 @@ pub fn serialize_task_trace_capped(
 /// connection, no forwarding headers) it falls back to per-request random,
 /// which still honors the rollout percentages in aggregate.
 ///
-/// The bucket goes on the message as `MessageBuilder::routing_bucket`, which
-/// the engine matches against each workflow's own `rollout` range. It used to
+/// The bucket goes to the run as `RunOptions::routing_bucket`, which the
+/// engine matches against each workflow's own `rollout` range. It used to
 /// be written into `data._rollout_bucket` for a synthetic condition to read,
 /// which meant it was a caller-visible field that every response and trace
 /// boundary then had to strip back out — and, because dataflow-rs v3 had no
@@ -321,21 +321,22 @@ pub fn json_kind(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs_v3::Message;
     use serde_json::json;
 
-    /// A message shaped the way every ingress builds one.
-    fn ingress_message(payload: Value, metadata: Value, identity: Option<&str>) -> Message {
-        Message::builder()
-            .payload_json(&payload)
-            .metadata_json(&metadata)
-            .routing_bucket(rollout_bucket_for_identity(identity))
-            .build()
+    /// A message shaped the way every ingress builds one. The routing bucket
+    /// is the run's, not the message's, so it has no place here.
+    fn ingress_message(payload: Value, metadata: Value) -> dataflow_rs::Message {
+        crate::engine::execute::serving_message(&payload, &metadata)
     }
 
     #[test]
     fn test_task_trace_cap_drops_oversized_detail() {
-        let trace = dataflow_rs_v3::ExecutionTrace::new();
+        let trace: dataflow_rs::observe::Trace = serde_json::from_value(serde_json::json!({
+            "initial": {"data": {}, "metadata": {}, "temp_data": {}},
+            "steps": [],
+            "truncated": false,
+        }))
+        .expect("an empty trace reads");
         // Empty trace serializes to a small JSON — passes any nonzero cap…
         assert!(serialize_task_trace_capped(Some(&trace), 1024, "t").is_some());
         // …fails a cap smaller than its serialization…
@@ -351,15 +352,13 @@ mod tests {
     /// nested `metadata.a.b`.
     #[test]
     fn ingress_seeds_metadata_with_literal_keys() {
-        let msg = ingress_message(json!({}), json!({"source": "test", "a.b": 2}), None);
+        let msg = ingress_message(json!({}), json!({"source": "test", "a.b": 2}));
+        let metadata = Value::from(msg.context().metadata());
 
-        assert_eq!(
-            msg.metadata().get("source").and_then(|v| v.as_str()),
-            Some("test")
-        );
-        assert_eq!(msg.metadata().get("a.b").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(metadata["source"], "test");
+        assert_eq!(metadata["a.b"], 2);
         assert!(
-            msg.metadata().get("a").is_none(),
+            metadata.get("a").is_none(),
             "a dotted metadata key must not be re-read as a path"
         );
     }
@@ -412,18 +411,18 @@ mod tests {
     /// `data._rollout_bucket`, which meant it serialized into every success
     /// body and into `traces.result_json` as a field the caller never sent —
     /// and, with no `unset` in dataflow-rs v3, could only be nulled rather than
-    /// removed. It is now a message field the wire format does not carry, so
-    /// neither the response view nor the persisted message can leak it.
+    /// removed. It is now a run option the message does not carry, so neither
+    /// the response view nor the persisted message can leak it.
     #[test]
     fn the_routing_bucket_is_not_part_of_the_message_body() {
-        let msg = ingress_message(json!({"order_id": 7}), json!({}), Some("caller-1"));
-        assert!(
-            msg.routing_bucket().is_some(),
-            "precondition: the ingress set a bucket"
-        );
+        let msg = ingress_message(json!({"order_id": 7}), json!({}));
 
-        let body: Value = msg.data().into();
-        assert_eq!(body, json!({}), "routing must not write into `data`");
+        let body = Value::from(msg.context().data());
+        assert_eq!(
+            body,
+            json!({"order_id": 7}),
+            "routing must not write into `data`"
+        );
 
         let serialized = serde_json::to_string(&msg).expect("message serializes");
         assert!(

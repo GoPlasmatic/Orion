@@ -1,0 +1,305 @@
+{
+  "a_connector_of_another_kind_is_refused": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "Connector 'db' is not a db or es connector"
+    }
+  },
+  "a_query_timeout_before_the_run_deadline/{\"source\":\"users\",\"count\":true}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: data_query query timed out after 150ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "a_query_timeout_before_the_run_deadline/{\"source\":\"users\"}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: data_query query timed out after 150ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "an_elasticsearch_search": {
+    "ok": {
+      "rows": [
+        {
+          "name": "Alice"
+        },
+        {
+          "name": "Bob"
+        }
+      ]
+    }
+  },
+  "numeric_as_binary_as/\"number\" {\"var\":\"data.bad\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: data_query: 'binary_as' must be one of auto/hex/base64/text (got 'money')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as_binary_as/\"string\" {\"var\":\"data.hex\"}": {
+    "ok": {
+      "hex": "hex",
+      "b64": "base64",
+      "bad": "money",
+      "rows": [
+        {
+          "id": "u1",
+          "avatar": "00ff"
+        },
+        {
+          "id": "u2",
+          "avatar": "6869"
+        },
+        {
+          "id": "u3",
+          "avatar": null
+        },
+        {
+          "id": "u4",
+          "avatar": null
+        }
+      ]
+    }
+  },
+  "numeric_as_binary_as/null {\"var\":\"data.b64\"}": {
+    "ok": {
+      "hex": "hex",
+      "b64": "base64",
+      "bad": "money",
+      "rows": [
+        {
+          "id": "u1",
+          "avatar": "AP8="
+        },
+        {
+          "id": "u2",
+          "avatar": "aGk="
+        },
+        {
+          "id": "u3",
+          "avatar": null
+        },
+        {
+          "id": "u4",
+          "avatar": null
+        }
+      ]
+    }
+  },
+  "numeric_as_binary_as/{\"var\":\"data.bad\"} \"hex\"": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: data_query: 'numeric_as' must be one of number/string (got 'money')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as_binary_as/{\"var\":\"data.none\"} null": {
+    "ok": {
+      "hex": "hex",
+      "b64": "base64",
+      "bad": "money",
+      "rows": [
+        {
+          "id": "u1",
+          "avatar": "00ff"
+        },
+        {
+          "id": "u2",
+          "avatar": "hi"
+        },
+        {
+          "id": "u3",
+          "avatar": null
+        },
+        {
+          "id": "u4",
+          "avatar": null
+        }
+      ]
+    }
+  },
+  "refusals/{\"connector\":\"absent\",\"query\":{\"source\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.rows\"} {}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":{\"source\":\"nowhere\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.rows\"} {}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: data_query query failed: error returned from database: (code: 1) no such table: nowhere",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":{\"source\":\"users\",\"count\":1},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.rows\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: invalid envelope: 'count' must be a boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":{\"source\":\"users\"},\"output\":\"data.rows\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: entity 'users' is not declared in the task's schema: add \"schema\": {\"entities\": {\"users\": {\"columns\": {\"<column>\": {}}}}} naming the columns this task uses, or add \"unmapped\": \"identity\" to that schema to accept undeclared names as physical ones (pre-1.0 behaviour)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":{\"source\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.rows\"} {\"dialect\":{\"require_schema\":true}}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "connector 'db' requires a declared schema (dialect.require_schema): supply \"schema\" with an \"entities\" map and without \"unmapped\": \"identity\""
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":{\"source\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.rows\"} {\"operations\":{\"read\":false}}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'read' is disabled on connector 'db'"
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":{\"source\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":{\"var\":\"data.n\"}} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "root_output/{\"connector\":\"db\",\"query\":{\"source\":\"users\",\"count\":true},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data\"}": {
+    "ok": {
+      "count": 4
+    }
+  },
+  "root_output/{\"connector\":\"db\",\"query\":{\"source\":\"users\",\"count\":true},\"schema\":{\"unmapped\":\"identity\"}}": {
+    "ok": {
+      "count": 4
+    }
+  },
+  "root_output/{\"connector\":\"db\",\"query\":{\"source\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.rows\"}": {
+    "ok": {
+      "rows": [
+        {
+          "id": "u1",
+          "name": "Alice",
+          "age": 15,
+          "avatar": "00ff"
+        },
+        {
+          "id": "u2",
+          "name": "Bob",
+          "age": 20,
+          "avatar": "hi"
+        },
+        {
+          "id": "u3",
+          "name": "Carol",
+          "age": 30,
+          "avatar": null
+        },
+        {
+          "id": "u4",
+          "name": "Dave",
+          "age": 40,
+          "avatar": null
+        }
+      ]
+    }
+  },
+  "root_output/{\"connector\":\"db\",\"query\":{\"source\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":{\"cat\":[\"data\",\".rows\"]}}": {
+    "ok": {
+      "rows": [
+        {
+          "id": "u1",
+          "name": "Alice",
+          "age": 15,
+          "avatar": "00ff"
+        },
+        {
+          "id": "u2",
+          "name": "Bob",
+          "age": 20,
+          "avatar": "hi"
+        },
+        {
+          "id": "u3",
+          "name": "Carol",
+          "age": 30,
+          "avatar": null
+        },
+        {
+          "id": "u4",
+          "name": "Dave",
+          "age": 40,
+          "avatar": null
+        }
+      ]
+    }
+  },
+  "rows_are_written_at_output/count": {
+    "ok": {
+      "rows": {
+        "count": 4
+      }
+    }
+  },
+  "rows_are_written_at_output/params": {
+    "ok": {
+      "threshold": 18,
+      "rows": [
+        {
+          "id": "u2",
+          "age": 20
+        },
+        {
+          "id": "u3",
+          "age": 30
+        },
+        {
+          "id": "u4",
+          "age": 40
+        }
+      ]
+    }
+  },
+  "rows_are_written_at_output/params [1]": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: query references undefined param 'min' (at filter.>)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "rows_are_written_at_output/params null": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: query references undefined param 'min' (at filter.>)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "rows_are_written_at_output/params {\"var\":\"data.threshold\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: query references undefined param 'min' (at filter.>)",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

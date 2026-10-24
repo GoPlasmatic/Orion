@@ -112,10 +112,9 @@ pub(super) fn deployment_err_response(err: DeploymentError) -> (StatusCode, Json
         | "PROVIDER_REVOKED"
         | "ADMISSION_INVALIDATED"
         | "BACKFILL_ENTERPRISE_PROVIDER_REQUIRED" => StatusCode::FORBIDDEN,
-        "DB_TRANSACTION_ERROR"
-        | "DB_WRITE_ERROR"
-        | "DB_COMMIT_ERROR"
-        | "DB_READ_ERROR" => StatusCode::SERVICE_UNAVAILABLE,
+        "DB_TRANSACTION_ERROR" | "DB_WRITE_ERROR" | "DB_COMMIT_ERROR" | "DB_READ_ERROR" => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         "CORRUPT_PERSISTED_STATE" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };
@@ -295,11 +294,11 @@ mod tests {
 
     #[tokio::test]
     async fn claim7_cli_and_server_contract_end_to_end_against_running_server() {
-        use std::str::FromStr;
         use axum::body::{Body, to_bytes};
         use axum::http::{Method, Request, StatusCode};
         use orion_api::v2::*;
         use orion_client::paths;
+        use std::str::FromStr;
         use tower::ServiceExt as _;
 
         let pool = sqlx::sqlite::SqlitePoolOptions::new()

@@ -1,45 +1,25 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
-use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, QueryBudget, QueryFailure, acquire_conn, decode_failure, encode_failure,
-    reject_mongo_connector, require_op_allowed, resolve_bind_params, resolve_row_format,
-    to_connect_error,
+    QueryBudget, QueryFailure, acquire_conn, decode_failure, encode_failure,
+    reject_mongo_connector, require_op_allowed, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::FieldSource;
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name, for the row-conversion helpers below — a reference to
 /// the one place it is written (F48), not a second spelling of it.
-const NAME: &str = <DbReadHandler as ConnectorHandler>::NAME;
-
-/// Executes SQL SELECT queries against external databases configured via connectors.
-pub struct DbReadHandler {
-    pub pool_cache: Arc<SqlPoolCache>,
-    pub registry: Arc<ConnectorRegistry>,
-    /// Hard row cap, from `query.max_limit` (F10). Raw SQL can't have a
-    /// LIMIT injected reliably, so rows are streamed and counted — one
-    /// `SELECT * FROM big_table` must not OOM the process.
-    pub max_rows: usize,
-    /// Hard decoded byte cap across the result set, from
-    /// `query.max_result_bytes` (`0` = unlimited, `TD-09`).
-    pub max_result_bytes: usize,
-}
+pub(crate) const NAME: &str = "db_read";
 
 /// The statement and its bind values.
 ///
@@ -52,48 +32,6 @@ pub struct DbRead<'q> {
     query: Cow<'q, str>,
     params: Vec<Value>,
     format: RowFormat,
-}
-
-impl DbRead<'static> {
-    /// The parse both raw-SQL handlers do. Shared rather than copied because
-    /// `db_read` and `db_write` differ in what the database does with the
-    /// statement, not in what the task says.
-    /// The half `db_read` and `db_write` genuinely share: a literal statement
-    /// and message-derived binds.
-    ///
-    /// The rendering choices (`numeric_as`, `binary_as`) are **not** read here.
-    /// They govern how a decoded row renders,
-    /// and `db_write` decodes no rows — it answers `rows_affected`. Reading it
-    /// on both paths meant a wrong value produced `db_write: 'numeric_as' must
-    /// be one of number/string`, an error naming a field `DB_WRITE_FIELDS` does
-    /// not declare and the schema validator already reports as `UNKNOWN_FIELD`.
-    /// One of the two had to go, and the runtime is the one that was wrong.
-    pub(super) fn parse_statement(
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &(impl FieldSource + ?Sized),
-    ) -> Result<Self, HandlerError> {
-        Ok(Self {
-            query: Cow::Owned(call.require_str(input, "query")?.to_string()),
-            params: resolve_bind_params(input, call.name, ctx)?,
-            format: RowFormat::default(),
-        })
-    }
-
-    /// [`parse_statement`](Self::parse_statement) plus the read-only rendering
-    /// choice — and the check that the statement is actually a read.
-    pub(super) fn parse_read(
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &TaskContext<'_>,
-    ) -> Result<Self, HandlerError> {
-        let read = Self {
-            format: resolve_row_format(input, call.name, ctx)?,
-            ..Self::parse_statement(call, input, ctx)?
-        };
-        require_read_only(&read.query, call.name)?;
-        Ok(read)
-    }
 }
 
 impl<'q> DbRead<'q> {
@@ -159,57 +97,7 @@ fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     // A Mongo connection string in a `db` connector is the right type and
     // the wrong backend: both are `ConnectorConfig::Db`, and only the
     // string tells them apart.
-    Ok(reject_mongo_connector(NAME, connector, conn)?)
-}
-
-#[async_trait]
-impl ConnectorHandler for DbReadHandler {
-    const NAME: &'static str = "db_read";
-    type Kind = crate::connector::kind::Db;
-    type Input = TemplatedInput;
-    type Parsed = DbRead<'static>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        DbRead::parse_read(call, input, ctx)
-    }
-
-    fn gate(
-        _parsed: &Self::Parsed,
-        conn: &DbConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        gate(conn, connector)
-    }
-
-    async fn run(
-        &self,
-        read: Self::Parsed,
-        db_config: &DbConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        Ok(read_rows(
-            &self.pool_cache,
-            call.connector,
-            db_config,
-            self.max_rows,
-            self.max_result_bytes,
-            &read,
-            None,
-        )
-        .await?
-        .into())
-    }
+    reject_mongo_connector(NAME, connector, conn)
 }
 
 /// The rows a read returns, as a JSON array, against a resolved and gated
@@ -528,7 +416,7 @@ fn require_read_only(query: &str, handler_name: &str) -> Result<(), HandlerError
              (it has its own 'raw_write' connector gate)"
         ),
     };
-    Err(DataflowError::Validation(message).into())
+    Err(HandlerError::new(ErrorClass::CallerInput, message))
 }
 
 #[cfg(test)]
@@ -537,7 +425,7 @@ mod tests {
 
     fn check(sql: &str) -> Result<(), String> {
         require_read_only(sql, "db_read").map_err(|e| {
-            let e: DataflowError = e.into();
+            let e: dataflow_rs::Error = e.into();
             e.to_string()
         })
     }
@@ -618,8 +506,8 @@ mod tests {
         assert!(err.contains("no statement"), "{err}");
     }
 
-    // -- dataflow-rs 4: the config, I185's Defect, and twins of the handler
-    // over in-memory SQLite --
+    // -- the config, I185's Defect, and calls over in-memory SQLite, against
+    // 1.12's records --
 
     use std::time::Duration;
 
@@ -637,15 +525,6 @@ mod tests {
          (3, 'plum', 3.5, NULL)",
     ];
 
-    fn handler(db: &twin::Sqlite, max_rows: usize) -> dataflow_rs_v3::BoxedFunctionHandler {
-        Box::new(super::super::connector_handler::Connector(DbReadHandler {
-            pool_cache: db.pool_cache.clone(),
-            registry: db.registry.clone(),
-            max_rows,
-            max_result_bytes: 0,
-        }))
-    }
-
     fn function(db: &twin::Sqlite, max_rows: usize) -> DbReadFunction {
         DbReadFunction {
             pool_cache: db.pool_cache.clone(),
@@ -655,14 +534,11 @@ mod tests {
         }
     }
 
-    /// One task through each engine, each against a database of its own
-    /// seeded with [`SEED`], its connector configured with `config`.
-    async fn both(input: Value, data: Value, config: Value, max_rows: usize) -> (Seen, Seen) {
-        let db = twin::sqlite(config.clone(), SEED).await;
-        let v3 = twin::v3(NAME, handler(&db, max_rows), input.clone(), data.clone()).await;
+    /// One task against a database of its own seeded with [`SEED`], its
+    /// connector configured with `config`.
+    async fn run(input: Value, data: Value, config: Value, max_rows: usize) -> Seen {
         let db = twin::sqlite(config, SEED).await;
-        let v4 = twin::v4(NAME, function(&db, max_rows), input, data).await;
-        (v3, v4)
+        twin::v4(NAME, function(&db, max_rows), input, data).await
     }
 
     fn rejected(input: Value) -> Vec<(String, IssueCode)> {
@@ -792,15 +668,15 @@ mod tests {
 
     /// The rows are written at `output`, the binds filled from the message.
     #[tokio::test]
-    async fn rows_are_written_at_output_as_on_v3() {
+    async fn rows_are_written_at_output() {
         let input = json!({
             "connector": "db",
             "query": "SELECT id, name FROM items WHERE id >= ? AND name <> ? ORDER BY id",
             "params": [{"var": "data.min"}, {"var": ["data.skip", "none"]}],
             "output": "data.rows"
         });
-        let (v3, v4) = both(input, json!({"min": 2}), json!({}), 1000).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({"min": 2}), json!({}), 1000).await;
+        twin::pinned(&v4, "rows_are_written_at_output");
         assert_eq!(
             v4.expect("read")["rows"],
             json!([{"id": 2, "name": "pear"}, {"id": 3, "name": "plum"}])
@@ -810,7 +686,7 @@ mod tests {
     /// A bound document keeps its `$` keys and has its holes filled, and a
     /// `payload` hole yields its default, as 1.12's fold did.
     #[tokio::test]
-    async fn a_bound_document_keeps_its_dollar_keys_as_on_v3() {
+    async fn a_bound_document_keeps_its_dollar_keys() {
         let input = json!({
             "connector": "db",
             "query": "SELECT ? AS doc, ? AS missing, ? AS payload",
@@ -821,8 +697,8 @@ mod tests {
             ],
             "output": "data.rows"
         });
-        let (v3, v4) = both(input, json!({"id": "abc", "n": 2}), json!({}), 1000).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({"id": "abc", "n": 2}), json!({}), 1000).await;
+        twin::pinned(&v4, "a_bound_document_keeps_its_dollar_keys");
         assert_eq!(
             v4.expect("read")["rows"],
             json!([{"doc": r#"{"$oid":"abc","n":[1,2]}"#, "missing": null, "payload": "fallback"}])
@@ -833,7 +709,7 @@ mod tests {
     /// read them: a rendering named, the default for `null` or a hole that
     /// finds nothing, and 1.12's refusal for a name or a type it refused.
     #[tokio::test]
-    async fn numeric_as_and_binary_as_fold_as_on_v3() {
+    async fn numeric_as_and_binary_as_fold_as_1_12_did() {
         let data = json!({"num": "string", "hex": "hex", "b64": "base64", "bad": "money", "n": 7});
         for (numeric, binary, ok) in [
             (json!({"var": "data.num"}), json!({"var": "data.hex"}), true),
@@ -853,8 +729,8 @@ mod tests {
                 "query": "SELECT id, price, blob FROM items ORDER BY id",
                 "numeric_as": numeric, "binary_as": binary, "output": "data.rows"
             });
-            let (v3, v4) = both(input, data.clone(), json!({}), 1000).await;
-            assert_eq!(v4, v3, "{numeric} {binary}");
+            let v4 = run(input, data.clone(), json!({}), 1000).await;
+            twin::pinned(&v4, format!("numeric_as_and_binary_as/{numeric} {binary}"));
             assert_eq!(v4.is_ok(), ok, "{numeric} {binary}: {v4:?}");
         }
         // `hex` is honoured: the second row's `hi` is its bytes, not text.
@@ -862,7 +738,7 @@ mod tests {
             "connector": "db", "query": "SELECT blob FROM items WHERE id = 2",
             "binary_as": {"var": "data.hex"}, "output": "data.rows"
         });
-        let (_, v4) = both(input, data, json!({}), 1000).await;
+        let v4 = run(input, data, json!({}), 1000).await;
         assert_eq!(v4.expect("read")["rows"], json!([{"blob": "6869"}]));
     }
 
@@ -901,8 +777,9 @@ mod tests {
             ),
             (with("output", json!({"var": "data.n"})), json!({}), 1000),
         ] {
-            let (v3, v4) = both(input.clone(), data.clone(), config, max_rows).await;
-            assert_eq!(v4, v3, "{input}");
+            let key = format!("refusals/{input} {config} {max_rows}");
+            let v4 = run(input.clone(), data.clone(), config, max_rows).await;
+            twin::pinned(&v4, key);
             assert!(v4.is_err(), "{input}");
         }
     }
@@ -910,7 +787,7 @@ mod tests {
     /// The connector's kind and backend, as 1.12 refused them: not a `db`
     /// connector, and a `db` connector that is MongoDB.
     #[tokio::test]
-    async fn a_connector_of_another_kind_or_backend_is_refused_as_on_v3() {
+    async fn a_connector_of_another_kind_or_backend_is_refused() {
         for connector in [
             json!({"type": "http", "url": "http://127.0.0.1:1"}),
             json!({"type": "db", "connection_string": "mongodb://127.0.0.1:1"}),
@@ -918,18 +795,6 @@ mod tests {
             let input = json!({"connector": "db", "query": "SELECT 1", "output": "data.rows"});
             let pool_cache = Arc::new(SqlPoolCache::new(8));
             let registry = twin::connectors(&[("db", connector.clone())]).await;
-            let v3 = twin::v3(
-                NAME,
-                Box::new(super::super::connector_handler::Connector(DbReadHandler {
-                    pool_cache: pool_cache.clone(),
-                    registry: registry.clone(),
-                    max_rows: 1000,
-                    max_result_bytes: 0,
-                })),
-                input.clone(),
-                Value::Null,
-            )
-            .await;
             let v4 = twin::v4(
                 NAME,
                 DbReadFunction {
@@ -942,7 +807,10 @@ mod tests {
                 Value::Null,
             )
             .await;
-            assert_eq!(v4, v3, "{connector}");
+            twin::pinned(
+                &v4,
+                format!("a_connector_of_another_kind_or_backend/{connector}"),
+            );
             assert!(v4.is_err(), "{connector}");
         }
     }
@@ -983,12 +851,7 @@ mod tests {
     /// 1.12's code, text and retryability.
     #[tokio::test]
     async fn a_query_timeout_before_the_run_deadline_is_1_12s() {
-        let config = json!({"query_timeout_ms": 150});
-        let db = twin::sqlite(config.clone(), SEED).await;
-        let held = db.pool.acquire().await.expect("the one connection");
-        let v3 = twin::v3(NAME, handler(&db, 1000), select_rows(), Value::Null).await;
-        drop(held);
-        let db = twin::sqlite(config, SEED).await;
+        let db = twin::sqlite(json!({"query_timeout_ms": 150}), SEED).await;
         let _held = db.pool.acquire().await.expect("the one connection");
         let called = testing::call(function(&db, 1000), select_rows())
             .exprs(kit::test_exprs())
@@ -996,7 +859,7 @@ mod tests {
             .deadline(dataflow_rs::run::Instant::now() + Duration::from_secs(60))
             .await;
         let v4 = twin::seen(&called);
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "a_query_timeout_before_the_run_deadline");
         let failure = v4.expect_err("the query timed out");
         assert_eq!(failure.code, "TIMEOUT_ERROR");
         assert_eq!(
@@ -1008,24 +871,11 @@ mod tests {
 
     #[tokio::test]
     async fn td09_result_byte_cap_refuses_oversized_rows_as_400_limit_error() {
-        let db = twin::sqlite(json!({}), SEED).await;
         let input = json!({
             "connector": "db",
             "query": "SELECT id, name, price, blob FROM items ORDER BY id",
             "output": "data.rows"
         });
-        let v3 = twin::v3(
-            NAME,
-            Box::new(super::super::connector_handler::Connector(DbReadHandler {
-                pool_cache: db.pool_cache.clone(),
-                registry: db.registry.clone(),
-                max_rows: 1000,
-                max_result_bytes: 64,
-            })),
-            input.clone(),
-            Value::Null,
-        )
-        .await;
         let db4 = twin::sqlite(json!({}), SEED).await;
         let v4 = twin::v4(
             NAME,
@@ -1039,11 +889,13 @@ mod tests {
             Value::Null,
         )
         .await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "td09_result_byte_cap");
         let failure = v4.expect_err("oversized result set must be refused");
         assert_eq!(failure.code, "VALIDATION_ERROR");
         assert!(
-            failure.message.contains("query.max_result_bytes (64 bytes)"),
+            failure
+                .message
+                .contains("query.max_result_bytes (64 bytes)"),
             "expected max_result_bytes diagnostic, got: {}",
             failure.message
         );

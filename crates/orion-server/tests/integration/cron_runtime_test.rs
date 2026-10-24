@@ -80,7 +80,7 @@ fn slow_workflow(name: &str) -> Value {
                     "connector": "slow-endpoint",
                     "method": "GET",
                     "path": "/slow",
-                    "response_path": "data.called",
+                    "output": "data.called",
                     "timeout_ms": 5000
                 }
             }

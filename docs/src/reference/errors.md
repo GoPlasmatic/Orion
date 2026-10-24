@@ -187,8 +187,7 @@ The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{i
 | `reads '…', which no earlier task writes` | A `data.*` path read by a task that no earlier task writes. |
 | `… is JSONLogic in a field nothing evaluates` | An operator node in a connector-payload field, which folds `{"var": …}` and nothing else — so the expression is stored or sent verbatim. |
 | `… emits '…' with one '$' stripped` | A `$`-prefixed key in a template position. The engine strips one `$` from every such key, so a `{"$set": …}` update document composed in a `map` goes out as `{"set": …}`. Double the prefix (`$$set`) to emit the `$`. |
-| `a failing rule here records status 400 and task '…' still runs` | A [`validation`](./functions/validation.md) whose failure stops nothing: `4xx` warns and carries on, and `continue_on_error` governs `5xx` only. Add [`"halt_on": "failure"`](./workflows.md#halting-on-failure), or gate what follows. |
-| `group '…' carries continue_on_error, which the engine does not honour` | The key parses on a task group and is then dropped. It belongs on the tasks inside the group, or on the workflow. |
+| `a failing rule here records status 400 and task '…' still runs` | A [`validation`](./functions/validation.md) whose failure stops nothing: `4xx` warns and carries on, and `on_failure` governs `5xx` only. Add [`"on_rejection": "halt"`](./workflows.md#halting-on-a-rejection), or gate what follows. |
 
 The last three are the engine's own findings, reported wherever a workflow is checked: this endpoint, `orion-server lint`, `orion-server clippy`, the definition-set check and `preflight`. Each carries a stable id there ([`lint`](./cli/orion-server/lint.md)); here they arrive as warnings like any other.
 

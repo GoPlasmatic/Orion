@@ -1,0 +1,333 @@
+{
+  "absent_iat": {
+    "ok": {
+      "token": "<jws>",
+      "claims": {
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "computed_output/null": {
+    "ok": {
+      "sub": "u1",
+      "iat": 1700000000,
+      "exp": 1900000000
+    }
+  },
+  "cross_family": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: jwt_verify: token rejected (alg_rejected)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "every_family/ES256": {
+    "ok": {
+      "user_id": "user-7",
+      "token": "<jws>",
+      "claims": {
+        "sub": "user-7",
+        "roles": [
+          "teacher"
+        ],
+        "iss": "example-api",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "every_family/EdDSA": {
+    "ok": {
+      "user_id": "user-7",
+      "token": "<jws>",
+      "claims": {
+        "sub": "user-7",
+        "roles": [
+          "teacher"
+        ],
+        "iss": "example-api",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "every_family/HS256": {
+    "ok": {
+      "user_id": "user-7",
+      "token": "<jws>",
+      "claims": {
+        "sub": "user-7",
+        "roles": [
+          "teacher"
+        ],
+        "iss": "example-api",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "every_family/HS512": {
+    "ok": {
+      "user_id": "user-7",
+      "token": "<jws>",
+      "claims": {
+        "sub": "user-7",
+        "roles": [
+          "teacher"
+        ],
+        "iss": "example-api",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "every_family/PS256": {
+    "ok": {
+      "user_id": "user-7",
+      "token": "<jws>",
+      "claims": {
+        "sub": "user-7",
+        "roles": [
+          "teacher"
+        ],
+        "iss": "example-api",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "every_family/RS256": {
+    "ok": {
+      "user_id": "user-7",
+      "token": "<jws>",
+      "claims": {
+        "sub": "user-7",
+        "roles": [
+          "teacher"
+        ],
+        "iss": "example-api",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "explicit_iat": {
+    "ok": {
+      "token": "<jws>",
+      "claims": {
+        "sub": "u1",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "fully_pinned": {
+    "ok": {
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxOTAwMDAwMDAwfQ.kWB2xoWHxA5SVmk68hHh4fi5Xx3zdizh6CbrzH73Zcw",
+      "claims": {
+        "sub": "u1",
+        "iat": 1700000000,
+        "exp": 1900000000
+      }
+    }
+  },
+  "jwks_rotation/new": {
+    "ok": {
+      "token": "<jws>",
+      "claims": {
+        "sub": "u",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "jwks_rotation/old": {
+    "ok": {
+      "token": "<jws>",
+      "claims": {
+        "sub": "u",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "non_numeric_date/exp": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: claims.exp must be a number of seconds since the Unix epoch (NumericDate, RFC 7519 §2), got a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "non_numeric_date/iat": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: claims.iat must be a number of seconds since the Unix epoch (NumericDate, RFC 7519 §2), got a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "output_refusal/5": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "output_refusal/{\"a\":1}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "short_hs_key": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: HS secret is 5 bytes; RFC 7518 requires at least the hash length (32 bytes)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"key_encoding\":\"rot13\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_verify: 'keys[0]': key_encoding 'rot13' is not supported — utf8 (default), base64, hex",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"kid\":5,\"key_encoding\":7}": {
+    "ok": {
+      "token": "<jws>",
+      "k": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "n": 5,
+      "claims": {
+        "sub": "u",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":\"env://ORION_JWT_VERIFY_SURELY_UNSET_8P\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Configuration error: jwt_verify.keys: env-var 'ORION_JWT_VERIFY_SURELY_UNSET_8P' is not set (referenced via env:// in a connector config)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":\"short\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_verify: 'keys[0]': HS secret is 5 bytes; RFC 7518 requires at least the hash length (32 bytes) — a shorter secret weakens the MAC",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":7}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":null}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_verify: 'keys[0].key' is required",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":{\"cat\":[{\"secret\":\"signing\"}]}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":{\"secret\":\"count\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'jwt_verify.keys': secret 'count' is not a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":{\"secret\":\"signing\"}}": {
+    "ok": {
+      "token": "<jws>",
+      "k": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "n": 5,
+      "claims": {
+        "sub": "u",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":{\"secret\":[\"signing\"]}}": {
+    "ok": {
+      "token": "<jws>",
+      "k": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "n": 5,
+      "claims": {
+        "sub": "u",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":{\"secret\":{\"var\":\"data.k\"}}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS256\",\"key\":{\"var\":\"data.k\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "static_key/{\"algorithm\":\"HS999\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_verify: algorithm 'HS999' is not supported — one of HS256, HS384, HS512, RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, EdDSA",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "store_round_trip": {
+    "ok": {
+      "token": "<jws>",
+      "claims": {
+        "sub": "u1",
+        "iat": "<clock>",
+        "exp": "<clock>"
+      }
+    }
+  },
+  "verify_failures/audience": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: jwt_verify: token rejected (audience_mismatch)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "verify_failures/expired": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: jwt_verify: token rejected (expired)",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

@@ -93,9 +93,6 @@ orion-definitions.workspace = true
 # and `tensor` still need their Cargo gates; `budget` enables the ops ceiling.
 # Use the published crate so builds do not require a developer's checkout.
 dataflow-rs = { version = "4.0.1", features = ["datetime", "tensor", "budget"] }
-# dataflow-rs 3.15, beside v4 until the port deletes it (Task O14). The derive
-# emits `::dataflow_rs::` paths, so v3 is the one renamed.
-dataflow-rs-v3 = { package = "dataflow-rs", version = "=3.15.0", features = ["all-operators", "tensor", "budget"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went

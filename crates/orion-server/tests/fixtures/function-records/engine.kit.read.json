@@ -1,0 +1,3127 @@
+{
+  "binary_as/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got '')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got '18446744073709551615d')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got '24h')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got '5m')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got '5x')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got '90')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"base64\"": {
+    "ok": "Base64"
+  },
+  "binary_as/\"hex\"": {
+    "ok": "Hex"
+  },
+  "binary_as/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got 'number')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got 'orders')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must be one of auto/hex/base64/text (got 'string')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/null": {
+    "ok": "Auto"
+  },
+  "binary_as/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "binary_as/unset": {
+    "ok": "Auto"
+  },
+  "binary_as/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/[\"a\",1,true]": {
+    "ok": "[String(\"a\"), Number(1), Bool(true)]"
+  },
+  "bind_params/[\"a\",null]": {
+    "ok": "[String(\"a\"), Null]"
+  },
+  "bind_params/[\"a\",{\"k\":1}]": {
+    "ok": "[String(\"a\"), Object {\"k\": Number(1)}]"
+  },
+  "bind_params/[]": {
+    "ok": "[]"
+  },
+  "bind_params/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/null": {
+    "ok": "[]"
+  },
+  "bind_params/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bind_params/unset": {
+    "ok": "[]"
+  },
+  "bind_params/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'params' must resolve to an array of bind values, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/false/false": {
+    "ok": "false"
+  },
+  "bool_or/false/null": {
+    "ok": "false"
+  },
+  "bool_or/false/true": {
+    "ok": "true"
+  },
+  "bool_or/false/unset": {
+    "ok": "false"
+  },
+  "bool_or/false/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bool_or/true/false": {
+    "ok": "false"
+  },
+  "bool_or/true/null": {
+    "ok": "true"
+  },
+  "bool_or/true/true": {
+    "ok": "true"
+  },
+  "bool_or/true/unset": {
+    "ok": "true"
+  },
+  "bool_or/true/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'upsert' must resolve to a boolean, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "boolean/false": {
+    "ok": "false"
+  },
+  "boolean/null": {
+    "ok": "false"
+  },
+  "boolean/true": {
+    "ok": "true"
+  },
+  "boolean/unset": {
+    "ok": "false"
+  },
+  "boolean/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'raw' must resolve to a boolean, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': '' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': '18446744073709551615d' overflows",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"24h\"": {
+    "ok": "Some(86400)"
+  },
+  "duration_secs/\"5m\"": {
+    "ok": "Some(300)"
+  },
+  "duration_secs/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': '5x' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': '90' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': 'base64' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': 'hex' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': 'number' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': 'orders' is not a duration — the part before the unit must be a number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs': 'string' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/0": {
+    "ok": "Some(0)"
+  },
+  "duration_secs/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/7": {
+    "ok": "Some(7)"
+  },
+  "duration_secs/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/null": {
+    "ok": "None"
+  },
+  "duration_secs/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "duration_secs/unset": {
+    "ok": "None"
+  },
+  "duration_secs/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'ttl_secs' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/0": {
+    "ok": "Some(0)"
+  },
+  "mongo_u64/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/7": {
+    "ok": "Some(7)"
+  },
+  "mongo_u64/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/null": {
+    "ok": "None"
+  },
+  "mongo_u64/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "mongo_u64/unset": {
+    "ok": "None"
+  },
+  "mongo_u64/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'limit' must resolve to a non-negative integer, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got '')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got '18446744073709551615d')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got '24h')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got '5m')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got '5x')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got '90')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got 'base64')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got 'hex')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"number\"": {
+    "ok": "Number"
+  },
+  "numeric_as/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got 'orders')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/\"string\"": {
+    "ok": "String"
+  },
+  "numeric_as/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/null": {
+    "ok": "Number"
+  },
+  "numeric_as/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as/unset": {
+    "ok": "Number"
+  },
+  "numeric_as/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/-3": {
+    "ok": "Some(-3)"
+  },
+  "optional_i64/-9223372036854775808": {
+    "ok": "Some(-9223372036854775808)"
+  },
+  "optional_i64/0": {
+    "ok": "Some(0)"
+  },
+  "optional_i64/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a whole number that fits in 64 bits",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a whole number that fits in 64 bits",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a whole number that fits in 64 bits",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/7": {
+    "ok": "Some(7)"
+  },
+  "optional_i64/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/null": {
+    "ok": "None"
+  },
+  "optional_i64/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_i64/unset": {
+    "ok": "None"
+  },
+  "optional_i64/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'by' must resolve to a number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/\"\"": {
+    "ok": "Some(\"\")"
+  },
+  "optional_str/\"18446744073709551615d\"": {
+    "ok": "Some(\"18446744073709551615d\")"
+  },
+  "optional_str/\"24h\"": {
+    "ok": "Some(\"24h\")"
+  },
+  "optional_str/\"5m\"": {
+    "ok": "Some(\"5m\")"
+  },
+  "optional_str/\"5x\"": {
+    "ok": "Some(\"5x\")"
+  },
+  "optional_str/\"90\"": {
+    "ok": "Some(\"90\")"
+  },
+  "optional_str/\"base64\"": {
+    "ok": "Some(\"base64\")"
+  },
+  "optional_str/\"hex\"": {
+    "ok": "Some(\"hex\")"
+  },
+  "optional_str/\"number\"": {
+    "ok": "Some(\"number\")"
+  },
+  "optional_str/\"orders\"": {
+    "ok": "Some(\"orders\")"
+  },
+  "optional_str/\"string\"": {
+    "ok": "Some(\"string\")"
+  },
+  "optional_str/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/null": {
+    "ok": "None"
+  },
+  "optional_str/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_str/unset": {
+    "ok": "None"
+  },
+  "optional_str/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'from' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/0": {
+    "ok": "Some(0)"
+  },
+  "optional_u64/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/7": {
+    "ok": "Some(7)"
+  },
+  "optional_u64/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/null": {
+    "ok": "None"
+  },
+  "optional_u64/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "optional_u64/unset": {
+    "ok": "None"
+  },
+  "optional_u64/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'leeway_secs' must resolve to a number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "params/\"\"": {
+    "ok": "{}"
+  },
+  "params/\"18446744073709551615d\"": {
+    "ok": "{}"
+  },
+  "params/\"24h\"": {
+    "ok": "{}"
+  },
+  "params/\"5m\"": {
+    "ok": "{}"
+  },
+  "params/\"5x\"": {
+    "ok": "{}"
+  },
+  "params/\"90\"": {
+    "ok": "{}"
+  },
+  "params/\"base64\"": {
+    "ok": "{}"
+  },
+  "params/\"hex\"": {
+    "ok": "{}"
+  },
+  "params/\"number\"": {
+    "ok": "{}"
+  },
+  "params/\"orders\"": {
+    "ok": "{}"
+  },
+  "params/\"string\"": {
+    "ok": "{}"
+  },
+  "params/-3": {
+    "ok": "{}"
+  },
+  "params/-9223372036854775808": {
+    "ok": "{}"
+  },
+  "params/0": {
+    "ok": "{}"
+  },
+  "params/18446744073709551615": {
+    "ok": "{}"
+  },
+  "params/1e+20": {
+    "ok": "{}"
+  },
+  "params/2.5": {
+    "ok": "{}"
+  },
+  "params/7": {
+    "ok": "{}"
+  },
+  "params/[\"a\",1,true]": {
+    "ok": "{}"
+  },
+  "params/[\"a\",null]": {
+    "ok": "{}"
+  },
+  "params/[\"a\",{\"k\":1}]": {
+    "ok": "{}"
+  },
+  "params/[]": {
+    "ok": "{}"
+  },
+  "params/false": {
+    "ok": "{}"
+  },
+  "params/null": {
+    "ok": "{}"
+  },
+  "params/true": {
+    "ok": "{}"
+  },
+  "params/unset": {
+    "ok": "{}"
+  },
+  "params/{\"k\":1}": {
+    "ok": "{\"k\": Number(1)}"
+  },
+  "plain_str/\"\"": {
+    "ok": "\"\""
+  },
+  "plain_str/\"18446744073709551615d\"": {
+    "ok": "\"18446744073709551615d\""
+  },
+  "plain_str/\"24h\"": {
+    "ok": "\"24h\""
+  },
+  "plain_str/\"5m\"": {
+    "ok": "\"5m\""
+  },
+  "plain_str/\"5x\"": {
+    "ok": "\"5x\""
+  },
+  "plain_str/\"90\"": {
+    "ok": "\"90\""
+  },
+  "plain_str/\"base64\"": {
+    "ok": "\"base64\""
+  },
+  "plain_str/\"hex\"": {
+    "ok": "\"hex\""
+  },
+  "plain_str/\"number\"": {
+    "ok": "\"number\""
+  },
+  "plain_str/\"orders\"": {
+    "ok": "\"orders\""
+  },
+  "plain_str/\"string\"": {
+    "ok": "\"string\""
+  },
+  "plain_str/-3": {
+    "ok": "\"-3\""
+  },
+  "plain_str/-9223372036854775808": {
+    "ok": "\"-9223372036854775808\""
+  },
+  "plain_str/0": {
+    "ok": "\"0\""
+  },
+  "plain_str/18446744073709551615": {
+    "ok": "\"1.8446744073709552e19\""
+  },
+  "plain_str/1e+20": {
+    "ok": "\"1e20\""
+  },
+  "plain_str/2.5": {
+    "ok": "\"2.5\""
+  },
+  "plain_str/7": {
+    "ok": "\"7\""
+  },
+  "plain_str/false": {
+    "ok": "\"false\""
+  },
+  "plain_str/true": {
+    "ok": "\"true\""
+  },
+  "required_str/\"\"": {
+    "ok": "\"\""
+  },
+  "required_str/\"18446744073709551615d\"": {
+    "ok": "\"18446744073709551615d\""
+  },
+  "required_str/\"24h\"": {
+    "ok": "\"24h\""
+  },
+  "required_str/\"5m\"": {
+    "ok": "\"5m\""
+  },
+  "required_str/\"5x\"": {
+    "ok": "\"5x\""
+  },
+  "required_str/\"90\"": {
+    "ok": "\"90\""
+  },
+  "required_str/\"base64\"": {
+    "ok": "\"base64\""
+  },
+  "required_str/\"hex\"": {
+    "ok": "\"hex\""
+  },
+  "required_str/\"number\"": {
+    "ok": "\"number\""
+  },
+  "required_str/\"orders\"": {
+    "ok": "\"orders\""
+  },
+  "required_str/\"string\"": {
+    "ok": "\"string\""
+  },
+  "required_str/-3": {
+    "ok": "\"-3\""
+  },
+  "required_str/-9223372036854775808": {
+    "ok": "\"-9223372036854775808\""
+  },
+  "required_str/0": {
+    "ok": "\"0\""
+  },
+  "required_str/18446744073709551615": {
+    "ok": "\"1.8446744073709552e+19\""
+  },
+  "required_str/1e+20": {
+    "ok": "\"1e+20\""
+  },
+  "required_str/2.5": {
+    "ok": "\"2.5\""
+  },
+  "required_str/7": {
+    "ok": "\"7\""
+  },
+  "required_str/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'key' must resolve to a string or number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'key' must resolve to a string or number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'key' must resolve to a string or number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str/[]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'key' must resolve to a string or number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str/false": {
+    "ok": "\"false\""
+  },
+  "required_str/null": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'key' must resolve to a string or number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str/true": {
+    "ok": "\"true\""
+  },
+  "required_str/unset": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe requires 'key' field",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'key' must resolve to a string or number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' resolved to 3 keys; at most 0 are allowed in one call",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' resolved to 2 keys; at most 0 are allowed in one call",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' resolved to 2 keys; at most 0 are allowed in one call",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/[]": {
+    "ok": "[]"
+  },
+  "required_str_list/0/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/null": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/unset": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe requires 'keys' field",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/0/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/[\"a\",1,true]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' resolved to 3 keys; at most 1 are allowed in one call",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' resolved to 2 keys; at most 1 are allowed in one call",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' resolved to 2 keys; at most 1 are allowed in one call",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/[]": {
+    "ok": "[]"
+  },
+  "required_str_list/1/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/null": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/unset": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe requires 'keys' field",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/0": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/18446744073709551615": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/2.5": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/[\"a\",1,true]": {
+    "ok": "[\"a\", \"1\", \"true\"]"
+  },
+  "required_str_list/1000/[\"a\",null]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys[1]' must resolve to a string or number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/[\"a\",{\"k\":1}]": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys[1]' must resolve to a string or number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/[]": {
+    "ok": "[]"
+  },
+  "required_str_list/1000/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/null": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/unset": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe requires 'keys' field",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "required_str_list/1000/{\"k\":1}": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe 'keys' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "row_format/\"money\"/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'numeric_as' must be one of number/string (got 'money')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "row_format/\"string\"/\"hex\"": {
+    "ok": "RowFormat { numeric: String, binary: Hex }"
+  },
+  "row_format/\"string\"/7": {
+    "err": {
+      "code": "CallerInput",
+      "message": "probe: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"18446744073709551615d\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"18446744073709551615d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"24h\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"5m\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"5m\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"5x\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"5x\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"90\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"90\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"base64\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"base64\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"hex\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"hex\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"number\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"number\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"orders\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"orders\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/\"string\"": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got \"string\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/-3": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got -3",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/-9223372036854775808": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got -9223372036854775808",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/0": {
+    "ok": "0"
+  },
+  "template_u64/18446744073709551615": {
+    "ok": "18446744073709551615"
+  },
+  "template_u64/1e+20": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got 1e20",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/2.5": {
+    "ok": "2"
+  },
+  "template_u64/7": {
+    "ok": "7"
+  },
+  "template_u64/false": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got false",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "template_u64/true": {
+    "err": {
+      "code": "CallerInput",
+      "message": "http_call timeout_ms must evaluate to a non-negative number, got true",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

@@ -372,7 +372,7 @@ pub(crate) fn ensure_functions_available(
 /// renamed between versions, a new required one. Without it the activation
 /// succeeds and the next reload quarantines every dependant, because the
 /// handler checks the authored input against its table when the workflow
-/// loads (`parse_input_with`). Refusing here says which workflow and which
+/// compiles. Refusing here says which workflow and which
 /// field, while the previous version is still serving. A `409`, like the
 /// archive gate: the conflict is with other rows' state.
 ///

@@ -65,7 +65,7 @@ fn entity_key_tables_cover_exactly_the_request_schemas() {
 }
 
 /// The step tables against the workflow reference's own field tables.
-/// `dataflow_rs_v3::Task` is `#[non_exhaustive]` and not `Serialize`, so the
+/// The engine's task definition is `#[non_exhaustive]` and not `Serialize`, so the
 /// page — which `docs_routes_drift_test`'s siblings already keep honest —
 /// is the closest pin available. A task's `description` is accepted by the
 /// engine but not documented, and is allowed as the one extra.
@@ -125,7 +125,7 @@ fn every_builtin_input_table_names_an_engine_builtin_and_only_those() {
     let builtins: BTreeSet<&str> = catalogue
         .iter()
         .filter(|e| e.input_fields.is_none())
-        .flat_map(|e| std::iter::once(e.name.as_str()).chain(e.aliases.iter().map(String::as_str)))
+        .map(|e| e.name.as_str())
         .collect();
     let tabled: BTreeSet<&str> = style::BUILTIN_INPUT_KEYS.iter().map(|(n, _)| *n).collect();
     assert_eq!(

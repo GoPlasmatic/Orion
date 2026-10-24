@@ -1,0 +1,204 @@
+{
+  "output_refusal/5": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "output_refusal/[\"data.token\"]": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"%%%\",\"expires_in\":300,\"output\":\"data.token\",\"key_encoding\":\"base64\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: key does not decode as base64: Invalid symbol 37, offset 0.",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"claims\":{\"exp\":\"2026-08-20T00:00:00Z\"},\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: claims.exp must be a number of seconds since the Unix epoch (NumericDate, RFC 7519 §2), got a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"claims\":{\"sub\":\"u\"},\"expires_in\":{\"var\":\"data.missing\"},\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: requires 'expires_in' (or an explicit 'exp' claim — non-expiring tokens must be deliberate)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":-5,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'expires_in' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":0,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'expires_in' must be between 1 second and 315360000 seconds (10 years)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":1.5,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'expires_in' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"claims\":[1]} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'claims' must resolve to an object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"claims\":null} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'claims' must resolve to an object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"claims\":{\"iat\":\"2026-08-20T00:00:00Z\"}} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: claims.iat must be a number of seconds since the Unix epoch (NumericDate, RFC 7519 §2), got a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"claims\":{\"var\":\"data.n\"}} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'claims' must resolve to an object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"issuer\":{\"var\":\"data.obj\"}} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'issuer' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"kid\":{\"var\":\"data.n\"},\"claims\":{\"var\":\"data.n\"}} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'kid' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"kid\":{\"var\":\"data.n\"}} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'kid' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":300,\"output\":\"data.token\",\"not_before\":\"abc\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'not_before': 'abc' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":315360001,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'expires_in' must be between 1 second and 315360000 seconds (10 years)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":{\"var\":\"data.bad\"},\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'expires_in': '5x' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"expires_in\":{\"var\":\"data.obj\"},\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: 'expires_in' must be seconds (integer) or a duration like \"24h\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"key_encoding\":\"utf8\",\"claims\":{\"sub\":{\"var\":\"data.user\"},\"iat\":1700000000,\"exp\":1900000000,\"scope\":[\"read\",{\"var\":\"data.scope\"}],\"$role\":\"admin\"},\"issuer\":{\"var\":\"data.iss\"},\"audience\":[\"app\",{\"var\":\"data.aud\"}],\"kid\":{\"cat\":[\"k-\",{\"var\":\"data.n\"}]},\"output\":\"data.token\"} {\"user\":\"u1\",\"scope\":\"write\",\"iss\":\"orion\",\"aud\":\"partner\",\"n\":2}": {
+    "ok": {
+      "user": "u1",
+      "scope": "write",
+      "iss": "orion",
+      "aud": "partner",
+      "n": 2,
+      "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6ImstMiJ9.eyJzdWIiOiJ1MSIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxOTAwMDAwMDAwLCJzY29wZSI6WyJyZWFkIiwid3JpdGUiXSwiJHJvbGUiOiJhZG1pbiIsImlzcyI6Im9yaW9uIiwiYXVkIjpbImFwcCIsInBhcnRuZXIiXX0.oyUsJgGVRWXBDT4ktI8SLQhKQ_6wqrZMDCThR4ZnwFQ"
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"env://ORION_JWT_SIGN_SURELY_UNSET_3Q\",\"expires_in\":300,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Configuration error: jwt_sign.key: env-var 'ORION_JWT_SIGN_SURELY_UNSET_3Q' is not set (referenced via env:// in a connector config)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":\"short\",\"expires_in\":300,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: HS secret is 5 bytes; RFC 7518 requires at least the hash length (32 bytes)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":null,\"expires_in\":300,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: requires 'key' ({\"secret\": \"name\"}, a secret reference like env://NAME, an expression, or a literal)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"HS256\",\"key\":{\"var\":\"data.n\"},\"expires_in\":300,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'jwt_sign.key' must resolve to a string, got 5",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"algorithm\":\"RS256\",\"key\":\"not a pem\",\"expires_in\":300,\"output\":\"data.token\"} {\"n\":5,\"bad\":\"5x\",\"obj\":{\"a\":1}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: jwt_sign: not a usable RSA private key PEM: InvalidKeyFormat",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

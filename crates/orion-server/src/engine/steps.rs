@@ -24,31 +24,33 @@
 //! about what a workflow contains, and the disagreement would be silent in the
 //! direction that matters: fewer things checked, still reported green.
 //!
-//! # Since dataflow-rs 3.7 this is an adapter, not an implementation
+//! # The group test and the depth cap are the parser's
 //!
-//! The traversal, the group test and the depth cap now come from
-//! [`walk_authored_steps`], which the engine ships precisely so a host stops
-//! mirroring them. What is left here is the *shape* Orion's callers want —
-//! leaves and groups pre-split into vectors — over the engine's lazy iterator.
-//!
-//! Mirroring cost Orion one real bug, and it is the reason this module no
-//! longer holds a depth constant of its own. Orion counted depth from 1 while
-//! the parser counts enclosing groups from 0, so the mirror refused the eighth
-//! nesting level that dataflow-rs accepts: a legal workflow was rejected at
-//! create with an "engine refuses to build this" message that was not true.
-//! Reading [`MAX_GROUP_DEPTH`] means the limit tracks the parser by
-//! construction.
+//! dataflow-rs 4 parses the authored tree but publishes no walker over raw
+//! JSON, and Orion's callers need the raw nodes: a malformed task the parser
+//! refuses is still a node a validator must point at. So the traversal lives
+//! here, and the two facts it depends on match the parser: a step is a group
+//! when it carries a `tasks` key (whatever that key holds), and groups nest at
+//! most [`MAX_GROUP_DEPTH`] deep, counted from 0 at the top level. Orion once
+//! counted depth from 1 and refused the deepest nesting the parser accepts, so
+//! the number comes from the engine, not from here.
 
-use dataflow_rs_v3::{MAX_GROUP_DEPTH, StepKind, walk_authored_steps, walk_authored_steps_at};
+use dataflow_rs::def::MAX_GROUP_DEPTH;
 use serde_json::Value;
-
-pub use dataflow_rs_v3::is_group;
 
 /// dataflow-rs refuses a step tree nested deeper than this.
 ///
 /// Re-exported rather than redefined so the number an author is told about is
 /// the number the parser enforces.
 pub const MAX_STEP_DEPTH: usize = MAX_GROUP_DEPTH;
+
+/// Whether an authored step is a task group: it carries a `tasks` key. The
+/// key's presence decides, not its type, so `{"tasks": "oops"}` is a
+/// malformed group rather than a task.
+#[inline]
+pub fn is_group(step: &Value) -> bool {
+    step.get("tasks").is_some()
+}
 
 /// What a `tasks` array holds, flattened.
 #[derive(Debug, Default)]
@@ -74,47 +76,56 @@ pub struct Steps<'a> {
 /// `setup` list, at `loop.setup[0]`…, then `tasks`.
 ///
 /// Both halves, always. A loop's setup steps are tasks the engine resolves,
-/// validates and runs exactly as it does the body's (dataflow-rs 3.14), and a
-/// walk handed `tasks` alone passed an unknown function, a missing connector
-/// or a duplicate id placed there without a word (#351). Taking the loop in
-/// the signature is what makes that omission something a caller has to write
-/// out rather than fall into.
-fn authored_steps<'a>(
-    tasks: &'a Value,
-    loop_config: Option<&'a Value>,
-) -> impl Iterator<Item = dataflow_rs_v3::AuthoredStep<'a>> {
-    let setup = loop_config.and_then(|l| l.get("setup"));
-    setup
-        .into_iter()
-        .flat_map(|setup| walk_authored_steps_at(setup, "loop.setup"))
-        .chain(walk_authored_steps(tasks))
+/// validates and runs exactly as it does the body's, and a walk handed `tasks`
+/// alone passed an unknown function, a missing connector or a duplicate id
+/// placed there without a word (#351). Taking the loop in the signature is
+/// what makes that omission something a caller has to write out rather than
+/// fall into.
+fn walk_into<'a>(tasks: &'a Value, loop_config: Option<&'a Value>, out: &mut Steps<'a>) {
+    if let Some(setup) = loop_config.and_then(|l| l.get("setup")) {
+        walk_list(setup, "loop.setup", 0, out);
+    }
+    walk_list(tasks, "tasks", 0, out);
+}
+
+/// One step list, pre-order: a group before its members. A list that is not
+/// an array yields nothing; whether it must be one is the caller's rule.
+fn walk_list<'a>(steps: &'a Value, prefix: &str, depth: usize, out: &mut Steps<'a>) {
+    let Some(items) = steps.as_array() else {
+        return;
+    };
+    for (idx, node) in items.iter().enumerate() {
+        let path = format!("{prefix}[{idx}]");
+        if !is_group(node) {
+            out.tasks.push((path, node));
+        } else if depth >= MAX_GROUP_DEPTH {
+            out.too_deep.push(path);
+        } else {
+            let members = node.get("tasks").expect("is_group checked the key");
+            let member_prefix = format!("{path}.tasks");
+            out.groups.push((path, node));
+            walk_list(members, &member_prefix, depth + 1, out);
+        }
+    }
 }
 
 /// Flatten a workflow's steps into its leaf tasks and its groups, setup
 /// first.
 pub fn walk_steps<'a>(tasks: &'a Value, loop_config: Option<&'a Value>) -> Steps<'a> {
     let mut out = Steps::default();
-    for step in authored_steps(tasks, loop_config) {
-        match step.kind {
-            StepKind::Leaf => out.tasks.push((step.path, step.node)),
-            StepKind::Group => out.groups.push((step.path, step.node)),
-            StepKind::TooDeep => out.too_deep.push(step.path),
-        }
-    }
+    walk_into(tasks, loop_config, &mut out);
     out
 }
 
 /// Just the leaf tasks, setup first, for the walks that do not need paths.
 ///
-/// The engine's walker formats a path for every node, so this no longer saves
-/// the allocation it once did — it saves the caller a `filter`/`map` and keeps
-/// "which tasks are in this workflow" a single spelling. The traversal is the
-/// same one [`walk_steps`] uses, which is the property that matters: the
-/// premise of this module is that every walk sees the same tasks.
+/// The same traversal [`walk_steps`] runs, which is the property that matters:
+/// the premise of this module is that every walk sees the same tasks.
 pub fn leaf_tasks<'a>(tasks: &'a Value, loop_config: Option<&'a Value>) -> Vec<&'a Value> {
-    authored_steps(tasks, loop_config)
-        .filter(|step| step.kind == StepKind::Leaf)
-        .map(|step| step.node)
+    walk_steps(tasks, loop_config)
+        .tasks
+        .into_iter()
+        .map(|(_, task)| task)
         .collect()
 }
 
@@ -243,12 +254,14 @@ mod tests {
             walk_steps(&inner, None).too_deep.is_empty(),
             "{MAX_STEP_DEPTH} levels of nesting is what the parser accepts"
         );
+        let parsed = dataflow_rs::def::parse(
+            &json!({"id": "w", "name": "w", "condition": true, "tasks": inner}),
+            crate::engine::parse_options(),
+        );
         assert!(
-            serde_json::from_value::<dataflow_rs_v3::Workflow>(json!({
-                "id": "w", "name": "w", "condition": true, "tasks": inner,
-            }))
-            .is_ok(),
-            "and the parser agrees, which is the whole claim"
+            parsed.def.is_some(),
+            "and the parser agrees, which is the whole claim: {:?}",
+            parsed.issues
         );
     }
 
@@ -263,9 +276,24 @@ mod tests {
         assert!(steps.groups.is_empty());
     }
 
-    /// [`leaf_tasks`] and [`walk_steps`] must not drift apart. Upstream pins
-    /// its walker against the engine's own flattening; this pins Orion's two
-    /// spellings of it against each other.
+    /// One past the deepest nesting the parser accepts: the parser refuses it,
+    /// and the walk reports it, so the two agree on where the limit is.
+    #[test]
+    fn the_parser_refuses_what_the_walk_reports_too_deep() {
+        let mut inner = json!([task("leaf")]);
+        for i in 0..=MAX_STEP_DEPTH {
+            inner = json!([{"id": format!("g{i}"), "tasks": inner}]);
+        }
+        assert_eq!(walk_steps(&inner, None).too_deep.len(), 1);
+        let parsed = dataflow_rs::def::parse(
+            &json!({"id": "w", "name": "w", "condition": true, "tasks": inner}),
+            crate::engine::parse_options(),
+        );
+        assert!(parsed.def.is_none(), "the parser refuses it too");
+    }
+
+    /// [`leaf_tasks`] and [`walk_steps`] must not drift apart: this pins
+    /// Orion's two spellings of the walk against each other.
     #[test]
     fn leaf_tasks_sees_exactly_what_walk_steps_sees() {
         let mut deep = json!([task("leaf")]);

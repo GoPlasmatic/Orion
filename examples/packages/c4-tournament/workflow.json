@@ -13,7 +13,7 @@
     {
       "id": "validate",
       "name": "Require a model id",
-      "halt_on": "failure",
+      "on_rejection": "halt",
       "function": {
         "name": "validation",
         "input": {
@@ -69,7 +69,7 @@
     {
       "id": "legal",
       "name": "The opening move must be legal",
-      "halt_on": "failure",
+      "on_rejection": "halt",
       "function": {
         "name": "validation",
         "input": {

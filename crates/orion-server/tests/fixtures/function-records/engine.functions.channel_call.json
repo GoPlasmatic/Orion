@@ -1,0 +1,417 @@
+{
+  "basic": {
+    "ok": {
+      "result": {
+        "input": {
+          "name": "World"
+        },
+        "greeting": "Hello, World"
+      }
+    }
+  },
+  "completes_with_errors": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: channel_call to 'failing' failed: IO_ERROR: Task boom error: IO error: the backend is down",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":\"target\",\"data\":{\"throw\":\"boom\"}}": {
+    "err": {
+      "code": "LOGIC_ERROR",
+      "message": "Logic evaluation error: Thrown: {\"type\":\"boom\"} (in operator: throw)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":\"target\",\"timeout_ms\":\"soon\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call 'timeout_ms' must evaluate to a non-negative number, got \"soon\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":\"target\",\"timeout_ms\":-1}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call 'timeout_ms' must evaluate to a non-negative number, got -1",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":\"target\",\"timeout_ms\":{\"var\":\"data.in.empty\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call 'timeout_ms' must evaluate to a non-negative number, got \"\"",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":{\"throw\":\"boom\"}}": {
+    "err": {
+      "code": "LOGIC_ERROR",
+      "message": "Logic evaluation error: Thrown: {\"type\":\"boom\"} (in operator: throw)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":{\"var\":\"data.in.empty\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call: target channel name must not be empty",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":{\"var\":\"data.in.missing\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call 'channel' must evaluate to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_fields/{\"channel\":{\"var\":\"data.in.n\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call 'channel' must evaluate to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_output/{\"var\":\"data.in.n\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_output/{\"var\":\"data.in.nowhere\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "computed_output/{\"var\":\"data.in.where\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a path in the context: path `result` must start at `data`, `metadata` or `temp_data`",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "fields/{\"channel\":\"echo\",\"data\":{\"cat\":[\"a\",\"b\"]},\"output\":\"temp_data.r\"}": {
+    "ok": {
+      "parsed": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      }
+    }
+  },
+  "fields/{\"channel\":\"echo\",\"data\":{\"var\":\"data.parsed.inner\"},\"output\":\"data.r\"}": {
+    "ok": {
+      "parsed": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      },
+      "r": {
+        "got": {
+          "k": 1
+        }
+      }
+    }
+  },
+  "fields/{\"channel\":\"echo\",\"output\":\"data.r\",\"timeout_ms\":2.5}": {
+    "ok": {
+      "parsed": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      },
+      "r": {
+        "got": {
+          "inner": {
+            "k": 1
+          },
+          "ms": 5000
+        }
+      }
+    }
+  },
+  "fields/{\"channel\":\"echo\",\"output\":\"data.r\",\"timeout_ms\":5000}": {
+    "ok": {
+      "parsed": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      },
+      "r": {
+        "got": {
+          "inner": {
+            "k": 1
+          },
+          "ms": 5000
+        }
+      }
+    }
+  },
+  "fields/{\"channel\":\"echo\",\"output\":\"data.r\",\"timeout_ms\":{\"var\":\"data.parsed.ms\"}}": {
+    "ok": {
+      "parsed": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      },
+      "r": {
+        "got": {
+          "inner": {
+            "k": 1
+          },
+          "ms": 5000
+        }
+      }
+    }
+  },
+  "fields/{\"channel\":\"echo\",\"output\":\"data.r\"}": {
+    "ok": {
+      "parsed": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      },
+      "r": {
+        "got": {
+          "inner": {
+            "k": 1
+          },
+          "ms": 5000
+        }
+      }
+    }
+  },
+  "fields/{\"channel\":\"echo\"}": {
+    "ok": {
+      "got": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      }
+    }
+  },
+  "fields/{\"channel\":{\"cat\":[\"ec\",\"ho\"]},\"output\":{\"cat\":[\"data.\",\"x\"]}}": {
+    "ok": {
+      "parsed": {
+        "inner": {
+          "k": 1
+        },
+        "ms": 5000
+      },
+      "x": {
+        "got": {
+          "inner": {
+            "k": 1
+          },
+          "ms": 5000
+        }
+      }
+    }
+  },
+  "guards/{\"to\":\"guarded\",\"send\":{\"name\":\"Ada\"}}": {
+    "ok": {
+      "in": {
+        "to": "guarded",
+        "send": {
+          "name": "Ada"
+        }
+      },
+      "first": {
+        "input": {
+          "name": "Ada"
+        },
+        "greeting": "Hello, Ada"
+      },
+      "second": {
+        "input": {
+          "name": "Ada"
+        },
+        "greeting": "Hello, Ada"
+      }
+    }
+  },
+  "guards/{\"to\":\"guarded\",\"send\":{\"name\":\"Bob\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call to 'guarded': Input validation failed",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "guards/{\"to\":\"limited\",\"send\":{\"name\":\"Ada\"}}": {
+    "err": {
+      "code": "channel_rate_limited",
+      "message": "channel_call to 'limited': Too many requests",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "guards_see_no_records": {
+    "ok": {
+      "own": "boom",
+      "r": {
+        "input": {
+          "name": "Ada"
+        },
+        "greeting": "Hello, Ada"
+      }
+    }
+  },
+  "metadata/{\"_orion_call_depth\":\"two\",\"_orion_call_chain\":\"edge\"}": {
+    "ok": {
+      "seen": {
+        "depth": 1,
+        "chain": [
+          "probe"
+        ],
+        "channel": "probe"
+      }
+    }
+  },
+  "metadata/{\"_orion_call_depth\":2,\"_orion_call_chain\":[\"edge\",\"mid\"]}": {
+    "ok": {
+      "seen": {
+        "depth": 3,
+        "chain": [
+          "edge",
+          "mid",
+          "probe"
+        ],
+        "channel": "probe"
+      }
+    }
+  },
+  "metadata/{\"headers\":{\"x-trace\":\"abc\"},\"vars\":{\"region\":\"eu\"}}": {
+    "ok": {
+      "seen": {
+        "depth": 1,
+        "chain": [
+          "probe"
+        ],
+        "channel": "probe",
+        "header": "abc",
+        "vars": {
+          "region": "eu"
+        }
+      }
+    }
+  },
+  "metadata/{}": {
+    "ok": {
+      "seen": {
+        "depth": 1,
+        "chain": [
+          "probe"
+        ],
+        "channel": "probe"
+      }
+    }
+  },
+  "own_timeout/None/{\"timeout_ms\":150}/30000/Some(5000)": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: channel_call to 'target' timed out after 150ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "own_timeout/None/{}/200/None": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: channel_call to 'target' timed out after 200ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "own_timeout/Some(100)/{}/30000/None": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: channel_call to 'target' timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "own_timeout/Some(100)/{}/30000/Some(5000)": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: channel_call to 'target' timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "recursion/caller/{\"_orion_call_chain\":[\"edge\",\"target\"]}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call: cycle detected: edge -> target -> target",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "recursion/caller/{\"_orion_call_depth\":10}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call: max call depth 10 exceeded (chain: target)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "recursion/caller/{\"_orion_call_depth\":15,\"_orion_call_chain\":[\"a\"]}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: channel_call: max call depth 10 exceeded (chain: a -> target)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "unserviceable/broken": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: channel_call to 'broken': Service unavailable: Channel 'broken' failed to load and is not being served: its workflow did not build",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "unserviceable/nightly": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: channel_call to 'nightly': it is a cron channel, which                          runs only on its own schedule. Call the workflow it names                          directly, or give the shared work a channel of its own.",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "unserviceable/nowhere": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: channel_call to 'nowhere': channel not found or not active",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "zero_matches/declined": {
+    "ok": {
+      "r": {}
+    }
+  }
+}

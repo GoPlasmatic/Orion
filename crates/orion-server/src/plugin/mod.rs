@@ -3,10 +3,9 @@
 //! engine functions.
 //!
 //! Sits beside `engine` and below `runtime`: it produces
-//! [`FunctionEntry`](crate::engine::FunctionEntry) values,
-//! `AsyncFunctionHandler` implementations and their dataflow-rs 4 twins
-//! ([`PluginFunction`]) for a generation to carry, and names nothing above
-//! them but the task supervisor it hands the ticker to.
+//! [`FunctionEntry`](crate::engine::FunctionEntry) values and engine
+//! functions ([`PluginFunction`]) for a generation to carry, and names
+//! nothing above them but the task supervisor it hands the ticker to.
 //! See `docs/src/concepts/plugins.md` for the design and
 //! `docs/src/reference/plugin-manifest.md` for the manifest, ABI and limits.
 

@@ -184,7 +184,7 @@ test_model_serves_the_tournament_package() {
     # The leaderboard, over the data plane as a GET. Self-play credits both
     # sides of the one row, so its three counters sum to two.
     local board
-    board=$(curl -sf "$ORION_URL/api/v1/data/c4/leaderboard")
+    board=$(curl -sf "$ORION_URL/api/v2/data/c4/leaderboard")
     assert_json_eq "$board" ".data.leaderboard[0].model" "$C4_MODEL"
     assert_json_eq "$board" ".data.leaderboard[0].parameters" "1479"
     assert_json_eq "$board" ".data.leaderboard[0] | .wins + .losses + .draws" "2"

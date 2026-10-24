@@ -8,19 +8,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Value, json};
 
-use super::connector_helpers::{apply_output, resolve_output_path, resolve_value};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::extensions::{
@@ -152,87 +146,6 @@ impl Function for ConnectorCallFunction {
         ctx.set(&output, OwnedDataValue::from(&data))?;
         Ok(Outcome::Ok)
     }
-}
-
-/// `dataflow-rs` 3 handler twin for `connector_call` so `build_custom_functions`
-/// and `register_functions` register identical function sets (`Claim 6`).
-pub struct ConnectorCallHandler {
-    pub providers: ProviderRegistry,
-}
-
-#[async_trait]
-impl AsyncFunctionHandler for ConnectorCallHandler {
-    type Input = TemplatedInput;
-
-    fn compile_input(
-        input: &mut Self::Input,
-        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs_v3::Result<()> {
-        input.compile(NAME, c)
-    }
-
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        run_v3(&self.providers, ctx, input).await
-    }
-}
-
-async fn run_v3(
-    providers: &ProviderRegistry,
-    ctx: &mut TaskContext<'_>,
-    input: &TemplatedInput,
-) -> dataflow_rs_v3::Result<TaskOutcome> {
-    let validation_err =
-        |msg: &str| -> dataflow_rs_v3::DataflowError { HandlerError::new(ErrorClass::CallerInput, msg).prefixed(NAME).into() };
-    let connection = match input.get("connection").and_then(Value::as_str) {
-        Some(c) if !c.is_empty() => c,
-        _ => return Err(validation_err("requires 'connection' (string)")),
-    };
-    let operation = match input.get("operation").and_then(Value::as_str) {
-        Some(op) if !op.is_empty() => op,
-        _ => return Err(validation_err("requires 'operation' (string)")),
-    };
-    let kind = match input.get("kind") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(s.as_str()),
-        Some(_) => return Err(validation_err("'kind' must be a string")),
-    };
-    let target_id = match input.get("target_id") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(s.as_str()),
-        Some(_) => return Err(validation_err("'target_id' must be a string")),
-    };
-    let output = resolve_output_path(input, NAME, ctx)?;
-    let input_val = match input.get("input") {
-        Some(raw) if !raw.is_null() => resolve_value(raw, ctx),
-        _ => json!({}),
-    };
-    let idempotency_key = match input.value_of("idempotency_key", NAME, ctx) {
-        None => None,
-        Some(res) => match res? {
-            Value::Null => None,
-            Value::String(s) => Some(s),
-            _ => return Err(validation_err("'idempotency_key' must resolve to a string")),
-        },
-    };
-
-    let data = execute_connector_call(
-        providers,
-        connection,
-        operation,
-        kind,
-        target_id,
-        input_val,
-        idempotency_key,
-    )
-    .await
-    .map_err(|e| -> dataflow_rs_v3::DataflowError { e.prefixed(NAME).into() })?;
-
-    apply_output(ctx, &output, data);
-    Ok(TaskOutcome::Success)
 }
 
 async fn execute_connector_call(
@@ -525,24 +438,12 @@ mod tests {
         );
 
         let offline = crate::engine::kit::OfflineDeps::new();
-        let custom_fns = crate::engine::build_custom_functions(offline.deps());
-        assert!(custom_fns.contains_key(NAME));
-
         let serving_reg = crate::engine::serving_registry(offline.deps(), None);
         assert!(serving_reg.catalogue().any(|i| i.name == NAME));
 
-        let stub_log = std::sync::Arc::new(crate::engine::functions::stub::CallLog::new());
-        let mut stubs = crate::engine::functions::stub::StubTable::new();
-        stubs.insert(
-            NAME.to_string(),
-            [("local-cache".to_string(), json!({"hit": true, "value": 99}))]
-                .into_iter()
-                .collect(),
+        assert!(
+            crate::engine::functions::stub::stubbable_functions().any(|name| name == NAME),
+            "an offline run answers connector_call from its stubs"
         );
-        let stub_fns = crate::engine::functions::stub::build_stub_functions_with_log(
-            stubs,
-            stub_log.clone(),
-        );
-        assert!(stub_fns.contains_key(NAME));
     }
 }

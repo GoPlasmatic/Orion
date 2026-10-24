@@ -57,15 +57,12 @@ pub struct RuntimeGeneration {
     /// with an id of its own choosing, so the number always means "how many
     /// times this node has republished".
     pub id: u64,
-    pub engine: Arc<dataflow_rs_v3::Engine>,
-    /// The dataflow-rs 4 engine built from the same rows: every row compiled
-    /// on its `Registry`, whose verdict decided which channels load (I182),
-    /// so it holds exactly the workflows `engine` serves. `channel_call`'s
-    /// dataflow-rs 4 function runs its child on it, and a reload that keeps
-    /// the plugins compiles on its compiler. `None` only on the boot
-    /// generation, before the first publish; the running cutover makes it
-    /// `engine` and this field goes.
-    pub engine4: Option<dataflow_rs::Engine>,
+    /// The engine built from the same rows: every row compiled on its
+    /// `Registry`, whose verdict decided which channels load (I182).
+    /// `channel_call` runs its child on it, and a reload that keeps the
+    /// plugins compiles on its compiler. `None` only on the boot generation,
+    /// before the first publish, which serves nothing.
+    pub engine: Option<dataflow_rs::Engine>,
     pub channels: Arc<ChannelSnapshot>,
     /// Every function the engine above dispatches, and what each declares —
     /// what create-time validation and `GET /admin/functions` read, so a
@@ -90,6 +87,16 @@ pub struct RuntimeGeneration {
         Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
     /// Run-wide resource budget ceilings configured for this generation (`TD-03`).
     pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
+}
+
+impl RuntimeGeneration {
+    /// The workflows this generation serves: its program's. Empty on the boot
+    /// generation, which has no program yet.
+    pub fn workflows(&self) -> &[dataflow_rs::program::WorkflowInfo] {
+        self.engine
+            .as_ref()
+            .map_or(&[], |engine| engine.program().workflows())
+    }
 }
 
 /// The live generation, swapped wholesale on reload.
@@ -121,20 +128,15 @@ pub struct RuntimeHandle {
 impl RuntimeHandle {
     /// The handle a node boots with, around generation 0.
     ///
-    /// Created before the real engine exists, because the `channel_call`
-    /// handler is registered *on* that engine and holds this handle: an empty
-    /// engine stands in here until the first real publish, which happens
+    /// Created before the engine exists, because the `channel_call` function
+    /// is registered *on* that engine's registry and holds this handle: the
+    /// boot generation has no engine until the first publish, which happens
     /// before anything is served.
-    pub fn new(
-        engine: Arc<dataflow_rs_v3::Engine>,
-        channels: Arc<ChannelSnapshot>,
-        functions: Arc<FunctionRegistry>,
-    ) -> Self {
+    pub fn new(channels: Arc<ChannelSnapshot>, functions: Arc<FunctionRegistry>) -> Self {
         Self {
             current: ArcSwap::from_pointee(RuntimeGeneration {
                 id: 0,
-                engine,
-                engine4: None,
+                engine: None,
                 channels,
                 functions,
                 plugins: Arc::new(PluginSet::empty()),
@@ -173,8 +175,7 @@ impl RuntimeHandle {
     /// generation finish on it; every load after this returns the new one.
     pub fn publish(
         &self,
-        engine: Arc<dataflow_rs_v3::Engine>,
-        engine4: Option<dataflow_rs::Engine>,
+        engine: dataflow_rs::Engine,
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
         plugins: Arc<PluginSet>,
@@ -182,7 +183,6 @@ impl RuntimeHandle {
     ) -> u64 {
         self.publish_with_estate(
             engine,
-            engine4,
             channels,
             functions,
             plugins,
@@ -197,8 +197,7 @@ impl RuntimeHandle {
     #[allow(clippy::too_many_arguments)]
     pub fn publish_with_estate(
         &self,
-        engine: Arc<dataflow_rs_v3::Engine>,
-        engine4: Option<dataflow_rs::Engine>,
+        engine: dataflow_rs::Engine,
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
         plugins: Arc<PluginSet>,
@@ -211,8 +210,7 @@ impl RuntimeHandle {
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
         self.current.store(Arc::new(RuntimeGeneration {
             id,
-            engine,
-            engine4,
+            engine: Some(engine),
             channels,
             functions,
             plugins,
@@ -231,15 +229,10 @@ impl RuntimeHandle {
 }
 
 /// An empty handle for unit tests elsewhere in the crate: the boot generation,
-/// with an engine that has no workflows and an estate with no channels.
+/// with no engine and an estate with no channels.
 #[cfg(test)]
 pub(crate) fn test_handle() -> Arc<RuntimeHandle> {
     Arc::new(RuntimeHandle::new(
-        Arc::new(
-            dataflow_rs_v3::Engine::builder()
-                .build()
-                .expect("an empty engine builds"),
-        ),
         Arc::new(ChannelSnapshot::empty()),
         FunctionRegistry::builtin().clone(),
     ))
@@ -249,129 +242,80 @@ pub(crate) fn test_handle() -> Arc<RuntimeHandle> {
 mod tests {
     use super::*;
 
-    fn engine() -> Arc<dataflow_rs_v3::Engine> {
-        Arc::new(
-            dataflow_rs_v3::Engine::builder()
-                .build()
-                .expect("empty engine builds"),
+    fn engine(id: &str) -> dataflow_rs::Engine {
+        dataflow_rs::Engine::builder()
+            .workflow_json(&serde_json::json!({"id": id, "tasks": [
+                {"id": "t", "function": {"name": "map", "input": {"mappings": []}}}
+            ]}))
+            .build()
+            .expect("an engine builds")
+    }
+
+    fn handle() -> RuntimeHandle {
+        RuntimeHandle::new(
+            Arc::new(ChannelSnapshot::empty()),
+            FunctionRegistry::builtin().clone(),
         )
     }
 
-    fn handle() -> (RuntimeHandle, Arc<dataflow_rs_v3::Engine>) {
-        let boot = engine();
-        (
-            RuntimeHandle::new(
-                boot.clone(),
-                Arc::new(ChannelSnapshot::empty()),
-                FunctionRegistry::builtin().clone(),
-            ),
-            boot,
-        )
-    }
-
-    /// The retention property, on **both** halves at once — which is the whole
-    /// point. A holder of generation N sees N's engine and N's channels after
-    /// N+1 is published, so no request can be admitted by one generation and
-    /// executed by another.
-    #[test]
-    fn a_held_generation_survives_a_publish_whole() {
-        let (handle, boot_engine) = handle();
-        let held = handle.load();
-
-        let next_engine = engine();
+    fn publish(handle: &RuntimeHandle, engine: dataflow_rs::Engine) -> u64 {
         handle.publish(
-            next_engine.clone(),
-            None,
+            engine,
             Arc::new(ChannelSnapshot::empty()),
             FunctionRegistry::builtin().clone(),
             Arc::new(PluginSet::empty()),
             Arc::new(ModelSet::empty()),
+        )
+    }
+
+    fn ids(generation: &RuntimeGeneration) -> Vec<String> {
+        generation
+            .workflows()
+            .iter()
+            .map(|w| w.id.to_string())
+            .collect()
+    }
+
+    /// The retention property, on every half at once — which is the whole
+    /// point. A holder of generation N sees N's engine and N's channels after
+    /// N+1 is published, so no request can be admitted by one generation and
+    /// executed by another. An `Engine` is an `Arc` inside, so the check is
+    /// that the held one runs the program it was published with.
+    #[test]
+    fn a_held_generation_survives_a_publish_whole() {
+        let handle = handle();
+        assert!(
+            handle.load().engine.is_none(),
+            "the boot generation has none"
         );
 
-        assert_eq!(held.id, 0);
-        assert!(
-            Arc::ptr_eq(&held.engine, &boot_engine),
+        publish(&handle, engine("first"));
+        let held = handle.load();
+        publish(&handle, engine("second"));
+
+        assert_eq!(held.id, 1);
+        assert_eq!(
+            ids(&held),
+            ["first"],
             "a held generation must keep the engine it was loaded with"
         );
-        assert!(
-            !Arc::ptr_eq(&held.engine, &next_engine),
-            "and must not see the engine published after it"
-        );
-        assert_eq!(handle.load().id, 1, "a later load sees the new generation");
-        assert!(Arc::ptr_eq(&handle.load().engine, &next_engine));
+        assert_eq!(handle.load().id, 2, "a later load sees the new generation");
+        assert_eq!(ids(&handle.load()), ["second"]);
     }
 
     /// Ids are the publish count, so "which generation is this node on?" and
     /// "how many times has it republished?" cannot disagree.
     #[test]
     fn ids_count_publications() {
-        let (handle, _) = handle();
+        let handle = handle();
         assert_eq!(handle.published_count(), 0);
         assert_eq!(handle.load().id, 0);
 
         for expected in 1..=3 {
-            let id = handle.publish(
-                engine(),
-                None,
-                Arc::new(ChannelSnapshot::empty()),
-                FunctionRegistry::builtin().clone(),
-                Arc::new(PluginSet::empty()),
-                Arc::new(ModelSet::empty()),
-            );
+            let id = publish(&handle, engine("w"));
             assert_eq!(id, expected);
             assert_eq!(handle.load().id, expected);
             assert_eq!(handle.published_count(), expected);
         }
-    }
-
-    /// The dataflow-rs 4 engine is one more half of the generation: the boot
-    /// generation has none, and a held generation keeps the one it was
-    /// published with across the next publish, as it keeps its dataflow-rs 3
-    /// engine. An `Engine` is an `Arc` inside, so the check is that the held
-    /// one runs the program it was published with.
-    #[test]
-    fn the_dataflow_rs_4_engine_travels_with_its_generation() {
-        let (handle, _) = handle();
-        assert!(
-            handle.load().engine4.is_none(),
-            "the boot generation has none"
-        );
-
-        let v4 = |id: &str| {
-            dataflow_rs::Engine::builder()
-                .workflow_json(&serde_json::json!({"id": id, "tasks": [
-                    {"id": "t", "function": {"name": "map", "input": {"mappings": []}}}
-                ]}))
-                .build()
-                .expect("a v4 engine builds")
-        };
-        let ids = |generation: &RuntimeGeneration| -> Vec<String> {
-            generation
-                .engine4
-                .as_ref()
-                .expect("an engine4")
-                .program()
-                .workflows()
-                .iter()
-                .map(|w| w.id.to_string())
-                .collect()
-        };
-        let publish = |engine4| {
-            handle.publish(
-                engine(),
-                engine4,
-                Arc::new(ChannelSnapshot::empty()),
-                FunctionRegistry::builtin().clone(),
-                Arc::new(PluginSet::empty()),
-                Arc::new(ModelSet::empty()),
-            )
-        };
-        publish(Some(v4("first")));
-        let held = handle.load();
-        publish(Some(v4("second")));
-        assert_eq!(ids(&held), ["first"], "a held generation keeps its engine4");
-        assert_eq!(ids(&handle.load()), ["second"]);
-        publish(None);
-        assert!(handle.load().engine4.is_none());
     }
 }

@@ -1,4 +1,4 @@
-<!-- description: GET /api/v2/admin/functions serves the live function catalogue: every name with its category, source, aliases, retry safety and input schema. -->
+<!-- description: GET /api/v2/admin/functions serves the live function catalogue: every name with its category, source, retry safety and input schema. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -30,7 +30,6 @@ One entry per function:
 | `name` | string | The name a task writes in `function.name` |
 | `category` | string | `connector`, `control`, `data`, `compute` or `utility`; the wire value, not the grouping on the hub |
 | `source` | string | `engine`, `orion` or `plugin` |
-| `aliases` | array | Other accepted spellings; `validation` lists `validate` |
 | `retry_safety` | string | The answer on the [Retry safety](./retry-safety.md) table, per function |
 | `input_fields` | array | The field table an Orion handler validates against; absent for an engine built-in |
 | `plugin` | object | For a plugin function: the plugin id, version and component digest |

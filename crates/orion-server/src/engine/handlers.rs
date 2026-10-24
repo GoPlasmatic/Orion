@@ -7,7 +7,6 @@
 //! against a live engine: every `Source::Orion` entry has a handler here, and
 //! every handler registered here has an entry.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::functions;
@@ -57,276 +56,12 @@ pub struct HandlerDeps<'a> {
     pub providers: crate::extensions::ProviderRegistry,
 }
 
-/// Register one connector handler, wrapped and keyed by its own name.
+/// Register Orion's functions, each under its 1.12 name (F48).
 ///
-/// The wrapping is what supplies the prologue → resolve → gate → shell → output
-/// sequence, and the key is `H::NAME` rather than a string literal beside it:
-/// every other `fns.insert` here spells the function's name twice, once as the
-/// map key and once inside the handler, and nothing checked that the two agree.
-/// A handler registered under a name it does not answer to is a task that
-/// dispatches fine and reports metrics, profile samples and errors under
-/// another function's name.
-fn register<H: functions::connector_handler::ConnectorHandler>(
-    fns: &mut HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
-    handler: H,
-) {
-    fns.insert(
-        H::NAME.to_string(),
-        Box::new(functions::connector_handler::Connector(handler)),
-    );
-}
-
-/// Build the custom function handlers for the dataflow-rs engine.
-///
-/// Registers every `Source::Orion` entry of the registry — the connector
-/// handlers, `channel_call`, the self-contained trio, `model_infer` — plus a
-/// stub `publish_kafka`. Call [`register_kafka_publisher`] afterwards to swap
-/// the stub for the real Kafka-backed handler once the producer is
-/// initialised.
-pub fn build_custom_functions(
-    deps: HandlerDeps<'_>,
-) -> HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> {
-    let HandlerDeps {
-        registry,
-        client,
-        runtime,
-        exprs,
-        jwks,
-        engine_config,
-        query_config,
-        write_config,
-        cache_pool,
-        channel_loader,
-        sql_pool_cache,
-        mongo_pool_cache,
-        smtp_pool_cache,
-        models,
-        models_config,
-        providers,
-    } = deps;
-    let mut fns: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
-
-    register(
-        &mut fns,
-        functions::http_call::HttpCallHandler {
-            registry: registry.clone(),
-            client: client.clone(),
-        },
-    );
-
-    fns.insert(
-        functions::channel_call::NAME.to_string(),
-        Box::new(functions::channel_call::ChannelCallHandler {
-            runtime: runtime.clone(),
-            exprs,
-            max_call_depth: engine_config.max_channel_call_depth,
-            default_timeout_ms: engine_config.default_channel_call_timeout_ms,
-        }),
-    );
-
-    // The other handler that dispatches through the serving generation: it
-    // takes the model set and the expression engine off one load, and the
-    // loaded sessions and permits off the node.
-    let models_config = Arc::new(models_config.clone());
-    fns.insert(
-        crate::model::handler::NAME.to_string(),
-        Box::new(crate::model::ModelInferHandler {
-            source: crate::model::ModelSource::Node(runtime),
-            host: models.map(|models| {
-                Arc::new(crate::model::InferenceHost::node(
-                    &models,
-                    models_config.clone(),
-                    registry.clone(),
-                    client.clone(),
-                ))
-            }),
-            config: models_config,
-        }),
-    );
-
-    // Self-contained (no connector, no deps): digests, MACs, password hashing.
-    fns.insert(
-        "crypto".to_string(),
-        Box::new(functions::crypto::CryptoHandler),
-    );
-
-    // Self-contained JWT surfaces (#267): issuance and mid-workflow
-    // verification, sharing the channel mode's core and JWKS cache.
-    fns.insert(
-        "jwt_sign".to_string(),
-        Box::new(functions::jwt_sign::JwtSignHandler),
-    );
-    fns.insert(
-        "jwt_verify".to_string(),
-        Box::new(functions::jwt_verify::JwtVerifyHandler { jwks }),
-    );
-
-    register(
-        &mut fns,
-        functions::send_email::SendEmailHandler {
-            registry: registry.clone(),
-            smtp_pool: smtp_pool_cache,
-        },
-    );
-
-    register(
-        &mut fns,
-        functions::storage_presign::StoragePresignHandler {
-            registry: registry.clone(),
-        },
-    );
-
-    register(
-        &mut fns,
-        functions::storage_head::StorageHeadHandler {
-            registry: registry.clone(),
-            client: client.clone(),
-        },
-    );
-
-    // Register stub publish_kafka (will be replaced by register_kafka_publisher when Kafka is configured)
-    register(
-        &mut fns,
-        functions::publish_kafka::PublishKafkaHandler {
-            registry: registry.clone(),
-            producers: None,
-        },
-    );
-
-    // Register SQL database handlers (db_read, db_write)
-    register(
-        &mut fns,
-        functions::db_read::DbReadHandler {
-            pool_cache: sql_pool_cache.clone(),
-            registry: registry.clone(),
-            max_rows: query_config.max_limit as usize,
-            max_result_bytes: query_config.max_result_bytes,
-        },
-    );
-    register(
-        &mut fns,
-        functions::db_write::DbWriteHandler {
-            pool_cache: sql_pool_cache.clone(),
-            registry: registry.clone(),
-        },
-    );
-
-    // Register the portable query handler (data_query). It renders a
-    // backend-neutral filter + envelope to native SQL or a MongoDB find
-    // (§ src/query/).
-    register(
-        &mut fns,
-        functions::data_query::DataQueryHandler {
-            pool_cache: sql_pool_cache.clone(),
-            mongo_pool_cache: mongo_pool_cache.clone(),
-            http_client: client.clone(),
-            registry: registry.clone(),
-            limits: query_config.clone(),
-        },
-    );
-
-    // Register the portable write handler (data_write). It renders a
-    // backend-neutral mutation envelope to a native SQL INSERT/UPDATE/DELETE/upsert,
-    // a MongoDB write, or an Elasticsearch write (§ src/query/write.rs).
-    register(
-        &mut fns,
-        functions::data_write::DataWriteHandler {
-            pool_cache: sql_pool_cache,
-            mongo_pool_cache: mongo_pool_cache.clone(),
-            http_client: client.clone(),
-            registry: registry.clone(),
-            write_config: write_config.clone(),
-            max_returning: query_config.max_limit as usize,
-        },
-    );
-
-    // Register cache handlers (cache_read, cache_write, cache_delete, cache_incr).
-    // CachePool routes to the in-memory or Redis backend per connector config.
-    // Wrapped: `Connector<H>` is what supplies the prologue → resolve →
-    // gate → shell → output sequence, and an unwrapped handler is not an
-    // `AsyncFunctionHandler` at all, so it cannot be registered.
-    register(
-        &mut fns,
-        functions::cache_read::CacheReadHandler {
-            cache_pool: cache_pool.clone(),
-            registry: registry.clone(),
-        },
-    );
-    register(
-        &mut fns,
-        functions::cache_write::CacheWriteHandler {
-            cache_pool: cache_pool.clone(),
-            registry: registry.clone(),
-        },
-    );
-    register(
-        &mut fns,
-        functions::cache_delete::CacheDeleteHandler {
-            cache_pool: cache_pool.clone(),
-            registry: registry.clone(),
-        },
-    );
-    register(
-        &mut fns,
-        functions::cache_incr::CacheIncrHandler {
-            cache_pool: cache_pool.clone(),
-            registry: registry.clone(),
-        },
-    );
-    fns.insert(
-        "cache_invalidate".to_string(),
-        Box::new(functions::cache_invalidate::CacheInvalidateHandler {
-            channel_loader,
-            registry: registry.clone(),
-            cache_pool,
-        }),
-    );
-
-    // Register the MongoDB trio (mongo_read, mongo_write, mongo_aggregate)
-    register(
-        &mut fns,
-        functions::mongo_read::MongoReadHandler {
-            pool_cache: mongo_pool_cache.clone(),
-            registry: registry.clone(),
-            limits: query_config.clone(),
-        },
-    );
-    register(
-        &mut fns,
-        functions::mongo_write::MongoWriteHandler {
-            pool_cache: mongo_pool_cache.clone(),
-            registry: registry.clone(),
-            write_config: write_config.clone(),
-        },
-    );
-    register(
-        &mut fns,
-        functions::mongo_aggregate::MongoAggregateHandler {
-            pool_cache: mongo_pool_cache,
-            registry: registry.clone(),
-            limits: query_config.clone(),
-        },
-    );
-
-    fns.insert(
-        functions::connector_call::NAME.to_string(),
-        Box::new(functions::connector_call::ConnectorCallHandler { providers }),
-    );
-
-    fns
-}
-
-/// Register Orion's dataflow-rs 4 functions: the twin of
-/// [`build_custom_functions`], function by function in its order, as each
-/// gains a v4 port, each under its dataflow-rs 3 handler's name (F48). No
-/// serving path calls it before the building cutover.
-///
-/// `publish_kafka` is registered with no producer, as
-/// `build_custom_functions` registers its stub: the producer is swapped in
-/// once Kafka is initialised, as [`register_kafka_publisher`] does for
-/// dataflow-rs 3 (`Registry::register` replaces a name).
+/// `publish_kafka` is registered with no producer: the producer is swapped
+/// in once Kafka is initialised, by [`register_kafka_function`]
+/// (`Registry::register` replaces a name).
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
-    use functions::connector_handler::ConnectorHandler;
     use functions::{
         cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, channel_call, crypto,
         data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify,
@@ -354,7 +89,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     } = deps;
 
     registry.register(
-        <http_call::HttpCallHandler as ConnectorHandler>::NAME,
+        http_call::NAME,
         http_call::HttpCallFunction {
             registry: connectors.clone(),
             client: client.clone(),
@@ -373,7 +108,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     );
     // The model set comes off one load of the serving generation per call,
     // its adapters compiled on the process's expression engine; the loaded
-    // sessions and permits off the node, shared with dataflow-rs 3's handler.
+    // sessions and permits off the node.
     let models_config = Arc::new(models_config.clone());
     registry.register(
         crate::model::handler::NAME,
@@ -397,34 +132,34 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     registry.register(jwt_sign::NAME, jwt_sign::JwtSignFunction);
     registry.register(jwt_verify::NAME, jwt_verify::JwtVerifyFunction { jwks });
     registry.register(
-        <send_email::SendEmailHandler as ConnectorHandler>::NAME,
+        send_email::NAME,
         send_email::SendEmailFunction {
             registry: connectors.clone(),
             smtp_pool: smtp_pool_cache,
         },
     );
     registry.register(
-        <storage_presign::StoragePresignHandler as ConnectorHandler>::NAME,
+        storage_presign::NAME,
         storage_presign::StoragePresignFunction {
             registry: connectors.clone(),
         },
     );
     registry.register(
-        <storage_head::StorageHeadHandler as ConnectorHandler>::NAME,
+        storage_head::NAME,
         storage_head::StorageHeadFunction {
             registry: connectors.clone(),
             client: client.clone(),
         },
     );
     registry.register(
-        <publish_kafka::PublishKafkaHandler as ConnectorHandler>::NAME,
+        publish_kafka::NAME,
         publish_kafka::PublishKafkaFunction {
             registry: connectors.clone(),
             producers: None,
         },
     );
     registry.register(
-        <db_read::DbReadHandler as ConnectorHandler>::NAME,
+        db_read::NAME,
         db_read::DbReadFunction {
             pool_cache: sql_pool_cache.clone(),
             registry: connectors.clone(),
@@ -433,14 +168,14 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         },
     );
     registry.register(
-        <db_write::DbWriteHandler as ConnectorHandler>::NAME,
+        db_write::NAME,
         db_write::DbWriteFunction {
             pool_cache: sql_pool_cache.clone(),
             registry: connectors.clone(),
         },
     );
     registry.register(
-        <data_query::DataQueryHandler as ConnectorHandler>::NAME,
+        data_query::NAME,
         data_query::DataQueryFunction {
             pool_cache: sql_pool_cache.clone(),
             mongo_pool_cache: mongo_pool_cache.clone(),
@@ -450,7 +185,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         },
     );
     registry.register(
-        <data_write::DataWriteHandler as ConnectorHandler>::NAME,
+        data_write::NAME,
         data_write::DataWriteFunction {
             pool_cache: sql_pool_cache,
             mongo_pool_cache: mongo_pool_cache.clone(),
@@ -461,28 +196,28 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         },
     );
     registry.register(
-        <cache_read::CacheReadHandler as ConnectorHandler>::NAME,
+        cache_read::NAME,
         cache_read::CacheReadFunction {
             cache_pool: cache_pool.clone(),
             registry: connectors.clone(),
         },
     );
     registry.register(
-        <cache_write::CacheWriteHandler as ConnectorHandler>::NAME,
+        cache_write::NAME,
         cache_write::CacheWriteFunction {
             cache_pool: cache_pool.clone(),
             registry: connectors.clone(),
         },
     );
     registry.register(
-        <cache_delete::CacheDeleteHandler as ConnectorHandler>::NAME,
+        cache_delete::NAME,
         cache_delete::CacheDeleteFunction {
             cache_pool: cache_pool.clone(),
             registry: connectors.clone(),
         },
     );
     registry.register(
-        <cache_incr::CacheIncrHandler as ConnectorHandler>::NAME,
+        cache_incr::NAME,
         cache_incr::CacheIncrFunction {
             cache_pool: cache_pool.clone(),
             registry: connectors.clone(),
@@ -497,7 +232,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         },
     );
     registry.register(
-        <mongo_read::MongoReadHandler as ConnectorHandler>::NAME,
+        mongo_read::NAME,
         mongo_read::MongoReadFunction {
             pool_cache: mongo_pool_cache.clone(),
             registry: connectors.clone(),
@@ -505,7 +240,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         },
     );
     registry.register(
-        <mongo_write::MongoWriteHandler as ConnectorHandler>::NAME,
+        mongo_write::NAME,
         mongo_write::MongoWriteFunction {
             pool_cache: mongo_pool_cache.clone(),
             registry: connectors.clone(),
@@ -513,7 +248,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         },
     );
     registry.register(
-        <mongo_aggregate::MongoAggregateHandler as ConnectorHandler>::NAME,
+        mongo_aggregate::NAME,
         mongo_aggregate::MongoAggregateFunction {
             pool_cache: mongo_pool_cache,
             registry: connectors,
@@ -530,9 +265,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
 /// and the per-request profile as its one call layer
 /// ([`kit::ProfileLayer`](crate::engine::kit::ProfileLayer), I189).
 ///
-/// The twin of [`build_custom_functions`] plus [`register_kafka_publisher`],
-/// which boot and a plugin-changing reload both assemble dataflow-rs 3's
-/// handlers from. The generation's plugin functions join it
+/// Boot and every reload assemble it. The generation's plugin functions join it
 /// ([`register_plugin_functions`]) before anything compiles, since a
 /// workflow links only under the registry it compiled under.
 pub fn serving_registry(
@@ -549,17 +282,15 @@ pub fn serving_registry(
     registry
 }
 
-/// Register the real Kafka-backed `publish_kafka` on a dataflow-rs 4
-/// `Registry`: [`register_kafka_publisher`]'s twin, replacing the stub
-/// [`register_functions`] registers (`Registry::register` replaces a name).
+/// Register the real Kafka-backed `publish_kafka` on a `Registry`, replacing
+/// the stub [`register_functions`] registers (`Registry::register` replaces a name).
 pub fn register_kafka_function(
     registry: &mut dataflow_rs::Registry,
     connectors: Arc<ConnectorRegistry>,
     producers: Arc<crate::kafka::producer::KafkaProducerCache>,
 ) {
-    use functions::connector_handler::ConnectorHandler;
     registry.register(
-        <functions::publish_kafka::PublishKafkaHandler as ConnectorHandler>::NAME,
+        functions::publish_kafka::NAME,
         functions::publish_kafka::PublishKafkaFunction {
             registry: connectors,
             producers: Some(producers),
@@ -568,11 +299,9 @@ pub fn register_kafka_function(
 }
 
 /// Register plugin functions on `registry`, each under the name its
-/// manifest gives it (`<plugin>.<label>`): the dataflow-rs 4 twin of adding
-/// [`PluginSet::handlers`](crate::plugin::PluginSet::handlers) to a
-/// dataflow-rs 3 engine's handler map, fed
+/// manifest gives it (`<plugin>.<label>`), fed
 /// [`PluginSet::functions`](crate::plugin::PluginSet::functions). A name
-/// registered before is replaced, as the map's insert replaced it.
+/// registered before is replaced.
 ///
 /// An invalid registration is refused through `Registry::try_register`, so
 /// runtime names and schemas cannot panic the node. It is logged and returned.
@@ -602,26 +331,9 @@ pub fn register_plugin_functions(
 
 /// Whether `Registry::register` refuses `name` with a panic (I43, amended
 /// by I57): a built-in's ([`dataflow_rs::def::BUILTIN_FUNCTIONS`]) or
-/// `validate`, dataflow-rs 3's alias for `validation`, which the compat
+/// `validate`, 1.12's alias for `validation`, which the compat
 /// reader rewrites before any name is looked up. A host registering names
 /// from data checks them first, as `register`'s documentation asks.
 pub fn is_reserved_function_name(name: &str) -> bool {
     dataflow_rs::def::is_reserved_function(name)
-}
-
-/// Register the real Kafka-backed publish_kafka handler.
-///
-/// Replaces the stub handler (or adds the handler if not yet registered).
-pub fn register_kafka_publisher(
-    fns: &mut HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
-    registry: Arc<ConnectorRegistry>,
-    producers: Arc<crate::kafka::producer::KafkaProducerCache>,
-) {
-    register(
-        fns,
-        functions::publish_kafka::PublishKafkaHandler {
-            registry,
-            producers: Some(producers),
-        },
-    );
 }

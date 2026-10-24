@@ -13,7 +13,7 @@
     {
       "id": "validate",
       "name": "Validate order",
-      "halt_on": "failure",
+      "on_rejection": "halt",
       "function": {
         "name": "validation",
         "input": {

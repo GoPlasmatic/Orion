@@ -457,31 +457,33 @@ pub fn present<T: FromValue>(field: &Option<Expr<T>>) -> Option<&Expr<T>> {
     field.as_ref().filter(|expr| !expr.raw().is_null())
 }
 
-/// Each reader against its dataflow-rs 3 twin over the same JSON: the value
-/// on success, and the class and the message on a refusal — computed from
-/// the twin, never written out.
+/// Each reader over the same JSON values: the value on success, and the
+/// class and the message on a refusal, held to 1.12's records.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::functions::connector_helpers as v3;
-    use crate::engine::functions::templated_input::TemplatedInput;
-    use dataflow_rs_v3::engine::task_context::TaskContext;
+    use crate::engine::functions::twin;
     use serde_json::json;
-    use std::sync::Arc;
 
     /// A field's value as a reader sees it, or its refusal's class and
     /// message.
     type Seen<T> = Result<T, (ErrorClass, String)>;
 
-    fn seen_v3<T>(result: Result<T, dataflow_rs_v3::DataflowError>) -> Seen<T> {
-        result.map_err(|e| {
-            let e = HandlerError::from(e);
-            (e.class, e.msg)
-        })
+    fn seen<T>(result: Result<T, HandlerError>) -> Seen<T> {
+        result.map_err(|e| (e.class, e.msg))
     }
 
-    fn seen_v4<T>(result: Result<T, HandlerError>) -> Seen<T> {
-        result.map_err(|e| (e.class, e.msg))
+    /// A reader's answer as a record holds it: the value's `Debug`, or the
+    /// refusal's class and message.
+    fn record<T: std::fmt::Debug>(result: Result<T, HandlerError>) -> twin::Seen {
+        result
+            .map(|v| json!(format!("{v:?}")))
+            .map_err(|e| twin::Failure {
+                code: format!("{:?}", e.class),
+                message: e.msg,
+                retryable: e.class.is_retryable(),
+                detail: None,
+            })
     }
 
     /// The values every reader is held to: the coercions, the `null`s, each
@@ -519,53 +521,32 @@ mod tests {
         ]
     }
 
-    /// Runs `f` with a dataflow-rs 3 task context over an empty message: the
-    /// readers' templates are never compiled here, so each field reads as the
-    /// literal it was written as, which is the value a compiled one resolves
-    /// to.
-    fn with_v3<R>(f: impl FnOnce(&TaskContext<'_>) -> R) -> R {
-        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        let ctx = TaskContext::new(&mut message, &datalogic);
-        f(&ctx)
-    }
-
-    /// The input dataflow-rs 3 reads `field` from, and the value dataflow-rs
-    /// 4 hands the reader. dataflow-rs 3 saw a template's result through
-    /// the JSON bridge, so its value is the bridged one: `u64::MAX` is a
-    /// float to both.
-    fn inputs(field: &str, value: Option<&Value>) -> (TemplatedInput, Option<OwnedDataValue>) {
-        let owned = value.map(OwnedDataValue::from);
-        let mut raw = Map::new();
-        if let Some(owned) = &owned {
-            raw.insert(field.to_string(), Value::from(owned));
+    /// The record key of `value` under `case`.
+    fn key(case: &str, value: Option<&Value>) -> String {
+        match value {
+            Some(value) => format!("{case}/{value}"),
+            None => format!("{case}/unset"),
         }
-        (TemplatedInput::from(Value::Object(raw)), owned)
     }
 
-    /// Holds one reader to its twin over every value.
-    fn twin<T: PartialEq + std::fmt::Debug>(
-        field: &str,
-        v3_read: impl Fn(&TemplatedInput, &TaskContext<'_>) -> Result<T, dataflow_rs_v3::DataflowError>,
-        v4_read: impl Fn(Option<&OwnedDataValue>) -> Result<T, HandlerError>,
+    /// Holds one reader to 1.12's record over every value, under `case`.
+    fn sweep<T: std::fmt::Debug>(
+        case: &str,
+        read: impl Fn(Option<&OwnedDataValue>) -> Result<T, HandlerError>,
     ) {
         for value in values() {
-            let (input, owned) = inputs(field, value.as_ref());
-            let v3 = with_v3(|ctx| seen_v3(v3_read(&input, ctx)));
-            let v4 = seen_v4(v4_read(owned.as_ref()));
-            assert_eq!(v4, v3, "{field} = {value:?}");
+            let owned = value.as_ref().map(OwnedDataValue::from);
+            twin::pinned(&record(read(owned.as_ref())), key(case, value.as_ref()));
         }
     }
 
     const H: &str = "probe";
 
     #[test]
-    fn required_str_is_resolve_required_str() {
-        twin(
-            "key",
-            |input, ctx| v3::resolve_required_str(input, "key", H, ctx),
-            |v| required_str(v, "key", H).map(Cow::into_owned),
-        );
+    fn required_str_reads_as_1_12_did() {
+        sweep("required_str", |v| {
+            required_str(v, "key", H).map(Cow::into_owned)
+        });
     }
 
     /// The coercions a typed `Expr<String>` would refuse, and every running
@@ -590,23 +571,17 @@ mod tests {
     }
 
     #[test]
-    fn required_str_list_is_resolve_required_str_list() {
+    fn required_str_list_reads_as_1_12_did() {
         for max in [0, 1, 1000] {
-            twin(
-                "keys",
-                |input, ctx| v3::resolve_required_str_list(input, "keys", H, ctx, max),
-                |v| required_str_list(v, "keys", H, max),
-            );
+            sweep(&format!("required_str_list/{max}"), |v| {
+                required_str_list(v, "keys", H, max)
+            });
         }
     }
 
     #[test]
-    fn duration_secs_is_resolve_duration_secs() {
-        twin(
-            "ttl_secs",
-            |input, ctx| v3::resolve_duration_secs(input, ctx, H, "ttl_secs"),
-            |v| duration_secs(v, "ttl_secs", H),
-        );
+    fn duration_secs_reads_as_1_12_did() {
+        sweep("duration_secs", |v| duration_secs(v, "ttl_secs", H));
         let five_minutes = OwnedDataValue::from(&json!("5m"));
         assert_eq!(
             duration_secs(Some(&five_minutes), "ttl_secs", H).ok(),
@@ -615,46 +590,30 @@ mod tests {
     }
 
     #[test]
-    fn optional_str_is_resolve_optional_str() {
-        twin(
-            "from",
-            |input, ctx| v3::resolve_optional_str(input, "from", H, ctx),
-            |v| optional_str(v, "from", H).map(|s| s.map(Cow::into_owned)),
-        );
+    fn optional_str_reads_as_1_12_did() {
+        sweep("optional_str", |v| {
+            optional_str(v, "from", H).map(|s| s.map(Cow::into_owned))
+        });
     }
 
     #[test]
-    fn bool_or_is_resolve_bool_or() {
+    fn bool_or_reads_as_1_12_did() {
         for default in [true, false] {
-            twin(
-                "upsert",
-                |input, ctx| v3::resolve_bool_or(input, "upsert", H, ctx, default),
-                |v| bool_or(v, "upsert", H, default),
-            );
+            sweep(&format!("bool_or/{default}"), |v| {
+                bool_or(v, "upsert", H, default)
+            });
         }
-        twin(
-            "raw",
-            |input, ctx| v3::resolve_bool(input, "raw", H, ctx),
-            |v| boolean(v, "raw", H),
-        );
+        sweep("boolean", |v| boolean(v, "raw", H));
     }
 
     #[test]
-    fn optional_u64_is_resolve_optional_u64() {
-        twin(
-            "leeway_secs",
-            |input, ctx| v3::resolve_optional_u64(input, "leeway_secs", H, ctx),
-            |v| optional_u64(v, "leeway_secs", H),
-        );
+    fn optional_u64_reads_as_1_12_did() {
+        sweep("optional_u64", |v| optional_u64(v, "leeway_secs", H));
     }
 
     #[test]
-    fn optional_i64_is_resolve_optional_i64() {
-        twin(
-            "by",
-            |input, ctx| v3::resolve_optional_i64(input, "by", H, ctx),
-            |v| optional_i64(v, "by", H),
-        );
+    fn optional_i64_reads_as_1_12_did() {
+        sweep("optional_i64", |v| optional_i64(v, "by", H));
         assert_eq!(
             optional_i64(Some(&OwnedDataValue::Null), "by", H).ok(),
             Some(None)
@@ -662,69 +621,60 @@ mod tests {
     }
 
     #[test]
-    fn bind_params_is_resolve_bind_params() {
-        twin(
-            "params",
-            |input, ctx| v3::resolve_bind_params(input, H, ctx),
-            |v| bind_params(v.map(Value::from), H),
-        );
+    fn bind_params_reads_as_1_12_did() {
+        sweep("bind_params", |v| bind_params(v.map(Value::from), H));
     }
 
     #[test]
-    fn params_is_resolve_params() {
-        twin(
-            "params",
-            |input, ctx| Ok(v3::resolve_params(input, H, ctx)),
-            |v| Ok(params(v.map(Value::from))),
-        );
+    fn params_reads_as_1_12_did() {
+        sweep("params", |v| {
+            Ok::<_, HandlerError>(params(v.map(Value::from)))
+        });
     }
 
     #[test]
-    fn numeric_and_binary_as_are_their_twins() {
-        twin(
-            "numeric_as",
-            |input, ctx| v3::resolve_numeric_as(input, H, ctx),
-            |v| numeric_as(v, H),
-        );
-        twin(
-            "binary_as",
-            |input, ctx| v3::resolve_binary_as(input, H, ctx),
-            |v| binary_as(v, H),
-        );
+    fn numeric_and_binary_as_read_as_1_12_did() {
+        sweep("numeric_as", |v| numeric_as(v, H));
+        sweep("binary_as", |v| binary_as(v, H));
         // Read together, `numeric_as` first.
         for (numeric, binary) in [
             (json!("string"), json!("hex")),
             (json!("money"), json!("hex")),
             (json!("string"), json!(7)),
         ] {
-            let input = TemplatedInput::from(json!({"numeric_as": numeric, "binary_as": binary}));
-            let v3 = with_v3(|ctx| seen_v3(v3::resolve_row_format(&input, H, ctx)));
+            let case = format!("row_format/{numeric}/{binary}");
             let (numeric, binary) = (
                 OwnedDataValue::from(&numeric),
                 OwnedDataValue::from(&binary),
             );
-            let v4 = seen_v4(row_format(Some(&numeric), Some(&binary), H));
-            assert_eq!(v4, v3);
+            twin::pinned(&record(row_format(Some(&numeric), Some(&binary), H)), case);
         }
+        let refused = seen(row_format(
+            Some(&OwnedDataValue::from(&json!("money"))),
+            Some(&OwnedDataValue::from(&json!(7))),
+            H,
+        ));
+        assert!(refused.is_err(), "`numeric_as` is read first: {refused:?}");
     }
 
-    /// `plain_str` and `template_u64` against dataflow-rs 3's `Template`
-    /// over every scalar, which an uncompiled template reads as itself. A
-    /// compiled one, over every kind of value, is held to them by
-    /// `http_call`'s twin over its typed config.
+    /// `plain_str` and `template_u64` over every scalar, as 1.12's
+    /// `Template` read them.
     #[test]
-    fn plain_str_and_template_u64_are_templates_readers() {
+    fn plain_str_and_template_u64_read_as_1_12_did() {
         let label = "http_call timeout_ms";
         for value in values().into_iter().flatten() {
             if !(value.is_string() || value.is_number() || value.is_boolean()) {
                 continue;
             }
-            let template = dataflow_rs_v3::Template::from(value.clone());
             let owned = OwnedDataValue::from(&value);
-            let v3 = with_v3(|ctx| template.resolve_string(ctx)).expect("a scalar resolves");
-            assert_eq!(plain_str(&owned), v3, "{value}");
-            let v3 = with_v3(|ctx| seen_v3(template.resolve_u64(ctx, label)));
-            assert_eq!(seen_v4(template_u64(&owned, label)), v3, "{value}");
+            twin::pinned(
+                &record(Ok::<_, HandlerError>(plain_str(&owned).into_owned())),
+                key("plain_str", Some(&value)),
+            );
+            twin::pinned(
+                &record(template_u64(&owned, label)),
+                key("template_u64", Some(&value)),
+            );
         }
         assert_eq!(plain_str(&OwnedDataValue::Null), "null");
         assert_eq!(
@@ -756,32 +706,16 @@ mod tests {
     /// `mongo_common::resolve_u64` reads the authored field: a literal `null`
     /// is unset, which the caller says by passing `None`.
     #[test]
-    fn mongo_u64_is_mongo_commons_resolve_u64() {
+    fn mongo_u64_reads_as_1_12_did() {
         for value in values() {
-            let (input, owned) = inputs("limit", value.as_ref());
-            let v3 = with_v3(|ctx| {
-                seen_v3(crate::engine::functions::mongo_common::resolve_u64(
-                    &input, "limit", H, ctx,
-                ))
-            });
+            let owned = value.as_ref().map(OwnedDataValue::from);
             let authored_null = matches!(value, Some(Value::Null));
-            let v4 = seen_v4(mongo_u64(
-                owned.as_ref().filter(|_| !authored_null),
-                "limit",
-                H,
-            ));
-            assert_eq!(v4, v3, "limit = {value:?}");
+            let v4 = mongo_u64(owned.as_ref().filter(|_| !authored_null), "limit", H);
+            twin::pinned(&record(v4), key("mongo_u64", value.as_ref()));
         }
-        // A path that resolves to `null` is not unset: dataflow-rs 3 folds
-        // the hole and refuses what it finds.
-        let input = TemplatedInput::from(json!({"limit": {"var": "data.missing"}}));
-        let v3 = with_v3(|ctx| {
-            seen_v3(crate::engine::functions::mongo_common::resolve_u64(
-                &input, "limit", H, ctx,
-            ))
-        });
-        let v4 = seen_v4(mongo_u64(Some(&OwnedDataValue::Null), "limit", H));
-        assert_eq!(v4, v3);
+        // A path that resolves to `null` is not unset: 1.12 folded the hole
+        // and refused what it found.
+        let v4 = seen(mongo_u64(Some(&OwnedDataValue::Null), "limit", H));
         assert!(v4.is_err());
     }
 }

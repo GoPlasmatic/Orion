@@ -60,32 +60,11 @@ pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, Task
 /// engine — a module every request path sits below — named `AppState`. The
 /// mapping is a runtime concern: it says which of the node's live components
 /// a handler gets, and `engine` only has to accept them.
-/// Every handler an engine built from this node's live components carries:
-/// Orion's own, with the Kafka publisher swapped in when a producer exists.
-///
-/// The one assembly boot, reload and the test endpoint share. A reload that
-/// must rebuild the engine — the plugin set changed, so `with_new_workflows`
-/// cannot carry the old handler map across — used to have no way to
-/// reproduce what boot registered; this is that way.
-pub fn build_handlers(
-    state: &crate::server::state::AppState,
-) -> std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> {
-    let mut fns = crate::engine::build_custom_functions(handler_deps(state));
-    if let Some(producers) = &state.kafka.producers {
-        crate::engine::register_kafka_publisher(
-            &mut fns,
-            state.connector_registry.clone(),
-            producers.clone(),
-        );
-    }
-    fns
-}
-
-/// [`build_handlers`]'s twin on dataflow-rs 4: the `Registry` a generation
-/// compiles on before its plugins, from this node's live components
-/// ([`crate::engine::serving_registry`]). What a reload that changes the
-/// plugin set starts from; a reload that keeps it compiles on the running
-/// engine's registry instead.
+/// The `Registry` a generation compiles on before its plugins, from this
+/// node's live components ([`crate::engine::serving_registry`]), with the
+/// Kafka publisher swapped in when a producer exists. What a reload that
+/// changes the plugin set starts from; a reload that keeps it compiles on the
+/// running engine's registry instead.
 pub fn build_registry(state: &crate::server::state::AppState) -> dataflow_rs::Registry {
     crate::engine::serving_registry(handler_deps(state), state.kafka.producers.clone())
 }

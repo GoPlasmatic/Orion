@@ -1,17 +1,14 @@
 //! `channel_call` — run another channel's workflows in-process, under that
 //! channel's ingress guards, and write what they left in `data`.
 //!
-//! Two implementations, one set of refusals: [`ChannelCallHandler`] serves
-//! on dataflow-rs 3, and [`ChannelCallFunction`] is the dataflow-rs 4
-//! function, which passes the run's deadline and cancellation on to the
-//! child it starts (R60) and a stopped child's error on with its code
-//! (I184). Both read the call position, judge the target and word every
-//! refusal through the helpers below, so the two cannot refuse differently.
+//! [`ChannelCallFunction`] passes the run's deadline and cancellation on to
+//! the child it starts (R60) and a stopped child's error on with its code
+//! (I184). It reads the call position, judges the target and words every
+//! refusal through the helpers below, in 1.12's order and words.
 
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use dataflow_rs::Path;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Output};
@@ -19,12 +16,6 @@ use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::program::IssueCode;
 use dataflow_rs::run::{AuditMode, CancelToken, Instant, RunStatus};
 use dataflow_rs::{Ctx, Expr, Function, Message, Outcome, RunOptions};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
-use dataflow_rs_v3::{Template, TemplateCompiler};
-use serde::Deserialize;
 use serde_json::Value;
 
 use super::schema::{FieldKind, FieldSchema};
@@ -33,8 +24,7 @@ use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::runtime::RuntimeGeneration;
 
-/// This function's name: the one place it is written, for both engines
-/// (F48).
+/// This function's name: the one place it is written (F48).
 pub const NAME: &str = "channel_call";
 
 /// The refusal of a task that names no target.
@@ -45,347 +35,7 @@ const META_CALL_DEPTH: &str = "_orion_call_depth";
 /// Metadata key for the call chain (array of channel names).
 const META_CALL_CHAIN: &str = "_orion_call_chain";
 
-/// Input configuration for the channel_call function.
-#[derive(Debug, Deserialize)]
-pub struct ChannelCallInput {
-    /// The target channel (JSONLogic), compiled once at engine build.
-    ///
-    /// One field, not the `channel` / `channel_logic` pair it used to be.
-    /// dataflow-rs 3.9 collapsed exactly this shape on its own configs, for the
-    /// reason that applies here too: a static spelling *is* JSONLogic for
-    /// itself, folded once at build and free per message, so a second field to
-    /// say "this one is an expression" was only ever describing the type of a
-    /// value the compiler can see for itself. `channel_logic` stays as a serde
-    /// alias, so a workflow written against the pair keeps loading — supplying
-    /// both is a duplicate-field error rather than a precedence rule.
-    ///
-    /// `Option`, and defaulted, rather than required: a task naming no channel
-    /// must fail at *call* time with the message below, not at engine
-    /// construction, which for Orion is a whole-instance failure that takes
-    /// every channel down over one stored row (proposal F23). The authoring-time
-    /// refusal is the schema's `required: true`.
-    #[serde(default, alias = "channel_logic")]
-    pub channel: Option<Template>,
-    /// Dotted path where the called channel's response is written. Named
-    /// `output` to match the other nine handlers (proposal F43);
-    /// `response_path` stays accepted so 0.3.x workflows keep loading — an
-    /// *accepted alternate spelling* with no removal date, not a deprecation
-    /// (F59): `http_call`'s twin alias lives on dataflow-rs's
-    /// `HttpCallConfig`, which Orion cannot retire on its own, and the two
-    /// functions must not drift apart. See "accepted alternate spellings" in
-    /// `docs/src/reference/support.md`.
-    #[serde(default, alias = "response_path")]
-    pub output: Option<Template>,
-    /// The payload to send (JSONLogic). Omitted, the caller's own payload is
-    /// forwarded. `data_logic` stays as a serde alias, as `channel` keeps
-    /// `channel_logic`.
-    #[serde(default, alias = "data_logic")]
-    pub data: Option<Template>,
-    /// Per-call timeout (JSONLogic), as `http_call`'s is.
-    #[serde(default)]
-    pub timeout_ms: Option<Template>,
-}
-
-/// Invokes another channel's workflow in-process (no HTTP round-trip).
-pub struct ChannelCallHandler {
-    /// The node's serving generation, consulted lazily per call — the handler
-    /// is registered on an engine that is itself part of a generation, so it
-    /// cannot hold one; it holds the handle and loads.
-    ///
-    /// One load per call gives the target's ingress contract (F14) and the
-    /// engine that will run it from the same build. The child may be a
-    /// *later* generation than its caller, which is deliberate: a reload
-    /// mid-workflow is a config change the child is entitled to see, and both
-    /// halves it does see agree with each other.
-    pub runtime: Arc<crate::runtime::RuntimeHandle>,
-    /// The process's expression engine, which compiled the target channel's
-    /// guards and evaluates them on this ingress as on every other (I188).
-    pub exprs: dataflow_rs::expr::ExprEngine,
-    pub max_call_depth: u32,
-    pub default_timeout_ms: u64,
-}
-
-#[async_trait]
-impl AsyncFunctionHandler for ChannelCallHandler {
-    type Input = ChannelCallInput;
-
-    /// Compile both JSONLogic fields once, at engine construction.
-    ///
-    /// This moves a malformed expression from a per-message failure to a build
-    /// failure — which for Orion is a *whole-instance* failure: boot aborts, or
-    /// every channel on every node goes down on reload. `custom_input_parse_check`
-    /// compiles the same two fields ahead of `Engine::new` so a bad expression
-    /// stays a per-channel `ChannelLoadIssue` (F33/F41) instead.
-    fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs_v3::Result<()> {
-        if let Some(t) = input.channel.as_mut() {
-            check_channel_shape(t)?;
-            t.compile(c, "channel_call.channel")?;
-        }
-        if let Some(t) = input.data.as_mut() {
-            t.compile(c, "channel_call.data")?;
-        }
-        if let Some(t) = input.timeout_ms.as_mut() {
-            t.compile(c, "channel_call.timeout_ms")?;
-        }
-        if let Some(t) = input.output.as_mut() {
-            t.compile(c, "channel_call.output")?;
-        }
-        Ok(())
-    }
-
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &ChannelCallInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        // F49: resolve the target *before* opening the profile scope, so the
-        // sample can be labelled with it. `channel_call` used to pass `None`,
-        // leaving `by_connector` blank for the one handler whose fan-out most
-        // needs attribution — a workflow calling three channels showed three
-        // unattributed `channel_call` entries and no way to tell which one was
-        // slow. Resolution is pure (a JSONLogic eval over the message) and
-        // takes `ctx` immutably, so it sits outside the body that borrows it
-        // mutably anyway.
-        let target_channel = resolve_target(ctx, input)?;
-        let label = target_channel.clone();
-
-        crate::engine::profile::record("channel_call", Some(&label), async move {
-            // --- Cycle detection and depth tracking ---
-            let parent_depth = ctx
-                .message()
-                .metadata()
-                .get(META_CALL_DEPTH)
-                .and_then(|v| v.as_i64())
-                .map(|n| n as u64)
-                .unwrap_or(0);
-
-            let parent_chain: Vec<String> = ctx
-                .message()
-                .metadata()
-                .get(META_CALL_CHAIN)
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            if parent_depth >= self.max_call_depth as u64 {
-                return Err(DataflowError::Validation(format!(
-                    "channel_call: max call depth {} exceeded (chain: {})",
-                    self.max_call_depth,
-                    format_chain(&parent_chain, &target_channel),
-                )));
-            }
-
-            if parent_chain.contains(&target_channel) {
-                return Err(DataflowError::Validation(format!(
-                    "channel_call: cycle detected: {}",
-                    format_chain(&parent_chain, &target_channel),
-                )));
-            }
-
-            // Resolve data to send.
-            let call_data: Value = if let Some(ref data) = input.data {
-                input_json(data, ctx)?
-            } else {
-                // Forward the original payload (not context.data which may be empty).
-                // Bridge OwnedDataValue → serde_json::Value once.
-                (&*ctx.message().payload_arc().clone()).into()
-            };
-
-            // Build the child metadata as JSON once: parent metadata (minus
-            // the parent's "channel" key) plus call-tracking keys. Used both
-            // as the validation_logic context and as the metadata merged into
-            // the child message, so validation sees what the workflow sees.
-            let child_depth = parent_depth + 1;
-            let mut child_chain = parent_chain;
-            child_chain.push(target_channel.clone());
-
-            let mut child_meta: Value = ctx.message().metadata().into();
-            if !child_meta.is_object() {
-                child_meta = serde_json::json!({});
-            }
-            // #280: the child inherits the parent's metadata wholesale, so
-            // without this it would start life carrying — and branching on —
-            // the *parent's* failed tasks as if they were its own. Its own
-            // failures are recorded by the engine as they happen.
-            crate::engine::clear_error_context(&mut child_meta);
-            // The calling channel, read before the override below replaces
-            // it: it is this call's caller identity, so a target's rate limit
-            // buckets per calling channel rather than lumping every
-            // in-process caller together (N16).
-            let calling_channel = child_meta
-                .get("channel")
-                .and_then(Value::as_str)
-                .unwrap_or("channel_call")
-                .to_string();
-            // F4: the child runs as the target channel — override the
-            // parent's "channel" so connector metrics and circuit-breaker
-            // keys attribute to the channel actually executing.
-            child_meta["channel"] = Value::String(target_channel.clone());
-            child_meta[META_CALL_DEPTH] = serde_json::json!(child_depth);
-            child_meta[META_CALL_CHAIN] = serde_json::json!(child_chain);
-
-            // F14/N16: enforce the target channel's ingress contract for
-            // in-process calls. Which guards that means is
-            // `Transport::ChannelCall`'s row of the matrix, not a decision
-            // taken here.
-            // F35: refuse a quarantined target rather than calling it with
-            // none of its guards.
-            //
-            // One generation for this call: the target's guards here and the
-            // engine that runs it below come from the same build.
-            let generation = self.runtime.load_pinned_or_current();
-            let target_runtime = Some(serviceable_target(&generation, &target_channel)?);
-            // The header view is the metadata inherited from the originating
-            // request, so a target whose `rate_limit.key_logic` reads a
-            // header still resolves one on this path. Credential headers
-            // arrive masked (S10), which narrows those buckets rather than
-            // widening them.
-            let header_lookup = |name: &str| {
-                child_meta
-                    .get("headers")
-                    .and_then(|h| h.get(name))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            };
-            let admission = crate::channel::guards::admit(crate::channel::guards::GuardRequest {
-                transport: crate::channel::guards::Transport::ChannelCall,
-                channel: &target_channel,
-                runtime: &target_runtime,
-                data: &call_data,
-                metadata: &child_meta,
-                exprs: &self.exprs,
-                origin: None,
-                caller_identity: &calling_channel,
-                header: &header_lookup,
-                // Authenticated at the edge; this call presents no credential.
-                auth_backoff: None,
-                // An in-process call presents no credential and signs no body; its
-                // ingress authenticated at the edge (see `Transport::guards`).
-                raw_body: None,
-                dedup_key_fallback: None,
-                // `Transport::ChannelCall` does not deduplicate, so no
-                // claim is taken and the owner is moot.
-                dedup_owner: None,
-                default_timeout_ms: Some(self.default_timeout_ms),
-                // `engine.default_channel_call_timeout_ms` is a default,
-                // not a ceiling: an in-process call blocks only its own
-                // caller, and the task's explicit `timeout_ms` outranks
-                // both anyway.
-                max_timeout_ms: None,
-                // The caller is a workflow, not a user agent: there is no
-                // browser to redirect and no callback to complete.
-                oauth: None,
-            })
-            .await
-            .map_err(|e| guard_refusal(&target_channel, e))?;
-            let _backpressure_permit = admission.backpressure_permit;
-
-            // Timeout precedence: explicit input > target channel's
-            // timeout_ms > engine default (the last two resolved by the
-            // guard chain, so every transport agrees on them).
-            let task_timeout_ms = match input.timeout_ms.as_ref() {
-                Some(t) => Some(t.resolve_u64(ctx, "channel_call 'timeout_ms'")?),
-                None => None,
-            };
-            let timeout_ms = task_timeout_ms
-                .or(admission.timeout_ms)
-                .unwrap_or(self.default_timeout_ms);
-
-            // F46: the shared post-admission step owns the deadline arm and
-            // the message build, so the in-process call cannot drift from the
-            // sync HTTP, trace-queue and Kafka paths. No trace capture and no
-            // profile scope — this call already runs inside the caller's. No
-            // routing bucket either: the child executes within its caller's
-            // rollout decision rather than drawing one of its own.
-            let child = crate::engine::execute_admitted(
-                &generation.engine,
-                &target_channel,
-                &call_data,
-                &child_meta,
-                crate::engine::ExecOpts {
-                    timeout_ms: Some(timeout_ms),
-                    ..Default::default()
-                },
-            )
-            .await;
-
-            match child.outcome {
-                crate::engine::RunOutcome::Ok => {}
-                // This arm did not exist before the step was shared: the
-                // handler read only the outer `Result`, so a target whose
-                // workflow failed its tasks reported success and the caller
-                // merged whatever half-finished `data` it left behind.
-                crate::engine::RunOutcome::WorkflowErrors(summary) => {
-                    return Err(failed(&target_channel, &summary).into());
-                }
-                // dataflow-rs 4's function passes the child's error on with
-                // its own code instead (I184).
-                crate::engine::RunOutcome::EngineError(e) => {
-                    return Err(failed(&target_channel, &e).into());
-                }
-                crate::engine::RunOutcome::Timeout(ms) => {
-                    return Err(timed_out(&target_channel, ms).into());
-                }
-            }
-
-            // Strip internal tracking metadata from the child's result before merging.
-            // The bridge from OwnedDataValue to serde_json::Value is the easiest way
-            // to filter; we then convert the parts we care about back.
-            let result_data_json: Value = child.message.data().into();
-
-            let output = match input.output.as_ref() {
-                Some(t) => t.resolve_string(ctx)?,
-                None => "data".to_string(),
-            };
-            ctx.set_json(&output, &result_data_json);
-
-            Ok(TaskOutcome::Success)
-        })
-        .await
-    }
-}
-
-/// Resolve the target channel name.
-pub(super) fn resolve_target(
-    ctx: &TaskContext<'_>,
-    input: &ChannelCallInput,
-) -> dataflow_rs_v3::Result<String> {
-    let Some(channel) = input.channel.as_ref() else {
-        return Err(DataflowError::Validation(CHANNEL_REQUIRED.into()));
-    };
-    // Deliberately not `resolve_string`: a non-string result here is an
-    // authoring mistake worth reporting, not something to coerce into a channel
-    // name that cannot exist. A statically authored name is a constant on the
-    // compiled template, so this costs no evaluation for the ordinary case.
-    let result: Value = input_json(channel, ctx)?;
-    Ok(target_name(result.as_str())?)
-}
-
-/// Refuse a `channel` that cannot name a channel whatever the message says.
-///
-/// While `channel` was a `String`, serde caught `"channel": 7` when the input
-/// was parsed, and the load-time screen quarantined that one row rather than
-/// letting it serve — which is the whole of F33/F41. A `Template` accepts any
-/// JSON, so that check has to be made here or the row loads clean and fails on
-/// every request instead.
-///
-/// The line is the authored shape: a non-string *scalar* is unambiguously
-/// itself in JSONLogic, so it is a channel name that is not a string and never
-/// will be. An object or an array may be an operator call, and what it
-/// evaluates to is not knowable until a message arrives — `resolve_target`
-/// reports those.
-fn check_channel_shape(channel: &Template) -> dataflow_rs_v3::Result<()> {
-    match channel_shape_problem(channel.as_json()) {
-        Some(problem) => Err(DataflowError::Validation(problem)),
-        None => Ok(()),
-    }
-}
-
-/// [`check_channel_shape`]'s rule on the authored JSON, for both engines:
+/// The rule on the authored JSON:
 /// why `channel` can never name a channel, or `None` when it may.
 fn channel_shape_problem(channel: &Value) -> Option<String> {
     match channel {
@@ -400,33 +50,6 @@ fn channel_shape_problem(channel: &Value) -> Option<String> {
     }
 }
 
-/// A template's value for this message as `serde_json::Value`, through
-/// `resolve` so a folded constant is served from the cache rather than
-/// re-evaluated.
-fn input_json(template: &Template, ctx: &TaskContext<'_>) -> dataflow_rs_v3::Result<Value> {
-    Ok((&template.resolve(ctx)?).into())
-}
-
-/// Map a target channel's guard refusal onto the error the calling workflow
-/// sees.
-///
-/// A `validation_logic` rejection stays a `Validation` — the caller sent data
-/// the target refuses, which the envelope reports as `400`. Every other
-/// refusal (over the target's rate limit, at its concurrency cap, a
-/// fail-closed dedup/rate-limit backend) keeps the status the guard chose,
-/// so the caller sees `429`/`503` rather than the generic `500` a plain
-/// function-execution error would have produced for a condition that is
-/// nobody's bug and is worth retrying.
-fn guard_refusal(target: &str, e: crate::errors::OrionError) -> DataflowError {
-    let (status, _code, detail) = e.response_parts();
-    let message = format!("channel_call to '{target}': {detail}");
-    if status == axum::http::StatusCode::BAD_REQUEST {
-        DataflowError::Validation(message)
-    } else {
-        crate::errors::channel_refused_dataflow_error(status, message)
-    }
-}
-
 /// Format a call chain for error messages: "A -> B -> C"
 fn format_chain(chain: &[String], target: &str) -> String {
     let mut parts: Vec<&str> = chain.iter().map(|s| s.as_str()).collect();
@@ -434,7 +57,7 @@ fn format_chain(chain: &[String], target: &str) -> String {
     parts.join(" -> ")
 }
 
-// -- dataflow-rs 4 --
+// -- The function --
 
 /// The `metadata` root, which a call reads its position and its caller's
 /// identity from and hands its child, amended.
@@ -478,9 +101,9 @@ impl ChannelCallConfig {
     }
 }
 
-/// `channel_call` as a dataflow-rs 4 function: the call `ChannelCallHandler`
-/// makes, refused in the same order and the same words, with the child run
-/// on the generation's dataflow-rs 4 engine.
+/// `channel_call` as a function: the call 1.12's handler made, refused in
+/// the same order and the same words, with the child run on the
+/// generation's engine.
 ///
 /// **The child inherits the run's limits (R60).** Its deadline is the
 /// earliest of the call's own timeout (the task's, else the target's, else
@@ -572,7 +195,7 @@ impl Function for ChannelCallFunction {
         let generation = self.runtime.load_pinned_or_current();
         let target_runtime = Some(serviceable_target(&generation, &target)?);
         let engine = generation
-            .engine4
+            .engine
             .as_ref()
             .ok_or_else(|| not_found(&target))?;
         // Where the answer goes, before the guards spend anything on the
@@ -782,13 +405,12 @@ fn guard_refused(target: &str, e: crate::errors::OrionError) -> dataflow_rs::Err
     }
 }
 
-// -- What both engines share --
+// -- The call position, the target, and the refusals --
 //
 // The call position, the target's judgement and every refusal 1.12 words,
-// once, as `HandlerError`s of the class its `DataflowError` variant maps to:
+// once, as `HandlerError`s of the class 1.12's error mapped to:
 // `CallerInput` is 1.12's `Validation`, `Backend` its `function_execution`
-// and `Timeout` its `Timeout`, so dataflow-rs 3 rebuilds the variant and
-// dataflow-rs 4 records its code and its text (I184).
+// and `Timeout` its `Timeout`, so each records 1.12's code and text (I184).
 
 /// Where a message stands in a call chain, as its metadata records it: the
 /// depth (`_orion_call_depth`, a number) and the channels called so far
@@ -911,7 +533,7 @@ fn not_found(target: &str) -> HandlerError {
 }
 
 /// The refusal of a target whose run failed: its error records summarised,
-/// or, on dataflow-rs 3, the error that stopped it.
+/// or the error that stopped it.
 fn failed(target: &str, why: impl std::fmt::Display) -> HandlerError {
     HandlerError::new(
         ErrorClass::Backend,
@@ -939,27 +561,23 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "channel",
         description: "Target channel to invoke (JSONLogic), so one task can route by \
-                      message content. (Was `channel_logic`; still accepted, but not \
-                      alongside `channel`.)",
+                      message content.",
         kind: FieldKind::String,
         required: true,
         template_at: &[""],
-        alias: Some("channel_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "data",
         description: "Payload to pass to the target channel (JSONLogic). Omit to forward \
-                      the caller's own payload. (Was `data_logic`; still accepted, but not \
-                      alongside `data`.)",
+                      the caller's own payload.",
         kind: FieldKind::Any,
         template_at: &[""],
-        alias: Some("data_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
-        description: "Dotted path where the called channel's response is stored. Defaults to \"data\". (Was `response_path` before 1.0; still accepted.)",
+        description: "Dotted path where the called channel's response is stored. Defaults to \"data\".",
         kind: FieldKind::String,
         template_at: &[""],
         ..FieldSchema::DEFAULT
@@ -990,7 +608,7 @@ mod tests {
     /// `engine.max_channel_call_depth`'s default.
     const MAX_DEPTH: u32 = 10;
 
-    // -- The world: one generation holding both engines --
+    // -- The world: one generation and its engine --
 
     /// One channel of a [`World`]: its row's config, the tasks of the one
     /// workflow serving it (none for a channel no workflow serves), and
@@ -1069,7 +687,7 @@ mod tests {
             }
         }
 
-        /// The workflow serving it, as both engines read it.
+        /// The workflow serving it.
         fn workflow(&self) -> Option<Value> {
             self.tasks.as_ref().map(|tasks| {
                 json!({
@@ -1085,8 +703,8 @@ mod tests {
         json!([{"id": "t", "name": "t", "function": {"name": NAME, "input": input}}])
     }
 
-    /// Every run the dataflow-rs 4 engine finished, in order: its channel
-    /// and how it ended.
+    /// Every run the engine finished, in order: its channel and how it
+    /// ended.
     #[derive(Default)]
     struct Runs {
         started: Mutex<Vec<(String, String)>>,
@@ -1155,8 +773,8 @@ mod tests {
         }
     }
 
-    /// Waits as long as `ms` says (an hour by default), in both engines: a
-    /// target that is still running when a limit fires.
+    /// Waits as long as `ms` says (an hour by default): a target that is
+    /// still running when a limit fires.
     #[derive(Debug, FunctionConfig)]
     struct WaitConfig {
         #[config(default = 3_600_000)]
@@ -1174,25 +792,8 @@ mod tests {
         }
     }
 
-    struct WaitHandler;
-
-    #[async_trait]
-    impl AsyncFunctionHandler for WaitHandler {
-        type Input = Value;
-
-        async fn execute(
-            &self,
-            _: &mut TaskContext<'_>,
-            input: &Value,
-        ) -> dataflow_rs_v3::Result<TaskOutcome> {
-            let ms = input.get("ms").and_then(Value::as_u64).unwrap_or(3_600_000);
-            tokio::time::sleep(Duration::from_millis(ms)).await;
-            Ok(TaskOutcome::Success)
-        }
-    }
-
-    /// Fails with a connection error, `IO_ERROR` and retryable, in both
-    /// engines: a code that is not `FUNCTION_ERROR`, so passing it on shows.
+    /// Fails with a connection error, `IO_ERROR` and retryable: a code that
+    /// is not `FUNCTION_ERROR`, so passing it on shows.
     #[derive(Debug, FunctionConfig)]
     struct NoConfig {}
 
@@ -1206,23 +807,8 @@ mod tests {
         }
     }
 
-    struct FailHandler;
-
-    #[async_trait]
-    impl AsyncFunctionHandler for FailHandler {
-        type Input = Value;
-
-        async fn execute(
-            &self,
-            _: &mut TaskContext<'_>,
-            _: &Value,
-        ) -> dataflow_rs_v3::Result<TaskOutcome> {
-            Err(HandlerError::new(ErrorClass::Connector, "the backend is down").into())
-        }
-    }
-
     /// Cancels the token it holds, then waits: a parent's token tripped
-    /// while its child runs. dataflow-rs 4 only; 1.12 had no token.
+    /// while its child runs. 1.12 had no token.
     struct Trip(CancelToken);
 
     impl Function for Trip {
@@ -1236,24 +822,23 @@ mod tests {
     }
 
     /// One generation of a node serving `chans`, published on its handle:
-    /// the channel estate, a dataflow-rs 3 engine and a dataflow-rs 4
-    /// engine built from the same channels, each with `channel_call` itself
-    /// registered, so calls chain.
+    /// the channel estate and an engine built from the same channels, with
+    /// `channel_call` itself registered, so calls chain.
     struct World {
         runtime: Arc<RuntimeHandle>,
-        v3: Arc<dataflow_rs_v3::Engine>,
         v4: dataflow_rs::Engine,
         runs: Arc<Runs>,
         default_timeout_ms: u64,
     }
 
     /// The world's knobs: the engine default timeout, the channels
-    /// quarantined, and the token `trip` cancels.
+    /// quarantined, the token `trip` cancels, and whether the generation
+    /// has an engine at all.
     struct Knobs {
         default_timeout_ms: u64,
         quarantined: Vec<&'static str>,
         trip: CancelToken,
-        engine4: bool,
+        engine: bool,
     }
 
     impl Default for Knobs {
@@ -1262,7 +847,7 @@ mod tests {
                 default_timeout_ms: 30_000,
                 quarantined: Vec::new(),
                 trip: CancelToken::new(),
-                engine4: true,
+                engine: true,
             }
         }
     }
@@ -1273,7 +858,6 @@ mod tests {
 
     async fn world_with(chans: &[Chan], knobs: Knobs) -> World {
         let exprs = kit::test_exprs();
-        let runtime = crate::runtime::generation::test_handle();
         let client = reqwest::Client::new();
         let rows: Vec<_> = chans.iter().map(Chan::row).collect();
         let issues = knobs
@@ -1308,38 +892,15 @@ mod tests {
                 issues,
             )
             .await;
+        let channels = Arc::new(channels);
+        // Without an engine the node stays on its boot generation, which
+        // holds the estate and nothing to run it.
+        let runtime = Arc::new(RuntimeHandle::new(
+            Arc::clone(&channels),
+            crate::engine::FunctionRegistry::builtin().clone(),
+        ));
 
         let workflows: Vec<Value> = chans.iter().filter_map(Chan::workflow).collect();
-
-        let mut handlers: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
-            Default::default();
-        handlers.insert(
-            NAME.to_string(),
-            Box::new(ChannelCallHandler {
-                runtime: runtime.clone(),
-                exprs: exprs.clone(),
-                max_call_depth: MAX_DEPTH,
-                default_timeout_ms: knobs.default_timeout_ms,
-            }),
-        );
-        handlers.insert("wait".to_string(), Box::new(WaitHandler));
-        handlers.insert("fail".to_string(), Box::new(FailHandler));
-        // 1.12 had no token to trip: on dataflow-rs 3 the target just waits.
-        handlers.insert("trip".to_string(), Box::new(WaitHandler));
-        let v3_workflows = workflows
-            .iter()
-            .map(|w| dataflow_rs_v3::Workflow::from_json(&w.to_string()).expect("a v3 workflow"));
-        // Built as 1.12 built every engine: Orion's operators, its secrets
-        // and its error context.
-        let mut v3 = dataflow_rs_v3::Engine::builder().with_workflows(v3_workflows);
-        for (name, handler) in handlers {
-            v3 = v3.register_boxed(name, handler);
-        }
-        let v3 = crate::engine::operators::with_orion_engine_defaults(
-            v3,
-            &crate::engine::ResolvedSecrets::empty(),
-        );
-        let v3 = Arc::new(v3.build().expect("the v3 engine builds"));
 
         let runs = Arc::new(Runs::default());
         let mut registry = dataflow_rs::Registry::new(exprs.clone());
@@ -1366,17 +927,17 @@ mod tests {
         }
         let v4 = builder.build().expect("the v4 engine builds");
 
-        runtime.publish(
-            v3.clone(),
-            knobs.engine4.then(|| v4.clone()),
-            Arc::new(channels),
-            crate::engine::FunctionRegistry::builtin().clone(),
-            Arc::new(crate::plugin::PluginSet::empty()),
-            Arc::new(crate::model::ModelSet::empty()),
-        );
+        if knobs.engine {
+            runtime.publish(
+                v4.clone(),
+                channels,
+                crate::engine::FunctionRegistry::builtin().clone(),
+                Arc::new(crate::plugin::PluginSet::empty()),
+                Arc::new(crate::model::ModelSet::empty()),
+            );
+        }
         World {
             runtime,
-            v3,
             v4,
             runs,
             default_timeout_ms: knobs.default_timeout_ms,
@@ -1389,40 +950,8 @@ mod tests {
     }
 
     impl World {
-        /// `channel` run on dataflow-rs 3 over `payload` and `metadata`, as
-        /// `execute_admitted` builds the message.
-        async fn v3(&self, channel: &str, payload: Value, metadata: Value) -> Seen {
-            let mut message = dataflow_rs_v3::Message::builder()
-                .payload_json(&payload)
-                .metadata_json(&metadata)
-                .capture_changes(false)
-                .audit_mode(dataflow_rs_v3::AuditMode::Off)
-                .build();
-            match self
-                .v3
-                .process_message_for_channel(channel, &mut message)
-                .await
-            {
-                Ok(()) => Ok(Value::from(message.data())),
-                Err(e) => {
-                    let record = message.errors().first().expect("the failure is recorded");
-                    let failure = Failure {
-                        code: record.code.clone(),
-                        message: e.to_string(),
-                        retryable: e.retryable(),
-                        detail: record.detail.clone(),
-                    };
-                    assert_eq!(
-                        record.message,
-                        record_of(record.task_id.as_deref(), &failure)
-                    );
-                    Err(failure)
-                }
-            }
-        }
-
-        /// `channel` run on dataflow-rs 4 over `payload` and `metadata`,
-        /// under `options` (the channel set here): the run and the message.
+        /// `channel` run over `payload` and `metadata`, as `execute_admitted`
+        /// builds the message, under `options` (the channel set here): the run and the message.
         async fn v4_run(
             &self,
             channel: &str,
@@ -1453,8 +982,8 @@ mod tests {
         }
     }
 
-    /// A dataflow-rs 4 run as [`Seen`]: `data` when every workflow finished,
-    /// error records or not, as dataflow-rs 3's `Ok(())` reads it.
+    /// A run as [`Seen`]: `data` when every workflow finished, error records
+    /// or not, as 1.12 read a run that returned.
     fn seen(run: &dataflow_rs::Run, message: &Message) -> Seen {
         match run.status() {
             RunStatus::Completed | RunStatus::CompletedWithErrors => {
@@ -1474,15 +1003,10 @@ mod tests {
         }
     }
 
-    /// The same run on both engines, each in a world of its own, so a
-    /// guard's state (a rate limit's tokens) is not shared: what each saw.
-    async fn both(chans: &[Chan], channel: &str, payload: Value, metadata: Value) -> (Seen, Seen) {
-        let v3 = world(chans)
-            .await
-            .v3(channel, payload.clone(), metadata.clone())
-            .await;
-        let v4 = world(chans).await.v4(channel, payload, metadata).await;
-        (v3, v4)
+    /// The run in a world of its own, so a guard's state (a rate limit's
+    /// tokens) is not shared with any other: what it saw.
+    async fn answer(chans: &[Chan], channel: &str, payload: Value, metadata: Value) -> Seen {
+        world(chans).await.v4(channel, payload, metadata).await
     }
 
     /// A target that greets the payload's `name`, as `channel_call_test`'s
@@ -1548,13 +1072,10 @@ mod tests {
     #[test]
     fn a_channel_that_can_name_no_channel_is_refused_at_load_in_1_12s_words() {
         for channel in [json!(7), json!(true), json!(1.5)] {
-            let mut input: ChannelCallInput =
-                serde_json::from_value(json!({ "channel": channel })).expect("1.12 reads it");
-            let v3 = check_channel_shape(input.channel.as_mut().expect("set"))
-                .expect_err("1.12 refused it at load");
-            let DataflowError::Validation(expected) = v3 else {
-                unreachable!("1.12 refused it as a validation error: {v3:?}");
-            };
+            let expected = format!(
+                "channel_call 'channel' must be a channel name or an expression \
+                 producing one, not {channel}"
+            );
             let issues = testing::config_with::<ChannelCallConfig>(
                 &kit::test_exprs(),
                 json!({ "channel": channel }),
@@ -1572,15 +1093,7 @@ mod tests {
             );
         }
         // `null` is no channel: 1.12 failed every call with its refusal.
-        let input: ChannelCallInput =
-            serde_json::from_value(json!({"channel": null})).expect("1.12 reads it");
-        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        let v3 = resolve_target(&TaskContext::new(&mut message, &datalogic), &input)
-            .expect_err("1.12 refused every call");
-        let DataflowError::Validation(expected) = v3 else {
-            unreachable!("1.12 refused it as a validation error: {v3:?}");
-        };
+        let expected = "channel_call requires 'channel'".to_string();
         let issues =
             testing::config_with::<ChannelCallConfig>(&kit::test_exprs(), json!({"channel": null}))
                 .expect_err("refused at load");
@@ -1602,8 +1115,8 @@ mod tests {
 
     /// The named load refusals (O11a's CHANGELOG): `channel` missing
     /// (I183), and an unknown key (break 2a), which 1.12's `deny_unknown:
-    /// false` accepted and ignored. 1.12's aliases are unknown keys here,
-    /// since the loader rewrites them first (I186).
+    /// false` accepted and ignored. 1.12's aliases are unknown keys: no
+    /// alias is read.
     #[test]
     fn a_missing_channel_and_an_unknown_key_are_refused_at_load() {
         let rejected = |input: Value| -> Vec<(String, IssueCode)> {
@@ -1668,10 +1181,10 @@ mod tests {
     // -- The call --
 
     /// The basic call, `channel_call_test`'s first: the child runs on the
-    /// generation's dataflow-rs 4 engine, on the target channel, and what it
-    /// left in `data` is written at `output`, as 1.12 wrote it.
+    /// generation's engine, on the target channel, and what it left in
+    /// `data` is written at `output`, as 1.12 wrote it.
     #[tokio::test]
-    async fn the_child_runs_on_engine4_and_its_data_is_written_at_output() {
+    async fn the_child_runs_on_the_generations_engine_and_its_data_is_written_at_output() {
         let chans = [
             greeter(),
             chan(
@@ -1679,8 +1192,8 @@ mod tests {
                 call(json!({"channel": "target", "output": "data.result"})),
             ),
         ];
-        let (v3, v4) = both(&chans, "caller", json!({"name": "World"}), json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = answer(&chans, "caller", json!({"name": "World"}), json!({})).await;
+        twin::pinned(&v4, "basic");
         assert_eq!(
             v4.expect("the call answers")["result"]["greeting"],
             "Hello, World"
@@ -1691,16 +1204,16 @@ mod tests {
             .v4("caller", json!({"name": "World"}), json!({}))
             .await
             .expect("answers");
-        // Both runs reported to the dataflow-rs 4 engine's observer: the
-        // child ran on the generation's `engine4`.
-        assert!(world.runtime.load().engine4.is_some());
+        // Both runs reported to the engine's observer: the child ran on the
+        // generation's engine.
+        assert!(world.runtime.load().engine.is_some());
         assert_eq!(world.runs.channels(), ["caller", "target"]);
     }
 
-    /// Without `engine4` there is no workflow to run the target: the call
+    /// Without an engine there is no workflow to run the target: the call
     /// is refused as 1.12 refused a target nothing serves, and nothing runs.
     #[tokio::test]
-    async fn a_generation_without_engine4_runs_no_child() {
+    async fn a_generation_without_an_engine_runs_no_child() {
         let chans = [
             greeter(),
             chan("caller", call(json!({"channel": "target"}))),
@@ -1708,7 +1221,7 @@ mod tests {
         let world = world_with(
             &chans,
             Knobs {
-                engine4: false,
+                engine: false,
                 ..Knobs::default()
             },
         )
@@ -1717,7 +1230,7 @@ mod tests {
             .v4("caller", json!({}), json!({}))
             .await
             .expect_err("refused");
-        let expected: DataflowError = not_found("target").into();
+        let expected: dataflow_rs::Error = not_found("target").into();
         assert_eq!(failure.message, expected.to_string());
         assert_eq!(failure.code, "FUNCTION_ERROR");
         assert_eq!(world.runs.channels(), ["caller"], "no child ran");
@@ -1753,8 +1266,8 @@ mod tests {
             );
             let chans = [echo.clone(), caller];
             let payload = json!({"inner": {"k": 1}, "ms": 5000});
-            let (v3, v4) = both(&chans, "caller", payload, json!({})).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = answer(&chans, "caller", payload, json!({})).await;
+            twin::pinned(&v4, format!("fields/{input}"));
             assert!(v4.is_ok(), "{input}: {v4:?}");
         }
     }
@@ -1788,11 +1301,11 @@ mod tests {
             json!({"_orion_call_depth": 2, "_orion_call_chain": ["edge", "mid"]}),
             json!({"_orion_call_depth": "two", "_orion_call_chain": "edge"}),
         ] {
-            let (v3, v4) = both(&chans, "caller", json!({}), metadata.clone()).await;
-            assert_eq!(v4, v3, "{metadata}");
+            let v4 = answer(&chans, "caller", json!({}), metadata.clone()).await;
+            twin::pinned(&v4, format!("metadata/{metadata}"));
             assert!(v4.is_ok(), "{metadata}");
         }
-        let (_, v4) = both(
+        let v4 = answer(
             &chans,
             "caller",
             json!({}),
@@ -1824,8 +1337,8 @@ mod tests {
                 json!({"_orion_call_depth": MAX_DEPTH + 5, "_orion_call_chain": ["a"]}),
             ),
         ] {
-            let (v3, v4) = both(&chans, channel, json!({}), metadata.clone()).await;
-            assert_eq!(v4, v3, "{metadata}");
+            let v4 = answer(&chans, channel, json!({}), metadata.clone()).await;
+            twin::pinned(&v4, format!("recursion/{channel}/{metadata}"));
             assert_eq!(v4.expect_err("refused").code, "VALIDATION_ERROR");
         }
     }
@@ -1837,8 +1350,9 @@ mod tests {
     #[tokio::test]
     async fn a_cycle_found_in_the_child_is_passed_on_with_its_code() {
         let chans = [chan("self", call(json!({"channel": "self"})))];
-        let (v3, v4) = both(&chans, "self", json!({}), json!({})).await;
-        let (v3, v4) = (v3.expect_err("refused"), v4.expect_err("refused"));
+        let v4 = answer(&chans, "self", json!({}), json!({}))
+            .await
+            .expect_err("refused");
         // The child's refusal, as the child's run stopped with it: the
         // same call at the child's position.
         let inner = world(&chans)
@@ -1859,12 +1373,6 @@ mod tests {
                 retryable: inner.retryable,
                 detail: inner.detail.clone(),
             }
-        );
-        // What moved: 1.12 recorded the same text as a function failure.
-        assert_eq!(v3.code, "FUNCTION_ERROR");
-        assert_eq!(
-            v3.message,
-            format!("Function execution error: {}", v4.message)
         );
     }
 
@@ -1891,13 +1399,9 @@ mod tests {
             ..Knobs::default()
         };
         for to in ["nowhere", "nightly", "broken"] {
-            let v3 = world_with(&chans, knobs())
-                .await
-                .v3("caller", json!(to), json!({}))
-                .await;
             let world = world_with(&chans, knobs()).await;
             let v4 = world.v4("caller", json!(to), json!({})).await;
-            assert_eq!(v4, v3, "{to}");
+            twin::pinned(&v4, format!("unserviceable/{to}"));
             assert_eq!(v4.expect_err("refused").code, "FUNCTION_ERROR", "{to}");
             assert_eq!(world.runs.channels(), ["caller"], "{to}: nothing ran");
         }
@@ -1919,8 +1423,8 @@ mod tests {
                 call(json!({"channel": "target", "output": "data.r"})),
             ),
         ];
-        let (v3, v4) = both(&chans, "caller", json!({"name": "x"}), json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = answer(&chans, "caller", json!({"name": "x"}), json!({})).await;
+        twin::pinned(&v4, "zero_matches/declined");
         assert_eq!(v4.expect("answers"), json!({"r": {}}));
 
         let chans = [
@@ -1935,13 +1439,10 @@ mod tests {
             .v4("caller", json!({}), json!({}))
             .await
             .expect_err("refused");
-        let expected: DataflowError = not_found("target").into();
+        let expected: dataflow_rs::Error = not_found("target").into();
         assert_eq!(failure.code, "FUNCTION_ERROR");
         assert_eq!(failure.message, expected.to_string());
         assert_eq!(world.runs.channels(), ["caller", "target"]);
-        // What 1.12 did with the same estate: the empty `data`, written.
-        let v3 = world.v3("caller", json!({}), json!({})).await;
-        assert_eq!(v3.expect("1.12 answered"), json!({"r": {}}));
     }
 
     /// The target's guards admit or refuse as 1.12's did: its
@@ -1994,8 +1495,8 @@ mod tests {
                 Some(crate::errors::kind::CHANNEL_RATE_LIMITED),
             ),
         ] {
-            let (v3, v4) = both(&chans, "caller", payload.clone(), json!({})).await;
-            assert_eq!(v4, v3, "{payload}");
+            let v4 = answer(&chans, "caller", payload.clone(), json!({})).await;
+            twin::pinned(&v4, format!("guards/{payload}"));
             match code {
                 None => {
                     let data = v4.expect("admitted");
@@ -2005,7 +1506,7 @@ mod tests {
                 Some(code) => assert_eq!(v4.expect_err("refused").code, code, "{payload}"),
             }
         }
-        let (_, v4) = both(
+        let v4 = answer(
             &chans,
             "caller",
             json!({"to": "limited", "send": {"name": "Ada"}}),
@@ -2042,8 +1543,8 @@ mod tests {
                 ]),
             );
             let chans = [greeter(), caller];
-            let (v3, v4) = both(&chans, "caller", json!({"n": 7, "empty": ""}), json!({})).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = answer(&chans, "caller", json!({"n": 7, "empty": ""}), json!({})).await;
+            twin::pinned(&v4, format!("computed_fields/{input}"));
             assert!(v4.is_err(), "{input}");
         }
     }
@@ -2053,13 +1554,10 @@ mod tests {
     /// runs. 1.12 ran the target and wrote at a key no response shows.
     #[tokio::test]
     async fn a_computed_output_naming_no_path_runs_nothing() {
-        for (output, expected) in [
-            (
-                json!({"var": "data.in.n"}),
-                Some(twin::output_refusal(json!(7))),
-            ),
-            (json!({"var": "data.in.nowhere"}), None),
-            (json!({"var": "data.in.where"}), None),
+        for output in [
+            json!({"var": "data.in.n"}),
+            json!({"var": "data.in.nowhere"}),
+            json!({"var": "data.in.where"}),
         ] {
             let caller = chan(
                 "caller",
@@ -2076,9 +1574,7 @@ mod tests {
                 .await
                 .expect_err("refused");
             assert_eq!(failure.code, "VALIDATION_ERROR", "{output}");
-            if let Some(expected) = expected {
-                assert_eq!(failure, expected, "{output}");
-            }
+            twin::pinned(&Err(failure), format!("computed_output/{output}"));
             assert_eq!(
                 world.runs.channels(),
                 ["caller"],
@@ -2097,8 +1593,8 @@ mod tests {
                     "function": {"name": "fail", "input": {}}}]),
         );
         let chans = [failing, chan("caller", call(json!({"channel": "failing"})))];
-        let (v3, v4) = both(&chans, "caller", json!({}), json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = answer(&chans, "caller", json!({}), json!({})).await;
+        twin::pinned(&v4, "completes_with_errors");
         assert_eq!(v4.expect_err("failed").code, "FUNCTION_ERROR");
     }
 
@@ -2119,8 +1615,9 @@ mod tests {
             .expect_err("the target stops");
         assert_eq!((inner.code.as_str(), inner.retryable), ("IO_ERROR", true));
 
-        let (v3, v4) = both(&chans, "caller", json!({}), json!({})).await;
-        let (v3, v4) = (v3.expect_err("failed"), v4.expect_err("failed"));
+        let v4 = answer(&chans, "caller", json!({}), json!({}))
+            .await
+            .expect_err("failed");
         assert_eq!(
             v4,
             Failure {
@@ -2129,11 +1626,6 @@ mod tests {
                 retryable: inner.retryable,
                 detail: inner.detail.clone(),
             }
-        );
-        assert_eq!((v3.code.as_str(), v3.retryable), ("FUNCTION_ERROR", false));
-        assert_eq!(
-            v3.message,
-            format!("Function execution error: {}", v4.message)
         );
     }
 
@@ -2184,7 +1676,7 @@ mod tests {
     /// The target's guards see none of the caller's error records, as 1.12
     /// cleared them before the guards (#280): a caller with a recorded
     /// failure under `continue` calls a target whose `validation_logic`
-    /// rejects any message carrying one, and is admitted. On both engines.
+    /// rejects any message carrying one, and is admitted.
     #[tokio::test]
     async fn the_targets_guards_see_none_of_the_callers_error_records() {
         let strict = greeter().named("strict").config(json!({
@@ -2203,8 +1695,8 @@ mod tests {
             ]),
         );
         let chans = [strict, caller];
-        let (v3, v4) = both(&chans, "caller", json!({"name": "Ada"}), json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = answer(&chans, "caller", json!({"name": "Ada"}), json!({})).await;
+        twin::pinned(&v4, "guards_see_no_records");
         let data = v4.expect("admitted");
         assert_eq!(data["own"], "boom", "the caller holds its own record");
         assert_eq!(data["r"]["greeting"], "Hello, Ada");
@@ -2420,10 +1912,6 @@ mod tests {
             )
             .config(config.clone());
             let chans = [target, chan("caller", call(input))];
-            let v3 = world_with(&chans, knobs())
-                .await
-                .v3("caller", json!({}), json!({}))
-                .await;
             let world = world_with(&chans, knobs()).await;
             assert_eq!(world.default_timeout_ms, default);
             let mut options = RunOptions::default();
@@ -2433,7 +1921,10 @@ mod tests {
             }
             let (report, message) = world.v4_run("caller", json!({}), json!({}), options).await;
             let v4 = seen(&report, &message);
-            assert_eq!(v4, v3, "{task:?} {config} {default}");
+            twin::pinned(
+                &v4,
+                format!("own_timeout/{task:?}/{config}/{default}/{run:?}"),
+            );
             let failure = v4.expect_err("the call timed out");
             assert_eq!(failure.code, "TIMEOUT_ERROR");
             assert!(failure.retryable);
@@ -2557,11 +2048,6 @@ mod tests {
             chan("mid", call(json!({"channel": "target", "timeout_ms": 100}))),
             chan("caller", call(json!({"channel": "mid"}))),
         ];
-        let v3 = world(&chans)
-            .await
-            .v3("caller", json!({}), json!({}))
-            .await
-            .expect_err("1.12 failed the call");
         let world = world(&chans).await;
         let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(10);
         let (report, message) = world
@@ -2573,7 +2059,7 @@ mod tests {
             )
             .await;
         let v4 = seen(&report, &message).expect_err("the call failed");
-        let inner: DataflowError = timed_out("target", 100).into();
+        let inner: dataflow_rs::Error = timed_out("target", 100).into();
         assert_eq!(
             v4,
             Failure {
@@ -2590,11 +2076,6 @@ mod tests {
                 ("mid".to_string(), "stopped TIMEOUT_ERROR".to_string()),
                 ("caller".to_string(), "stopped TIMEOUT_ERROR".to_string()),
             ]
-        );
-        assert_eq!((v3.code.as_str(), v3.retryable), ("FUNCTION_ERROR", false));
-        assert_eq!(
-            v3.message,
-            format!("Function execution error: {}", v4.message)
         );
     }
 
@@ -2669,7 +2150,7 @@ mod tests {
         .name(NAME)
         .await;
         let failure = twin::seen(&called).expect_err("refused");
-        let expected: DataflowError = not_found("orders").into();
+        let expected: dataflow_rs::Error = not_found("orders").into();
         assert_eq!(failure.message, expected.to_string());
     }
 

@@ -130,7 +130,7 @@ fn channel_call_workflow(name: &str, target: &str, data: serde_json::Value) -> s
                 "input": {
                     "channel": target,
                     "data": data,
-                    "response_path": "data.target_result"
+                    "output": "data.target_result"
                 }
             }
         }]
@@ -173,7 +173,7 @@ async fn test_channel_call_enforces_target_validation_logic() {
     )
     .await;
 
-    // The nested validation failure propagates as DataflowError::Validation,
+    // The nested validation failure propagates as a `VALIDATION_ERROR`,
     // which the error envelope maps to 400.
     let resp = app
         .clone()
@@ -321,7 +321,7 @@ async fn failing_task_response(environment: &str) -> serde_json::Value {
         "tasks": [{
             "id": "t1",
             "name": "Failing DB read",
-            "continue_on_error": true,
+            "on_failure": "continue",
             "function": {
                 "name": "db_read",
                 "input": {
@@ -413,7 +413,7 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
         "tasks": [{
             "id": "t1",
             "name": "Failing DB read",
-            "continue_on_error": true,
+            "on_failure": "continue",
             "function": {
                 "name": "db_read",
                 "input": {

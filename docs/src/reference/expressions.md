@@ -124,7 +124,7 @@ On the wire a tensor is `{"tensor": {"dtype": "f32", "shape": [1, 7], "data": "<
 
 ### Encoding (Orion operators)
 
-Registered by Orion itself rather than gated by a cargo feature, so available on every expression surface: conditions, `map` logic, `body_logic`, channel guards. A string encodes as its UTF-8 bytes; any other value encodes as its compact-JSON text with key order preserved; `null` is an error. Decoders are strict. The input must be valid for the alphabet (base64 accepts padded and unpadded input), and the decoded bytes must be valid UTF-8. Binary payloads belong to the `crypto` function's `input_encoding` instead.
+Registered by Orion itself rather than gated by a cargo feature, so available on every expression surface: conditions, `map` logic, a connector function's `body`, channel guards. A string encodes as its UTF-8 bytes; any other value encodes as its compact-JSON text with key order preserved; `null` is an error. Decoders are strict. The input must be valid for the alphabet (base64 accepts padded and unpadded input), and the decoded bytes must be valid UTF-8. Binary payloads belong to the `crypto` function's `input_encoding` instead.
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
@@ -154,7 +154,7 @@ Registered by Orion. Like the encoding and randomness operators and unlike [`ext
 
 `url_encode` is RFC 3986, not form-encoding. A space becomes `%20`, never `+`, and a literal `+` becomes `%2B`. It is also stricter than JavaScript's `encodeURIComponent`, which leaves `!'()*` literal, and that is the comparison most authors make. `url_decode` correspondingly does not treat `+` as a space.
 
-Reach for `url_encode` whenever a value is interpolated into an outbound query string, which means building `path` or `path_logic` with `cat`:
+Reach for `url_encode` whenever a value is interpolated into an outbound query string, which means building `path` with `cat`:
 
 ```json
 { "cat": ["/search?q=", { "url_encode": [{ "var": "data.term" }] }] }

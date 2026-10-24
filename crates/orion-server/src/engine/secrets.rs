@@ -11,12 +11,9 @@
 //!
 //! This type is deliberately hard to leak from. It implements neither
 //! `Serialize` nor `Clone`, its `Debug` prints names with the values masked,
-//! and the only accessor that yields values is `pub(crate)` and used at
-//! exactly two call sites, one per engine line: the `Secrets::new` in
-//! [`crate::engine::operators::orion_exprs`], for the process's expression
-//! engine, and the `EngineBuilder::with_secrets_json` in
-//! [`crate::engine::operators::with_orion_engine_defaults`], for the v3
-//! workflow engines.
+//! and the only accessor that yields values is `pub(crate)` and used at one
+//! call site: the `Secrets::new` in [`crate::engine::operators::orion_exprs`],
+//! which every engine's expressions are built by.
 
 use std::fmt;
 

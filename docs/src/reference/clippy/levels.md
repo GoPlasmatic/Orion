@@ -17,7 +17,7 @@ Rules ship at `warn`. A rule is promoted to `deny` only after a release of field
 
 `scope: set` rules read the whole set: the other workflows, the channels, the shared `fragments`. They run only in directory mode. The two rules that need the serving instance's config (`-c`) are skipped, with a note, when none is given.
 
-`lint`'s own findings are re-reported unchanged, so a clippy run is a superset of a lint run. Those findings are `logic.unresolvable`, `logic.escaped_template_key`, `engine.unguarded_validation` and `engine.group_continue_on_error`. Also `engine.advisory`, `closure.channel_call_dynamic`, and the `env.reference` and `secrets.reference` notes. When `lint` reports an *error*, the rules do not run at all. A rule over a document the API would refuse produces a second finding about the same mistake, and a false one.
+`lint`'s own findings are re-reported unchanged, so a clippy run is a superset of a lint run. Those findings are `logic.unresolvable`, `logic.escaped_template_key`, and `engine.unguarded_validation`. Also `engine.advisory`, `closure.channel_call_dynamic`, and the `env.reference` and `secrets.reference` notes. When `lint` reports an *error*, the rules do not run at all. A rule over a document the API would refuse produces a second finding about the same mistake, and a false one.
 
 ## Related
 

@@ -2169,7 +2169,7 @@ async fn cron_singleton_holds_across_nodes() {
                         "connector": "slow-endpoint",
                         "method": "GET",
                         "path": "/slow",
-                        "response_path": "data.called",
+                        "output": "data.called",
                         "timeout_ms": 5000
                     }
                 }
@@ -2238,7 +2238,7 @@ async fn cron_slots_bound_holds_across_nodes() {
                         "connector": "slow-endpoint",
                         "method": "GET",
                         "path": "/slow",
-                        "response_path": "data.called",
+                        "output": "data.called",
                         "timeout_ms": 5000
                     }
                 }

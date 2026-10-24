@@ -391,10 +391,10 @@ async fn test_conditional_per_task_execution() {
 }
 
 // ============================================================
-// Test 5: continue_on_error
+// Test 5: on_failure: continue
 // ============================================================
 
-/// Verifies that a task with continue_on_error: true allows the pipeline to proceed
+/// Verifies that a task with on_failure: continue allows the pipeline to proceed
 /// even when the task fails. Task 1 references a non-existent db connector and fails,
 /// but task 2 (log) still runs. The response should have status "ok" with errors recorded.
 #[tokio::test]
@@ -409,7 +409,7 @@ async fn test_continue_on_error() {
             {
                 "id": "t1",
                 "name": "Failing DB read",
-                "continue_on_error": true,
+                "on_failure": "continue",
                 "function": {
                     "name": "db_read",
                     "input": {
@@ -458,7 +458,7 @@ async fn test_continue_on_error() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
 
-    // Pipeline should still complete with status "ok" because continue_on_error is true
+    // Pipeline should still complete with status "ok" because the task's on_failure is continue
     assert_eq!(body["status"], "ok");
 
     // There should be errors recorded from the failed db_read task
@@ -495,7 +495,7 @@ async fn a_later_task_can_branch_on_the_failure_code() {
             {
                 "id": "charge",
                 "name": "Failing DB read",
-                "continue_on_error": true,
+                "on_failure": "continue",
                 "function": {
                     "name": "db_read",
                     "input": {
@@ -586,7 +586,7 @@ async fn the_error_record_carries_no_message_and_cannot_be_round_tripped() {
         "tasks": [
             {
                 "id": "fail",
-                "continue_on_error": true,
+                "on_failure": "continue",
                 "name": "Failing DB read",
                 "function": {
                     "name": "db_read",
@@ -759,7 +759,7 @@ async fn test_http_call_then_map_pipeline() {
                         "method": "POST",
                         "path": "/api/user",
                         "body": { "request": true },
-                        "response_path": "data.api_response",
+                        "output": "data.api_response",
                         "timeout_ms": 5000
                     }
                 }

@@ -233,7 +233,7 @@ pub fn child_role(parent: Role, key: Option<&str>, child: &Node, depth: usize) -
 pub fn input_role(function_name: Option<&str>) -> Role {
     Role::Input(match function_name {
         Some("map") => InputKind::Map,
-        Some("validation" | "validate") => InputKind::Validation,
+        Some("validation") => InputKind::Validation,
         _ => InputKind::Other,
     })
 }

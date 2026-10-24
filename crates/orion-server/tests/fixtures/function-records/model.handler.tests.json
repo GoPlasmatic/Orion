@@ -1,0 +1,788 @@
+{
+  "budget/adapter": {
+    "err": {
+      "code": "BUDGET_EXCEEDED",
+      "message": "model_infer: adapter for input 'board' failed: Operation budget exceeded: 86 operations charged against a budget of 20 (in operator: tensor)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "budget/field": {
+    "err": {
+      "code": "BUDGET_EXCEEDED",
+      "message": "model_infer: 'input': Operation budget exceeded: 4 operations charged against a budget of 3 (in operator: +)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "inference/{\"model\":\"ada.c4-tiny\",\"input\":{\"var\":\"\"},\"output\":\"data.result\",\"raw\":true}": {
+    "ok": {
+      "board": [
+        [
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      ],
+      "which": "ada.c4-tiny",
+      "cols": [
+        3,
+        5
+      ],
+      "result": {
+        "policy": {
+          "tensor": {
+            "dtype": "f32",
+            "shape": [
+              1,
+              7
+            ],
+            "data": "a5M6uxPYZz1FljA8WK/ru7R/zjsJGTO8/B5auw=="
+          }
+        }
+      }
+    }
+  },
+  "inference/{\"model\":\"ada.c4-tiny\",\"input\":{\"var\":\"\"},\"output\":\"data.result\",\"select\":{\"argmax\":[{\"var\":\"policy\"},1]},\"stats_output\":\"data.stats\"}": {
+    "ok": {
+      "board": [
+        [
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      ],
+      "which": "ada.c4-tiny",
+      "cols": [
+        3,
+        5
+      ],
+      "result": [
+        1
+      ],
+      "stats": {
+        "id": "ada.c4-tiny",
+        "version": 0,
+        "digest": "sha256:a846b06040de77b5c51789ba7b02e05618008f6524f1fc2789e4382f3f811619",
+        "runtime": "tract",
+        "device": "cpu",
+        "parameters": null,
+        "artifact_bytes": null,
+        "ops": 95,
+        "peak_ops": 86,
+        "queued_ms": null,
+        "inference_ms": null,
+        "cold_load": true
+      }
+    }
+  },
+  "inference/{\"model\":\"ada.c4-tiny\",\"input\":{\"var\":\"\"},\"output\":\"data.result\",\"select\":{\"to_list\":[{\"gather\":[{\"reshape\":[{\"var\":\"policy\"},[7]]},{\"var\":\"input.data.cols\"},0]}]}}": {
+    "ok": {
+      "board": [
+        [
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      ],
+      "which": "ada.c4-tiny",
+      "cols": [
+        3,
+        5
+      ],
+      "result": [
+        -0.00719253346323967,
+        -0.01093126181513071
+      ]
+    }
+  },
+  "inference/{\"model\":\"ada.c4-tiny\",\"input\":{\"var\":\"\"},\"output\":\"data.result\",\"stats_output\":\"data.stats\"}": {
+    "ok": {
+      "board": [
+        [
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      ],
+      "which": "ada.c4-tiny",
+      "cols": [
+        3,
+        5
+      ],
+      "result": {
+        "policy": [
+          [
+            -0.0028469215612858534,
+            0.05660254880785942,
+            0.010778014548122883,
+            -0.00719253346323967,
+            0.006301844492554665,
+            -0.01093126181513071,
+            -0.0033282628282904625
+          ]
+        ]
+      },
+      "stats": {
+        "id": "ada.c4-tiny",
+        "version": 0,
+        "digest": "sha256:a846b06040de77b5c51789ba7b02e05618008f6524f1fc2789e4382f3f811619",
+        "runtime": "tract",
+        "device": "cpu",
+        "parameters": null,
+        "artifact_bytes": null,
+        "ops": 96,
+        "peak_ops": 86,
+        "queued_ms": null,
+        "inference_ms": null,
+        "cold_load": true
+      }
+    }
+  },
+  "inference/{\"model\":{\"var\":\"data.which\"},\"input\":{\"var\":\"\"},\"output\":\"data.result\",\"runtime\":\"tract\",\"timeout_ms\":{\"+\":[4000,1000]}}": {
+    "ok": {
+      "board": [
+        [
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ],
+          [
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          ]
+        ]
+      ],
+      "which": "ada.c4-tiny",
+      "cols": [
+        3,
+        5
+      ],
+      "result": {
+        "policy": [
+          [
+            -0.0028469215612858534,
+            0.05660254880785942,
+            0.010778014548122883,
+            -0.00719253346323967,
+            0.006301844492554665,
+            -0.01093126181513071,
+            -0.0033282628282904625
+          ]
+        ]
+      }
+    }
+  },
+  "refusals/disabled": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: model_infer: models are disabled on this node (models.enabled = false)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/load_issue": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: model_infer: model 'ada.c4-tiny' is unavailable on this node: admission: admission is 'failed' at stage 'digest': mismatch",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"model\":\"ada.c4-tiny\",\"input\":{\"data\":{\"board\":[[1,2]]}},\"output\":\"data.result\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: model_infer: input 'board': expected f32[1,2,6,7], got f32[1,2]",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"model\":\"ada.c4-tiny\",\"input\":{\"var\":\"\"},\"output\":\"data.result\",\"select\":{\"reshape\":[{\"var\":\"policy\"},[5]]}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: model_infer: the select expression failed: Invalid arguments: reshape: the new shape must hold exactly as many elements (in operator: reshape)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"model\":\"ada.c4-tiny\",\"input\":{\"var\":\"\"},\"output\":\"data.result\",\"timeout_ms\":{\"-\":[5,5]}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: model_infer: 'timeout_ms' must be a positive integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"model\":\"ada.c4-tiny\",\"input\":{\"var\":\"data.nothing\"},\"output\":\"data.result\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: model_infer: adapter for input 'board' failed: element 0 is not representable as f32 (in operator: tensor)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"model\":\"ada.nope\",\"input\":{\"var\":\"\"},\"output\":\"data.result\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: model_infer: model 'ada.nope' is unavailable on this node: it is unknown or not active",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"model\":7,\"input\":{\"var\":\"\"},\"output\":\"data.result\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: model_infer: 'model' must evaluate to a model id (string), not a number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"model\":{\"var\":\"data.nothing\"},\"input\":{\"var\":\"\"},\"output\":\"data.result\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: model_infer: 'model' must evaluate to a model id (string), not null",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

@@ -1348,7 +1348,7 @@ async fn s6_private_db_target_is_refused_when_the_pool_is_opened() {
             "s6",
             json!([{
                 "id": "r", "name": "r",
-                "continue_on_error": true,
+                "on_failure": "continue",
                 "function": { "name": "db_read", "input": {
                     "connector": "s6-metadata",
                     "query": "SELECT 1",

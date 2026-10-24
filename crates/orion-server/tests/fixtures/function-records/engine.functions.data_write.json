@@ -1,0 +1,281 @@
+{
+  "a_partial_bulk_write/all": {
+    "ok": {
+      "w": {
+        "status": "ok",
+        "inserted": 2,
+        "ids": [
+          "a",
+          "b"
+        ]
+      }
+    }
+  },
+  "a_partial_bulk_write/none": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Elasticsearch bulk insert failed, no documents were written: {\"type\":\"mapper_parsing_exception\",\"reason\":\"bad\"}",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "a_partial_bulk_write/partial": {
+    "ok": {
+      "w": {
+        "status": "partial",
+        "inserted": 1,
+        "ids": [
+          "a"
+        ],
+        "failed": 1,
+        "items": [
+          {
+            "index": 0,
+            "status": "ok",
+            "id": "a"
+          },
+          {
+            "index": 1,
+            "status": "error",
+            "error": {
+              "type": "mapper_parsing_exception",
+              "reason": "bad"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "a_query_timeout_before_the_run_deadline/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":[{\"id\":\"u2\"},{\"id\":\"u3\"}]},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: data_write query timed out after 150ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "a_query_timeout_before_the_run_deadline/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: data_write query timed out after 150ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "a_write_answers/binary_as": {
+    "ok": {
+      "enc": "base64",
+      "w": {
+        "rows_affected": 1,
+        "returning": [
+          {
+            "avatar": "AP8="
+          }
+        ],
+        "status": "ok"
+      }
+    }
+  },
+  "a_write_answers/binary_as/rows": {
+    "ok": []
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"delete\",\"target\":\"users\",\"filter\":{\"==\":[{\"field\":\"id\"},\"u1\"]},\"returning\":[\"id\",\"avatar\"]},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}": {
+    "ok": {
+      "status": "banned",
+      "who": "u1",
+      "w": {
+        "rows_affected": 1,
+        "returning": [
+          {
+            "id": "u1",
+            "avatar": "00ff"
+          }
+        ],
+        "status": "ok"
+      }
+    }
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"delete\",\"target\":\"users\",\"filter\":{\"==\":[{\"field\":\"id\"},\"u1\"]},\"returning\":[\"id\",\"avatar\"]},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}/rows": {
+    "ok": []
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":[{\"id\":\"u2\",\"status\":\"a\"},{\"id\":\"u3\",\"status\":\"b\"}]},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}": {
+    "ok": {
+      "status": "banned",
+      "who": "u1",
+      "w": {
+        "rows_affected": 2,
+        "last_insert_id": 3,
+        "status": "ok"
+      }
+    }
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":[{\"id\":\"u2\",\"status\":\"a\"},{\"id\":\"u3\",\"status\":\"b\"}]},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ],
+      [
+        "u2",
+        "a"
+      ],
+      [
+        "u3",
+        "b"
+      ]
+    ]
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\",\"status\":\"new\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}": {
+    "ok": {
+      "status": "banned",
+      "who": "u1",
+      "w": {
+        "rows_affected": 1,
+        "last_insert_id": 2,
+        "status": "ok"
+      }
+    }
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\",\"status\":\"new\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ],
+      [
+        "u2",
+        "new"
+      ]
+    ]
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"update\",\"target\":\"users\",\"set\":{\"status\":{\"param\":\"s\"}},\"filter\":{\"==\":[{\"field\":\"id\"},{\"param\":\"id\"}]}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\",\"params\":{\"s\":{\"var\":\"data.status\"},\"id\":{\"var\":\"data.who\"}}}": {
+    "ok": {
+      "status": "banned",
+      "who": "u1",
+      "w": {
+        "rows_affected": 1,
+        "status": "ok"
+      }
+    }
+  },
+  "a_write_answers/{\"connector\":\"db\",\"write\":{\"op\":\"update\",\"target\":\"users\",\"set\":{\"status\":{\"param\":\"s\"}},\"filter\":{\"==\":[{\"field\":\"id\"},{\"param\":\"id\"}]}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\",\"params\":{\"s\":{\"var\":\"data.status\"},\"id\":{\"var\":\"data.who\"}}}/rows": {
+    "ok": [
+      [
+        "u1",
+        "banned"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"absent\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"absent\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"delete\",\"target\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'delete' has no filter; set \"all\": true to intentionally affect every row",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"delete\",\"target\":\"users\"},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u1\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}": {
+    "err": {
+      "code": "integrity_unique",
+      "message": "The request conflicts with an existing record",
+      "retryable": false,
+      "detail": "data_write query failed: error returned from database: (code: 1555) UNIQUE constraint failed: users.id"
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u1\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\",\"binary_as\":\"money\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: data_write: 'binary_as' must be one of auto/hex/base64/text (got 'money')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\",\"binary_as\":\"money\"} {}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {\"operations\":{\"insert\":false}}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'insert' is disabled on connector 'db'"
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {\"operations\":{\"insert\":false}}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":{\"var\":\"data.n\"}} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"insert\",\"target\":\"users\",\"values\":{\"id\":\"u2\"}},\"schema\":{\"unmapped\":\"identity\"},\"output\":{\"var\":\"data.n\"}} {}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"update\",\"target\":\"users\",\"set\":{\"status\":{\"param\":\"s\"}},\"all\":true},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: query references undefined param 's' (at set.status)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"write\":{\"op\":\"update\",\"target\":\"users\",\"set\":{\"status\":{\"param\":\"s\"}},\"all\":true},\"schema\":{\"unmapped\":\"identity\"},\"output\":\"data.w\"} {}/rows": {
+    "ok": [
+      [
+        "u1",
+        "active"
+      ]
+    ]
+  }
+}

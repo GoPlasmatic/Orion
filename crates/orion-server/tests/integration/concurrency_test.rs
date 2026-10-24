@@ -447,7 +447,6 @@ async fn a_reload_publishes_exactly_one_generation() {
     );
     assert!(
         generation
-            .engine
             .workflows()
             .iter()
             .any(|w| w.channel == "gen-count-ch"),
@@ -485,8 +484,8 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
             .workflow
     };
     let before = state.runtime.load();
-    let compiled = probe(&before.engine4.as_ref().expect("an engine4").compiler());
-    let fresh = probe(&before.engine4.as_ref().expect("an engine4").compiler());
+    let compiled = probe(&before.engine.as_ref().expect("an engine4").compiler());
+    let fresh = probe(&before.engine.as_ref().expect("an engine4").compiler());
 
     orion::runtime::reload_engine(&state)
         .await
@@ -495,34 +494,21 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
     let after = state.runtime.load();
     assert!(after.id > before.id);
     let engine4 = after
-        .engine4
+        .engine
         .as_ref()
-        .expect("the reload publishes an engine4");
+        .expect("the reload publishes an engine");
     let program = engine4.compiler().link([compiled]);
     assert_eq!(
         program.workflows().len(),
         1,
         "one registry across the reload"
     );
-    let channels = |generation: &orion::runtime::RuntimeGeneration| -> Vec<String> {
-        generation
-            .engine4
-            .as_ref()
-            .expect("an engine4")
-            .program()
-            .workflows()
-            .iter()
-            .map(|w| w.channel.clone())
-            .collect()
-    };
-    let v3: Vec<String> = after
-        .engine
+    let channels: Vec<String> = after
         .workflows()
         .iter()
         .map(|w| w.channel.clone())
         .collect();
-    assert_eq!(channels(&after), v3, "both engines load the same workflows");
-    assert!(v3.iter().any(|c| c == "reuse-ch"));
+    assert!(channels.iter().any(|c| c == "reuse-ch"));
 
     // The control: a registry assembled afresh from the node's components
     // is another registry, which the outgoing generation's workflow does not

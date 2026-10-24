@@ -19,40 +19,32 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
 use serde_json::{Map, Value};
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{
-    ConnectorCall, QueryBudget, require_op_allowed, resolve_bool, resolve_bool_or, to_connect_error,
-};
+use super::connector_helpers::{QueryBudget, require_op_allowed, to_connect_error};
 use super::data_write::{bulk_result, mongo_write_errors};
 use super::mongo_common::{
     all_duplicate_key, delete_envelope, empty_insert_envelope, mongo_error, rendered_document,
-    rendered_document_array, require_mongo_backend, requires, resolve_document,
-    resolve_document_array, update_envelope as build_update_envelope,
+    rendered_document_array, require_mongo_backend, requires,
+    update_envelope as build_update_envelope,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::config::WriteConfig;
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
 use crate::query::backend::mongo::insert_outcome;
 use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::write::WriteError;
 
 /// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "mongo_write";
+pub(crate) const NAME: &str = "mongo_write";
 
 /// The open op value set. Growth rule: a new capability is a new *value* here
 /// (plus its validation rows), not a new function.
@@ -145,22 +137,11 @@ impl MongoOp {
     }
 }
 
-/// Workflow function handler for writing documents to MongoDB.
-pub struct MongoWriteHandler {
-    pub pool_cache: Arc<MongoPoolCache>,
-    pub registry: Arc<ConnectorRegistry>,
-    /// The `[write]` safety bounds: `max_rows` caps the `insert_many` batch,
-    /// `allow_unfiltered` is half of the W15 double opt-in.
-    pub write_config: WriteConfig,
-}
-
 /// A resolved write, with the two facts the gate needs kept alongside it: the
 /// operation and whether it upserts together decide *which* gate applies, and
 /// a gate chosen after the driver call would not be one.
 ///
-/// Owned by the dataflow-rs 3 handler, which reads the names off the authored
-/// input per call; the names borrowed from the compiled config by the
-/// dataflow-rs 4 function.
+/// The names are borrowed from the compiled config.
 #[derive(Debug)]
 pub struct MongoWrite<'a> {
     database: Cow<'a, str>,
@@ -190,11 +171,10 @@ impl<'a> MongoWrite<'a> {
         if let Prepared::InsertMany { docs, .. } = &write
             && docs.len() as u64 > write_config.max_rows
         {
-            return Err(DataflowError::from(WriteError::TooManyRows {
+            return Err(HandlerError::from(WriteError::TooManyRows {
                 requested: docs.len(),
                 max: write_config.max_rows,
-            })
-            .into());
+            }));
         }
         Ok(Self {
             database,
@@ -208,34 +188,34 @@ impl<'a> MongoWrite<'a> {
 
 /// The refusal of an `op` outside the value set, in 1.12's words.
 fn unknown_op() -> HandlerError {
-    DataflowError::Validation(format!("{NAME} 'op' must be one of {}", MongoOp::VALUES)).into()
+    HandlerError::new(
+        ErrorClass::CallerInput,
+        format!("{NAME} 'op' must be one of {}", MongoOp::VALUES),
+    )
 }
 
 /// The connector's gates for a write: insert / update / upsert / delete are
 /// separately gateable, and which one this task is depends on the envelope it
-/// parsed; then a MongoDB backend. Shared by the dataflow-rs 3 handler and
-/// the dataflow-rs 4 function.
+/// parsed; then a MongoDB backend.
 fn gate(
     write: &MongoWrite<'_>,
     conn: &DbConnectorConfig,
     connector: &str,
 ) -> Result<(), HandlerError> {
     require_op_allowed(&conn.operations, write.op.gate(write.upsert), connector)?;
-    Ok(require_mongo_backend(conn, NAME, connector)?)
+    require_mongo_backend(conn, NAME, connector)
 }
 
 /// The write's answer and its outcome, `Success` or F28's partial 207,
-/// against a resolved and gated connector. Shared by the dataflow-rs 3
-/// handler and the dataflow-rs 4 function. `run_deadline` is the deadline of
-/// the run the call belongs to, which the dataflow-rs 4 function passes on
-/// ([`QueryBudget::within`]).
+/// against a resolved and gated connector. `run_deadline` is the deadline of
+/// the run the call belongs to ([`QueryBudget::within`]).
 async fn write_documents(
     pool_cache: &MongoPoolCache,
     connector: &str,
     db_config: &DbConnectorConfig,
     parsed: MongoWrite<'_>,
     run_deadline: Option<dataflow_rs::run::Instant>,
-) -> Result<(Value, TaskOutcome), HandlerError> {
+) -> Result<(Value, Outcome), HandlerError> {
     let client = pool_cache
         .get_client(connector, db_config)
         .await
@@ -245,83 +225,13 @@ async fn write_documents(
         .collection::<Document>(&parsed.collection);
 
     // F11: one wall-clock bound over connect + write.
-    Ok(
-        QueryBudget::within(db_config.query_timeout_ms, run_deadline)
-            .run(NAME, async {
-                execute_write(&coll, parsed.write)
-                    .await
-                    .map_err(|e| e.to_string())
-            })
-            .await?,
-    )
-}
-
-#[async_trait]
-impl ConnectorHandler for MongoWriteHandler {
-    const NAME: &'static str = "mongo_write";
-    type Kind = crate::connector::kind::Db;
-    type Input = TemplatedInput;
-    type Parsed = MongoWrite<'static>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        let database = call.require_str(input, "database")?.to_string();
-        let collection = call.require_str(input, "collection")?.to_string();
-        let op = MongoOp::parse(call.require_str(input, "op")?).ok_or_else(unknown_op)?;
-        let upsert = resolve_bool(input, "upsert", <Self as ConnectorHandler>::NAME, ctx)?;
-        let ordered = resolve_bool_or(
-            input,
-            "ordered",
-            <Self as ConnectorHandler>::NAME,
-            ctx,
-            true,
-        )?;
-
-        MongoWrite::assemble(
-            Cow::Owned(database),
-            Cow::Owned(collection),
-            op,
-            upsert,
-            ordered,
-            literal_bool(input.raw(), "all"),
-            &Folded {
-                input: input.raw(),
-                ctx,
-            },
-            &self.write_config,
-        )
-    }
-
-    fn gate(
-        parsed: &Self::Parsed,
-        conn: &DbConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        gate(parsed, conn, connector)
-    }
-
-    async fn run(
-        &self,
-        parsed: Self::Parsed,
-        db_config: &DbConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        let (result, outcome) =
-            write_documents(&self.pool_cache, call.connector, db_config, parsed, None).await?;
-        // F28: a partially applied ordered batch is a 207, not a success —
-        // which is the one outcome a connector handler chooses for itself.
-        Ok(Produced::with_outcome(result, outcome))
-    }
+    QueryBudget::within(db_config.query_timeout_ms, run_deadline)
+        .run(NAME, async {
+            execute_write(&coll, parsed.write)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await
 }
 
 /// Where [`prepare`] reads an op's documents: 1.12's fold of the authored
@@ -332,22 +242,6 @@ trait OpDocuments {
     fn document(&self, field: &'static str) -> Result<Option<Document>, HandlerError>;
     /// An array-of-documents field (`documents`, `array_filters`).
     fn document_array(&self, field: &'static str) -> Result<Option<Vec<Document>>, HandlerError>;
-}
-
-/// The authored input, folded against the message as 1.12 folds it.
-struct Folded<'a, 'c> {
-    input: &'a Value,
-    ctx: &'a TaskContext<'c>,
-}
-
-impl OpDocuments for Folded<'_, '_> {
-    fn document(&self, field: &'static str) -> Result<Option<Document>, HandlerError> {
-        Ok(resolve_document(self.input, field, NAME, self.ctx)?)
-    }
-
-    fn document_array(&self, field: &'static str) -> Result<Option<Vec<Document>>, HandlerError> {
-        Ok(resolve_document_array(self.input, field, NAME, self.ctx)?)
-    }
 }
 
 /// A dataflow-rs 4 config's documents, rendered for the call into BSON.
@@ -418,8 +312,7 @@ fn prepare(
     ordered: bool,
 ) -> Result<Prepared, HandlerError> {
     let required = |field: &'static str| -> Result<Document, HandlerError> {
-        docs.document(field)?
-            .ok_or_else(|| requires(field, NAME).into())
+        docs.document(field)?.ok_or_else(|| requires(field, NAME))
     };
     Ok(match op {
         MongoOp::InsertOne => Prepared::InsertOne {
@@ -428,7 +321,7 @@ fn prepare(
         MongoOp::InsertMany => Prepared::InsertMany {
             docs: docs
                 .document_array("documents")?
-                .ok_or_else(|| HandlerError::from(requires("documents", NAME)))?,
+                .ok_or_else(|| requires("documents", NAME))?,
             ordered,
         },
         MongoOp::UpdateOne | MongoOp::UpdateMany => {
@@ -449,11 +342,10 @@ fn prepare(
         MongoOp::ReplaceOne => {
             let doc = required("document")?;
             if let Some(key) = doc.keys().find(|k| k.starts_with('$')) {
-                return Err(DataflowError::Validation(format!(
-                    "{NAME} {}",
-                    replace_plain_message(key)
-                ))
-                .into());
+                return Err(HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!("{NAME} {}", replace_plain_message(key)),
+                ));
             }
             Prepared::Replace {
                 filter: resolve_filter(op, docs)?,
@@ -476,7 +368,7 @@ fn guard_unfiltered(
     write: &Prepared,
     all: bool,
     cfg: &WriteConfig,
-) -> Result<(), DataflowError> {
+) -> Result<(), HandlerError> {
     let unfiltered = match write {
         Prepared::Update { filter, .. }
         | Prepared::Replace { filter, .. }
@@ -652,9 +544,9 @@ fn cross_check_array_filters(filters: &[Document], update: &Document) -> Result<
 fn require_usable_array_filters(
     filters: &[Document],
     update: &Document,
-) -> Result<(), DataflowError> {
+) -> Result<(), HandlerError> {
     cross_check_array_filters(filters, update)
-        .map_err(|e| DataflowError::Validation(format!("{NAME} {e}")))
+        .map_err(|e| HandlerError::new(ErrorClass::CallerInput, format!("{NAME} {e}")))
 }
 
 fn replace_plain_message(operator_key: &str) -> String {
@@ -667,17 +559,18 @@ fn replace_plain_message(operator_key: &str) -> String {
 /// An update document must be operator-shaped (`$set`, `$inc`, …): the driver
 /// refuses a plain document anyway, but with a message that does not say what
 /// to do instead.
-fn require_update_operators(update: &Document) -> Result<(), DataflowError> {
+fn require_update_operators(update: &Document) -> Result<(), HandlerError> {
     if update.is_empty() {
-        return Err(DataflowError::Validation(format!(
-            "{NAME} 'update' must not be empty"
-        )));
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("{NAME} 'update' must not be empty"),
+        ));
     }
     if let Some(key) = update.keys().find(|k| !k.starts_with('$')) {
-        return Err(DataflowError::Validation(format!(
-            "{NAME} {}",
-            update_operators_message(key)
-        )));
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("{NAME} {}", update_operators_message(key)),
+        ));
     }
     Ok(())
 }
@@ -689,10 +582,6 @@ fn resolve_filter(op: MongoOp, docs: &impl OpDocuments) -> Result<Document, Hand
     Ok(docs.document("filter")?.unwrap_or_default())
 }
 
-fn literal_bool(input: &Value, field: &str) -> bool {
-    input.get(field).and_then(Value::as_bool).unwrap_or(false)
-}
-
 /// Run the prepared write and normalise its result to the same envelopes
 /// `data_write`'s Mongo branch produces — inserts report the bulk shape (F28:
 /// a partial ordered batch is 207 with applied/failed/never-attempted named),
@@ -700,7 +589,7 @@ fn literal_bool(input: &Value, field: &str) -> bool {
 async fn execute_write(
     coll: &mongodb::Collection<Document>,
     write: Prepared,
-) -> Result<(Value, TaskOutcome), DataflowError> {
+) -> Result<(Value, Outcome), HandlerError> {
     match write {
         Prepared::InsertOne { doc } => match coll.insert_one(doc).await {
             Ok(res) => {
@@ -711,7 +600,7 @@ async fn execute_write(
         },
         Prepared::InsertMany { docs, ordered } => {
             if docs.is_empty() {
-                return Ok((empty_insert_envelope(), TaskOutcome::Success));
+                return Ok((empty_insert_envelope(), Outcome::Ok));
             }
             let sent = docs.len();
             match coll.insert_many(docs).ordered(ordered).await {
@@ -783,7 +672,7 @@ async fn execute_write(
                 coll.delete_one(filter).await
             };
             match res {
-                Ok(r) => Ok((delete_envelope(r.deleted_count), TaskOutcome::Success)),
+                Ok(r) => Ok((delete_envelope(r.deleted_count), Outcome::Ok)),
                 Err(e) => Err(mongo_error(e)),
             }
         }
@@ -794,9 +683,9 @@ async fn execute_write(
 /// itself is `mongo_common`'s, shared with `data_write`'s Mongo branch.
 fn update_envelope(
     res: mongodb::error::Result<mongodb::results::UpdateResult>,
-) -> Result<(Value, TaskOutcome), DataflowError> {
+) -> Result<(Value, Outcome), HandlerError> {
     match res {
-        Ok(r) => Ok((build_update_envelope(&r), TaskOutcome::Success)),
+        Ok(r) => Ok((build_update_envelope(&r), Outcome::Ok)),
         Err(e) => Err(mongo_error(e)),
     }
 }
@@ -1107,7 +996,7 @@ impl Function for MongoWriteFunction {
             let (result, outcome) =
                 write_documents(&self.pool_cache, &cfg.connector, db, write, run_deadline).await?;
             answer = Some(result);
-            Ok(super::data_write::outcome(outcome))
+            Ok(outcome)
         })
         .await?;
         if let Some(answer) = answer {
@@ -1226,108 +1115,6 @@ mod tests {
 
     fn obj(v: Value) -> Map<String, Value> {
         v.as_object().expect("test input is an object").clone()
-    }
-
-    fn mongo_connector(
-        gates: crate::connector::OperationGates,
-    ) -> crate::connector::DbConnectorConfig {
-        crate::connector::DbConnectorConfig {
-            connection_string: "mongodb://localhost:27017".to_string(),
-            max_connections: None,
-            connect_timeout_ms: None,
-            query_timeout_ms: None,
-            allow_private_urls: true,
-            operations: gates,
-            dialect: Default::default(),
-            aggregate_write_stages: false,
-        }
-    }
-
-    /// Parse a task the way the shell does, so `gate` can be asked about it.
-    fn parse(input: Value) -> MongoWrite<'static> {
-        let handler = MongoWriteHandler {
-            pool_cache: Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(2)),
-            registry: Arc::new(ConnectorRegistry::new(Default::default())),
-            write_config: Default::default(),
-        };
-        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        let ctx = TaskContext::new(&mut message, &datalogic);
-        let call = ConnectorCall {
-            name: MongoWriteHandler::NAME,
-            connector: "orders",
-            channel: "ch".to_string(),
-            output: "data".to_string(),
-        };
-        let input = TemplatedInput::from(input);
-        crate::engine::functions::templated_input::with_scope(&ctx, |scope| {
-            ConnectorHandler::parse(&handler, &call, &input, scope)
-        })
-        .expect("the task parses")
-    }
-
-    /// The gate `mongo_write` picks is not fixed: an update that upserts is
-    /// gated as `upsert`, so a connector that permits updates and refuses
-    /// upserts refuses this one and allows the same task without `upsert`.
-    ///
-    /// This is the reason `gate` takes the parsed input, and it is testable
-    /// in-process for the same reason `mongo_aggregate`'s is: the answer is a
-    /// function of the task and the connector, not of a live server.
-    #[test]
-    fn an_upsert_is_gated_as_an_upsert_not_an_update() {
-        let update_only = crate::connector::OperationGates {
-            upsert: false,
-            ..Default::default()
-        };
-        let task = |upsert: bool| {
-            json!({
-                "connector": "orders", "database": "db", "collection": "orders",
-                "op": "update_one", "upsert": upsert,
-                "filter": { "_id": "1" }, "update": { "$set": { "status": "paid" } },
-            })
-        };
-
-        let err = <MongoWriteHandler as ConnectorHandler>::gate(
-            &parse(task(true)),
-            &mongo_connector(update_only.clone()),
-            "orders",
-        )
-        .expect_err("an upsert must hit the upsert gate, which is off");
-        let detail = err.detail.as_deref().unwrap_or_default();
-        assert!(
-            detail.contains("'upsert'"),
-            "the refusal must name the gate it hit: {detail:?}"
-        );
-
-        assert!(
-            <MongoWriteHandler as ConnectorHandler>::gate(
-                &parse(task(false)),
-                &mongo_connector(update_only),
-                "orders",
-            )
-            .is_ok(),
-            "the same update without upsert is gated as 'update', which is on"
-        );
-    }
-
-    /// A `db` connector holding a SQL connection string is the right type and
-    /// the wrong backend — the check that outlived `require_mongo_connector`.
-    #[test]
-    fn a_sql_connection_string_is_refused_by_the_gate() {
-        let mut conn = mongo_connector(Default::default());
-        conn.connection_string = "postgres://localhost/app".to_string();
-        let task = json!({
-            "connector": "orders", "database": "db", "collection": "orders",
-            "op": "insert_one", "document": { "id": 1 },
-        });
-
-        let err = <MongoWriteHandler as ConnectorHandler>::gate(&parse(task), &conn, "orders")
-            .expect_err("mongo_write cannot speak to a SQL connector");
-        assert!(
-            err.msg.contains("MongoDB connector"),
-            "the refusal must say which backend is required: {:?}",
-            err.msg
-        );
     }
 
     // ---- validate_static_input: the authoring-time contract ----
@@ -1578,16 +1365,14 @@ mod tests {
         assert_eq!(MongoOp::InsertMany.gate(false), "insert");
     }
 
-    // -- dataflow-rs 4: the config and its check, the seams, and twins of the
-    // handler --
+    // -- the config and its check, the gate, and calls against 1.12's
+    // records --
     //
-    // No MongoDB is reached. A probe of each engine writes the write it
-    // parsed, past the connector and its gate, where the driver would be
-    // called; the functions themselves run against `testkit`'s connector to
-    // a closed port, where a call that passes every gate waits in the
+    // No MongoDB is reached. A probe writes the write the function parsed,
+    // past the connector and its gate, where the driver would be called; the
+    // function itself runs against `testkit`'s connector to a closed port, where a call that passes every gate waits in the
     // driver's server selection until the connector's `query_timeout_ms`.
 
-    use crate::engine::functions::connector_handler::Connector;
     use crate::engine::functions::mongo_common::testkit;
     use crate::engine::functions::twin::{self, Seen};
     use crate::errors::kind::CONNECTOR_DETAIL;
@@ -1602,14 +1387,6 @@ mod tests {
         WriteConfig {
             max_rows: 3,
             allow_unfiltered,
-        }
-    }
-
-    fn handler(registry: Arc<ConnectorRegistry>, write_config: WriteConfig) -> MongoWriteHandler {
-        MongoWriteHandler {
-            pool_cache: testkit::pools(),
-            registry,
-            write_config,
         }
     }
 
@@ -1630,74 +1407,20 @@ mod tests {
         input
     }
 
-    /// One task through each engine's real function, each over a registry
-    /// of its own, `docs` configured with `extra`.
-    async fn both(input: Value, data: Value, extra: Value) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(handler(
-                testkit::connectors(extra.clone()).await,
-                write_config(false),
-            ))),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(
+    /// One task through the real function, over a registry of its own,
+    /// `docs` configured with `extra`.
+    async fn run(input: Value, data: Value, extra: Value) -> Seen {
+        twin::v4(
             NAME,
             function(testkit::connectors(extra).await, write_config(false)),
             input,
             data,
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
-    /// Writes the write 1.12's handler parsed, at `output`: its prologue,
-    /// its parse, the connector and its gate, and no driver call.
-    struct WriteV3(MongoWriteHandler);
-
-    #[async_trait]
-    impl ConnectorHandler for WriteV3 {
-        const NAME: &'static str = "mongo_write";
-        type Kind = crate::connector::kind::Db;
-        type Input = TemplatedInput;
-        type Parsed = MongoWrite<'static>;
-
-        fn registry(&self) -> &Arc<ConnectorRegistry> {
-            &self.0.registry
-        }
-
-        fn parse(
-            &self,
-            call: &ConnectorCall<'_>,
-            input: &TemplatedInput,
-            ctx: &Scope<'_, '_>,
-        ) -> Result<Self::Parsed, HandlerError> {
-            self.0.parse(call, input, ctx)
-        }
-
-        fn gate(
-            parsed: &Self::Parsed,
-            conn: &DbConnectorConfig,
-            connector: &str,
-        ) -> Result<(), HandlerError> {
-            MongoWriteHandler::gate(parsed, conn, connector)
-        }
-
-        async fn run(
-            &self,
-            write: Self::Parsed,
-            _db_config: &DbConnectorConfig,
-            _call: &ConnectorCall<'_>,
-            _input: &TemplatedInput,
-            _ctx: &mut TaskContext<'_>,
-        ) -> Result<Produced, HandlerError> {
-            Ok(Value::String(format!("{write:?}")).into())
-        }
-    }
-
-    /// The same, through the function's own reading.
+    /// Writes the write the function parsed, at `output`: its prologue, its
+    /// parse, the connector and its gate, and no driver call.
     struct WriteV4(MongoWriteFunction);
 
     impl Function for WriteV4 {
@@ -1719,26 +1442,15 @@ mod tests {
         }
     }
 
-    /// The write each engine parses from `input` over `data`.
-    async fn parsed(input: Value, data: Value, write_config: WriteConfig) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(WriteV3(handler(
-                testkit::connectors(json!({})).await,
-                write_config.clone(),
-            )))),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(
+    /// The write the function parses from `input` over `data`.
+    async fn parsed(input: Value, data: Value, write_config: WriteConfig) -> Seen {
+        twin::v4(
             NAME,
             WriteV4(function(testkit::connectors(json!({})).await, write_config)),
             input,
             data,
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
     fn rejected(input: Value) -> Vec<(String, IssueCode)> {
@@ -1944,13 +1656,14 @@ mod tests {
         assert_eq!(quirk[0].0, "array_filters");
     }
 
-    /// `an_upsert_is_gated_as_an_upsert_not_an_update`, on the function: the
-    /// config compiles, and a connector that permits updates and refuses
-    /// upserts refuses the task that upserts, whether `upsert` is written as
-    /// `true` or computed from the message, and lets the same update without
-    /// it through to the driver; each as 1.12's handler did.
+    /// The gate `mongo_write` picks is not fixed: an update that upserts is
+    /// gated as `upsert`. The config compiles, and a connector that permits
+    /// updates and refuses upserts refuses the task that upserts, whether
+    /// `upsert` is written as `true` or computed from the message, and lets
+    /// the same update without it through to the driver; each as 1.12's
+    /// handler did.
     #[tokio::test]
-    async fn on_v4_an_upsert_is_gated_as_an_upsert_not_an_update() {
+    async fn an_upsert_is_gated_as_an_upsert_not_an_update() {
         let update_only = json!({"operations": {"upsert": false}});
         let update = |upsert: Value| {
             task(json!({
@@ -1961,26 +1674,26 @@ mod tests {
         for upsert in [json!(true), json!({"var": "data.upsert"})] {
             testing::config_with::<MongoWriteConfig>(&kit::test_exprs(), update(upsert.clone()))
                 .expect("compiles");
-            let (v3, v4) = both(
+            let v4 = run(
                 update(upsert.clone()),
                 json!({"upsert": true}),
                 update_only.clone(),
             )
             .await;
-            assert_eq!(v4, v3, "{upsert}");
+            twin::pinned(&v4, format!("upsert_gate/{upsert}/upserting"));
             let refused = v4.expect_err("the upsert gate is off");
             assert_eq!(refused.code, CONNECTOR_DETAIL, "{upsert}");
             let detail = refused.detail.as_deref().unwrap_or_default();
             assert!(detail.contains("'upsert'"), "the gate it hit: {detail:?}");
         }
         for upsert in [json!(false), json!({"var": "data.upsert"})] {
-            let (v3, v4) = both(
+            let v4 = run(
                 update(upsert.clone()),
                 json!({"upsert": false}),
                 update_only.clone(),
             )
             .await;
-            assert_eq!(v4, v3, "{upsert}");
+            twin::pinned(&v4, format!("upsert_gate/{upsert}/not_upserting"));
             assert_eq!(
                 v4.expect_err("past the gate, the driver times out").code,
                 "TIMEOUT_ERROR",
@@ -1989,17 +1702,16 @@ mod tests {
         }
     }
 
-    /// `a_sql_connection_string_is_refused_by_the_gate`, on the function: a
-    /// `db` connector holding a SQL connection string is the right type and
-    /// the wrong backend.
+    /// A `db` connector holding a SQL connection string is the right type
+    /// and the wrong backend.
     #[tokio::test]
-    async fn on_v4_a_sql_connection_string_is_refused_by_the_gate() {
+    async fn a_sql_connection_string_is_refused_by_the_gate() {
         let mut input = task(json!({"op": "insert_one", "document": {"id": 1}}));
         input["connector"] = json!("sql");
         testing::config_with::<MongoWriteConfig>(&kit::test_exprs(), input.clone())
             .expect("compiles");
-        let (v3, v4) = both(input, Value::Null, json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, Value::Null, json!({})).await;
+        twin::pinned(&v4, "a_sql_connection_string_is_refused_by_the_gate");
         let refused = v4.expect_err("mongo_write cannot speak to a SQL connector");
         assert!(
             refused.message.contains("MongoDB connector"),
@@ -2007,12 +1719,12 @@ mod tests {
         );
     }
 
-    /// The write each engine would send, for every op: its documents
+    /// The write the function would send, for every op: its documents
     /// rendered into BSON with their holes filled and their extended JSON
     /// read, its switches evaluated; and every refusal the cases above leave
     /// to the call, in 1.12's order, with its code and text.
     #[tokio::test]
-    async fn the_write_is_read_as_on_v3() {
+    async fn the_write_is_read_as_1_12_read_it() {
         let data = json!({
             "id": "665f1f77bcf86cd799439011", "n": 3, "status": "paid", "flag": true,
             "text": "yes", "tags": ["a"], "doc": {"a": 1, "b": {"c": [1, 2]}},
@@ -2156,8 +1868,8 @@ mod tests {
             if input.get("output").is_none() {
                 input["output"] = json!("data.write");
             }
-            let (v3, v4) = parsed(input, data.clone(), write_config(false)).await;
-            assert_eq!(v4, v3, "{rest}");
+            let v4 = parsed(input, data.clone(), write_config(false)).await;
+            twin::pinned(&v4, format!("the_write/{rest}"));
             assert_eq!(v4.is_ok(), ok, "{rest}: {v4:?}");
         }
         // An unfiltered write with both halves of the opt-in.
@@ -2165,8 +1877,8 @@ mod tests {
             json!({"op": "delete_many", "filter": {"var": "data.empty"}, "all": true,
                                 "output": "data.write"}),
         );
-        let (v3, v4) = parsed(input, data, write_config(true)).await;
-        assert_eq!(v4, v3);
+        let v4 = parsed(input, data, write_config(true)).await;
+        twin::pinned(&v4, "the_write/unfiltered_with_both_opt_ins");
         assert!(v4.is_ok(), "{v4:?}");
     }
 
@@ -2174,7 +1886,7 @@ mod tests {
     /// past every gate reaching the driver, which waits for a server until
     /// the connector's `query_timeout_ms`, 1.12's `TIMEOUT_ERROR`.
     #[tokio::test]
-    async fn the_call_refuses_and_reaches_the_driver_as_on_v3() {
+    async fn the_call_refuses_and_reaches_the_driver() {
         let insert = task(
             json!({"op": "insert_one", "document": {"n": {"var": "data.n"}},
                                  "output": "data.result"}),
@@ -2209,8 +1921,9 @@ mod tests {
                 "VALIDATION_ERROR",
             ),
         ] {
-            let (v3, v4) = both(input.clone(), json!({"n": 3}), extra).await;
-            assert_eq!(v4, v3, "{input}");
+            let key = format!("the_call/{input}/{extra}");
+            let v4 = run(input.clone(), json!({"n": 3}), extra).await;
+            twin::pinned(&v4, key);
             assert_eq!(v4.expect_err("refused").code, code, "{input}");
         }
     }

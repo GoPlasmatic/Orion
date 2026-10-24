@@ -10,18 +10,17 @@
 //! was visible only as `workflow_overhead_ms` in the opt-in profile surface —
 //! a residual computed by subtraction (`profile.rs`), not a measurement.
 //!
-//! `ExecutionObserver` (dataflow-rs 3.1) is the callback that closes it. Unlike
+//! The engine's `Observer` is the callback that closes it. Unlike
 //! an `ExecutionTrace` this is always on and allocates nothing per request:
 //! traces are gated on `config.tracing.task_details` and deep-clone the whole
 //! message per step, so they can never be a metrics source.
 //!
-//! dataflow-rs 3.7 added the workflow lifecycle to the same callback, which
-//! closes the other half. Engine overhead — condition evaluation, group
+//! The workflow lifecycle, on the same callback, closes the other half. Engine overhead — condition evaluation, group
 //! gating, loop bookkeeping, audit writes, arena management — was reachable
 //! only as `workflow_overhead_ms` in the profile surface: a *residual*, got by
 //! subtracting handler timings from a whole-message total, so it silently
 //! absorbed everything else unmeasured and was per-request and opt-in besides.
-//! `workflow_finished` reports the workflow's own wall clock, and
+//! `WorkflowFinished` reports the workflow's own wall clock, and
 //! `orion_workflow_duration_seconds` minus the task histogram's sum for the
 //! same workflow is that overhead as a measurement.
 //!
@@ -29,50 +28,20 @@
 //! artifact keyed by connector, including a per-message JSONLogic resolution
 //! for `channel_call` (F49) that the engine has no concept of.
 
-use dataflow_rs::observe::{Event as V4Event, Interest as V4Interest, Observer as V4Observer};
-use dataflow_rs_v3::{ExecutionObserver, TaskEvent, WorkflowFinished};
+use dataflow_rs::observe::{Event, Interest, Observer};
 
 /// Emits `orion_task_duration_seconds{workflow,task,function}` per dispatched
 /// task, and `orion_workflow_duration_seconds{workflow}` per workflow run.
 pub struct MetricsObserver;
 
-impl ExecutionObserver for MetricsObserver {
-    fn task_finished(&self, event: &TaskEvent<'_>) {
-        // Contract: called synchronously on the executor thread, inside the
-        // arena scope on the sync-built-in path. Must not block, must not
-        // re-enter the engine, must not panic. `histogram!` is a lock-free
-        // recorder write, and `is_enabled()` short-circuits when metrics are
-        // off — nothing here can await or unwind.
-        crate::metrics::record_task_duration(
-            event.workflow_id,
-            event.task_id,
-            interned_function_name(event.function),
-            event.duration.as_secs_f64(),
-        );
+impl Observer for MetricsObserver {
+    fn interest(&self) -> Interest {
+        Interest::WORKFLOWS | Interest::TASKS | Interest::TIMINGS
     }
 
-    fn workflow_finished(&self, event: &WorkflowFinished<'_>) {
-        // Same contract as `task_finished`: synchronous, on the executor
-        // thread, must not block or unwind. `histogram!` is a lock-free
-        // recorder write.
-        //
-        // `event.sweeps` is deliberately not a label. A looping workflow
-        // reports one event for the whole loop, and the sweep count is bounded
-        // only by the data — making it a label would let a payload grow the
-        // Prometheus label space, which is the one thing these metrics are
-        // careful never to allow.
-        crate::metrics::record_workflow_duration(event.workflow_id, event.duration.as_secs_f64());
-    }
-}
-
-impl V4Observer for MetricsObserver {
-    fn interest(&self) -> V4Interest {
-        V4Interest::WORKFLOWS | V4Interest::TASKS | V4Interest::TIMINGS
-    }
-
-    fn on(&self, event: &V4Event<'_>) {
+    fn on(&self, event: &Event<'_>) {
         match event {
-            V4Event::TaskFinished {
+            Event::TaskFinished {
                 info,
                 elapsed: Some(duration),
                 ..
@@ -84,15 +53,12 @@ impl V4Observer for MetricsObserver {
                     duration.as_secs_f64(),
                 );
             }
-            V4Event::WorkflowFinished {
+            Event::WorkflowFinished {
                 record,
                 elapsed: Some(duration),
                 ..
             } => {
-                crate::metrics::record_workflow_duration(
-                    record.id,
-                    duration.as_secs_f64(),
-                );
+                crate::metrics::record_workflow_duration(record.id, duration.as_secs_f64());
             }
             _ => {}
         }
@@ -132,68 +98,81 @@ mod tests {
         assert_eq!(interned_function_name("__nope__"), "other");
     }
 
-    /// The observer must survive the names the executor actually reports,
-    /// including `validate` standing in for both spellings of the validation
-    /// config.
+    /// The observer must survive the names the executor actually reports.
     #[test]
-    fn the_validation_alias_the_executor_reports_is_known() {
-        assert_eq!(interned_function_name("validate"), "validate");
+    fn the_validation_builtin_is_known() {
+        assert_eq!(interned_function_name("validation"), "validation");
     }
 
-    /// The whole justification for attaching an observer: the sync built-ins
-    /// are reported.
+    /// Runs `workflows` on an engine with no functions of its own, with
+    /// `observer` attached to the run.
+    async fn run_observed(workflows: &[serde_json::Value], observer: &dyn Observer) {
+        let mut builder = dataflow_rs::Engine::builder();
+        for workflow in workflows {
+            builder = builder.workflow_json(workflow);
+        }
+        let engine = builder.build().expect("engine builds");
+        let mut message = dataflow_rs::Message::new(dataflow_rs::datavalue::OwnedDataValue::Null);
+        engine
+            .run_with(
+                &mut message,
+                &dataflow_rs::RunOptions::default().observer(observer),
+            )
+            .await;
+    }
+
+    fn map_workflow(id: &str, condition: bool) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "condition": condition,
+            "tasks": [{"id": "m", "function": {"name": "map", "input":
+                {"mappings": [{"path": "data.ok", "logic": true}]}}}]
+        })
+    }
+
+    /// The whole justification for attaching an observer: the built-ins are
+    /// reported.
     ///
-    /// `map` never reaches the handler registry — it is dispatched inside a
-    /// private executor method — so if a future dataflow-rs stopped emitting
-    /// events for that path, `orion_task_duration_seconds` would go quiet for
-    /// the six functions it exists to cover, with nothing else failing. This
-    /// pins the dependency rather than the arithmetic.
+    /// `map` never reaches a host call layer, so if a future dataflow-rs
+    /// stopped emitting events for that path, `orion_task_duration_seconds`
+    /// would go quiet for the functions it exists to cover, with nothing else
+    /// failing. This pins the dependency rather than the arithmetic.
     #[tokio::test]
-    async fn a_sync_builtin_is_reported_to_the_observer() {
+    async fn a_builtin_is_reported_to_the_observer() {
         use std::sync::Mutex;
 
         #[derive(Default)]
         struct Seen(Mutex<Vec<(String, String)>>);
-        impl ExecutionObserver for Seen {
-            fn task_finished(&self, e: &TaskEvent<'_>) {
-                self.0
-                    .lock()
-                    .expect("test")
-                    .push((e.task_id.to_string(), e.function.to_string()));
+        impl Observer for Seen {
+            fn interest(&self) -> Interest {
+                Interest::TASKS
+            }
+            fn on(&self, event: &Event<'_>) {
+                if let Event::TaskFinished { info, .. } = event {
+                    self.0
+                        .lock()
+                        .expect("test")
+                        .push((info.task_id.to_string(), info.function.to_string()));
+                }
             }
         }
 
-        let seen = std::sync::Arc::new(Seen::default());
-        let workflow = dataflow_rs_v3::Workflow::from_json(
-            r#"{"id":"w","name":"w","priority":0,"condition":true,
-                "tasks":[{"id":"m","name":"m","function":{"name":"map","input":
-                  {"mappings":[{"path":"data.ok","logic":true}]}}}]}"#,
-        )
-        .expect("workflow parses");
-        let engine = dataflow_rs_v3::Engine::new(vec![workflow], std::collections::HashMap::new())
-            .expect("engine builds")
-            .with_observer(seen.clone());
-
-        let mut message = dataflow_rs_v3::Message::builder().build();
-        engine
-            .process_message(&mut message)
-            .await
-            .expect("run succeeds");
-
+        let seen = Seen::default();
+        run_observed(&[map_workflow("w", true)], &seen).await;
         assert_eq!(
             *seen.0.lock().expect("test"),
             vec![("m".to_string(), "map".to_string())],
-            "a built-in dispatched inside the executor must still be timed"
+            "a built-in must still be timed"
         );
     }
 
-    /// The workflow lifecycle callback fires, and its duration covers the task
+    /// The workflow lifecycle event fires, and its duration covers the task
     /// bodies inside it — which is what makes the subtraction that yields
     /// engine overhead meaningful.
     ///
-    /// A skipped workflow must *not* report: the overhead figure is per run,
-    /// and counting a workflow the condition rejected would dilute it with
-    /// runs that never happened.
+    /// A skipped workflow must *not* report a duration: the overhead figure
+    /// is per run, and counting a workflow the condition rejected would
+    /// dilute it with runs that never happened.
     #[tokio::test]
     async fn a_workflow_reports_once_and_only_when_it_runs() {
         use std::sync::Mutex;
@@ -204,40 +183,35 @@ mod tests {
             workflows: Mutex<Vec<(String, Duration)>>,
             tasks: Mutex<Duration>,
         }
-        impl ExecutionObserver for Seen {
-            fn task_finished(&self, e: &TaskEvent<'_>) {
-                *self.tasks.lock().expect("test") += e.duration;
+        impl Observer for Seen {
+            fn interest(&self) -> Interest {
+                Interest::WORKFLOWS | Interest::TASKS | Interest::TIMINGS
             }
-            fn workflow_finished(&self, e: &WorkflowFinished<'_>) {
-                self.workflows
-                    .lock()
-                    .expect("test")
-                    .push((e.workflow_id.to_string(), e.duration));
+            fn on(&self, event: &Event<'_>) {
+                match event {
+                    Event::TaskFinished {
+                        elapsed: Some(d), ..
+                    } => *self.tasks.lock().expect("test") += *d,
+                    Event::WorkflowFinished {
+                        record,
+                        elapsed: Some(d),
+                        ..
+                    } => self
+                        .workflows
+                        .lock()
+                        .expect("test")
+                        .push((record.id.to_string(), *d)),
+                    _ => {}
+                }
             }
         }
 
-        fn workflow(id: &str, condition: bool) -> dataflow_rs_v3::Workflow {
-            dataflow_rs_v3::Workflow::from_json(&format!(
-                r#"{{"id":"{id}","name":"{id}","priority":0,"condition":{condition},
-                    "tasks":[{{"id":"m","name":"m","function":{{"name":"map","input":
-                      {{"mappings":[{{"path":"data.ok","logic":true}}]}}}}}}]}}"#
-            ))
-            .expect("workflow parses")
-        }
-
-        let seen = std::sync::Arc::new(Seen::default());
-        let engine = dataflow_rs_v3::Engine::new(
-            vec![workflow("runs", true), workflow("skipped", false)],
-            std::collections::HashMap::new(),
+        let seen = Seen::default();
+        run_observed(
+            &[map_workflow("runs", true), map_workflow("skipped", false)],
+            &seen,
         )
-        .expect("engine builds")
-        .with_observer(seen.clone());
-
-        let mut message = dataflow_rs_v3::Message::builder().build();
-        engine
-            .process_message(&mut message)
-            .await
-            .expect("run succeeds");
+        .await;
 
         let workflows = seen.workflows.lock().expect("test");
         assert_eq!(
@@ -246,7 +220,7 @@ mod tests {
                 .map(|(id, _)| id.as_str())
                 .collect::<Vec<_>>(),
             ["runs"],
-            "a workflow its condition rejected never starts, so it never finishes"
+            "a workflow its condition rejected never starts, so it is never timed"
         );
         assert!(
             workflows[0].1 >= *seen.tasks.lock().expect("test"),

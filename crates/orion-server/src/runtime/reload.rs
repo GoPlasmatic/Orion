@@ -200,28 +200,26 @@ async fn manifest_definitions(
     }
 
     let now = chrono::Utc::now().naive_utc();
-    let parse_artifact_json = |member: &ManifestMember| -> Result<
-        Option<serde_json::Value>,
-        crate::errors::OrionError,
-    > {
-        let Some(art) = state
-            .composition
-            .deployments
-            .get_artifact(&member.definition_digest)
-        else {
-            return Ok(None);
+    let parse_artifact_json =
+        |member: &ManifestMember| -> Result<Option<serde_json::Value>, crate::errors::OrionError> {
+            let Some(art) = state
+                .composition
+                .deployments
+                .get_artifact(&member.definition_digest)
+            else {
+                return Ok(None);
+            };
+            if art.state != ArtifactState::Active {
+                return Err(crate::errors::OrionError::validation(format!(
+                    "member '{}' artifact '{}' is not ACTIVE",
+                    member.entity.id, member.definition_digest
+                )));
+            }
+            let Some(bytes) = art.bytes else {
+                return Ok(None);
+            };
+            Ok(serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         };
-        if art.state != ArtifactState::Active {
-            return Err(crate::errors::OrionError::validation(format!(
-                "member '{}' artifact '{}' is not ACTIVE",
-                member.entity.id, member.definition_digest
-            )));
-        }
-        let Some(bytes) = art.bytes else {
-            return Ok(None);
-        };
-        Ok(serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-    };
 
     let mut active_channels = Vec::new();
     let mut active_workflows = Vec::new();
@@ -435,17 +433,16 @@ async fn manifest_definitions(
                     .and_then(|v| v.as_i64())
                     .unwrap_or(100),
                 condition_json: serde_json::to_string(
-                    val.get("condition").unwrap_or(&serde_json::Value::Bool(true)),
+                    val.get("condition")
+                        .unwrap_or(&serde_json::Value::Bool(true)),
                 )
                 .unwrap_or_else(|_| "true".to_string()),
                 tasks_json: serde_json::to_string(
                     val.get("tasks").unwrap_or(&serde_json::json!([])),
                 )
                 .unwrap_or_else(|_| "[]".to_string()),
-                tags_json: serde_json::to_string(
-                    val.get("tags").unwrap_or(&serde_json::json!([])),
-                )
-                .unwrap_or_else(|_| "[]".to_string()),
+                tags_json: serde_json::to_string(val.get("tags").unwrap_or(&serde_json::json!([])))
+                    .unwrap_or_else(|_| "[]".to_string()),
                 loop_json: val
                     .get("loop")
                     .filter(|v| !v.is_null())
@@ -512,7 +509,15 @@ async fn reload_with_scope(
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     let (head_rev, _) = state.composition.deployments.current_head();
     let manifest_rev = (head_rev > 0).then_some(head_rev);
-    reload_with_manifest(state, opts, scope, evict_connector_pools, manifest_rev, false).await
+    reload_with_manifest(
+        state,
+        opts,
+        scope,
+        evict_connector_pools,
+        manifest_rev,
+        false,
+    )
+    .await
 }
 
 async fn reload_with_manifest(
@@ -560,46 +565,28 @@ async fn reload_with_manifest(
             None => state.repos.active_definitions().await?,
         };
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
-        // The outgoing generation, read once: it is the screen for the new
-        // workflows, the base the new engine is built from, and the reuse
-        // cache the new channel estate is built against. Reading it once is
-        // what makes those three agree.
-        //
-        // The running engine is the screen because `with_new_workflows`
-        // carries the handler registry across, so the handlers that will run
-        // these workflows are exactly the ones already registered there. A
-        // workflow they cannot dispatch is quarantined per channel rather than
-        // failing the reload — which would take down every channel on every
-        // node over one bad stored row.
+        // The outgoing generation, read once: the base the new engine is built
+        // from and the reuse cache the new channel estate is built against.
+        // Reading it once is what makes those agree.
         let current = state.runtime.load();
 
         // The plugin half decides how the engine is built. An unchanged
-        // active plugin set keeps the cheap path: `with_new_workflows` carries
-        // the running engine's handler map across, so the running engine is
-        // the screen and the handlers that will run these workflows are
-        // exactly the ones already registered there. A changed set — an
-        // activation, an archive, a new digest — needs handlers the old
-        // engine does not have, so the engine is assembled afresh from the
-        // node's live components plus the loaded plugins and screened against
-        // that builder. Either way a workflow the handlers cannot dispatch is
-        // quarantined per channel rather than failing the reload, both halves
-        // are built before anything is published, and a failure here leaves
-        // the previous generation serving whole. Back when the channel estate
-        // was published first, this `?` could leave the node *permanently*
-        // mixed: new guards over old workflows, until some later reload
-        // happened to succeed.
-        //
-        // dataflow-rs 4 decides which rows load (I182): every row compiles on
-        // dataflow-rs 4 first, and the dataflow-rs 3 screen sees only the rows
-        // it accepted. Its half takes the same two paths. An unchanged plugin
-        // set compiles on the running engine's compiler and swaps with
-        // `with_program`, which keeps the `Registry` (its functions, the
-        // plugin functions and the profile layer) and the engine's config;
-        // a changed one registers the loaded plugin functions on a registry
-        // assembled afresh and builds a new engine.
+        // active plugin set compiles on the running engine's compiler and
+        // swaps with `with_program`, which keeps the `Registry` (its
+        // functions, the plugin functions and the profile layer) and the
+        // engine's config. A changed set — an activation, an archive, a new
+        // digest — registers the loaded plugin functions on a registry
+        // assembled afresh and builds a new engine. Either way every row is
+        // compiled first and a workflow the registry cannot run is quarantined
+        // per channel rather than failing the reload, both halves are built
+        // before anything is published, and a failure here leaves the
+        // previous generation serving whole. Back when the channel estate was
+        // published first, this `?` could leave the node *permanently* mixed:
+        // new guards over old workflows, until some later reload happened to
+        // succeed.
         let plugins_changed =
             crate::plugin::PluginSet::fingerprint_of(&plugin_rows) != current.plugins.fingerprint();
-        let (new_engine, new_engine4, functions, plugins, engine_issues) = if plugins_changed {
+        let (new_engine, functions, plugins, engine_issues) = if plugins_changed {
             let plugins = Arc::new(
                 crate::plugin::load_active(
                     plugin_rows,
@@ -616,45 +603,24 @@ async fn reload_with_manifest(
                         message: format!("plugin function registry: {e}"),
                     })?,
             );
-            let mut handlers = super::build_handlers(state);
-            for (name, handler) in plugins.handlers() {
-                handlers.insert(name, handler);
-            }
-            let builder = crate::engine::operators::with_ops_budget(
-                crate::engine::operators::with_orion_engine_defaults(
-                    dataflow_rs_v3::Engine::builder(),
-                    &state.secrets,
-                ),
-                state.config.engine.ops_budget,
-            )
-            .with_handlers(handlers);
             let compiler = plugin_compiler(state, &plugins);
             let loaded = crate::engine::build_engine_workflows(
                 &channels,
                 &active_workflows,
                 &crate::engine::EngineLoad {
                     compiler: &compiler,
-                    functions: &functions,
                     plugins: &plugins,
-                    screen: &builder,
                 },
             );
-            let engine = Arc::new(
-                builder
-                    .with_workflows(loaded.v3)
-                    .build()
-                    .map_err(crate::errors::OrionError::Engine)?
-                    .with_observer(Arc::new(crate::engine::MetricsObserver)),
-            );
-            let engine4 = crate::engine::serving_engine(compiler.link(loaded.v4));
-            (engine, engine4, functions, plugins, loaded.issues)
+            let engine = crate::engine::serving_engine(compiler.link(loaded.workflows));
+            (engine, functions, plugins, loaded.issues)
         } else {
             // The running engine's compiler: its registry, so a reload that
-            // keeps the plugins registers nothing. A generation published
-            // with no dataflow-rs 4 engine (none is, past boot) has nothing
-            // to carry, and its registry is assembled as for a changed set.
-            let compiler = match &current.engine4 {
-                Some(engine4) => engine4.compiler(),
+            // keeps the plugins registers nothing. The boot generation has no
+            // engine to carry, and its registry is assembled as for a changed
+            // set.
+            let compiler = match &current.engine {
+                Some(engine) => engine.compiler(),
                 None => plugin_compiler(state, &current.plugins),
             };
             let loaded = crate::engine::build_engine_workflows(
@@ -662,25 +628,16 @@ async fn reload_with_manifest(
                 &active_workflows,
                 &crate::engine::EngineLoad {
                     compiler: &compiler,
-                    functions: &current.functions,
                     plugins: &current.plugins,
-                    screen: &*current.engine,
                 },
             );
-            let engine = Arc::new(
-                current
-                    .engine
-                    .with_new_workflows(loaded.v3)
-                    .map_err(crate::errors::OrionError::Engine)?,
-            );
-            let program = compiler.link(loaded.v4);
-            let engine4 = match &current.engine4 {
-                Some(engine4) => engine4.with_program(program),
+            let program = compiler.link(loaded.workflows);
+            let engine = match &current.engine {
+                Some(engine) => engine.with_program(program),
                 None => crate::engine::serving_engine(program),
             };
             (
                 engine,
-                engine4,
                 current.functions.clone(),
                 current.plugins.clone(),
                 loaded.issues,
@@ -771,7 +728,6 @@ async fn reload_with_manifest(
         // two stores here could not avoid however they were ordered.
         let generation = state.runtime.publish_with_estate(
             new_engine,
-            Some(new_engine4),
             Arc::new(new_channels),
             functions,
             plugins,
@@ -892,7 +848,7 @@ async fn reload_with_manifest(
 /// node's live components ([`super::build_registry`]) with `plugins`'
 /// functions registered: what a reload that changes the plugin set compiles
 /// on, as its dataflow-rs 3 half assembles its handlers afresh.
-fn plugin_compiler(
+pub(crate) fn plugin_compiler(
     state: &AppState,
     plugins: &crate::plugin::PluginSet,
 ) -> dataflow_rs::program::Compiler {

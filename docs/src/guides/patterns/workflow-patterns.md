@@ -72,7 +72,7 @@ Most workflows are `"condition": true` at the top with conditions on tasks. Reac
     { "id": "notify", "function": { "name": "http_call", "input": {
         "connector": "slack-webhook",
         "method": "POST",
-        "body_logic": { "var": "data.event" },
+        "body": { "var": "data.event" },
         "output": "data.notified"
     }}}
   ]
@@ -151,15 +151,14 @@ Two things to know before composing. The called channel applies its own guards, 
     { "id": "send", "name": "Send one",
       "function": { "name": "http_call", "input": {
         "connector": "notifier", "method": "POST", "path": "/send",
-        "body_logic": { "val": ["data", "req", "recipients", { "val": ["temp_data", "i"] }] } } } }
+        "body": { "val": ["data", "req", "recipients", { "val": ["temp_data", "i"] }] } } } }
   ]
 }
 ```
 
-**Why it bites.** Three traps, all silent:
+**Why it bites.** Two traps, both silent:
 
 - Putting the break in the workflow `condition` is the obvious move and it does nothing. `data` starts empty, so the condition is false on sweep 0 and the loop never runs once. Put it in a `filter`, after the parse.
-- `body` is a static field: an expression written there is sent verbatim, not evaluated. The evaluated field is `body_logic`. The same split exists on the other connector functions.
 - `var` cannot index by a computed value. Its second argument is a *default*, not an index, so `{"var": ["data.req.recipients", {"var": "temp_data.i"}]}` quietly returns the whole array on every sweep. Dynamic indexing needs `val` with path-chain segments, as above.
 
 The sweeps are sequential and inside one request. Twenty calls at 50 ms is a second of wall clock against your channel timeout. A thousand is a job for an async channel or a service built for it. `max` is capped by [`engine.max_loop_iterations`](../../reference/configuration/index.md).
@@ -168,10 +167,11 @@ The sweeps are sequential and inside one request. Twenty calls at 50 ms is a sec
 
 **Problem.** One optional enrichment fails and the whole request fails with it.
 
-**Pattern.** Set `continue_on_error` and read the `errors` array:
+**Pattern.** Set `on_failure: "continue"` on the optional task and read the `errors` array:
 
 ```json
-{ "workflow_id": "order-processing", "continue_on_error": true, "tasks": [ "..." ] }
+{ "id": "enrich", "name": "Optional enrichment", "on_failure": "continue",
+  "function": { "name": "http_call", "input": { "connector": "crm", "output": "data.crm" } } }
 ```
 
 ```json

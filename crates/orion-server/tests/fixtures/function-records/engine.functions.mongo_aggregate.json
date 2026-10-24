@@ -1,0 +1,453 @@
+{
+  "read_only/false": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: mongo_aggregate query timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "read_only/true": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: mongo_aggregate query timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{\"$oid\":{\"var\":\"data.id\"}}}]}/{}": {
+    "ok": {
+      "tenant": "acme",
+      "since": "2026-01-02T03:04:05Z",
+      "id": "665f1f77bcf86cd799439011",
+      "stage": {
+        "$limit": 5
+      },
+      "out": {
+        "$out": "rollup"
+      },
+      "bad": {
+        "$currentOp": {}
+      },
+      "pipeline": [
+        {
+          "$match": {
+            "a": 1
+          }
+        },
+        {
+          "$count": "n"
+        }
+      ],
+      "empty": [],
+      "object": {
+        "a": 1
+      },
+      "two": {
+        "$match": {},
+        "$sort": {}
+      },
+      "big": 1.8446744073709552e+19,
+      "spill": true,
+      "aggregation": "Aggregation { database: \"db\", collection: \"events\", allow_disk_use: false, pipeline: [Document({\"$match\": ObjectId(\"665f1f77bcf86cd799439011\")})], wants_write_stage: false }"
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{\"n\":18446744073709551615}},{\"var\":\"data.bad\"}]}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate pipeline[1] stage '$currentOp' is not in the allowed stage set (read stages: $addFields, $bucket, $bucketAuto, $count, $densify, $facet, $fill, $geoNear, $graphLookup, $group, $limit, $lookup, $match, $project, $redact, $replaceRoot, $replaceWith, $sample, $search, $searchMeta, $set, $setWindowFields, $skip, $sort, $sortByCount, $unionWith, $unset, $unwind, $vectorSearch; write stages, connector-gated: $out, $merge)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{\"n\":18446744073709551615}}]}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate pipeline[0] is not valid: BSON does not support unsigned integers.\n                 An attempt to serialize the value: 18446744073709551615 in a signed type failed due to the value's size.",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{\"n\":{\"var\":\"data.big\"}}}]}/{}": {
+    "ok": {
+      "tenant": "acme",
+      "since": "2026-01-02T03:04:05Z",
+      "id": "665f1f77bcf86cd799439011",
+      "stage": {
+        "$limit": 5
+      },
+      "out": {
+        "$out": "rollup"
+      },
+      "bad": {
+        "$currentOp": {}
+      },
+      "pipeline": [
+        {
+          "$match": {
+            "a": 1
+          }
+        },
+        {
+          "$count": "n"
+        }
+      ],
+      "empty": [],
+      "object": {
+        "a": 1
+      },
+      "two": {
+        "$match": {},
+        "$sort": {}
+      },
+      "big": 1.8446744073709552e+19,
+      "spill": true,
+      "aggregation": "Aggregation { database: \"db\", collection: \"events\", allow_disk_use: false, pipeline: [Document({\"$match\": Document({\"n\": Double(1.8446744073709552e19)})})], wants_write_stage: false }"
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{\"tenant\":{\"var\":\"data.tenant\"},\"at\":{\"$gte\":{\"$date\":{\"var\":\"data.since\"}}},\"_id\":{\"$oid\":{\"var\":\"data.id\"}}}},{\"$group\":{\"_id\":\"$kind\",\"n\":{\"$sum\":1}}},{\"var\":\"data.stage\"}]}/{}": {
+    "ok": {
+      "tenant": "acme",
+      "since": "2026-01-02T03:04:05Z",
+      "id": "665f1f77bcf86cd799439011",
+      "stage": {
+        "$limit": 5
+      },
+      "out": {
+        "$out": "rollup"
+      },
+      "bad": {
+        "$currentOp": {}
+      },
+      "pipeline": [
+        {
+          "$match": {
+            "a": 1
+          }
+        },
+        {
+          "$count": "n"
+        }
+      ],
+      "empty": [],
+      "object": {
+        "a": 1
+      },
+      "two": {
+        "$match": {},
+        "$sort": {}
+      },
+      "big": 1.8446744073709552e+19,
+      "spill": true,
+      "aggregation": "Aggregation { database: \"db\", collection: \"events\", allow_disk_use: false, pipeline: [Document({\"$match\": Document({\"tenant\": String(\"acme\"), \"at\": Document({\"$gte\": DateTime(2026-01-02 3:04:05.0 +00:00:00)}), \"_id\": ObjectId(\"665f1f77bcf86cd799439011\")})}), Document({\"$group\": Document({\"_id\": String(\"$kind\"), \"n\": Document({\"$sum\": Int64(1)})})}), Document({\"$limit\": Int64(5)})], wants_write_stage: false }"
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{}},{\"var\":\"data.out\"}]}/{\"aggregate_write_stages\":true}": {
+    "ok": {
+      "tenant": "acme",
+      "since": "2026-01-02T03:04:05Z",
+      "id": "665f1f77bcf86cd799439011",
+      "stage": {
+        "$limit": 5
+      },
+      "out": {
+        "$out": "rollup"
+      },
+      "bad": {
+        "$currentOp": {}
+      },
+      "pipeline": [
+        {
+          "$match": {
+            "a": 1
+          }
+        },
+        {
+          "$count": "n"
+        }
+      ],
+      "empty": [],
+      "object": {
+        "a": 1
+      },
+      "two": {
+        "$match": {},
+        "$sort": {}
+      },
+      "big": 1.8446744073709552e+19,
+      "spill": true,
+      "aggregation": "Aggregation { database: \"db\", collection: \"events\", allow_disk_use: false, pipeline: [Document({\"$match\": Document({})}), Document({\"$out\": String(\"rollup\")})], wants_write_stage: true }"
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{}},{\"var\":\"data.out\"}]}/{}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "pipeline contains a write stage ($out/$merge), which is disabled on connector 'docs' — set \"aggregate_write_stages\": true on the connector to permit it"
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{}}],\"allow_disk_use\":\"yes\"}/{}": {
+    "ok": {
+      "tenant": "acme",
+      "since": "2026-01-02T03:04:05Z",
+      "id": "665f1f77bcf86cd799439011",
+      "stage": {
+        "$limit": 5
+      },
+      "out": {
+        "$out": "rollup"
+      },
+      "bad": {
+        "$currentOp": {}
+      },
+      "pipeline": [
+        {
+          "$match": {
+            "a": 1
+          }
+        },
+        {
+          "$count": "n"
+        }
+      ],
+      "empty": [],
+      "object": {
+        "a": 1
+      },
+      "two": {
+        "$match": {},
+        "$sort": {}
+      },
+      "big": 1.8446744073709552e+19,
+      "spill": true,
+      "aggregation": "Aggregation { database: \"db\", collection: \"events\", allow_disk_use: false, pipeline: [Document({\"$match\": Document({})})], wants_write_stage: false }"
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{}}],\"allow_disk_use\":{\"var\":\"data.spill\"}}/{}": {
+    "ok": {
+      "tenant": "acme",
+      "since": "2026-01-02T03:04:05Z",
+      "id": "665f1f77bcf86cd799439011",
+      "stage": {
+        "$limit": 5
+      },
+      "out": {
+        "$out": "rollup"
+      },
+      "bad": {
+        "$currentOp": {}
+      },
+      "pipeline": [
+        {
+          "$match": {
+            "a": 1
+          }
+        },
+        {
+          "$count": "n"
+        }
+      ],
+      "empty": [],
+      "object": {
+        "a": 1
+      },
+      "two": {
+        "$match": {},
+        "$sort": {}
+      },
+      "big": 1.8446744073709552e+19,
+      "spill": true,
+      "aggregation": "Aggregation { database: \"db\", collection: \"events\", allow_disk_use: false, pipeline: [Document({\"$match\": Document({})})], wants_write_stage: false }"
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"$match\":{}}],\"output\":{\"var\":\"data.spill\"}}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"var\":\"data.bad\"},{\"$match\":{\"n\":18446744073709551615}}]}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate pipeline[0] stage '$currentOp' is not in the allowed stage set (read stages: $addFields, $bucket, $bucketAuto, $count, $densify, $facet, $fill, $geoNear, $graphLookup, $group, $limit, $lookup, $match, $project, $redact, $replaceRoot, $replaceWith, $sample, $search, $searchMeta, $set, $setWindowFields, $skip, $sort, $sortByCount, $unionWith, $unset, $unwind, $vectorSearch; write stages, connector-gated: $out, $merge)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"var\":\"data.bad\"}]}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate pipeline[0] stage '$currentOp' is not in the allowed stage set (read stages: $addFields, $bucket, $bucketAuto, $count, $densify, $facet, $fill, $geoNear, $graphLookup, $group, $limit, $lookup, $match, $project, $redact, $replaceRoot, $replaceWith, $sample, $search, $searchMeta, $set, $setWindowFields, $skip, $sort, $sortByCount, $unionWith, $unset, $unwind, $vectorSearch; write stages, connector-gated: $out, $merge)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"var\":\"data.missing\"}]}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate pipeline[0] must be an object with exactly one $-prefixed stage key (e.g. {\"$match\": {..}})",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":[{\"var\":\"data.two\"}]}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate pipeline[0] must be an object with exactly one $-prefixed stage key (e.g. {\"$match\": {..}})",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":{\"var\":\"data.empty\"}}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate 'pipeline' must not be empty",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":{\"var\":\"data.missing\"}}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate 'pipeline' must resolve to an array of stage objects",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":{\"var\":\"data.object\"}}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate 'pipeline' must resolve to an array of stage objects",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_aggregation/{\"pipeline\":{\"var\":\"data.pipeline\"},\"allow_disk_use\":true}/{}": {
+    "ok": {
+      "tenant": "acme",
+      "since": "2026-01-02T03:04:05Z",
+      "id": "665f1f77bcf86cd799439011",
+      "stage": {
+        "$limit": 5
+      },
+      "out": {
+        "$out": "rollup"
+      },
+      "bad": {
+        "$currentOp": {}
+      },
+      "pipeline": [
+        {
+          "$match": {
+            "a": 1
+          }
+        },
+        {
+          "$count": "n"
+        }
+      ],
+      "empty": [],
+      "object": {
+        "a": 1
+      },
+      "two": {
+        "$match": {},
+        "$sort": {}
+      },
+      "big": 1.8446744073709552e+19,
+      "spill": true,
+      "aggregation": "Aggregation { database: \"db\", collection: \"events\", allow_disk_use: true, pipeline: [Document({\"$match\": Document({\"a\": Int64(1)})}), Document({\"$count\": String(\"n\")})], wants_write_stage: false }"
+    }
+  },
+  "the_call/{\"connector\":\"absent\",\"database\":\"db\",\"collection\":\"events\",\"pipeline\":[{\"$match\":{\"n\":{\"var\":\"data.n\"}}}],\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"api\",\"database\":\"db\",\"collection\":\"events\",\"pipeline\":[{\"$match\":{\"n\":{\"var\":\"data.n\"}}}],\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "Connector 'api' is not a database connector"
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"events\",\"pipeline\":[{\"$match\":{\"n\":{\"var\":\"data.n\"}}}],\"output\":\"data.documents\"}/{\"operations\":{\"read\":false}}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'read' is disabled on connector 'docs'"
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"events\",\"pipeline\":[{\"$match\":{\"n\":{\"var\":\"data.n\"}}}],\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: mongo_aggregate query timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"events\",\"pipeline\":[{\"$match\":{\"n\":{\"var\":\"data.n\"}}}],\"output\":{\"var\":\"data.n\"}}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"events\",\"pipeline\":{\"var\":\"data.n\"},\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate 'pipeline' must resolve to an array of stage objects",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"sql\",\"database\":\"db\",\"collection\":\"events\",\"pipeline\":[{\"$match\":{\"n\":{\"var\":\"data.n\"}}}],\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_aggregate requires a MongoDB connector, but 'sql' has a non-MongoDB connection string (expected a mongodb:// or mongodb+srv:// URL)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "write_stage/[{\"$match\":{\"status\":\"active\"}},{\"$out\":\"rollup\"}]/default": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "pipeline contains a write stage ($out/$merge), which is disabled on connector 'docs' — set \"aggregate_write_stages\": true on the connector to permit it"
+    }
+  },
+  "write_stage/[{\"$match\":{\"status\":\"active\"}},{\"$out\":\"rollup\"}]/opted_in": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: mongo_aggregate query timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "write_stage/[{\"$match\":{\"status\":\"active\"}},{\"var\":\"data.stage\"}]/default": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "pipeline contains a write stage ($out/$merge), which is disabled on connector 'docs' — set \"aggregate_write_stages\": true on the connector to permit it"
+    }
+  },
+  "write_stage/[{\"$match\":{\"status\":\"active\"}},{\"var\":\"data.stage\"}]/opted_in": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: mongo_aggregate query timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  }
+}

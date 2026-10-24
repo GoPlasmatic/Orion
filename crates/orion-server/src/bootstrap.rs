@@ -94,13 +94,11 @@ pub fn init_metrics_handle(
 /// `AppStateInner`); re-exported here so bootstrap callers keep their path.
 pub use crate::storage::repositories::Repositories;
 
-/// Construct the Kafka producer and wire it into the engine's
-/// `publish_kafka` handler. Returns `None` when Kafka is disabled or no
-/// brokers are configured.
+/// Construct the Kafka producer and the per-connector cache the
+/// `publish_kafka` function resolves through. Returns `None` when Kafka is
+/// disabled or no brokers are configured.
 fn setup_kafka_producer(
     kafka_config: &config::KafkaIngestConfig,
-    custom_functions: &mut std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
-    connector_registry: Arc<ConnectorRegistry>,
     max_pool_cache_entries: usize,
 ) -> Result<KafkaProducers, Box<dyn std::error::Error>> {
     if !kafka_config.enabled || kafka_config.brokers.is_empty() {
@@ -120,11 +118,6 @@ fn setup_kafka_producer(
         kafka_config.extra_config.clone(),
         max_pool_cache_entries,
     ));
-    crate::engine::register_kafka_publisher(
-        custom_functions,
-        connector_registry,
-        producers.clone(),
-    );
     tracing::info!("Kafka producer initialized");
     Ok((Some(producer), Some(producers)))
 }
@@ -203,11 +196,10 @@ pub struct ServingComponents {
 /// handlers, and the Kafka producer.
 pub struct EngineComponents {
     pub serving: ServingComponents,
-    pub custom_functions: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
-    /// The same functions on dataflow-rs 4, the real `publish_kafka` and the
-    /// profile layer included ([`crate::engine::serving_registry`]): what the
-    /// first generation compiles every stored workflow on, its plugins
-    /// added. dataflow-rs 4's verdict decides which rows load (I182).
+    /// Orion's functions, the real `publish_kafka` and the profile layer
+    /// included ([`crate::engine::serving_registry`]): what the first
+    /// generation compiles every stored workflow on, its plugins added. Its
+    /// verdict decides which rows load (I182).
     pub registry: dataflow_rs::Registry,
 }
 
@@ -321,15 +313,11 @@ pub async fn build_engine_components(
         );
     }
 
-    // Create the runtime handle early so the `channel_call` handler can
-    // reference it. Generation 0 is an empty engine and an empty channel
-    // estate; `load_channels_and_build_engine` publishes the first real
-    // generation over it before anything is served.
-    let empty_engine = dataflow_rs_v3::Engine::builder().build().map_err(|e| {
-        crate::errors::OrionError::internal_from("Failed to build the empty boot engine", e)
-    })?;
+    // Create the runtime handle early so the `channel_call` function can
+    // reference it. Generation 0 has no engine and an empty channel estate;
+    // `load_channels_and_build_engine` publishes the first real generation
+    // over it before anything is served.
     let runtime: Arc<crate::runtime::RuntimeHandle> = Arc::new(crate::runtime::RuntimeHandle::new(
-        Arc::new(empty_engine),
         Arc::new(crate::channel::ChannelSnapshot::empty()),
         crate::engine::FunctionRegistry::builtin().clone(),
     ));
@@ -375,9 +363,7 @@ pub async fn build_engine_components(
         .with_resource_pool(smtp_pool_cache.clone());
     let providers = composition.providers.clone();
 
-    // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
-    // The same dependencies twice, once per engine: the dataflow-rs 3
-    // handlers below and the dataflow-rs 4 registry after the producer.
+    // The node's live components, as every function gets them.
     let handler_deps = || crate::engine::HandlerDeps {
         registry: connector_registry.clone(),
         client: http_client.clone(),
@@ -396,14 +382,8 @@ pub async fn build_engine_components(
         models_config: &config.models,
         providers: providers.clone(),
     };
-    let mut custom_functions = crate::engine::build_custom_functions(handler_deps());
-
-    let (kafka_producer, kafka_producers) = setup_kafka_producer(
-        &config.kafka,
-        &mut custom_functions,
-        connector_registry.clone(),
-        config.engine.max_pool_cache_entries,
-    )?;
+    let (kafka_producer, kafka_producers) =
+        setup_kafka_producer(&config.kafka, config.engine.max_pool_cache_entries)?;
     let mut composition = composition;
     if let Some(ref kp) = kafka_producers {
         composition = composition.with_resource_pool(kp.clone());
@@ -442,7 +422,6 @@ pub async fn build_engine_components(
             models,
             composition,
         },
-        custom_functions,
         registry,
     })
 }
@@ -477,7 +456,6 @@ impl EngineComponents {
     > {
         let EngineComponents {
             serving,
-            mut custom_functions,
             mut registry,
         } = self;
         // Load active channels and workflows, build engine
@@ -497,8 +475,7 @@ impl EngineComponents {
 
         // The active plugins, loaded into the sandbox — or every one a load
         // issue, on a node with the sandbox off — and the registry this
-        // generation carries: the built-ins plus what loaded. The plugin
-        // handlers join Orion's own on the builder below.
+        // generation carries: the built-ins plus what loaded.
         let plugin_rows = repos.plugins.list_active().await?;
         let plugins = Arc::new(
             crate::plugin::load_active(
@@ -516,60 +493,33 @@ impl EngineComponents {
                     message: format!("plugin function registry: {e}"),
                 })?,
         );
-        for (name, handler) in plugins.handlers() {
-            custom_functions.insert(name, handler);
-        }
-        // The same plugin functions on dataflow-rs 4, before anything
-        // compiles on the registry: a workflow links only under the registry
-        // it compiled under.
+        // The plugin functions go on the registry before anything compiles on
+        // it: a workflow links only under the registry it compiled under.
         crate::engine::register_plugin_functions(&mut registry, plugins.functions().cloned());
         let compiler = registry.compiler(dataflow_rs::program::CompileOptions::default());
 
-        // The handlers go on the builder *before* the workflows are converted,
-        // because converting screens each one against them: a workflow naming
-        // a function nothing will dispatch, or carrying an input its handler
-        // cannot parse, is quarantined per channel instead of aborting the
-        // whole build. `with_handlers` is the only thing this borrow is for —
-        // the workflows are added below, on the same builder.
-        //
-        // dataflow-rs 4 compiles every row first, and its verdict decides
-        // which load (I182); this builder screens only the rows it accepted.
-        let builder = crate::engine::operators::with_ops_budget(
-            crate::engine::operators::with_orion_engine_defaults(
-                dataflow_rs_v3::Engine::builder(),
-                &serving.secrets,
-            ),
-            config.engine.ops_budget,
-        )
-        .with_handlers(custom_functions);
+        // A workflow naming a function nothing will dispatch, or carrying an
+        // input its function cannot parse, is quarantined per channel instead
+        // of aborting the whole build.
         let crate::engine::LoadedWorkflows {
-            v3: workflows,
-            v4: compiled,
+            workflows,
             issues: mut engine_issues,
         } = crate::engine::build_engine_workflows(
             &channels,
             &active_workflows,
             &crate::engine::EngineLoad {
                 compiler: &compiler,
-                functions: &functions,
                 plugins: &plugins,
-                screen: &builder,
             },
         );
-        let engine4 = crate::engine::serving_engine(compiler.link(compiled));
-
-        let channel_names: std::collections::HashSet<&str> =
-            workflows.iter().map(|w| w.channel.as_str()).collect();
-        let channel_count = channel_names.len();
-
-        // The observer is attached here rather than on generation 0's empty
-        // engine at startup because `Engine::new` builds a fresh engine;
-        // `with_new_workflows` carries it across every subsequent reload, so
-        // this is the only place it needs setting.
-        let built_engine = builder
-            .with_workflows(workflows)
-            .build()?
-            .with_observer(Arc::new(crate::engine::MetricsObserver));
+        let engine = crate::engine::serving_engine(compiler.link(workflows));
+        let channel_count = engine
+            .program()
+            .workflows()
+            .iter()
+            .map(|w| w.channel.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
 
         // The active models, their adapters compiled on the process's
         // expression engine, which evaluates them and which every reload
@@ -643,8 +593,7 @@ impl EngineComponents {
         // is what makes the boot path and the reload path the same shape, and
         // there is only one way to publish.
         serving.runtime.publish_with_estate(
-            Arc::new(built_engine),
-            Some(engine4),
+            engine,
             Arc::new(channels_snapshot),
             functions,
             plugins,

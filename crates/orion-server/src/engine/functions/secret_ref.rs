@@ -1,4 +1,4 @@
-//! Reading key material out of a task input.
+//! Recognising a store read in a task input.
 //!
 //! A field that carries a signing key accepts two spellings, and they answer
 //! different questions:
@@ -23,10 +23,12 @@
 //! `UNRESOLVED_SECRET_REF` check, so "where a reference resolves" has one
 //! answer and one list behind it.
 
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::secrets::SECRET_OPERATOR;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
+
+/// The operator dataflow-rs reserves for a store read. Its own constant is
+/// crate-private; `the_secret_operator_is_the_engines` pins this one to the
+/// operator the engine registers.
+pub const SECRET_OPERATOR: &str = "secret";
 
 /// The name in a `{"secret": "name"}` node — the reserved operator dataflow-rs
 /// registers on every engine — or `None` for anything else.
@@ -44,108 +46,11 @@ pub fn secret_name(value: &Value) -> Option<&str> {
     if object.len() != 1 {
         return None;
     }
-    // The operator's own name, from the engine that registers it, so the two
-    // cannot drift apart.
     match object.get(SECRET_OPERATOR)? {
         Value::String(name) => Some(name.as_str()),
         Value::Array(items) if items.len() == 1 => items[0].as_str(),
         _ => None,
     }
-}
-
-/// Resolve one key-material field to its value.
-///
-/// The error text names the field and, for a store miss, the key — never a
-/// value.
-async fn resolve_key_material(
-    value: &Value,
-    field: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<String, String> {
-    if let Some(name) = secret_name(value) {
-        let Some(secret) = ctx.secret(name) else {
-            return Err(format!(
-                "'{field}' names secret '{name}', which this instance does not declare \
-                 — add it to the [secrets] section of the config file"
-            ));
-        };
-        return secret
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| format!("'{field}': secret '{name}' is not a string"));
-    }
-    match value.as_str() {
-        Some(text) => crate::connector::secrets::resolve_secret_string(text, field).await,
-        None => Err(format!(
-            "'{field}' must be a string (a literal or an env:// reference) or \
-             {{\"secret\": \"name\"}}"
-        )),
-    }
-}
-
-/// Resolve a key-material *field*, expression form included.
-///
-/// The two spellings answer different questions and are told apart by what the
-/// author wrote, not by what it produces:
-///
-/// * A **string** is the legacy form — a literal, or an `env://` / `vault://`
-///   reference resolved here at execution. Post-processing it is what makes
-///   `env://NAME` mean the variable rather than the text.
-/// * **Anything else** is JSONLogic, evaluated like every other parameter, and
-///   its result *is* the material. `{"secret": "name"}` reaches the engine's
-///   store through the reserved operator, so it needs no special case here —
-///   and because it is an ordinary expression, it can be composed:
-///   `{"cat": [{"secret": "prefix"}, "-", {"var": "metadata.vars.suffix"}]}`.
-///
-/// Not post-processing the expression result is deliberate: a secret whose
-/// stored value happened to begin with `env://` would otherwise be resolved a
-/// second time against this host's environment.
-///
-/// # Errors
-///
-/// [`DataflowError`] when the field is absent, the expression fails, or the
-/// result is not a string.
-pub async fn key_material_field(
-    input: &super::templated_input::TemplatedInput,
-    field: &str,
-    handler: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<String, DataflowError> {
-    let Some(authored) = input.get(field) else {
-        return Err(DataflowError::Validation(format!(
-            "{handler} requires '{field}' ({{\"secret\": \"name\"}}, a secret reference \
-             like env://NAME, an expression, or a literal)"
-        )));
-    };
-    let label = format!("{handler}.{field}");
-    if authored.is_string() {
-        return key_material(authored, &label, ctx).await;
-    }
-    let Some(value) = input.value_of(field, handler, ctx) else {
-        return Err(DataflowError::Validation(format!(
-            "{handler} requires '{field}'"
-        )));
-    };
-    match value? {
-        Value::String(material) => Ok(material),
-        other => Err(DataflowError::Validation(format!(
-            "'{label}' must resolve to a string, got {other}"
-        ))),
-    }
-}
-
-/// Resolve one key-material value to its value, as a `DataflowError`.
-///
-/// The entry point for a value already in hand — an element of `jwt_verify`'s
-/// `keys` array, which is nested rather than a field of its own.
-pub async fn key_material(
-    value: &Value,
-    field: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<String, DataflowError> {
-    resolve_key_material(value, field, ctx)
-        .await
-        .map_err(DataflowError::Validation)
 }
 
 #[cfg(test)]
@@ -173,5 +78,17 @@ mod tests {
         assert_eq!(secret_name(&json!({"secret": ["k", "j"]})), None);
         assert_eq!(secret_name(&json!({"secret": []})), None);
         assert_eq!(secret_name(&json!({"secret": [7]})), None);
+    }
+
+    /// The store read is the operator Orion's expressions register under
+    /// this name.
+    #[test]
+    fn the_secret_operator_is_the_engines() {
+        let exprs = crate::engine::kit::test_exprs();
+        assert!(
+            exprs.operators().iter().any(|op| op.name == SECRET_OPERATOR
+                && op.family == dataflow_rs::expr::OperatorFamily::Secret),
+            "no `{SECRET_OPERATOR}` operator in the secret family"
+        );
     }
 }

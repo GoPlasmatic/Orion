@@ -500,7 +500,7 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
 /// `"engine": "ok"` component for response-shape stability — monitors key on
 /// the field — not because anything is checked.
 fn workflows_loaded(generation: &crate::runtime::RuntimeGeneration) -> usize {
-    generation.engine.workflows().len()
+    generation.workflows().len()
 }
 
 /// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:

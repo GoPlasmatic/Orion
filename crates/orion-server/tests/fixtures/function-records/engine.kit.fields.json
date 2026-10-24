@@ -1,0 +1,364 @@
+{
+  "key_material/\"a-literal-key\"": {
+    "ok": {
+      "ok": "a-literal-key"
+    }
+  },
+  "key_material/\"env://ORION_KIT_SURELY_UNSET_7Q2\"": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "Configuration error: crypto.key: env-var 'ORION_KIT_SURELY_UNSET_7Q2' is not set (referenced via env:// in a connector config)"
+      ]
+    }
+  },
+  "key_material/\"env://PATH\"": {
+    "ok": {
+      "ok": "<PATH>"
+    }
+  },
+  "key_material/null": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'crypto.key' must resolve to a string, got null"
+      ]
+    }
+  },
+  "key_material/unset": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "crypto requires 'key' ({\"secret\": \"name\"}, a secret reference like env://NAME, an expression, or a literal)"
+      ]
+    }
+  },
+  "key_material/{\"cat\":[{\"secret\":\"signing\"},\"-\",{\"var\":\"data.suffix\"}]}": {
+    "ok": {
+      "ok": "s3cr3t-signing-key-eu"
+    }
+  },
+  "key_material/{\"secret\":\"count\"}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'crypto.key' must resolve to a string, got 7"
+      ]
+    }
+  },
+  "key_material/{\"secret\":\"signing\"}": {
+    "ok": {
+      "ok": "s3cr3t-signing-key"
+    }
+  },
+  "key_material/{\"secret\":[\"signing\"]}": {
+    "ok": {
+      "ok": "s3cr3t-signing-key"
+    }
+  },
+  "key_material/{\"var\":\"data.n\"}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'crypto.key' must resolve to a string, got 5"
+      ]
+    }
+  },
+  "key_material/{\"var\":\"data.suffix\"}": {
+    "ok": {
+      "ok": "eu"
+    }
+  },
+  "key_material_list/\"aud-literal\"": {
+    "ok": {
+      "ok": [
+        "aud-literal"
+      ]
+    }
+  },
+  "key_material_list/7": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "jwt_verify: 'audience' must be a string or an array of strings"
+      ]
+    }
+  },
+  "key_material_list/[\"a\",\"b\"]": {
+    "ok": {
+      "ok": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  "key_material_list/[\"a\",null,\"b\"]": {
+    "ok": {
+      "ok": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  "key_material_list/[\"env://ORION_KIT_SURELY_UNSET_7Q2\"]": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "Configuration error: audience: env-var 'ORION_KIT_SURELY_UNSET_7Q2' is not set (referenced via env:// in a connector config)"
+      ]
+    }
+  },
+  "key_material_list/[\"env://PATH\"]": {
+    "ok": {
+      "ok": [
+        "<PATH>"
+      ]
+    }
+  },
+  "key_material_list/[\"x\",{\"secret\":\"aud\"}]": {
+    "ok": {
+      "ok": [
+        "x",
+        "partner-app"
+      ]
+    }
+  },
+  "key_material_list/[7]": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'audience' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_material_list/[[\"nested\"]]": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'audience' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_material_list/[{\"secret\":\"count\"}]": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'audience': secret 'count' is not a string"
+      ]
+    }
+  },
+  "key_material_list/[{\"secret\":7}]": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'audience' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_material_list/[{\"secret\":{\"var\":\"data.secname\"}}]": {
+    "ok": {
+      "ok": [
+        "partner-app"
+      ]
+    }
+  },
+  "key_material_list/[{\"var\":\"data.aud1\"},{\"var\":\"data.aud2\"}]": {
+    "ok": {
+      "ok": [
+        "a1"
+      ]
+    }
+  },
+  "key_material_list/[{\"var\":\"data.num\"}]": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'audience' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_material_list/null": {
+    "ok": {
+      "ok": []
+    }
+  },
+  "key_material_list/unset": {
+    "ok": {
+      "ok": []
+    }
+  },
+  "key_material_list/{\"a\":1}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "jwt_verify: 'audience' must be a string or an array of strings"
+      ]
+    }
+  },
+  "key_material_list/{\"secret\":\"aud\"}": {
+    "ok": {
+      "ok": [
+        "partner-app"
+      ]
+    }
+  },
+  "key_material_list/{\"secret\":\"count\"}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'audience': secret 'count' is not a string"
+      ]
+    }
+  },
+  "key_material_list/{\"secret\":7}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "jwt_verify: 'audience' must be a string or an array of strings"
+      ]
+    }
+  },
+  "key_material_list/{\"secret\":[\"aud\"]}": {
+    "ok": {
+      "ok": [
+        "partner-app"
+      ]
+    }
+  },
+  "key_material_list/{\"secret\":{\"var\":\"data.secname\"}}": {
+    "ok": {
+      "ok": [
+        "partner-app"
+      ]
+    }
+  },
+  "key_material_list/{\"var\":\"data.list\"}": {
+    "ok": {
+      "ok": [
+        "l1",
+        "l2"
+      ]
+    }
+  },
+  "key_material_list/{\"var\":\"data.missing\"}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "jwt_verify: 'audience' must be a string or an array of strings"
+      ]
+    }
+  },
+  "key_material_list/{\"var\":\"data.one\"}": {
+    "ok": {
+      "ok": [
+        "o1"
+      ]
+    }
+  },
+  "key_material_list/{\"var\":\"data.ref\"}": {
+    "ok": {
+      "ok": [
+        "<PATH>"
+      ]
+    }
+  },
+  "key_material_list/{\"var\":\"data.sec\"}": {
+    "ok": {
+      "ok": [
+        "partner-app"
+      ]
+    }
+  },
+  "key_ref/\"a-literal-key\"": {
+    "ok": {
+      "ok": "a-literal-key"
+    }
+  },
+  "key_ref/\"env://ORION_KIT_SURELY_UNSET_7Q2\"": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "Configuration error: jwt_verify.keys: env-var 'ORION_KIT_SURELY_UNSET_7Q2' is not set (referenced via env:// in a connector config)"
+      ]
+    }
+  },
+  "key_ref/\"env://PATH\"": {
+    "ok": {
+      "ok": "<PATH>"
+    }
+  },
+  "key_ref/7": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_ref/[\"k\"]": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_ref/null": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_ref/{\"cat\":[\"k-\",{\"var\":\"data.suffix\"}]}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_ref/{\"secret\":\"count\"}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys': secret 'count' is not a string"
+      ]
+    }
+  },
+  "key_ref/{\"secret\":\"signing\",\"x\":1}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_ref/{\"secret\":\"signing\"}": {
+    "ok": {
+      "ok": "s3cr3t-signing-key"
+    }
+  },
+  "key_ref/{\"secret\":[\"signing\"]}": {
+    "ok": {
+      "ok": "s3cr3t-signing-key"
+    }
+  },
+  "key_ref/{\"secret\":{\"var\":\"data.secname\"}}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  },
+  "key_ref/{\"var\":\"data.suffix\"}": {
+    "ok": {
+      "err": [
+        "CallerInput",
+        "'jwt_verify.keys' must be a string (a literal or an env:// reference) or {\"secret\": \"name\"}"
+      ]
+    }
+  }
+}

@@ -15,27 +15,18 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::Output;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome, Path};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
-use serde_json::json;
 
-use super::connector_helpers::{
-    apply_output, output_declared, resolve_output_path, resolve_required_str_list, to_exec_error,
-};
+use super::connector_helpers::to_exec_error;
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
 use crate::channel::cache_namespace;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This function's name, written once (F48): both engines register it
 /// under this, and its errors carry it.
@@ -44,87 +35,24 @@ pub const NAME: &str = "cache_invalidate";
 /// Most namespaces one call may bump.
 const MAX_PER_CALL: usize = 64;
 
-pub struct CacheInvalidateHandler {
-    pub channel_loader: Arc<crate::channel::ChannelLoader>,
-    pub registry: Arc<ConnectorRegistry>,
-    pub cache_pool: Arc<CachePool>,
-}
-
-#[async_trait]
-impl AsyncFunctionHandler for CacheInvalidateHandler {
-    type Input = TemplatedInput;
-
-    fn compile_input(
-        input: &mut Self::Input,
-        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs_v3::Result<()> {
-        input.compile(NAME, c)
-    }
-
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        self.run(ctx, input)
-            .await
-            .map_err(|e| e.prefixed(NAME).into())
-    }
-}
-
-impl CacheInvalidateHandler {
-    async fn run(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> Result<TaskOutcome, HandlerError> {
-        let namespaces = resolve_required_str_list(input, "namespaces", NAME, ctx, MAX_PER_CALL)?;
-        check_namespaces(&namespaces)?;
-        // Resolved before anything is bumped, so a bad `output` does not leave
-        // an invalidation behind a failed task.
-        let output = if output_declared(input) {
-            Some(resolve_output_path(input, NAME, ctx)?)
-        } else {
-            None
-        };
-
-        let stores = invalidate(
-            &self.channel_loader,
-            &self.registry,
-            &self.cache_pool,
-            &namespaces,
-        )
-        .await?;
-
-        if let Some(path) = output {
-            apply_output(
-                ctx,
-                &path,
-                json!({ "namespaces": namespaces.len(), "stores": stores }),
-            );
-        }
-        Ok(TaskOutcome::Success)
-    }
-}
-
 /// The namespaces' own rules, after the bound: at least one, and each a
-/// name a channel's `cache.namespaces` could declare. Shared by the
-/// dataflow-rs 3 handler and the dataflow-rs 4 function.
+/// name a channel's `cache.namespaces` could declare.
 fn check_namespaces(namespaces: &[String]) -> Result<(), HandlerError> {
     if namespaces.is_empty() {
-        return Err(DataflowError::Validation(
-            "'namespaces' resolved to an empty list; name at least one".to_string(),
-        )
-        .into());
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            "'namespaces' resolved to an empty list; name at least one",
+        ));
     }
     for ns in namespaces {
-        cache_namespace::check_name(ns).map_err(DataflowError::Validation)?;
+        cache_namespace::check_name(ns)
+            .map_err(|e| HandlerError::new(ErrorClass::CallerInput, e))?;
     }
     Ok(())
 }
 
 /// The bump, in every store a response-cache entry could be in: how many
-/// stores it reached. Shared by both engines.
+/// stores it reached.
 async fn invalidate(
     loader: &crate::channel::ChannelLoader,
     registry: &ConnectorRegistry,
@@ -250,8 +178,9 @@ mod tests {
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
     use serde_json::Value;
+    use serde_json::json;
 
-    /// The namespaces the twins look at after a bump.
+    /// The namespaces a test looks at after a bump.
     const LOOK: &[&str] = &["ladder", "season", "a", "7"];
 
     /// What a node with no cache connector bumps: the built-in response
@@ -281,14 +210,6 @@ mod tests {
             }
         }
 
-        fn handler(&self) -> dataflow_rs_v3::BoxedFunctionHandler {
-            Box::new(CacheInvalidateHandler {
-                channel_loader: self.loader.clone(),
-                registry: self.registry.clone(),
-                cache_pool: self.pool.clone(),
-            })
-        }
-
         /// Each of `namespaces`' version in the built-in store, in order.
         async fn versions(&self, namespaces: &[&str]) -> Vec<Option<String>> {
             let store = self.pool.default_memory(CachePurpose::ResponseCache);
@@ -300,18 +221,12 @@ mod tests {
         }
     }
 
-    /// One task through each engine, each against stores of its own: what
-    /// each saw, and each namespace of [`LOOK`]'s version after.
-    async fn both(
-        input: Value,
-        data: Value,
-    ) -> ((Seen, Vec<Option<String>>), (Seen, Vec<Option<String>>)) {
-        let v3_stores = stores();
-        let v3 = twin::v3(NAME, v3_stores.handler(), input.clone(), data.clone()).await;
-        let v3 = (v3, v3_stores.versions(LOOK).await);
-        let v4_stores = stores();
-        let v4 = twin::v4(NAME, v4_stores.function(), input, data).await;
-        (v3, (v4, v4_stores.versions(LOOK).await))
+    /// One task against stores of its own: what it saw, and each namespace
+    /// of [`LOOK`]'s version after.
+    async fn run(input: Value, data: Value) -> (Seen, Vec<Option<String>>) {
+        let stores = stores();
+        let v4 = twin::v4(NAME, stores.function(), input, data).await;
+        (v4, stores.versions(LOOK).await)
     }
 
     /// Declaration order is the field table's (I179); `namespaces` is an
@@ -358,7 +273,7 @@ mod tests {
     /// is not one, and a computed output that names no path, refused before
     /// anything is bumped.
     #[tokio::test]
-    async fn bumps_and_refuses_as_on_v3() {
+    async fn bumps_and_refuses_as_1_12_did() {
         let data = json!({
             "ns": ["a", "season"], "at": "data.inv", "n": 3,
             "many": (0..65).map(|i| format!("n{i}")).collect::<Vec<_>>(),
@@ -381,11 +296,15 @@ mod tests {
             json!({"namespaces": ["ladder"], "output": {"throw": "boom"}}),
         ];
         for input in cases {
-            let (v3, v4) = both(input.clone(), data.clone()).await;
-            assert_eq!(v4, v3, "{input}");
+            let (seen, versions) = run(input.clone(), data.clone()).await;
+            twin::pinned(&seen, format!("bumps_and_refuses/{input}"));
+            twin::pinned(
+                &Ok(json!(versions)),
+                format!("bumps_and_refuses/{input}/versions"),
+            );
         }
         // Spot checks: the answer, and a refusal under the function's name.
-        let (_, (seen, versions)) = both(
+        let (seen, versions) = run(
             json!({"namespaces": ["ladder"], "output": "data.inv"}),
             json!({}),
         )
@@ -395,7 +314,7 @@ mod tests {
             json!({"inv": {"namespaces": 1, "stores": 1}})
         );
         assert_eq!(versions[0].as_deref(), Some("1"));
-        let (_, (seen, versions)) = both(json!({"namespaces": []}), json!({})).await;
+        let (seen, versions) = run(json!({"namespaces": []}), json!({})).await;
         let failure = seen.expect_err("an empty list");
         assert_eq!(failure.code, "VALIDATION_ERROR");
         assert_eq!(

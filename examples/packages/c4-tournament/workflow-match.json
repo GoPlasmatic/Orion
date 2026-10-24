@@ -19,7 +19,7 @@
         {
           "id": "validate",
           "name": "Require two model ids",
-          "halt_on": "failure",
+          "on_rejection": "halt",
           "function": {
             "name": "validation",
             "input": {

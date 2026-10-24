@@ -1,33 +1,22 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Function, Outcome};
-use dataflow_rs_v3::engine::task_context::TaskContext;
 
-use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, QueryBudget, QueryFailure, acquire_conn, encode_failure, reject_mongo_connector,
+    QueryBudget, QueryFailure, acquire_conn, encode_failure, reject_mongo_connector,
     require_op_allowed, to_connect_error,
 };
 use super::db_read::DbRead;
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
 use crate::engine::HandlerError;
 use crate::engine::kit;
 
 /// This handler's name, for the shared write below (F48).
-const NAME: &str = <DbWriteHandler as ConnectorHandler>::NAME;
-
-/// Executes SQL write queries (INSERT, UPDATE, DELETE) against external databases
-/// configured via connectors.
-pub struct DbWriteHandler {
-    pub pool_cache: Arc<SqlPoolCache>,
-    pub registry: Arc<ConnectorRegistry>,
-}
+pub(crate) const NAME: &str = "db_write";
 
 /// The connector's gates for a raw write: its `raw_write` operation, and a
 /// SQL backend. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
@@ -35,54 +24,7 @@ pub struct DbWriteHandler {
 fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     // Raw SQL cannot be classified per-op; it has its own gate.
     require_op_allowed(&conn.operations, "raw_write", connector)?;
-    Ok(reject_mongo_connector(NAME, connector, conn)?)
-}
-
-#[async_trait]
-impl ConnectorHandler for DbWriteHandler {
-    const NAME: &'static str = "db_write";
-    type Kind = crate::connector::kind::Db;
-    type Input = TemplatedInput;
-    /// The same shape `db_read` parses — a literal statement and message-derived
-    /// binds — because the two differ in what the database does with it, not in
-    /// what the task says.
-    type Parsed = DbRead<'static>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        DbRead::parse_statement(call, input, ctx)
-    }
-
-    fn gate(
-        _parsed: &Self::Parsed,
-        conn: &DbConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        gate(conn, connector)
-    }
-
-    async fn run(
-        &self,
-        write: Self::Parsed,
-        db_config: &DbConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        Ok(
-            write_rows(&self.pool_cache, call.connector, db_config, &write, None)
-                .await?
-                .into(),
-        )
-    }
+    reject_mongo_connector(NAME, connector, conn)
 }
 
 /// The write's answer, `{"rows_affected": n}` and, for an insert on a driver
@@ -279,13 +221,6 @@ mod tests {
         "INSERT INTO items (name) VALUES ('apple')",
     ];
 
-    fn handler(db: &twin::Sqlite) -> dataflow_rs_v3::BoxedFunctionHandler {
-        Box::new(super::super::connector_handler::Connector(DbWriteHandler {
-            pool_cache: db.pool_cache.clone(),
-            registry: db.registry.clone(),
-        }))
-    }
-
     fn function(db: &twin::Sqlite) -> DbWriteFunction {
         DbWriteFunction {
             pool_cache: db.pool_cache.clone(),
@@ -293,26 +228,23 @@ mod tests {
         }
     }
 
-    /// One task through each engine, each against a database of its own
-    /// seeded with [`SEED`], its connector configured with `config`; and
-    /// each database's rows after it.
-    async fn both(input: Value, data: Value, config: Value) -> ((Seen, Value), (Seen, Value)) {
-        let mut sides = Vec::new();
-        for v4 in [false, true] {
-            let db = twin::sqlite(config.clone(), SEED).await;
-            let seen = if v4 {
-                twin::v4(NAME, function(&db), input.clone(), data.clone()).await
-            } else {
-                twin::v3(NAME, handler(&db), input.clone(), data.clone()).await
-            };
-            let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM items ORDER BY id")
-                .fetch_all(&db.pool)
-                .await
-                .expect("the table reads");
-            sides.push((seen, json!(rows)));
-        }
-        let v4 = sides.pop().expect("v4");
-        (sides.pop().expect("v3"), v4)
+    /// One task against a database of its own seeded with [`SEED`], its
+    /// connector configured with `config`; and the database's rows after it.
+    async fn run(input: Value, data: Value, config: Value) -> (Seen, Value) {
+        let db = twin::sqlite(config, SEED).await;
+        let seen = twin::v4(NAME, function(&db), input, data).await;
+        let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM items ORDER BY id")
+            .fetch_all(&db.pool)
+            .await
+            .expect("the table reads");
+        (seen, json!(rows))
+    }
+
+    /// `seen` and the rows after it, each against 1.12's record under `key`.
+    #[track_caller]
+    fn pinned(seen: &(Seen, Value), key: &str) {
+        twin::pinned(&seen.0, key);
+        twin::pinned(&Ok(seen.1.clone()), format!("{key}/rows"));
     }
 
     /// Declaration order is the field table's (I179); `params` is a document
@@ -364,7 +296,7 @@ mod tests {
     /// binds from the message; an update answers its count alone; each
     /// database ends the same.
     #[tokio::test]
-    async fn a_write_answers_as_on_v3() {
+    async fn a_write_answers_as_1_12_did() {
         for (input, answer) in [
             (
                 json!({
@@ -385,15 +317,15 @@ mod tests {
                 json!({"rows_affected": 0}),
             ),
         ] {
-            let (v3, v4) = both(input.clone(), json!({"name": "pear"}), json!({})).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), json!({"name": "pear"}), json!({})).await;
+            pinned(&v4, &format!("a_write_answers/{input}"));
             assert_eq!(v4.0.expect("written")["write"], answer, "{input}");
         }
         // With no `output`, the answer replaces `data`, an object a root
         // takes.
         let input = json!({"connector": "db", "query": "DELETE FROM items"});
-        let (v3, v4) = both(input, json!({"keep": 1}), json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({"keep": 1}), json!({})).await;
+        pinned(&v4, "a_write_answers/no_output");
         assert_eq!(v4.0.expect("written"), json!({"rows_affected": 1}));
     }
 
@@ -439,29 +371,20 @@ mod tests {
                 json!({}),
             ),
         ] {
-            let (v3, v4) = both(input.clone(), data, config).await;
-            assert_eq!(v4, v3, "{input}");
+            let key = format!("refusals/{input} {data} {config}");
+            let v4 = run(input.clone(), data, config).await;
+            pinned(&v4, &key);
             assert!(v4.0.is_err(), "{input}");
             assert_eq!(v4.1, json!([[1, "apple"]]), "{input}");
         }
     }
 
     #[tokio::test]
-    async fn a_mongo_connector_is_refused_as_on_v3() {
+    async fn a_mongo_connector_is_refused() {
         let connector = json!({"type": "db", "connection_string": "mongodb://127.0.0.1:1"});
         let input = json!({"connector": "db", "query": "DELETE FROM t", "output": "data.write"});
         let pool_cache = Arc::new(SqlPoolCache::new(8));
         let registry = twin::connectors(&[("db", connector)]).await;
-        let v3 = twin::v3(
-            NAME,
-            Box::new(super::super::connector_handler::Connector(DbWriteHandler {
-                pool_cache: pool_cache.clone(),
-                registry: registry.clone(),
-            })),
-            input.clone(),
-            Value::Null,
-        )
-        .await;
         let v4 = twin::v4(
             NAME,
             DbWriteFunction {
@@ -472,7 +395,7 @@ mod tests {
             Value::Null,
         )
         .await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "a_mongo_connector_is_refused");
         assert_eq!(v4.expect_err("refused").code, "VALIDATION_ERROR");
     }
 
@@ -518,12 +441,7 @@ mod tests {
     /// 1.12's code, text and retryability.
     #[tokio::test]
     async fn a_query_timeout_before_the_run_deadline_is_1_12s() {
-        let config = json!({"query_timeout_ms": 150});
-        let db = twin::sqlite(config.clone(), SEED).await;
-        let held = db.pool.acquire().await.expect("the one connection");
-        let v3 = twin::v3(NAME, handler(&db), delete_all(), Value::Null).await;
-        drop(held);
-        let db = twin::sqlite(config, SEED).await;
+        let db = twin::sqlite(json!({"query_timeout_ms": 150}), SEED).await;
         let _held = db.pool.acquire().await.expect("the one connection");
         let called = testing::call(function(&db), delete_all())
             .exprs(crate::engine::kit::test_exprs())
@@ -531,7 +449,7 @@ mod tests {
             .deadline(dataflow_rs::run::Instant::now() + Duration::from_secs(60))
             .await;
         let v4 = twin::seen(&called);
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "a_query_timeout_before_the_run_deadline");
         let failure = v4.expect_err("the write timed out");
         assert_eq!(failure.code, "TIMEOUT_ERROR");
         assert_eq!(

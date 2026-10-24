@@ -1,0 +1,175 @@
+{
+  "a_mongo_connector_is_refused": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_write requires a SQL connector, but 'db' is a MongoDB connector — use mongo_read or data_query for MongoDB",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "a_query_timeout_before_the_run_deadline": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: db_write query timed out after 150ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "a_write_answers/no_output": {
+    "ok": {
+      "rows_affected": 1
+    }
+  },
+  "a_write_answers/no_output/rows": {
+    "ok": []
+  },
+  "a_write_answers/{\"connector\":\"db\",\"query\":\"DELETE FROM items WHERE id = 9\",\"output\":\"data.write\"}": {
+    "ok": {
+      "name": "pear",
+      "write": {
+        "rows_affected": 0
+      }
+    }
+  },
+  "a_write_answers/{\"connector\":\"db\",\"query\":\"DELETE FROM items WHERE id = 9\",\"output\":\"data.write\"}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ]
+    ]
+  },
+  "a_write_answers/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"}": {
+    "ok": {
+      "name": "pear",
+      "write": {
+        "rows_affected": 1,
+        "last_insert_id": 2
+      }
+    }
+  },
+  "a_write_answers/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ],
+      [
+        2,
+        "pear"
+      ]
+    ]
+  },
+  "a_write_answers/{\"connector\":\"db\",\"query\":\"UPDATE items SET name = ? WHERE id = ?\",\"params\":[{\"var\":\"data.name\"},1],\"output\":\"data.write\"}": {
+    "ok": {
+      "name": "pear",
+      "write": {
+        "rows_affected": 1
+      }
+    }
+  },
+  "a_write_answers/{\"connector\":\"db\",\"query\":\"UPDATE items SET name = ? WHERE id = ?\",\"params\":[{\"var\":\"data.name\"},1],\"output\":\"data.write\"}/rows": {
+    "ok": [
+      [
+        1,
+        "pear"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"absent\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"pear\"} {}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"absent\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"pear\"} {}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"apple\"} {}": {
+    "err": {
+      "code": "integrity_unique",
+      "message": "The request conflicts with an existing record",
+      "retryable": false,
+      "detail": "db_write query failed: error returned from database: (code: 2067) UNIQUE constraint failed: items.name"
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"apple\"} {}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"pear\"} {\"operations\":{\"raw_write\":false}}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'raw_write' is disabled on connector 'db'"
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"pear\"} {\"operations\":{\"raw_write\":false}}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":{\"var\":\"data.n\"}} {\"name\":\"pear\",\"n\":1} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":{\"var\":\"data.n\"}} {\"name\":\"pear\",\"n\":1} {}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":{\"var\":\"data.name\"},\"output\":\"data.write\"} {\"name\":\"pear\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_write 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO items (name) VALUES (?)\",\"params\":{\"var\":\"data.name\"},\"output\":\"data.write\"} {\"name\":\"pear\"} {}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ]
+    ]
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO nowhere VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"pear\"} {}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: db_write query failed: error returned from database: (code: 1) no such table: nowhere",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"INSERT INTO nowhere VALUES (?)\",\"params\":[{\"var\":\"data.name\"}],\"output\":\"data.write\"} {\"name\":\"pear\"} {}/rows": {
+    "ok": [
+      [
+        1,
+        "apple"
+      ]
+    ]
+  }
+}

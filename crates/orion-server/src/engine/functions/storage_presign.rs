@@ -9,23 +9,14 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::Output;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{
-    ConnectorCall, parse_duration_secs, require_op, resolve_duration_secs, resolve_optional_str,
-    resolve_optional_u64, resolve_required_str,
-};
+use super::connector_helpers::parse_duration_secs;
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::FieldSource;
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::{ConnectorRegistry, StorageConnectorConfig, sigv4};
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
@@ -35,12 +26,7 @@ const MAX_EXPIRES_SECS: u64 = 604_800;
 
 /// This handler's name, for the free functions below — a reference to the one
 /// place it is written (F48), not a second spelling of it.
-const NAME: &str = <StoragePresignHandler as ConnectorHandler>::NAME;
-
-/// Workflow function handler that presigns object-storage URLs.
-pub struct StoragePresignHandler {
-    pub registry: Arc<ConnectorRegistry>,
-}
+pub(crate) const NAME: &str = "storage_presign";
 
 /// The presign request, read from the task and folded against the message.
 ///
@@ -54,74 +40,6 @@ pub struct Presign {
     response_content_disposition: Option<String>,
     content_type: Option<String>,
     content_length: Option<u64>,
-}
-
-#[async_trait]
-impl ConnectorHandler for StoragePresignHandler {
-    const NAME: &'static str = "storage_presign";
-    type Kind = crate::connector::kind::Storage;
-    type Input = TemplatedInput;
-    type Parsed = Presign;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        // Both read literal fields, and both are shared with the
-        // authoring-time validator, which has only the authored JSON.
-        let raw = input.raw();
-        let method = presign_method(raw.get("method").and_then(Value::as_str)).map_err(named)?;
-        check_method_fields(method, |field| raw.get(field).is_some_and(|v| !v.is_null()))
-            .map_err(named)?;
-        Ok(Presign {
-            method,
-            key: resolve_required_str(input, "key", call.name, ctx)?,
-            expires_secs: expires_in(input, ctx)?,
-            response_content_type: resolve_optional_str(
-                input,
-                "response_content_type",
-                call.name,
-                ctx,
-            )?,
-            response_content_disposition: resolve_optional_str(
-                input,
-                "response_content_disposition",
-                call.name,
-                ctx,
-            )?,
-            content_type: resolve_optional_str(input, "content_type", call.name, ctx)?,
-            content_length: content_length(input, ctx)?,
-        })
-    }
-
-    fn gate(
-        presign: &Self::Parsed,
-        conn: &StorageConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        Ok(require_op(
-            presign.method.allowed(conn),
-            presign.method.gate_name(),
-            connector,
-        )?)
-    }
-
-    async fn run(
-        &self,
-        presign: Self::Parsed,
-        storage: &StorageConnectorConfig,
-        _call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        Ok(Value::String(presign_url(&presign, storage)?).into())
-    }
 }
 
 /// The URL, signed against a resolved and gated storage connector: pure
@@ -404,20 +322,6 @@ fn check_method_fields(
     }
 }
 
-/// The TTL: integer seconds or a single-unit duration string, bounded by
-/// S3's own 7-day cap.
-fn expires_in(
-    input: &TemplatedInput,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<u64, DataflowError> {
-    Ok(expires_secs(resolve_duration_secs(
-        input,
-        ctx,
-        NAME,
-        "expires_in",
-    )?)?)
-}
-
 /// `expires_in`'s rules over the seconds the field read as: it is set, and
 /// within S3's 7-day cap.
 fn expires_secs(secs: Option<u64>) -> Result<u64, HandlerError> {
@@ -433,28 +337,6 @@ fn expires_secs(secs: Option<u64>) -> Result<u64, HandlerError> {
         ))));
     }
     Ok(secs)
-}
-
-/// The exact upload size a PUT presign binds, signed as a `content-length`
-/// header so the store refuses any other length — the size bound the
-/// after-the-fact `storage_head` check cannot make, because by then the bytes
-/// have landed (#367).
-///
-/// Zero is refused rather than signed: AWS's front end rewrites an incoming
-/// `Content-Length: 0` to an empty value, so a URL signed for zero bytes can
-/// never match its own signature. That is a URL that fails with
-/// `SignatureDoesNotMatch` and no way to tell why, which is worse than
-/// refusing it here.
-fn content_length(
-    input: &TemplatedInput,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<Option<u64>, DataflowError> {
-    Ok(exact_length(resolve_optional_u64(
-        input,
-        "content_length",
-        NAME,
-        ctx,
-    )?)?)
 }
 
 /// `content_length`'s rule over the value the field read as: never zero.
@@ -649,184 +531,6 @@ mod tests {
         }
     }
 
-    async fn run(input: Value, config: StorageConnectorConfig) -> Result<Value, String> {
-        let registry =
-            std::sync::Arc::new(crate::connector::ConnectorRegistry::new(Default::default()));
-        registry
-            .insert_for_test("media", ConnectorConfig::Storage(config))
-            .await;
-        crate::engine::functions::run_test_task(
-            NAME,
-            Box::new(super::super::connector_handler::Connector(
-                StoragePresignHandler { registry },
-            )),
-            input,
-            Value::Null,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn presigns_a_virtual_hosted_get() {
-        let out = run(
-            json!({"connector": "media", "key": "video/topic 1/output.m3u8",
-                   "expires_in": "7d", "output": "data.url"}),
-            storage_config(false),
-        )
-        .await
-        .expect("test");
-        let url = out["url"].as_str().expect("test");
-        assert!(
-            url.starts_with(
-                "https://media.ap-south-1.linodeobjects.com/video/topic%201/output.m3u8?"
-            ),
-            "{url}"
-        );
-        assert!(url.contains("X-Amz-Expires=604800"), "{url}");
-        assert!(url.contains("X-Amz-Signature="), "{url}");
-        assert!(url.contains("X-Amz-Credential=AKEXAMPLE%2F"), "{url}");
-    }
-
-    #[tokio::test]
-    async fn path_style_addresses_through_the_endpoint_host() {
-        let out = run(
-            json!({"connector": "media", "key": "k.txt", "expires_in": 60,
-                   "output": "data.url"}),
-            storage_config(true),
-        )
-        .await
-        .expect("test");
-        let url = out["url"].as_str().expect("test");
-        assert!(
-            url.starts_with("https://ap-south-1.linodeobjects.com/media/k.txt?"),
-            "{url}"
-        );
-    }
-
-    #[tokio::test]
-    async fn put_respects_its_gate_and_signs_the_content_type() {
-        let mut config = storage_config(false);
-        config.operations.presign_put = false;
-        // The refusal is caller-sanitized ("Request validation failed" — the
-        // gate name stays server-side), so the assertion is behavioral: the
-        // gated call errs where the identical ungated call below succeeds.
-        run(
-            json!({"connector": "media", "method": "PUT", "key": "up.mp4",
-                   "expires_in": 900}),
-            config,
-        )
-        .await
-        .expect_err("presign_put=false must refuse");
-
-        let out = run(
-            json!({"connector": "media", "method": "PUT", "key": "up.mp4",
-                   "content_type": "video/mp4", "expires_in": 900,
-                   "output": "data.url"}),
-            storage_config(false),
-        )
-        .await
-        .expect("test");
-        let url = out["url"].as_str().expect("test");
-        assert!(
-            url.contains("X-Amz-SignedHeaders=content-type%3Bhost"),
-            "{url}"
-        );
-    }
-
-    /// The size bound is the *signature*, not a field the store reads: two
-    /// lengths over otherwise identical inputs must sign differently, or the
-    /// header is decoration and a client could send any number of bytes.
-    ///
-    /// The half this cannot assert is the store's, so it was verified by hand
-    /// against a SigV4-verifying S3 implementation (SeaweedFS): a URL signed
-    /// for 64 bytes stored a 64-byte body and answered
-    /// `403 SignatureDoesNotMatch` to 65 bytes and to 4 KiB, while the same
-    /// URL signed without a length took every size.
-    #[tokio::test]
-    async fn put_signs_an_exact_content_length() {
-        let presign = |bytes: u64| async move {
-            let out = run(
-                json!({"connector": "media", "method": "PUT", "key": "up.mp4",
-                       "content_type": "video/mp4", "content_length": bytes,
-                       "expires_in": 900, "output": "data.url"}),
-                storage_config(false),
-            )
-            .await
-            .expect("test");
-            out["url"].as_str().expect("test").to_string()
-        };
-
-        let url = presign(1_048_576).await;
-        assert!(
-            url.contains("X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost"),
-            "{url}"
-        );
-        let signature = |u: &str| {
-            u.split("X-Amz-Signature=")
-                .nth(1)
-                .expect("test")
-                .to_string()
-        };
-        assert_ne!(
-            signature(&url),
-            signature(&presign(1_048_577).await),
-            "one byte's difference must change the signature"
-        );
-    }
-
-    #[tokio::test]
-    async fn argument_mistakes_are_named() {
-        for (input, expected) in [
-            (
-                json!({"connector": "media", "key": "k", "expires_in": "8d"}),
-                "7 days",
-            ),
-            (
-                json!({"connector": "media", "key": "k", "expires_in": "soon"}),
-                "not a duration",
-            ),
-            (
-                json!({"connector": "media", "key": "k", "expires_in": 0}),
-                "between 1 second",
-            ),
-            (
-                json!({"connector": "media", "method": "POST", "key": "k", "expires_in": 60}),
-                "GET (default) or PUT",
-            ),
-            (
-                json!({"connector": "media", "key": "k", "expires_in": 60,
-                       "content_type": "video/mp4"}),
-                "applies to PUT only",
-            ),
-            (
-                json!({"connector": "media", "method": "PUT", "key": "k", "expires_in": 60,
-                       "response_content_disposition": "attachment"}),
-                "apply to GET only",
-            ),
-            (json!({"connector": "media", "key": "k"}), "expires_in"),
-            (
-                json!({"connector": "media", "key": "k", "expires_in": 60,
-                       "content_length": 1024}),
-                "'content_length' applies to PUT only",
-            ),
-            (
-                json!({"connector": "media", "method": "PUT", "key": "k",
-                       "expires_in": 60, "content_length": 0}),
-                "must be at least 1",
-            ),
-            (
-                json!({"connector": "media", "method": "PUT", "key": "k",
-                       "expires_in": 60, "content_length": -1}),
-                "non-negative integer",
-            ),
-        ] {
-            let err = run(input.clone(), storage_config(false))
-                .await
-                .expect_err("test");
-            assert!(err.contains(expected), "{input}: {err}");
-        }
-    }
-
     #[test]
     fn static_validation_reads_the_same_rules() {
         let obj = json!({"connector": "m", "key": "k", "expires_in": "30d"});
@@ -882,8 +586,7 @@ mod tests {
         assert!(errs.is_empty(), "{errs:?}");
     }
 
-    // -- dataflow-rs 4: the config, I185's Defect, and a twin of each test
-    // above that runs the handler, held to it over the same input --
+    // -- the config, I185's Defect, and calls held to 1.12's records --
 
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
@@ -1038,20 +741,9 @@ mod tests {
         })
     }
 
-    /// One task through each engine against the same connector config.
-    async fn both(input: Value, config: StorageConnectorConfig) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(super::super::connector_handler::Connector(
-                StoragePresignHandler {
-                    registry: media(config.clone()).await,
-                },
-            )),
-            input.clone(),
-            Value::Null,
-        )
-        .await;
-        let v4 = twin::v4(
+    /// One task against `config`.
+    async fn run(input: Value, config: StorageConnectorConfig) -> Seen {
+        twin::v4(
             NAME,
             StoragePresignFunction {
                 registry: media(config).await,
@@ -1059,16 +751,15 @@ mod tests {
             input,
             Value::Null,
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
     #[tokio::test]
-    async fn presigns_a_virtual_hosted_get_on_v4() {
+    async fn presigns_a_virtual_hosted_get() {
         let input = json!({"connector": "media", "key": "video/topic 1/output.m3u8",
                            "expires_in": "7d", "output": "data.url"});
-        let (v3, v4) = both(input, storage_config(false)).await;
-        assert_eq!(unclocked(&v4), unclocked(&v3));
+        let v4 = run(input, storage_config(false)).await;
+        twin::pinned(&unclocked(&v4), "presigns_a_virtual_hosted_get");
         let out = v4.expect("test");
         let url = out["url"].as_str().expect("test");
         assert!(
@@ -1083,11 +774,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_style_addresses_through_the_endpoint_host_on_v4() {
+    async fn path_style_addresses_through_the_endpoint_host() {
         let input = json!({"connector": "media", "key": "k.txt", "expires_in": 60,
                            "output": "data.url"});
-        let (v3, v4) = both(input, storage_config(true)).await;
-        assert_eq!(unclocked(&v4), unclocked(&v3));
+        let v4 = run(input, storage_config(true)).await;
+        twin::pinned(
+            &unclocked(&v4),
+            "path_style_addresses_through_the_endpoint_host",
+        );
         let out = v4.expect("test");
         let url = out["url"].as_str().expect("test");
         assert!(
@@ -1097,26 +791,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_respects_its_gate_and_signs_the_content_type_on_v4() {
+    async fn put_respects_its_gate_and_signs_the_content_type() {
         let mut config = storage_config(false);
         config.operations.presign_put = false;
-        let (v3, v4) = both(
+        let v4 = run(
             json!({"connector": "media", "method": "PUT", "key": "up.mp4",
                    "expires_in": 900}),
             config,
         )
         .await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "put_respects_its_gate/gated");
         v4.expect_err("presign_put=false must refuse");
 
-        let (v3, v4) = both(
+        let v4 = run(
             json!({"connector": "media", "method": "PUT", "key": "up.mp4",
                    "content_type": "video/mp4", "expires_in": 900,
                    "output": "data.url"}),
             storage_config(false),
         )
         .await;
-        assert_eq!(unclocked(&v4), unclocked(&v3));
+        twin::pinned(&unclocked(&v4), "put_respects_its_gate/signed");
         let out = v4.expect("test");
         let url = out["url"].as_str().expect("test");
         assert!(
@@ -1126,16 +820,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_signs_an_exact_content_length_on_v4() {
+    async fn put_signs_an_exact_content_length() {
         let presign = |bytes: u64| async move {
-            let (v3, v4) = both(
+            let v4 = run(
                 json!({"connector": "media", "method": "PUT", "key": "up.mp4",
                        "content_type": "video/mp4", "content_length": bytes,
                        "expires_in": 900, "output": "data.url"}),
                 storage_config(false),
             )
             .await;
-            assert_eq!(unclocked(&v4), unclocked(&v3));
+            twin::pinned(
+                &unclocked(&v4),
+                format!("put_signs_an_exact_content_length/{bytes}"),
+            );
             v4.expect("test")["url"].as_str().expect("test").to_string()
         };
 
@@ -1158,7 +855,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn argument_mistakes_are_named_on_v4() {
+    async fn argument_mistakes_are_named() {
         for (input, expected) in [
             (
                 json!({"connector": "media", "key": "k", "expires_in": "8d"}),
@@ -1223,8 +920,8 @@ mod tests {
                 "Connector 'absent' not found",
             ),
         ] {
-            let (v3, v4) = both(input.clone(), storage_config(false)).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), storage_config(false)).await;
+            twin::pinned(&v4, format!("argument_mistakes/{input}"));
             let failure = v4.expect_err("test");
             assert!(failure.message.contains(expected), "{input}: {failure:?}");
         }
@@ -1232,7 +929,7 @@ mod tests {
 
     /// A `method` that is not a string is GET, as 1.12 read it: the config
     /// loads, and the call answers to the `presign_get` gate, not
-    /// `presign_put`, on both engines.
+    /// `presign_put`.
     #[tokio::test]
     async fn a_method_that_is_not_a_string_is_get() {
         for method in [
@@ -1248,8 +945,11 @@ mod tests {
 
             let mut no_put = storage_config(false);
             no_put.operations.presign_put = false;
-            let (v3, v4) = both(input.clone(), no_put).await;
-            assert_eq!(unclocked(&v4), unclocked(&v3), "{method}");
+            let v4 = run(input.clone(), no_put).await;
+            twin::pinned(
+                &unclocked(&v4),
+                format!("method_not_a_string/{method}/no_put"),
+            );
             assert!(
                 v4.is_ok(),
                 "{method}: GET does not answer to presign_put: {v4:?}"
@@ -1257,8 +957,8 @@ mod tests {
 
             let mut no_get = storage_config(false);
             no_get.operations.presign_get = false;
-            let (v3, v4) = both(input, no_get).await;
-            assert_eq!(v4, v3, "{method}");
+            let v4 = run(input, no_get).await;
+            twin::pinned(&v4, format!("method_not_a_string/{method}/no_get"));
             assert!(v4.is_err(), "{method}: GET answers to presign_get");
         }
     }
@@ -1293,22 +993,11 @@ mod tests {
             ),
         ] {
             let data = json!({"n": 3, "empty": "", "at": "data.url"});
-            let v3 = twin::v3(
-                NAME,
-                Box::new(super::super::connector_handler::Connector(
-                    StoragePresignHandler {
-                        registry: media(storage_config(false)).await,
-                    },
-                )),
-                input.clone(),
-                data.clone(),
-            )
-            .await;
             let f = StoragePresignFunction {
                 registry: media(storage_config(false)).await,
             };
             let v4 = twin::v4(NAME, f, input.clone(), data).await;
-            assert_eq!(unclocked(&v4), unclocked(&v3), "{input}");
+            twin::pinned(&unclocked(&v4), format!("computed_output/{input}"));
             if written {
                 assert!(v4.expect("signed")["url"].is_string());
             } else {

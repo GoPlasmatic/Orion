@@ -66,7 +66,7 @@ In cluster mode breakers trip per node. Each replica learns independently that a
 
 ## Decide what a failing task does to the request
 
-By default a workflow halts on the first task that errors, meaning a handler error or a `5xx`. The error goes back to the caller. Set `continue_on_error` on the workflow to collect errors and keep going:
+By default a workflow halts on the first task that errors, meaning a handler error or a `5xx`. The error goes back to the caller. Set `"on_failure": "continue"` on a task to record its error and keep going:
 
 ```json
 {
@@ -78,9 +78,9 @@ By default a workflow halts on the first task that errors, meaning a handler err
 }
 ```
 
-Note the envelope: `"status": "ok"` with a non-empty `errors` array. A client that only checks the HTTP code reads that as success. Anything relying on `continue_on_error` must inspect `errors`. The `filter` function offers finer control: `on_reject: "halt"` stops the workflow, `on_reject: "skip"` skips only the current task.
+Note the envelope: `"status": "ok"` with a non-empty `errors` array. A client that only checks the HTTP code reads that as success. Anything relying on a continued failure must inspect `errors`. A workflow's own `continue_on_error: true` is coarser: a failure ends that workflow without failing the request, and its later tasks do not run. The `filter` function offers finer control: `on_reject: "halt"` stops the workflow, `on_reject: "skip"` skips only the current task.
 
-`continue_on_error` is not the whole axis. It governs handler errors and `5xx`; a task that records a `4xx` warns and the pipeline carries on either way. That is the default a failing [`validation`](../../reference/functions/validation.md) rule lands in. An assertion written as a gate records its `400` and lets the next task run as if it had passed. [`"halt_on": "failure"`](../../reference/workflows.md#halting-on-failure) on the task is the key that stops it. `orion-server lint` and `orion-server preflight` both report the unguarded shape as `engine.unguarded_validation`. That is worth running over a stored estate, since nothing about it fails at any gate.
+`on_failure` is not the whole axis. It governs handler errors and `5xx`; a task that records a `4xx` is its `on_rejection`, which carries on by default. That is the default a failing [`validation`](../../reference/functions/validation.md) rule lands in. An assertion written as a gate records its `400` and lets the next task run as if it had passed. [`"on_rejection": "halt"`](../../reference/workflows.md#halting-on-a-rejection) on the task is the key that stops it. `orion-server lint` and `orion-server preflight` both report the unguarded shape as `engine.unguarded_validation`. That is worth running over a stored estate, since nothing about it fails at any gate.
 
 A run that continues records each failure's code at [`metadata._orion_errors`](../../reference/workflows.md#branching-on-a-failure), so a later task can answer differently depending on *why* the step failed. A timeout or dropped connection is worth retrying; a `4xx` from the upstream is not:
 

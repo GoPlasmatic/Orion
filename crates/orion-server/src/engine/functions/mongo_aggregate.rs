@@ -15,34 +15,27 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use mongodb::bson::{self, Bson, Document};
 use serde_json::{Map, Value};
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{
-    ConnectorCall, QueryBudget, require_op_allowed, resolve_value, to_connect_error,
-};
+use super::connector_helpers::{QueryBudget, require_op_allowed, to_connect_error};
 use super::mongo_common::{
     docs_to_json, drain_capped, rendered_bson, report_static, require_mongo_backend,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::config::QueryConfig;
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
-use crate::engine::HandlerError;
 use crate::engine::kit;
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name, for the helpers that take it as an argument — a
 /// reference to the one place it is written (F48).
-const NAME: &str = <MongoAggregateHandler as ConnectorHandler>::NAME;
+pub(crate) const NAME: &str = "mongo_aggregate";
 
 /// Read-only stages, allowed on any MongoDB connector whose `read` gate is on.
 /// One row per stage — growth is data.
@@ -87,22 +80,11 @@ pub(super) fn is_known_stage(stage: &str) -> bool {
     READ_STAGES.contains(&stage) || WRITE_STAGES.contains(&stage)
 }
 
-/// Workflow function handler for running an aggregation pipeline.
-pub struct MongoAggregateHandler {
-    pub pool_cache: Arc<MongoPoolCache>,
-    pub registry: Arc<ConnectorRegistry>,
-    /// `[query] max_limit` caps the drained result size (F10) — a `$group`
-    /// over a large collection must not OOM the process.
-    pub limits: QueryConfig,
-}
-
 /// The pipeline as it will actually run: `{"var": ..}` folded at any depth,
 /// every stage checked against the allowlist, and the answer to the one
 /// question the gate needs — whether any stage writes.
 ///
-/// Owned by the dataflow-rs 3 handler, which reads the names off the
-/// authored input per call; the names borrowed from the compiled config by
-/// the dataflow-rs 4 function.
+/// The names are borrowed from the compiled config.
 #[derive(Debug)]
 pub struct Aggregation<'a> {
     database: Cow<'a, str>,
@@ -116,7 +98,7 @@ pub struct Aggregation<'a> {
 /// allowlist judged on the folded JSON, then each stage converted, and
 /// whether any stage writes. Shared with the dataflow-rs 4 function, which
 /// reaches it only for a pipeline it refuses.
-fn stages_from_value(resolved: &Value) -> Result<(Vec<Document>, bool), DataflowError> {
+fn stages_from_value(resolved: &Value) -> Result<(Vec<Document>, bool), HandlerError> {
     let stages = pipeline_stages(resolved)?;
     let wants_write_stage = stages
         .iter()
@@ -160,8 +142,7 @@ fn stages_from_bson(pipeline: Bson) -> Option<(Vec<Document>, bool)> {
 }
 
 /// The connector's gates for an aggregation: its `read` operation, a MongoDB
-/// backend, and the write stages' opt-in. Shared by the dataflow-rs 3 handler
-/// and the dataflow-rs 4 function.
+/// backend, and the write stages' opt-in.
 fn gate(
     wants_write_stage: bool,
     conn: &DbConnectorConfig,
@@ -173,21 +154,20 @@ fn gate(
     // connector that explicitly says its aggregations may write. Decided
     // from the resolved pipeline, which is why the gate reads the parse.
     if wants_write_stage && !conn.aggregate_write_stages {
-        return Err(crate::errors::connector_detail_error(format!(
-            "pipeline contains a write stage ($out/$merge), which is disabled on \
-             connector '{connector}' — set \"aggregate_write_stages\": true on the \
-             connector to permit it"
-        ))
-        .into());
+        return Err(HandlerError::from(
+            crate::errors::service::connector_detail(format!(
+                "pipeline contains a write stage ($out/$merge), which is disabled on \
+                 connector '{connector}' — set \"aggregate_write_stages\": true on the \
+                 connector to permit it"
+            )),
+        ));
     }
     Ok(())
 }
 
 /// The documents an aggregation returns, as a JSON array, against a resolved
-/// and gated connector, at most `cap` of them. Shared by the dataflow-rs 3
-/// handler and the dataflow-rs 4 function. `run_deadline` is the deadline of
-/// the run the call belongs to, which the dataflow-rs 4 function passes on
-/// ([`QueryBudget::within`]).
+/// and gated connector, at most `cap` of them. `run_deadline` is the deadline
+/// of the run the call belongs to ([`QueryBudget::within`]).
 async fn aggregate_documents(
     pool_cache: &MongoPoolCache,
     connector: &str,
@@ -215,103 +195,38 @@ async fn aggregate_documents(
         })
         .await?;
 
-    Ok(docs_to_json(&docs, NAME)?)
-}
-
-#[async_trait]
-impl ConnectorHandler for MongoAggregateHandler {
-    const NAME: &'static str = "mongo_aggregate";
-    type Kind = crate::connector::kind::Db;
-    type Input = TemplatedInput;
-    type Parsed = Aggregation<'static>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        let database = call.require_str(input, "database")?.to_string();
-        let collection = call.require_str(input, "collection")?.to_string();
-        let allow_disk_use = input
-            .raw()
-            .get("allow_disk_use")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-
-        // Fold `{"var": ..}` at any depth, then validate the *resolved* stages
-        // — the allowlist judges what will actually run, not what was typed.
-        let raw = input.get("pipeline").ok_or_else(|| {
-            DataflowError::Validation(format!("{} requires 'pipeline' field", call.name))
-        })?;
-        let (pipeline, wants_write_stage) = stages_from_value(&resolve_value(raw, ctx))?;
-
-        Ok(Aggregation {
-            database: Cow::Owned(database),
-            collection: Cow::Owned(collection),
-            allow_disk_use,
-            pipeline,
-            wants_write_stage,
-        })
-    }
-
-    fn gate(
-        aggregation: &Self::Parsed,
-        conn: &DbConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        gate(aggregation.wants_write_stage, conn, connector)
-    }
-
-    async fn run(
-        &self,
-        aggregation: Self::Parsed,
-        db_config: &DbConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        Ok(aggregate_documents(
-            &self.pool_cache,
-            call.connector,
-            db_config,
-            self.limits.max_limit as usize,
-            aggregation,
-            None,
-        )
-        .await?
-        .into())
-    }
+    docs_to_json(&docs, NAME)
 }
 
 /// Validate the resolved pipeline's shape: an array of single-key objects,
 /// each key a stage in the allowlists. Returns `(stage_name, stage_json)`
 /// pairs. Every violation names its index.
-fn pipeline_stages(resolved: &Value) -> Result<Vec<(String, &Value)>, DataflowError> {
+fn pipeline_stages(resolved: &Value) -> Result<Vec<(String, &Value)>, HandlerError> {
     let Value::Array(items) = resolved else {
-        return Err(DataflowError::Validation(format!(
-            "{NAME} 'pipeline' must resolve to an array of stage objects"
-        )));
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("{NAME} 'pipeline' must resolve to an array of stage objects"),
+        ));
     };
     if items.is_empty() {
-        return Err(DataflowError::Validation(format!(
-            "{NAME} 'pipeline' must not be empty"
-        )));
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("{NAME} 'pipeline' must not be empty"),
+        ));
     }
     let mut stages = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
         let (name, _) = stage_entry(item).ok_or_else(|| {
-            DataflowError::Validation(format!("{NAME} {}", stage_shape_message(i)))
+            HandlerError::new(
+                ErrorClass::CallerInput,
+                format!("{NAME} {}", stage_shape_message(i)),
+            )
         })?;
         if !is_known_stage(name) {
-            return Err(DataflowError::Validation(format!(
-                "{NAME} {}",
-                unknown_stage_message(i, name)
-            )));
+            return Err(HandlerError::new(
+                ErrorClass::CallerInput,
+                format!("{NAME} {}", unknown_stage_message(i, name)),
+            ));
         }
         stages.push((name.to_string(), item));
     }
@@ -586,105 +501,6 @@ mod tests {
         v.as_object().expect("test input is an object").clone()
     }
 
-    fn mongo_connector(aggregate_write_stages: bool) -> crate::connector::DbConnectorConfig {
-        crate::connector::DbConnectorConfig {
-            connection_string: "mongodb://localhost:27017".to_string(),
-            max_connections: None,
-            connect_timeout_ms: None,
-            query_timeout_ms: None,
-            allow_private_urls: true,
-            operations: Default::default(),
-            dialect: Default::default(),
-            aggregate_write_stages,
-        }
-    }
-
-    /// Parse a pipeline the way the shell does, so `gate` can be asked about
-    /// it. No engine, no registry entry, no MongoDB.
-    fn parse(pipeline: Value) -> Aggregation<'static> {
-        let handler = MongoAggregateHandler {
-            pool_cache: Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(2)),
-            registry: Arc::new(ConnectorRegistry::new(Default::default())),
-            limits: Default::default(),
-        };
-        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        let ctx = TaskContext::new(&mut message, &datalogic);
-        let call = ConnectorCall {
-            name: MongoAggregateHandler::NAME,
-            connector: "analytics",
-            channel: "ch".to_string(),
-            output: "data".to_string(),
-        };
-        let input = json!({
-            "connector": "analytics",
-            "database": "db",
-            "collection": "events",
-            "pipeline": pipeline,
-        });
-        let input = TemplatedInput::from(input);
-        crate::engine::functions::templated_input::with_scope(&ctx, |scope| {
-            ConnectorHandler::parse(&handler, &call, &input, scope)
-        })
-        .expect("the pipeline parses")
-    }
-
-    /// The default-deny that had no test: `$out` and `$merge` write to a
-    /// collection, so they run only on a connector that says its aggregations
-    /// may write.
-    ///
-    /// Reachable in-process because the gate is a function of the parse and the
-    /// connector, not of a live server — which is the whole reason the handler
-    /// shape is a trait. Before this it could only be exercised against a
-    /// container.
-    #[test]
-    fn a_write_stage_needs_the_connectors_opt_in() {
-        let parsed = parse(json!([
-            { "$match": { "status": "active" } },
-            { "$out": "rollup" },
-        ]));
-
-        let err = <MongoAggregateHandler as ConnectorHandler>::gate(
-            &parsed,
-            &mongo_connector(false),
-            "analytics",
-        )
-        .expect_err("a write stage must be refused by default");
-        let detail = err.detail.as_deref().unwrap_or_default();
-        assert!(
-            detail.contains("$out/$merge"),
-            "the refusal must name the stages it is about: {detail:?}"
-        );
-
-        assert!(
-            <MongoAggregateHandler as ConnectorHandler>::gate(
-                &parsed,
-                &mongo_connector(true),
-                "analytics",
-            )
-            .is_ok(),
-            "the same pipeline runs on a connector that opted in"
-        );
-    }
-
-    /// The other half: a read-only pipeline is unaffected by the opt-in, so
-    /// leaving it off costs nothing for the ordinary case.
-    #[test]
-    fn a_read_only_pipeline_passes_the_gate_either_way() {
-        let parsed = parse(json!([{ "$group": { "_id": "$q", "n": { "$sum": 1 } } }]));
-        for opted_in in [false, true] {
-            assert!(
-                <MongoAggregateHandler as ConnectorHandler>::gate(
-                    &parsed,
-                    &mongo_connector(opted_in),
-                    "analytics",
-                )
-                .is_ok(),
-                "a read-only pipeline must not depend on aggregate_write_stages"
-            );
-        }
-    }
-
     #[test]
     fn a_read_only_pipeline_passes_authoring_validation() {
         let errs = validate_static_input(&obj(json!({ "pipeline": [
@@ -761,16 +577,15 @@ mod tests {
         assert!(err.to_string().contains("must not be empty"), "{err}");
     }
 
-    // -- dataflow-rs 4: the config and its check, I185's Defect, the seams,
-    // and twins of the handler --
+    // -- the config and its check, I185's Defect, the gate, and calls
+    // against 1.12's records --
     //
-    // No MongoDB is reached. A probe of each engine writes the aggregation
-    // it parsed, past the connector and its gate, where the driver would be
-    // called; the functions themselves run against `testkit`'s connector to
+    // No MongoDB is reached. A probe writes the aggregation the function
+    // parsed, past the connector and its gate, where the driver would be
+    // called; the function itself runs against `testkit`'s connector to
     // a closed port, where a call that passes every gate waits in the
     // driver's server selection until the connector's `query_timeout_ms`.
 
-    use crate::engine::functions::connector_handler::Connector;
     use crate::engine::functions::mongo_common::testkit;
     use crate::engine::functions::twin::{self, Seen};
     use crate::errors::kind::CONNECTOR_DETAIL;
@@ -781,14 +596,6 @@ mod tests {
 
     fn limits() -> QueryConfig {
         QueryConfig::default()
-    }
-
-    fn handler(registry: Arc<ConnectorRegistry>) -> MongoAggregateHandler {
-        MongoAggregateHandler {
-            pool_cache: testkit::pools(),
-            registry,
-            limits: limits(),
-        }
     }
 
     fn function(registry: Arc<ConnectorRegistry>) -> MongoAggregateFunction {
@@ -808,71 +615,20 @@ mod tests {
         input
     }
 
-    /// One task through each engine's real function, each over a registry
-    /// of its own, `docs` configured with `extra`.
-    async fn both(input: Value, data: Value, extra: Value) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(handler(testkit::connectors(extra.clone()).await))),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(
+    /// One task through the real function, over a registry of its own,
+    /// `docs` configured with `extra`.
+    async fn run(input: Value, data: Value, extra: Value) -> Seen {
+        twin::v4(
             NAME,
             function(testkit::connectors(extra).await),
             input,
             data,
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
-    /// Writes the aggregation 1.12's handler parsed, at `output`: its
+    /// Writes the aggregation the function parsed, at `output`: its
     /// prologue, its parse, the connector and its gate, and no driver call.
-    struct AggregationV3(MongoAggregateHandler);
-
-    #[async_trait]
-    impl ConnectorHandler for AggregationV3 {
-        const NAME: &'static str = "mongo_aggregate";
-        type Kind = crate::connector::kind::Db;
-        type Input = TemplatedInput;
-        type Parsed = Aggregation<'static>;
-
-        fn registry(&self) -> &Arc<ConnectorRegistry> {
-            &self.0.registry
-        }
-
-        fn parse(
-            &self,
-            call: &ConnectorCall<'_>,
-            input: &TemplatedInput,
-            ctx: &Scope<'_, '_>,
-        ) -> Result<Self::Parsed, HandlerError> {
-            self.0.parse(call, input, ctx)
-        }
-
-        fn gate(
-            parsed: &Self::Parsed,
-            conn: &DbConnectorConfig,
-            connector: &str,
-        ) -> Result<(), HandlerError> {
-            MongoAggregateHandler::gate(parsed, conn, connector)
-        }
-
-        async fn run(
-            &self,
-            aggregation: Self::Parsed,
-            _db_config: &DbConnectorConfig,
-            _call: &ConnectorCall<'_>,
-            _input: &TemplatedInput,
-            _ctx: &mut TaskContext<'_>,
-        ) -> Result<Produced, HandlerError> {
-            Ok(Value::String(format!("{aggregation:?}")).into())
-        }
-    }
-
-    /// The same, through the function's own reading.
     struct AggregationV4(MongoAggregateFunction);
 
     impl Function for AggregationV4 {
@@ -894,26 +650,16 @@ mod tests {
         }
     }
 
-    /// The aggregation each engine parses from `input` over `data`, the
+    /// The aggregation the function parses from `input` over `data`, the
     /// `docs` connector configured with `extra`.
-    async fn parsed(input: Value, data: Value, extra: Value) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(AggregationV3(handler(
-                testkit::connectors(extra.clone()).await,
-            )))),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(
+    async fn parsed(input: Value, data: Value, extra: Value) -> Seen {
+        twin::v4(
             NAME,
             AggregationV4(function(testkit::connectors(extra).await)),
             input,
             data,
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
     fn rejected(input: Value) -> Vec<(String, IssueCode)> {
@@ -1096,12 +842,12 @@ mod tests {
         }
     }
 
-    /// `a_write_stage_needs_the_connectors_opt_in`, on the function: `$out`
-    /// and `$merge` run only on a connector that says its aggregations may
-    /// write, whether the stage is authored or arrives in the message; the
-    /// same pipeline passes the gate on a connector that opted in.
+    /// The default-deny: `$out` and `$merge` write to a collection, so they
+    /// run only on a connector that says its aggregations may write, whether
+    /// the stage is authored or arrives in the message; the same pipeline
+    /// passes the gate on a connector that opted in.
     #[tokio::test]
-    async fn on_v4_a_write_stage_needs_the_connectors_opt_in() {
+    async fn a_write_stage_needs_the_connectors_opt_in() {
         let data = json!({"stage": {"$out": "rollup"}});
         for pipeline in [
             json!([{"$match": {"status": "active"}}, {"$out": "rollup"}]),
@@ -1110,8 +856,8 @@ mod tests {
             let input = task(json!({"pipeline": pipeline.clone(), "output": "data.documents"}));
             testing::config_with::<MongoAggregateConfig>(&kit::test_exprs(), input.clone())
                 .expect("compiles");
-            let (v3, v4) = both(input.clone(), data.clone(), json!({})).await;
-            assert_eq!(v4, v3, "{pipeline}");
+            let v4 = run(input.clone(), data.clone(), json!({})).await;
+            twin::pinned(&v4, format!("write_stage/{pipeline}/default"));
             let refused = v4.expect_err("a write stage is refused by default");
             assert_eq!(refused.code, CONNECTOR_DETAIL, "{pipeline}");
             let detail = refused.detail.as_deref().unwrap_or_default();
@@ -1121,16 +867,17 @@ mod tests {
             );
 
             let opted_in = json!({"aggregate_write_stages": true});
-            let (v3, v4) = both(input, data.clone(), opted_in).await;
-            assert_eq!(v4, v3, "{pipeline}");
+            let v4 = run(input, data.clone(), opted_in).await;
+            twin::pinned(&v4, format!("write_stage/{pipeline}/opted_in"));
             assert_eq!(v4.expect_err("the driver times out").code, "TIMEOUT_ERROR");
         }
     }
 
-    /// `a_read_only_pipeline_passes_the_gate_either_way`, on the function: a
-    /// read-only pipeline does not depend on `aggregate_write_stages`.
+    /// The other half: a read-only pipeline does not depend on
+    /// `aggregate_write_stages`, so leaving it off costs nothing for the
+    /// ordinary case.
     #[tokio::test]
-    async fn on_v4_a_read_only_pipeline_passes_the_gate_either_way() {
+    async fn a_read_only_pipeline_passes_the_gate_either_way() {
         let input = task(json!({
             "pipeline": [{"$group": {"_id": "$q", "n": {"$sum": 1}}}],
             "output": "data.documents"
@@ -1138,13 +885,13 @@ mod tests {
         testing::config_with::<MongoAggregateConfig>(&kit::test_exprs(), input.clone())
             .expect("compiles");
         for opted_in in [false, true] {
-            let (v3, v4) = both(
+            let v4 = run(
                 input.clone(),
                 Value::Null,
                 json!({"aggregate_write_stages": opted_in}),
             )
             .await;
-            assert_eq!(v4, v3, "{opted_in}");
+            twin::pinned(&v4, format!("read_only/{opted_in}"));
             assert_eq!(
                 v4.expect_err("past the gate, the driver times out").code,
                 "TIMEOUT_ERROR",
@@ -1153,13 +900,13 @@ mod tests {
         }
     }
 
-    /// The aggregation each engine would run: the pipeline rendered into
+    /// The aggregation the function would run: the pipeline rendered into
     /// BSON with its holes filled and its extended JSON read, its stages
     /// judged after the holes are filled, `allow_disk_use` read as 1.12 read
     /// it; and every refusal the check leaves to the call, with its code and
     /// text.
     #[tokio::test]
-    async fn the_aggregation_is_read_as_on_v3() {
+    async fn the_aggregation_is_read_as_1_12_read_it() {
         let data = json!({
             "tenant": "acme", "since": "2026-01-02T03:04:05Z", "id": "665f1f77bcf86cd799439011",
             "stage": {"$limit": 5}, "out": {"$out": "rollup"}, "bad": {"$currentOp": {}},
@@ -1256,8 +1003,9 @@ mod tests {
             if input.get("output").is_none() {
                 input["output"] = json!("data.aggregation");
             }
-            let (v3, v4) = parsed(input, data.clone(), extra).await;
-            assert_eq!(v4, v3, "{rest}");
+            let key = format!("the_aggregation/{rest}/{extra}");
+            let v4 = parsed(input, data.clone(), extra).await;
+            twin::pinned(&v4, key);
             assert_eq!(v4.is_ok(), ok, "{rest}: {v4:?}");
         }
     }
@@ -1265,7 +1013,7 @@ mod tests {
     /// The function itself, refused at each step as 1.12's handler was, and
     /// past every gate reaching the driver, 1.12's `TIMEOUT_ERROR`.
     #[tokio::test]
-    async fn the_call_refuses_and_reaches_the_driver_as_on_v3() {
+    async fn the_call_refuses_and_reaches_the_driver() {
         let aggregate = task(json!({
             "pipeline": [{"$match": {"n": {"var": "data.n"}}}], "output": "data.documents"
         }));
@@ -1303,8 +1051,9 @@ mod tests {
                 "VALIDATION_ERROR",
             ),
         ] {
-            let (v3, v4) = both(input.clone(), json!({"n": 3}), extra).await;
-            assert_eq!(v4, v3, "{input}");
+            let key = format!("the_call/{input}/{extra}");
+            let v4 = run(input.clone(), json!({"n": 3}), extra).await;
+            twin::pinned(&v4, key);
             assert_eq!(v4.expect_err("refused").code, code, "{input}");
         }
     }

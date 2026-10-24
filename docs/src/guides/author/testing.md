@@ -96,7 +96,7 @@ orion-server dry-run -w workflow.json -i payload.json | jq '.output.order'
 
 It exits non-zero when the run fails, and prints the trace either way. A run that dies at task three still tells you what the first two did.
 
-Each step in `trace` snapshots the message after it, with only the audit entry that step wrote. A long looping workflow still records a snapshot per step. For one, `--trace steps` keeps each step's id, timing and changes without the snapshot. `--trace none` runs it as a node runs an untraced message and reports only `tasks`.
+`trace` is the engine's trace, in the shape a node persists one: the context the run started from (`initial`), then each step with the changes it made. Replaying the changes in order gives the context after every step, so the trace grows with the steps rather than with a copy of the message per step. `--trace steps` keeps each step's id, result and timing without its changes. `--trace none` runs it as a node runs an untraced message and reports only `tasks`. See [the trace object](../../reference/data-api.md#the-trace-object) for every field.
 
 ## Stub the calls that leave the process
 
@@ -182,7 +182,7 @@ A case that names codes in `expect_errors` is asserting the failure, so the run 
   "workflow": "../packages/fixed-width-statement/workflow.json",
   "input": { "record": "ACC0001234" },
   "expect": { "data.statement": null },
-  "expect_errors": ["VALIDATION_ERROR", "WORKFLOW_ERROR"],
+  "expect_errors": ["VALIDATION_ERROR"],
   "expect_tasks": ["parse", "decode"]
 }
 ```

@@ -1,0 +1,262 @@
+{
+  "a_bound_document_keeps_its_dollar_keys": {
+    "ok": {
+      "id": "abc",
+      "n": 2,
+      "rows": [
+        {
+          "doc": "{\"$oid\":\"abc\",\"n\":[1,2]}",
+          "missing": null,
+          "payload": "fallback"
+        }
+      ]
+    }
+  },
+  "a_connector_of_another_kind_or_backend/{\"type\":\"db\",\"connection_string\":\"mongodb://127.0.0.1:1\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read requires a SQL connector, but 'db' is a MongoDB connector — use mongo_read or data_query for MongoDB",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "a_connector_of_another_kind_or_backend/{\"type\":\"http\",\"url\":\"http://127.0.0.1:1\"}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "Connector 'db' is not a database connector"
+    }
+  },
+  "a_query_timeout_before_the_run_deadline": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: db_read query timed out after 150ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "numeric_as_and_binary_as/\"number\" {\"var\":\"data.b64\"}": {
+    "ok": {
+      "num": "string",
+      "hex": "hex",
+      "b64": "base64",
+      "bad": "money",
+      "n": 7,
+      "rows": [
+        {
+          "id": 1,
+          "price": 1.25,
+          "blob": "AP8="
+        },
+        {
+          "id": 2,
+          "price": 2,
+          "blob": "aGk="
+        },
+        {
+          "id": 3,
+          "price": 3.5,
+          "blob": null
+        }
+      ]
+    }
+  },
+  "numeric_as_and_binary_as/\"string\" {\"var\":\"data.n\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read: 'binary_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as_and_binary_as/null null": {
+    "ok": {
+      "num": "string",
+      "hex": "hex",
+      "b64": "base64",
+      "bad": "money",
+      "n": 7,
+      "rows": [
+        {
+          "id": 1,
+          "price": 1.25,
+          "blob": "00ff"
+        },
+        {
+          "id": 2,
+          "price": 2,
+          "blob": "hi"
+        },
+        {
+          "id": 3,
+          "price": 3.5,
+          "blob": null
+        }
+      ]
+    }
+  },
+  "numeric_as_and_binary_as/{\"cat\":[\"str\",\"ing\"]} \"hex\"": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read: 'numeric_as' must resolve to a string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as_and_binary_as/{\"var\":\"data.bad\"} \"hex\"": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read: 'numeric_as' must be one of number/string (got 'money')",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "numeric_as_and_binary_as/{\"var\":\"data.none\"} {\"var\":\"data.none\"}": {
+    "ok": {
+      "num": "string",
+      "hex": "hex",
+      "b64": "base64",
+      "bad": "money",
+      "n": 7,
+      "rows": [
+        {
+          "id": 1,
+          "price": 1.25,
+          "blob": "00ff"
+        },
+        {
+          "id": 2,
+          "price": 2,
+          "blob": "hi"
+        },
+        {
+          "id": 3,
+          "price": 3.5,
+          "blob": null
+        }
+      ]
+    }
+  },
+  "numeric_as_and_binary_as/{\"var\":\"data.num\"} {\"var\":\"data.hex\"}": {
+    "ok": {
+      "num": "string",
+      "hex": "hex",
+      "b64": "base64",
+      "bad": "money",
+      "n": 7,
+      "rows": [
+        {
+          "id": 1,
+          "price": 1.25,
+          "blob": "00ff"
+        },
+        {
+          "id": 2,
+          "price": 2,
+          "blob": "6869"
+        },
+        {
+          "id": 3,
+          "price": 3.5,
+          "blob": null
+        }
+      ]
+    }
+  },
+  "refusals/{\"connector\":\"absent\",\"query\":\"SELECT id FROM items\",\"output\":\"data.rows\"} {} 1000": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"DELETE FROM items\",\"output\":\"data.rows\"} {} 1000": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read runs read statements only, but this one starts with 'DELETE' — use db_write for INSERT/UPDATE/DELETE (it has its own 'raw_write' connector gate). Reads start with SELECT, WITH, VALUES, TABLE",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"SELECT id FROM items\",\"output\":\"data.rows\",\"params\":\"x\"} {} 1000": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read 'params' must resolve to an array of bind values, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"SELECT id FROM items\",\"output\":\"data.rows\",\"params\":{\"var\":\"data.obj\"}} {} 1000": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read 'params' must resolve to an array of bind values, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"SELECT id FROM items\",\"output\":\"data.rows\"} {\"operations\":{\"read\":false}} 1000": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'read' is disabled on connector 'db'"
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"SELECT id FROM items\",\"output\":\"data.rows\"} {} 2": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read result exceeds query.max_limit (2 rows) — add a LIMIT to the query or raise the cap",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"SELECT id FROM items\",\"output\":{\"var\":\"data.n\"}} {} 1000": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"SELECT nope FROM items\",\"output\":\"data.rows\"} {} 1000": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: db_read query failed: error returned from database: (code: 1) no such column: nope",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusals/{\"connector\":\"db\",\"query\":\"WITH gone AS (DELETE FROM items RETURNING id) SELECT * FROM gone\",\"output\":\"data.rows\"} {} 1000": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read runs read statements only, but this one carries a data-modifying 'DELETE' common table expression — use db_write (it has its own 'raw_write' connector gate)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "rows_are_written_at_output": {
+    "ok": {
+      "min": 2,
+      "rows": [
+        {
+          "id": 2,
+          "name": "pear"
+        },
+        {
+          "id": 3,
+          "name": "plum"
+        }
+      ]
+    }
+  },
+  "td09_result_byte_cap": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: db_read result exceeds query.max_result_bytes (64 bytes) — select fewer columns, add a LIMIT, or raise the cap",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

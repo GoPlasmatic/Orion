@@ -58,9 +58,9 @@ fn classify(id: &str) -> Value {
     })
 }
 
-/// Mark a task `continue_on_error` so the run survives it.
+/// Mark a task `on_failure: continue` so the run survives it.
 fn tolerant(mut task: Value) -> Value {
-    task["continue_on_error"] = json!(true);
+    task["on_failure"] = json!("continue");
     task
 }
 

@@ -1,5 +1,5 @@
 //! From active plugin rows to what a generation carries: registry entries,
-//! engine handlers, and the reasons anything did not load.
+//! engine functions, and the reasons anything did not load.
 //!
 //! A load never aborts. A plugin that fails — no artifact under its digest,
 //! a component that will not compile, a self-test that traps, or a node with
@@ -44,8 +44,7 @@ pub struct LoadedPlugin {
     pub functions: Vec<String>,
     pub compile_ms: u64,
     entries: Vec<FunctionEntry>,
-    handlers: Vec<PluginFunctionHandler>,
-    /// The same functions on dataflow-rs 4, each over its handler.
+    /// The engine functions, one per entry, each over its handler.
     plugin_functions: Vec<PluginFunction>,
 }
 
@@ -93,22 +92,7 @@ impl PluginSet {
             .collect()
     }
 
-    /// A fresh boxed handler per function, for one engine build.
-    pub fn handlers(&self) -> Vec<(String, dataflow_rs_v3::BoxedFunctionHandler)> {
-        self.plugins
-            .iter()
-            .flat_map(|p| p.handlers.iter())
-            .map(|h| {
-                (
-                    h.name().to_string(),
-                    Box::new(h.clone()) as dataflow_rs_v3::BoxedFunctionHandler,
-                )
-            })
-            .collect()
-    }
-
-    /// Every loaded function as a dataflow-rs 4 function, for one
-    /// `Registry`: what [`Self::handlers`] is to a dataflow-rs 3 engine.
+    /// Every loaded function as an engine function, for one `Registry`.
     /// [`register_plugin_functions`](crate::engine::register_plugin_functions)
     /// registers them.
     pub fn functions(&self) -> impl Iterator<Item = &PluginFunction> {
@@ -343,19 +327,21 @@ async fn load_one(
         abi: manifest.abi.clone(),
     };
     let entries = manifest.entries(&binding);
-    let handlers: Vec<PluginFunctionHandler> = entries
-        .iter()
-        .map(|e| {
-            PluginFunctionHandler::new(Arc::new(e.clone()), loaded.clone(), runtime.clone(), limits)
-        })
-        .collect();
     // `entries` holds one entry per declared function, in order, so each
     // handler is its declaration's.
     let plugin_functions = manifest
         .functions
         .iter()
-        .zip(&handlers)
-        .map(|(decl, handler)| PluginFunction::new(handler.clone(), decl.runtime_fields()))
+        .zip(&entries)
+        .map(|(decl, entry)| {
+            let handler = PluginFunctionHandler::new(
+                Arc::new(entry.clone()),
+                loaded.clone(),
+                runtime.clone(),
+                limits,
+            );
+            PluginFunction::new(handler, decl.runtime_fields())
+        })
         .collect();
     Ok(LoadedPlugin {
         id: row.plugin_id.clone(),
@@ -364,7 +350,6 @@ async fn load_one(
         functions,
         compile_ms: loaded.compile_time.as_millis() as u64,
         entries,
-        handlers,
         plugin_functions,
     })
 }
@@ -382,7 +367,7 @@ fn load_stage(e: &super::runtime::LoadError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs::def::{ParseOptions, parse};
+    use dataflow_rs::def::parse;
     use dataflow_rs::program::CompileOptions;
     use serde_json::{Value, json};
 
@@ -410,7 +395,7 @@ mod tests {
     fn issues(workflow: &Value) -> Vec<Issue> {
         let compiler = dataflow_rs::Registry::new(crate::engine::kit::test_exprs())
             .compiler(CompileOptions::default());
-        let def = parse(workflow, ParseOptions::default())
+        let def = parse(workflow, crate::engine::parse_options())
             .def
             .expect("the workflow parses");
         compiler.compile_one(&def).expect_err("refused")

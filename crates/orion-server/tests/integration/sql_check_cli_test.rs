@@ -195,7 +195,7 @@ fn a_scratch_schema_is_built_in_memory_and_json_is_one_object_per_line() {
 fn lint_errors_stop_the_check_before_any_connection() {
     let scratch = set(
         "sql_check_lint",
-        serde_json::json!([{"id": "bad", "function": {"name": "db_read",
+        serde_json::json!([{"id": "bad", "conditon": true, "function": {"name": "db_read",
             "input": {"connector": "orders-db", "query": "SELECT 1"}}}]),
     );
     let (code, stdout, _) = check(&scratch, &[]);

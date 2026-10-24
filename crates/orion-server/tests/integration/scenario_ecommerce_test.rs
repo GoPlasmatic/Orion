@@ -111,7 +111,7 @@ async fn test_order_processing_pipeline() {
                         "method": "POST",
                         "path": "/charge",
                         "body": { "amount": 89.97, "currency": "USD" },
-                        "response_path": "data.payment",
+                        "output": "data.payment",
                         "timeout_ms": 5000
                     }
                 }

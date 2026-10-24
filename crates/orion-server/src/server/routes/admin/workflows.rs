@@ -636,6 +636,9 @@ pub(crate) async fn create_new_workflow_version(
 // Workflow Dry-Run / Testing
 // ============================================================
 
+/// The channel a tested workflow is compiled and run on.
+const TEST_CHANNEL: &str = "__test__";
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct TestWorkflowRequest {
     data: Value,
@@ -661,7 +664,7 @@ pub(crate) async fn test_workflow(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(req): OrionJson<TestWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    use crate::storage::repositories::workflows::workflow_to_dataflow;
+    use crate::storage::repositories::workflows::workflow_json;
 
     let workflow = state.repos.workflows.get_by_id(&id).await?;
 
@@ -674,44 +677,30 @@ pub(crate) async fn test_workflow(
     // dies mid-task.
     audit_log(&state.audit_queue, &principal, "test", "workflow", &id);
 
-    // G14 keeps `OrionError::Serialization` a 500, on the premise that no
-    // client-authored parse reaches it via `?` — so this conversion of a
-    // client-authored draft must answer for itself. A stored workflow the
-    // engine's shape refuses (a gap the create-time task validation did not
-    // cover) is the author's document to fix, not a server fault: 400 with
-    // the shape error, which quotes their own workflow JSON and nothing else.
-    let df_workflow = workflow_to_dataflow(&workflow, "__test__").map_err(|e| {
+    // An isolated engine over just this workflow, compiled on the serving
+    // generation's own registry — its functions, plugins and live connector
+    // dependencies — as boot and reload compile a row. A workflow they would
+    // quarantine is a 400 naming why, here, before anyone activates; a green
+    // "test this workflow" used to precede a channel that would not serve.
+    // `channel_call` still routes through the serving engine.
+    let generation = state.runtime.load();
+    let compiler = match &generation.engine {
+        Some(engine) => engine.compiler(),
+        None => crate::runtime::reload::plugin_compiler(&state, &generation.plugins),
+    };
+    let json = workflow_json(
+        &workflow,
+        TEST_CHANNEL,
+        &workflow.workflow_id,
+        "active",
+        None,
+    )
+    .map_err(|e| {
         OrionError::validation(format!(
             "workflow '{id}' does not match the engine's workflow shape: {e}"
         ))
     })?;
-
-    // An isolated engine over just this workflow, on the same registries and
-    // pools the serving engine uses (`handler_deps`) and screened the same way
-    // (`build_single`). `channel_call` still routes through the main engine for
-    // cross-channel calls.
-    //
-    // The screen is the point: this endpoint used to assemble the builder by
-    // hand and call `.build()`, so it accepted a workflow that boot and reload
-    // would quarantine — a green "test this workflow" followed by a channel
-    // that will not serve. A task nothing can dispatch is now a 400 naming it,
-    // here, before anyone activates.
-    let custom_fns = crate::engine::build_custom_functions(crate::runtime::handler_deps(&state));
-    let test_engine = crate::engine::build_single(
-        df_workflow,
-        custom_fns,
-        &state.secrets,
-        state.config.engine.ops_budget,
-    )?;
-
-    let mut payload = json!({});
-    if let Some(obj) = req.data.as_object() {
-        for (k, v) in obj {
-            payload[k] = v.clone();
-        }
-    } else {
-        payload = req.data;
-    }
+    let test_engine = crate::engine::offline::single_engine(&compiler, &json)?;
 
     // Through the same normalization the two *offline* surfaces use —
     // `dry-run` and the CLI's `test` — because this endpoint is a third one
@@ -732,62 +721,40 @@ pub(crate) async fn test_workflow(
     // `dry-run`, there *is* a running instance with a `[vars]` section, so the
     // real values are the honest ones.
     crate::engine::stamp_vars(&mut metadata, state.vars.as_deref());
-    let mut message = dataflow_rs_v3::Message::builder()
-        .payload_json(&payload)
-        .metadata_json(&metadata)
-        .build();
 
-    // Record into a trace this function owns, so the steps that ran before a
-    // hard failure survive it. `process_message_with_trace` builds the trace as
-    // a local and moves it into the `Ok` arm, so an `Err` used to leave this
-    // endpoint — the one place a human explicitly asks "show me the steps" —
-    // returning a bare 5xx with no steps at all. A failed dry run is the case
-    // it exists to explain, so it answers 200 with the partial trace and the
-    // error rather than throwing both away.
-    //
-    // Bounded as a node bounds a `task_details` trace. The default options
-    // snapshot the whole audit trail so far at every step, which is quadratic
-    // in the steps, with no ceiling: one call on a long looping workflow could
-    // take the node's memory (#353). `Own` keeps the entry each step wrote,
-    // and past the budget a step keeps its id, result and timing and drops its
-    // snapshot, with `truncated` set on the trace.
-    let mut trace = dataflow_rs_v3::ExecutionTrace::with_options(dataflow_rs_v3::TraceOptions {
-        snapshot_audit_trail: dataflow_rs_v3::AuditTrailScope::Own,
-        max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
-        ..Default::default()
-    });
-    let run_error = test_engine
-        .process_message_tracing(&mut message, &mut trace)
-        .await
-        .err();
+    // The trace is kept on every status, so a run that stopped short still
+    // answers 200 with the steps that ran and the error — a failed test is
+    // the case this endpoint exists to explain. Bounded as a node bounds a
+    // `task_details` trace: past the budget a step keeps its id, result and
+    // timing and drops its snapshot, with `truncated` set on the trace (#353).
+    let result = crate::engine::offline::run_single(
+        &test_engine,
+        &req.data,
+        &metadata,
+        crate::engine::offline::OfflineRun {
+            trace: Some(crate::engine::offline::OfflineTrace::Changes),
+            max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
+            capture_changes: true,
+            layers: &[],
+            observer: None,
+        },
+    )
+    .await;
 
-    let matched = !trace.steps.is_empty()
-        && trace.steps.iter().any(|s| {
-            matches!(
-                s.result,
-                dataflow_rs_v3::StepResult::Executed | dataflow_rs_v3::StepResult::Skipped
-            )
-        });
-
-    let trace_value = serde_json::to_value(&trace)?;
+    let message = &result.message;
     let mut body = json!({
-        "matched": matched,
-        "trace": trace_value,
-        "output": message.data(),
-        "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
+        "matched": result.matched,
+        "trace": serde_json::to_value(&result.trace)?,
+        "output": Value::from(message.context().data()),
+        "errors": serde_json::to_value(message.errors())?,
     });
-    if let Some(e) = run_error {
-        // Note the failing task's own step is still absent: the engine
-        // propagates before appending it, so the trace ends at the last
-        // known-good step and this names what stopped it.
-        //
+    if let Some(e) = result.error {
         // G12: through the same redaction as every other engine-error
-        // surface — the raw Display can carry driver text. The full error
+        // surface — the raw text can carry driver detail. The full error
         // goes to the log; validation/timeout messages stay verbatim.
         tracing::warn!(error = %e, "workflow dry-run execution failed");
         body["error"] = json!(OrionError::Engine(e).client_message());
     }
-
     Ok(data_response(body))
 }
 
@@ -1320,24 +1287,23 @@ fn validate_workflow_condition(
 /// loader logs each at `warn`; this is where an author sees one before the
 /// workflow serves. Warnings, so `valid` keeps meaning what create accepts
 /// (R20). Compiled as the serving generation's loader compiles a row: its
-/// JSON, its aliases rewritten, on its dataflow-rs 4 compiler.
+/// JSON, on its dataflow-rs 4 compiler.
 fn load_defects(
     req: &CreateWorkflowRequest,
     generation: &crate::runtime::RuntimeGeneration,
 ) -> Vec<ValidationIssue> {
     use crate::storage::repositories::workflows::{synthetic_workflow, workflow_json};
 
-    let Some(engine4) = generation.engine4.as_ref() else {
+    let Some(engine4) = generation.engine.as_ref() else {
         return Vec::new();
     };
     let Ok(row) = synthetic_workflow(req, "temp-validate") else {
         return Vec::new();
     };
     // A row that is not JSON is `validate_dataflow_conversion`'s finding.
-    let Ok(mut json) = workflow_json(&row, "__validate__", "temp-validate", "active", None) else {
+    let Ok(json) = workflow_json(&row, "__validate__", "temp-validate", "active", None) else {
         return Vec::new();
     };
-    crate::engine::rewrite_aliases(&mut json, &generation.functions);
     let issues = match crate::engine::compile_row(&engine4.compiler(), &json) {
         Ok(compiled) => compiled.issues,
         Err(issues) => issues,
@@ -1362,13 +1328,15 @@ fn load_defects(
         .collect()
 }
 
-/// Validate that the workflow can be converted to a dataflow-rs workflow.
+/// Validate that the workflow's fields build the definition the engine reads.
+/// What the engine then reports about that definition is `validate_tasks`'
+/// and `load_defects`' to say.
 fn validate_dataflow_conversion(req: &CreateWorkflowRequest, errors: &mut Vec<ValidationIssue>) {
-    use crate::storage::repositories::workflows::{synthetic_workflow, workflow_to_dataflow};
+    use crate::storage::repositories::workflows::{synthetic_workflow, workflow_json};
 
     match synthetic_workflow(req, "temp-validate") {
         Ok(w) => {
-            if let Err(e) = workflow_to_dataflow(&w, "__validate__") {
+            if let Err(e) = workflow_json(&w, "__validate__", "temp-validate", "active", None) {
                 errors.push(ValidationIssue {
                     field: "(root)".to_string(),
                     message: format!("Failed to convert to dataflow workflow: {e}"),

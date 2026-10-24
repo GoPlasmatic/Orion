@@ -22,7 +22,7 @@
 //!
 //! `expected_error` asserts a validation-class refusal, not *which* refusal. The
 //! data plane replaces task-error messages with a generic string (G1) and every
-//! `QueryError` variant maps to the same `DataflowError::Validation`, so the
+//! `QueryError` variant maps to the same `VALIDATION_ERROR`, so the
 //! response body carries no discriminator to assert on. Which refusal a backend
 //! gives — `FeatureUnsupportedByTarget` rather than a parse error, say — is
 //! pinned where the error value itself is in hand, in the per-backend renderer

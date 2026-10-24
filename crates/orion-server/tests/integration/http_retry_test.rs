@@ -86,7 +86,7 @@ fn call_workflow(name: &str, connector: &str, method: &str, path: &str) -> serde
         json!([{
             "id": "t1",
             "name": "Call endpoint",
-            "continue_on_error": true,
+            "on_failure": "continue",
             "function": {
                 "name": "http_call",
                 "input": {
@@ -94,7 +94,7 @@ fn call_workflow(name: &str, connector: &str, method: &str, path: &str) -> serde
                     "method": method,
                     "path": path,
                     "body": {"amount": 100},
-                    "response_path": "data.result",
+                    "output": "data.result",
                     "timeout_ms": 2000
                 }
             }

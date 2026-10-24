@@ -1,46 +1,28 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use mongodb::bson::{self, Document};
 use serde_json::Value;
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{
-    ConnectorCall, QueryBudget, require_op_allowed, resolve_value, to_connect_error,
-};
+use super::connector_helpers::{QueryBudget, require_op_allowed, to_connect_error};
 use super::mongo_common::{
     docs_to_json, drain_capped, rendered_bson, rendered_document, require_mongo_backend,
-    resolve_document, resolve_u64,
 };
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::config::QueryConfig;
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
 use crate::query::QueryError;
 
 /// This handler's name, for the helpers that take it as an argument — a
 /// reference to the one place it is written (F48).
-const NAME: &str = <MongoReadHandler as ConnectorHandler>::NAME;
-
-/// Workflow function handler for reading documents from MongoDB.
-pub struct MongoReadHandler {
-    pub pool_cache: Arc<MongoPoolCache>,
-    pub registry: Arc<ConnectorRegistry>,
-    /// The `[query]` bounds: `max_limit` caps both an explicit `limit` and the
-    /// drained result size (F10 — an unbounded `find` must not OOM the
-    /// process); `max_skip` bounds `skip` (W12).
-    pub limits: QueryConfig,
-}
+pub(crate) const NAME: &str = "mongo_read";
 
 /// The `find` the task describes, with every message-dependent part already
 /// folded: `{"var": ..}` nodes may sit at any depth of the filter, so a
@@ -62,15 +44,19 @@ pub struct MongoFind<'a> {
 
 /// The filter as 1.12 read the JSON it folded: any document the bridge
 /// takes, an empty one when the task sets none.
-fn filter_from_value(filter: &Value) -> Result<Document, DataflowError> {
-    bson::to_document(filter)
-        .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {e}")))
+fn filter_from_value(filter: &Value) -> Result<Document, HandlerError> {
+    bson::to_document(filter).map_err(|e| {
+        HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("Invalid MongoDB filter: {e}"),
+        )
+    })
 }
 
 /// The dialect's reject-never-clamp rule for both bounds. An absent `limit`
 /// deliberately does NOT fall back to `default_limit`: the pre-#263 contract
 /// is "everything the filter matches, capped", and a silent page-size
-/// default would change existing tasks' results. Shared by both engines.
+/// default would change existing tasks' results.
 fn check_bounds(
     limit: Option<u64>,
     skip: Option<u64>,
@@ -79,37 +65,32 @@ fn check_bounds(
     if let Some(l) = limit
         && l > limits.max_limit
     {
-        return Err(DataflowError::from(QueryError::LimitExceeded {
+        return Err(HandlerError::from(QueryError::LimitExceeded {
             requested: l,
             max: limits.max_limit,
-        })
-        .into());
+        }));
     }
     if let Some(s) = skip
         && s > limits.max_skip
     {
-        return Err(DataflowError::from(QueryError::SkipExceeded {
+        return Err(HandlerError::from(QueryError::SkipExceeded {
             requested: s,
             max: limits.max_skip,
-        })
-        .into());
+        }));
     }
     Ok(())
 }
 
 /// The connector's gates for a read: its `read` operation, and a MongoDB
-/// backend. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
-/// function.
+/// backend.
 fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     require_op_allowed(&conn.operations, "read", connector)?;
-    Ok(require_mongo_backend(conn, NAME, connector)?)
+    require_mongo_backend(conn, NAME, connector)
 }
 
 /// The documents a find returns, as a JSON array, against a resolved and
-/// gated connector, at most `cap` of them. Shared by the dataflow-rs 3
-/// handler and the dataflow-rs 4 function, so both run the same find the
-/// same way. `run_deadline` is the deadline of the run the call belongs to,
-/// which the dataflow-rs 4 function passes on ([`QueryBudget::within`]).
+/// gated connector, at most `cap` of them. `run_deadline` is the deadline of
+/// the run the call belongs to ([`QueryBudget::within`]).
 async fn find_documents(
     pool_cache: &MongoPoolCache,
     connector: &str,
@@ -148,79 +129,7 @@ async fn find_documents(
         })
         .await?;
 
-    Ok(docs_to_json(&docs, NAME)?)
-}
-
-#[async_trait]
-impl ConnectorHandler for MongoReadHandler {
-    const NAME: &'static str = "mongo_read";
-    type Kind = crate::connector::kind::Db;
-    type Input = TemplatedInput;
-    type Parsed = MongoFind<'static>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        let database = call.require_str(input, "database")?.to_string();
-        let collection = call.require_str(input, "collection")?.to_string();
-
-        let filter_val = input
-            .get("filter")
-            .map(|f| resolve_value(f, ctx))
-            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-        let filter = filter_from_value(&filter_val)?;
-
-        // #263: optional find options — additive; a task naming none behaves
-        // exactly as before.
-        let limit = resolve_u64(input, "limit", call.name, ctx)?;
-        let skip = resolve_u64(input, "skip", call.name, ctx)?;
-        check_bounds(limit, skip, &self.limits)?;
-
-        Ok(MongoFind {
-            database: Cow::Owned(database),
-            collection: Cow::Owned(collection),
-            filter,
-            projection: resolve_document(input.raw(), "projection", call.name, ctx)?,
-            sort: resolve_document(input.raw(), "sort", call.name, ctx)?,
-            limit,
-            skip,
-        })
-    }
-
-    fn gate(
-        _parsed: &Self::Parsed,
-        conn: &DbConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        gate(conn, connector)
-    }
-
-    async fn run(
-        &self,
-        find: Self::Parsed,
-        db_config: &DbConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        Ok(find_documents(
-            &self.pool_cache,
-            call.connector,
-            db_config,
-            self.limits.max_limit as usize,
-            find,
-            None,
-        )
-        .await?
-        .into())
-    }
+    docs_to_json(&docs, NAME)
 }
 
 /// I185's Defect: the documents are an array, which no context root takes
@@ -431,18 +340,17 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
     },
 ];
 
-// -- dataflow-rs 4: the config, I185's Defect, and twins of the handler --
+// -- the config, I185's Defect, and calls against 1.12's records --
 //
-// No MongoDB is reached. A probe of each engine writes the find it parsed,
-// past the connector and its gate, where the driver would be called; the
-// functions themselves run against `testkit`'s connector to a closed port,
+// No MongoDB is reached. A probe writes the find the function parsed, past
+// the connector and its gate, where the driver would be called; the
+// function itself runs against `testkit`'s connector to a closed port,
 // where a call that passes every gate waits in the driver's server selection
 // until its connector's `query_timeout_ms` ends it.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::functions::connector_handler::Connector;
     use crate::engine::functions::mongo_common::testkit;
     use crate::engine::functions::twin::{self, Seen};
     use crate::errors::kind::CONNECTOR_DETAIL;
@@ -461,14 +369,6 @@ mod tests {
         }
     }
 
-    fn handler(registry: Arc<ConnectorRegistry>) -> MongoReadHandler {
-        MongoReadHandler {
-            pool_cache: testkit::pools(),
-            registry,
-            limits: limits(),
-        }
-    }
-
     fn function(registry: Arc<ConnectorRegistry>) -> MongoReadFunction {
         MongoReadFunction {
             pool_cache: testkit::pools(),
@@ -477,71 +377,20 @@ mod tests {
         }
     }
 
-    /// One task through each engine's real function, each over a registry
-    /// of its own, `docs` configured with `extra`.
-    async fn both(input: Value, data: Value, extra: Value) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(handler(testkit::connectors(extra.clone()).await))),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(
+    /// One task through the real function, over a registry of its own,
+    /// `docs` configured with `extra`.
+    async fn run(input: Value, data: Value, extra: Value) -> Seen {
+        twin::v4(
             NAME,
             function(testkit::connectors(extra).await),
             input,
             data,
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
-    /// Writes the find 1.12's handler parsed, at `output`: its prologue, its
+    /// Writes the find the function parsed, at `output`: its prologue, its
     /// parse, the connector and its gate, and no driver call.
-    struct FindV3(MongoReadHandler);
-
-    #[async_trait]
-    impl ConnectorHandler for FindV3 {
-        const NAME: &'static str = "mongo_read";
-        type Kind = crate::connector::kind::Db;
-        type Input = TemplatedInput;
-        type Parsed = MongoFind<'static>;
-
-        fn registry(&self) -> &Arc<ConnectorRegistry> {
-            &self.0.registry
-        }
-
-        fn parse(
-            &self,
-            call: &ConnectorCall<'_>,
-            input: &TemplatedInput,
-            ctx: &Scope<'_, '_>,
-        ) -> Result<Self::Parsed, HandlerError> {
-            self.0.parse(call, input, ctx)
-        }
-
-        fn gate(
-            parsed: &Self::Parsed,
-            conn: &DbConnectorConfig,
-            connector: &str,
-        ) -> Result<(), HandlerError> {
-            MongoReadHandler::gate(parsed, conn, connector)
-        }
-
-        async fn run(
-            &self,
-            find: Self::Parsed,
-            _db_config: &DbConnectorConfig,
-            _call: &ConnectorCall<'_>,
-            _input: &TemplatedInput,
-            _ctx: &mut TaskContext<'_>,
-        ) -> Result<Produced, HandlerError> {
-            Ok(Value::String(format!("{find:?}")).into())
-        }
-    }
-
-    /// The same, through the function's own reading.
     struct FindV4(MongoReadFunction);
 
     impl Function for FindV4 {
@@ -563,25 +412,15 @@ mod tests {
         }
     }
 
-    /// The find each engine parses from `input` over `data`.
-    async fn parsed(input: Value, data: Value) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(FindV3(handler(
-                testkit::connectors(json!({})).await,
-            )))),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(
+    /// The find the function parses from `input` over `data`.
+    async fn parsed(input: Value, data: Value) -> Seen {
+        twin::v4(
             NAME,
             FindV4(function(testkit::connectors(json!({})).await)),
             input,
             data,
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
     fn rejected(input: Value) -> Vec<(String, IssueCode)> {
@@ -704,12 +543,12 @@ mod tests {
         }
     }
 
-    /// The find each engine would send: the filter, the projection and the
+    /// The find the function would send: the filter, the projection and the
     /// sort rendered into BSON with their holes filled and their extended
     /// JSON read, `limit` and `skip` read and bounded; and every refusal on
     /// the way, in 1.12's order, with its code and text.
     #[tokio::test]
-    async fn the_find_is_read_as_on_v3() {
+    async fn the_find_is_read_as_1_12_read_it() {
         let data = json!({
             "id": "665f1f77bcf86cd799439011", "min": 3, "when": "2026-01-02T03:04:05Z",
             "tags": ["a", "b"], "doc": {"k": 1, "$exists": true}, "limit": 5, "skip": 2,
@@ -793,8 +632,8 @@ mod tests {
             if let (Some(input), Some(case)) = (input.as_object_mut(), case.as_object()) {
                 input.extend(case.clone());
             }
-            let (v3, v4) = parsed(input, data.clone()).await;
-            assert_eq!(v4, v3, "{case}");
+            let v4 = parsed(input, data.clone()).await;
+            twin::pinned(&v4, format!("the_find/{case}"));
             assert_eq!(v4.is_ok(), ok, "{case}: {v4:?}");
         }
     }
@@ -803,7 +642,7 @@ mod tests {
     /// past every gate reaching the driver, which waits for a server until
     /// the connector's `query_timeout_ms`, 1.12's `TIMEOUT_ERROR`.
     #[tokio::test]
-    async fn the_call_refuses_and_reaches_the_driver_as_on_v3() {
+    async fn the_call_refuses_and_reaches_the_driver() {
         let read = json!({
             "connector": "docs", "database": "db", "collection": "c",
             "filter": {"n": {"var": "data.n"}}, "output": "data.documents"
@@ -839,11 +678,12 @@ mod tests {
                 "VALIDATION_ERROR",
             ),
         ] {
-            let (v3, v4) = both(input.clone(), json!({"n": 3}), extra).await;
-            assert_eq!(v4, v3, "{input}");
+            let key = format!("the_call/{input}/{extra}");
+            let v4 = run(input.clone(), json!({"n": 3}), extra).await;
+            twin::pinned(&v4, key);
             assert_eq!(v4.expect_err("refused").code, code, "{input}");
         }
-        let (_, v4) = both(read, json!({"n": 3}), json!({})).await;
+        let v4 = run(read, json!({"n": 3}), json!({})).await;
         assert_eq!(
             v4.expect_err("timed out").message,
             "Timeout error: mongo_read query timed out after 100ms"

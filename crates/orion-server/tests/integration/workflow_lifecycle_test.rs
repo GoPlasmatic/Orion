@@ -98,12 +98,11 @@ async fn test_dry_run_unmatched_condition() {
     // evaluated BEFORE any tasks run. For the condition to access the
     // data, we need it available in the context before processing.
     //
-    // Since the test endpoint spreads request data into payload (not context.data),
-    // the workflow condition cannot access it. A condition like
-    // {">": [{"var": "data.priority"}, 5]} evaluates against context.data
-    // which is empty, so it will always be false.
+    // The test endpoint runs from the message a node builds, whose data is
+    // seeded with the request's: a condition like
+    // {">": [{"var": "data.priority"}, 5]} reads the caller's `priority`.
     //
-    // We test this scenario: the workflow condition is unmet, so only a
+    // We test the unmet case: the workflow condition is false, so only a
     // workflow-level skip step is recorded and no tasks execute.
     let resp = app
         .clone()
@@ -130,9 +129,8 @@ async fn test_dry_run_unmatched_condition() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Dry-run with priority = 1. The condition evaluates against the
-    // message context where data starts empty (payload is separate),
-    // so the condition {> [null, 5]} evaluates to false.
+    // Dry-run with priority = 1. The run's data is seeded with its payload,
+    // so the condition reads `data.priority` as 1 and `1 > 5` is false.
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -163,12 +161,12 @@ async fn test_dry_run_unmatched_condition() {
         "no tasks should have executed when workflow condition is false"
     );
 
-    // Output should be empty (no data was produced)
-    assert!(
-        body["data"]["output"]
-            .as_object()
-            .is_none_or(|o| o.is_empty()),
-        "output should be empty when workflow is skipped"
+    // Output is the input as the run started from it: a run's data is
+    // seeded with its payload, and no task wrote to it.
+    assert_eq!(
+        body["data"]["output"],
+        json!({"priority": 1}),
+        "nothing is written when the workflow is skipped"
     );
 }
 
@@ -1062,11 +1060,11 @@ async fn validate_warns_about_the_engines_own_shape_findings() {
     let warnings = data["warnings"].as_array().expect("warnings array");
     assert!(
         warnings.iter().any(|w| {
-            w["field"].as_str().unwrap_or_default() == "task 'check'.halt_on"
+            w["field"].as_str().unwrap_or_default() == "task 'check'.on_rejection"
                 && w["message"]
                     .as_str()
                     .unwrap_or_default()
-                    .contains("halt_on")
+                    .contains("on_rejection")
         }),
         "expected the unguarded-validation advisory, got: {warnings:?}"
     );

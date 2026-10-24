@@ -166,7 +166,7 @@ async fn an_account_credentials_connector_acquires_and_applies_its_token() {
                 "id": "t1", "name": "Fetch", "function": { "name": "http_call", "input": {
                     "connector": "zoom",
                     "method": "GET",
-                    "response_path": "data.meetings"
+                    "output": "data.meetings"
                 } }
             }]),
         ),
@@ -219,7 +219,7 @@ async fn http_call_acquires_applies_and_caches_the_token() {
                 "id": "t1", "name": "Fetch", "function": { "name": "http_call", "input": {
                     "connector": "partner",
                     "method": "GET",
-                    "response_path": "data.orders_response"
+                    "output": "data.orders_response"
                 } }
             }]),
         ),

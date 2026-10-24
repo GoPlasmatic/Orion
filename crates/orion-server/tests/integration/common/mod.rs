@@ -20,8 +20,7 @@ use axum::http::Request;
 use serde_json::Value;
 use tower::ServiceExt;
 
-/// An empty serving generation: an engine with no workflows and an estate with
-/// no channels.
+/// An empty serving generation: no engine and an estate with no channels.
 ///
 /// For the component tests that drive a queue, a consumer or a handler
 /// directly rather than through [`test_app`] — they need a `RuntimeHandle` to
@@ -30,11 +29,6 @@ use tower::ServiceExt;
 /// real one.
 pub fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     Arc::new(orion::runtime::RuntimeHandle::new(
-        Arc::new(
-            dataflow_rs_v3::Engine::builder()
-                .build()
-                .expect("empty engine"),
-        ),
         Arc::new(orion::channel::ChannelSnapshot::empty()),
         orion::engine::FunctionRegistry::builtin().clone(),
     ))
@@ -580,7 +574,7 @@ pub fn failing_http_workflow(name: &str, connector: &str) -> serde_json::Value {
                     "method": "POST",
                     "path": "/fail",
                     "body": {"test": true},
-                    "response_path": "data.result",
+                    "output": "data.result",
                     "timeout_ms": 5000
                 }
             }

@@ -1,32 +1,23 @@
 //! `http_call` — a request to an HTTP connector, with the connector's retry
 //! policy, its auth (managed OAuth2 included) and the circuit breaker.
 //!
-//! Two implementations, one request path: [`HttpCallHandler`] serves on
-//! dataflow-rs 3 over its `HttpCallConfig`, and [`HttpCallFunction`] is the
-//! dataflow-rs 4 function over Orion's own [`HttpCallConfig`] (break 10).
-//! Both resolve the task's fields in the same order and hand the request to
-//! one `send`, so the two cannot send different requests.
+//! [`HttpCallFunction`] reads the task through Orion's own
+//! [`HttpCallConfig`] (break 10), resolving its fields in 1.12's order, and
+//! hands the request to one `send`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::program::IssueCode;
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::HttpCallConfig as V3HttpCallConfig;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{ConnectorCall, require_method_allowed};
 use super::http_common::{self, BodyFormat, ResponseFormat, build_url};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::Scope;
 use crate::connector::{ConnectorRegistry, HttpConnectorConfig};
 use crate::engine::kit::{self, read};
 use crate::engine::retry::{RetryPolicy, retry_with_attempts};
@@ -34,7 +25,7 @@ use crate::engine::{ErrorClass, HandlerError, http_status};
 
 /// This function's name, for the free functions below — a reference to the
 /// one place it is written (F48), not a second spelling of it.
-const NAME: &str = <HttpCallHandler as ConnectorHandler>::NAME;
+pub(crate) const NAME: &str = "http_call";
 
 /// The methods a task may name, in dataflow-rs 3's `HttpMethod::ALL` order:
 /// the vocabulary its `HttpMethod` deserialized, upper case only.
@@ -46,29 +37,8 @@ fn is_idempotent(method: &str) -> bool {
     matches!(method, "GET" | "PUT" | "DELETE")
 }
 
-/// The half of an `http_call` task read before the connector is resolved.
-///
-/// The refusals here — an unknown `body_format`, a `response_format` naming
-/// nothing — must not be reported after one the message can change (F58), so
-/// they are decided in `parse`, which runs before the connector lookup. Since
-/// dataflow-rs 3.9 every one of these parameters is JSONLogic, so "decided
-/// first" no longer means "decided by the task text alone": a statically
-/// authored value folds at engine build and costs nothing, and a computed one
-/// evaluates here, still ahead of the method gate. The path and body stay in
-/// `run`, after the connector's method allow-list has had its say.
-pub struct HttpCall {
-    method: reqwest::Method,
-    body_format: BodyFormat,
-    response_format: ResponseFormat,
-    timeout: Duration,
-    /// Per-task headers, values resolved against the message. Before 3.9 these
-    /// were `String`s on the config, so a bearer token or a correlation id had
-    /// to be injected by the service layer.
-    headers: HashMap<String, String>,
-}
-
 /// One request, its every field resolved: what [`send`] needs from the
-/// task, read by either engine's implementation.
+/// task.
 struct Request<'a> {
     method: &'a reqwest::Method,
     /// Whether a retry may resend it, by the task's method.
@@ -117,10 +87,8 @@ async fn send(
         // attempts plus backoff were previously unbounded, and a 60 s channel
         // timeout could sit under a ~127 s retry loop still burning a
         // connection after the caller gave up. The run's own deadline is not
-        // this loop's: on dataflow-rs 3 `run_for_channel` wraps the engine
-        // call in a timeout, and dataflow-rs 4 races every host call against
-        // the run's deadline, so a call cut short by either ends the same
-        // way. Non-retryable methods get `max_retries = 0`, so their budget is
+        // this loop's: the engine races every host call against the run's
+        // deadline. Non-retryable methods get `max_retries = 0`, so their budget is
         // exactly one `timeout_ms`.
         deadline: Some(req.timeout.saturating_mul(max_retries.saturating_add(1))),
     };
@@ -180,100 +148,6 @@ async fn send(
         registry.oauth().invalidate(connector).await;
     }
     result
-}
-
-/// Executes HTTP requests against named connectors with retry support.
-pub struct HttpCallHandler {
-    pub registry: Arc<ConnectorRegistry>,
-    pub client: reqwest::Client,
-}
-
-#[async_trait]
-impl ConnectorHandler for HttpCallHandler {
-    const NAME: &'static str = "http_call";
-    type Kind = crate::connector::kind::Http;
-    type Input = V3HttpCallConfig;
-    type Parsed = HttpCall;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        _call: &ConnectorCall<'_>,
-        input: &V3HttpCallConfig,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        // The format axes are values-as-data on dataflow-rs's config; this
-        // parse is the value table that interprets them. Workflow validation
-        // checks the same table at authoring time, so these refusals only fire
-        // for definitions that bypassed it.
-        Ok(HttpCall {
-            method: super::to_reqwest_method(&input.method),
-            body_format: BodyFormat::parse(input.resolve_body_format(ctx)?.as_deref())
-                .map_err(DataflowError::Validation)?,
-            response_format: ResponseFormat::parse(input.resolve_response_format(ctx)?.as_deref())
-                .map_err(DataflowError::Validation)?,
-            timeout: Duration::from_millis(input.resolve_timeout_ms(ctx)?),
-            headers: input.resolve_headers(ctx)?,
-        })
-    }
-
-    fn gate(
-        parsed: &Self::Parsed,
-        conn: &HttpConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        // F22e: the connector's method allow-list, empty by default. A
-        // connector pointed at a read-only upstream can be `["GET"]` and no
-        // workflow can POST through it.
-        Ok(require_method_allowed(
-            &conn.operations,
-            parsed.method.as_str(),
-            connector,
-        )?)
-    }
-
-    async fn run(
-        &self,
-        parsed: Self::Parsed,
-        http_config: &HttpConnectorConfig,
-        call: &ConnectorCall<'_>,
-        input: &V3HttpCallConfig,
-        ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        // `resolve_path` / `resolve_body` are dataflow-rs's own sanctioned read
-        // of the (static, logic) pairs: they apply the static fallback, coerce
-        // a non-string path to compact JSON, and evaluate on the worker's
-        // pooled arena. Resolved here rather than in `parse` so the method gate
-        // above still precedes the only message-dependent step (F58).
-        let path = input.resolve_path(ctx)?;
-        let body = input.resolve_body(ctx)?;
-        let response_body = send(
-            &self.registry,
-            &self.client,
-            call.connector,
-            http_config,
-            Request {
-                method: &parsed.method,
-                idempotent: input.method.is_idempotent(),
-                path: path.as_deref(),
-                headers: &parsed.headers,
-                body: body.as_ref(),
-                body_format: parsed.body_format,
-                response_format: parsed.response_format,
-                timeout: parsed.timeout,
-            },
-        )
-        .await?;
-
-        // `response_path` is optional: omitting it discards the body.
-        Ok(match input.response_path {
-            Some(_) => response_body.into(),
-            None => Produced::nothing(),
-        })
-    }
 }
 
 /// `http_call`'s input on dataflow-rs 4: Orion's own config, in place of
@@ -341,8 +215,8 @@ fn unknown_method(method: &str) -> String {
     )
 }
 
-/// `http_call` as a dataflow-rs 4 function: the request `HttpCallHandler`
-/// sends, read in the same order.
+/// `http_call` as a function: the request 1.12's handler sent, read in the
+/// same order.
 pub struct HttpCallFunction {
     pub registry: Arc<ConnectorRegistry>,
     pub client: reqwest::Client,
@@ -472,11 +346,9 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "path",
-        description: "Path appended to the connector's base URL (JSONLogic). \
-                      (Was `path_logic`; still accepted, but not alongside `path`.)",
+        description: "Path appended to the connector's base URL (JSONLogic).",
         kind: FieldKind::String,
         template_at: &[""],
-        alias: Some("path_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -489,11 +361,9 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "body",
-        description: "Request body, any JSON value (JSONLogic). \
-                      (Was `body_logic`; still accepted, but not alongside `body`.)",
+        description: "Request body, any JSON value (JSONLogic).",
         kind: FieldKind::Any,
         template_at: &[""],
-        alias: Some("body_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -508,12 +378,9 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "output",
-        description: "Dotted path where the response body is written (JSONLogic). Omit to discard it. (Was `response_path` before 1.0; still accepted, but not alongside `output`.)",
+        description: "Dotted path where the response body is written (JSONLogic). Omit to discard it.",
         kind: FieldKind::String,
         template_at: &[""],
-        // A real serde alias on dataflow-rs's `HttpCallConfig` since 3.1 —
-        // Orion used to rewrite the key in the storage repository instead.
-        alias: Some("response_path"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -536,7 +403,6 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::functions::connector_handler::Connector;
     use crate::engine::functions::twin::{self, Failure, Seen};
     use dataflow_rs::function::testing;
     use dataflow_rs::program::Severity;
@@ -643,17 +509,10 @@ mod tests {
             json!({"connector": "api", "response_path": "data.r"}),
             json!({"connector": "api", "output": 7}),
         ];
-        let v3 = |input: &Value| serde_json::from_value::<V3HttpCallConfig>(input.clone()).is_ok();
         for input in loads {
-            assert!(v3(&input), "3.15 loads {input}");
             assert!(config(input.clone()).is_ok(), "{input}");
         }
-        for input in refused_alike {
-            assert!(!v3(&input), "3.15 refuses {input}");
-            assert!(config(input.clone()).is_err(), "{input}");
-        }
-        for input in breaks {
-            assert!(v3(&input), "3.15 loads {input}");
+        for input in refused_alike.into_iter().chain(breaks) {
             assert!(config(input.clone()).is_err(), "{input}");
         }
     }
@@ -679,11 +538,10 @@ mod tests {
         );
     }
 
-    /// Break 2a: an unknown key is refused. 3.15's aliases are among them
-    /// here, since the loader rewrites them before the config sees a task
-    /// (I186).
+    /// Break 2a: an unknown key is refused, 1.12's aliases among them: no
+    /// alias is read.
     #[test]
-    fn an_unknown_key_is_refused_and_the_aliases_are_the_loaders() {
+    fn an_unknown_key_is_refused_the_aliases_among_them() {
         for key in ["path_logic", "body_logic", "response_path", "retries"] {
             let issues = refused(json!({"connector": "api", key: "x"}));
             assert_eq!(issues.len(), 1, "{key}: {issues:?}");
@@ -699,39 +557,40 @@ mod tests {
     /// and what it refused is refused with its text.
     #[test]
     fn the_method_is_3_15s_with_its_refusal() {
-        let names: Vec<&str> = dataflow_rs_v3::HttpMethod::ALL
-            .iter()
-            .map(dataflow_rs_v3::HttpMethod::as_str)
-            .collect();
-        assert_eq!(names, METHODS);
-        for method in dataflow_rs_v3::HttpMethod::ALL {
-            config(json!({"connector": "api", "method": method.as_str()})).expect("compiles");
-            assert_eq!(
-                is_idempotent(method.as_str()),
-                method.is_idempotent(),
-                "{method}"
-            );
+        assert_eq!(METHODS, ["GET", "POST", "PUT", "PATCH", "DELETE"]);
+        for (method, idempotent) in [
+            ("GET", true),
+            ("POST", false),
+            ("PUT", true),
+            ("PATCH", false),
+            ("DELETE", true),
+        ] {
+            config(json!({"connector": "api", "method": method})).expect("compiles");
+            assert_eq!(is_idempotent(method), idempotent, "{method}");
         }
         for method in ["get", "Post", "HEAD", "OPTIONS", ""] {
-            let v3 = serde_json::from_value::<dataflow_rs_v3::HttpMethod>(json!(method))
-                .expect_err("3.15 refuses it")
-                .to_string();
             let issues = refused(json!({"connector": "api", "method": method}));
             assert_eq!(
                 issues,
-                [("method".to_string(), IssueCode::InputParse, v3)],
+                [(
+                    "method".to_string(),
+                    IssueCode::InputParse,
+                    format!(
+                        "unknown variant `{method}`, expected one of \
+                         `GET`, `POST`, `PUT`, `PATCH`, `DELETE`"
+                    )
+                )],
                 "{method:?}"
             );
         }
         // Not a string at all, which 3.15 refused too.
-        assert!(serde_json::from_value::<dataflow_rs_v3::HttpMethod>(Value::Null).is_err());
         assert_eq!(
             refused(json!({"connector": "api", "method": null}))[0].0,
             "method"
         );
     }
 
-    // -- The call, against 3.15's handler --
+    // -- The call, against 1.12's records --
 
     /// An HTTP upstream on a free loopback port.
     async fn serve(app: axum::Router) -> String {
@@ -792,13 +651,6 @@ mod tests {
         })
     }
 
-    fn handler(registry: Arc<ConnectorRegistry>) -> HttpCallHandler {
-        HttpCallHandler {
-            registry,
-            client: reqwest::Client::new(),
-        }
-    }
-
     fn function(registry: Arc<ConnectorRegistry>) -> HttpCallFunction {
         HttpCallFunction {
             registry,
@@ -806,24 +658,18 @@ mod tests {
         }
     }
 
-    /// One task through both engines, each over a fresh registry holding
-    /// `connectors`: dataflow-rs 3's, then dataflow-rs 4's.
-    async fn both(connectors: &[(&str, Value)], input: Value, data: Value) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(handler(twin::connectors(connectors).await))),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(
+    /// One task over a fresh registry holding `connectors`, with the
+    /// upstream `url` a failure names spelled `<upstream>`, so the answer is
+    /// the same from one run's loopback port to the next.
+    async fn run(connectors: &[(&str, Value)], url: &str, input: Value, data: Value) -> Seen {
+        let seen = twin::v4(
             NAME,
             function(twin::connectors(connectors).await),
             input,
             data,
         )
         .await;
-        (v3, v4)
+        upstream_unnamed(seen, url)
     }
 
     /// Every field resolves as 3.15's `HttpCallConfig` resolved it: the path,
@@ -866,8 +712,8 @@ mod tests {
             json!({"connector": "api", "path": "/teapot", "output": "data.r"}),
         ];
         for input in cases {
-            let (v3, v4) = both(&connectors, input.clone(), data.clone()).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(&connectors, &url, input.clone(), data.clone()).await;
+            twin::pinned(&v4, format!("every_field/{input}"));
         }
     }
 
@@ -890,13 +736,13 @@ mod tests {
             json!({"connector": "api", "method": "POST"}),
             json!({"connector": "api", "method": "GET", "output": "data.r"}),
         ] {
-            let (v3, v4) = both(&connectors, input.clone(), json!({})).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(&connectors, &url, input.clone(), json!({})).await;
+            twin::pinned(&v4, format!("connector_and_gate/{input}"));
         }
     }
 
     /// `seen` with the upstream `url` a failure names spelled `<upstream>`,
-    /// for comparing two sides that each ran their own upstream.
+    /// for comparing answers from upstreams on different ports.
     fn upstream_unnamed(seen: Seen, url: &str) -> Seen {
         seen.map_err(|failure| Failure {
             message: failure.message.replace(url, "<upstream>"),
@@ -924,8 +770,8 @@ mod tests {
     }
 
     /// The retry: an idempotent method is retried by the connector's policy,
-    /// a POST is not unless the connector opts in, and each engine makes the
-    /// same number of attempts to the same answer.
+    /// a POST is not unless the connector opts in, and the attempts and the
+    /// answer are 1.12's.
     #[tokio::test]
     async fn the_retry_is_3_15s() {
         let cases = [
@@ -938,26 +784,14 @@ mod tests {
         ];
         for (method, opt_in, fails, attempts) in cases {
             let input = json!({"connector": "api", "method": method, "output": "data.r"});
-            let mut sides = Vec::new();
-            for v4 in [false, true] {
-                let (url, seen) = flaky(fails).await;
-                let mut conn = connector(&url);
-                conn["retry_non_idempotent"] = json!(opt_in);
-                let registry = twin::connectors(&[("api", conn)]).await;
-                let result = if v4 {
-                    twin::v4(NAME, function(registry), input.clone(), json!({})).await
-                } else {
-                    let handler = Box::new(Connector(handler(registry)));
-                    twin::v3(NAME, handler, input.clone(), json!({})).await
-                };
-                sides.push((upstream_unnamed(result, &url), seen.load(Ordering::SeqCst)));
-            }
+            let (url, seen) = flaky(fails).await;
+            let mut conn = connector(&url);
+            conn["retry_non_idempotent"] = json!(opt_in);
+            let result = run(&[("api", conn)], &url, input, json!({})).await;
+            twin::pinned(&result, format!("retry/{method}/{opt_in}/{fails}"));
             assert_eq!(
-                sides[1], sides[0],
-                "{method}, opt-in {opt_in}, {fails} failures"
-            );
-            assert_eq!(
-                sides[1].1, attempts,
+                seen.load(Ordering::SeqCst),
+                attempts,
                 "{method}, opt-in {opt_in}, {fails} failures"
             );
         }
@@ -1029,35 +863,27 @@ mod tests {
     }
 
     /// The OAuth path (#268): the token is acquired and applied, a 401 drops
-    /// it, and the next call acquires a fresh one — the same calls, tokens
-    /// and answers on both engines.
+    /// it, and the next call acquires a fresh one — the calls, tokens and
+    /// answers 1.12's handler made.
     #[tokio::test]
-    async fn a_401_drops_the_managed_token_as_3_15s_handler_did() {
+    async fn a_401_drops_the_managed_token_as_1_12_did() {
         let input = json!({"connector": "partner", "output": "data.r"});
-        let mut sides = Vec::new();
-        for v4 in [false, true] {
-            let (idp, api, issued) = oauth_pair().await;
-            let registry = oauth_registry(&api, &idp).await;
-            let mut calls = Vec::new();
-            for _ in 0..3 {
-                let seen = if v4 {
-                    twin::v4(
-                        NAME,
-                        function(Arc::clone(&registry)),
-                        input.clone(),
-                        json!({}),
-                    )
-                    .await
-                } else {
-                    let handler = Box::new(Connector(handler(Arc::clone(&registry))));
-                    twin::v3(NAME, handler, input.clone(), json!({})).await
-                };
-                calls.push(upstream_unnamed(seen, &api));
-            }
-            sides.push((calls, issued.load(Ordering::SeqCst)));
+        let (idp, api, issued) = oauth_pair().await;
+        let registry = oauth_registry(&api, &idp).await;
+        let mut calls = Vec::new();
+        for i in 0..3 {
+            let seen = twin::v4(
+                NAME,
+                function(Arc::clone(&registry)),
+                input.clone(),
+                json!({}),
+            )
+            .await;
+            let seen = upstream_unnamed(seen, &api);
+            twin::pinned(&seen, format!("oauth/{i}"));
+            calls.push(seen);
         }
-        assert_eq!(sides[1], sides[0]);
-        let (calls, issued) = &sides[1];
+        let issued = issued.load(Ordering::SeqCst);
         assert_eq!(
             calls[0].as_ref().err().map(|f| f.code.as_str()),
             Some("HTTP_ERROR")
@@ -1067,7 +893,7 @@ mod tests {
             Some(&json!("Bearer tok-2"))
         );
         assert_eq!(
-            *issued, 2,
+            issued, 2,
             "the 401 dropped the first token, the second was reused"
         );
     }
@@ -1078,8 +904,7 @@ mod tests {
         let url = echo().await;
         let connectors = [("api", connector(&url))];
         let input = json!({"connector": "api", "path": "/orders"});
-        let (v3, v4) = both(&connectors, input.clone(), json!({"keep": 1})).await;
-        assert_eq!(v4, v3);
+        let v4 = run(&connectors, &url, input.clone(), json!({"keep": 1})).await;
         assert_eq!(v4, Ok(json!({"keep": 1})));
 
         let called = testing::call(function(twin::connectors(&connectors).await), input)
@@ -1090,10 +915,10 @@ mod tests {
         assert!(called.writes.is_empty(), "{:?}", called.writes);
     }
 
-    /// `timeout_ms` bounds one attempt, and a timeout is 3.15's retryable
+    /// `timeout_ms` bounds one attempt, and a timeout is 1.12's retryable
     /// `TIMEOUT_ERROR`, with its text.
     #[tokio::test]
-    async fn timeout_ms_bounds_an_attempt_as_3_15s_did() {
+    async fn timeout_ms_bounds_an_attempt_as_1_12_did() {
         let url = echo().await;
         let mut conn = connector(&url);
         conn["retry"] = json!({"max_retries": 0, "retry_delay_ms": 1});
@@ -1101,8 +926,8 @@ mod tests {
         for timeout in [json!(100), json!({"+": [50, 50]})] {
             let input = json!({"connector": "api", "path": "/slow", "timeout_ms": timeout,
                                "output": "data.r"});
-            let (v3, v4) = both(&connectors, input, json!({})).await;
-            assert_eq!(v4, v3);
+            let v4 = run(&connectors, &url, input.clone(), json!({})).await;
+            twin::pinned(&v4, format!("timeout/{input}"));
             let failure: Failure = v4.expect_err("the attempt times out");
             assert_eq!(failure.code, "TIMEOUT_ERROR");
             assert!(
@@ -1113,8 +938,7 @@ mod tests {
     }
 
     /// The run's deadline (`ctx.deadline()`) ends a call still waiting on its
-    /// upstream, as `run_for_channel`'s timeout ended one on dataflow-rs 3:
-    /// the call ends `TimedOut`, well before its own `timeout_ms`, and
+    /// upstream, as 1.12's channel timeout ended one: the call ends `TimedOut`, well before its own `timeout_ms`, and
     /// nothing is written.
     #[tokio::test]
     async fn the_runs_deadline_ends_a_waiting_call() {
@@ -1144,9 +968,9 @@ mod tests {
     /// `VALIDATION_ERROR` and nothing is sent. 3.15's `http_call` read its
     /// output through `resolve_string`, which refused nothing: it sent the
     /// request and wrote the response at a context key no response shows,
-    /// which dataflow-rs 4 has no way to write, so the request it sent is the
-    /// one difference, and this pins both sides of it. An output that names a
-    /// path is written there, alike.
+    /// which can no longer be written, so the request it sent is the one
+    /// difference. An output that names a path is written there, as 1.12
+    /// wrote it.
     #[tokio::test]
     async fn a_computed_output_is_resolved_before_the_request() {
         let data = json!({"n": 3, "word": "result", "at": "data.r"});
@@ -1169,44 +993,15 @@ mod tests {
                 "{failure:?}"
             );
             assert_eq!(sent.load(Ordering::SeqCst), 0, "{output}: nothing is sent");
-
-            let (url, sent) = flaky(0).await;
-            let registry = twin::connectors(&[("api", connector(&url))]).await;
-            let handler = Box::new(Connector(handler(registry)));
-            let v3 = twin::v3(NAME, handler, input, data.clone()).await;
-            assert_eq!(
-                v3,
-                Ok(data.clone()),
-                "{output}: 3.15 wrote where no response shows"
-            );
-            assert_eq!(
-                sent.load(Ordering::SeqCst),
-                1,
-                "{output}: 3.15 sent the request"
-            );
         }
 
         let input = json!({"connector": "api", "output": {"var": "data.at"}});
-        let mut sides = Vec::new();
-        for v4 in [false, true] {
-            let (url, sent) = flaky(0).await;
-            let registry = twin::connectors(&[("api", connector(&url))]).await;
-            let seen = if v4 {
-                twin::v4(NAME, function(registry), input.clone(), data.clone()).await
-            } else {
-                twin::v3(
-                    NAME,
-                    Box::new(Connector(handler(registry))),
-                    input.clone(),
-                    data.clone(),
-                )
-                .await
-            };
-            sides.push((seen, sent.load(Ordering::SeqCst)));
-        }
-        assert_eq!(sides[1], sides[0]);
+        let (url, sent) = flaky(0).await;
+        let seen = run(&[("api", connector(&url))], &url, input, data).await;
+        twin::pinned(&seen, "computed_output/data.at");
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
         assert_eq!(
-            sides[1].0.as_ref().ok().map(|d| &d["r"]),
+            seen.as_ref().ok().map(|d| &d["r"]),
             Some(&json!({"ok": true}))
         );
     }

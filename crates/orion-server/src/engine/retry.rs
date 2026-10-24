@@ -11,10 +11,8 @@
 //! `tokio::time::Instant`, so a paused test clock stays coherent with the
 //! sleeps.
 //!
-//! Two changes from the original: the loop is generic over [`Retryable`], so
-//! it retries a dataflow-rs 3 `DataflowError` and a dataflow-rs 4 `Error`
-//! alike, and its debug lines go through `tracing`, Orion's logger, rather
-//! than `log`.
+//! Two changes from the original: the loop is generic over [`Retryable`], and
+//! its debug lines go through `tracing`, Orion's logger, rather than `log`.
 //!
 //! It is deliberately **not** engine-level automatic retry: the engine cannot
 //! know which handlers are idempotent — an SMTP send that times out after
@@ -38,15 +36,8 @@ pub trait Retryable {
     fn is_retryable(&self) -> bool;
 }
 
-/// dataflow-rs 3's classification, `DataflowError::retryable`.
-impl Retryable for dataflow_rs_v3::DataflowError {
-    fn is_retryable(&self) -> bool {
-        self.retryable()
-    }
-}
-
-/// dataflow-rs 4's, `Error::is_retryable`: a timeout, or what a service
-/// error declares.
+/// The engine's classification, `Error::is_retryable`: a timeout, or what a
+/// service error declares.
 impl Retryable for dataflow_rs::Error {
     fn is_retryable(&self) -> bool {
         dataflow_rs::Error::is_retryable(self)
@@ -200,8 +191,8 @@ where
     }
 }
 
-/// dataflow-rs 3.15.0's own tests of the loop (`tests/retry.rs`), over its
-/// `DataflowError`, and the same properties over dataflow-rs 4's `Error`.
+/// dataflow-rs 3.15.0's own tests of the loop (`tests/retry.rs`), over the
+/// engine's `Error`.
 ///
 /// Every timing assertion runs under a paused clock, so the clock only
 /// advances when a sleep asks it to. That makes the deadline arithmetic
@@ -209,7 +200,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs_v3::DataflowError;
+    use dataflow_rs::Error as DataflowError;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -233,11 +224,11 @@ mod tests {
     }
 
     fn transient() -> DataflowError {
-        DataflowError::Timeout("upstream".into())
+        DataflowError::service("TIMEOUT_ERROR", "upstream").with_retryable(true)
     }
 
     fn permanent() -> DataflowError {
-        DataflowError::Validation("bad input".into())
+        DataflowError::service("VALIDATION_ERROR", "bad input")
     }
 
     #[tokio::test(start_paused = true)]
@@ -430,9 +421,7 @@ mod tests {
             let op = move || {
                 c.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Err::<u32, _>(
-                    DataflowError::service("upstream", "boom")
-                        .retryable(retryable)
-                        .build(),
+                    DataflowError::service("upstream", "boom").with_retryable(retryable),
                 ))
             };
 
@@ -455,40 +444,11 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn the_attempt_count_is_what_fills_the_error_info_fields() {
-        use dataflow_rs_v3::ErrorInfo;
-
-        let (_, op) = flaky(u32::MAX, transient);
-        let (result, attempts) = retry_with_attempts(
-            RetryPolicy {
-                max_retries: 2,
-                retry_delay_ms: 1,
-                deadline: None,
-            },
-            "svc",
-            op,
-        )
-        .await;
-
-        let err = result.expect_err("every attempt fails");
-        let mut info = ErrorInfo::simple_ref("SVC_FAILED", &err.to_string(), None);
-        info.retry_attempted = Some(attempts > 1);
-        info.retry_count = Some(attempts - 1);
-
-        assert_eq!(info.retry_attempted, Some(true));
-        assert_eq!(
-            info.retry_count,
-            Some(2),
-            "two retries after the first attempt"
-        );
-    }
-
-    /// The loop over dataflow-rs 4's `Error`: a service error is retried
+    /// A class-built error is retried
     /// exactly when it declares itself retryable, which is what the kit's
     /// class mapping sets for `IO_ERROR` and `TIMEOUT_ERROR`.
     #[tokio::test(start_paused = true)]
-    async fn a_v4_error_is_retried_by_its_own_retryability() {
+    async fn a_class_built_error_is_retried_by_its_own_retryability() {
         use crate::engine::{ErrorClass, HandlerError};
 
         for (class, expected_calls) in [

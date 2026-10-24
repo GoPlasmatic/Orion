@@ -4,11 +4,10 @@
 //! ingress, and everything after it used to be copied per transport: the sync
 //! HTTP route, the async trace queue, the Kafka consume loop and the
 //! in-process `channel_call` handler each built a `Message`, loaded the engine
-//! snapshot, called [`run_for_channel`], re-derived the "engine returned Ok
+//! snapshot, ran it, re-derived the "engine returned Ok
 //! but the message carries task errors" rule, and mapped a timeout — **four
-//! different ways**: an `OrionError::Timeout`, a synthesised
-//! `DataflowError::Timeout`, a `fail("timeout", …)`, and another
-//! `DataflowError::Timeout` with different wording. Nothing tied the four
+//! different ways**: an `OrionError::Timeout`, a synthesised engine timeout,
+//! a `fail("timeout", …)`, and another engine timeout with different wording. Nothing tied the four
 //! together, so the next change to dataflow-rs's error semantics was four
 //! edits and a test suite that could not tell if one was missed.
 //!
@@ -17,7 +16,7 @@
 //! the `has_errors` rule at all, so a target channel whose workflow failed its
 //! tasks reported success to its caller.
 //!
-//! [`execute_admitted`] is that step, once. What stays with each transport is
+//! [`execute_admitted_on_generation`] is that step, once. What stays with each transport is
 //! what genuinely differs: persistence, response shaping, and what a
 //! [`RunOutcome`] *means* to it — an HTTP caller gets the errors in its
 //! envelope, the async path routes them to the DLQ, Kafka rewinds or
@@ -28,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use super::runner::{TraceCapture, run_for_channel};
+use super::runner::TraceCapture;
 
 /// What one admitted execution did.
 ///
@@ -39,14 +38,13 @@ use super::runner::{TraceCapture, run_for_channel};
 pub enum RunOutcome {
     /// Every workflow that matched ran, and none reported a task error.
     Ok,
-    /// The engine returned `Ok(())` and the message carries task errors — the
-    /// v3 contract. Carries the joined `code: message` summary, which is what
+    /// The run completed and the message carries task errors. Carries the joined `code: message` summary, which is what
     /// all three of the transports that look at it were building by hand.
     WorkflowErrors(String),
     /// The deadline expired, with the budget in milliseconds.
     Timeout(u64),
     /// The engine itself failed the call.
-    EngineError(dataflow_rs_v3::DataflowError),
+    EngineError(dataflow_rs::Error),
 }
 
 impl RunOutcome {
@@ -90,6 +88,11 @@ impl From<&RunOutcome> for NormalizedRunOutcome {
     }
 }
 
+/// A cancelled run, as the timeout 1.12 recorded for it.
+fn cancelled() -> dataflow_rs::Error {
+    dataflow_rs::Error::service("TIMEOUT_ERROR", "Timeout error: cancelled").with_retryable(true)
+}
+
 impl From<NormalizedRunOutcome> for RunOutcome {
     fn from(outcome: NormalizedRunOutcome) -> Self {
         match outcome {
@@ -97,11 +100,9 @@ impl From<NormalizedRunOutcome> for RunOutcome {
             NormalizedRunOutcome::TaskFailure { summary, .. }
             | NormalizedRunOutcome::Rejected(summary) => Self::WorkflowErrors(summary),
             NormalizedRunOutcome::DeadlineExceeded(ms) => Self::Timeout(ms),
-            NormalizedRunOutcome::Cancelled => {
-                Self::EngineError(dataflow_rs_v3::DataflowError::Timeout("cancelled".into()))
-            }
+            NormalizedRunOutcome::Cancelled => Self::EngineError(cancelled()),
             NormalizedRunOutcome::Unavailable(msg) | NormalizedRunOutcome::InternalFailure(msg) => {
-                Self::EngineError(dataflow_rs_v3::DataflowError::Unknown(msg))
+                Self::EngineError(dataflow_rs::Error::service("UNKNOWN_ERROR", msg))
             }
         }
     }
@@ -134,94 +135,19 @@ pub struct ExecOpts<'a> {
 pub struct Execution {
     /// The message as the workflows left it — the source of the response body,
     /// the persisted result, and the error list.
-    pub message: dataflow_rs_v3::Message,
-    /// The per-task trace, when [`ExecOpts::capture`] asked for one.
-    pub task_trace: Option<dataflow_rs_v3::ExecutionTrace>,
+    pub message: dataflow_rs::Message,
+    /// The run's trace, when [`ExecOpts::capture`] asked for one.
+    pub task_trace: Option<dataflow_rs::observe::Trace>,
     pub outcome: RunOutcome,
     /// Wall time of the engine call alone, for the latency histogram.
     pub duration: Duration,
 }
 
-/// Run `channel`'s workflows over `data`, after the guards have admitted it.
-///
-/// `engine` is the one belonging to the generation that admitted the request
-/// (`RuntimeGeneration::engine`) — passed in rather than loaded here, so a
-/// transport cannot admit against one generation and execute on the next. It
-/// used to take the engine *handle* and load it at this line, which is exactly
-/// where that mismatch entered.
-///
-/// Owns the message build, the deadline arm and the `has_errors` rule.
-/// Everything downstream — persisting a trace, shaping a response, committing
-/// an offset, emitting the counter whose label [`RunOutcome::status_label`]
-/// derives — is the caller's.
-pub async fn execute_admitted(
-    engine: &Arc<dataflow_rs_v3::Engine>,
-    channel: &str,
-    data: &Value,
-    metadata: &Value,
-    opts: ExecOpts<'_>,
-) -> Execution {
-    // Per-write capture and the audit trail are kept only for a traced run.
-    // With capture on, every write deep-copies its old and new value into the
-    // audit trail, and those copies stay on the message until the run returns
-    // — so a looping workflow holds sweeps × writes × value size (#350; about
-    // 65 bytes per number written). The entries themselves cost one per task
-    // per sweep, and a `for_each` used to copy them into every element (#373).
-    //
-    // Nothing on this path reads `Message::audit_trail`. The trace's per-step
-    // diff does: it is read from each task's own entry, so a traced run keeps
-    // them all (`AuditMode::Full`), and `TraceOptions { changes: true }` only
-    // reports what was captured, it never turns capture on. An untraced run
-    // keeps none (`AuditMode::Off`); status classification, the error records,
-    // `metadata.progress` and halting do not depend on the trail.
-    let traced = opts.capture.is_some();
-    let mut builder = dataflow_rs_v3::Message::builder()
-        .payload_json(data)
-        .metadata_json(metadata)
-        .capture_changes(traced)
-        .audit_mode(if traced {
-            dataflow_rs_v3::AuditMode::Full
-        } else {
-            dataflow_rs_v3::AuditMode::Off
-        });
-    if let Some(bucket) = opts.routing_bucket {
-        builder = builder.routing_bucket(bucket);
-    }
-    let mut message = builder.build();
-
-    let started = Instant::now();
-    let call = run_for_channel(
-        engine,
-        channel,
-        &mut message,
-        opts.timeout_ms,
-        opts.profile,
-        opts.capture,
-    )
-    .await;
-    let duration = started.elapsed();
-
-    let (outcome, task_trace) = match call {
-        Err(ms) => (RunOutcome::Timeout(ms), None),
-        Ok((Err(e), trace)) => (RunOutcome::EngineError(e), trace),
-        Ok((Ok(()), trace)) => {
-            // The v3 contract: `process_message_for_channel` answers `Ok(())`
-            // even when individual workflows failed — the failures are pushed
-            // into `message.errors()`. Derived here so a transport cannot
-            // forget to look, which is what `channel_call` was doing.
-            if message.has_errors() {
-                (RunOutcome::WorkflowErrors(error_summary(&message)), trace)
-            } else {
-                (RunOutcome::Ok, trace)
-            }
-        }
-    };
-
-    Execution {
-        message,
-        task_trace,
-        outcome,
-        duration,
+impl Execution {
+    /// The message's `data`, as JSON: the response body and the persisted
+    /// result.
+    pub fn data(&self) -> Value {
+        Value::from(self.message.context().data())
     }
 }
 
@@ -230,10 +156,12 @@ pub async fn execute_admitted(
 /// Pins `generation` in [`crate::runtime::PINNED_GENERATION`] for the duration
 /// of the execution so nested in-process `channel_call` invocations, guard
 /// stores, and model inference resolve against the same generation (`V2-05.2`,
-/// `V2-05.3`). When `opts.capture` is `None` and `generation.engine4` is
-/// present, executes on the Dataflow v4 [`dataflow_rs::Engine`]; when per-task
-/// `ExecutionTrace` capture is requested (or on synthetic test generations
-/// without `engine4`), delegates to [`execute_admitted`].
+/// `V2-05.3`).
+///
+/// Owns the message build, the deadline arm and the `has_errors` rule.
+/// Everything downstream — persisting a trace, shaping a response, committing
+/// an offset, emitting the counter whose label [`RunOutcome::status_label`]
+/// derives — is the caller's.
 pub async fn execute_admitted_on_generation(
     generation: &Arc<crate::runtime::RuntimeGeneration>,
     channel: &str,
@@ -256,18 +184,27 @@ async fn execute_admitted_on_generation_inner(
     metadata: &Value,
     opts: ExecOpts<'_>,
 ) -> Execution {
-    if let Some(ref engine4) = generation.engine4 {
-        return execute_admitted_on_v4(
-            engine4,
-            channel,
-            data,
-            metadata,
-            opts,
-            generation.run_budget_limits,
-        )
-        .await;
+    match &generation.engine {
+        Some(engine) => {
+            execute_on(
+                engine,
+                channel,
+                data,
+                metadata,
+                opts,
+                generation.run_budget_limits,
+            )
+            .await
+        }
+        // The boot generation, before the first publish, holds no workflow:
+        // nothing matches, and the message is returned as it started.
+        None => Execution {
+            message: serving_message(data, metadata),
+            task_trace: None,
+            outcome: RunOutcome::Ok,
+            duration: Duration::ZERO,
+        },
     }
-    execute_admitted(&generation.engine, channel, data, metadata, opts).await
 }
 
 fn v4_trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOptions {
@@ -285,122 +222,21 @@ fn v4_trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOpt
     opts
 }
 
-fn v4_trace_to_v3(
-    v4_trace: &dataflow_rs::observe::Trace,
-    v4_msg: &dataflow_rs::Message,
-    initial_payload: &Value,
-    capture: TraceCapture,
-) -> dataflow_rs_v3::ExecutionTrace {
-    let mut v3_trace = dataflow_rs_v3::ExecutionTrace::with_options(dataflow_rs_v3::TraceOptions {
-        changes: true,
-        snapshot_audit_trail: dataflow_rs_v3::AuditTrailScope::Own,
-        max_snapshot_bytes: capture.max_snapshot_bytes,
-        ..Default::default()
-    });
-
-    for (idx, (step, step_ctx)) in v4_trace
-        .steps
-        .iter()
-        .zip(v4_trace.contexts())
-        .enumerate()
-    {
-        match (&step.task_id, step.result) {
-            (None, dataflow_rs::observe::StepResult::Skipped) => {
-                v3_trace.add_step(
-                    dataflow_rs_v3::ExecutionStep::workflow_skipped(&step.workflow_id)
-                        .with_loop_counter(step.loop_counter),
-                );
-            }
-            (None, _) => {
-                // Internal engine workflow-level write (e.g. loop sweep entry);
-                // `v4_trace.contexts()` already applied its changes for later task steps.
-            }
-            (Some(task_id), dataflow_rs::observe::StepResult::Skipped) => {
-                v3_trace.add_step(
-                    dataflow_rs_v3::ExecutionStep::task_skipped(&step.workflow_id, task_id)
-                        .with_loop_counter(step.loop_counter)
-                        .with_element_index(step.element_index),
-                );
-            }
-            (Some(task_id), _) => {
-                let mut step_msg = dataflow_rs_v3::Message::builder()
-                    .id(v4_msg.id())
-                    .payload_json(initial_payload)
-                    .capture_changes(false)
-                    .audit_mode(dataflow_rs_v3::AuditMode::Off)
-                    .build();
-                step_msg.context = step_ctx.as_value().clone();
-                for rec in &step.errors {
-                    let mut eb =
-                        dataflow_rs_v3::ErrorInfo::builder(rec.code.as_str(), rec.message.as_str());
-                    if let Some(timestamp) = rec.timestamp.as_deref() {
-                        eb = eb.timestamp(timestamp);
-                    }
-                    if let Some(path) = rec.path.as_deref() {
-                        eb = eb.path(path);
-                    }
-                    if let Some(workflow_id) = rec.workflow_id.as_deref() {
-                        eb = eb.workflow_id(workflow_id);
-                    }
-                    if let Some(t_id) = rec.task_id.as_deref() {
-                        eb = eb.task_id(t_id);
-                    }
-                    if let Some(detail) = rec.detail.as_deref() {
-                        eb = eb.detail(detail);
-                    }
-                    if let Some(element_index) = rec.element_index {
-                        eb = eb.element_index(element_index);
-                    }
-                    step_msg.add_error(eb.build());
-                }
-
-                let v3_changes: Vec<dataflow_rs_v3::engine::message::Change> = step
-                    .changes
-                    .iter()
-                    .filter(|c| {
-                        &*c.path != "metadata.progress"
-                            && !c.path.starts_with("metadata._orion_errors")
-                    })
-                    .map(|c| dataflow_rs_v3::engine::message::Change {
-                        path: Arc::clone(&c.path),
-                        old_value: c.old_value.clone(),
-                        new_value: c.new_value.clone(),
-                        removed: c.removed,
-                    })
-                    .collect();
-
-                let mut v3_step =
-                    dataflow_rs_v3::ExecutionStep::executed(&step.workflow_id, task_id, &step_msg)
-                        .with_changes(v3_changes)
-                        .with_loop_counter(step.loop_counter)
-                        .with_element_index(step.element_index);
-
-                if v4_trace.truncated && step.changes.is_empty() {
-                    v3_step.message = None;
-                }
-                if let Some(elapsed) = step.elapsed {
-                    v3_step = v3_step.with_timing(
-                        chrono::Utc::now(),
-                        u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
-                    );
-                }
-                if let Some(map_ctxs) = v4_trace.mapping_contexts(idx) {
-                    v3_step = v3_step.with_mapping_contexts(
-                        map_ctxs
-                            .into_iter()
-                            .map(|c| Value::from(c.as_value()))
-                            .collect(),
-                    );
-                }
-                v3_trace.add_step(v3_step);
-            }
-        }
-    }
-
-    v3_trace
+/// The message a run on dataflow-rs 4 starts from: the caller's `data` as
+/// the payload and as the initial `data`, beside `metadata`.
+///
+/// `data` is seeded because dataflow-rs 4 keeps the payload out of the
+/// evaluation context (a path rooted at `payload` is a `PAYLOAD_VAR`), so a
+/// workflow reads its input under `data`. Every surface that runs a
+/// workflow builds its message here, so an offline run starts where a
+/// served one does.
+pub fn serving_message(data: &Value, metadata: &Value) -> dataflow_rs::Message {
+    use dataflow_rs::datavalue::OwnedDataValue;
+    let data = OwnedDataValue::from(data);
+    dataflow_rs::Message::from_parts(data.clone(), data, OwnedDataValue::from(metadata))
 }
 
-async fn execute_admitted_on_v4(
+async fn execute_on(
     engine: &dataflow_rs::Engine,
     channel: &str,
     data: &Value,
@@ -408,18 +244,13 @@ async fn execute_admitted_on_v4(
     opts: ExecOpts<'_>,
     budget_limits: super::budget::RunBudgetLimits,
 ) -> Execution {
-    use dataflow_rs::datavalue::OwnedDataValue;
     use dataflow_rs::run::{AuditMode, RunOptions, RunStatus};
 
-    let mut v4_msg = dataflow_rs::Message::from_parts(
-        OwnedDataValue::from(data),
-        OwnedDataValue::from(data),
-        OwnedDataValue::from(metadata),
-    );
+    let mut v4_msg = serving_message(data, metadata);
 
     if opts.timeout_ms == Some(0) {
         return Execution {
-            message: v4_message_to_v3(&v4_msg, data, metadata),
+            message: v4_msg,
             task_trace: None,
             outcome: RunOutcome::Timeout(0),
             duration: Duration::ZERO,
@@ -449,7 +280,7 @@ async fn execute_admitted_on_v4(
 
     let started = Instant::now();
     let run_fut = engine.run_with(&mut v4_msg, &run_opts);
-    let run = if let Some(p) = opts.profile {
+    let mut run = if let Some(p) = opts.profile {
         super::profile::ORION_PROFILE
             .scope(p.clone(), run_fut)
             .await
@@ -458,13 +289,11 @@ async fn execute_admitted_on_v4(
     };
     let duration = started.elapsed();
 
-    let task_trace = opts
-        .capture
-        .and_then(|capture| run.trace().map(|t| v4_trace_to_v3(t, &v4_msg, data, capture)));
-    let message = v4_message_to_v3(&v4_msg, data, metadata);
+    let task_trace = run.take_trace();
+    let message = v4_msg;
     let outcome = match run.status() {
         RunStatus::Completed => {
-            if message.has_errors() {
+            if !message.errors().is_empty() {
                 RunOutcome::WorkflowErrors(error_summary(&message))
             } else {
                 RunOutcome::Ok
@@ -472,20 +301,16 @@ async fn execute_admitted_on_v4(
         }
         RunStatus::CompletedWithErrors => RunOutcome::WorkflowErrors(error_summary(&message)),
         RunStatus::TimedOut => RunOutcome::Timeout(opts.timeout_ms.unwrap_or(0)),
-        RunStatus::Cancelled => {
-            RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Timeout("cancelled".into()))
-        }
+        RunStatus::Cancelled => RunOutcome::EngineError(cancelled()),
         _ => match run.into_result() {
             Ok(_) => {
-                if message.has_errors() {
+                if !message.errors().is_empty() {
                     RunOutcome::WorkflowErrors(error_summary(&message))
                 } else {
                     RunOutcome::Ok
                 }
             }
-            Err(e) => RunOutcome::EngineError(dataflow_rs_v3::DataflowError::from(
-                super::HandlerError::from(e),
-            )),
+            Err(e) => RunOutcome::EngineError(e),
         },
     };
 
@@ -497,74 +322,7 @@ async fn execute_admitted_on_v4(
     }
 }
 
-fn v4_message_to_v3(
-    v4_msg: &dataflow_rs::Message,
-    initial_payload: &Value,
-    initial_metadata: &Value,
-) -> dataflow_rs_v3::Message {
-    let data_val = Value::from(v4_msg.context().data());
-    let temp_val = Value::from(v4_msg.context().temp_data());
-    let meta_val = Value::from(v4_msg.context().metadata());
-    let meta_ref = if meta_val.is_null() {
-        initial_metadata
-    } else {
-        &meta_val
-    };
-
-    let mut v3_msg = dataflow_rs_v3::Message::builder()
-        .id(v4_msg.id())
-        .payload_json(initial_payload)
-        .metadata_json(meta_ref)
-        .capture_changes(false)
-        .audit_mode(dataflow_rs_v3::AuditMode::Off)
-        .build();
-    if !data_val.is_null() {
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut v3_msg.context,
-            "data",
-            dataflow_rs_v3::datavalue::OwnedDataValue::from(&data_val),
-        );
-    }
-    if !temp_val.is_null() {
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut v3_msg.context,
-            "temp_data",
-            dataflow_rs_v3::datavalue::OwnedDataValue::from(&temp_val),
-        );
-    }
-    // Copy every error diagnostic field shared between dataflow-rs v4
-    // `ErrorRecord` and v3 `ErrorInfo` (`code`, `message`, `path`,
-    // `workflow_id`, `task_id`, `timestamp`, `detail`, `element_index`).
-    // Note: `rec.cause` (`Arc<dyn Error>`) and `rec.site` (`ErrorSite`) are
-    // v4-only in-memory diagnostics with no v3 `ErrorInfo` counterpart.
-    for rec in v4_msg.errors() {
-        let mut eb = dataflow_rs_v3::ErrorInfo::builder(rec.code.as_str(), rec.message.as_str());
-        if let Some(timestamp) = rec.timestamp.as_deref() {
-            eb = eb.timestamp(timestamp);
-        }
-        if let Some(path) = rec.path.as_deref() {
-            eb = eb.path(path);
-        }
-        if let Some(workflow_id) = rec.workflow_id.as_deref() {
-            eb = eb.workflow_id(workflow_id);
-        }
-        if let Some(task_id) = rec.task_id.as_deref() {
-            eb = eb.task_id(task_id);
-        }
-        if let Some(detail) = rec.detail.as_deref() {
-            eb = eb.detail(detail);
-        }
-        if let Some(element_index) = rec.element_index {
-            eb = eb.element_index(element_index);
-        }
-        v3_msg.add_error(eb.build());
-    }
-    v3_msg
-}
-
-/// The `code: message; code: message` summary three transports were each
-/// building from `message.errors()`.
-fn error_summary(message: &dataflow_rs_v3::Message) -> String {
+fn error_summary(message: &dataflow_rs::Message) -> String {
     message
         .errors()
         .iter()
@@ -713,14 +471,10 @@ pub async fn execute_admitted_v4(
     metadata: &Value,
     opts: ExecOptsV4<'_>,
 ) -> ExecutionV4 {
-    use dataflow_rs::datavalue::OwnedDataValue;
     use dataflow_rs::run::{AuditMode, RunOptions};
 
     let traced = opts.capture.is_some();
-    let payload_dv = OwnedDataValue::from(data);
-    let data_dv = OwnedDataValue::from(data);
-    let meta_dv = OwnedDataValue::from(metadata);
-    let mut message = dataflow_rs::Message::from_parts(payload_dv, data_dv, meta_dv);
+    let mut message = serving_message(data, metadata);
 
     let mut run_opts = RunOptions::default()
         .channel(channel)
@@ -879,7 +633,7 @@ mod tests {
             "error"
         );
         assert_eq!(
-            RunOutcome::EngineError(dataflow_rs_v3::DataflowError::Unknown("x".into()))
+            RunOutcome::EngineError(dataflow_rs::Error::service("UNKNOWN_ERROR", "x"))
                 .status_label(),
             "error"
         );
@@ -891,32 +645,33 @@ mod tests {
     /// them.
     #[tokio::test]
     async fn only_a_traced_run_captures_per_write_changes() {
-        let workflow = dataflow_rs_v3::Workflow::from_json(
-            r#"{"id":"w","name":"w","channel":"c","priority":0,"condition":true,
-                "loop":{"counter":"i","max":3},
-                "tasks":[{"id":"m","name":"m","function":{"name":"map","input":
-                  {"mappings":[{"path":"temp_data.seen","logic":{"var":"temp_data.i"}}]}}}]}"#,
-        )
-        .expect("workflow parses");
-        let engine = Arc::new(
-            dataflow_rs_v3::Engine::new(vec![workflow], std::collections::HashMap::new())
-                .expect("engine builds"),
-        );
+        let engine = dataflow_rs::Engine::builder()
+            .workflow_json(&serde_json::json!({
+                "id": "w", "name": "w", "channel": "c", "priority": 0, "condition": true,
+                "loop": {"counter": "i", "max": 3},
+                "tasks": [{"id": "m", "name": "m", "function": {"name": "map", "input":
+                  {"mappings": [{"path": "temp_data.seen", "logic": {"var": "temp_data.i"}}]}}}]
+            }))
+            .build()
+            .expect("engine builds");
         let data = serde_json::json!({"xs": [1, 2, 3]});
         let metadata = serde_json::json!({});
+        let limits = crate::engine::budget::RunBudgetLimits::default();
 
-        let untraced = execute_admitted(&engine, "c", &data, &metadata, ExecOpts::default()).await;
+        let untraced =
+            execute_on(&engine, "c", &data, &metadata, ExecOpts::default(), limits).await;
         assert!(untraced.outcome.is_ok());
         assert!(
-            untraced.message.audit_trail().is_empty(),
+            untraced.message.audit().is_empty(),
             "an untraced run keeps no audit entries, so a loop holds nothing per sweep"
         );
+        assert!(untraced.task_trace.is_none());
         assert!(
-            untraced.message.temp_data().get("seen").is_some(),
+            untraced.message.context().temp_data().get("seen").is_some(),
             "the writes themselves still land"
         );
 
-        let traced = execute_admitted(
+        let traced = execute_on(
             &engine,
             "c",
             &data,
@@ -927,24 +682,18 @@ mod tests {
                 }),
                 ..Default::default()
             },
+            limits,
         )
         .await;
         assert!(traced.outcome.is_ok());
-        assert!(
-            traced
-                .message
-                .audit_trail()
-                .iter()
-                .all(|entry| entry.changes.len() == 1),
-            "a traced run captures each write"
-        );
         let trace = traced.task_trace.expect("a traced run returns its trace");
+        let task_steps: Vec<_> = trace.steps.iter().filter(|s| s.task_id.is_some()).collect();
+        assert_eq!(task_steps.len(), 3, "one step per sweep");
         assert!(
-            trace
-                .steps
+            task_steps
                 .iter()
-                .all(|step| step.changes.as_ref().is_some_and(|c| c.len() == 1)),
-            "the trace's per-step diff is still populated"
+                .all(|step| step.changes.iter().any(|c| &*c.path == "temp_data.seen")),
+            "each step records its own write"
         );
     }
 
@@ -1067,59 +816,8 @@ mod tests {
         assert_eq!(cancel_exec.outcome.status_label(), "cancelled");
     }
 
-    #[test]
-    fn v4_message_to_v3_preserves_message_id_and_all_error_diagnostic_fields() {
-        let v4_msg: dataflow_rs::Message = serde_json::from_value(serde_json::json!({
-            "id": "msg-preserve-id-01",
-            "payload": { "hello": "world" },
-            "context": {
-                "data": { "hello": "world" },
-                "metadata": { "channel": "orders" },
-                "temp_data": {}
-            },
-            "audit_trail": [],
-            "errors": [{
-                "code": "CONNECTOR_ERROR",
-                "message": "upstream failed",
-                "path": "data.orders.0",
-                "workflow_id": "wf-orders",
-                "task_id": "task-call-api",
-                "timestamp": "2026-01-01T00:00:00Z",
-                "detail": "HTTP 502 from internal-gateway: upstream connection reset",
-                "element_index": 3
-            }]
-        }))
-        .expect("deserialize v4 message");
-        let expected_id = v4_msg.id().to_string();
-
-        let v3_msg = v4_message_to_v3(
-            &v4_msg,
-            &serde_json::json!({ "hello": "world" }),
-            &serde_json::json!({ "channel": "orders" }),
-        );
-
-        assert_eq!(v3_msg.id(), expected_id, "v4 message ID must be preserved");
-        assert_eq!(v3_msg.errors().len(), 1);
-        let err = &v3_msg.errors()[0];
-        assert_eq!(err.code, "CONNECTOR_ERROR");
-        assert_eq!(err.message, "upstream failed");
-        assert_eq!(err.path.as_deref(), Some("data.orders.0"));
-        assert_eq!(err.workflow_id.as_deref(), Some("wf-orders"));
-        assert_eq!(err.task_id.as_deref(), Some("task-call-api"));
-        assert_eq!(err.timestamp.as_deref(), Some("2026-01-01T00:00:00Z"));
-        assert_eq!(
-            err.detail.as_deref(),
-            Some("HTTP 502 from internal-gateway: upstream connection reset")
-        );
-        assert_eq!(err.element_index, Some(3));
-    }
-
     #[tokio::test]
     async fn execute_admitted_on_generation_preserves_for_each_and_detail_diagnostics() {
-        let v3_engine = std::sync::Arc::new(
-            dataflow_rs_v3::Engine::new(vec![], std::collections::HashMap::new())
-                .expect("empty v3 engine"),
-        );
         let mut registry = dataflow_rs::Registry::new(crate::engine::kit::test_exprs());
         registry.register(
             crate::engine::functions::crypto::NAME,
@@ -1156,8 +854,7 @@ mod tests {
 
         let handle = crate::runtime::generation::test_handle();
         handle.publish(
-            v3_engine,
-            Some(v4_engine),
+            v4_engine,
             std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
             crate::engine::FunctionRegistry::builtin().clone(),
             std::sync::Arc::new(crate::plugin::PluginSet::empty()),
@@ -1186,11 +883,6 @@ mod tests {
 
     #[tokio::test]
     async fn td02_traced_execution_runs_on_v4_engine_and_redacts_sensitive_metadata() {
-        // Empty v3 engine: proves traced execution runs on `engine4`, not `engine`.
-        let v3_engine = std::sync::Arc::new(
-            dataflow_rs_v3::Engine::new(vec![], std::collections::HashMap::new())
-                .expect("empty v3 engine"),
-        );
         let v4_engine = dataflow_rs::Engine::builder()
             .config(
                 dataflow_rs::run::EngineConfig::default()
@@ -1218,8 +910,7 @@ mod tests {
 
         let handle = crate::runtime::generation::test_handle();
         handle.publish(
-            v3_engine,
-            Some(v4_engine),
+            v4_engine,
             std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
             crate::engine::FunctionRegistry::builtin().clone(),
             std::sync::Arc::new(crate::plugin::PluginSet::empty()),
@@ -1247,19 +938,15 @@ mod tests {
         .await;
 
         assert!(exec.outcome.is_ok());
-        assert_eq!(
-            serde_json::Value::from(exec.message.data())["doubled"],
-            serde_json::json!(42)
-        );
-        let trace = exec.task_trace.expect("traced v4 run must return ExecutionTrace");
+        assert_eq!(exec.data()["doubled"], serde_json::json!(42));
+        let trace = exec.task_trace.expect("a traced run returns its trace");
         assert_eq!(trace.steps.len(), 1);
         let step = &trace.steps[0];
-        assert_eq!(step.workflow_id, "wf-traced-v4");
+        assert_eq!(&*step.workflow_id, "wf-traced-v4");
         assert_eq!(step.task_id.as_deref(), Some("t-map"));
-        assert!(step.message.is_some());
         assert!(
-            step.changes.as_ref().is_some_and(|c| c.len() == 1),
-            "per-step changes should exclude metadata.progress and contain the map write"
+            step.changes.iter().any(|c| &*c.path == "data.doubled"),
+            "the step's changes carry the map write"
         );
         let trace_json = serde_json::to_string(&trace).expect("serializes");
         assert!(!trace_json.contains("top-secret-header-val"));
@@ -1269,10 +956,6 @@ mod tests {
 
     #[tokio::test]
     async fn td03_generation_run_budget_halts_excessive_task_dispatches() {
-        let v3_engine = std::sync::Arc::new(
-            dataflow_rs_v3::Engine::new(vec![], std::collections::HashMap::new())
-                .expect("empty v3 engine"),
-        );
         let v4_engine = dataflow_rs::Engine::builder()
             .config(
                 dataflow_rs::run::EngineConfig::default()
@@ -1301,8 +984,7 @@ mod tests {
 
         let handle = crate::runtime::generation::test_handle();
         handle.publish_with_estate(
-            v3_engine,
-            Some(v4_engine),
+            v4_engine,
             std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
             crate::engine::FunctionRegistry::builtin().clone(),
             std::sync::Arc::new(crate::plugin::PluginSet::empty()),
@@ -1327,7 +1009,7 @@ mod tests {
         assert!(
             matches!(
                 exec.outcome,
-                RunOutcome::EngineError(dataflow_rs_v3::DataflowError::BudgetExceeded(_))
+                RunOutcome::EngineError(ref e) if *e.kind() == dataflow_rs::ErrorKind::Budget
             ),
             "expected BudgetExceeded when loop exceeds max_tasks=3, got {:?}",
             exec.outcome
@@ -1348,8 +1030,9 @@ mod tests {
 
         let handle = crate::runtime::generation::test_handle();
         handle.publish_with_estate(
-            handle.load().engine.clone(),
-            None,
+            dataflow_rs::Engine::builder()
+                .build()
+                .expect("an empty engine builds"),
             std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
             crate::engine::FunctionRegistry::builtin().clone(),
             std::sync::Arc::new(crate::plugin::PluginSet::empty()),

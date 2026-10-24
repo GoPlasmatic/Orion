@@ -502,9 +502,8 @@ async fn a_rejected_query_does_not_trip_the_breaker() {
 /// *why* the task failed is the recorded code.
 ///
 /// That code is the connector's own service kind, verbatim. `circuit_open` is
-/// minted by `circuit_open_dataflow_error` as a `DataflowError::Service`, and
-/// dataflow-rs 3.5.0's classifier prefers a service `kind` over the variant
-/// fallback — so shedding a dependency stays distinguishable from the
+/// minted by `errors::service::circuit_open` as a service error whose code is
+/// that kind — so shedding a dependency stays distinguishable from the
 /// `IO_ERROR` of a genuine connection failure and the `TIMEOUT_ERROR` of a slow
 /// one. Before 3.5.0 all three flattened to `TASK_ERROR` here, which is why
 /// `docs/src/releases/upgrade-to-1.0.md` still warns that the rejection is
@@ -532,7 +531,7 @@ async fn an_open_breaker_is_named_in_the_errors_of_a_continue_on_error_workflow(
                         "method": "POST",
                         "path": "/fail",
                         "body": {"test": true},
-                        "response_path": "data.result",
+                        "output": "data.result",
                         "timeout_ms": 5000
                     }
                 }

@@ -1,109 +1,20 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::Interpolated;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{
-    ConnectorCall, json_type_name, require_op, resolve_required_str, resolve_value,
-    to_connect_error, to_exec_error,
-};
+use super::connector_helpers::{json_type_name, to_connect_error, to_exec_error};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This function's name, for the free functions below (F48).
-const NAME: &str = <CacheWriteHandler as ConnectorHandler>::NAME;
-
-/// Workflow function handler for writing values to a cache backend.
-pub struct CacheWriteHandler {
-    pub cache_pool: Arc<CachePool>,
-    pub registry: Arc<ConnectorRegistry>,
-}
-
-/// Everything the write needs from the task and the message, folded before the
-/// body takes `ctx` mutably — without which the task could only ever write one
-/// constant, to one constant key.
-pub struct CacheWrite {
-    key: String,
-    value: Value,
-    ttl: Option<u64>,
-}
-
-#[async_trait]
-impl ConnectorHandler for CacheWriteHandler {
-    const NAME: &'static str = "cache_write";
-    type Kind = crate::connector::kind::Cache;
-    type Input = TemplatedInput;
-    type Parsed = CacheWrite;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        let key = resolve_required_str(input, "key", call.name, ctx)?;
-        let value = match input.get("value") {
-            Some(v) => resolve_value(v, ctx),
-            None => {
-                return Err(
-                    DataflowError::Validation(format!("{} requires 'value'", call.name)).into(),
-                );
-            }
-        };
-        Ok(CacheWrite {
-            key,
-            value,
-            ttl: resolve_ttl_secs(input, call.name, ctx)?,
-        })
-    }
-
-    fn gate(
-        _parsed: &Self::Parsed,
-        conn: &crate::connector::CacheConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        // F22e: a cache connector can be made read-only in its config.
-        Ok(require_op(conn.operations.write, "write", connector)?)
-    }
-
-    async fn run(
-        &self,
-        write: Self::Parsed,
-        conn: &crate::connector::CacheConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        let encoded = encode(&write.value)?;
-        store(
-            &self.cache_pool,
-            call.connector,
-            conn,
-            &write.key,
-            &encoded,
-            write.ttl,
-        )
-        .await?;
-
-        // The write is the whole effect: this handler declares no `output`.
-        Ok(Produced::nothing())
-    }
-}
+pub(crate) const NAME: &str = "cache_write";
 
 /// The value as the string the store holds.
 ///
@@ -113,11 +24,15 @@ impl ConnectorHandler for CacheWriteHandler {
 /// likewise changed type — silently breaking any downstream JSONLogic
 /// comparison (proposal N13).
 ///
-/// Generic over what is encoded, so dataflow-rs 4 serializes the rendered
+/// Generic over what is encoded, so the function serializes the rendered
 /// document straight into the string, with no tree of its own.
-fn encode<V: serde::Serialize + ?Sized>(value: &V) -> Result<String, DataflowError> {
-    serde_json::to_string(value)
-        .map_err(|e| DataflowError::Validation(format!("Failed to serialize value for cache: {e}")))
+fn encode<V: serde::Serialize + ?Sized>(value: &V) -> Result<String, HandlerError> {
+    serde_json::to_string(value).map_err(|e| {
+        HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("Failed to serialize value for cache: {e}"),
+        )
+    })
 }
 
 /// The write, against a resolved and gated cache connector: `encoded` at
@@ -151,24 +66,6 @@ async fn store(
     Ok(())
 }
 
-/// Resolve `ttl_secs` to whole seconds. Absent or null means "no expiry"; a
-/// value that resolves to something uninterpretable is an error rather than a
-/// silent fall-through to a key that never expires.
-///
-/// The field is folded, not evaluated: 1.12's table declares it a template,
-/// but this reads the authored value through [`resolve_value`]'s `{"var"}`
-/// walk, which is the reading every stored task runs under (I183).
-pub(super) fn resolve_ttl_secs(
-    input: &TemplatedInput,
-    name: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Option<u64>, DataflowError> {
-    let Some(raw) = input.get("ttl_secs") else {
-        return Ok(None);
-    };
-    ttl_secs(resolve_value(raw, ctx), name)
-}
-
 /// `ttl_secs` on dataflow-rs 4: the document rendered for this call, read
 /// as [`resolve_ttl_secs`] reads its fold; `None` when the task leaves the
 /// field unset.
@@ -184,13 +81,13 @@ pub(super) fn rendered_ttl_secs(
     let Some(doc) = doc else {
         return Ok(None);
     };
-    Ok(ttl_secs(kit::rendered(ctx, doc)?, name)?)
+    ttl_secs(kit::rendered(ctx, doc)?, name)
 }
 
 /// A resolved `ttl_secs` as whole seconds, by [`resolve_ttl_secs`]' rules:
 /// `null` is no expiry; a non-negative whole number, written as an integer
 /// or a float, is the seconds; anything else is refused.
-fn ttl_secs(value: Value, name: &str) -> Result<Option<u64>, DataflowError> {
+fn ttl_secs(value: Value, name: &str) -> Result<Option<u64>, HandlerError> {
     match value {
         Value::Null => Ok(None),
         Value::Number(n) => {
@@ -202,15 +99,21 @@ fn ttl_secs(value: Value, name: &str) -> Result<Option<u64>, DataflowError> {
             {
                 Ok(Some(f as u64))
             } else {
-                Err(DataflowError::Validation(format!(
-                    "{name} 'ttl_secs' must be a non-negative whole number of seconds, got {n}"
-                )))
+                Err(HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!(
+                        "{name} 'ttl_secs' must be a non-negative whole number of seconds, got {n}"
+                    ),
+                ))
             }
         }
-        other => Err(DataflowError::Validation(format!(
-            "{name} 'ttl_secs' must resolve to a number, got {}",
-            json_type_name(&other)
-        ))),
+        other => Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!(
+                "{name} 'ttl_secs' must resolve to a number, got {}",
+                json_type_name(&other)
+            ),
+        )),
     }
 }
 
@@ -264,7 +167,7 @@ impl Function for CacheWriteFunction {
                 kit::require_connector::<crate::connector::kind::Cache>(&config, &cfg.connector)?;
             // F22e: a cache connector can be made read-only in its config.
             kit::require_op(conn.operations.write, "write", &cfg.connector)?;
-            let encoded = encode(&ctx.render(&cfg.value)).map_err(HandlerError::from)?;
+            let encoded = encode(&ctx.render(&cfg.value))?;
             store(&self.cache_pool, &cfg.connector, conn, &key, &encoded, ttl).await?;
             Ok(Outcome::Ok)
         })
@@ -321,34 +224,32 @@ mod tests {
     use dataflow_rs::program::{IssueCode, Severity};
     use serde_json::json;
 
-    /// The keys the twins look at after a write.
+    /// The keys a test looks at after a write.
     const LOOK: &[&str] = &["k", "7", "true", "user:7"];
 
-    /// One task through each engine, each against a cache of its own
-    /// holding `seed`, its connector configured with `config`: what each
-    /// saw, and what each cache holds at [`LOOK`] after.
-    async fn both(
+    /// One task against a cache of its own holding `seed`, its connector
+    /// configured with `config`: what it saw, and what the cache holds at
+    /// [`LOOK`] after.
+    async fn run(
         input: Value,
         data: Value,
         config: Value,
         seed: &[(&str, &str)],
-    ) -> ((Seen, Vec<Option<String>>), (Seen, Vec<Option<String>>)) {
-        let cache = twin::cache(config.clone(), seed).await;
-        let handler = Box::new(super::super::connector_handler::Connector(
-            CacheWriteHandler {
-                cache_pool: cache.pool.clone(),
-                registry: cache.registry.clone(),
-            },
-        ));
-        let v3 = twin::v3(NAME, handler, input.clone(), data.clone()).await;
-        let v3 = (v3, cache.held(LOOK).await);
+    ) -> (Seen, Vec<Option<String>>) {
         let cache = twin::cache(config, seed).await;
         let f = CacheWriteFunction {
             cache_pool: cache.pool.clone(),
             registry: cache.registry.clone(),
         };
         let v4 = twin::v4(NAME, f, input, data).await;
-        (v3, (v4, cache.held(LOOK).await))
+        (v4, cache.held(LOOK).await)
+    }
+
+    /// Pin what a call saw, and what the cache held after, to 1.12's records.
+    #[track_caller]
+    fn pin(seen: &(Seen, Vec<Option<String>>), key: impl std::fmt::Display) {
+        twin::pinned(&seen.0, &key);
+        twin::pinned(&Ok(json!(seen.1)), format!("{key}/held"));
     }
 
     /// Declaration order is the field table's (I179). The value and
@@ -425,7 +326,7 @@ mod tests {
     /// fold, a whole float accepted and a duration string, a fraction, a
     /// negative, an object (an operator is data here) or a boolean refused.
     #[tokio::test]
-    async fn writes_and_refuses_as_on_v3() {
+    async fn writes_and_refuses_as_1_12_did() {
         let data = json!({
             "id": 7, "name": "Ada", "obj": {"a": [1, {"b": null}]}, "ttl": 30,
             "two": 2.0, "half": 2.5, "neg": -1, "f": 1.25
@@ -462,11 +363,11 @@ mod tests {
             json!({"connector": "absent", "key": "k", "value": 1}),
         ];
         for input in cases {
-            let (v3, v4) = both(input.clone(), data.clone(), json!({}), &[]).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), data.clone(), json!({}), &[]).await;
+            pin(&v4, format!("writes_and_refuses/{input}"));
         }
         // A spot check: the string a read decodes back to the same type.
-        let (_, (seen, held)) = both(
+        let (seen, held) = run(
             json!({"connector": "c", "key": "k", "value": "123"}),
             json!({}),
             json!({}),
@@ -483,11 +384,11 @@ mod tests {
 
     /// The gate refuses a write before anything is stored, as 1.12's did.
     #[tokio::test]
-    async fn a_read_only_connector_refuses_a_write_on_v4() {
+    async fn a_read_only_connector_refuses_a_write() {
         let input = json!({"connector": "c", "key": "k", "value": 1});
         let gated = json!({"operations": {"read": true, "write": false}});
-        let (v3, v4) = both(input, json!({}), gated, &[("k", "0")]).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({}), gated, &[("k", "0")]).await;
+        pin(&v4, "a_read_only_connector_refuses_a_write");
         let failure = v4.0.expect_err("writes are off");
         assert!(
             failure
@@ -501,42 +402,24 @@ mod tests {
     }
 
     /// `ttl_secs` reaches the store as 1.12 sent it: a key written with one
-    /// is gone once it passes, on both engines, and one written without is
-    /// kept.
+    /// is gone once it passes, and one written without is kept.
     #[tokio::test(start_paused = true)]
-    async fn a_ttl_expires_the_key_on_both() {
-        for v4 in [false, true] {
-            let cache = twin::cache(json!({}), &[]).await;
-            for (key, ttl) in [("k", json!(1)), ("7", json!(null))] {
-                let input = json!({"connector": "c", "key": key, "value": 1, "ttl_secs": ttl});
-                let seen = if v4 {
-                    let f = CacheWriteFunction {
-                        cache_pool: cache.pool.clone(),
-                        registry: cache.registry.clone(),
-                    };
-                    twin::v4(NAME, f, input, json!({})).await
-                } else {
-                    let handler = Box::new(super::super::connector_handler::Connector(
-                        CacheWriteHandler {
-                            cache_pool: cache.pool.clone(),
-                            registry: cache.registry.clone(),
-                        },
-                    ));
-                    twin::v3(NAME, handler, input, json!({})).await
-                };
-                seen.expect("written");
-            }
-            assert_eq!(
-                cache.held(&["k", "7"]).await,
-                [Some("1".to_string()), Some("1".to_string())]
-            );
-            tokio::time::advance(std::time::Duration::from_secs(2)).await;
-            assert_eq!(
-                cache.held(&["k", "7"]).await,
-                [None, Some("1".to_string())],
-                "v4: {v4}"
-            );
+    async fn a_ttl_expires_the_key() {
+        let cache = twin::cache(json!({}), &[]).await;
+        for (key, ttl) in [("k", json!(1)), ("7", json!(null))] {
+            let input = json!({"connector": "c", "key": key, "value": 1, "ttl_secs": ttl});
+            let f = CacheWriteFunction {
+                cache_pool: cache.pool.clone(),
+                registry: cache.registry.clone(),
+            };
+            twin::v4(NAME, f, input, json!({})).await.expect("written");
         }
+        assert_eq!(
+            cache.held(&["k", "7"]).await,
+            [Some("1".to_string()), Some("1".to_string())]
+        );
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        assert_eq!(cache.held(&["k", "7"]).await, [None, Some("1".to_string())]);
     }
 
     /// The call writes nothing to the message: the store is its effect.

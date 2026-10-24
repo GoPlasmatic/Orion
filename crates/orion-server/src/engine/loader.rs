@@ -2,12 +2,9 @@
 //! are built from — including the per-channel quarantine that keeps one bad
 //! row from taking the instance down.
 //!
-//! **dataflow-rs 4 decides which rows load** (I182, the building cutover).
-//! Every row is compiled on dataflow-rs 4 first ([`compile_row`]), and its
-//! verdict decides quarantine ([`quarantines`]). dataflow-rs 3 serves, from
-//! the rows dataflow-rs 4 accepted; any row dataflow-rs 3 refuses still
-//! quarantines its channel, with dataflow-rs 3's reason. A rollout set stays
-//! all or nothing on both.
+//! Every row is compiled on the generation's compiler ([`compile_row`]), and
+//! its verdict decides quarantine ([`quarantines`]). A rollout set stays all
+//! or nothing.
 
 use std::collections::HashMap;
 
@@ -16,14 +13,11 @@ use dataflow_rs::def::{ParseOptions, parse};
 use dataflow_rs::program::{
     Compiled, CompiledWorkflow, Compiler, IssueCode, Program, Severity, StepKind,
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use crate::engine::FunctionRegistry;
 use crate::plugin::PluginSet;
 use crate::storage::models::{Channel, Workflow};
-use crate::storage::repositories::workflows::{
-    workflow_json, workflow_to_dataflow, workflow_to_dataflow_with_rollout,
-};
+use crate::storage::repositories::workflows::workflow_json;
 
 /// Filter channels based on include/exclude glob patterns from [`ChannelFilterConfig`].
 ///
@@ -90,334 +84,47 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     pi == p.len()
 }
 
-/// Something that can answer "will the handlers that run this workflow
-/// actually dispatch every task in it, and do their inputs parse?".
-///
-/// Two implementations, because the two callers hold different things. At boot
-/// the handler map is still on an [`EngineBuilder`] that has not been built
-/// yet; on reload the handlers live on the running [`Engine`], which
-/// `with_new_workflows` carries across. Both expose the same
-/// `check_workflow`, so this trait exists only to name that shared shape.
-///
-/// [`Engine`]: dataflow_rs_v3::Engine
-/// [`EngineBuilder`]: dataflow_rs_v3::engine::EngineBuilder
-pub trait HandlerScreen {
-    /// Every reason this workflow would not run, without building anything.
-    fn check_workflow(
-        &self,
-        workflow: &dataflow_rs_v3::Workflow,
-    ) -> Vec<dataflow_rs_v3::WorkflowIssue>;
-}
-
-impl HandlerScreen for dataflow_rs_v3::Engine {
-    fn check_workflow(
-        &self,
-        workflow: &dataflow_rs_v3::Workflow,
-    ) -> Vec<dataflow_rs_v3::WorkflowIssue> {
-        dataflow_rs_v3::Engine::check_workflow(self, workflow)
-    }
-}
-
-impl HandlerScreen for dataflow_rs_v3::engine::EngineBuilder {
-    fn check_workflow(
-        &self,
-        workflow: &dataflow_rs_v3::Workflow,
-    ) -> Vec<dataflow_rs_v3::WorkflowIssue> {
-        dataflow_rs_v3::engine::EngineBuilder::check_workflow(self, workflow)
-    }
-}
-
-/// Screen one converted workflow against the handlers that will run it.
-///
-/// Without this, a task naming an unregistered function or carrying an input
-/// its handler cannot parse is invisible until engine construction — which is
-/// a whole-instance failure, not a per-channel one: at boot the process
-/// aborts, and on reload every channel on every node goes down because one
-/// stored row is unusable. That defeats the F33/F35 quarantine, whose premise
-/// is that one broken row must never stop the instance. Checking here turns it
-/// back into a `ChannelLoadIssue` (F41).
-///
-/// This used to be a hand-written mirror: a membership test against a
-/// hand-kept list of registered names, a `match` naming the one handler with a typed `Input`, and
-/// a locally-built datalogic engine standing in for the crate-private
-/// `TemplateCompiler`. dataflow-rs 3.7's `check_workflow` does all three
-/// against the real registry and the real compiler, so the mirror is gone and
-/// with it three ways for it to drift:
-///
-/// - A new handler no longer has to be added to a list to be screened.
-/// - A handler that grows a typed `Input` is screened for it immediately,
-///   rather than silently going unchecked until someone remembers the `match`.
-/// - `http_call`, `publish_kafka` and `enrich` are covered too. They
-///   deserialize into typed built-in variants, so they never reached the
-///   `Custom` arm the mirror inspected — an `enrich` task in a stored row
-///   built cleanly and then failed every request with `FunctionNotFound`.
-///
-/// Issues are joined into one message: the caller reports per workflow, and a
-/// workflow that cannot run is quarantined whole regardless of how many of its
-/// tasks are the reason.
-///
-/// **Not every issue `check_workflow` reports makes a workflow unusable**, and
-/// the engine is what says which. Until dataflow-rs 3.9 every code it returned
-/// was one `Engine::build` also refused, so "any issue" and "cannot run" were
-/// the same set and this screen could take the whole list. `ESCAPED_TEMPLATE_KEY`
-/// broke that and 3.10 added two more, which Orion tracked in a hand-kept list
-/// that could only ever be wrong in one direction — silently, on upgrade,
-/// quarantining channels that were fine. 3.11's `Severity` replaced it:
-/// `severity()` is a match with no wildcard arm, so a code added in a later
-/// minor is classified upstream before it can reach here.
-///
-/// `Advisory` is the only class this may pass. **`Defect` must still
-/// quarantine**: `MISSING_HANDLER` is a config-only integration whose typed
-/// variant parses, so `build` accepts it and every message then fails — F54,
-/// the `enrich` case that made this function exist. Screening on "would this
-/// build" would call that healthy.
-///
-/// Filtered here rather than at each caller because all four surfaces — boot,
-/// reload, `dry-run` and the test endpoint — must agree on what "unusable"
-/// means.
-fn screen_workflow(
-    workflow: &dataflow_rs_v3::Workflow,
-    screen: &dyn HandlerScreen,
-) -> Result<(), String> {
-    // `check_workflow` asks about handlers, not structure: it never runs
-    // `Workflow::validate()`, which `build` runs on every workflow and fails
-    // on the first refusal. Unscreened, a duplicate step id across
-    // `loop.setup` and `tasks`, or a loop `as` that is not a plain key, failed
-    // every reload and stopped a node at boot.
-    workflow.validate().map_err(|e| e.to_string())?;
-    let issues = screen.check_workflow(workflow);
-    let (advisories, issues): (Vec<_>, Vec<_>) = issues
-        .into_iter()
-        .partition(|i| i.severity() == dataflow_rs_v3::Severity::Advisory);
-    // Dropped from the fatal set but not dropped. Each of the three says
-    // something a load is the last chance to notice: a stripped `$` changes the
-    // shape of a composed document without failing anything, a `validation`
-    // asserts nothing, a group's `continue_on_error` is discarded. None of them
-    // stops the workflow running, which is why they are logged here rather than
-    // returned. `lint` and `preflight` report the same findings against a
-    // document the author can still edit.
-    for advisory in &advisories {
-        tracing::warn!(
-            workflow = %workflow.id,
-            task = advisory.task_id.as_deref().unwrap_or("-"),
-            path = advisory.path.as_deref().unwrap_or("-"),
-            "{}",
-            advisory.message
-        );
-    }
-    if issues.is_empty() {
-        return Ok(());
-    }
-    Err(issues
-        .iter()
-        .map(|issue| match &issue.task_id {
-            Some(task_id) => format!("task '{task_id}': {}", issue.message),
-            None => issue.message.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join("; "))
-}
-
-/// Build an engine over exactly one workflow, screened the way the serving
-/// engine screens.
-///
-/// Four places in the tree build a workflow engine, and until this existed only
-/// two of them went through the [`HandlerScreen`]: boot and reload. The other
-/// two — `orion-server dry-run` and `POST /workflows/{id}/test` — assembled the
-/// builder by hand and called `.build()`, so they answered a *different
-/// question* from the one they are asked.
-///
-/// `.build()` alone is not the same check. It refuses an unregistered *custom*
-/// function, but `http_call`, `publish_kafka` and `enrich` deserialize into
-/// typed built-in variants, so a workflow naming one builds cleanly with no
-/// handler behind it and fails every request with `FunctionNotFound`. Orion
-/// registers the first two and never registers `enrich` — which is exactly the
-/// case that made this screen exist (F54). The author saw a green dry run and a
-/// channel that would not serve; worse in reverse, since "test this workflow"
-/// is the endpoint people trust before activating.
-///
-/// So the screen is not optional and not the caller's to remember. `handlers`
-/// go on the builder first, because that is what the screen consults — pass
-/// the same map the surface would run with (the real handlers for the test
-/// endpoint, the stub table for a dry run), and the answer is about *that*
-/// engine.
-///
-/// `Err` is the joined screen message, in the same wording
-/// [`build_engine_workflows`] puts in a `ChannelLoadIssue`, so an author reads
-/// one explanation of an unusable task wherever they meet it.
-pub fn build_single(
-    workflow: dataflow_rs_v3::Workflow,
-    handlers: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
-    secrets: &crate::engine::ResolvedSecrets,
-    ops_budget: u64,
-) -> Result<dataflow_rs_v3::Engine, crate::errors::OrionError> {
-    // `ops_budget` is `engine.ops_budget` where a config exists (the admin
-    // test endpoint) and `0` where none does (an offline `dry-run`), so a
-    // test run on the server is bounded exactly as serving is.
-    let builder = crate::engine::operators::with_ops_budget(
-        crate::engine::operators::with_orion_engine_defaults(
-            dataflow_rs_v3::Engine::builder(),
-            secrets,
-        ),
-        ops_budget,
-    )
-    .with_handlers(handlers);
-
-    screen_workflow(&workflow, &builder).map_err(|e| {
-        crate::errors::OrionError::validation(format!(
-            "workflow '{}' has an unusable task: {e}",
-            workflow.id
-        ))
-    })?;
-
-    builder
-        .with_workflow(workflow)
-        .build()
-        .map_err(crate::errors::OrionError::Engine)
-}
-
 // -- dataflow-rs 4: the verdict that decides quarantine (I182) --
 
-/// One alias the loader rewrote to its canonical key (I186).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AliasRewrite {
-    /// The task's path in the workflow: `tasks[0]`, `tasks[1].tasks[0]`,
-    /// `loop.setup[0]`.
-    pub task: String,
-    /// The task's id, as authored, when it has one.
-    pub task_id: Option<String>,
-    /// The function the task calls, by its canonical name.
-    pub function: String,
-    /// The spelling the row stores.
-    pub alias: String,
-    /// The spelling dataflow-rs 4's config reads.
-    pub canonical: String,
+/// How Orion reads a workflow definition: with dataflow-rs's v3 compat
+/// reader off. A v3 spelling — a task's `continue_on_error` or `halt_on`,
+/// `validate` for `validation` — is then an unknown key or function, and
+/// refused; [`name_v3_spellings`] says what to write instead.
+pub fn parse_options() -> ParseOptions {
+    ParseOptions::default().compat(false)
 }
 
-/// The aliases 1.12 read through a serde alias on a handler's own input
-/// struct and that its `schema.rs` row does not declare: `(function, alias,
-/// canonical)`.
+/// Names, in each issue of `issues` that sits at a v3 spelling of `json`,
+/// the v4 spelling to write in its place.
 ///
-/// One: `channel_call`'s `response_path`, `ChannelCallInput::output`'s serde
-/// alias, which its field row describes as "still accepted" without
-/// declaring it, so the authoring check neither refuses both spellings at
-/// once nor reads the alias's kind. Declaring it on the row would change what
-/// create refuses; rewriting it here keeps what 1.12 loaded loading, and
-/// nothing else moves. Every other alias is read from the rows.
-const SERDE_ONLY_ALIASES: &[(&str, &str, &str)] = &[("channel_call", "response_path", "output")];
-
-/// Rewrites each stored alias in a task's `function.input` to its canonical
-/// key, over every step: `tasks`, every group's members and `loop.setup`
-/// (I186). dataflow-rs 4's derived configs have no aliases (D5, I132), so a
-/// row that spells `http_call`'s `path_logic`, `body_logic` or
-/// `response_path`, `publish_kafka`'s `key_logic` or `value_logic`, or
-/// `channel_call`'s `channel_logic`, `data_logic` or `response_path`, is
-/// read here as 1.12's serde read it.
-///
-/// The aliases are the `alias` of each field row of `functions` (the
-/// `schema.rs` rows), plus `channel_call`'s `response_path`, 1.12's serde
-/// alias its row does not declare. A key keeps its place in the input, since
-/// an input's key order is the author's. A task holding both spellings is
-/// left as written, and its config refuses it, as 1.12's serde refused a
-/// duplicate field. Rewrites `workflow` only, never a stored row; each
-/// rewrite is returned for the caller to log, with the workflow and version
-/// it knows.
-pub fn rewrite_aliases(workflow: &mut Value, functions: &FunctionRegistry) -> Vec<AliasRewrite> {
-    let mut rewrites = Vec::new();
-    if let Some(tasks) = workflow.get_mut("tasks") {
-        rewrite_steps(tasks, "tasks", functions, &mut rewrites);
-    }
-    if let Some(setup) = workflow
-        .get_mut("loop")
-        .and_then(|config| config.get_mut("setup"))
-    {
-        rewrite_steps(setup, "loop.setup", functions, &mut rewrites);
-    }
-    rewrites
-}
-
-/// [`rewrite_aliases`] over one list of steps at `at`. A step carrying a
-/// `tasks` key is a group, as dataflow-rs 4's parser reads it.
-fn rewrite_steps(
-    steps: &mut Value,
-    at: &str,
-    functions: &FunctionRegistry,
-    out: &mut Vec<AliasRewrite>,
-) {
-    let Some(steps) = steps.as_array_mut() else {
+/// The spellings are the compat reader's own: a parse with it on reports
+/// each as a `V3_SPELLING` at the v3 key, the path the strict parse refuses
+/// the key at (a function name's refusal is the compile's, at the same
+/// `function.name`). An issue anywhere else is left as it is.
+pub fn name_v3_spellings(json: &Value, issues: &mut [Issue]) {
+    if issues.is_empty() {
         return;
-    };
-    for (i, step) in steps.iter_mut().enumerate() {
-        let path = format!("{at}[{i}]");
-        if let Some(members) = step.get_mut("tasks") {
-            rewrite_steps(members, &format!("{path}.tasks"), functions, out);
-        } else {
-            rewrite_task(step, path, functions, out);
-        }
     }
-}
-
-/// [`rewrite_aliases`] over one task's input.
-fn rewrite_task(
-    task: &mut Value,
-    path: String,
-    functions: &FunctionRegistry,
-    out: &mut Vec<AliasRewrite>,
-) {
-    let Some(entry) = task
-        .pointer("/function/name")
-        .and_then(Value::as_str)
-        .and_then(|name| functions.get(name))
-    else {
-        return;
-    };
-    let aliases: Vec<(&str, &str)> = entry
-        .input_fields
-        .iter()
-        .flatten()
-        .filter_map(|field| {
-            field
-                .alias
-                .as_deref()
-                .map(|alias| (alias, field.name.as_str()))
-        })
-        .chain(
-            SERDE_ONLY_ALIASES
-                .iter()
-                .filter(|(function, ..)| *function == entry.name)
-                .map(|&(_, alias, canonical)| (alias, canonical)),
-        )
+    let spellings: Vec<(String, String)> = parse(json, ParseOptions::default().compat(true))
+        .issues
+        .into_iter()
+        .filter(|issue| issue.code == IssueCode::V3Spelling)
+        .map(|issue| (issue.path.to_string(), issue.message))
         .collect();
-    if aliases.is_empty() {
+    if spellings.is_empty() {
         return;
     }
-    let task_id = task.get("id").and_then(Value::as_str).map(str::to_string);
-    let Some(input) = task
-        .pointer_mut("/function/input")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    for (alias, canonical) in aliases {
-        if !input.contains_key(alias) || input.contains_key(canonical) {
-            continue;
+    for issue in issues.iter_mut() {
+        let path = issue.path.to_string();
+        if let Some((_, spelling)) = spellings.iter().find(|(at, _)| *at == path) {
+            // The reader's text says what it read the key as: "`halt_on:
+            // failure` is a v3 spelling, read as `on_failure: fail, …`".
+            let instead = match spelling.split_once(", read as ") {
+                Some((v3, v4)) => format!("{v3}, which is no longer read: write {v4}"),
+                None => spelling.clone(),
+            };
+            issue.message = format!("{} — {instead}", issue.message);
         }
-        rename_key(input, alias, canonical);
-        out.push(AliasRewrite {
-            task: path.clone(),
-            task_id: task_id.clone(),
-            function: entry.name.clone(),
-            alias: alias.to_string(),
-            canonical: canonical.to_string(),
-        });
-    }
-}
-
-/// Renames `from` to `to` in `map`, in its place.
-fn rename_key(map: &mut Map<String, Value>, from: &str, to: &str) {
-    for (key, value) in std::mem::take(map) {
-        let key = if key == from { to.to_string() } else { key };
-        map.insert(key, value);
     }
 }
 
@@ -436,8 +143,7 @@ fn rename_key(map: &mut Map<String, Value>, from: &str, to: &str) {
 /// Every other Defect, `PAYLOAD_VAR` included, loads: the loader logs it at
 /// `warn`, and `POST /workflows/validate` reports it. Advisories never
 /// quarantine. A severity a later dataflow-rs adds quarantines until it is
-/// classified here, as the dataflow-rs 3 screen passes only what it knows to
-/// be harmless.
+/// classified here: only what is known to be harmless passes.
 pub fn quarantines(issue: &Issue) -> bool {
     match issue.severity {
         Severity::Advisory => false,
@@ -447,7 +153,7 @@ pub fn quarantines(issue: &Issue) -> bool {
 }
 
 /// Parses and compiles one workflow definition on dataflow-rs 4
-/// (`def::parse` with the compat reader on, then `Compiler::compile_one`).
+/// (`def::parse` with the compat reader off, then `Compiler::compile_one`).
 ///
 /// `Ok` holds the compiled workflow, with every issue that does not
 /// [quarantine](quarantines) it in `issues`: the parse's first, then the
@@ -458,19 +164,22 @@ pub fn quarantines(issue: &Issue) -> bool {
 ///
 /// Every issue, when one quarantines the workflow.
 pub fn compile_row(compiler: &Compiler, json: &Value) -> Result<Compiled, Vec<Issue>> {
-    let parsed = parse(json, ParseOptions::default());
+    let parsed = parse(json, parse_options());
     let mut issues = parsed.issues;
     let Some(def) = parsed.def else {
+        name_v3_spellings(json, &mut issues);
         return Err(issues);
     };
     match compiler.compile_one(&def) {
         Err(mut compiled) => {
             issues.append(&mut compiled);
+            name_v3_spellings(json, &mut issues);
             Err(issues)
         }
         Ok(mut compiled) => {
             issues.append(&mut compiled.issues);
             if issues.iter().any(quarantines) {
+                name_v3_spellings(json, &mut issues);
                 return Err(issues);
             }
             compiled.issues = issues;
@@ -527,7 +236,7 @@ fn describe(issue: &Issue, plugins: &PluginSet, json: &Value) -> String {
 
 /// The quarantine reason of a workflow dataflow-rs 4 refused: every issue
 /// that [quarantines](quarantines) it, described.
-fn refusal(issues: &[Issue], plugins: &PluginSet, json: &Value) -> String {
+pub(crate) fn refusal(issues: &[Issue], plugins: &PluginSet, json: &Value) -> String {
     issues
         .iter()
         .filter(|issue| quarantines(issue))
@@ -536,51 +245,12 @@ fn refusal(issues: &[Issue], plugins: &PluginSet, json: &Value) -> String {
         .join("; ")
 }
 
-/// One row's JSON with its aliases rewritten, each rewrite logged.
-fn row_json(
-    workflow: &Workflow,
-    channel: &str,
-    id: &str,
-    status: &str,
-    rollout: Option<(u8, u8)>,
-    functions: &FunctionRegistry,
-) -> Result<Value, crate::errors::OrionError> {
-    let mut json = workflow_json(workflow, channel, id, status, rollout)?;
-    for rewrite in rewrite_aliases(&mut json, functions) {
-        tracing::info!(
-            workflow = %workflow.workflow_id,
-            version = workflow.version,
-            task = %rewrite.task,
-            task_id = rewrite.task_id.as_deref().unwrap_or("-"),
-            function = %rewrite.function,
-            alias = %rewrite.alias,
-            canonical = %rewrite.canonical,
-            "Read a stored alias as its canonical key: dataflow-rs 4 has no alias for it"
-        );
-    }
-    Ok(json)
-}
-
 /// Logs what a compile found and did not quarantine on: each Defect (a
-/// `PAYLOAD_VAR`, say) and each Advisory, at `warn`, as the dataflow-rs 3
-/// screen logs its advisories, with the workflow, version and path.
+/// `PAYLOAD_VAR`, say) and each Advisory, at `warn`, with the workflow,
+/// version and path.
 ///
-/// A `V3_SPELLING` is logged at `debug`: it says the compat reader read a
-/// 1.12 spelling as 1.12 did (a task's `continue_on_error`, say), which every
-/// such row raises on every reload, and which changes nothing.
 fn log_findings(workflow: &Workflow, compiled: &Compiled) {
     for issue in &compiled.issues {
-        if issue.code == IssueCode::V3Spelling {
-            tracing::debug!(
-                workflow = %workflow.workflow_id,
-                version = workflow.version,
-                task = issue.step_id.as_deref().unwrap_or("-"),
-                path = %issue.path,
-                "{}",
-                issue.message
-            );
-            continue;
-        }
         tracing::warn!(
             workflow = %workflow.workflow_id,
             version = workflow.version,
@@ -594,16 +264,12 @@ fn log_findings(workflow: &Workflow, compiled: &Compiled) {
     }
 }
 
-/// Every active channel's workflows, compiled and screened by both engines.
+/// Every active channel's workflows, compiled.
 ///
 /// For each active channel, finds the associated workflow(s) and builds each
-/// row's definition with the channel name injected as its channel.
-/// dataflow-rs 4 compiles each first ([`compile_row`]); a row it refuses
-/// quarantines the channel with its issues' codes and paths. dataflow-rs 3
-/// then converts and screens the rows dataflow-rs 4 accepted, and a row it
-/// refuses quarantines the channel with dataflow-rs 3's reason. A channel
-/// that loads has its workflows in both returned sets, and only such a
-/// channel does: the two engines serve the same channels.
+/// row's definition with the channel name injected as its channel, then
+/// compiles it ([`compile_row`]); a row it refuses quarantines the channel
+/// with its issues' codes and paths.
 ///
 /// F33: a channel whose workflows cannot be built — missing `workflow_id`,
 /// workflow not found among the active set, or a version that fails
@@ -647,10 +313,7 @@ pub fn build_engine_workflows(
         };
 
         match load_channel(channel, wf_id, wf_versions, load) {
-            Ok((v3, v4)) => {
-                loaded.v3.extend(v3);
-                loaded.v4.extend(v4);
-            }
+            Ok(compiled) => loaded.workflows.extend(compiled),
             Err(reason) => loaded.issues.push(crate::channel::ChannelLoadIssue {
                 channel: channel.name.clone(),
                 reason,
@@ -661,50 +324,42 @@ pub fn build_engine_workflows(
     loaded
 }
 
-/// What [`build_engine_workflows`] loads against: dataflow-rs 4's compiler
-/// and dataflow-rs 3's screen, from one generation's functions.
+/// What [`build_engine_workflows`] loads against, from one generation's
+/// functions.
 pub struct EngineLoad<'a> {
-    /// The generation's dataflow-rs 4 compiler: on its `Registry`, which
-    /// holds Orion's functions, the plugin functions and the profile layer.
+    /// The generation's compiler: on its `Registry`, which holds Orion's
+    /// functions, the plugin functions and the profile layer.
     pub compiler: &'a Compiler,
-    /// The generation's function vocabulary, whose field rows name the
-    /// aliases the loader rewrites.
-    pub functions: &'a FunctionRegistry,
     /// The generation's plugins, which name the plugin a refused task's
     /// function belongs to and why it did not load.
     pub plugins: &'a PluginSet,
-    /// The handlers dataflow-rs 3 dispatches, which screen what it serves.
-    pub screen: &'a dyn HandlerScreen,
 }
 
 /// What [`build_engine_workflows`] produced.
 #[derive(Default)]
 pub struct LoadedWorkflows {
-    /// The workflows dataflow-rs 3 serves.
-    pub v3: Vec<dataflow_rs_v3::Workflow>,
-    /// The same workflows, compiled on dataflow-rs 4, for its program.
-    pub v4: Vec<CompiledWorkflow>,
+    /// The workflows that loaded, compiled, for the generation's program.
+    pub workflows: Vec<CompiledWorkflow>,
     /// Every channel that did not load, and why.
     pub issues: Vec<crate::channel::ChannelLoadIssue>,
 }
 
-/// One channel's workflows on both engines, or its quarantine reason.
+/// One channel's workflows, compiled, or its quarantine reason.
 fn load_channel(
     channel: &Channel,
     wf_id: &str,
     wf_versions: &[&Workflow],
     load: &EngineLoad<'_>,
-) -> Result<(Vec<dataflow_rs_v3::Workflow>, Vec<CompiledWorkflow>), String> {
+) -> Result<Vec<CompiledWorkflow>, String> {
     if wf_versions.len() == 1 && wf_versions[0].rollout_percentage == 100 {
         // Single version at 100% — convert normally
         let row = wf_versions[0];
-        let json = row_json(
+        let json = workflow_json(
             row,
             &channel.name,
             &row.workflow_id,
             crate::storage::models::EntityStatus::Active.as_str(),
             None,
-            load.functions,
         )
         .map_err(|e| format!("workflow '{wf_id}' failed to convert: {e}"))?;
         let compiled = compile_row(load.compiler, &json).map_err(|issues| {
@@ -714,14 +369,7 @@ fn load_channel(
             )
         })?;
         log_findings(row, &compiled);
-        let w = workflow_to_dataflow(row, &channel.name)
-            .map_err(|e| format!("workflow '{wf_id}' failed to convert: {e}"))?;
-        screen_workflow(&w, load.screen).map_err(|e| {
-            let mut reason = format!("workflow '{wf_id}' has an unusable task: {e}");
-            load.plugins.annotate(&mut reason);
-            reason
-        })?;
-        return Ok((vec![w], vec![compiled.workflow]));
+        return Ok(vec![compiled.workflow]);
     }
 
     // Multiple versions or partial rollout — wrap with bucket ranges.
@@ -750,17 +398,15 @@ fn load_channel(
     // is the engine's own arithmetic for exactly this, error direction
     // included, so the invariant is now stated once — in the crate
     // that routes on it.
-    let ranges = dataflow_rs_v3::Rollout::partition(&percentages).map_err(|e| {
+    let ranges = dataflow_rs::def::Rollout::partition(&percentages).map_err(|e| {
         format!(
             "rollout percentages for workflow '{wf_id}' do not partition the \
              bucket space: {e}"
         )
     })?;
 
-    // All-or-nothing per channel, on each engine: a partially-converted
-    // rollout would silently blackhole the failed version's bucket range.
-    // dataflow-rs 4 compiles the whole set first, and its verdict decides;
-    // dataflow-rs 3 converts and screens the set it accepted.
+    // All-or-nothing per channel: a partially-compiled rollout would silently
+    // blackhole the failed version's bucket range.
     let mut compiled = Vec::with_capacity(sorted.len());
     for (wf, rollout) in sorted.iter().zip(&ranges) {
         let failed = |e: String| {
@@ -769,13 +415,12 @@ fn load_channel(
                 wf.workflow_id, wf.version
             )
         };
-        let json = row_json(
+        let json = workflow_json(
             wf,
             &channel.name,
             &format!("{}:v{}", wf.workflow_id, wf.version),
             &wf.status,
             Some((rollout.bucket_start, rollout.bucket_end)),
-            load.functions,
         )
         .map_err(|e| {
             format!(
@@ -789,45 +434,17 @@ fn load_channel(
         compiled.push(version.workflow);
     }
 
-    let mut converted = Vec::with_capacity(sorted.len());
-    for (wf, rollout) in sorted.iter().zip(ranges) {
-        let w = workflow_to_dataflow_with_rollout(wf, &channel.name, rollout)
-            .map_err(|e| e.to_string())
-            .and_then(|w| screen_workflow(&w, load.screen).map(|()| w))
-            .map_err(|e| {
-                let mut reason = format!(
-                    "workflow '{}' v{} failed to convert: {e}",
-                    wf.workflow_id, wf.version
-                );
-                load.plugins.annotate(&mut reason);
-                reason
-            })?;
-        converted.push(w);
-    }
-    Ok((converted, compiled))
+    Ok(compiled)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The screen these tests convert against.
-    ///
-    /// A bare builder registers no custom handlers, which is all the fixtures
-    /// below need — they are about rollout arithmetic and quarantine, and
-    /// their tasks are `log`, a self-contained built-in every engine
-    /// dispatches.
-    fn screen() -> dataflow_rs_v3::engine::EngineBuilder {
-        dataflow_rs_v3::Engine::builder()
-    }
-
-    /// Both engines with every Orion function, over inert dependencies: the
-    /// dataflow-rs 4 `Registry` from `register_functions` and the
-    /// dataflow-rs 3 screen from `build_custom_functions`, as a generation
-    /// builds them.
+    /// Every Orion function over inert dependencies, as a generation builds
+    /// its registry.
     struct Engines {
         compiler: Compiler,
-        screen: dataflow_rs_v3::engine::EngineBuilder,
         plugins: PluginSet,
         _offline: crate::engine::kit::OfflineDeps,
     }
@@ -837,26 +454,17 @@ mod tests {
             Self::orion_with(crate::engine::kit::test_exprs(), Vec::new())
         }
 
-        /// Every Orion function on `exprs`, and each plugin function on
-        /// both engines.
+        /// Every Orion function on `exprs`, and each plugin function.
         fn orion_with(
             exprs: dataflow_rs::expr::ExprEngine,
-            plugins: Vec<(
-                crate::plugin::PluginFunctionHandler,
-                crate::plugin::PluginFunction,
-            )>,
+            plugins: Vec<crate::plugin::PluginFunction>,
         ) -> Self {
             let offline = crate::engine::kit::OfflineDeps::new();
             let mut registry = dataflow_rs::Registry::new(exprs);
             crate::engine::register_functions(&mut registry, offline.deps());
-            let mut handlers = crate::engine::build_custom_functions(offline.deps());
-            for (handler, function) in plugins {
-                handlers.insert(handler.name().to_string(), Box::new(handler));
-                crate::engine::register_plugin_functions(&mut registry, [function]);
-            }
+            crate::engine::register_plugin_functions(&mut registry, plugins);
             Self {
                 compiler: registry.compiler(dataflow_rs::program::CompileOptions::default()),
-                screen: dataflow_rs_v3::Engine::builder().with_handlers(handlers),
                 plugins: PluginSet::empty(),
                 _offline: offline,
             }
@@ -867,7 +475,6 @@ mod tests {
             let registry = dataflow_rs::Registry::new(crate::engine::kit::test_exprs());
             Self {
                 compiler: registry.compiler(dataflow_rs::program::CompileOptions::default()),
-                screen: screen(),
                 plugins: PluginSet::empty(),
                 _offline: crate::engine::kit::OfflineDeps::new(),
             }
@@ -879,140 +486,42 @@ mod tests {
                 workflows,
                 &EngineLoad {
                     compiler: &self.compiler,
-                    functions: FunctionRegistry::builtin(),
                     plugins: &self.plugins,
-                    screen: &self.screen,
                 },
             )
         }
     }
 
-    /// [`Engines::bare`]'s load, as `(dataflow-rs 3's workflows, issues)`,
-    /// holding the two engines to one set of channels.
+    /// [`Engines::bare`]'s load, as `(the workflows, the issues)`.
     fn load(
         channels: &[Channel],
         workflows: &[Workflow],
-    ) -> (
-        Vec<dataflow_rs_v3::Workflow>,
-        Vec<crate::channel::ChannelLoadIssue>,
-    ) {
+    ) -> (Vec<CompiledWorkflow>, Vec<crate::channel::ChannelLoadIssue>) {
         let loaded = Engines::bare().load(channels, workflows);
-        assert_eq!(
-            loaded.v3.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(),
-            loaded.v4.iter().map(|w| w.id()).collect::<Vec<_>>(),
-            "both engines load the same workflows"
-        );
-        (loaded.v3, loaded.issues)
+        (loaded.workflows, loaded.issues)
     }
 
-    /// `ESCAPED_TEMPLATE_KEY` must not quarantine a workflow.
-    ///
-    /// It is the one code `check_workflow` reports that `Engine::build` does
-    /// not refuse, and this screen used to take the whole list — correct while
-    /// every code was also a build refusal, wrong from dataflow-rs 3.9 on. It
-    /// fires on *correct* code too: `$$set` is the documented fix, so treating
-    /// it as fatal took down the channel of an author who had done the right
+    /// An advisory never quarantines: a stripped `$` key and a `validation`
+    /// that gates nothing both load, because the workflow runs. `$$set` is the documented fix for the first, so treating
+    /// it as fatal would take down the channel of an author who did the right
     /// thing.
     #[test]
-    fn an_escaped_template_key_is_an_advisory_not_a_quarantine() {
-        let workflow = dataflow_rs_v3::Workflow::from_json(
-            r#"{"id":"w","name":"w","condition":true,"tasks":[
-                {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[
-                  {"path":"data.a","logic":{"$set":{"x":1}}},
-                  {"path":"data.b","logic":{"$$oid":"abc"}}]}}}]}"#,
-        )
-        .expect("the fixture is a valid workflow");
-
-        // The engine does report both keys — this is not a claim that they are
-        // invisible, only that they are not a reason to refuse to serve.
-        assert_eq!(
-            screen()
-                .check_workflow(&workflow)
-                .iter()
-                .filter(|i| i.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey)
-                .count(),
-            2
-        );
-        assert!(screen_workflow(&workflow, &screen()).is_ok());
-    }
-
-    /// The 3.10 pair, and the regression that upgrade would otherwise have been.
-    ///
-    /// Both are `Severity::Advisory` — reported by `check_workflow`, never
-    /// refused by `build` — and both fire on shapes that are common in a real
-    /// estate: a `validation` that collects errors and carries on is what the
-    /// built-in is documented to do, and `continue_on_error` on a group is old
-    /// enough that stored definitions carry it. Treating either as fatal
-    /// quarantines working channels, which is what a hand-kept list did until
-    /// it was edited: `dry-run` answered "workflow has an unusable task" for a
-    /// workflow that runs perfectly.
-    ///
-    /// The severity table itself is upstream's to pin. What this asserts is
-    /// Orion's half — that `screen_workflow` acts on it.
-    #[test]
-    fn the_advisory_issues_do_not_quarantine() {
-        let cases = [
-            (
-                dataflow_rs_v3::IssueCode::UnguardedValidation,
-                r#"{"id":"w","name":"w","condition":true,"tasks":[
-                    {"id":"check","name":"check","function":{"name":"validation","input":{
-                      "rules":[{"logic":{"==":[1,2]},"message":"no"}]}}},
-                    {"id":"after","name":"after","function":{"name":"map","input":{
-                      "mappings":[{"path":"data.x","logic":true}]}}}]}"#,
-            ),
-            (
-                dataflow_rs_v3::IssueCode::GroupContinueOnError,
-                r#"{"id":"w","name":"w","condition":true,"tasks":[
-                    {"id":"g","name":"g","continue_on_error":true,"tasks":[
-                      {"id":"t","name":"t","function":{"name":"log","input":{
-                        "message":"x"}}}]}]}"#,
-            ),
-        ];
-
-        for (code, json) in cases {
-            let workflow =
-                dataflow_rs_v3::Workflow::from_json(json).expect("the fixture is a valid workflow");
-            // The engine reports it — so this is a claim about severity, not
-            // about the finding being absent.
-            assert!(
-                screen()
-                    .check_workflow(&workflow)
-                    .iter()
-                    .any(|i| i.code == code),
-                "{code:?} must be reported by check_workflow"
-            );
-            assert_eq!(
-                code.severity(),
-                dataflow_rs_v3::Severity::Advisory,
-                "{code:?} must be advisory"
-            );
-            assert!(
-                screen_workflow(&workflow, &screen()).is_ok(),
-                "{code:?} must not quarantine"
-            );
-        }
-    }
-
-    /// `check_workflow` does not run `Workflow::validate()`; `build` does, and
-    /// fails the whole engine on the first refusal. The screen must catch what
-    /// `validate()` refuses, or one row takes every channel down.
-    #[test]
-    fn a_workflow_validate_refuses_is_screened() {
-        let workflow = dataflow_rs_v3::Workflow::from_json(
-            r#"{"id":"w","name":"w","condition":true,
-                "loop":{"max":2,"setup":[
-                  {"id":"t","name":"s","function":{"name":"log","input":{"message":"x"}}}]},
-                "tasks":[
-                  {"id":"t","name":"t","function":{"name":"log","input":{"message":"x"}}}]}"#,
-        )
-        .expect("a duplicate id still parses");
-
-        assert!(
-            screen().check_workflow(&workflow).is_empty(),
-            "if check_workflow starts reporting this, the validate() call can go"
-        );
-        let err = screen_workflow(&workflow, &screen()).expect_err("must be screened");
-        assert!(err.contains("Duplicate"), "{err}");
+    fn an_advisory_never_quarantines() {
+        let mut channel = make_channel("advised");
+        channel.workflow_id = Some("wf-advised".to_string());
+        let wfs = vec![workflow_with_raw_tasks(
+            "wf-advised",
+            r#"[
+                {"id":"check","name":"check","function":{"name":"validation","input":{
+                    "rules":[{"logic":{"==":[1,2]},"message":"no"}]}}},
+                {"id":"g","name":"g","tasks":[
+                    {"id":"m","name":"m","function":{"name":"map","input":{"mappings":[
+                        {"path":"data.doc","logic":{"$set":{"a":1}}}]}}}]}
+            ]"#,
+        )];
+        let (loaded, issues) = load(&[channel], &wfs);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(loaded.len(), 1);
     }
 
     #[test]
@@ -1148,63 +657,51 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
     }
 
-    /// The `[min, max)` rollout bucket range a converted workflow serves.
-    ///
-    /// This used to parse the range back out of a synthetic condition
-    /// (`and[1]` is `>= min`, `and[2]` is `< max`) — which is why the split
-    /// could be inert for as long as it was: the assertion only ever checked
-    /// the *shape* of the generated JSON, never that a bucket routed anywhere.
-    fn bucket_range(wf: &dataflow_rs_v3::Workflow) -> (u8, u8) {
-        let rollout = wf
-            .rollout
-            .expect("converted rollout workflow carries a range");
-        (rollout.bucket_start, rollout.bucket_end)
-    }
-
     /// The bucket ranges must partition 0–99 contiguously, newest version
     /// first: 20/50/30 across v3/v2/v1 → v3 [0,20), v2 [20,70), v1 [70,100).
     /// A gap or overlap in the offsets silently misroutes traffic, which is
-    /// exactly what this accumulation arithmetic exists to prevent.
-    #[test]
-    fn test_rollout_bucket_offsets_partition_newest_first() {
+    /// exactly what this accumulation arithmetic exists to prevent — so every
+    /// bucket is run, and must be served by exactly the version that owns it.
+    #[tokio::test]
+    async fn test_rollout_bucket_offsets_partition_newest_first() {
         let mut channel = make_channel("rollout-ch");
         channel.workflow_id = Some("wf".to_string());
-        let wfs = vec![
-            make_workflow("wf", 1, 30),
-            make_workflow("wf", 2, 50),
-            make_workflow("wf", 3, 20),
-        ];
-        let (converted, issues) = load(&[channel], &wfs);
-        assert!(issues.is_empty(), "{issues:?}");
-        assert_eq!(converted.len(), 3);
-
-        let by_id: std::collections::HashMap<String, (u8, u8)> = converted
-            .iter()
-            .map(|w| (w.id.clone(), bucket_range(w)))
-            .collect();
+        let version = |v: i64, pct: i64| {
+            let mut wf = make_workflow("wf", v, pct);
+            wf.tasks_json = serde_json::json!([{"id": "mark", "name": "mark", "function": {
+                "name": "map", "input": {"mappings": [{"path": "data.version", "logic": v}]}}}])
+            .to_string();
+            wf
+        };
+        let wfs = vec![version(1, 30), version(2, 50), version(3, 20)];
+        let engines = Engines::bare();
+        let loaded = engines.load(&[channel], &wfs);
+        assert!(loaded.issues.is_empty(), "{:?}", loaded.issues);
         assert_eq!(
-            by_id["wf:v3"],
-            (0, 20),
-            "newest version gets the first bucket"
+            loaded.workflows.iter().map(|w| w.id()).collect::<Vec<_>>(),
+            ["wf:v3", "wf:v2", "wf:v1"]
         );
-        assert_eq!(by_id["wf:v2"], (20, 70));
-        assert_eq!(by_id["wf:v1"], (70, 100));
 
-        // …and the ranges actually route. Every bucket 0–99 must be served by
-        // exactly one version. The previous wiring passed the shape assertion
-        // above while sending 100% of traffic to whichever version started at
-        // 0, because the condition's `var` addressed the context root and the
-        // bucket was injected under `data`.
+        let engine = serving_engine(engines.compiler.link(loaded.workflows));
         for bucket in 0u8..100 {
-            let serving: Vec<&str> = converted
-                .iter()
-                .filter(|w| w.rollout.is_some_and(|r| r.accepts(bucket)))
-                .map(|w| w.id.as_str())
-                .collect();
+            let mut message = crate::engine::execute::serving_message(
+                &serde_json::json!({}),
+                &serde_json::json!({}),
+            );
+            let options = dataflow_rs::run::RunOptions::default()
+                .channel("rollout-ch")
+                .routing_bucket(bucket);
+            let run = engine.run_with(&mut message, &options).await;
+            assert_eq!(run.matched(), 1, "bucket {bucket} is served by one version");
+            let expected = match bucket {
+                0..20 => 3,
+                20..70 => 2,
+                _ => 1,
+            };
             assert_eq!(
-                serving.len(),
-                1,
-                "bucket {bucket} is served by {serving:?}, not exactly one version"
+                Value::from(message.context().data())["version"],
+                expected,
+                "bucket {bucket}"
             );
         }
     }
@@ -1351,11 +848,11 @@ mod tests {
             1,
             "the healthy channel must still be built"
         );
-        assert_eq!(converted[0].channel, "good");
+        assert_eq!(converted[0].id(), "wf-good");
         assert_eq!(issues.len(), 1, "issues = {issues:?}");
         assert_eq!(issues[0].channel, "bad");
-        // dataflow-rs 4's verdict decides, so the reason is its issue's code
-        // and path (I182), where it was dataflow-rs 3's `FunctionNotFound`.
+        // The engine's verdict decides, so the reason is its issue's code
+        // and path (I182).
         assert!(
             issues[0].reason.contains("`totally_not_a_function`")
                 && issues[0]
@@ -1368,89 +865,84 @@ mod tests {
 
     // ---- dataflow-rs 4 decides which rows load (I182) ---------------------
 
-    /// I186: every alias of `schema.rs`'s rows (and `channel_call`'s
-    /// `response_path`, 1.12's serde alias the row does not declare) is
-    /// rewritten to its canonical key, in a task, in a group and in
-    /// `loop.setup`, in its place in the input, and each is reported. A task
-    /// holding both spellings is left as written, for its config to refuse.
+    /// A v3 spelling is no longer read: a task's `continue_on_error` and
+    /// `halt_on` are refused at the key, `validate` as an unknown function,
+    /// and each refusal names the v4 spelling to write. A function input's
+    /// 1.12 alias is an unknown key of the function's config.
     #[test]
-    fn rewrite_aliases_rewrites_every_alias_in_tasks_groups_and_setup() {
-        let mut workflow = serde_json::json!({
-            "id": "w",
-            "tasks": [
-                {"id": "call", "function": {"name": "http_call", "input": {
-                    "connector": "api", "path_logic": {"var": "data.p"},
-                    "body_logic": {"a": 1}, "response_path": "data.r", "timeout_ms": 5}}},
-                {"id": "g", "tasks": [
-                    {"id": "pub", "function": {"name": "publish_kafka", "input": {
-                        "connector": "k", "topic": "t",
-                        "key_logic": {"var": "data.k"}, "value_logic": {"var": "data"}}}},
-                    {"id": "both", "function": {"name": "http_call", "input": {
-                        "connector": "api", "output": "data.a", "response_path": "data.b"}}}
-                ]},
-                {"id": "plain", "function": {"name": "log", "input": {"message": "x"}}}
-            ],
-            "loop": {"max": 1, "setup": [
-                {"id": "fan", "function": {"name": "channel_call", "input": {
-                    "channel_logic": "target", "data_logic": {"x": 1},
-                    "response_path": "data.child"}}}
-            ]}
-        });
-
-        let rewrites = rewrite_aliases(&mut workflow, FunctionRegistry::builtin());
-
-        let seen: Vec<(&str, &str, &str)> = rewrites
-            .iter()
-            .map(|r| (r.task.as_str(), r.alias.as_str(), r.canonical.as_str()))
-            .collect();
-        assert_eq!(
-            seen,
-            [
-                ("tasks[0]", "path_logic", "path"),
-                ("tasks[0]", "body_logic", "body"),
-                ("tasks[0]", "response_path", "output"),
-                ("tasks[1].tasks[0]", "key_logic", "key"),
-                ("tasks[1].tasks[0]", "value_logic", "value"),
-                ("loop.setup[0]", "channel_logic", "channel"),
-                ("loop.setup[0]", "data_logic", "data"),
-                ("loop.setup[0]", "response_path", "output"),
-            ]
-        );
-        assert_eq!(rewrites[0].task_id.as_deref(), Some("call"));
-        assert_eq!(rewrites[0].function, "http_call");
-
-        // Each key keeps its place in the input.
-        let keys = |at: &str| -> Vec<String> {
-            workflow
-                .pointer(at)
-                .and_then(Value::as_object)
-                .expect("an input")
-                .keys()
-                .cloned()
-                .collect()
+    fn a_v3_spelling_is_refused_naming_its_v4_spelling() {
+        let engines = Engines::orion();
+        let task = |extra: Value, name: &str, input: Value| {
+            let mut task =
+                serde_json::json!({"id": "t", "function": {"name": name, "input": input}});
+            if let (Some(task), Some(extra)) = (task.as_object_mut(), extra.as_object()) {
+                task.extend(extra.clone());
+            }
+            serde_json::json!({"id": "w", "tasks": [task]})
         };
-        assert_eq!(
-            keys("/tasks/0/function/input"),
-            ["connector", "path", "body", "output", "timeout_ms"]
-        );
-        assert_eq!(
-            keys("/loop/setup/0/function/input"),
-            ["channel", "data", "output"]
-        );
-        assert_eq!(
-            workflow.pointer("/tasks/0/function/input/path"),
-            Some(&serde_json::json!({"var": "data.p"}))
-        );
-        // Both spellings at once: left as written.
-        assert_eq!(
-            keys("/tasks/1/tasks/1/function/input"),
-            ["connector", "output", "response_path"]
-        );
+        let log = serde_json::json!({"message": "x"});
+        let cases = [
+            (
+                task(
+                    serde_json::json!({"continue_on_error": true}),
+                    "log",
+                    log.clone(),
+                ),
+                "tasks[0].continue_on_error",
+                "write `on_failure: continue, on_rejection: continue`",
+            ),
+            (
+                task(
+                    serde_json::json!({"halt_on": "failure"}),
+                    "log",
+                    log.clone(),
+                ),
+                "tasks[0].halt_on",
+                "write `on_failure: fail, on_rejection: halt`",
+            ),
+            (
+                task(
+                    serde_json::json!({}),
+                    "validate",
+                    serde_json::json!({"rules": [{"logic": true, "message": "m"}]}),
+                ),
+                "tasks[0].function.name",
+                "write `validation`",
+            ),
+        ];
+        for (json, path, instead) in cases {
+            let issues = compile_row(&engines.compiler, &json).expect_err("refused");
+            let issue = issues
+                .iter()
+                .find(|i| i.path.to_string() == path)
+                .unwrap_or_else(|| unreachable!("no issue at {path}: {issues:?}"));
+            assert!(issue.message.contains(instead), "{}", issue.message);
+        }
+
+        for (function, alias) in [
+            ("http_call", "response_path"),
+            ("http_call", "path_logic"),
+            ("publish_kafka", "key_logic"),
+            ("channel_call", "channel_logic"),
+        ] {
+            let json = task(
+                serde_json::json!({}),
+                function,
+                serde_json::json!({"connector": "c", alias: "data.x"}),
+            );
+            let issues = compile_row(&engines.compiler, &json).expect_err("refused");
+            let at = format!("tasks[0].function.input.{alias}");
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.path.to_string() == at && i.severity == Severity::Rejected),
+                "{function}.{alias}: {issues:?}"
+            );
+        }
     }
 
-    /// A rollout set is all or nothing on dataflow-rs 4 too: a version it
-    /// refuses drops the whole set, though dataflow-rs 3 would have taken
-    /// every version. The refusal is break 2a: `cache_write`'s `output`,
+    /// A rollout set is all or nothing: a version the compiler refuses drops
+    /// the whole set. The refusal is break 2a: `cache_write`'s `output`,
     /// which 1.12 resolved and ignored, is an unknown key of its config.
     #[tokio::test]
     async fn a_rollout_set_one_of_whose_versions_is_rejected_is_dropped_whole() {
@@ -1464,7 +956,7 @@ mod tests {
 
         let engines = Engines::orion();
         let loaded = engines.load(std::slice::from_ref(&channel), &wfs);
-        assert!(loaded.v3.is_empty() && loaded.v4.is_empty());
+        assert!(loaded.workflows.is_empty());
         assert_eq!(loaded.issues.len(), 1, "{:?}", loaded.issues);
         let reason = &loaded.issues[0].reason;
         assert!(
@@ -1475,23 +967,21 @@ mod tests {
             "{reason}"
         );
 
-        // The same set without the stray key loads whole, on both engines.
+        // The same set without the stray key loads whole.
         let mut fixed = wfs.clone();
         fixed[0].tasks_json = fixed[0].tasks_json.replace(r#","output":"data.x""#, "");
         let loaded = engines.load(&[channel], &fixed);
         assert!(loaded.issues.is_empty(), "{:?}", loaded.issues);
-        assert_eq!(loaded.v3.len(), 2);
         assert_eq!(
-            loaded.v4.iter().map(|w| w.id()).collect::<Vec<_>>(),
+            loaded.workflows.iter().map(|w| w.id()).collect::<Vec<_>>(),
             ["wf:v2", "wf:v1"]
         );
     }
 
     /// I185 and I182: break 21's root-output Defect quarantines, its code and
-    /// path in the reason, where dataflow-rs 3 loads the row (and replaced
-    /// `data` with the rows on every call). A `PAYLOAD_VAR` Defect does not:
-    /// that row loads on both engines and the compile keeps the Defect for
-    /// the log.
+    /// path in the reason (1.12 loaded the row, and replaced `data` with the
+    /// rows on every call). A `PAYLOAD_VAR` Defect does not: that row loads,
+    /// and the compile keeps the Defect for the log.
     #[tokio::test]
     async fn a_root_output_defect_quarantines_its_channel_and_a_payload_var_does_not() {
         let engines = Engines::orion();
@@ -1511,15 +1001,6 @@ mod tests {
                     {"path":"data.x","logic":{"var":"payload.x"}}]}}}]"#,
             ),
         ];
-        for wf in &wfs {
-            let w = workflow_to_dataflow(wf, "c").expect("converts");
-            assert!(
-                screen_workflow(&w, &engines.screen).is_ok(),
-                "dataflow-rs 3 loads {}",
-                wf.workflow_id
-            );
-        }
-
         let loaded = engines.load(&[rows, payload], &wfs);
         assert_eq!(loaded.issues.len(), 1, "{:?}", loaded.issues);
         assert_eq!(loaded.issues[0].channel, "rows");
@@ -1531,8 +1012,10 @@ mod tests {
             "{}",
             loaded.issues[0].reason
         );
-        assert_eq!(loaded.v3.len(), 1);
-        assert_eq!(loaded.v3[0].channel, "payload");
+        assert_eq!(
+            loaded.workflows.iter().map(|w| w.id()).collect::<Vec<_>>(),
+            ["wf-payload"]
+        );
 
         let json = workflow_json(&wfs[1], "payload", "wf-payload", "active", None).expect("json");
         let compiled = compile_row(&engines.compiler, &json).expect("loads");
@@ -1546,12 +1029,13 @@ mod tests {
         );
     }
 
-    /// Break 2: a near miss of a task key is a `LIKELY_TYPO` Defect, and it
-    /// quarantines, where dataflow-rs 3 ignored the key and ran the task
-    /// unconditionally. A stray key that resembles none is an Advisory and
-    /// loads.
+    /// Break 2: a near miss of a task key is a `LIKELY_TYPO`, and it
+    /// quarantines, where 1.12 ignored the key and ran the task
+    /// unconditionally. With the v3 compat reader off, a stray key that
+    /// resembles none is refused too: a definition carries only its own keys,
+    /// and an extension goes in `ext`.
     #[test]
-    fn a_likely_typo_quarantines_and_an_unknown_key_loads() {
+    fn a_likely_typo_and_an_unknown_key_both_quarantine() {
         let mut typo = make_channel("typo");
         typo.workflow_id = Some("wf-typo".to_string());
         let mut stray = make_channel("stray");
@@ -1569,14 +1053,8 @@ mod tests {
             ),
         ];
 
-        let w = workflow_to_dataflow(&wfs[0], "typo").expect("converts");
-        assert!(
-            screen_workflow(&w, &screen()).is_ok(),
-            "dataflow-rs 3 loads the typo, ignoring the key"
-        );
-
         let (converted, issues) = load(&[typo, stray], &wfs);
-        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues.len(), 2, "{issues:?}");
         assert_eq!(issues[0].channel, "typo");
         assert!(
             issues[0]
@@ -1585,8 +1063,15 @@ mod tests {
             "{}",
             issues[0].reason
         );
-        assert_eq!(converted.len(), 1);
-        assert_eq!(converted[0].channel, "stray");
+        assert_eq!(issues[1].channel, "stray");
+        assert!(
+            issues[1]
+                .reason
+                .contains("task 't1': UNKNOWN_KEY at tasks[0].owner"),
+            "{}",
+            issues[1].reason
+        );
+        assert!(converted.is_empty());
     }
 
     /// The rule itself, one severity and code at a time.
@@ -1926,9 +1411,7 @@ mod tests {
                     runtime.clone(),
                     limits,
                 );
-                let function =
-                    crate::plugin::PluginFunction::new(handler.clone(), decl.runtime_fields());
-                (handler, function)
+                crate::plugin::PluginFunction::new(handler, decl.runtime_fields())
             })
             .collect();
         let engines = Engines::orion_with(exprs_with_a_secret(), functions);
@@ -1955,72 +1438,35 @@ mod tests {
         );
     }
 
-    // ---- build_single: the screen is not the caller's to remember --------
+    // ---- one workflow, compiled as a generation compiles it ---------------
 
-    fn one_task_workflow(function: &str, input: serde_json::Value) -> dataflow_rs_v3::Workflow {
-        serde_json::from_value(serde_json::json!({
+    fn one_task_workflow(function: &str, input: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
             "id": "wf-1",
             "name": "wf-1",
+            "channel": "c",
             "condition": true,
             "tasks": [{
                 "id": "t1",
                 "name": "t1",
                 "function": { "name": function, "input": input }
             }],
-        }))
-        .expect("a well-formed workflow")
+        })
     }
 
-    /// The divergence this closes, in its sharpest form.
-    ///
-    /// `enrich` is a dataflow-rs built-in that *requires a handler*, and Orion
-    /// never registers one (F54). So it deserializes, `.build()` accepts it,
-    /// and every request fails with `FunctionNotFound` — which is why
-    /// `dry-run` and `POST /workflows/{id}/test` calling `.build()` by hand
-    /// gave a green answer for a workflow boot would quarantine.
-    ///
-    /// It is also the trap in screening by severity: this is
-    /// `Severity::Defect`, the class between "refused" and "advisory", and the
-    /// only one where `build` and the first message disagree. A screen written
-    /// as "pass anything `build` would accept" lets it through. Both halves of
-    /// that are asserted below, so the prose above is checked rather than
-    /// trusted.
+    /// A task naming a function no registry holds is refused when the
+    /// workflow is compiled, naming the workflow and the task — an offline
+    /// run or `POST /workflows/{id}/test` cannot give a green answer for a
+    /// workflow boot would quarantine.
     #[test]
-    fn build_single_refuses_a_built_in_with_no_handler_behind_it() {
-        let task = || {
-            one_task_workflow(
-                "enrich",
-                serde_json::json!({ "connector": "c", "merge_path": "data" }),
-            )
-        };
-        assert!(
-            screen()
-                .check_workflow(&task())
-                .iter()
-                .any(|i| i.severity() == dataflow_rs_v3::Severity::Defect),
-            "`enrich` with no handler is the Defect class"
-        );
-        assert!(
-            dataflow_rs_v3::Engine::builder()
-                .with_workflow(task())
-                .build()
-                .is_ok(),
-            "`build` accepts it — the premise that makes this screen necessary"
-        );
-
-        // `dataflow_rs_v3::Engine` is not `Debug`, so unwrap the arms by hand.
-        let Err(err) = build_single(
-            task(),
-            std::collections::HashMap::new(),
-            &crate::engine::ResolvedSecrets::empty(),
-            0,
+    fn single_engine_refuses_a_function_nothing_dispatches() {
+        let engines = Engines::bare();
+        let Err(err) = crate::engine::offline::single_engine(
+            &engines.compiler,
+            &one_task_workflow("enrich", serde_json::json!({ "connector": "c" })),
         ) else {
-            unreachable!(
-                "`enrich` has no handler in any Orion engine — building it is \
-                 the bug this screen exists to catch"
-            );
+            unreachable!("`enrich` has no function behind it");
         };
-
         let msg = err.to_string();
         assert!(
             msg.contains("wf-1") && msg.contains("t1"),
@@ -2033,20 +1479,17 @@ mod tests {
         );
     }
 
-    /// The control: a self-contained built-in needs no handler, so the same
-    /// call builds. Without this the test above would pass for a `build_single`
-    /// that refuses everything.
+    /// The control: a self-contained built-in needs no host function, so the
+    /// same call builds.
     #[test]
-    fn build_single_builds_a_workflow_every_engine_can_run() {
+    fn single_engine_builds_a_workflow_every_engine_can_run() {
         assert!(
-            build_single(
-                one_task_workflow("log", serde_json::json!({ "message": "x" })),
-                std::collections::HashMap::new(),
-                &crate::engine::ResolvedSecrets::empty(),
-                0,
+            crate::engine::offline::single_engine(
+                &Engines::bare().compiler,
+                &one_task_workflow("log", serde_json::json!({ "message": "x" })),
             )
             .is_ok(),
-            "`log` is self-contained — every engine dispatches it"
+            "`log` is self-contained"
         );
     }
 }

@@ -1,0 +1,403 @@
+{
+  "a_read_only_connector_refuses_a_bump": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'write' is disabled on connector 'c'"
+    }
+  },
+  "a_read_only_connector_refuses_a_bump/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"absent\",\"key\":\"n\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"absent\",\"key\":\"n\"}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"fresh\",\"ttl_secs\":60,\"output\":\"data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 1
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"fresh\",\"ttl_secs\":60,\"output\":\"data.v\"}/held": {
+    "ok": [
+      "41",
+      "1",
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"fresh\",\"ttl_secs\":{\"var\":\"data.n\"}}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v"
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"fresh\",\"ttl_secs\":{\"var\":\"data.n\"}}/held": {
+    "ok": [
+      "41",
+      "1",
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":\"2\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_incr 'by' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":\"2\"}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":-50,\"output\":\"temp_data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v"
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":-50,\"output\":\"temp_data.v\"}/held": {
+    "ok": [
+      "-9",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":1e+20}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_incr 'by' must resolve to a whole number that fits in 64 bits",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":1e+20}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":5,\"output\":\"data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 46
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":5,\"output\":\"data.v\"}/held": {
+    "ok": [
+      "46",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":null,\"output\":\"data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 42
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":null,\"output\":\"data.v\"}/held": {
+    "ok": [
+      "42",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"throw\":\"boom\"}}": {
+    "err": {
+      "code": "LOGIC_ERROR",
+      "message": "Logic evaluation error: Thrown: {\"type\":\"boom\"} (in operator: throw)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"throw\":\"boom\"}}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.by\"},\"output\":{\"var\":\"data.at\"}}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 46
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.by\"},\"output\":{\"var\":\"data.at\"}}/held": {
+    "ok": [
+      "46",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.half\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_incr 'by' must resolve to a whole number that fits in 64 bits",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.half\"}}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.missing\"},\"output\":\"data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 42
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.missing\"},\"output\":\"data.v\"}/held": {
+    "ok": [
+      "42",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.neg\"},\"output\":\"data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 39
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.neg\"},\"output\":\"data.v\"}/held": {
+    "ok": [
+      "39",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.obj\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_incr 'by' must resolve to a number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"by\":{\"var\":\"data.obj\"}}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"output\":\"data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 42
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"output\":\"data.v\"}/held": {
+    "ok": [
+      "42",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"output\":null}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v"
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"output\":null}/held": {
+    "ok": [
+      "42",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"output\":{\"var\":\"data.n\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"output\":{\"var\":\"data.n\"}}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"ttl_secs\":\"5m\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_incr 'ttl_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\",\"ttl_secs\":\"5m\"}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v"
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"n\"}/held": {
+    "ok": [
+      "42",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"text\",\"output\":\"data.v\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Validation failed: cache key 'text' does not hold an integer, so it cannot be incremented",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":\"text\",\"output\":\"data.v\"}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":7,\"output\":\"data.v\"}": {
+    "ok": {
+      "by": 5,
+      "neg": -2,
+      "half": 2.5,
+      "obj": {
+        "a": 1
+      },
+      "n": 3,
+      "at": "data.v",
+      "v": 1
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":7,\"output\":\"data.v\"}/held": {
+    "ok": [
+      "41",
+      null,
+      "1"
+    ]
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":{\"var\":\"data.none\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_incr 'key' must resolve to a string or number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"connector\":\"c\",\"key\":{\"var\":\"data.none\"}}/held": {
+    "ok": [
+      "41",
+      null,
+      null
+    ]
+  }
+}

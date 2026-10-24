@@ -1,153 +1,22 @@
 //! `publish_kafka` — one record to a Kafka topic through a Kafka connector.
 //!
-//! Two implementations, one publish: [`PublishKafkaHandler`] serves on
-//! dataflow-rs 3 over its `PublishKafkaConfig`, and
-//! [`PublishKafkaFunction`] is the dataflow-rs 4 function over Orion's own
+//! [`PublishKafkaFunction`] is the function, over Orion's own
 //! [`PublishKafkaConfig`] (break 10).
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::PublishKafkaConfig as V3PublishKafkaConfig;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::Value;
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{ConnectorCall, require_op};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::Scope;
 use crate::connector::ConnectorRegistry;
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 
 /// This function's name, for the free functions below (F48).
-const NAME: &str = <PublishKafkaHandler as ConnectorHandler>::NAME;
-
-/// Kafka publish handler.
-pub struct PublishKafkaHandler {
-    pub registry: Arc<ConnectorRegistry>,
-    /// Producer cache keyed by the connector's broker list (F13). `None`
-    /// when Kafka is disabled.
-    pub producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
-}
-
-#[async_trait]
-impl ConnectorHandler for PublishKafkaHandler {
-    const NAME: &'static str = "publish_kafka";
-    type Kind = crate::connector::kind::Kafka;
-    type Input = V3PublishKafkaConfig;
-    /// The resolved topic. Since dataflow-rs 3.9 it is a `Template` like the
-    /// key and the value, so one task can route by message content; it is
-    /// resolved here rather than in `run` because it names the destination in
-    /// the "Kafka is not enabled" refusal, which precedes the producer.
-    type Parsed = String;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        _call: &ConnectorCall<'_>,
-        input: &V3PublishKafkaConfig,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        Ok(input.resolve_topic(ctx)?)
-    }
-
-    fn gate(
-        _parsed: &Self::Parsed,
-        conn: &crate::connector::KafkaConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        // F22e: gate before anything else — whether the deployment has Kafka
-        // enabled says nothing about whether this connector is allowed to
-        // publish, and the refusal must be the same either way.
-        Ok(require_op(conn.operations.publish, "publish", connector)?)
-    }
-
-    async fn run(
-        &self,
-        topic: Self::Parsed,
-        kafka_config: &crate::connector::KafkaConnectorConfig,
-        call: &ConnectorCall<'_>,
-        input: &V3PublishKafkaConfig,
-        ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        let producers = match &self.producers {
-            Some(p) => p,
-            None => return Err(unavailable(&topic)),
-        };
-
-        // S6: the broker list is connector data, so judge it against the
-        // private-address guard before dialling. An empty list means the
-        // globally configured cluster — operator config, not connector data —
-        // and is deliberately not re-judged.
-        if !kafka_config.brokers.is_empty() {
-            crate::validation::check_broker_endpoints(
-                call.connector,
-                &kafka_config.brokers,
-                kafka_config.allow_private_urls,
-            )
-            .await
-            .map_err(crate::errors::connector_detail_error)?;
-        }
-
-        // F13: publish to the cluster the *connector* names, not the one
-        // globally configured. Empty brokers keep the previous meaning: the
-        // global cluster.
-        let producer = producers
-            .for_brokers(&kafka_config.brokers)
-            .await
-            .map_err(|e| {
-                DataflowError::function_execution(
-                    format!(
-                        "Failed to create Kafka producer for connector '{}': {e}",
-                        call.connector
-                    ),
-                    None,
-                )
-            })?;
-
-        // `resolve_key` applies the same string coercion this handler used to
-        // spell out — a JSON string yields its contents, anything else its
-        // compact form.
-        let key = input.resolve_key(ctx)?;
-
-        // No `value_logic` still means "publish the message data": that is a
-        // transport decision the config cannot make, so upstream returns `None`
-        // and the fallback stays here.
-        let value_json: Value = match input.resolve_value(ctx)? {
-            Some(value) => value,
-            None => ctx.data().into(),
-        };
-        let value = serde_json::to_string(&value_json).map_err(|e| {
-            DataflowError::function_execution(
-                format!("Failed to serialize Kafka message value: {e}"),
-                None,
-            )
-        })?;
-
-        producer
-            .send(&topic, key.as_deref(), value.as_bytes())
-            .await
-            .map_err(|e| {
-                DataflowError::function_execution(
-                    format!("Kafka publish to '{topic}' failed: {e}"),
-                    None,
-                )
-            })?;
-
-        tracing::debug!(topic = %topic, "Published message to Kafka");
-
-        // A publish records nothing at `output`; the send is the whole effect.
-        Ok(Produced::nothing())
-    }
-}
+pub(crate) const NAME: &str = "publish_kafka";
 
 /// The refusal of a publish on a node with Kafka disabled, naming the topic.
 fn unavailable(topic: &str) -> HandlerError {
@@ -312,20 +181,16 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "key",
-        description: "Message key (JSONLogic). \
-                      (Was `key_logic`; still accepted, but not alongside `key`.)",
+        description: "Message key (JSONLogic).",
         kind: FieldKind::Any,
         template_at: &[""],
-        alias: Some("key_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "value",
-        description: "Message value (JSONLogic). Defaults to the message data. \
-                      (Was `value_logic`; still accepted, but not alongside `value`.)",
+        description: "Message value (JSONLogic). Defaults to the message data.",
         kind: FieldKind::Any,
         template_at: &[""],
-        alias: Some("value_logic"),
         ..FieldSchema::DEFAULT
     },
 ];
@@ -333,7 +198,6 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::functions::connector_handler::Connector;
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
@@ -354,8 +218,7 @@ mod tests {
 
     /// Declaration order is the field table's (I179); `connector` and
     /// `topic` are required (I183) and `connector` a literal; an unknown key
-    /// is refused (break 2a), 3.15's aliases among them, since the loader
-    /// rewrites those (I186).
+    /// is refused (break 2a), 1.12's aliases among them: no alias is read.
     #[test]
     fn the_config_is_the_field_table() {
         let fields: Vec<&str> = PublishKafkaConfig::fields()
@@ -397,7 +260,7 @@ mod tests {
     /// where 3.15 loaded it: a computed `connector` (the shapes' note) and an
     /// alias on its own (I186).
     #[test]
-    fn the_load_verdict_is_3_15s_but_for_the_named_breaks() {
+    fn the_load_verdict_is_1_12s_but_for_the_named_breaks() {
         let loads = [
             json!({"connector": "events", "topic": "t"}),
             json!({"connector": "events", "topic": null, "key": null, "value": null}),
@@ -417,53 +280,19 @@ mod tests {
             json!({"connector": "events", "topic": "t", "key_logic": "k"}),
             json!({"connector": "events", "topic": "t", "value_logic": {"var": "data"}}),
         ];
-        let v3 =
-            |input: &Value| serde_json::from_value::<V3PublishKafkaConfig>(input.clone()).is_ok();
         for input in loads {
-            assert!(v3(&input), "3.15 loads {input}");
             assert!(config(input.clone()).is_ok(), "{input}");
         }
-        for input in refused_alike {
-            assert!(!v3(&input), "3.15 refuses {input}");
-            assert!(config(input.clone()).is_err(), "{input}");
-        }
-        for input in breaks {
-            assert!(v3(&input), "3.15 loads {input}");
+        for input in refused_alike.into_iter().chain(breaks) {
             assert!(config(input.clone()).is_err(), "{input}");
         }
     }
 
-    /// Writes 3.15's readings of its typed config at `data.out`: the topic,
-    /// the key, and the value with the handler's fallback to all of `data`.
-    struct ReadsV3;
+    /// Writes the function's readings of its config at `data.out`: the
+    /// topic, the key, and the value with its fallback to all of `data`.
+    struct Reads;
 
-    #[async_trait]
-    impl dataflow_rs_v3::engine::functions::AsyncFunctionHandler for ReadsV3 {
-        type Input = V3PublishKafkaConfig;
-
-        async fn execute(
-            &self,
-            ctx: &mut TaskContext<'_>,
-            input: &V3PublishKafkaConfig,
-        ) -> dataflow_rs_v3::Result<dataflow_rs_v3::engine::task_outcome::TaskOutcome> {
-            let value: Value = match input.resolve_value(ctx)? {
-                Some(value) => value,
-                None => ctx.data().into(),
-            };
-            let read = json!({
-                "topic": input.resolve_topic(ctx)?,
-                "key": input.resolve_key(ctx)?,
-                "value": value,
-            });
-            ctx.set_json("data.out", &read);
-            Ok(dataflow_rs_v3::engine::task_outcome::TaskOutcome::Success)
-        }
-    }
-
-    /// The same readings, through the function's own.
-    struct ReadsV4;
-
-    impl Function for ReadsV4 {
+    impl Function for Reads {
         type Config = PublishKafkaConfig;
 
         async fn call(
@@ -499,15 +328,14 @@ mod tests {
             json!({"connector": "events", "topic": "t", "key": {"var": "data.none"},
                    "value": {"var": "data.none"}}),
         ] {
-            let v3 = twin::v3(NAME, Box::new(ReadsV3), input.clone(), data.clone()).await;
-            let v4 = twin::v4(NAME, ReadsV4, input.clone(), data.clone()).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = twin::v4(NAME, Reads, input.clone(), data.clone()).await;
+            twin::pinned(&v4, format!("fields_read/{input}"));
         }
     }
 
-    /// One task through each engine with no producer configured, as the
-    /// handler is tested today (`connector_ops_test`).
-    async fn both(input: Value) -> (Seen, Seen) {
+    /// One task with no producer configured, as the function is tested in
+    /// `connector_ops_test`.
+    async fn run(input: Value) -> Seen {
         let connectors = [
             (
                 "events",
@@ -520,17 +348,7 @@ mod tests {
             ),
             ("api", json!({"type": "http", "url": "http://127.0.0.1:1"})),
         ];
-        let v3 = twin::v3(
-            NAME,
-            Box::new(Connector(PublishKafkaHandler {
-                registry: twin::connectors(&connectors).await,
-                producers: None,
-            })),
-            input.clone(),
-            json!({"region": "eu"}),
-        )
-        .await;
-        let v4 = twin::v4(
+        twin::v4(
             NAME,
             PublishKafkaFunction {
                 registry: twin::connectors(&connectors).await,
@@ -539,8 +357,7 @@ mod tests {
             input,
             json!({"region": "eu"}),
         )
-        .await;
-        (v3, v4)
+        .await
     }
 
     /// The gate first, so a closed connector refuses alike with Kafka on or
@@ -565,11 +382,11 @@ mod tests {
             ),
             (json!({"connector": "api", "topic": "t"}), CONNECTOR_DETAIL),
         ] {
-            let (v3, v4) = both(input.clone()).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone()).await;
+            twin::pinned(&v4, format!("no_producer/{input}"));
             assert_eq!(v4.expect_err("refused").code, expected, "{input}");
         }
-        let (_, v4) = both(json!({"connector": "events",
+        let v4 = run(json!({"connector": "events",
                                    "topic": {"cat": ["orders.", {"var": "data.region"}]}}))
         .await;
         let failure = v4.expect_err("Kafka is disabled");

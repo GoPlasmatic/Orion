@@ -1,6 +1,5 @@
-//! The engine functions behind every plugin function: an ordinary
-//! `AsyncFunctionHandler` for dataflow-rs 3, and its dataflow-rs 4 twin,
-//! [`PluginFunction`], whose body is the same sandboxed call.
+//! The engine function behind every plugin function: [`PluginFunction`],
+//! whose body is the sandboxed call [`PluginFunctionHandler`] makes.
 //!
 //! The steps are the design's, in order: validate the task's input against
 //! the entry's own table, evaluate its template fields and fold `{"var": …}`
@@ -9,21 +8,16 @@
 //! invoke under a fresh store; validate the result and write it at `output`.
 //! A failure at any step writes nothing.
 //!
-//! One type, one instance per function a manifest declares. The two
-//! receiver-taking hooks dataflow-rs 3.12 added — `parse_input_with` and
-//! `compile_input_with` — are what let an instance answer for its own
-//! registration: the authored input is checked against *this* function's
-//! table when the workflow loads, and *this* function's template fields are
-//! the ones compiled. Before 3.12 the hooks had no `&self`, so a plugin field
-//! could only be folded or literal.
-//!
-//! On dataflow-rs 4 the table is the function's spec: its manifest's fields
-//! as runtime fields ([`FunctionDecl::runtime_fields`]), which the engine
-//! compiles into a `Templated` config at load, and which the call reads
-//! through [`Templated::get`]. Both engines share everything after the input
-//! is resolved: the schema over the resolved values, the size limit, the
-//! permit, the invocation and its classification, the metrics and the
-//! operator log.
+//! One type, one instance per function a manifest declares, so an instance
+//! answers for its own registration: the authored input is checked against
+//! *this* function's table when the workflow loads, and *this* function's
+//! template fields are the ones compiled. The table is the function's spec:
+//! its manifest's fields as runtime fields ([`FunctionDecl::runtime_fields`]),
+//! which the engine compiles into a `Templated` config at load, and which the
+//! call reads through [`Templated::get`]. After the input is resolved the
+//! handler does the rest: the schema over the resolved values, the size
+//! limit, the permit, the invocation and its classification, the metrics and
+//! the operator log.
 //!
 //! [`FunctionDecl::runtime_fields`]: super::manifest::FunctionDecl::runtime_fields
 
@@ -31,26 +25,19 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
-use async_trait::async_trait;
 use dataflow_rs::ErrorKind;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{ExprVisitor, FieldSpec as RuntimeField, Interpolated};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare, Templated};
 use dataflow_rs::program::{AuthoredPath, IssueCode, PathSeg};
 use dataflow_rs::{Ctx, Issue, Outcome, Path};
-use dataflow_rs_v3::TemplateCompiler;
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 use tokio::sync::Semaphore;
 
 use super::error::{Category, Failure};
 use super::limits::Limits;
 use super::runtime::{LoadedComponent, WasmRuntime};
-use crate::engine::functions::connector_helpers::{apply_output, resolve_value};
-use crate::engine::functions::templated_input::{TemplatedInput, with_scope};
+
 use crate::engine::{FunctionEntry, HandlerError};
 use crate::plugin::manifest::OUTPUT_FIELD;
 
@@ -110,75 +97,7 @@ impl PluginFunctionHandler {
         &self.entry.name
     }
 
-    async fn run(&self, ctx: &mut TaskContext<'_>, input: &TemplatedInput) -> Result<(), Failure> {
-        let raw = input.raw();
-        let obj = raw
-            .as_object()
-            .ok_or_else(|| Failure::host(Category::CallerInput, "input must be a JSON object"))?;
-
-        // Where the result goes: the task's `output`, else the function's
-        // declared default root, else nowhere — which is a refusal, because a
-        // pure function whose result is dropped did nothing.
-        let output = match obj.get(OUTPUT_FIELD) {
-            Some(Value::String(path)) if !path.trim().is_empty() => path.clone(),
-            Some(_) => {
-                return Err(Failure::host(
-                    Category::CallerInput,
-                    "'output' must be a non-empty dotted context path",
-                ));
-            }
-            None => match self.entry.writes {
-                crate::engine::functions::schema::WriteShape::OutputPath {
-                    default_root: Some(root),
-                } => root.to_string(),
-                _ => {
-                    return Err(Failure::host(
-                        Category::CallerInput,
-                        "the task names no 'output' and the function declares no default root",
-                    ));
-                }
-            },
-        };
-
-        // Only declared fields reach the guest, `output` excluded — it is the
-        // host's. A template field is evaluated by the engine (compiled once
-        // at load, in `compile_input_with`), a resolvable field is folded
-        // against the message, and anything else is the literal it was
-        // written as.
-        //
-        // Every field resolves against one view of the message: a function
-        // declaring k expression fields views it once rather than k times.
-        let guest = with_scope(ctx, |scope| {
-            let mut guest = Map::new();
-            for field in self.entry.input_fields.as_deref().unwrap_or(&[]) {
-                if field.name == OUTPUT_FIELD {
-                    continue;
-                }
-                let Some(value) = obj.get(&field.name) else {
-                    continue;
-                };
-                let value = match input.template_value(&field.name, scope) {
-                    Some(Ok(evaluated)) => evaluated,
-                    Some(Err(e)) => {
-                        return Err(Failure::host(
-                            Category::CallerInput,
-                            format!("'{}' did not evaluate: {e}", field.name),
-                        ));
-                    }
-                    None if field.resolvable => resolve_value(value, scope),
-                    None => value.clone(),
-                };
-                guest.insert(field.name.clone(), value);
-            }
-            Ok(Value::Object(guest))
-        })?;
-
-        let value = self.invoke_resolved(guest).await?;
-        apply_output(ctx, &output, value);
-        Ok(())
-    }
-
-    /// Everything after the input is resolved, which both engines share:
+    /// Everything after the input is resolved:
     /// the schema over the resolved values, the size limit, the permit, the
     /// invocation, and its result read as JSON. `guest` is the input the
     /// guest receives, every declared field but `output` that has a value.
@@ -308,71 +227,14 @@ impl PluginFunctionHandler {
     }
 }
 
-#[async_trait]
-impl AsyncFunctionHandler for PluginFunctionHandler {
-    type Input = TemplatedInput;
-
-    /// The authored input against this registration's own table, when the
-    /// workflow loads. `check_workflow` and `build` both run it, so a
-    /// workflow whose input no longer matches the schema its plugin's active
-    /// version declares — a field renamed between versions, say — is
-    /// quarantined with the mismatch named, rather than every message
-    /// failing at the same check below. The same rules the create-time gate
-    /// applies, so what create accepted this accepts, and what a later
-    /// version's schema refuses the screen refuses too.
-    fn parse_input_with(&self, input: &Value) -> dataflow_rs_v3::Result<TemplatedInput> {
-        let problems = self.entry.validate_input(input, "task");
-        if !problems.is_empty() {
-            return Err(DataflowError::Validation(
-                problems
-                    .iter()
-                    .map(|p| format!("{} ({})", p.message, p.code))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            ));
-        }
-        Ok(TemplatedInput::from(input.clone()))
-    }
-
-    /// Compile this function's template fields — the ones its manifest marks
-    /// `template_at` — against the engine's compiler, once at load. A
-    /// malformed expression fails here and quarantines the workflow, the
-    /// same stance every built-in's template fields take.
-    fn compile_input_with(
-        &self,
-        input: &mut TemplatedInput,
-        c: &TemplateCompiler,
-    ) -> dataflow_rs_v3::Result<()> {
-        input.compile_fields(
-            &self.entry.name,
-            self.entry.input_fields.as_deref().unwrap_or(&[]),
-            c,
-        )
-    }
-
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        let started = Instant::now();
-        let result = self.run(ctx, input).await;
-        let workflow = ctx.workflow_id().unwrap_or("-");
-        let task = ctx.task_id().unwrap_or("-");
-        self.settle(started, result, workflow, task)
-            .map(|()| TaskOutcome::Success)
-            .map_err(Into::into)
-    }
-}
-
-/// One plugin function on dataflow-rs 4: its manifest's fields as the
+/// One plugin function: its manifest's fields as the
 /// runtime fields of a `Templated` config, and a call that is the sandboxed
 /// one [`PluginFunctionHandler`] makes. Registered under the name its
 /// manifest gives it, `<plugin>.<label>`.
 ///
-/// It wraps the dataflow-rs 3 handler of the same function, so the two share
+/// It wraps the function's [`PluginFunctionHandler`], so every clone shares
 /// the component, the limits and the concurrency permits: one function holds
-/// one limit, whichever engine calls it. Cheap to clone.
+/// one limit. Cheap to clone.
 #[derive(Clone)]
 pub struct PluginFunction {
     handler: PluginFunctionHandler,
@@ -515,8 +377,8 @@ impl dataflow_rs::Function for PluginFunction {
         }
     }
 
-    /// 1.12's call: the prologue, then the sandboxed invocation shared with
-    /// the dataflow-rs 3 handler, then the result written at `output`.
+    /// 1.12's call: the prologue, then the handler's sandboxed invocation,
+    /// then the result written at `output`.
     ///
     /// The run's deadline and cancellation race the call in the engine, so
     /// a run that ends first ends it `TimedOut` or `Cancelled` with nothing
@@ -543,8 +405,8 @@ impl dataflow_rs::Function for PluginFunction {
     }
 }
 
-/// 1.12's refusal of a template field whose expression failed, on dataflow-rs
-/// 4's error: the error worded as dataflow-rs 3's `Display` worded it, an
+/// 1.12's refusal of a template field whose expression failed, from the
+/// engine's error: the error worded as 1.12 worded it, an
 /// evaluation's under "Logic evaluation error: " and a budget refusal's as
 /// datalogic does, and the caller's class, so its code is `VALIDATION_ERROR`
 /// for a budget refusal too, as 1.12's was.
@@ -703,12 +565,11 @@ resolvable = true
         (runtime, loaded)
     });
 
-    /// One function on both engines: its dataflow-rs 3 handler, and the
-    /// dataflow-rs 4 function over it.
+    /// One function: its handler, and the engine function over it.
     #[derive(Clone)]
     struct Both {
-        v3: PluginFunctionHandler,
-        v4: PluginFunction,
+        handler: PluginFunctionHandler,
+        function: PluginFunction,
     }
 
     /// Every function `manifest` declares, over the fixture component, under
@@ -728,14 +589,14 @@ resolvable = true
             .into_iter()
             .zip(&manifest.functions)
             .map(|(entry, decl)| {
-                let v3 = PluginFunctionHandler::new(
+                let handler = PluginFunctionHandler::new(
                     Arc::new(entry),
                     loaded.clone(),
                     runtime.clone(),
                     limits,
                 );
-                let v4 = PluginFunction::new(v3.clone(), decl.runtime_fields());
-                (v4.name().to_string(), Both { v3, v4 })
+                let function = PluginFunction::new(handler.clone(), decl.runtime_fields());
+                (function.name().to_string(), Both { handler, function })
             })
             .collect()
     }
@@ -744,21 +605,12 @@ resolvable = true
         functions_of(MANIFEST, &config())
     }
 
-    /// `f` called with `input` over a message whose `data` is `data`, on
-    /// both engines.
-    async fn twins(f: &Both, input: Value, data: Value) -> (Seen, Seen) {
-        let v3 = twin::v3(
-            f.v3.name(),
-            Box::new(f.v3.clone()),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
-        let v4 = twin::v4(f.v4.name(), f.v4.clone(), input, data).await;
-        (v3, v4)
+    /// `f` called with `input` over a message whose `data` is `data`.
+    async fn run(f: &Both, input: Value, data: Value) -> Seen {
+        twin::v4(f.function.name(), f.function.clone(), input, data).await
     }
 
-    /// `f` called on dataflow-rs 4 alone, its issues and writes kept.
+    /// `f` called, its issues and writes kept.
     async fn v4_call(f: &PluginFunction, input: Value, data: Value) -> testing::Called {
         testing::call(f.clone(), input)
             .exprs(test_exprs())
@@ -771,22 +623,7 @@ resolvable = true
             .await
     }
 
-    /// The text dataflow-rs 3 refuses `input` with when it builds an engine
-    /// over `f`, its load refusal; `None` when the engine builds.
-    fn v3_refusal(f: &PluginFunctionHandler, input: &Value) -> Option<String> {
-        let mut fns: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
-        fns.insert(f.name().to_string(), Box::new(f.clone()));
-        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t", "function": {"name": f.name(), "input": input}}]
-        }))
-        .expect("a workflow");
-        dataflow_rs_v3::Engine::new(vec![workflow], fns)
-            .err()
-            .map(|e| e.to_string())
-    }
-
-    /// The Rejected issues dataflow-rs 4 refuses `input` with at load, as
+    /// The Rejected issues `input` is refused with at load, as
     /// (path, code); the call must not have run.
     async fn v4_refusal(f: &PluginFunction, input: Value) -> Vec<(String, IssueCode)> {
         let called = v4_call(f, input, json!({})).await;
@@ -875,9 +712,9 @@ resolvable = true
         assert_eq!(f.len(), expected.len());
         for (name, fields) in expected {
             let both = &f[name];
-            assert_eq!(shape(both.v4.fields()), fields, "{name}");
-            let spec = dataflow_rs::Function::spec(&both.v4);
-            assert_eq!(spec.description, both.v3.entry.description, "{name}");
+            assert_eq!(shape(both.function.fields()), fields, "{name}");
+            let spec = dataflow_rs::Function::spec(&both.function);
+            assert_eq!(spec.description, both.handler.entry.description, "{name}");
             assert_eq!(spec.category, "transform", "{name}");
             assert_eq!(spec.retry, RetrySafety::Idempotent, "{name}: pure");
             assert!(spec.references.is_empty(), "{name}");
@@ -891,7 +728,7 @@ resolvable = true
         let mut registry = dataflow_rs::Registry::new(test_exprs());
         let refused = crate::engine::register_plugin_functions(
             &mut registry,
-            f.values().map(|both| both.v4.clone()),
+            f.values().map(|both| both.function.clone()),
         );
         assert!(refused.is_empty(), "{refused:?}");
         let hosts: Vec<_> = registry.catalogue().filter(|info| !info.builtin).collect();
@@ -904,7 +741,7 @@ resolvable = true
         for info in hosts {
             assert_eq!(
                 shape(info.fields),
-                shape(f[info.name].v4.fields()),
+                shape(f[info.name].function.fields()),
                 "{}",
                 info.name
             );
@@ -945,7 +782,7 @@ resolvable = true
     /// literal and a template that folded to a constant are lent from the
     /// config, and a computed template and an interpolated field are
     /// resolved per call. `identity` hands back what it received, which is
-    /// what dataflow-rs 3 handed it.
+    /// what 1.12 handed it.
     #[tokio::test]
     async fn identity_reads_its_fields_through_templated_get_lending_literals_and_constants() {
         let rich = functions_of(RICH, &config());
@@ -964,13 +801,13 @@ resolvable = true
         let lent = Arc::new(Mutex::new(Vec::new()));
         let called = testing::call(
             Lending {
-                inner: identity.v4.clone(),
+                inner: identity.function.clone(),
                 lent: Arc::clone(&lent),
             },
             input.clone(),
         )
         .exprs(test_exprs())
-        .name(identity.v4.name())
+        .name(identity.function.name())
         .message(dataflow_rs::Message::from_parts(
             OwnedDataValue::Null,
             OwnedDataValue::from(&data),
@@ -997,17 +834,16 @@ resolvable = true
             Value::from(called.message.context().data())["echoed"],
             echoed
         );
-        let (v3, v4) = twins(identity, input, data).await;
-        assert_eq!(v4, v3);
+        let v4 = run(identity, input, data).await;
+        twin::pinned(&v4, "identity_reads_its_fields");
         assert_eq!(v4.expect("identity succeeds")["echoed"], echoed);
     }
 
     /// Each call the integration suite makes of a well-behaved fixture
-    /// function writes on dataflow-rs 4 what it writes on dataflow-rs 3:
-    /// the round trip, the default root, an evaluated and a literal
+    /// function writes what 1.12 wrote: the round trip, the default root, an evaluated and a literal
     /// template, and a result under the response limit.
     #[tokio::test]
-    async fn a_call_writes_what_dataflow_rs_3_writes() {
+    async fn a_call_writes_what_1_12_wrote() {
         let f = fixture();
         for (name, input, data) in [
             (
@@ -1049,19 +885,19 @@ resolvable = true
                 json!({}),
             ),
         ] {
-            let (v3, v4) = twins(&f[name], input.clone(), data).await;
-            assert!(v3.is_ok(), "{name} {input}: {v3:?}");
-            assert_eq!(v4, v3, "{name} {input}");
+            let v4 = run(&f[name], input.clone(), data).await;
+            assert!(v4.is_ok(), "{name} {input}: {v4:?}");
+            twin::pinned(&v4, format!("call/{name}/{input}"));
         }
     }
 
-    /// Each refusal the integration suite pins at call time, on both
-    /// engines with one code, text, retryability and detail: a value that
+    /// Each refusal the integration suite pins at call time, with 1.12's
+    /// code, text, retryability and detail: a value that
     /// resolved to the wrong kind (the schema run again over the resolved
     /// input), a template that did not evaluate, the guest's own errors,
     /// and the sandbox's.
     #[tokio::test]
-    async fn a_refusal_at_call_is_dataflow_rs_3s() {
+    async fn a_refusal_at_call_is_1_12s() {
         let f = fixture();
         let out = json!({"output": "data.x"});
         for (name, input, data, needle) in [
@@ -1084,7 +920,7 @@ resolvable = true
                 "'text' did not evaluate: ",
             ),
             // An object in a template position may be an operator call, so
-            // both engines admit it at load; this one is not, so it evaluates
+            // it is admitted at load; this one is not, so it evaluates
             // to itself, an object where the table wants a string.
             (
                 "test.fixture.upper",
@@ -1130,8 +966,9 @@ resolvable = true
             ),
             ("test.fixture.bad-json", out.clone(), json!({}), "not JSON"),
         ] {
-            let (v3, v4) = twins(&f[name], input.clone(), data).await;
-            let failure = v3.as_ref().expect_err(name);
+            let v4 = run(&f[name], input.clone(), data).await;
+            twin::pinned(&v4, format!("refusal/{name}/{input}"));
+            let failure = v4.as_ref().expect_err(name);
             assert!(
                 failure.message.contains(needle),
                 "{name} {input}: {failure:?}"
@@ -1140,7 +977,6 @@ resolvable = true
                 failure.message.contains(name),
                 "the error names the function: {failure:?}"
             );
-            assert_eq!(v4, v3, "{name} {input}");
         }
     }
 
@@ -1158,54 +994,24 @@ resolvable = true
         let data = json!({"who": "world"});
         let secrets = crate::engine::ResolvedSecrets::empty();
 
-        let mut fns: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
-        fns.insert(upper.v3.name().to_string(), Box::new(upper.v3.clone()));
-        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t", "function": {"name": upper.v3.name(), "input": input}}]
-        }))
-        .expect("a workflow");
-        let engine = crate::engine::operators::with_ops_budget(
-            crate::engine::operators::with_orion_engine_defaults(
-                dataflow_rs_v3::Engine::builder(),
-                &secrets,
-            ),
-            2,
-        )
-        .with_handlers(fns)
-        .with_workflows(vec![workflow])
-        .build()
-        .expect("the engine builds");
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            OwnedDataValue::from(&data),
-        );
-        let e = engine
-            .process_message(&mut message)
-            .await
-            .expect_err("over the budget");
-        let v3 = twin::Failure {
-            code: message.errors()[0].code.clone(),
-            message: e.to_string(),
-            retryable: e.retryable(),
-            detail: message.errors()[0].detail.clone(),
-        };
-        assert_eq!(v3.code, "VALIDATION_ERROR");
-        assert!(v3.message.contains("'text' did not evaluate: "), "{v3:?}");
-        assert!(v3.message.contains("budget exceeded"), "{v3:?}");
-
-        let called = testing::call(upper.v4.clone(), input)
+        let called = testing::call(upper.function.clone(), input)
             .exprs(crate::engine::operators::orion_exprs(&secrets, 2).expect("the engine builds"))
-            .name(upper.v4.name())
+            .name(upper.function.name())
             .message(dataflow_rs::Message::from_parts(
                 OwnedDataValue::Null,
                 OwnedDataValue::from(&data),
                 OwnedDataValue::Null,
             ))
             .await;
-        assert_eq!(twin::seen(&called), Err(v3));
+        let seen = twin::seen(&called);
+        twin::pinned(&seen, "over_the_ops_budget");
+        let failure = seen.expect_err("over the budget");
+        assert_eq!(failure.code, "VALIDATION_ERROR");
+        assert!(
+            failure.message.contains("'text' did not evaluate: "),
+            "{failure:?}"
+        );
+        assert!(failure.message.contains("budget exceeded"), "{failure:?}");
     }
 
     /// The size and fuel ceilings, under a plugin's own limits, refuse as
@@ -1239,19 +1045,18 @@ resolvable = true
                 "exhausted its fuel backstop",
             ),
         ] {
-            let (v3, v4) = twins(&f[name], input, json!({})).await;
-            let failure = v3.as_ref().expect_err(name);
+            let v4 = run(&f[name], input, json!({})).await;
+            twin::pinned(&v4, format!("limits/{name}"));
+            let failure = v4.as_ref().expect_err(name);
             assert!(failure.message.contains(needle), "{name}: {failure:?}");
-            assert_eq!(v4, v3, "{name}");
         }
     }
 
-    /// The permits are the function's, not an engine's: the dataflow-rs 4
-    /// function holds its dataflow-rs 3 handler's semaphore, so a call on
-    /// either engine waits for a permit the other holds, and is refused with
-    /// 1.12's text when none frees within the ceiling.
+    /// The permits are the function's: every clone holds its handler's
+    /// semaphore, so a call waits for a permit another holds, and is refused
+    /// with 1.12's text when none frees within the ceiling.
     #[tokio::test]
-    async fn the_function_and_its_dataflow_rs_3_handler_share_one_permit() {
+    async fn every_clone_of_a_function_shares_one_permit() {
         let f = functions_of(
             MANIFEST,
             &PluginsConfig {
@@ -1262,27 +1067,27 @@ resolvable = true
         );
         let identity = &f["test.fixture.identity"];
         assert!(Arc::ptr_eq(
-            &identity.v3.permits,
-            &identity.v4.handler.permits
+            &identity.handler.permits,
+            &identity.function.handler.permits
         ));
         let input = json!({"message": 1, "output": "data.x"});
-        let held = Arc::clone(&identity.v3.permits)
+        let held = Arc::clone(&identity.handler.permits)
             .acquire_owned()
             .await
             .expect("the permit is free");
-        let (v3, v4) = twins(identity, input.clone(), json!({})).await;
-        let failure = v3.as_ref().expect_err("no permit frees");
+        let v4 = run(identity, input.clone(), json!({})).await;
+        twin::pinned(&v4, "permit/held");
+        let failure = v4.as_ref().expect_err("no permit frees");
         assert!(
             failure
                 .message
                 .contains("no concurrency permit within 100ms (1 already running)"),
             "{failure:?}"
         );
-        assert_eq!(v4, v3);
         drop(held);
-        let (v3, v4) = twins(identity, input, json!({})).await;
-        assert!(v3.is_ok(), "{v3:?}");
-        assert_eq!(v4, v3);
+        let v4 = run(identity, input, json!({})).await;
+        assert!(v4.is_ok(), "{v4:?}");
+        twin::pinned(&v4, "permit/freed");
     }
 
     /// A run deadline before the plugin's own ceiling ends the call
@@ -1292,7 +1097,7 @@ resolvable = true
     async fn a_run_deadline_first_ends_the_call_timed_out_with_nothing_written() {
         let f = fixture();
         let called = testing::call(
-            f["test.fixture.spin"].v4.clone(),
+            f["test.fixture.spin"].function.clone(),
             json!({"output": "data.x"}),
         )
         .exprs(test_exprs())
@@ -1305,86 +1110,49 @@ resolvable = true
         assert!(called.writes.is_empty());
     }
 
-    /// What dataflow-rs 3 refused when its engine was built
-    /// (`parse_input_with` over the entry's table), dataflow-rs 4 refuses at
-    /// load: a required field missing, an unknown one, a literal or a
-    /// template scalar of the wrong kind, an `output` that is not written as
+    /// What 1.12 refused when its engine was built (`parse_input_with` over
+    /// the entry's table) is refused at load: a required field missing, an
+    /// unknown one, a literal or a template scalar of the wrong kind, an `output` that is not written as
     /// a string, a `resolvable` field that is neither its kind nor one `var`
     /// node, and an input that is not an object.
     #[tokio::test]
-    async fn what_dataflow_rs_3_refused_at_load_is_refused_at_load() {
+    async fn what_1_12_refused_at_load_is_refused_at_load() {
         let f = fixture();
         let rich = functions_of(RICH, &config());
         let identity = &f["test.fixture.identity"];
         let upper = &f["test.fixture.upper"];
         let any = &rich["test.fixture.identity"];
-        for (both, input, v3_code, v4_at) in [
-            (identity, json!({"output": "data.x"}), "REQUIRED", "message"),
+        for (both, input, v4_at) in [
+            (identity, json!({"output": "data.x"}), "message"),
             (
                 upper,
                 json!({"txt": "x", "text": "y", "output": "data.x"}),
-                "UNKNOWN_FIELD",
                 "txt",
             ),
-            (
-                upper,
-                json!({"text": 5, "output": "data.x"}),
-                "TYPE_MISMATCH",
-                "text",
-            ),
-            (
-                upper,
-                json!({"text": null, "output": "data.x"}),
-                "TYPE_MISMATCH",
-                "text",
-            ),
+            (upper, json!({"text": 5, "output": "data.x"}), "text"),
+            (upper, json!({"text": null, "output": "data.x"}), "text"),
             (
                 identity,
                 json!({"message": 1, "output": {"var": "data.where"}}),
-                "TYPE_MISMATCH",
                 "output",
             ),
             (
                 identity,
                 json!({"message": 1, "output": {"cat": ["data.", "x"]}}),
-                "TYPE_MISMATCH",
                 "output",
             ),
-            (
-                identity,
-                json!({"message": 1, "output": 5}),
-                "TYPE_MISMATCH",
-                "output",
-            ),
-            (
-                any,
-                json!({"label": 5, "output": "data.x"}),
-                "TYPE_MISMATCH",
-                "label",
-            ),
-            (
-                any,
-                json!({"text": 5, "output": "data.x"}),
-                "TYPE_MISMATCH",
-                "text",
-            ),
-            (
-                any,
-                json!({"text": null, "output": "data.x"}),
-                "TYPE_MISMATCH",
-                "text",
-            ),
+            (identity, json!({"message": 1, "output": 5}), "output"),
+            (any, json!({"label": 5, "output": "data.x"}), "label"),
+            (any, json!({"text": 5, "output": "data.x"}), "text"),
+            (any, json!({"text": null, "output": "data.x"}), "text"),
             (
                 any,
                 json!({"text": {"var": "data.t", "or": "x"}, "output": "data.x"}),
-                "TYPE_MISMATCH",
                 "text",
             ),
-            (any, json!(["not", "an", "object"]), "TYPE_MISMATCH", ""),
+            (any, json!(["not", "an", "object"]), ""),
         ] {
-            let refusal = v3_refusal(&both.v3, &input).expect("dataflow-rs 3 refuses it");
-            assert!(refusal.contains(v3_code), "{input}: {refusal}");
-            let issues = v4_refusal(&both.v4, input.clone()).await;
+            let issues = v4_refusal(&both.function, input.clone()).await;
             assert!(
                 issues.iter().any(|(at, _)| at == v4_at),
                 "{input}: {issues:?}"
@@ -1393,7 +1161,7 @@ resolvable = true
         // And the kind 1.12 admitted, a `var` node in a `resolvable` field,
         // loads.
         let called = v4_call(
-            &any.v4,
+            &any.function,
             json!({"text": {"var": "data.t"}, "output": "data.x"}),
             json!({"t": "x"}),
         )
@@ -1401,54 +1169,24 @@ resolvable = true
         assert!(called.outcome.is_ok(), "{:?}", called.issues);
     }
 
-    /// The named breaks (I183): what dataflow-rs 3 loaded and then failed on
-    /// every call is refused at load. A task naming no `output` where the
+    /// The named breaks (I183): what 1.12 loaded and then failed on every
+    /// call is refused at load. A task naming no `output` where the
     /// function declares no default root (the field is required); an empty
     /// or blank `output`; a template whose constant is not of its kind,
     /// which 1.12 admitted as a possible operator call and refused at every
     /// call once it evaluated.
     #[tokio::test]
-    async fn what_dataflow_rs_3_failed_on_every_call_is_refused_at_load() {
+    async fn what_1_12_failed_on_every_call_is_refused_at_load() {
         let f = fixture();
         let identity = &f["test.fixture.identity"];
         let upper = &f["test.fixture.upper"];
-        for (both, input, v3_needle, v4_at) in [
-            (
-                &f["test.fixture.trap"],
-                json!({}),
-                "names no 'output'",
-                "output",
-            ),
-            (
-                identity,
-                json!({"message": 1, "output": ""}),
-                "'output' must be a non-empty dotted context path",
-                "output",
-            ),
-            (
-                identity,
-                json!({"message": 1, "output": "  "}),
-                "'output' must be a non-empty dotted context path",
-                "output",
-            ),
-            (
-                upper,
-                json!({"text": ["a"], "output": "data.x"}),
-                "expected string for 'text' (TYPE_MISMATCH)",
-                "text",
-            ),
+        for (both, input, v4_at) in [
+            (&f["test.fixture.trap"], json!({}), "output"),
+            (identity, json!({"message": 1, "output": ""}), "output"),
+            (identity, json!({"message": 1, "output": "  "}), "output"),
+            (upper, json!({"text": ["a"], "output": "data.x"}), "text"),
         ] {
-            assert_eq!(v3_refusal(&both.v3, &input), None, "{input}: 1.12 loads it");
-            let v3 = twin::v3(
-                both.v3.name(),
-                Box::new(both.v3.clone()),
-                input.clone(),
-                json!({}),
-            )
-            .await
-            .expect_err("and refuses every call");
-            assert!(v3.message.contains(v3_needle), "{input}: {v3:?}");
-            let issues = v4_refusal(&both.v4, input.clone()).await;
+            let issues = v4_refusal(&both.function, input.clone()).await;
             assert!(
                 issues.iter().any(|(at, _)| at == v4_at),
                 "{input}: {issues:?}"
@@ -1457,16 +1195,8 @@ resolvable = true
         // O3's ruled class: a string naming no context root, which 1.12
         // wrote where no response shows, is no path.
         let input = json!({"message": 1, "output": "result"});
-        let v3 = twin::v3(
-            identity.v3.name(),
-            Box::new(identity.v3.clone()),
-            input.clone(),
-            json!({}),
-        )
-        .await;
-        assert_eq!(v3, Ok(json!({})), "1.12 wrote it where no response shows");
         assert_eq!(
-            v4_refusal(&identity.v4, input).await,
+            v4_refusal(&identity.function, input).await,
             [("output".to_string(), IssueCode::InvalidPath)]
         );
     }
@@ -1481,7 +1211,7 @@ resolvable = true
         let rich = functions_of(RICH, &config());
         let any = &rich["test.fixture.identity"];
         let registry = FunctionRegistry::builtin()
-            .with_entries(vec![(*any.v3.entry).clone()])
+            .with_entries(vec![(*any.handler.entry).clone()])
             .expect("the entry registers");
         for (input, code) in [
             (
@@ -1497,12 +1227,13 @@ resolvable = true
                 IssueCode::SecretInDocument,
             ),
         ] {
-            let tasks = json!([{"id": "t", "function": {"name": any.v4.name(), "input": input}}]);
+            let tasks =
+                json!([{"id": "t", "function": {"name": any.function.name(), "input": input}}]);
             assert!(
                 !crate::validation::secret_reference_errors(&tasks, None, &registry).is_empty(),
                 "1.12's authoring refused {input}"
             );
-            let issues = v4_refusal(&any.v4, input.clone()).await;
+            let issues = v4_refusal(&any.function, input.clone()).await;
             assert!(
                 issues.iter().any(|(_, c)| *c == code),
                 "{input}: {issues:?}"
@@ -1510,17 +1241,16 @@ resolvable = true
         }
     }
 
-    /// Two values 1.12 refused at load that load on dataflow-rs 4, pinned
+    /// Two values 1.12 refused at load (`TYPE_MISMATCH`) that load now, pinned
     /// for the report's concern: a `null` in an optional literal field reads
     /// as unset (I53), so the guest receives no such field; and a `null`
     /// output keeps its default root.
     #[tokio::test]
-    async fn a_null_that_dataflow_rs_3_refused_at_load_loads_as_unset() {
+    async fn a_null_that_1_12_refused_at_load_loads_as_unset() {
         let rich = functions_of(RICH, &config());
         let any = &rich["test.fixture.identity"];
         let input = json!({"mode": null, "label": "x", "output": "data.echoed"});
-        assert!(v3_refusal(&any.v3, &input).is_some_and(|e| e.contains("TYPE_MISMATCH")));
-        let called = v4_call(&any.v4, input, json!({})).await;
+        let called = v4_call(&any.function, input, json!({})).await;
         assert!(called.outcome.is_ok(), "{:?}", called.issues);
         assert_eq!(
             Value::from(called.message.context().data())["echoed"],
@@ -1529,8 +1259,7 @@ resolvable = true
 
         let identity = &fixture()["test.fixture.identity"];
         let input = json!({"message": 1, "output": null});
-        assert!(v3_refusal(&identity.v3, &input).is_some_and(|e| e.contains("TYPE_MISMATCH")));
-        let called = v4_call(&identity.v4, input, json!({"before": 1})).await;
+        let called = v4_call(&identity.function, input, json!({"before": 1})).await;
         assert!(called.outcome.is_ok(), "{:?}", called.issues);
         assert_eq!(
             Value::from(called.message.context().data()),
@@ -1561,9 +1290,7 @@ resolvable = true
 
         let big = &f["test.fixture.big-output"];
         let input = json!({"size": 3, "output": "data"});
-        let (v3, _) = twins(big, input.clone(), json!({"before": 1})).await;
-        assert_eq!(v3, Ok(json!("xxx")), "1.12 replaced the root");
-        let called = v4_call(&big.v4, input, json!({"before": 1})).await;
+        let called = v4_call(&big.function, input, json!({"before": 1})).await;
         assert_eq!(advisories(&called), advised);
         let e = called.outcome.expect_err("a root takes only an object");
         assert_eq!(*e.kind(), ErrorKind::Config);
@@ -1575,12 +1302,12 @@ resolvable = true
 
         // The default root: advised, and an object written there as before.
         let wrap = &f["test.fixture.wrap"];
-        let called = v4_call(&wrap.v4, json!({"message": "hello"}), json!({})).await;
+        let called = v4_call(&wrap.function, json!({"message": "hello"}), json!({})).await;
         assert_eq!(advisories(&called), advised);
         assert!(called.outcome.is_ok());
 
         let called = v4_call(
-            &wrap.v4,
+            &wrap.function,
             json!({"message": "hello", "output": "temp_data.wrapped"}),
             json!({}),
         )
@@ -1596,22 +1323,22 @@ resolvable = true
         let f = fixture();
         let identity = &f["test.fixture.identity"];
         let renamed = |name: &str| {
-            let mut entry = (*identity.v3.entry).clone();
+            let mut entry = (*identity.handler.entry).clone();
             entry.name = name.to_string();
             let handler = PluginFunctionHandler::new(
                 Arc::new(entry),
-                identity.v3.loaded.clone(),
-                identity.v3.runtime.clone(),
-                identity.v3.limits,
+                identity.handler.loaded.clone(),
+                identity.handler.runtime.clone(),
+                identity.handler.limits,
             );
-            PluginFunction::new(handler, identity.v4.fields().to_vec())
+            PluginFunction::new(handler, identity.function.fields().to_vec())
         };
         let mut registry = dataflow_rs::Registry::new(test_exprs());
         let refused = crate::engine::register_plugin_functions(
             &mut registry,
             [
                 renamed("map"),
-                identity.v4.clone(),
+                identity.function.clone(),
                 renamed("validate"),
                 renamed("parse_json"),
             ],

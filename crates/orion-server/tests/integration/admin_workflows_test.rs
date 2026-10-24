@@ -1887,7 +1887,7 @@ async fn create_status_and_body(
 
 /// A task with no `id` is refused at create, not discovered at first request.
 ///
-/// `dataflow_rs_v3::Task::id` is a required `String`, so such a workflow used to be
+/// 1.12's task type required an `id`, so such a workflow used to be
 /// accepted (201), activate cleanly (200), and then fail to convert at engine
 /// load — quarantining its channel and answering 503 to every request with
 /// "missing field `id`". Same class as the `enrich` false-accept above.
@@ -1909,10 +1909,10 @@ async fn a_task_without_an_id_is_refused_at_create() {
     );
 }
 
-/// A *missing* `name` is refused: it is a required `String` upstream, so the
-/// document would not deserialize.
+/// A task's `name` is optional, as it is to the engine: a task without one is
+/// accepted at create.
 #[tokio::test]
-async fn a_task_without_a_name_is_refused_at_create() {
+async fn a_task_without_a_name_is_accepted_at_create() {
     let app = common::test_app().await;
     let (status, body) = create_status_and_body(
         &app,
@@ -1922,19 +1922,15 @@ async fn a_task_without_a_name_is_refused_at_create() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
-    assert!(
-        body.to_string().contains("tasks[0].name"),
-        "the error must point at the offending task, got: {body}"
-    );
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
 }
 
-/// …but an *empty* `name` is accepted, because the engine accepts it.
+/// …and so is an *empty* `name`, because the engine accepts it.
 ///
 /// This is the boundary between the two rules. Orion tracks dataflow-rs's
 /// parsing rules rather than tightening them, so that "Orion accepts it" and
-/// "the engine can load it" remain the same statement. `""` deserializes into
-/// the required `String` and the workflow loads and runs; an empty name is
+/// "the engine can load it" remain the same statement. `""` is accepted and
+/// the workflow loads and runs; an empty name is
 /// unhelpful in a log, but that is an authoring preference, not a defect, and
 /// refusing it would be Orion inventing a rule the engine does not have.
 /// `id` is the one deliberate exception — see below.

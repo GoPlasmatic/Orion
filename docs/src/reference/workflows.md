@@ -23,7 +23,7 @@ Send this shape to `POST /api/v2/admin/workflows`; `PUT .../{id}` updates the dr
 | `tasks` | array | **yes** | — | Ordered, non-empty list of [task objects](#tasks) |
 | `tags` | string[] | no | `[]` | Free-form labels for filtering |
 | `loop` | object | no | — | Run the task list once per sweep instead of once in total (see [Loop](#loop)) |
-| `continue_on_error` | bool | no | `false` | If `true`, a task that errors or records `5xx` does not halt the pipeline. A `4xx` never halts either way — see [Error handling](#error-handling) |
+| `continue_on_error` | bool | no | `false` | If `true`, a task failure (a handler error or `5xx`) that reaches the workflow ends this workflow without failing the request: the error is recorded and the next matching workflow runs. It does not run this workflow's later tasks; a task's own `on_failure: "continue"` does that — see [Error handling](#error-handling) |
 | `version` | integer | server-managed | `1` | Increments per saved version of a `workflow_id` |
 | `status` | string | server-managed | `draft` | `draft` \| `active` \| `archived` |
 | `rollout_percentage` | integer | server-managed | `100` | Share of traffic when activated (see [Rollout](#rollout)) |
@@ -45,12 +45,12 @@ Each entry in `tasks` is a single step in the pipeline:
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `id` | string | **yes** | — | Unique within the workflow; used in tracing |
-| `name` | string | **yes** | — | Human-readable label |
+| `name` | string | no | — | Human-readable label |
 | `function` | object | **yes** | — | The function to run; the `function` object table follows |
 | `condition` | JSONLogic | no | — | If present and falsy, this task is skipped |
-| `continue_on_error` | bool | no | inherits the workflow | Per-task override: `true` lets the pipeline continue past **this** task's error or `5xx`. To stop on a `4xx`, use `halt_on` |
+| `on_failure` | string | no | `"fail"` | What a handler error or `5xx` from **this** task does: `"fail"` passes it to the workflow, `"halt"` ends the workflow, `"continue"` records it and runs the next task — see [Error handling](#error-handling) |
 | `terminal` | bool | no | `false` | End the workflow after this step runs. About **position, not outcome** — see [Terminal steps](#terminal-steps) |
-| `halt_on` | string | no | `"never"` | `"failure"` ends the workflow when *this task* failed. About **outcome, not position** — see [Halting on failure](#halting-on-failure). Tasks only; a group carrying it is refused |
+| `on_rejection` | string | no | `"continue"` | What a `4xx` from **this** task does, which is what a failing `validation` rule records: `"continue"` records it and runs the next task, `"halt"` ends the workflow. About **outcome, not position** — see [Halting on a rejection](#halting-on-a-rejection). Tasks only; a group carrying it is refused |
 | `for_each` | object | no | — | Run the task's function once per element of an array — see [Fan-out](#fan-out) |
 
 The `function` object names a [built-in function](./functions/index.md) and supplies
@@ -114,34 +114,34 @@ It is about **position, not outcome**:
 
 - A falsy `condition` does not halt — the step did not run.
 - A skipped task does not halt.
-- A task that *failed* under `continue_on_error: true` **does** halt, because
+- A task that *failed* under `on_failure: "continue"` **does** halt, because
   the author said nothing runs after this one.
 
 **Since:** Orion 1.2. Task groups and `terminal` need dataflow-rs 3.6, which Orion 1.2.0 ships. A definition using a group fails to load on an older engine, loudly; a bare `terminal: true` is silently ignored there and every later task runs. Gate on the server version if you deploy definitions to instances you do not control.
 
-### Halting on failure
+### Halting on a rejection
 
-`halt_on: "failure"` ends the workflow when the task failed: a recorded status of `400` or above. That covers a `validation` rule that did not pass, any task returning that range, and a handler error. A success falls through.
+`on_rejection: "halt"` ends the workflow when the task records a `4xx`. That covers a `validation` rule that did not pass and any task returning that range. A handler error or `5xx` is the task's `on_failure`, which by default fails the workflow anyway. A success falls through.
 
 It is the other axis from `terminal`: position versus outcome. The two compose
 by *or*, so `terminal` stays strictly stronger and no combination contradicts.
 
 ```json
-{ "id": "check_state", "name": "Check the state token", "halt_on": "failure",
+{ "id": "check_state", "name": "Check the state token", "on_rejection": "halt",
   "function": { "name": "validation", "input": { "rules": [
     { "logic": { "==": [{ "var": "metadata.query.state" },
                         { "var": "metadata.cookies.oauth_state" }] },
       "message": "state mismatch" } ] } } }
 ```
 
-Without it, a failing `validation` does not stop anything. A failed rule records status `400`, and the engine's rule is that `4xx` warns and carries on; `continue_on_error` governs `5xx` and handler errors only. A `validation` followed by unguarded tasks therefore records an error and proceeds exactly as if it had passed. That is how a check that reads correct ships doing nothing.
+Without it, a failing `validation` does not stop anything. A failed rule records status `400`, and a task's `on_rejection` is `continue` unless you say otherwise; `on_failure` governs `5xx` and handler errors only. A `validation` followed by unguarded tasks therefore records an error and proceeds exactly as if it had passed. That is how a check that reads correct ships doing nothing.
 
 Collecting every rule failure and carrying on is a legitimate shape, and the
 default keeps it. When you meant a gate, say so:
 
 | You want | Write |
 |---|---|
-| Stop, keeping the task's own status | `"halt_on": "failure"` on the task |
+| Stop, keeping the task's own status | `"on_rejection": "halt"` on the task |
 | Stop, and answer with a chosen status and body | a later task with a `condition` on the failure and `terminal: true` |
 | Stop, with no body | a [`filter`](./functions/filter.md) task (records `299`) |
 
@@ -149,9 +149,19 @@ default keeps it. When you meant a gate, say so:
 nothing guarded after it (`engine.unguarded_validation`). The silent version
 does not have to be found in production.
 
-`halt_on` belongs to a task. A group has no outcome of its own, so one carrying `halt_on` is refused at parse, loudly, rather than as a guard that never fires. `continue_on_error` on a group is the same mistake resolved the other way: it parses, the engine drops it, and `lint` reports `engine.group_continue_on_error`.
+`on_rejection` and `on_failure` belong to a task. A group has no outcome of its own, so one carrying either is refused at parse, loudly, rather than as a guard that never fires.
 
-**Since:** Orion 1.6. `halt_on` needs dataflow-rs 3.10, which Orion 1.6.0 ships.
+The 1.x spellings are no longer read: a task's `halt_on` or `continue_on_error` is refused at create, and a stored row carrying one is quarantined at load. Each refusal names the key to write instead:
+
+| 1.x | Write |
+|---|---|
+| `"halt_on": "failure"` | `"on_rejection": "halt"` |
+| `"continue_on_error": true` | `"on_failure": "continue", "on_rejection": "continue"` |
+| both | `"on_failure": "halt", "on_rejection": "halt"` |
+| `"halt_on": "never"`, `"continue_on_error": false` | nothing: these are the defaults |
+| `"function": { "name": "validate" }` | `"name": "validation"` |
+
+The pre-1.0 input aliases are no longer read either: `http_call`'s `path_logic`, `body_logic` and `response_path`, `publish_kafka`'s `key_logic` and `value_logic`, and `channel_call`'s `channel_logic`, `data_logic` and `response_path` are unknown keys. Write `path`, `body`, `output`, `key`, `value`, `channel` and `data`.
 
 ### Fan-out
 
@@ -169,7 +179,7 @@ A task with `for_each` runs its function once per element of an array, and colle
 {
   "id": "infer",
   "name": "One move per participant",
-  "continue_on_error": true,
+  "on_failure": "continue",
   "for_each": {
     "over": { "var": "data.participants" },
     "as": "p",
@@ -186,7 +196,7 @@ A task with `for_each` runs its function once per element of an array, and colle
 
 Every call runs against its own copy of the message, taken before the first call, so no call sees another's writes. The calls' writes, errors and audit entries are then folded back in element order. The element bindings are not left behind. An element that failed, never ran, or wrote nothing at `collect` leaves `null` at its index in `into`.
 
-The task's `continue_on_error` applies per element. A call that fails the task stops new calls from starting, and the elements after it contribute nothing. `terminal` and `halt_on` apply once, after the whole fan-out.
+The task's `on_failure` applies per element. A call that fails the task stops new calls from starting, and the elements after it contribute nothing. `terminal` and `on_rejection` apply once, after the whole fan-out.
 
 Any Orion function can fan out. The engine's inline built-ins (`map`, `validation`, `filter`, `log`, `parse_json`, `parse_xml`, `publish_json`, `publish_xml`) cannot: a per-element transform is JSONLogic's `map`. A key `for_each` does not define is refused at write time, because the engine would ignore it. A misspelt `max_concurency` would otherwise run one call at a time without a word.
 
@@ -276,7 +286,7 @@ No other key or prefix in the context is reserved. Six plain metadata keys are s
 
 ### Branching on a failure
 
-When a task fails and the run continues (`continue_on_error`), the engine appends a record to `metadata._orion_errors`. A later task can answer differently depending on why the step failed:
+When a task fails and the run continues (`on_failure: "continue"`), the engine appends a record to `metadata._orion_errors`. A later task can answer differently depending on why the step failed:
 
 ```json
 { "task_id": "charge_payment", "workflow_id": "place-order",
@@ -398,7 +408,7 @@ Stopping early is a [`filter`](./functions/filter.md) task with `on_reject:
           "connector": "notifier",
           "method": "POST",
           "path": "/send",
-          "body_logic": { "val": ["data", "req", "recipients", { "val": ["temp_data", "i"] }] }
+          "body": { "val": ["data", "req", "recipients", { "val": ["temp_data", "i"] }] }
         }
       }
     }
@@ -429,14 +439,14 @@ With `over`, the counter indexes the array: sweep `k` holds `over[k]` at `temp_d
 
 ## Error handling
 
-By default the pipeline halts on the first task that errors, and the error is returned to the caller. Set `continue_on_error: true` on the workflow to keep running later tasks and collect errors instead, or on a single task to make only that step non-fatal. A run that continues records each failure's code at [`metadata._orion_errors`](#branching-on-a-failure). A later task can branch on why the step failed rather than only on whether it did.
+By default the pipeline halts on the first task that errors, and the error is returned to the caller. Set `"on_failure": "continue"` on a task to make that step non-fatal: its error is recorded and the next task runs. `continue_on_error: true` on the workflow is coarser: a failure that reaches the workflow ends it without failing the request, so the error is recorded and the next matching workflow runs, but this workflow's later tasks do not. A run that continues records each failure's code at [`metadata._orion_errors`](#branching-on-a-failure). A later task can branch on why the step failed rather than only on whether it did.
 
-"Errors" here means a handler failure or a status of `500` or above. A task that records a `4xx`, which is what a failing `validation` rule does, logs a warning and the pipeline carries on, whatever `continue_on_error` says. That is deliberate: a `4xx` is the task reporting on its input, not the engine failing to run it. It is also the one thing about this field worth knowing before you reach for it after a `validation`:
+"Errors" here means a handler failure or a status of `500` or above. A task that records a `4xx`, which is what a failing `validation` rule does, logs a warning and the pipeline carries on unless the task's `on_rejection` is `halt`. That is deliberate: a `4xx` is the task reporting on its input, not the engine failing to run it. It is also the one thing about this field worth knowing before you reach for it after a `validation`:
 
 | To stop on | Use |
 |---|---|
-| A handler failure or `5xx` | `continue_on_error: false` (the default) |
-| This task's own failure, `4xx` included | [`halt_on: "failure"`](#halting-on-failure) |
+| A handler failure or `5xx` | `on_failure: "fail"` (the default) |
+| This task's own rejection, a `4xx` | [`on_rejection: "halt"`](#halting-on-a-rejection) |
 | A condition you write yourself | [`filter`](./functions/filter.md) — `on_reject: "halt"` stops the workflow, `"skip"` skips only that task |
 | Reaching this point at all | [`terminal: true`](#terminal-steps) |
 

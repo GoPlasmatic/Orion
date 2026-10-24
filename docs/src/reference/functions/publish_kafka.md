@@ -37,8 +37,8 @@ be enabled in config. If `value` is omitted, the full data context is published.
 |-------|------|:--------:|---------|-------------|
 | `connector` | string \| JSONLogic | yes | — | Name of the Kafka connector. A computed name is not yet supported |
 | `topic` | string \| JSONLogic | yes | — | Target topic. Accepts an expression, so one task can route by message content |
-| `key` | any \| JSONLogic | no | — | The message key. Accepts the pre-1.0 name `key_logic` |
-| `value` | any \| JSONLogic | no | full `data` | The message value. Accepts the pre-1.0 name `value_logic` |
+| `key` | any \| JSONLogic | no | — | The message key |
+| `value` | any \| JSONLogic | no | full `data` | The message value |
 
 ## Examples
 

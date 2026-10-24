@@ -1,107 +1,35 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::{Map, Value};
 
-use super::connector_handler::ConnectorHandler;
-use super::connector_helpers::{
-    ConnectorCall, require_op, resolve_required_str, resolve_required_str_list, to_connect_error,
-    to_exec_error,
-};
+use super::connector_helpers::{to_connect_error, to_exec_error};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
-use dataflow_rs_v3::engine::error::DataflowError;
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This function's name, for the free functions below (F48).
-const NAME: &str = <CacheReadHandler as ConnectorHandler>::NAME;
-
-/// Workflow function handler for reading values from a cache backend.
-pub struct CacheReadHandler {
-    pub cache_pool: Arc<CachePool>,
-    pub registry: Arc<ConnectorRegistry>,
-}
-
-#[async_trait]
-impl ConnectorHandler for CacheReadHandler {
-    const NAME: &'static str = "cache_read";
-    type Kind = crate::connector::kind::Cache;
-    type Input = TemplatedInput;
-    /// The key or keys, resolved against the message. `{"var": "data.id"}` is
-    /// the whole point of a per-request cache lookup, so it has to be folded
-    /// before the body takes `ctx` mutably.
-    type Parsed = CacheReadKeys;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, crate::engine::HandlerError> {
-        // Exactly one of the two; `validate_static_input` says so at authoring
-        // time, and this is the same rule for a hand-built input.
-        match (input.get("key").is_some(), input.get("keys").is_some()) {
-            (true, false) => Ok(CacheReadKeys::One(resolve_required_str(
-                input, "key", call.name, ctx,
-            )?)),
-            (false, true) => Ok(CacheReadKeys::Many(resolve_required_str_list(
-                input, "keys", call.name, ctx, MAX_KEYS,
-            )?)),
-            (true, true) => Err(not_one_key_choice(call.name, true).into()),
-            (false, false) => Err(not_one_key_choice(call.name, false).into()),
-        }
-    }
-
-    fn gate(
-        _keys: &CacheReadKeys,
-        conn: &crate::connector::CacheConnectorConfig,
-        connector: &str,
-    ) -> Result<(), crate::engine::HandlerError> {
-        // F22e: a cache connector can be made write-only in its config.
-        Ok(require_op(conn.operations.read, "read", connector)?)
-    }
-
-    async fn run(
-        &self,
-        keys: CacheReadKeys,
-        conn: &crate::connector::CacheConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<super::connector_handler::Produced, crate::engine::HandlerError> {
-        let lookup = match &keys {
-            CacheReadKeys::One(key) => Lookup::One(Cow::Borrowed(key)),
-            CacheReadKeys::Many(keys) => Lookup::Many(Cow::Borrowed(keys)),
-        };
-        Ok(look_up(&self.cache_pool, call.connector, conn, &lookup)
-            .await?
-            .into())
-    }
-}
+pub(crate) const NAME: &str = "cache_read";
 
 /// The refusal of a task naming both `key` and `keys`, or neither, in
 /// 1.12's words: `both` says which. dataflow-rs 4's config refuses both
 /// shapes at load, as 1.12's authoring did, so only a dataflow-rs 3 call
 /// meets it.
-fn not_one_key_choice(name: &str, both: bool) -> DataflowError {
-    DataflowError::Validation(if both {
-        format!("{name} takes 'key' or 'keys', not both")
-    } else {
-        format!("{name} requires 'key' or 'keys'")
-    })
+fn not_one_key_choice(name: &str, both: bool) -> HandlerError {
+    HandlerError::new(
+        ErrorClass::CallerInput,
+        if both {
+            format!("{name} takes 'key' or 'keys', not both")
+        } else {
+            format!("{name} requires 'key' or 'keys'")
+        },
+    )
 }
 
 /// One lookup, borrowed from the keys either engine read.
@@ -233,7 +161,7 @@ impl Function for CacheReadFunction {
                 MAX_KEYS,
             )?)),
             (key, _) => {
-                return Err(HandlerError::from(not_one_key_choice(NAME, key.is_some())).into());
+                return Err(not_one_key_choice(NAME, key.is_some()).into());
             }
         };
         let mut value = None;
@@ -343,98 +271,13 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
 mod tests {
     use super::*;
 
-    fn memory_connector(read: bool) -> crate::connector::CacheConnectorConfig {
-        crate::connector::CacheConnectorConfig {
-            backend: "memory".to_string(),
-            url: None,
-            allow_private_urls: false,
-            operations: crate::connector::CacheOperationGates { read, write: true },
-        }
-    }
-
-    fn handler() -> CacheReadHandler {
-        CacheReadHandler {
-            cache_pool: Arc::new(CachePool::new(4, 60, 128)),
-            registry: Arc::new(ConnectorRegistry::new(Default::default())),
-        }
-    }
-
-    /// The seam the trait exists for.
-    ///
-    /// `run` receives a connector that is already resolved, already
-    /// type-checked and already gated, so a handler body can be exercised
-    /// in-process against a real backend — no registry entry, no engine, no
-    /// workflow. The same shape is what would let the Mongo, Redis, SMTP and ES
-    /// bodies out of their container-gated `#[ignore]`s, which is the reason to
-    /// prefer the trait over a cheaper conformance fix.
-    #[tokio::test]
-    async fn the_run_seam_is_reachable_without_an_engine() {
-        let h = handler();
-        let datalogic = std::sync::Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs_v3::Message::from_value(&serde_json::json!({}));
-        let mut ctx =
-            dataflow_rs_v3::engine::task_context::TaskContext::new(&mut message, &datalogic);
-        let call = ConnectorCall {
-            name: CacheReadHandler::NAME,
-            connector: "c",
-            channel: "ch".to_string(),
-            output: "data".to_string(),
-        };
-
-        let value = h
-            .run(
-                CacheReadKeys::One("absent-key".to_string()),
-                &memory_connector(true),
-                &call,
-                &TemplatedInput::from(serde_json::json!({"connector": "c", "key": "absent-key"})),
-                &mut ctx,
-            )
-            .await
-            .expect("a miss is not an error");
-        assert_eq!(
-            value.value,
-            Some(Value::Null),
-            "a cache miss reads as null, not as a failure"
-        );
-    }
-
-    /// The gate is the connector's answer rather than the backend's, which is
-    /// why it is a separate method: it has to be decided before anything is
-    /// dialled. It is also now callable on its own.
-    #[test]
-    fn a_write_only_connector_refuses_a_read() {
-        let err = <CacheReadHandler as ConnectorHandler>::gate(
-            &CacheReadKeys::One("k".to_string()),
-            &memory_connector(false),
-            "c",
-        )
-        .expect_err("a read must be refused when the gate is off");
-        // The specific refusal is the operator-facing detail; `msg` is the
-        // caller-safe half. Both must survive the conversion.
-        assert_eq!(err.msg, "Request validation failed");
-        let detail = err.detail.as_deref().unwrap_or_default();
-        assert!(
-            detail.contains("operation 'read' is disabled"),
-            "the refusal must name the gate it hit: {detail:?}"
-        );
-    }
-
-    // -- dataflow-rs 4: the config and its check, I185's Defect, and twins
-    // of the handler over an in-memory cache --
+    // -- the config and its check, I185's Defect, and calls over an
+    // in-memory cache, against 1.12's records --
 
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
     use serde_json::json;
-
-    fn v3_handler(cache: &twin::Cache) -> dataflow_rs_v3::BoxedFunctionHandler {
-        Box::new(super::super::connector_handler::Connector(
-            CacheReadHandler {
-                cache_pool: cache.pool.clone(),
-                registry: cache.registry.clone(),
-            },
-        ))
-    }
 
     fn function(cache: &twin::Cache) -> CacheReadFunction {
         CacheReadFunction {
@@ -443,14 +286,11 @@ mod tests {
         }
     }
 
-    /// One task through each engine, each against a cache of its own
-    /// holding `seed`, its connector configured with `config`.
-    async fn both(input: Value, data: Value, config: Value, seed: &[(&str, &str)]) -> (Seen, Seen) {
-        let cache = twin::cache(config.clone(), seed).await;
-        let v3 = twin::v3(NAME, v3_handler(&cache), input.clone(), data.clone()).await;
+    /// One task against a cache of its own holding `seed`, its connector
+    /// configured with `config`.
+    async fn run(input: Value, data: Value, config: Value, seed: &[(&str, &str)]) -> Seen {
         let cache = twin::cache(config, seed).await;
-        let v4 = twin::v4(NAME, function(&cache), input, data).await;
-        (v3, v4)
+        twin::v4(NAME, function(&cache), input, data).await
     }
 
     fn compile(input: Value) -> Result<CacheReadConfig, Vec<dataflow_rs::Issue>> {
@@ -661,24 +501,24 @@ mod tests {
         }
     }
 
-    /// `the_run_seam_is_reachable_without_an_engine` on v4: a miss is a
-    /// result, `null`, not a failure.
+    /// A miss is a result, `null`, not a failure.
     #[tokio::test]
-    async fn a_miss_reads_as_null_on_v4() {
+    async fn a_miss_reads_as_null() {
         let input = json!({"connector": "c", "key": "absent-key", "output": "data.cached"});
-        let (v3, v4) = both(input, json!({}), json!({}), &[]).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({}), json!({}), &[]).await;
+        twin::pinned(&v4, "a_miss_reads_as_null");
         assert_eq!(v4.expect("a miss is not an error"), json!({"cached": null}));
     }
 
-    /// `a_write_only_connector_refuses_a_read` on v4: the gate's refusal,
-    /// its caller-safe message and its detail, as 1.12's.
+    /// The gate's refusal, its caller-safe message and its detail, as
+    /// 1.12's. The gate is the connector's answer rather than the backend's,
+    /// so it is decided before anything is dialled.
     #[tokio::test]
-    async fn a_write_only_connector_refuses_a_read_on_v4() {
+    async fn a_write_only_connector_refuses_a_read() {
         let input = json!({"connector": "c", "key": "k", "output": "data.v"});
         let gated = json!({"operations": {"read": false, "write": true}});
-        let (v3, v4) = both(input, json!({}), gated, &[("k", "1")]).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({}), gated, &[("k", "1")]).await;
+        twin::pinned(&v4, "a_write_only_connector_refuses_a_read");
         let failure = v4.expect_err("a read must be refused when the gate is off");
         let detail = failure.detail.as_deref().unwrap_or_default();
         assert!(
@@ -687,7 +527,7 @@ mod tests {
         );
     }
 
-    /// Every reading 1.12 made, on both engines: a computed key, a number
+    /// Every reading 1.12 made: a computed key, a number
     /// and a boolean spelled out as keys, `keys` as an array of expressions
     /// or one expression, the decode with its raw-string fallback, a miss
     /// in the middle; and every refusal, in order: a computed output that
@@ -695,7 +535,7 @@ mod tests {
     /// to no key, the bound of 1000, a connector that is not there or not a
     /// cache.
     #[tokio::test]
-    async fn reads_and_refuses_as_on_v3() {
+    async fn reads_and_refuses_as_1_12_did() {
         let seed: &[(&str, &str)] = &[
             ("user:7", r#"{"name":"Ada","tags":["a","b"]}"#),
             ("n", "123"),
@@ -736,11 +576,11 @@ mod tests {
             json!({"connector": "c", "keys": [{"throw": "boom"}], "output": "data.out"}),
         ];
         for input in cases {
-            let (v3, v4) = both(input.clone(), data.clone(), json!({}), seed).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), data.clone(), json!({}), seed).await;
+            twin::pinned(&v4, format!("reads_and_refuses/{input}"));
         }
-        // A spot check of what the twins agree on.
-        let (_, v4) = both(
+        // A spot check of what the records hold.
+        let v4 = run(
             json!({"connector": "c", "keys": ["n", "missing", "raw", "s"], "output": "data.out"}),
             json!({}),
             json!({}),
@@ -755,22 +595,15 @@ mod tests {
 
     /// A connector of another kind is refused as 1.12 refused it.
     #[tokio::test]
-    async fn a_connector_that_is_not_a_cache_is_refused_on_v4() {
+    async fn a_connector_that_is_not_a_cache_is_refused() {
         let input = json!({"connector": "api", "key": "k", "output": "data.v"});
         let http = json!({"type": "http", "url": "http://127.0.0.1:1"});
-        let mut sides = Vec::new();
-        for v4 in [false, true] {
-            let cache = twin::cache(json!({}), &[]).await;
-            let registry = twin::connectors(&[("api", http.clone())]).await;
-            let cache = twin::Cache { registry, ..cache };
-            sides.push(if v4 {
-                twin::v4(NAME, function(&cache), input.clone(), json!({})).await
-            } else {
-                twin::v3(NAME, v3_handler(&cache), input.clone(), json!({})).await
-            });
-        }
-        assert_eq!(sides[1], sides[0]);
-        let failure = sides[1].as_ref().expect_err("not a cache");
+        let cache = twin::cache(json!({}), &[]).await;
+        let registry = twin::connectors(&[("api", http)]).await;
+        let cache = twin::Cache { registry, ..cache };
+        let v4 = twin::v4(NAME, function(&cache), input, json!({})).await;
+        twin::pinned(&v4, "a_connector_that_is_not_a_cache_is_refused");
+        let failure = v4.as_ref().expect_err("not a cache");
         assert!(
             failure
                 .detail
@@ -784,19 +617,17 @@ mod tests {
     /// Break 21 at call time, named for O11b: one key's value written at a
     /// context root, the default `data` included, is refused on v4 unless
     /// it is an object, a miss's `null` included, where 1.12 replaced the
-    /// root with it. An object is written on both.
+    /// root with it. An object is written.
     #[tokio::test]
     async fn one_value_at_a_root_is_written_only_when_it_is_an_object() {
         let seed: &[(&str, &str)] = &[("n", "123"), ("o", r#"{"a":1}"#)];
         for (key, scalar) in [("n", true), ("missing", true), ("o", false)] {
             let input = json!({"connector": "c", "key": key});
-            let (v3, v4) = both(input, json!({"kept": true}), json!({}), seed).await;
+            let v4 = run(input, json!({"kept": true}), json!({}), seed).await;
             if scalar {
-                assert!(v3.is_ok(), "1.12 replaced `data`: {v3:?}");
                 let failure = v4.expect_err("a root takes only an object");
                 assert_eq!(failure.code, "CONFIG_ERROR", "{key}");
             } else {
-                assert_eq!(v4, v3);
                 assert_eq!(v4.expect("an object"), json!({"a": 1}));
             }
         }

@@ -76,7 +76,7 @@ An active workflow is immutable. Changing one means creating a new version, test
 
 ## Errors
 
-By default the pipeline halts on the first task that errors, meaning a handler error or a `5xx`. The error reaches the caller in the response envelope. Set `continue_on_error` on the workflow to collect errors and keep going instead. A task that records a `4xx`, as a failing [`validation`](../reference/functions/validation.md) rule does, halts nothing on its own. It is recorded and the pipeline proceeds, unless the task carries [`halt_on`](../reference/workflows.md#halting-on-failure). On an async channel, a task failure routes the trace to the dead-letter queue for retry.
+By default the pipeline halts on the first task that errors, meaning a handler error or a `5xx`. The error reaches the caller in the response envelope. Set `"on_failure": "continue"` on a task to record its error and keep going instead. A task that records a `4xx`, as a failing [`validation`](../reference/functions/validation.md) rule does, halts nothing on its own. It is recorded and the pipeline proceeds, unless the task carries [`"on_rejection": "halt"`](../reference/workflows.md#halting-on-a-rejection). On an async channel, a task failure routes the trace to the dead-letter queue for retry.
 
 ## Next steps
 

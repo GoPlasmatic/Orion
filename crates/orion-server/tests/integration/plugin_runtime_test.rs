@@ -16,15 +16,17 @@ use serde_json::{Value, json};
 
 use orion::config::PluginsConfig;
 use orion::engine::{FunctionEntry, FunctionRegistry, PluginBinding};
-use orion::plugin::{ABI, Limits, LoadError, Manifest, PluginFunctionHandler, WasmRuntime};
+use orion::plugin::{
+    ABI, Limits, LoadError, Manifest, PluginFunction, PluginFunctionHandler, WasmRuntime,
+};
 
 const COMPONENT: &[u8] = include_bytes!("../fixtures/plugins/fixture.wasm");
 const MANIFEST: &str = include_str!("../fixtures/plugins/fixture.toml");
 
-/// Every handler the fixture exports, built under `config`.
+/// Every function the fixture exports, built under `config`.
 struct Fixture {
     runtime: Arc<WasmRuntime>,
-    handlers: HashMap<String, PluginFunctionHandler>,
+    handlers: HashMap<String, PluginFunction>,
     entries: Vec<FunctionEntry>,
 }
 
@@ -40,16 +42,22 @@ fn fixture(config: &PluginsConfig) -> Fixture {
     };
     let entries = manifest.entries(&binding);
     let limits = Limits::effective(config, &manifest.name);
+    // The loader's pairing: the manifest's functions in the order
+    // `Manifest::entries` gives them, each compiled from its runtime fields.
     let handlers = entries
         .iter()
-        .map(|e| {
+        .zip(&manifest.functions)
+        .map(|(e, decl)| {
             let handler = PluginFunctionHandler::new(
                 Arc::new(e.clone()),
                 loaded.clone(),
                 runtime.clone(),
                 limits,
             );
-            (e.name.clone(), handler)
+            (
+                e.name.clone(),
+                PluginFunction::new(handler, decl.runtime_fields()),
+            )
         })
         .collect();
     Fixture {
@@ -73,35 +81,31 @@ fn config() -> PluginsConfig {
     }
 }
 
-/// Run one task through a real dataflow engine with `handler` registered
-/// under its name; returns the message's final `data`, or the first task
-/// error's text.
-async fn run(handler: &PluginFunctionHandler, input: Value, data: Value) -> Result<Value, String> {
-    let name = handler.name().to_string();
-    let mut fns: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
-    fns.insert(name.clone(), Box::new(handler.clone()));
-    let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
-        "id": "w", "name": "w", "condition": true,
-        "tasks": [{"id": "t", "name": "t", "function": {"name": name, "input": input}}]
-    }))
-    .map_err(|e| e.to_string())?;
-    let engine = dataflow_rs_v3::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-    let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-    if !data.is_null() {
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            dataflow_rs_v3::datavalue::OwnedDataValue::from(&data),
-        );
-    }
-    engine
-        .process_message(&mut message)
-        .await
+/// Run one task through a real dataflow engine with `function` registered
+/// under its name; returns the message's final `data`, or the refusal or
+/// first task error's text.
+async fn run(function: &PluginFunction, input: Value, data: Value) -> Result<Value, String> {
+    use dataflow_rs::datavalue::OwnedDataValue;
+    let name = function.name().to_string();
+    let exprs = orion::engine::operators::orion_exprs(&orion::engine::ResolvedSecrets::empty(), 0)
         .map_err(|e| e.to_string())?;
+    let mut registry = dataflow_rs::Registry::new(exprs);
+    registry.register(&name, function.clone());
+    let engine = dataflow_rs::Engine::builder()
+        .registry(registry)
+        .workflow_json(&json!({
+            "id": "w",
+            "tasks": [{"id": "t", "function": {"name": name, "input": input}}]
+        }))
+        .build()
+        .map_err(|e| format!("{e:?}"))?;
+    let data = OwnedDataValue::from(&if data.is_null() { json!({}) } else { data });
+    let mut message = dataflow_rs::Message::from_parts(data.clone(), data, OwnedDataValue::Null);
+    engine.run(&mut message).await;
     if let Some(err) = message.errors().first() {
         return Err(format!("{err:?}"));
     }
-    Ok(message.data().into())
+    Ok(Value::from(message.context().data()))
 }
 
 /// A ticker for the tests that need the epoch clock, at the runtime's tick.
@@ -246,14 +250,14 @@ async fn a_task_without_output_writes_at_the_functions_default_root() {
     let err = run(&f.handlers["test.fixture.trap"], json!({}), json!({}))
         .await
         .expect_err("no output, no default");
-    assert!(err.contains("names no 'output'"), "{err}");
+    assert!(err.contains("missing field `output`"), "{err}");
 }
 
 #[tokio::test]
 async fn the_input_is_validated_against_the_entry_before_wasm() {
     let f = fixture(&config());
     // A required field missing from the authored input: refused when the
-    // engine is built (`parse_input_with`), before any message.
+    // engine is built, before any message, at the field.
     let err = run(
         &f.handlers["test.fixture.identity"],
         json!({"output": "data.x"}),
@@ -261,10 +265,10 @@ async fn the_input_is_validated_against_the_entry_before_wasm() {
     )
     .await
     .expect_err("a required field is missing");
-    assert!(err.contains("REQUIRED"), "{err}");
+    assert!(err.contains("missing field `message`"), "{err}");
     assert!(
-        err.contains("test.fixture.identity"),
-        "the error names the function: {err}"
+        err.contains(r#"Key("input"), Key("message")"#),
+        "the issue is at the field: {err}"
     );
 
     // A field that resolved to the wrong kind per message is refused too —
@@ -330,7 +334,7 @@ async fn a_template_that_evaluates_to_the_wrong_kind_is_refused_before_wasm() {
 /// The receiver-taking hooks dataflow-rs 3.12 added: the authored input is
 /// checked against *this registration's* table, and its template fields are
 /// compiled, when the engine is built — so an input the schema refuses fails
-/// `Engine::new` naming the function rather than failing the first message.
+/// the engine build at the field rather than failing the first message.
 /// That is what lets the serving screen quarantine a workflow whose plugin
 /// changed its schema underneath it.
 #[tokio::test]
@@ -343,12 +347,14 @@ async fn the_authored_input_is_checked_against_the_registration_at_engine_build(
     )
     .await
     .expect_err("an undeclared field");
-    assert!(err.contains("UNKNOWN_FIELD"), "{err}");
     assert!(
-        err.contains("REQUIRED"),
+        err.contains("unknown key `txt`, did you mean `text`?"),
+        "{err}"
+    );
+    assert!(
+        err.contains("missing field `text`"),
         "and the declared one is missing: {err}"
     );
-    assert!(err.contains("test.fixture.upper"), "{err}");
 
     // An object in a template position is admitted at build — it may be an
     // operator call — and judged per message by what it evaluates to. This

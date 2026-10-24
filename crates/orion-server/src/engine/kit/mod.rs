@@ -41,7 +41,7 @@ use dataflow_rs::function::{BoxFuture, CallLayer, FunctionSpec, Next, Reference}
 use dataflow_rs::program::{AuthoredPath, IssueCode, Severity};
 use dataflow_rs::{Ctx, Issue, Outcome};
 
-use crate::connector::{ConnectorConfig, ConnectorRegistry, ConnectorTarget, HttpOperationGates};
+use crate::connector::ConnectorRegistry;
 use crate::engine::functions::schema;
 use crate::engine::{HandlerDeps, ResolvedSecrets};
 
@@ -225,44 +225,15 @@ pub fn retry(safety: schema::RetrySafety) -> dataflow_rs::function::RetrySafety 
     }
 }
 
-/// `connector_helpers::require_op` on dataflow-rs 4's error: a connector
-/// whose gate for `op` is off refuses the call before anything is dialled.
+/// The connector gates and lookups every connector function opens with,
+/// shared with the dataflow-rs 3 handlers: their [`HandlerError`] converts
+/// into either engine's error, so the refusal a caller sees does not depend
+/// on which engine ran the task.
 ///
-/// # Errors
-///
-/// A `connector_detail` refusal when `allowed` is false: the caller is told
-/// the request failed validation, and which operation is off rides as the
-/// operator-only detail.
-pub fn require_op(allowed: bool, op: &str, connector: &str) -> dataflow_rs::Result<()> {
-    if allowed {
-        return Ok(());
-    }
-    Err(crate::errors::service::connector_detail(format!(
-        "operation '{op}' is disabled on connector '{connector}'"
-    )))
-}
-
-/// `connector_helpers::require_method_allowed` on dataflow-rs 4's error: an
-/// HTTP connector's method allow-list (F22e), where an empty list allows
-/// every method.
-///
-/// # Errors
-///
-/// A `connector_detail` refusal naming the method and the allowed ones when
-/// the list excludes `method`.
-pub fn require_method_allowed(
-    gates: &HttpOperationGates,
-    method: &str,
-    connector: &str,
-) -> dataflow_rs::Result<()> {
-    if gates.allows_method(method) {
-        return Ok(());
-    }
-    Err(crate::errors::service::connector_detail(format!(
-        "HTTP method '{method}' is not allowed on connector '{connector}' (allowed: {})",
-        gates.methods.join(", ")
-    )))
-}
+/// [`HandlerError`]: crate::engine::HandlerError
+pub use crate::engine::functions::connector_helpers::{
+    require_connector, require_method_allowed, require_op, resolve_connector,
+};
 
 /// `guarded_handler` on dataflow-rs 4's types: the circuit breaker and the
 /// connector metrics around one connector call's work.
@@ -383,42 +354,6 @@ fn profile_target(ctx: &Ctx<'_>) -> Option<String> {
     })
 }
 
-/// The connector named `name`, `connector_helpers::resolve_connector` on
-/// dataflow-rs 4's error.
-///
-/// # Errors
-///
-/// A `FUNCTION_ERROR`, not retryable, when no connector has the name.
-pub async fn resolve_connector(
-    registry: &ConnectorRegistry,
-    name: &str,
-) -> dataflow_rs::Result<Arc<ConnectorConfig>> {
-    registry.get(name).await.ok_or_else(|| {
-        crate::engine::HandlerError::new(
-            crate::engine::ErrorClass::Backend,
-            format!("Connector '{name}' not found"),
-        )
-        .into()
-    })
-}
-
-/// The typed config of a connector of kind `K`,
-/// `connector_helpers::require_connector` on dataflow-rs 4's error.
-///
-/// # Errors
-///
-/// A `connector_detail` refusal when the connector is another kind: the
-/// caller is told the request failed validation, and which kind it is rides
-/// as the operator-only detail.
-pub fn require_connector<'a, K: ConnectorTarget>(
-    config: &'a ConnectorConfig,
-    name: &str,
-) -> dataflow_rs::Result<&'a K::Config> {
-    K::extract(config).ok_or_else(|| {
-        crate::errors::service::connector_detail(format!("Connector '{name}' is not {}", K::noun()))
-    })
-}
-
 /// Orion's expressions with no secrets and no budget: `orion_exprs` as an
 /// offline surface or a test builds it. Every function test compiles its
 /// config and runs its call on it.
@@ -461,11 +396,6 @@ impl OfflineDeps {
                 engine_config.circuit_breaker.clone(),
             )),
             runtime: Arc::new(crate::runtime::RuntimeHandle::new(
-                Arc::new(
-                    dataflow_rs_v3::Engine::builder()
-                        .build()
-                        .expect("an empty engine builds"),
-                ),
                 Arc::new(crate::channel::ChannelSnapshot::empty()),
                 crate::engine::FunctionRegistry::builtin().clone(),
             )),
@@ -530,18 +460,16 @@ impl std::fmt::Debug for OfflineDeps {
 mod tests {
     use super::*;
     use crate::connector::circuit_breaker::CircuitBreakerConfig;
-    use crate::engine::functions::connector_helpers as v3;
+    use crate::connector::{ConnectorConfig, HttpOperationGates};
     use crate::engine::{ErrorClass, HandlerError};
     use dataflow_rs::Function;
     use dataflow_rs::datavalue::OwnedDataValue;
     use dataflow_rs::function::testing;
-    use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
     use serde_json::{Value, json};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// One call as its caller sees it: whether the work ran, and the error's
-    /// code, retryability and the text its record carries (a dataflow-rs 3
-    /// error's `Display`, a dataflow-rs 4 service error's message).
+    /// code, retryability and the text its record carries.
     type Seen = (bool, Option<(String, bool, String)>);
 
     /// What each call of a plan does: succeed, or fail with a class.
@@ -581,37 +509,6 @@ mod tests {
         seen
     }
 
-    /// The same plan through 1.12's `guarded_handler`.
-    async fn through_guarded_handler(registry: &ConnectorRegistry, plan: Plan<'_>) -> Vec<Seen> {
-        let mut seen = Vec::new();
-        for step in plan {
-            let ran = AtomicBool::new(false);
-            let result = v3::guarded_handler("probe", registry, "c", "ch", async {
-                ran.store(true, Ordering::Relaxed);
-                match step {
-                    None => Ok(TaskOutcome::Success),
-                    Some(class) => Err(HandlerError::new(*class, "down").into()),
-                }
-            })
-            .await;
-            let error = result.err().map(|e| {
-                let code = dataflow_rs_v3::ErrorInfo::new(None, None, e.clone()).code;
-                (code, e.retryable(), e.to_string())
-            });
-            seen.push((ran.load(Ordering::Relaxed), error));
-        }
-        seen
-    }
-
-    /// `plan` through the kit's shell when `kit`, else through 1.12's.
-    async fn through(kit: bool, registry: &ConnectorRegistry, plan: Plan<'_>) -> Vec<Seen> {
-        if kit {
-            through_guarded(registry, plan).await
-        } else {
-            through_guarded_handler(registry, plan).await
-        }
-    }
-
     /// The exposition lines of the connector and breaker counters `run`
     /// emitted, on a recorder of its own: what Prometheus is told, less the
     /// latencies, which differ run to run.
@@ -641,30 +538,24 @@ mod tests {
     /// and the shed request's code, at the shell: three retryable failures
     /// open the breaker, the next calls never reach the work and fail
     /// `circuit_open`, and a reset closes it — every outcome, every breaker
-    /// state and every counter as `guarded_handler`'s over the same plan.
+    /// state and every counter as 1.12's `guarded_handler` gave them.
     #[test]
-    fn guarded_trips_and_resets_the_breaker_as_guarded_handler_does() {
+    fn guarded_trips_and_resets_the_breaker() {
         let connect = Some(ErrorClass::Connector);
         let plan = [connect, connect, connect, None, None];
-        let run = |kit: bool| {
-            let mut seen = Vec::new();
-            let mut states = Vec::new();
-            let lines = counters(|| {
-                block_on(async {
-                    let registry = breakers(3);
-                    seen.extend(through(kit, &registry, &plan).await);
-                    states.push(registry.circuit_breaker_states().await);
-                    assert!(registry.reset_circuit_breaker("ch:c").await);
-                    seen.extend(through(kit, &registry, &[None]).await);
-                    states.push(registry.circuit_breaker_states().await);
-                });
+        let mut seen = Vec::new();
+        let mut states = Vec::new();
+        let lines = counters(|| {
+            block_on(async {
+                let registry = breakers(3);
+                seen.extend(through_guarded(&registry, &plan).await);
+                states.push(registry.circuit_breaker_states().await);
+                assert!(registry.reset_circuit_breaker("ch:c").await);
+                seen.extend(through_guarded(&registry, &[None]).await);
+                states.push(registry.circuit_breaker_states().await);
             });
-            (seen, states, lines)
-        };
-        let (kit, v3) = (run(true), run(false));
-        assert_eq!(kit, v3);
+        });
 
-        let (seen, states, lines) = kit;
         assert_eq!(seen.iter().filter(|(ran, _)| *ran).count(), 4, "{seen:?}");
         let shed = seen[3].1.as_ref().expect("shed");
         assert_eq!(shed.0, crate::errors::kind::CIRCUIT_OPEN);
@@ -695,9 +586,12 @@ mod tests {
         let registry = ConnectorRegistry::new(CircuitBreakerConfig::default());
         let kit = through_guarded(&registry, &plan).await;
         assert!(registry.circuit_breaker_states().await.is_empty());
-        let registry = ConnectorRegistry::new(CircuitBreakerConfig::default());
-        assert_eq!(kit, through_guarded_handler(&registry, &plan).await);
         assert!(kit.iter().all(|(ran, _)| *ran));
+        assert!(
+            kit.iter()
+                .all(|(_, e)| e.as_ref().map(|e| e.0.as_str()) == Some("IO_ERROR")),
+            "{kit:?}"
+        );
     }
 
     /// `a_rejected_query_does_not_trip_the_breaker`: a failure the caller
@@ -714,7 +608,6 @@ mod tests {
         let kit = through_guarded(&registry, &plan).await;
         let states = registry.circuit_breaker_states().await;
         assert_eq!(states.get("ch:c").map(String::as_str), Some("closed"));
-        assert_eq!(kit, through_guarded_handler(&breakers(1), &plan).await);
         assert!(kit.iter().all(|(ran, _)| *ran));
     }
 
@@ -723,18 +616,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn after_the_cooldown_a_probe_reaches_the_work() {
         let connect = Some(ErrorClass::Connector);
-        let mut sides = Vec::new();
-        for kit in [true, false] {
-            let registry = breakers(2);
-            let mut seen = through(kit, &registry, &[connect, connect, connect]).await;
-            tokio::time::advance(std::time::Duration::from_secs(301)).await;
-            seen.extend(through(kit, &registry, &[connect, connect]).await);
-            sides.push((seen, registry.circuit_breaker_states().await));
-        }
-        assert_eq!(sides[0], sides[1]);
-        let ran: Vec<bool> = sides[0].0.iter().map(|(ran, _)| *ran).collect();
+        let registry = breakers(2);
+        let mut seen = through_guarded(&registry, &[connect, connect, connect]).await;
+        tokio::time::advance(std::time::Duration::from_secs(301)).await;
+        seen.extend(through_guarded(&registry, &[connect, connect]).await);
+        let ran: Vec<bool> = seen.iter().map(|(ran, _)| *ran).collect();
         assert_eq!(ran, [true, true, false, true, false]);
-        assert_eq!(sides[0].1.get("ch:c").map(String::as_str), Some("open"));
+        let states = registry.circuit_breaker_states().await;
+        assert_eq!(states.get("ch:c").map(String::as_str), Some("open"));
     }
 
     /// Writes `kit::channel(ctx)` at `data.channel`.
@@ -758,17 +647,10 @@ mod tests {
         assert_eq!(written(&on), Some(json!("orders")));
         let off = testing::call(Channel, json!({})).await;
         assert_eq!(written(&off), Some(json!("unknown")));
-        // 1.12's reading of a message with no channel.
-        let message = dataflow_rs_v3::Message::from_value(&json!({}));
-        assert_eq!(
-            crate::engine::functions::extract_channel(&message),
-            "unknown"
-        );
     }
 
-    /// The code, retryability, recorded text and detail of a v4 and a v3
-    /// error.
-    fn facts_v4(e: &dataflow_rs::Error) -> (String, bool, String, Option<String>) {
+    /// The code, retryability, recorded text and detail of an error.
+    fn facts(e: &dataflow_rs::Error) -> (String, bool, String, Option<String>) {
         (
             e.code().to_string(),
             e.is_retryable(),
@@ -777,22 +659,21 @@ mod tests {
         )
     }
 
-    fn facts_v3(e: dataflow_rs_v3::DataflowError) -> (String, bool, String, Option<String>) {
-        let detail = e.detail().map(str::to_string);
-        let code = dataflow_rs_v3::ErrorInfo::new(None, None, e.clone()).code;
-        (code, e.retryable(), e.to_string(), detail)
-    }
-
     #[tokio::test]
     async fn the_connector_lookups_refuse_as_1_12_did() {
         let registry = ConnectorRegistry::new(CircuitBreakerConfig::default());
         let kit = resolve_connector(&registry, "missing")
             .await
             .expect_err("absent");
-        let v3 = v3::resolve_connector(&registry, "missing")
-            .await
-            .expect_err("absent");
-        assert_eq!(facts_v4(&kit), facts_v3(v3));
+        assert_eq!(
+            facts(&kit.into()),
+            (
+                "FUNCTION_ERROR".to_string(),
+                false,
+                "Function execution error: Connector 'missing' not found".to_string(),
+                None
+            )
+        );
 
         let es = ConnectorConfig::Es(crate::connector::EsConnectorConfig {
             max_response_size: 1024,
@@ -805,9 +686,18 @@ mod tests {
         });
         let kit = require_connector::<crate::connector::kind::Db>(&es, "search")
             .expect_err("not a database");
-        let v3 = v3::require_connector::<crate::connector::kind::Db>(&es, "search")
-            .expect_err("not a database");
-        assert_eq!(facts_v4(&kit), facts_v3(v3));
+        assert_eq!(
+            facts(&kit.into()),
+            (
+                crate::errors::kind::CONNECTOR_DETAIL.to_string(),
+                false,
+                "Request validation failed".to_string(),
+                Some(format!(
+                    "Connector 'search' is not {}",
+                    <crate::connector::kind::Db as crate::connector::kind::ConnectorTarget>::noun()
+                ))
+            )
+        );
         assert!(require_connector::<crate::connector::kind::Es>(&es, "search").is_ok());
     }
 
@@ -924,21 +814,45 @@ mod tests {
     /// and operator-only detail, open and closed.
     #[test]
     fn the_gates_refuse_as_1_12_did() {
-        for allowed in [true, false] {
-            let kit = require_op(allowed, "publish", "events").map_err(|e| facts_v4(&e));
-            let v3 = v3::require_op(allowed, "publish", "events").map_err(facts_v3);
-            assert_eq!(kit, v3, "allowed: {allowed}");
-        }
-        for methods in [
-            vec![],
-            vec!["GET".to_string()],
-            vec!["get".to_string(), "PUT".to_string()],
+        let refused = |detail: &str| {
+            Err((
+                crate::errors::kind::CONNECTOR_DETAIL.to_string(),
+                false,
+                "Request validation failed".to_string(),
+                Some(detail.to_string()),
+            ))
+        };
+        assert_eq!(
+            require_op(true, "publish", "events").map_err(|e| facts(&e.into())),
+            Ok(())
+        );
+        assert_eq!(
+            require_op(false, "publish", "events").map_err(|e| facts(&e.into())),
+            refused("operation 'publish' is disabled on connector 'events'")
+        );
+        // An empty list allows everything; a listed method matches whatever
+        // its case.
+        for (methods, allowed) in [
+            (vec![], ["GET", "POST", "PUT"].as_slice()),
+            (vec!["GET".to_string()], ["GET"].as_slice()),
+            (
+                vec!["get".to_string(), "PUT".to_string()],
+                ["GET", "PUT"].as_slice(),
+            ),
         ] {
             let gates = HttpOperationGates { methods };
             for method in ["GET", "POST", "PUT"] {
-                let kit = require_method_allowed(&gates, method, "api").map_err(|e| facts_v4(&e));
-                let v3 = v3::require_method_allowed(&gates, method, "api").map_err(facts_v3);
-                assert_eq!(kit, v3, "{method} against {:?}", gates.methods);
+                let got =
+                    require_method_allowed(&gates, method, "api").map_err(|e| facts(&e.into()));
+                let expected = if allowed.contains(&method) {
+                    Ok(())
+                } else {
+                    refused(&format!(
+                        "HTTP method '{method}' is not allowed on connector 'api' (allowed: {})",
+                        gates.methods.join(", ")
+                    ))
+                };
+                assert_eq!(got, expected, "{method} against {:?}", gates.methods);
             }
         }
     }
@@ -983,7 +897,7 @@ mod tests {
         assert!(seen > 0, "register_functions registered nothing");
     }
 
-    /// The functions ported so far, in `build_custom_functions`' order.
+    /// The host functions `register_functions` registers.
     const PORTED: &[&str] = &[
         "http_call",
         "channel_call",
@@ -1010,23 +924,11 @@ mod tests {
         "connector_call",
     ];
 
-    /// Every function 1.12 registers can be built over the inert
-    /// dependencies, and `register_functions` registers the ones ported so
-    /// far, each under the name `build_custom_functions` gives its twin.
+    /// `register_functions` registers every host function over the inert
+    /// dependencies, each under its 1.12 name.
     #[tokio::test]
-    async fn offline_deps_build_every_function_and_register_the_ported_ones() {
+    async fn offline_deps_register_every_function() {
         let offline = OfflineDeps::new();
-        let built = crate::engine::build_custom_functions(offline.deps());
-        for name in [
-            "http_call",
-            "channel_call",
-            "db_read",
-            "cache_read",
-            "jwt_verify",
-            "model_infer",
-        ] {
-            assert!(built.contains_key(name), "{name}");
-        }
         let mut registry = dataflow_rs::Registry::new(test_exprs());
         crate::engine::register_functions(&mut registry, offline.deps());
         let hosts: Vec<&str> = registry
@@ -1037,9 +939,6 @@ mod tests {
         let mut ported = PORTED.to_vec();
         ported.sort_unstable();
         assert_eq!(hosts, ported, "the catalogue lists host functions by name");
-        for name in PORTED {
-            assert!(built.contains_key(*name), "{name} has a dataflow-rs 3 twin");
-        }
         // The engine every test compiles on: Orion's operators, no secrets.
         assert!(
             test_exprs()

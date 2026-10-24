@@ -439,7 +439,7 @@ fn serialize_envelope(envelope: &Value) -> Result<String, OrionError> {
 const SANITIZED_ERROR_MESSAGE: &str =
     "Task processing failed; full detail is available in the trace";
 
-/// Map engine `ErrorInfo` entries to the shape the caller sees: code and
+/// Map engine error records to the shape the caller sees: code and
 /// task_id, with the message decided by `verbose`.
 ///
 /// Sanitized (`verbose = false`) is the production contract: raw messages can
@@ -452,7 +452,7 @@ const SANITIZED_ERROR_MESSAGE: &str =
 /// the first one already knew. `AppConfig::verbose_errors` picks between them
 /// and refuses the unsafe combination at startup, so this function does not
 /// re-derive the policy; it is handed the answer.
-fn sanitize_errors(errors: &[dataflow_rs_v3::ErrorInfo], verbose: bool) -> Vec<Value> {
+fn sanitize_errors(errors: &[dataflow_rs::run::ErrorRecord], verbose: bool) -> Vec<Value> {
     errors
         .iter()
         .map(|e| {
@@ -460,7 +460,7 @@ fn sanitize_errors(errors: &[dataflow_rs_v3::ErrorInfo], verbose: bool) -> Vec<V
                 "code": e.code,
                 "message": if verbose { e.message.as_str() } else { SANITIZED_ERROR_MESSAGE },
             });
-            if let Some(ref task_id) = e.task_id {
+            if let Some(task_id) = e.task_id.as_deref() {
                 entry["task_id"] = json!(task_id);
             }
             entry
@@ -656,7 +656,7 @@ pub(super) async fn process_sync_for_channel(
                 // content. A channel left on the default `envelope` mode never
                 // looks, which is what keeps an incidental `_orion` key in some
                 // workflow's data inert.
-                let mut data_out: Value = message.data().into();
+                let mut data_out = Value::from(message.context().data());
                 // #312: what the workflow declared and did not get. Empty for
                 // every channel on the default `envelope` mode, which never looks
                 // at `_orion.response` at all.
@@ -774,7 +774,7 @@ pub(super) async fn process_sync_for_channel(
                 // one trace carrying the evidence is the one sampled away), the
                 // trace row is findable by an operator searching for failures, and
                 // an incomplete response is not written to the response cache.
-                let has_errors = message.has_errors() || !response_drops.is_empty();
+                let has_errors = !message.errors().is_empty() || !response_drops.is_empty();
                 let public_json = if has_errors {
                     response["errors"] = Value::Array(sanitize_errors(
                         message.errors(),
@@ -1019,17 +1019,14 @@ mod tests {
         );
     }
 
-    /// `ErrorInfo` is `#[non_exhaustive]` as of dataflow-rs 3.1, so the builder
-    /// is the only cross-crate construction path.
-    fn info(code: &str, message: &str, task_id: Option<&str>) -> dataflow_rs_v3::ErrorInfo {
-        let mut b = dataflow_rs_v3::ErrorInfo::builder(code, message);
-        if let Some(task_id) = task_id {
-            b = b.task_id(task_id);
-        }
-        b.build()
+    /// An error record as the engine stamps one: its code, message and task.
+    fn info(code: &str, message: &str, task_id: Option<&str>) -> dataflow_rs::run::ErrorRecord {
+        let mut record = dataflow_rs::run::ErrorRecord::new(code, message);
+        record.task_id = task_id.map(std::sync::Arc::from);
+        record
     }
 
-    fn sample_errors() -> Vec<dataflow_rs_v3::ErrorInfo> {
+    fn sample_errors() -> Vec<dataflow_rs::run::ErrorRecord> {
         vec![
             info(
                 "TASK_FAILED",

@@ -302,7 +302,7 @@ fn total(inner: &Inner) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs_v3::datavalue::OwnedDataTensor;
+    use dataflow_rs::datavalue::OwnedDataTensor;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A resident model of a stated size that runs nothing.

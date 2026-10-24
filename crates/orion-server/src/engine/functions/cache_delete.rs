@@ -1,93 +1,20 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::Output;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use serde_json::json;
 
 use super::cache_read::MAX_KEYS;
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{
-    ConnectorCall, output_declared, require_op, resolve_required_str_list, to_connect_error,
-    to_exec_error,
-};
+use super::connector_helpers::{to_connect_error, to_exec_error};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
 
 /// This function's name, for the free functions below (F48).
-const NAME: &str = <CacheDeleteHandler as ConnectorHandler>::NAME;
-
-/// Workflow function handler for deleting exact keys from a cache backend.
-///
-/// The half of "cache a read until a write invalidates it" that `cache_read`
-/// and `cache_write` could not express: a workflow that changes the data can
-/// now drop the entries it made stale instead of waiting out their TTL.
-/// Exact keys only. A prefix or pattern form would be a `SCAN` over the whole
-/// keyspace on Redis; a generation counter (`cache_incr`) is the scalable way
-/// to retire a family of keys.
-pub struct CacheDeleteHandler {
-    pub cache_pool: Arc<CachePool>,
-    pub registry: Arc<ConnectorRegistry>,
-}
-
-#[async_trait]
-impl ConnectorHandler for CacheDeleteHandler {
-    const NAME: &'static str = "cache_delete";
-    type Kind = crate::connector::kind::Cache;
-    type Input = TemplatedInput;
-    type Parsed = Vec<String>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        Ok(resolve_required_str_list(
-            input, "keys", call.name, ctx, MAX_KEYS,
-        )?)
-    }
-
-    fn gate(
-        _keys: &Self::Parsed,
-        conn: &crate::connector::CacheConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        // A delete changes what later reads see, so a read-only connector
-        // refuses it exactly as it refuses `cache_write`.
-        Ok(require_op(conn.operations.write, "write", connector)?)
-    }
-
-    async fn run(
-        &self,
-        keys: Self::Parsed,
-        conn: &crate::connector::CacheConnectorConfig,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        let deleted = delete(&self.cache_pool, call.connector, conn, &keys).await?;
-
-        // Recorded only where the task asks: the delete is the effect, and a
-        // default of `data` would overwrite the message with a count.
-        Ok(if output_declared(input) {
-            json!({ "deleted": deleted }).into()
-        } else {
-            Produced::nothing()
-        })
-    }
-}
+pub(crate) const NAME: &str = "cache_delete";
 
 /// The delete, against a resolved and gated cache connector: how many of
 /// `keys` existed. Shared by the dataflow-rs 3 handler and the dataflow-rs
@@ -205,85 +132,17 @@ pub(super) const CACHE_DELETE_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn memory_connector(write: bool) -> crate::connector::CacheConnectorConfig {
-        crate::connector::CacheConnectorConfig {
-            backend: "memory".to_string(),
-            url: None,
-            allow_private_urls: false,
-            operations: crate::connector::CacheOperationGates { read: true, write },
-        }
-    }
-
-    #[test]
-    fn a_read_only_connector_refuses_a_delete() {
-        let err = <CacheDeleteHandler as ConnectorHandler>::gate(
-            &vec!["k".to_string()],
-            &memory_connector(false),
-            "c",
-        )
-        .expect_err("a delete must be refused when writes are off");
-        assert!(
-            err.detail
-                .as_deref()
-                .unwrap_or_default()
-                .contains("operation 'write' is disabled")
-        );
-    }
-
-    /// The count is of keys that existed, and the output is recorded only
-    /// where the task names one.
-    #[tokio::test]
-    async fn deletes_report_what_existed() {
-        let pool = Arc::new(CachePool::new(4, 60, 128));
-        let conn = memory_connector(true);
-        let backend = pool
-            .get_backend(CachePurpose::Workflow, "c", &conn)
-            .await
-            .expect("test");
-        backend.set("a", "1").await.expect("test");
-        backend.set("b", "2").await.expect("test");
-        let h = CacheDeleteHandler {
-            cache_pool: pool,
-            registry: Arc::new(ConnectorRegistry::new(Default::default())),
-        };
-        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        let mut ctx = TaskContext::new(&mut message, &datalogic);
-        let call = ConnectorCall {
-            name: CacheDeleteHandler::NAME,
-            connector: "c",
-            channel: "ch".to_string(),
-            output: "data.del".to_string(),
-        };
-        let keys = vec!["a".to_string(), "b".to_string(), "absent".to_string()];
-
-        let with_output =
-            TemplatedInput::from(json!({"connector": "c", "keys": [], "output": "data.del"}));
-        let produced = h
-            .run(keys.clone(), &conn, &call, &with_output, &mut ctx)
-            .await
-            .expect("test");
-        assert_eq!(produced.value, Some(json!({"deleted": 2})));
-        assert_eq!(backend.get("a").await.expect("test"), None);
-
-        let without = TemplatedInput::from(json!({"connector": "c", "keys": []}));
-        let produced = h
-            .run(keys, &conn, &call, &without, &mut ctx)
-            .await
-            .expect("test");
-        assert_eq!(produced.value, None, "no output declared, nothing recorded");
-    }
-
-    // -- dataflow-rs 4: the config, and twins of the handler over an
-    // in-memory cache --
+    // -- the config, and calls over an in-memory cache, against 1.12's
+    // records --
 
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
     use serde_json::Value;
 
-    /// The keys the twins look at after a delete.
+    /// The keys a test looks at after a delete.
     const LOOK: &[&str] = &["a", "b", "c"];
 
     fn function(cache: &twin::Cache) -> CacheDeleteFunction {
@@ -293,27 +152,21 @@ mod tests {
         }
     }
 
-    /// One task through each engine, each against a cache of its own
-    /// holding `a`, `b` and `c`, its connector configured with `config`:
-    /// what each saw, and what each cache holds at [`LOOK`] after.
-    async fn both(
-        input: Value,
-        data: Value,
-        config: Value,
-    ) -> ((Seen, Vec<Option<String>>), (Seen, Vec<Option<String>>)) {
+    /// One task against a cache of its own holding `a`, `b` and `c`, its
+    /// connector configured with `config`: what it saw, and what the cache
+    /// holds at [`LOOK`] after.
+    async fn run(input: Value, data: Value, config: Value) -> (Seen, Vec<Option<String>>) {
         let seed: &[(&str, &str)] = &[("a", "1"), ("b", "2"), ("c", "3")];
-        let cache = twin::cache(config.clone(), seed).await;
-        let handler = Box::new(super::super::connector_handler::Connector(
-            CacheDeleteHandler {
-                cache_pool: cache.pool.clone(),
-                registry: cache.registry.clone(),
-            },
-        ));
-        let v3 = twin::v3(NAME, handler, input.clone(), data.clone()).await;
-        let v3 = (v3, cache.held(LOOK).await);
         let cache = twin::cache(config, seed).await;
         let v4 = twin::v4(NAME, function(&cache), input, data).await;
-        (v3, (v4, cache.held(LOOK).await))
+        (v4, cache.held(LOOK).await)
+    }
+
+    /// Pin what a call saw, and what the cache held after, to 1.12's records.
+    #[track_caller]
+    fn pin(seen: &(Seen, Vec<Option<String>>), key: impl std::fmt::Display) {
+        twin::pinned(&seen.0, &key);
+        twin::pinned(&Ok(json!(seen.1)), format!("{key}/held"));
     }
 
     /// Declaration order is the field table's (I179); `keys` is an
@@ -365,29 +218,28 @@ mod tests {
         assert_eq!(issues[0].0, "key");
     }
 
-    /// `deletes_report_what_existed` on v4: the count is of the keys that
-    /// existed, written only where the task names an output; the keys go
-    /// either way.
+    /// The count is of the keys that existed, written only where the task
+    /// names an output; the keys go either way.
     #[tokio::test]
-    async fn deletes_report_what_existed_on_v4() {
+    async fn deletes_report_what_existed() {
         let keys = json!(["a", "b", "absent"]);
-        let (v3, v4) = both(
+        let v4 = run(
             json!({"connector": "c", "keys": keys.clone(), "output": "data.del"}),
             json!({}),
             json!({}),
         )
         .await;
-        assert_eq!(v4, v3);
+        pin(&v4, "deletes_report_what_existed/output");
         assert_eq!(v4.0.expect("deleted"), json!({"del": {"deleted": 2}}));
         assert_eq!(v4.1, [None, None, Some("3".to_string())]);
 
-        let (v3, v4) = both(
+        let v4 = run(
             json!({"connector": "c", "keys": keys}),
             json!({}),
             json!({}),
         )
         .await;
-        assert_eq!(v4, v3);
+        pin(&v4, "deletes_report_what_existed/no_output");
         assert_eq!(
             v4.0.expect("deleted"),
             json!({}),
@@ -396,14 +248,13 @@ mod tests {
         assert_eq!(v4.1, [None, None, Some("3".to_string())]);
     }
 
-    /// `a_read_only_connector_refuses_a_delete` on v4: refused before
-    /// anything goes.
+    /// A read-only connector refuses a delete before anything goes.
     #[tokio::test]
-    async fn a_read_only_connector_refuses_a_delete_on_v4() {
+    async fn a_read_only_connector_refuses_a_delete() {
         let input = json!({"connector": "c", "keys": ["a"], "output": "data.del"});
         let gated = json!({"operations": {"read": true, "write": false}});
-        let (v3, v4) = both(input, json!({}), gated).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({}), gated).await;
+        pin(&v4, "a_read_only_connector_refuses_a_delete");
         let failure = v4.0.expect_err("writes are off");
         assert!(
             failure
@@ -422,7 +273,7 @@ mod tests {
     /// refusal, a computed output that names no path before anything is
     /// deleted included.
     #[tokio::test]
-    async fn deletes_and_refuses_as_on_v3() {
+    async fn deletes_and_refuses_as_1_12_did() {
         let data = json!({
             "ks": ["a", "c"], "n": 3, "obj": {"x": 1},
             "many": (0..1001).map(|i| format!("k{i}")).collect::<Vec<_>>(),
@@ -442,8 +293,8 @@ mod tests {
             json!({"connector": "absent", "keys": ["a"]}),
         ];
         for input in cases {
-            let (v3, v4) = both(input.clone(), data.clone(), json!({})).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), data.clone(), json!({})).await;
+            pin(&v4, format!("deletes_and_refuses/{input}"));
         }
     }
 

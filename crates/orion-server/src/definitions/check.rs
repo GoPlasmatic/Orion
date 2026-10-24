@@ -491,9 +491,8 @@ fn check_workflows(
             ));
         }
         // Likewise for what the engine reports and does not refuse: a
-        // `$`-prefixed key that loses one `$` when it is emitted, a
-        // `validation` whose failure changes nothing, and `continue_on_error`
-        // on a group, which parses and is dropped.
+        // `$`-prefixed key that loses one `$` when it is emitted, and a
+        // `validation` whose failure changes nothing.
         for advisory in
             crate::validation::engine_advisories(&req.tasks, req.loop_config.as_ref(), functions)
         {

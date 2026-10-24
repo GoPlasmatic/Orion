@@ -10,7 +10,7 @@
 //! - [`loader`] — stored channels + workflows → both engines' workflow sets,
 //!   dataflow-rs 4's verdict deciding which load (I182),
 //!   with the per-channel quarantine.
-//! - [`runner`] — running one channel, and the instrumented lock accessors.
+//! - [`runner`] — the trace-capture policy every transport shares.
 //! - [`observer`] — always-on per-task timing, including the sync built-ins no
 //!   host can otherwise reach.
 //! - [`kit`] — what every dataflow-rs 4 function shares: the error mapping's
@@ -48,10 +48,8 @@ pub const ERROR_CONTEXT_KEY: &str = "_orion_errors";
 /// [`ERROR_CONTEXT_PATH`] as dataflow-rs 4's error context, keeping its
 /// default number of records: the one place Orion configures it. Every
 /// dataflow-rs 4 engine Orion builds takes it
-/// (`EngineConfig::default().error_context(ERROR_CONTEXT.clone())`), as
-/// [`operators::with_orion_engine_defaults`] gives dataflow-rs 3's engines
-/// the path, and `channel_call` strips its key from the metadata it hands a
-/// target.
+/// (`EngineConfig::default().error_context(ERROR_CONTEXT.clone())`), and
+/// `channel_call` strips its key from the metadata it hands a target.
 pub static ERROR_CONTEXT: std::sync::LazyLock<dataflow_rs::run::ErrorContext> =
     std::sync::LazyLock::new(|| {
         dataflow_rs::run::ErrorContext::new(
@@ -197,6 +195,7 @@ pub mod intake;
 pub mod kit;
 pub mod loader;
 pub mod observer;
+pub mod offline;
 pub mod operators;
 pub mod profile;
 pub mod refs;
@@ -208,27 +207,24 @@ pub mod utils;
 
 pub use budget::{RunBudgetLimits, RunBudgetSnapshot, SharedRunAccountant};
 pub use error::{ErrorClass, HTTP_ERROR, HandlerError, HttpFailure, http_error, http_status};
-pub use execute::{
-    ExecOpts, Execution, RunOutcome, execute_admitted, execute_admitted_on_generation,
-};
+pub use execute::{ExecOpts, Execution, RunOutcome, execute_admitted_on_generation};
 pub use functions::registry::{
     CatalogueEntry, FieldSpec, FunctionEntry, FunctionRegistry, PluginBinding,
 };
 pub use functions::schema::ConnectorRule;
 pub use handlers::{
-    HandlerDeps, build_custom_functions, is_reserved_function_name, register_functions,
-    register_kafka_function, register_kafka_publisher, register_plugin_functions, serving_registry,
+    HandlerDeps, is_reserved_function_name, register_functions, register_kafka_function,
+    register_plugin_functions, serving_registry,
 };
 pub use loader::{
-    AliasRewrite, EngineLoad, HandlerScreen, LoadedWorkflows, build_engine_workflows, build_single,
-    compile_row, filter_channels, quarantines, rewrite_aliases, serving_engine,
-    serving_engine_with_policy,
+    EngineLoad, LoadedWorkflows, build_engine_workflows, compile_row, filter_channels,
+    name_v3_spellings, parse_options, quarantines, serving_engine, serving_engine_with_policy,
 };
 pub use observer::MetricsObserver;
 pub use refs::{
     ConnectorFacts, ConnectorRef, RefProblem, channel_call_targets, check_connector_refs,
     connector_refs,
 };
-pub use runner::{EngineCallResult, TraceCapture, run_for_channel};
+pub use runner::TraceCapture;
 pub use secrets::ResolvedSecrets;
 pub use steps::{MAX_STEP_DEPTH, is_group, leaf_tasks, walk_steps};

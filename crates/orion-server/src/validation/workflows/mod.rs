@@ -346,13 +346,12 @@ pub fn validate_workflow_loop_schema(
 /// unknown function as a **warning**, so it green-lit payloads create rejects.
 ///
 /// The identity checks exist for the same reason as the function-name one, and
-/// they were the last three ways to author a workflow that create accepts and
+/// they were among the last ways to author a workflow that create accepts and
 /// the engine then refuses. All three were verified end to end:
 ///
 /// | Authored | Create | What actually happened |
 /// |---|---|---|
 /// | task without `id` | `201` | `503` on every request; channel quarantined at load |
-/// | task without `name` | `201` | same — both are required `String`s upstream |
 /// | two tasks sharing an `id` | `201` | `500` on activate; **the whole engine reload fails**, and at boot `Engine::new` aborts the process |
 /// | `"tasks": []` | `201` | same as the duplicate case — `Workflow::validate()` refuses a workflow with no tasks, and it is the engine *build* that runs it |
 ///
@@ -369,14 +368,11 @@ pub fn validate_workflow_loop_schema(
 ///
 /// **These track dataflow-rs's parsing rules rather than tightening them**, so
 /// that "Orion accepts it" and "the engine can load it" stay the same
-/// statement. Both fields must be *present* because both are required `String`s
-/// with no serde default. Only `id` additionally has to be non-empty, and that
-/// is the one deliberate step beyond the parse: `""` deserializes happily, but
-/// it collides with any second blank id on `Workflow::validate()`'s uniqueness
-/// check, and a task that does parse with one writes an empty `task_id` into
-/// every audit entry, trace step and metric label. `name` is left alone — an
-/// empty one is unhelpful in a log, but it loads, and refusing it would be
-/// Orion inventing a rule the engine does not have.
+/// statement. A task's `name` is optional, as it is to the engine. `id` has to
+/// be present and non-empty, and that is the one deliberate step beyond the
+/// parse: a blank id collides with any second one on the uniqueness check, and
+/// writes an empty `task_id` into every audit entry, trace step and metric
+/// label.
 pub fn validate_workflow_tasks_schema(
     tasks: &serde_json::Value,
     loop_config: Option<&serde_json::Value>,
@@ -442,20 +438,6 @@ pub fn validate_workflow_tasks_schema(
             ));
         }
 
-        // Presence only, matching the parse: `Task::name` is a required
-        // `String`, but an empty one deserializes and loads fine, so refusing
-        // it here would reject a workflow the engine would happily run.
-        if task.get("name").and_then(|v| v.as_str()).is_none() {
-            errors.push(FieldError::new(
-                format!("{path}.name"),
-                "REQUIRED",
-                "Task 'name' is required and must be a string — it is what makes \
-                 an audit trail or a trace readable to a human. It may be empty, \
-                 but it must be present: without the key this workflow would be \
-                 accepted and then fail to load, taking its channel out of service",
-            ));
-        }
-
         check_terminal(task, path, &mut errors);
 
         let function = task.get("function");
@@ -508,49 +490,49 @@ pub fn validate_workflow_tasks_schema(
     // was collected: those are the better messages, and this one exists for
     // the gaps they miss.
     //
-    // `Workflow::validate_authored` (dataflow-rs 3.7) replaced a bare
-    // round-trip `from_value::<Workflow>` here. Three things improved. It
-    // reports *every* remaining problem rather than the parser's first. Each
-    // one carries the coordinate the author typed, so the error points at
-    // `tasks[1].tasks[0].id` instead of at a bare `tasks`. And it runs
-    // `Workflow::validate()` as well as the parse, which is what the engine
-    // build actually runs — so `tasks: []`, which parses cleanly and then
-    // fails `validate()`, is now refused at create instead of taken down the
-    // whole reload on activation.
+    // dataflow-rs 4's parser holds every structural rule, at the coordinate
+    // the author typed, and reports every problem rather than its first. It
+    // reads the loop whole, because its `setup` steps share the body's step-id
+    // namespace and `as`, `scratch` and `over` carry rules of their own.
     //
     // The workflow-level fields are synthesized: `workflow.id` /
     // `workflow.name` are validated by their own callers with their own
-    // messages. `loop` goes in whole, because `build` validates it whole:
-    // its `setup` steps share the body's step-id namespace, and `as`,
-    // `scratch` and `over` carry rules of their own. A synthetic document
-    // without it accepted a workflow whose loop then failed every reload.
+    // messages.
     if errors.is_empty() {
-        let mut synthetic = serde_json::json!({
-            "id": "__shape_check__", "name": "__shape_check__",
-            "condition": true, "tasks": tasks,
-        });
-        if let Some(loop_config) = loop_config.filter(|l| !l.is_null()) {
-            synthetic["loop"] = loop_config.clone();
-        }
+        let document = shape_document(tasks, loop_config);
+        let mut issues = dataflow_rs::def::parse(&document, crate::engine::parse_options()).issues;
+        crate::engine::name_v3_spellings(&document, &mut issues);
         errors.extend(
-            dataflow_rs_v3::Workflow::validate_authored(&synthetic)
+            issues
                 .into_iter()
-                // An advisory must never become a create-time refusal.
-                // `validate_authored` emits none today — the three live on
-                // `check_workflow` — but `IssueCode` is `#[non_exhaustive]`
-                // and `engine_issue_to_field_error` maps anything it does not
-                // recognise onto `INVALID`, so one arriving here would start
-                // rejecting workflows that build and run. `Rejected` and
-                // `Defect` stay errors: the second builds and then fails every
-                // message, which is not something to accept at create.
-                .filter(|issue| issue.severity() != dataflow_rs_v3::Severity::Advisory)
+                // What the parser refuses outright. An advisory must never
+                // become a create-time refusal, and a Defect is left to the
+                // loader's verdict: a near-miss key (`LIKELY_TYPO`) is
+                // accepted here and quarantined at load, as 1.12 accepted it.
+                .filter(|issue| issue.severity == dataflow_rs::program::Severity::Rejected)
                 .map(engine_issue_to_field_error),
         );
     }
     errors
 }
 
-/// Render one [`dataflow_rs_v3::WorkflowIssue`] as an Orion `FieldError`.
+/// The workflow the engine checks a task array as: the tasks, the loop when
+/// there is one, and synthesized workflow-level fields.
+fn shape_document(
+    tasks: &serde_json::Value,
+    loop_config: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut synthetic = serde_json::json!({
+        "id": "__shape_check__", "name": "__shape_check__",
+        "condition": true, "tasks": tasks,
+    });
+    if let Some(loop_config) = loop_config.filter(|l| !l.is_null()) {
+        synthetic["loop"] = loop_config.clone();
+    }
+    synthetic
+}
+
+/// Render one engine [`dataflow_rs::Issue`] as an Orion `FieldError`.
 ///
 /// The code registry is closed (`orion_api::error::field_codes`), so this maps
 /// onto the codes Orion already emits rather than minting one per `IssueCode`.
@@ -558,24 +540,29 @@ pub fn validate_workflow_tasks_schema(
 /// `INVALID` and still reaches the author with the engine's own message, which
 /// is the point of having a catch-all at all.
 ///
-/// The path is the engine's authored coordinate, already rooted at `tasks`, so
-/// it drops straight into a field error. A workflow-level issue carries no
+/// The path is the engine's authored coordinate, rooted at the workflow, so
+/// it drops straight into a field error. A workflow-level issue has the root
 /// path and is reported against `tasks` — the only field this function was
 /// given.
-fn engine_issue_to_field_error(issue: dataflow_rs_v3::WorkflowIssue) -> FieldError {
-    use dataflow_rs_v3::IssueCode;
+fn engine_issue_to_field_error(issue: dataflow_rs::Issue) -> FieldError {
+    use dataflow_rs::program::IssueCode;
     let code = match issue.code {
-        IssueCode::NoTasks | IssueCode::MissingStepId | IssueCode::MissingFunction => "REQUIRED",
+        IssueCode::NoTasks
+        | IssueCode::MissingStepId
+        | IssueCode::MissingFunction
+        | IssueCode::InvalidFunctionName => "REQUIRED",
         IssueCode::DuplicateStepId => "DUPLICATE_TASK_ID",
         IssueCode::InvalidTerminal => "TYPE_MISMATCH",
-        IssueCode::UnknownFunction | IssueCode::MissingHandler => "UNKNOWN_FUNCTION",
+        IssueCode::UnknownFunction => "UNKNOWN_FUNCTION",
+        IssueCode::LikelyTypo => "UNKNOWN_FIELD",
         _ => "INVALID",
     };
-    FieldError::new(
-        issue.path.unwrap_or_else(|| "tasks".to_string()),
-        code,
-        issue.message,
-    )
+    let path = if issue.path.is_root() {
+        "tasks".to_string()
+    } else {
+        issue.path.to_string()
+    };
+    FieldError::new(path, code, issue.message)
 }
 
 /// Every JSON-bearing field of a workflow request, checked for authoring

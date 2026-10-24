@@ -551,7 +551,7 @@ fn context() -> Value {
 /// server builds (bootstrap wires them into the guard engine and the workflow
 /// engines alike).
 fn try_eval(logic: &Value) -> Result<Value, String> {
-    use dataflow_rs_v3::datalogic_rs as datalogic;
+    use dataflow_rs::datalogic_rs as datalogic;
     let engine = orion::engine::operators::add_to_datalogic(datalogic::Engine::builder()).build();
     let compiled = engine.compile(logic).map_err(|e| e.to_string())?;
     engine
@@ -565,7 +565,8 @@ fn eval(logic: &Value) -> Value {
 }
 
 /// Whether a task guarded by `logic == expected` ran, on an engine that
-/// declares [`TEST_SECRET`].
+/// declares [`TEST_SECRET`] — the serving engine, compiled and run as an
+/// offline run compiles and runs one.
 ///
 /// `secret` cannot be proved the way every other row is, for two reasons that
 /// are both the feature working. It is registered by dataflow-rs on the
@@ -581,35 +582,41 @@ async fn a_task_guarded_by(logic: &Value, expected: &Value) -> bool {
     let mut store = serde_json::Map::new();
     store.insert(name.to_string(), json!(value));
 
-    let workflow = dataflow_rs_v3::Workflow::from_json(
-        &json!({
-            "id": "secret_op", "name": "secret_op", "priority": 0, "condition": true,
-            "tasks": [{
-                "id": "guarded", "name": "guarded",
-                "condition": {"==": [logic, expected]},
-                "function": {"name": "map", "input": {
-                    "mappings": [{"path": "data.ran", "logic": true}]
-                }},
-            }],
-        })
-        .to_string(),
+    let secrets = orion::engine::ResolvedSecrets::from_values(store);
+    let compiler = orion::engine::offline::offline_compiler(&secrets, Vec::new(), None)
+        .expect("a registry declaring the secret builds");
+    let workflow = json!({
+        "id": "secret_op", "name": "secret_op", "channel": "c", "status": "active",
+        "priority": 0, "condition": true,
+        "tasks": [{
+            "id": "guarded", "name": "guarded",
+            "condition": {"==": [logic, expected]},
+            "function": {"name": "map", "input": {
+                "mappings": [{"path": "data.ran", "logic": true}]
+            }},
+        }],
+    });
+    let engine = orion::engine::offline::single_engine(&compiler, &workflow)
+        .expect("the guard workflow compiles");
+    let result = orion::engine::offline::run_single(
+        &engine,
+        &json!({}),
+        &json!({}),
+        orion::engine::offline::OfflineRun {
+            trace: None,
+            max_snapshot_bytes: 0,
+            capture_changes: false,
+            layers: &[],
+            observer: None,
+        },
     )
-    .expect("the guard workflow parses");
-
-    let engine = orion::engine::operators::with_orion_engine_defaults(
-        dataflow_rs_v3::Engine::builder(),
-        &orion::engine::ResolvedSecrets::from_values(store),
-    )
-    .with_workflow(workflow)
-    .build()
-    .expect("an engine declaring the secret builds");
-
-    let mut message = dataflow_rs_v3::Message::builder().build();
-    engine
-        .process_message(&mut message)
-        .await
-        .expect("the run succeeds");
-    message.data().get("ran") == Some(&json!(true).into())
+    .await;
+    assert!(
+        result.error.is_none(),
+        "the run succeeds: {:?}",
+        result.error
+    );
+    Value::from(result.message.context().data()).get("ran") == Some(&json!(true))
 }
 
 /// [`OPERATORS`] and the vocabulary `engine::operators::operator_names()`

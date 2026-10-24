@@ -1,0 +1,74 @@
+{
+  "a_denied_request/403": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: storage_head via 'media': HTTP 403 Forbidden",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "a_denied_request/gated": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'head' is disabled on connector 'media'"
+    }
+  },
+  "a_denied_request/{\"connector\":\"absent\",\"key\":\"k\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "a_denied_request/{\"connector\":\"media\",\"key\":{\"var\":\"data.none\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: storage_head 'key' must resolve to a string or number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "a_missing_object_is_data_not_failure": {
+    "ok": {
+      "meta": {
+        "exists": false
+      }
+    }
+  },
+  "an_existing_object_answers_its_metadata": {
+    "ok": {
+      "meta": {
+        "exists": true,
+        "size": 1048576,
+        "etag": "abc123",
+        "last_modified": "Wed, 19 Aug 2026 07:00:00 GMT",
+        "content_type": "video/mp4"
+      }
+    }
+  },
+  "computed_output/{\"var\":\"data.at\"}": {
+    "ok": {
+      "n": 3,
+      "at": "data.meta",
+      "meta": {
+        "exists": false
+      }
+    }
+  },
+  "computed_output/{\"var\":\"data.missing.deeper\"}": {
+    "ok": {
+      "exists": false
+    }
+  },
+  "computed_output/{\"var\":\"data.n\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

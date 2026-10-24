@@ -186,7 +186,7 @@ impl ResolvedWrite {
 /// malformed envelope, a non-representable construct, a backend capability gap,
 /// and every filter / field / relation error — is the shared [`QueryError`],
 /// wrapped in [`WriteError::Query`] (W20). All variants map to
-/// `DataflowError::Validation` at the handler edge.
+/// a `VALIDATION_ERROR` at the handler edge.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WriteError {
     /// A field required for this `op` is missing (e.g. `set` for update).
@@ -240,14 +240,14 @@ impl From<QueryError> for WriteError {
     }
 }
 
-impl From<WriteError> for dataflow_rs_v3::engine::error::DataflowError {
+impl From<WriteError> for crate::engine::HandlerError {
     fn from(e: WriteError) -> Self {
         // A wrapped `QueryError` keeps its redaction class (G3) — the write
         // path reaches `EntityNotAllowed` through exactly the same lowering.
         if matches!(&e, WriteError::Query(q) if q.is_connector_detail()) {
-            return crate::errors::connector_detail_error(e);
+            return Self::from(crate::errors::service::connector_detail(e));
         }
-        dataflow_rs_v3::engine::error::DataflowError::Validation(e.to_string())
+        Self::new(crate::engine::ErrorClass::CallerInput, e)
     }
 }
 

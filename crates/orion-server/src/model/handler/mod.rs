@@ -10,11 +10,9 @@
 //! them. The loaded session comes from the process-wide [`LoadedCache`] and
 //! outlives generations.
 //!
-//! Two functions run it: [`ModelInferHandler`] on dataflow-rs 3, which
-//! serves, and [`ModelInferFunction`] on dataflow-rs 4. Each reads the
-//! task's fields as its engine compiled them and hands them to one core
-//! (`infer`), so the sequence, the refusals and what is written are one
-//! code path.
+//! [`ModelInferFunction`] runs it: it reads the task's fields as the engine
+//! compiled them and hands them to one core (`infer`), so the sequence, the
+//! refusals and what is written are one code path.
 //!
 //! The sequence, and what each step refuses as:
 //!
@@ -70,11 +68,6 @@ use dataflow_rs::datavalue::{OwnedDataTensor, OwnedDataValue};
 use dataflow_rs::expr::ExprEngine;
 use dataflow_rs::function::{FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
-use dataflow_rs_v3::datalogic_rs as datalogic;
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Value, json};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
@@ -90,31 +83,11 @@ use crate::config::ModelsConfig;
 use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::engine::HandlerError;
 use crate::engine::functions::model_infer::ModelInferConfig;
-use crate::engine::functions::templated_input::{TemplatedInput, with_scope};
 use crate::engine::kit;
 use crate::runtime::RuntimeHandle;
 
 /// This handler's name in metrics, profiles and error messages.
 pub const NAME: &str = "model_infer";
-
-/// A `model_infer` task's input: the fields as authored, with the template
-/// fields compiled, and `select` compiled once as an expression over the
-/// outputs rather than evaluated against the message.
-#[derive(Debug, Default)]
-pub struct InferInput {
-    fields: TemplatedInput,
-    select: Option<Arc<datalogic::Logic>>,
-}
-
-impl<'de> serde::Deserialize<'de> for InferInput {
-    /// Any JSON, as [`TemplatedInput`] takes: the field table validates it.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self {
-            fields: TemplatedInput::deserialize(deserializer)?,
-            select: None,
-        })
-    }
-}
 
 /// The key the call's `input` root sits under in `select`'s context, beside
 /// the outputs.
@@ -276,161 +249,8 @@ impl ModelSource {
     }
 }
 
-/// The `model_infer` task function on dataflow-rs 3.
-pub struct ModelInferHandler {
-    pub source: ModelSource,
-    /// What the call runs on — `None` with `models.enabled = false`, which
-    /// makes every call an `unavailable` failure rather than a build error.
-    pub host: Option<Arc<InferenceHost>>,
-    pub config: Arc<ModelsConfig>,
-}
-
-#[async_trait]
-impl AsyncFunctionHandler for ModelInferHandler {
-    type Input = InferInput;
-
-    /// Compile the expression fields the table declares (`model`, `input`,
-    /// `timeout_ms`), and `select` as an expression of its own: it reads the
-    /// outputs, which do not exist until the model has run, so it is
-    /// compiled here and evaluated after the run, never templated against
-    /// the message.
-    fn compile_input(
-        input: &mut Self::Input,
-        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs_v3::Result<()> {
-        input.fields.compile(NAME, c)?;
-        input.select = match input.fields.get("select") {
-            None | Some(Value::Null) => None,
-            Some(select) => Some(Arc::new(c.engine().compile(select).map_err(|e| {
-                DataflowError::Validation(format!("{NAME}: 'select' does not compile: {e}"))
-            })?)),
-        };
-        Ok(())
-    }
-
-    /// The shell around the core, then the writes: the result at `output`,
-    /// the stats at `stats_output` when it is set.
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &InferInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        let started = Instant::now();
-        let result = self.run(ctx, input, started).await;
-        let Inferred {
-            value,
-            stats,
-            writes: (output, stats_output),
-            ..
-        } = settle(started, result)?;
-        // Written last, together: nothing lands on a failure above.
-        ctx.set(output, value);
-        if let (Some(path), Some(stats)) = (stats_output, stats) {
-            ctx.set_json(path, &stats);
-        }
-        Ok(TaskOutcome::Success)
-    }
-}
-
-impl ModelInferHandler {
-    /// The task's fields as dataflow-rs 3 compiled them, read for this
-    /// message, and the core over them. The fields that read the message
-    /// are resolved together against one view of it; the rest are read as
-    /// written, each refused in 1.12's words when it is not what the field
-    /// takes.
-    async fn run<'i>(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        infer_input: &'i InferInput,
-        started: Instant,
-    ) -> Result<Inferred<(&'i str, Option<&'i str>)>, Refused> {
-        let input = &infer_input.fields;
-        let (model_field, timeout_field, root_field) = with_scope(ctx, |scope| {
-            (
-                input.resolve_owned("model", scope),
-                input.value_of("timeout_ms", NAME, scope),
-                input.resolve_owned("input", scope),
-            )
-        });
-        let raw = match input.get("raw") {
-            None | Some(Value::Null) => Ok(false),
-            Some(Value::Bool(b)) => Ok(*b),
-            Some(_) => Err(caller_input(None, "'raw' must be a boolean".to_string())),
-        };
-        let writes = if matches!(raw, Ok(true)) && infer_input.select.is_some() {
-            Err(caller_input(
-                None,
-                "'raw' and 'select' are exclusive: 'raw' writes the outputs whole, 'select' \
-                 reduces them first"
-                    .to_string(),
-            ))
-        } else {
-            v3_path(input, "output", Some(DEFAULT_OUTPUT)).and_then(|output| {
-                v3_path(input, "stats_output", None)
-                    .map(|stats_output| (output.unwrap_or(DEFAULT_OUTPUT), stats_output))
-            })
-        };
-        // `select` evaluates on the engine running this task, the one that
-        // compiled it.
-        let datalogic = ctx.datalogic().clone();
-        let request = Request {
-            started,
-            model: match model_field {
-                None => Err(caller_input(None, "requires 'model' (string)".to_string())),
-                Some(Err(e)) => Err(field_refused_v3("model", e)),
-                Some(Ok(value)) => Ok(value),
-            },
-            runtime: match input.get("runtime") {
-                None | Some(Value::Null) => Ok(None),
-                Some(Value::String(name)) => Ok(Some(name.as_str())),
-                Some(_) => Err(caller_input(None, "'runtime' must be a string".to_string())),
-            },
-            timeout_ms: match timeout_field {
-                None | Some(Ok(Value::Null)) => Ok(None),
-                Some(Err(e)) => Err(field_refused_v3("timeout_ms", e)),
-                Some(Ok(v)) => Ok(Some(v)),
-            },
-            raw,
-            stats: matches!(writes, Ok((_, Some(_)))),
-            writes,
-            root: match root_field {
-                None => Err(caller_input(
-                    None,
-                    "requires 'input': the JSON root the manifest's adapters read".to_string(),
-                )),
-                Some(Err(e)) => Err(field_refused_v3("input", e)),
-                Some(Ok(root)) => Ok(root),
-            },
-            select: infer_input
-                .select
-                .as_deref()
-                .map(|logic| Select::V3(&datalogic, logic)),
-            run_deadline: None,
-        };
-        infer(&self.source, self.host.as_ref(), &self.config, request).await
-    }
-}
-
-/// A path field read as 1.12 read it: unset or `null` is `default`, a
-/// non-empty string is the path, and anything else is refused.
-fn v3_path<'i>(
-    input: &'i TemplatedInput,
-    field: &str,
-    default: Option<&'static str>,
-) -> Result<Option<&'i str>, Refused> {
-    match input.get(field) {
-        None | Some(Value::Null) => Ok(default),
-        Some(Value::String(path)) if !path.is_empty() => Ok(Some(path.as_str())),
-        Some(_) => Err(caller_input(
-            None,
-            format!("'{field}' must be a dotted path (string)"),
-        )),
-    }
-}
-
-/// The `model_infer` task function on dataflow-rs 4: the inference
-/// [`ModelInferHandler`] runs, over the same model set and host, its fields
-/// read in the same order. `output` is the primary output, beside
+/// The `model_infer` task function: the inference over the generation's
+/// model set and the node's host, its fields read in 1.12's order. `output` is the primary output, beside
 /// `stats_output`.
 pub struct ModelInferFunction {
     pub source: ModelSource,
@@ -486,7 +306,6 @@ impl Function for ModelInferFunction {
             runtime: Ok(cfg.runtime.as_deref()),
             timeout_ms,
             raw: Ok(cfg.raw.unwrap_or(false)),
-            writes: Ok(()),
             root,
             select: cfg
                 .select

@@ -1,21 +1,10 @@
 //! One output-field name across every handler (proposal F43).
 //!
 //! Before 1.0 the destination path was called `output` in eight handlers and
-//! `response_path` in `http_call` and `channel_call`. 1.0 standardises on
-//! `output` and keeps `response_path` working so 0.3.x workflows load
-//! unchanged.
-//!
-//! Both reach the contract through a serde alias now — `channel_call` on an
-//! Orion-owned struct, `http_call` on dataflow-rs's `HttpCallConfig`, which
-//! grew `alias = "output"` in 3.1. Orion used to deep-walk task JSON in the
-//! storage repository to rename the key, because it could not annotate a
-//! struct it does not own.
-//!
-//! The alias is not quite what the rewrite was: it cannot express a precedence
-//! rule, so both keys at once is a refusal rather than "`output` wins", and
-//! `HttpCallConfig` is `deny_unknown_fields` so a typo is a refusal too. Both
-//! refusals are raised at create, by Orion's own input schema, rather than at
-//! engine load where they would quarantine the channel.
+//! `response_path` in `http_call` and `channel_call`. `output` is the one
+//! name now: the pre-1.0 spelling is an unknown key, refused at create by
+//! Orion's own input schema rather than at engine load, where it would
+//! quarantine the channel.
 
 use crate::common;
 
@@ -118,37 +107,20 @@ async fn http_call_accepts_output() {
     );
 }
 
-/// The 0.3.x name still loads and still works.
+/// The 0.3.x name is refused at create, alone or beside `output`, naming
+/// the key.
 #[tokio::test]
-async fn http_call_still_accepts_response_path() {
+async fn http_call_refuses_response_path() {
     let app = app_with_mock_origin().await;
-    common::create_and_activate_channel(
-        &app,
-        "http-legacy",
-        http_call_workflow("response_path", "data.api_response"),
-    )
-    .await;
-
-    let body = run_channel(&app, "http-legacy").await;
-    assert_eq!(body["data"]["api_response"]["user_id"], "123");
+    let alone = http_call_workflow("response_path", "data.api_response");
+    let mut both = http_call_workflow("output", "data.new_path");
+    both["tasks"][0]["function"]["input"]["response_path"] = json!("data.old_path");
+    for wf in [alone, both] {
+        refused_naming_response_path(&app, wf).await;
+    }
 }
 
-/// When a workflow carries both keys — as one will mid-migration, if an author
-/// adds the new name without deleting the old — the workflow is refused.
-///
-/// This used to be a precedence rule (`output` wins), which the boundary
-/// rewrite could implement because it chose which key survived. A serde alias
-/// cannot: `HttpCallConfig` fails with `duplicate field` in either key order.
-/// Refusing is the better answer anyway — the author is told, rather than
-/// having one of two conflicting destinations silently picked for them — but
-/// it has to be refused *here*, at create, or the workflow activates and then
-/// quarantines its channel at engine load.
-#[tokio::test]
-async fn http_call_rejects_output_and_response_path_together() {
-    let app = app_with_mock_origin().await;
-    let mut wf = http_call_workflow("output", "data.new_path");
-    wf["tasks"][0]["function"]["input"]["response_path"] = json!("data.old_path");
-
+async fn refused_naming_response_path(app: &axum::Router, wf: serde_json::Value) {
     let resp = app
         .clone()
         .oneshot(json_request("POST", "/api/v2/admin/workflows", Some(wf)))
@@ -159,8 +131,8 @@ async fn http_call_rejects_output_and_response_path_together() {
     let body = body_json(resp).await;
     let rendered = body.to_string();
     assert!(
-        rendered.contains("response_path") && rendered.contains("output"),
-        "the error must name both spellings, got: {body}"
+        rendered.contains("response_path"),
+        "the error must name the key, got: {body}"
     );
 }
 

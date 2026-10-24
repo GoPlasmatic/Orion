@@ -1,12 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use super::templated_input::{FieldSource, TemplatedInput};
 use crate::connector::ConnectorTarget;
 use crate::connector::{
     ConnectorConfig, ConnectorRegistry, EsConnectorConfig, HttpOperationGates, OperationGates,
@@ -26,14 +22,14 @@ pub fn build_entity_registry(
     schema: Option<&Value>,
     connector_config: &ConnectorConfig,
     connector_name: &str,
-) -> Result<EntityRegistry, DataflowError> {
+) -> Result<EntityRegistry, HandlerError> {
     let mut registry = match schema {
         Some(s) => EntityRegistry::from_json(s)?,
         None => EntityRegistry::default(),
     };
     if let Some(guards) = connector_config.dialect_guards() {
         if !guards.schema_is_sufficient(!registry.is_empty(), registry.is_identity_mode()) {
-            return Err(crate::errors::connector_detail_error(format!(
+            return Err(connector_detail(format!(
                 "connector '{connector_name}' requires a declared schema \
                  (dialect.require_schema): supply \"schema\" with an \"entities\" map \
                  and without \"unmapped\": \"identity\""
@@ -44,6 +40,12 @@ pub fn build_entity_registry(
     Ok(registry)
 }
 
+/// A refusal whose text names connector topology: the caller is told the
+/// request failed validation, and `detail` rides as the operator-only text.
+fn connector_detail(detail: impl std::fmt::Display) -> HandlerError {
+    HandlerError::from(crate::errors::service::connector_detail(detail))
+}
+
 /// Reject the call when the connector's operation gates disable `op` — the
 /// per-connector en/disable switch for read / insert / update / delete /
 /// upsert / raw_write (see [`OperationGates`]).
@@ -51,7 +53,7 @@ pub fn require_op_allowed(
     gates: &OperationGates,
     op: &str,
     connector_name: &str,
-) -> Result<(), DataflowError> {
+) -> Result<(), HandlerError> {
     require_op(gates.allows(op), op, connector_name)
 }
 
@@ -59,9 +61,9 @@ pub fn require_op_allowed(
 /// (`read` / `write`) and Kafka (`publish`) gates each have their own struct,
 /// because a `raw_write` flag on a cache would be a field nothing reads (F22e).
 /// The refusal is worded identically whatever the connector type.
-pub fn require_op(allowed: bool, op: &str, connector_name: &str) -> Result<(), DataflowError> {
+pub fn require_op(allowed: bool, op: &str, connector_name: &str) -> Result<(), HandlerError> {
     if !allowed {
-        return Err(crate::errors::connector_detail_error(format!(
+        return Err(connector_detail(format!(
             "operation '{op}' is disabled on connector '{connector_name}'"
         )));
     }
@@ -75,9 +77,9 @@ pub fn require_method_allowed(
     gates: &HttpOperationGates,
     method: &str,
     connector_name: &str,
-) -> Result<(), DataflowError> {
+) -> Result<(), HandlerError> {
     if !gates.allows_method(method) {
-        return Err(crate::errors::connector_detail_error(format!(
+        return Err(connector_detail(format!(
             "HTTP method '{method}' is not allowed on connector \
              '{connector_name}' (allowed: {})",
             gates.methods.join(", ")
@@ -95,14 +97,11 @@ pub async fn es_request(
     es: &EsConnectorConfig,
     method: reqwest::Method,
     url: &str,
-) -> Result<reqwest::RequestBuilder, DataflowError> {
+) -> Result<reqwest::RequestBuilder, HandlerError> {
     if !es.allow_private_urls
         && let Err(msg) = crate::validation::validate_url_not_private(url).await
     {
-        return Err(DataflowError::function_execution(
-            format!("SSRF protection: {msg}"),
-            None,
-        ));
+        return Err(to_exec_error(format!("SSRF protection: {msg}")));
     }
 
     let mut req = client.request(method, url);
@@ -119,10 +118,7 @@ pub async fn es_request(
 /// `max_response_size` (F12) — the same guard `execute_request` applies to
 /// `http_call` responses. Without it a large `_search` result was buffered
 /// wholesale.
-pub async fn read_es_body(
-    resp: reqwest::Response,
-    max_size: usize,
-) -> Result<Value, DataflowError> {
+pub async fn read_es_body(resp: reqwest::Response, max_size: usize) -> Result<Value, HandlerError> {
     // Bounded *while streaming* (`http_body`): a `_search` that answers with
     // no `Content-Length` used to be buffered whole and measured afterwards,
     // so the cap bounded what the workflow received and not what the node
@@ -131,7 +127,7 @@ pub async fn read_es_body(
     let bytes = crate::http_body::read_bounded(resp, max_size)
         .await
         .map_err(|e| to_exec_error(format!("Elasticsearch response {e}")))?;
-    serde_json::from_slice(&bytes).map_err(|e| to_exec_error(e).into())
+    serde_json::from_slice(&bytes).map_err(to_exec_error)
 }
 
 /// Send an ES request and parse its JSON body. Returns the status alongside so
@@ -140,7 +136,7 @@ pub async fn read_es_body(
 pub async fn send_es(
     req: reqwest::RequestBuilder,
     max_response_size: usize,
-) -> Result<(reqwest::StatusCode, Value), DataflowError> {
+) -> Result<(reqwest::StatusCode, Value), HandlerError> {
     // `without_url`: a transport failure's `Display` carries the endpoint it
     // was given, and an ES connector URL can hold credentials in userinfo or
     // the query (#281). The connector name is the diagnostic here.
@@ -171,10 +167,7 @@ fn redact_error_json(val: &Value, depth: usize) -> Value {
             let mut out = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
                 if crate::connector::is_secret_key(k) {
-                    out.insert(
-                        k.clone(),
-                        Value::String(crate::connector::MASK.to_string()),
-                    );
+                    out.insert(k.clone(), Value::String(crate::connector::MASK.to_string()));
                 } else {
                     out.insert(k.clone(), redact_error_json(v, depth + 1));
                 }
@@ -205,229 +198,9 @@ fn truncate_error_preview(s: &str, max_bytes: usize) -> String {
 }
 
 /// Uniform error for a non-2xx Elasticsearch write response.
-pub fn es_write_error(status: reqwest::StatusCode, body: &Value) -> DataflowError {
+pub fn es_write_error(status: reqwest::StatusCode, body: &Value) -> HandlerError {
     let preview = format_upstream_error_preview(body);
-    DataflowError::function_execution(
-        format!("Elasticsearch write failed ({status}): {preview}"),
-        None,
-    )
-}
-
-/// The prologue every connector handler runs before its own body.
-///
-/// F48: the same six steps — resolve-before-borrow, the `connector` field, the
-/// operation gate, the pool fetch, the output path, the observability shell —
-/// were written out in seven handlers, with the handler-name string literal
-/// repeated three to six times per file. A typo in one of those copies is
-/// invisible to the compiler and shows up as a metric label or an error message
-/// naming the wrong function. Now it is named once, in [`ConnectorCall::begin`],
-/// and read back off `self.name` everywhere else.
-///
-/// The split between `begin` and [`ConnectorCall::run`] is not cosmetic: `begin`
-/// reads only the handler's *own literal keys* and the message channel, both of
-/// which must happen before the body borrows `ctx` mutably.
-pub struct ConnectorCall<'a> {
-    /// The handler's name, as it appears in metrics, profiles and errors.
-    pub name: &'static str,
-    /// The connector this call targets, from the task's literal `connector` key.
-    pub connector: &'a str,
-    /// The channel the message arrived on — read before the body takes `ctx`
-    /// mutably, which is why it is owned.
-    pub channel: String,
-    /// Where the handler's result is written, defaulting to `data`. Owned
-    /// because a computed destination is produced, not borrowed.
-    pub output: String,
-}
-
-impl<'a> ConnectorCall<'a> {
-    /// Read the literal prologue: the `connector` key, the `output` path, and
-    /// the message's channel.
-    ///
-    /// F58: call this **first**, ahead of any message-dependent resolution. The
-    /// handlers used to resolve `key` / `filter` / `params` against the message
-    /// before checking that a `connector` was even named, so a task missing both
-    /// reported the wrong one — the author fixed `key`, re-ran, and only then
-    /// learned about `connector`. Cheap literal checks are also the ones whose
-    /// failure is unambiguous: nothing about the message can change the answer.
-    /// Generic over the input's shape, not over `Value`: `http_call` and
-    /// `publish_kafka` take dataflow-rs's typed configs, and the prologue is
-    /// the same question for them. See
-    /// [`ConnectorInput`](super::connector_handler::ConnectorInput).
-    pub fn begin<I: super::connector_handler::ConnectorInput>(
-        name: &'static str,
-        input: &'a I,
-        ctx: &super::templated_input::Scope<'_, '_>,
-    ) -> Result<Self, DataflowError> {
-        Ok(Self {
-            name,
-            connector: input.connector(name)?,
-            channel: super::extract_channel(ctx.message()).to_string(),
-            output: input.output(name, ctx)?,
-        })
-    }
-
-    /// [`require_str_field`] with the handler name already filled in.
-    pub fn require_str<'i>(
-        &self,
-        input: &'i TemplatedInput,
-        field: &str,
-    ) -> Result<&'i str, DataflowError> {
-        require_str_field(input.raw(), field, self.name)
-    }
-
-    /// Resolve the target connector.
-    ///
-    /// Gating is *not* here: every handler applies its own through
-    /// `ConnectorHandler::gate`, because the op a call performs is often
-    /// known only after its envelope is parsed (`data_write`). This used to
-    /// take an `op` and gate for the callers that had one; nothing passed one
-    /// once `gate` existed, so the branch was dead and the doc beside it
-    /// described a split that no longer applied.
-    pub async fn resolve(
-        &self,
-        registry: &ConnectorRegistry,
-    ) -> Result<Arc<ConnectorConfig>, DataflowError> {
-        resolve_connector(registry, self.connector).await
-    }
-
-    /// Run the handler body inside the shared observability + circuit-breaker
-    /// shell ([`guarded_handler`]).
-    pub async fn run<F>(
-        &self,
-        registry: &ConnectorRegistry,
-        fut: F,
-    ) -> dataflow_rs_v3::Result<TaskOutcome>
-    where
-        F: std::future::Future<Output = dataflow_rs_v3::Result<TaskOutcome>>,
-    {
-        guarded_handler(self.name, registry, self.connector, &self.channel, fut).await
-    }
-}
-
-/// [`observed_handler_named`] plus the circuit breaker (F6).
-///
-/// The breaker used to wrap exactly one of the nine egress paths — `http_call`.
-/// `db_read`, `db_write`, `data_query`, `data_write`, `mongo_read`,
-/// `cache_read`, `cache_write` and `publish_kafka` reached their pools
-/// directly, so `[engine.circuit_breaker]` read as global resilience while a
-/// hung Postgres or Redis pinned every worker.
-///
-/// **Only retryable failures trip it.** That distinction is what makes this
-/// safe to apply to a database: a query the backend *rejected* — a syntax
-/// error, a constraint violation, a row-cap breach — says nothing about the
-/// dependency's health, and counting it would let one bad workflow trip the
-/// breaker on a perfectly healthy database and take down every other channel
-/// using it. F42's taxonomy is what makes "retryable" mean "the dependency is
-/// in trouble" rather than "something went wrong".
-///
-/// A no-op when `engine.circuit_breaker.enabled` is false (the default), which
-/// leaves the observability in [`observed_handler_named`] unconditional.
-pub async fn guarded_handler<F>(
-    fn_name: &'static str,
-    registry: &ConnectorRegistry,
-    connector: &str,
-    channel: &str,
-    fut: F,
-) -> dataflow_rs_v3::Result<TaskOutcome>
-where
-    F: std::future::Future<Output = dataflow_rs_v3::Result<TaskOutcome>>,
-{
-    if !registry.circuit_breaker_enabled() {
-        return observed_handler_named(fn_name, connector, channel, fut).await;
-    }
-
-    // The registry composes the same `channel:connector` key shape as the
-    // pre-existing `http_call` path, so an operator's keys keep meaning what
-    // they meant; it also keeps the two parts for pruning on delete/archive.
-    let breaker = registry.get_or_create_breaker(channel, connector).await;
-    if !breaker.check() {
-        crate::metrics::record_circuit_breaker_rejection(connector, channel);
-        return Err(crate::errors::circuit_open_dataflow_error(
-            connector, channel,
-        ));
-    }
-
-    let result = observed_handler_named(fn_name, connector, channel, fut).await;
-    match &result {
-        Ok(_) => breaker.record_success(),
-        Err(e) if e.retryable() => {
-            if breaker.record_failure() {
-                tracing::warn!(
-                    connector = connector,
-                    channel = channel,
-                    "Circuit breaker tripped"
-                );
-                crate::metrics::record_circuit_breaker_trip(connector, channel);
-            }
-        }
-        // A failure the caller caused is not evidence about the dependency.
-        Err(_) => {}
-    }
-    result
-}
-
-/// The profile sample plus the connector request/latency metrics (F40) — the
-/// inner layer of the shell, reached through [`guarded_handler`].
-///
-/// `connector_requests_total` and `connector_request_duration_seconds` used to
-/// be emitted from exactly one place — inside the circuit breaker — which
-/// `http_call` reaches only when `engine.circuit_breaker.enabled` is true. That
-/// defaults to **false**, so a default install emitted **zero** connector-level
-/// counts or latencies for *any* of the ten handlers: every external dependency
-/// was dark in Prometheus until an operator flipped an unrelated resilience
-/// flag.
-///
-/// Observability is not conditional on resilience config, so every connector
-/// handler reaches this unconditionally; the breaker stays an inner, optional
-/// layer above it.
-///
-/// `channel` must be read from the message *before* the handler body takes
-/// `ctx` mutably.
-pub async fn observed_handler_named<F>(
-    fn_name: &'static str,
-    connector: &str,
-    channel: &str,
-    fut: F,
-) -> dataflow_rs_v3::Result<TaskOutcome>
-where
-    F: std::future::Future<Output = dataflow_rs_v3::Result<TaskOutcome>>,
-{
-    let start = std::time::Instant::now();
-    let result = crate::engine::profile::record(fn_name, Some(connector), fut).await;
-    let status = if result.is_ok() { "ok" } else { "error" };
-    crate::metrics::record_connector_request(connector, channel, status);
-    crate::metrics::record_connector_duration(connector, channel, start.elapsed().as_secs_f64());
-    result
-}
-
-/// Where a handler's result is written, resolved against the message.
-///
-/// The `output` field is JSONLogic like the rest, so a task can fan its results
-/// out by message content. A destination is a *path*, so the result is coerced
-/// with the same plain-string rule a path gets everywhere else: a string yields
-/// its contents, anything else its compact JSON form — which is nonsense as a
-/// path and is refused rather than written to.
-///
-/// # Errors
-///
-/// [`DataflowError`] when the expression fails, or resolves to something that
-/// cannot be a path.
-pub fn resolve_output_path(
-    input: &TemplatedInput,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<String, DataflowError> {
-    match input.value_of("output", handler_name, ctx) {
-        None => Ok("data".to_string()),
-        Some(value) => match value? {
-            Value::Null => Ok("data".to_string()),
-            Value::String(path) if !path.is_empty() => Ok(path),
-            other => Err(DataflowError::Validation(format!(
-                "'output' must resolve to a non-empty dotted path, got {}",
-                json_type_name(&other)
-            ))),
-        },
-    }
+    to_exec_error(format!("Elasticsearch write failed ({status}): {preview}"))
 }
 
 /// The backend was reached and the operation failed.
@@ -499,7 +272,7 @@ pub enum QueryFailure {
     /// the operator-only `detail` alone, never a caller.
     Integrity(crate::errors::IntegrityKind, String),
     /// The operation classified the failure itself and handed back a
-    /// finished [`DataflowError`].
+    /// finished [`HandlerError`].
     ///
     /// Some operations are not one driver call: `data_write`'s MongoDB branch
     /// decides between a partial-bulk 207, a duplicate-key 409 and a plain
@@ -509,12 +282,12 @@ pub enum QueryFailure {
     /// [`Self::Backend`] — so the classification was built and then discarded
     /// one line later, and the caller got a double-prefixed message with the
     /// wrong status. Passing the error through is the whole variant.
-    Classified(DataflowError),
+    Classified(HandlerError),
 }
 
 /// An error that already knows what it is keeps its own classification.
-impl From<DataflowError> for QueryFailure {
-    fn from(e: DataflowError) -> Self {
+impl From<HandlerError> for QueryFailure {
+    fn from(e: HandlerError) -> Self {
         Self::Classified(e)
     }
 }
@@ -570,18 +343,6 @@ impl std::fmt::Display for QueryFailure {
     }
 }
 
-/// Extracts a required string field from a JSON value, returning a validation
-/// error that names the handler and field on failure.
-pub fn require_str_field<'a>(
-    input: &'a Value,
-    field: &str,
-    handler_name: &str,
-) -> Result<&'a str, DataflowError> {
-    input.get(field).and_then(|v| v.as_str()).ok_or_else(|| {
-        DataflowError::Validation(format!("{handler_name} requires '{field}' field"))
-    })
-}
-
 /// A connector targets MongoDB when its connection string uses a `mongodb`
 /// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
 pub use crate::connector::is_mongo_url as is_mongo;
@@ -596,12 +357,15 @@ pub fn reject_mongo_connector(
     function: &str,
     connector_name: &str,
     db_config: &crate::connector::DbConnectorConfig,
-) -> Result<(), DataflowError> {
+) -> Result<(), HandlerError> {
     if is_mongo(&db_config.connection_string) {
-        return Err(DataflowError::Validation(format!(
-            "{function} requires a SQL connector, but '{connector_name}' is a MongoDB \
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!(
+                "{function} requires a SQL connector, but '{connector_name}' is a MongoDB \
              connector — use mongo_read or data_query for MongoDB"
-        )));
+            ),
+        ));
     }
     Ok(())
 }
@@ -611,10 +375,11 @@ pub fn reject_mongo_connector(
 pub async fn resolve_connector(
     registry: &ConnectorRegistry,
     name: &str,
-) -> Result<Arc<ConnectorConfig>, DataflowError> {
-    registry.get(name).await.ok_or_else(|| {
-        DataflowError::function_execution(format!("Connector '{name}' not found"), None)
-    })
+) -> Result<Arc<ConnectorConfig>, HandlerError> {
+    registry
+        .get(name)
+        .await
+        .ok_or_else(|| to_exec_error(format!("Connector '{name}' not found")))
 }
 
 /// Borrow the typed config a handler needs, or say which type the connector
@@ -635,210 +400,9 @@ pub async fn resolve_connector(
 pub fn require_connector<'a, K: ConnectorTarget>(
     config: &'a ConnectorConfig,
     name: &str,
-) -> Result<&'a K::Config, DataflowError> {
-    K::extract(config).ok_or_else(|| {
-        crate::errors::connector_detail_error(format!("Connector '{name}' is not {}", K::noun()))
-    })
-}
-
-/// Writes a value at `output_path` in the message context via `TaskContext::set_json`,
-/// which auto-records a `Change` on the audit trail when `capture_changes` is on.
-pub fn apply_output(ctx: &mut TaskContext<'_>, output_path: &str, new_value: Value) {
-    ctx.set_json(output_path, &new_value);
-}
-
-/// Fold `{"var": ..}` nodes in a workflow-authored input against the message
-/// context. This is the single convention every connector handler uses to read
-/// request data.
-///
-/// dataflow-rs precompiles a task's `input` once at engine build, so a handler
-/// receives the literal workflow JSON rather than anything evaluated per
-/// message. Handlers that need message data must therefore resolve it
-/// themselves.
-///
-/// **This is now the minority path.** A field the registry marks
-/// `template_at` is a real compiled expression — see
-/// [`TemplatedInput`] — and this fold
-/// is what the document-shaped fields keep, because evaluating them would
-/// strip a `$` from every key of a MongoDB operator or an extended-JSON
-/// wrapper.
-///
-/// * `{"var": "data.id"}` → the value at that dot-path over the unified
-///   `{data, metadata, temp_data}` context, or `null` when it does not resolve.
-/// * `{"var": ["data.id", <default>]}` → the same, falling back to `<default>`
-///   when the path is absent (JSONLogic's two-argument `var` form).
-/// * Objects and arrays are walked recursively, so a `{"var": ..}` node is
-///   folded wherever it appears — including inside a positional bind-parameter
-///   array or a nested filter document.
-/// * Every other value is a literal and is cloned unchanged.
-///
-/// Values pulled out of the message are **not** re-scanned, so request data can
-/// never inject a `{"var": ..}` node of its own.
-pub fn resolve_value(value: &Value, ctx: &TaskContext<'_>) -> Value {
-    match value {
-        Value::Object(o) => {
-            if o.len() == 1
-                && let Some(spec) = o.get("var")
-            {
-                return resolve_var(spec, ctx);
-            }
-            Value::Object(
-                o.iter()
-                    .map(|(k, v)| (k.clone(), resolve_value(v, ctx)))
-                    .collect(),
-            )
-        }
-        Value::Array(a) => Value::Array(a.iter().map(|v| resolve_value(v, ctx)).collect()),
-        other => other.clone(),
-    }
-}
-
-/// Look up the payload of a `{"var": ..}` node. Accepts the string form
-/// (`"data.id"`) and the JSONLogic array form (`["data.id", <default>]`).
-fn resolve_var(spec: &Value, ctx: &TaskContext<'_>) -> Value {
-    let (path, default) = match spec {
-        Value::String(p) => (p.as_str(), Value::Null),
-        Value::Array(a) => match a.first().and_then(|v| v.as_str()) {
-            Some(p) => (p, a.get(1).cloned().unwrap_or(Value::Null)),
-            None => return Value::Null,
-        },
-        _ => return Value::Null,
-    };
-    ctx.get(path).map(Value::from).unwrap_or(default)
-}
-
-/// Fold `{"var": ..}` in one input field — but only where the function's own
-/// schema says that field folds.
-///
-/// §3.3: `FieldSchema::resolvable` used to be a *second* declaration of
-/// something the handler decided for itself by calling [`resolve_value`] or
-/// not. Two hand-maintained lists of the same fact, and three surfaces reading
-/// the wrong one when they disagreed: `validation::unresolvable_logic_warnings`
-/// advises against an expression in a field it believes literal, `stub.rs`
-/// folds exactly the declared set when `dry-run` executes a workflow offline,
-/// and `analysis::operators` decides what a clippy rule can see. A handler
-/// that folded an undeclared field made `dry-run` and production disagree
-/// about the same task.
-///
-/// So the table decides and the handler asks. A field the schema does not
-/// declare `resolvable` is passed through as the literal it was authored as,
-/// whichever helper is doing the reading.
-pub fn resolve_declared_field(
-    function: &str,
-    field: &str,
-    raw: &Value,
-    ctx: &TaskContext<'_>,
-) -> Value {
-    if super::registry::FunctionRegistry::builtin().is_resolvable_field(function, field) {
-        resolve_value(raw, ctx)
-    } else {
-        raw.clone()
-    }
-}
-
-/// Resolve a `params` object into concrete values for the query/write dialects.
-///
-/// Thin wrapper over [`resolve_value`] that requires the result to be an
-/// object. Shared by `data_query` and `data_write`, which fold the returned map
-/// into the `{"param": ..}` nodes of a filter before translation.
-pub fn resolve_params(
-    input: &TemplatedInput,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Map<String, Value> {
-    match input.value_of("params", handler_name, ctx) {
-        Some(Ok(Value::Object(map))) => map,
-        _ => Map::new(),
-    }
-}
-
-/// Resolve a required input field and coerce the result to a string.
-///
-/// Scalars stringify; `null`, objects, and arrays are rejected so an
-/// unresolvable `{"var": ..}` surfaces as an error instead of silently becoming
-/// the literal key `"null"`.
-pub fn resolve_required_str(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<String, DataflowError> {
-    let Some(value) = input.value_of(field, handler_name, ctx) else {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} requires '{field}' field"
-        )));
-    };
-    scalar_to_key(value?).map_err(|other| {
-        DataflowError::Validation(format!(
-            "{handler_name} '{field}' must resolve to a string or number, got {}",
-            json_type_name(&other)
-        ))
-    })
-}
-
-/// One key from a resolved value: a string as itself, a number or bool
-/// spelled out. Anything else is handed back for the caller's error.
-fn scalar_to_key(value: Value) -> Result<String, Value> {
-    match value {
-        Value::String(s) => Ok(s),
-        Value::Number(n) => Ok(n.to_string()),
-        Value::Bool(b) => Ok(b.to_string()),
-        other => Err(other),
-    }
-}
-
-/// Whether the task declares an `output`. For the handlers whose result is
-/// recorded only where asked (`cache_delete`, `cache_incr`,
-/// `cache_invalidate`): the connector default of `data` would otherwise
-/// overwrite the message with a count.
-pub fn output_declared(input: &TemplatedInput) -> bool {
-    input.get("output").is_some_and(|v| !v.is_null())
-}
-
-/// Resolve a field that names several keys — `cache_read.keys`,
-/// `cache_delete.keys` — to strings, in order.
-///
-/// The field is one expression, so it may be an array whose elements are
-/// expressions (`[{"cat": ["gen:", {"var": "data.game"}]}, "gen:ladder"]`) or a
-/// single expression that evaluates to an array. Each element converts the way
-/// [`resolve_required_str`] converts one key, and an element that is `null` or
-/// a document is an error rather than a key spelled `"null"`. `max` bounds one
-/// call, so a message cannot turn one task into an unbounded round trip.
-pub fn resolve_required_str_list(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-    max: usize,
-) -> Result<Vec<String>, DataflowError> {
-    let Some(value) = input.value_of(field, handler_name, ctx) else {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} requires '{field}' field"
-        )));
-    };
-    let Value::Array(items) = value? else {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} '{field}' must resolve to an array of keys"
-        )));
-    };
-    if items.len() > max {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} '{field}' resolved to {} keys; at most {max} are allowed in one call",
-            items.len()
-        )));
-    }
-    items
-        .into_iter()
-        .enumerate()
-        .map(|(i, item)| {
-            scalar_to_key(item).map_err(|other| {
-                DataflowError::Validation(format!(
-                    "{handler_name} '{field}[{i}]' must resolve to a string or number, got {}",
-                    json_type_name(&other)
-                ))
-            })
-        })
-        .collect()
+) -> Result<&'a K::Config, HandlerError> {
+    K::extract(config)
+        .ok_or_else(|| connector_detail(format!("Connector '{name}' is not {}", K::noun())))
 }
 
 /// `"900"`-less duration spelling: `<n>` followed by one of `s m h d`.
@@ -861,186 +425,6 @@ pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
     })?;
     n.checked_mul(multiplier)
         .ok_or_else(|| format!("'{s}' overflows"))
-}
-
-/// Seconds from a duration field: integer seconds or a
-/// [`parse_duration_secs`] string, either possibly computed.
-/// Bounds stay with the caller — they differ per field.
-///
-/// `None` when the task does not set the field, so a caller with a default
-/// applies it rather than being handed one.
-pub fn resolve_duration_secs(
-    input: &TemplatedInput,
-    ctx: &(impl FieldSource + ?Sized),
-    handler_name: &str,
-    field: &str,
-) -> Result<Option<u64>, DataflowError> {
-    let Some(value) = input.value_of(field, handler_name, ctx) else {
-        return Ok(None);
-    };
-    match value? {
-        // An expression whose path is absent resolves to null, which is the
-        // same statement as "the task did not set this" — so the caller's
-        // default applies rather than a type error about a field nobody wrote.
-        Value::Null => Ok(None),
-        Value::Number(n) => n
-            .as_u64()
-            .ok_or_else(|| {
-                DataflowError::Validation(format!(
-                    "{handler_name}: '{field}' must be a positive integer"
-                ))
-            })
-            .map(Some),
-        Value::String(s) => parse_duration_secs(&s)
-            .map_err(|e| DataflowError::Validation(format!("{handler_name}: '{field}': {e}")))
-            .map(Some),
-        _ => Err(DataflowError::Validation(format!(
-            "{handler_name}: '{field}' must be seconds (integer) or a duration like \"24h\""
-        ))),
-    }
-}
-
-/// Resolve an optional input field to a string: absent, null, or resolving to
-/// null → `None`; a resolved non-string is an error naming the field.
-pub fn resolve_optional_str(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<Option<String>, DataflowError> {
-    match input.value_of(field, handler_name, ctx) {
-        None => Ok(None),
-        Some(value) => match value? {
-            Value::String(s) => Ok(Some(s)),
-            Value::Null => Ok(None),
-            _ => Err(DataflowError::Validation(format!(
-                "{handler_name}: '{field}' must resolve to a string"
-            ))),
-        },
-    }
-}
-
-/// Resolve a boolean field, defaulting to `default` when the task omits it or
-/// it resolves to null.
-///
-/// # Errors
-///
-/// [`DataflowError`] when the field resolves to anything but a boolean. A
-/// switch that silently reads `false` because its expression produced a string
-/// is the kind of default worth refusing.
-pub fn resolve_bool_or(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-    default: bool,
-) -> Result<bool, DataflowError> {
-    match input.value_of(field, handler_name, ctx) {
-        None => Ok(default),
-        Some(value) => match value? {
-            Value::Null => Ok(default),
-            Value::Bool(b) => Ok(b),
-            other => Err(DataflowError::Validation(format!(
-                "{handler_name} '{field}' must resolve to a boolean, got {}",
-                json_type_name(&other)
-            ))),
-        },
-    }
-}
-
-/// [`resolve_bool_or`] with `false` as the default.
-///
-/// # Errors
-///
-/// As [`resolve_bool_or`].
-pub fn resolve_bool(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<bool, DataflowError> {
-    resolve_bool_or(input, field, handler_name, ctx, false)
-}
-
-/// Resolve an optional unsigned-integer field. Absent or null yields `None`;
-/// anything that is not a non-negative integer is an error naming the field.
-///
-/// # Errors
-///
-/// [`DataflowError`] when the field resolves to a non-integer.
-pub fn resolve_optional_u64(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<Option<u64>, DataflowError> {
-    match input.value_of(field, handler_name, ctx) {
-        None => Ok(None),
-        Some(value) => match value? {
-            Value::Null => Ok(None),
-            Value::Number(n) => n.as_u64().map(Some).ok_or_else(|| {
-                DataflowError::Validation(format!(
-                    "{handler_name} '{field}' must resolve to a non-negative integer"
-                ))
-            }),
-            other => Err(DataflowError::Validation(format!(
-                "{handler_name} '{field}' must resolve to a number, got {}",
-                json_type_name(&other)
-            ))),
-        },
-    }
-}
-
-/// Resolve an optional signed-integer field — [`resolve_optional_u64`]'s
-/// twin, for a value that may be negative (`cache_incr.by`).
-///
-/// # Errors
-///
-/// [`DataflowError`] when the field resolves to a non-integer.
-pub fn resolve_optional_i64(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<Option<i64>, DataflowError> {
-    match input.value_of(field, handler_name, ctx) {
-        None => Ok(None),
-        Some(value) => match value? {
-            Value::Null => Ok(None),
-            Value::Number(n) => n.as_i64().map(Some).ok_or_else(|| {
-                DataflowError::Validation(format!(
-                    "{handler_name} '{field}' must resolve to a whole number that fits in 64 bits"
-                ))
-            }),
-            other => Err(DataflowError::Validation(format!(
-                "{handler_name} '{field}' must resolve to a number, got {}",
-                json_type_name(&other)
-            ))),
-        },
-    }
-}
-
-/// Resolve the positional `params` array bound to a raw-SQL statement.
-///
-/// Absent or null yields no binds. Anything that resolves to a non-array is an
-/// error rather than being dropped, which would leave the statement's
-/// placeholders unbound.
-pub fn resolve_bind_params(
-    input: &TemplatedInput,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<Vec<Value>, DataflowError> {
-    match input.value_of("params", handler_name, ctx) {
-        None => Ok(Vec::new()),
-        Some(value) => match value? {
-            Value::Null => Ok(Vec::new()),
-            Value::Array(a) => Ok(a),
-            other => Err(DataflowError::Validation(format!(
-                "{handler_name} 'params' must resolve to an array of bind values, got {}",
-                json_type_name(&other)
-            ))),
-        },
-    }
 }
 
 /// Name a JSON value's type for error messages.
@@ -1070,79 +454,15 @@ pub fn json_type_name(v: &Value) -> &'static str {
 pub fn encode_failure(
     function: &str,
     e: crate::connector::sql_encode::EncodeError,
-) -> dataflow_rs_v3::DataflowError {
-    dataflow_rs_v3::DataflowError::Validation(e.message(function))
+) -> HandlerError {
+    HandlerError::new(ErrorClass::CallerInput, e.message(function))
 }
 
 pub fn decode_failure(
     function: &str,
     e: crate::connector::sql_decode::DecodeError,
-) -> dataflow_rs_v3::DataflowError {
-    dataflow_rs_v3::DataflowError::Validation(e.message(function))
-}
-
-/// Read the `numeric_as` input: how an arbitrary-precision decimal is rendered.
-///
-/// Absent is [`crate::connector::sql_decode::NumericAs::Number`], which is what an
-/// author reaching for
-/// `SELECT price` expects and is lossy beyond 2^53 or on most decimal
-/// fractions. `"string"` is the deliberate opt-out for money and identifier
-/// columns, where the rounding would be a correctness bug the caller cannot
-/// see.
-pub fn resolve_numeric_as(
-    input: &TemplatedInput,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<crate::connector::sql_decode::NumericAs, DataflowError> {
-    use crate::connector::sql_decode::NumericAs;
-    match resolve_optional_str(input, "numeric_as", handler_name, ctx)? {
-        None => Ok(NumericAs::default()),
-        Some(s) => NumericAs::parse(&s).ok_or_else(|| {
-            DataflowError::Validation(format!(
-                "{handler_name}: 'numeric_as' must be one of {} (got '{s}')",
-                NumericAs::VALUES
-            ))
-        }),
-    }
-}
-
-/// Read the `binary_as` input: how a binary column is rendered.
-///
-/// Absent is [`crate::connector::sql_decode::BinaryAs::Auto`], the historical
-/// rule — text when the bytes are valid UTF-8, hex when they are not. That is
-/// the one setting whose output *shape* depends on the value rather than on
-/// the task, so a column that is genuinely binary should name an encoding.
-pub fn resolve_binary_as(
-    input: &TemplatedInput,
-    handler_name: &str,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<crate::connector::sql_decode::BinaryAs, DataflowError> {
-    use crate::connector::sql_decode::BinaryAs;
-    match resolve_optional_str(input, "binary_as", handler_name, ctx)? {
-        None => Ok(BinaryAs::default()),
-        Some(s) => BinaryAs::parse(&s).ok_or_else(|| {
-            DataflowError::Validation(format!(
-                "{handler_name}: 'binary_as' must be one of {} (got '{s}')",
-                BinaryAs::VALUES
-            ))
-        }),
-    }
-}
-
-/// Both rendering choices a result set carries, read together.
-///
-/// # Errors
-///
-/// As [`resolve_numeric_as`] and [`resolve_binary_as`].
-pub fn resolve_row_format(
-    input: &TemplatedInput,
-    handler_name: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<crate::connector::sql_decode::RowFormat, DataflowError> {
-    Ok(crate::connector::sql_decode::RowFormat::new(
-        resolve_numeric_as(input, handler_name, ctx)?,
-        resolve_binary_as(input, handler_name, ctx)?,
-    ))
+) -> HandlerError {
+    HandlerError::new(ErrorClass::CallerInput, e.message(function))
 }
 
 /// The query timeout a connector that declares no `query_timeout_ms` gets.
@@ -1194,7 +514,7 @@ impl QueryBudget {
     }
 
     /// Run one leg of the operation against the shared deadline.
-    pub async fn run<F, T, E>(&self, handler_name: &str, operation: F) -> Result<T, DataflowError>
+    pub async fn run<F, T, E>(&self, handler_name: &str, operation: F) -> Result<T, HandlerError>
     where
         F: std::future::Future<Output = Result<T, E>>,
         E: Into<QueryFailure>,
@@ -1217,18 +537,17 @@ impl QueryBudget {
                 // a class; which `DataflowError` that becomes is decided once.
                 match e.into() {
                     QueryFailure::Limit(detail) => to_limit_error(detail),
-                    // Built as a `Service` error rather than through an
-                    // `ErrorClass`, like the breaker and channel refusals: the
-                    // class picks a `DataflowError` *variant*, and no variant
-                    // carries a code of its own. `HandlerError::from` keeps it
-                    // as `original`, so the `DataflowError::from` below hands
-                    // back exactly this error — the documented identity.
+                    // Built as a service error rather than through an
+                    // `ErrorClass`: no class carries a code of its own, and
+                    // the kind is what a workflow branches on. `HandlerError`
+                    // keeps it as its original, so either engine gets back
+                    // exactly this error.
                     //
                     // The handler name goes on the operator-only side; what
                     // the caller sees is the generic sentence the builder
                     // picks by kind.
                     QueryFailure::Integrity(integrity, text) => {
-                        HandlerError::from(crate::errors::integrity_dataflow_error(
+                        HandlerError::from(crate::errors::service::integrity(
                             integrity,
                             format!("{handler_name} query failed: {text}"),
                         ))
@@ -1239,10 +558,9 @@ impl QueryBudget {
                     // Already classified by the operation, which knew more than
                     // this wrapper can. Re-wrapping would only re-prefix a
                     // message that already names its own failure.
-                    QueryFailure::Classified(e) => HandlerError::from(e),
+                    QueryFailure::Classified(e) => e,
                 }
             })
-            .map_err(DataflowError::from)
     }
 }
 
@@ -1262,7 +580,7 @@ pub async fn acquire_conn<DB>(
     budget: &QueryBudget,
     handler_name: &str,
     pool: &sqlx::Pool<DB>,
-) -> Result<sqlx::pool::PoolConnection<DB>, DataflowError>
+) -> Result<sqlx::pool::PoolConnection<DB>, HandlerError>
 where
     DB: sqlx::Database,
 {
@@ -1270,20 +588,20 @@ where
         .run(handler_name, async {
             pool.acquire()
                 .await
-                .map_err(|e| QueryFailure::Classified(to_connect_error(e).into()))
+                .map_err(|e| QueryFailure::Classified(to_connect_error(e)))
         })
         .await
 }
 
-/// Execute an async operation with a timeout, mapping errors to
-/// `DataflowError::Timeout` and `DataflowError::FunctionExecution`
-/// respectively.  Consolidates the repeated timeout + error-mapping pattern
+/// Execute an async operation with a timeout, classifying a timeout as
+/// [`ErrorClass::Timeout`] and a failure as [`ErrorClass::Backend`].
+/// Consolidates the repeated timeout + error-mapping pattern
 /// in the SQL handler functions. A single-round-trip [`QueryBudget`].
 pub async fn timed_query<F, T, E>(
     timeout_ms: Option<u64>,
     handler_name: &str,
     operation: F,
-) -> Result<T, DataflowError>
+) -> Result<T, HandlerError>
 where
     F: std::future::Future<Output = Result<T, E>>,
     E: Into<QueryFailure>,
@@ -1378,24 +696,24 @@ mod tests {
 mod error_taxonomy_tests {
     use super::*;
 
+    type DataflowError = dataflow_rs::Error;
+
     /// F42: a dead Postgres/Redis/Mongo used to be a **non-retryable** 500
     /// while the identical HTTP outage was a retryable `Io`, so DLQ retry
-    /// policy diverged by backend for no principled reason. dataflow-rs
-    /// classifies `FunctionExecution { source: None }` as not retryable and
-    /// `Io` as retryable.
+    /// policy diverged by backend for no principled reason.
     ///
-    /// The constructors now name a class rather than a variant, and
-    /// `HandlerError`'s `Into<DataflowError>` picks the variant. Asserted
+    /// The constructors name a class, and `HandlerError`'s conversion picks
+    /// the code and the retryability. Asserted
     /// end-to-end — through the conversion — because the retryability of the
     /// error that actually reaches the retry loop is the property that matters.
     #[test]
     fn a_failure_to_connect_is_retryable_but_a_failed_query_is_not() {
         assert!(
-            DataflowError::from(to_connect_error("connection refused")).retryable(),
+            DataflowError::from(to_connect_error("connection refused")).is_retryable(),
             "an unreachable backend must be retryable, like the HTTP path"
         );
         assert!(
-            !DataflowError::from(to_exec_error("syntax error at or near \"SELCT\"")).retryable(),
+            !DataflowError::from(to_exec_error("syntax error at or near \"SELCT\"")).is_retryable(),
             "a query the backend rejected is not worth retrying"
         );
     }
@@ -1407,11 +725,8 @@ mod error_taxonomy_tests {
         let err = DataflowError::from(to_limit_error(
             "result exceeds query.max_limit — add a LIMIT",
         ));
-        assert!(
-            matches!(err, DataflowError::Validation(_)),
-            "expected Validation, got {err:?}"
-        );
-        assert!(!err.retryable(), "a limit does not fix itself on retry");
+        assert_eq!(err.code(), "VALIDATION_ERROR", "{err:?}");
+        assert!(!err.is_retryable(), "a limit does not fix itself on retry");
     }
 
     /// A limit the operation classified reaches the caller as a 400 with its
@@ -1424,16 +739,20 @@ mod error_taxonomy_tests {
     /// lose it.
     #[tokio::test]
     async fn timed_query_reports_a_classified_limit_as_validation() {
-        let err = timed_query(Some(1_000), "db_read", async {
-            Err::<(), _>(QueryFailure::Limit(
-                "too many rows — add a LIMIT".to_string(),
-            ))
-        })
-        .await
-        .expect_err("the operation failed");
-        assert!(
-            matches!(err, DataflowError::Validation(ref m) if m == "too many rows — add a LIMIT"),
-            "expected the message intact under Validation, got {err:?}"
+        let err = DataflowError::from(
+            timed_query(Some(1_000), "db_read", async {
+                Err::<(), _>(QueryFailure::Limit(
+                    "too many rows — add a LIMIT".to_string(),
+                ))
+            })
+            .await
+            .expect_err("the operation failed"),
+        );
+        assert_eq!(err.code(), "VALIDATION_ERROR", "{err:?}");
+        assert_eq!(
+            err.message(),
+            "Validation error: too many rows — add a LIMIT",
+            "the message intact under its label"
         );
     }
 
@@ -1441,13 +760,16 @@ mod error_taxonomy_tests {
     /// string-prefix scheme could not tell the difference.
     #[tokio::test]
     async fn a_backend_failure_is_never_reclassified_by_its_text() {
-        let err = timed_query(Some(1_000), "db_read", async {
-            Err::<(), String>("orion.limit: not a limit, just text".to_string())
-        })
-        .await
-        .expect_err("the operation failed");
-        assert!(
-            matches!(err, DataflowError::FunctionExecution { .. }),
+        let err = DataflowError::from(
+            timed_query(Some(1_000), "db_read", async {
+                Err::<(), String>("orion.limit: not a limit, just text".to_string())
+            })
+            .await
+            .expect_err("the operation failed"),
+        );
+        assert_eq!(
+            err.code(),
+            "FUNCTION_ERROR",
             "text cannot promote a backend failure to a limit: {err:?}"
         );
     }
@@ -1481,10 +803,12 @@ mod error_taxonomy_tests {
             "the run's deadline is not the budget's to enforce"
         );
 
-        let err = QueryBudget::within(Some(10), Some(late))
-            .run("db_read", std::future::pending::<Result<(), String>>())
-            .await
-            .expect_err("the query timeout ends the leg");
+        let err = DataflowError::from(
+            QueryBudget::within(Some(10), Some(late))
+                .run("db_read", std::future::pending::<Result<(), String>>())
+                .await
+                .expect_err("the query timeout ends the leg"),
+        );
         assert_eq!(
             err.to_string(),
             "Timeout error: db_read query timed out after 10ms"
@@ -1494,15 +818,14 @@ mod error_taxonomy_tests {
     /// An unmarked failure keeps the old behaviour: a 500 naming the handler.
     #[tokio::test]
     async fn timed_query_leaves_an_ordinary_failure_as_execution() {
-        let err = timed_query(Some(1_000), "db_read", async {
-            Err::<(), String>("connection reset".to_string())
-        })
-        .await
-        .expect_err("the operation failed");
-        assert!(
-            matches!(err, DataflowError::FunctionExecution { .. }),
-            "expected FunctionExecution, got {err:?}"
+        let err = DataflowError::from(
+            timed_query(Some(1_000), "db_read", async {
+                Err::<(), String>("connection reset".to_string())
+            })
+            .await
+            .expect_err("the operation failed"),
         );
+        assert_eq!(err.code(), "FUNCTION_ERROR", "{err:?}");
     }
 
     /// An `sqlx::Error` that never reached a database has no classification to
@@ -1520,31 +843,31 @@ mod error_taxonomy_tests {
         );
     }
 
-    /// The classification survives the trip to a `DataflowError` and back —
+    /// The classification survives the trip to an engine error and back —
     /// the property `QueryBudget::run` depends on, since it converts through
     /// `HandlerError` on the way out.
     #[test]
     fn an_integrity_failure_keeps_its_kind_through_the_conversion() {
         use crate::errors::IntegrityKind;
 
-        let err: DataflowError = crate::errors::integrity_dataflow_error(
+        let err: DataflowError = crate::errors::service::integrity(
             IntegrityKind::Unique,
             "db_write query failed: UNIQUE constraint failed: models.id",
         );
         let back: DataflowError = HandlerError::from(err).into();
 
         assert_eq!(
-            back.kind(),
-            Some(crate::errors::kind::INTEGRITY_UNIQUE),
-            "the service kind is what a workflow branches on: {back:?}"
+            back.code(),
+            crate::errors::kind::INTEGRITY_UNIQUE,
+            "the service code is what a workflow branches on: {back:?}"
         );
         assert!(
-            !back.retryable(),
+            !back.is_retryable(),
             "an integrity failure must not be retried, or the circuit breaker \
              counts it: {back:?}"
         );
         assert_eq!(
-            back.to_string(),
+            back.message(),
             "The request conflicts with an existing record",
             "Display is the caller-safe half and must not carry the driver text"
         );

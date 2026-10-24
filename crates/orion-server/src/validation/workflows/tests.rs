@@ -36,7 +36,6 @@ fn a_plugin_function_refuses_a_secret_node_in_every_field() {
         resolvable,
         secret_at: &[],
         template_at,
-        alias: None,
     };
     let registry = FunctionRegistry::builtin()
         .with_entries(vec![FunctionEntry {
@@ -44,7 +43,6 @@ fn a_plugin_function_refuses_a_secret_node_in_every_field() {
             description: String::new(),
             category: "transform".to_string(),
             source: Source::Plugin,
-            aliases: Vec::new(),
             input_fields: Some(vec![
                 field("template", &[""], false),
                 field("folded", &[], true),
@@ -807,16 +805,20 @@ mod engine_advisory_tests {
         let found = engine_advisories(&tasks);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].check, "engine.unguarded_validation");
-        assert!(found[0].message.contains("halt_on"), "{}", found[0].message);
-        assert_eq!(found[0].path, "task 'check'.halt_on");
+        assert!(
+            found[0].message.contains("on_rejection"),
+            "{}",
+            found[0].message
+        );
+        assert_eq!(found[0].path, "task 'check'.on_rejection");
     }
 
     /// The fix silences it, which is the half that keeps the advisory from
     /// being noise on every workflow that validates anything.
     #[test]
-    fn halt_on_silences_it() {
+    fn on_rejection_halt_silences_it() {
         let tasks = json!([
-            { "id": "check", "name": "Check", "halt_on": "failure",
+            { "id": "check", "name": "Check", "on_rejection": "halt",
               "function": { "name": "validation", "input": {
                 "rules": [{ "logic": { "==": [1, 2] }, "message": "no" }] } } },
             { "id": "respond", "name": "Respond", "function": { "name": "map", "input": {
@@ -838,24 +840,6 @@ mod engine_advisory_tests {
                 "mappings": [{ "path": "data.x", "logic": true }] } } }
         ]);
         assert!(engine_advisories(&tasks).is_empty());
-    }
-
-    /// `continue_on_error` is real on a task and on a workflow, which is what
-    /// makes a group the one place it looks like it should work. The engine
-    /// parses it and drops it.
-    #[test]
-    fn continue_on_error_on_a_group_is_reported() {
-        let tasks = json!([
-            { "id": "g", "name": "G", "continue_on_error": true, "tasks": [
-                { "id": "t", "name": "T", "function": { "name": "log", "input": {
-                    "message": "x" } } } ] }
-        ]);
-        let found = engine_advisories(&tasks);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].check, "engine.group_continue_on_error");
-        // A group, named as one: the engine records it in `task_id` for want
-        // of another field, and the message beside this calls it a group.
-        assert_eq!(found[0].path, "group 'g'.continue_on_error");
     }
 
     /// A workflow with neither shape reports nothing, so the two above are not

@@ -50,9 +50,9 @@ only to the engine's supported maximum depth; lint reports violations.
 completes. Use it for explicit successful exits. Use a halting `filter` when
 termination depends on a predicate evaluated as a task.
 
-`halt_on: "failure"` is the outcome axis to `terminal`'s position axis: it ends
-the workflow when *that step failed* — a status of 400 or above, which includes
-a `validation` rule that did not pass. The two compose by `or`, and a step that
+`on_rejection: "halt"` is the outcome axis to `terminal`'s position axis: it
+ends the workflow when *that step was rejected* — a `4xx`, which includes a
+`validation` rule that did not pass. The two compose by `or`, and a step that
 halts this way keeps its own status on the audit trail rather than the 299 a
 halting `filter` records. Reach for it when a check must actually stop the
 pipeline; a bare `validation` collects its messages and carries on by design.
@@ -105,9 +105,11 @@ Avoid creating your own values in the `_orion` namespace.
 
 ## Failure behavior
 
-Without an override, a task error halts the pipeline. A task-level
-`continue_on_error: true` makes that step non-fatal; workflow/group settings
-apply more broadly.
+Without an override, a task error halts the pipeline. A task's
+`on_failure: "continue"` makes that step non-fatal (`"halt"` ends the workflow
+instead). The workflow's `continue_on_error: true` ends the failing workflow
+without failing the request; its later tasks do not run. The 1.x task keys
+`halt_on` and `continue_on_error` are refused.
 
 Continued failures append bounded, sanitized records to
 `metadata._orion_errors`, including task ID, workflow ID, stable code, and

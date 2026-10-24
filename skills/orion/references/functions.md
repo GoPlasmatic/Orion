@@ -46,7 +46,7 @@ connector operation gates.
   "id": "fetch-customer",
   "name": "Fetch customer",
   "condition": true,
-  "continue_on_error": false,
+  "on_failure": "fail",
   "function": {
     "name": "data_query",
     "input": {}
@@ -60,8 +60,8 @@ Do not invent legacy `*_logic` companions when the schema says the field
 itself is expression-capable.
 
 A function's destination is usually `output`, which may itself be an
-expression in current releases. `http_call` and `channel_call` retain the
-legacy alias `response_path`; supplying both is a duplicate-field error.
+expression in current releases. The pre-1.0 spelling `response_path` is an
+unknown key.
 A computed destination makes static read/write analysis incomplete, so clippy
 will stay conservative.
 

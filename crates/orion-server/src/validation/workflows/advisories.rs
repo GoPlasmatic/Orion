@@ -4,15 +4,15 @@ use super::*;
 // Advisory: JSONLogic in a field that folds only `{"var": ..}`
 // ============================================================
 
+use dataflow_rs::program::{IssueCode, Severity, StepKind};
 use serde_json::Value;
 
 /// Every informational finding about a task array: what the engine reports and
 /// does not refuse, plus the half of the escape story only Orion can see.
 ///
-/// One pass. `check_workflow` answers all three codes at once, and the three
-/// surfaces that ask — `lint`, the definition-set check, `preflight` — each
-/// want the whole set, so asking twice built two engines and walked the
-/// workflow twice to split one answer in half.
+/// One pass. The engine's parse and its check answer every code at once, and
+/// the three surfaces that ask — `lint`, the definition-set check,
+/// `preflight` — each want the whole set.
 ///
 /// - `logic.escaped_template_key` — a `$`-prefixed key in a template position.
 ///   dataflow-rs 3.9 made the escape unconditional: one `$` comes off *every*
@@ -26,36 +26,31 @@ use serde_json::Value;
 ///   kept silent here: doubling is also how an author
 ///   *deliberately* emits a `$` key, and an author who has done the right
 ///   thing must not be left with a warning they cannot clear. This one has a
-///   second half: a custom handler's `input` is a config document to
+///   second half: a host function's `input` is a config document to
 ///   dataflow-rs, not a template — which of its fields are templates is the
-///   handler's business — so `check_workflow` skips it, and
+///   function's business — so the bare check here skips it, and
 ///   [`FunctionRegistry::template_paths`], where that business
 ///   is declared, is what closes the gap.
 /// - `engine.unguarded_validation` — a `validation` task whose failure changes
-///   nothing, because a failing rule records `400` and the executor's 4xx
-///   branch carries on; `continue_on_error` governs `5xx` and `Err` only. This
-///   is the shape that shipped a decorative CSRF check
+///   nothing, because a failing rule records `400` and its `on_rejection` is
+///   `continue`. This is the shape that shipped a decorative CSRF check
 ///   ([#308](https://github.com/GoPlasmatic/Orion/issues/308)): the check read
-///   correct, did nothing, and nothing said so. dataflow-rs 3.10 added
-///   `"halt_on": "failure"` as the fix and this code as the warning.
-/// - `engine.group_continue_on_error` — `continue_on_error` on a task *group*,
-///   which parses and is then dropped. The key is real on a task and on a
-///   workflow, which is what makes a group the one place it looks like it
-///   should work.
+///   correct, did nothing, and nothing said so. `"on_rejection": "halt"` is
+///   the fix.
 ///
 /// Every one fires on a definition that builds and runs — that is the engine's
 /// classification, not a choice made here — so what a caller does with the
 /// severity is the caller's. Two of them are advisories everywhere;
 /// `preflight` raises the escaped key to a break, because a stored workflow
 /// carrying one changes the shape of what it writes the moment the instance is
-/// upgraded. `engine::loader::screen_workflow` asks the same question on the
-/// serving side, where the job is the opposite one — not to quarantine a
-/// channel over any of them.
+/// upgraded. `engine::quarantines` asks the same question on the serving
+/// side, where the job is the opposite one — not to quarantine a channel over
+/// any of them.
 ///
-/// A bare builder: every finding here is structural, so no handler registry
-/// and no secret store changes the answer, and the other issues such a builder
-/// reports — an unregistered function, an undeclared secret — belong to checks
-/// that own them and would be reported twice with worse wording.
+/// A bare compiler: every finding here is structural, so no function registry
+/// and no secret store changes the answer, and the other issues such a
+/// compiler reports — an unregistered function, an undeclared secret — belong
+/// to checks that own them and would be reported twice with worse wording.
 pub fn engine_advisories(
     tasks: &Value,
     loop_config: Option<&Value>,
@@ -65,31 +60,23 @@ pub fn engine_advisories(
     // included: the engine reads a loop's `setup` steps and its `over` as it
     // reads the body.
     let loop_config = loop_config.filter(|l| !l.is_null());
-    let mut synthetic = serde_json::json!({
-        "id": "__shape_check__", "name": "__shape_check__",
-        "condition": true, "tasks": tasks,
-    });
-    if let Some(loop_config) = loop_config {
-        synthetic["loop"] = loop_config.clone();
-    }
-    let Ok(workflow) = dataflow_rs_v3::Workflow::from_json(&synthetic.to_string()) else {
+    let Some(issues) = engine_issues(&shape_document(tasks, loop_config)) else {
         // Unparseable tasks are reported with a better message by the schema
         // check; there is nothing to say about the shape of a document that is
         // not a workflow.
         return Vec::new();
     };
-    let issues = dataflow_rs_v3::Engine::builder().check_workflow(&workflow);
 
     // Escaped keys first, then the walk that finds the ones the engine cannot,
     // then the shape findings — the order the three callers reported these in
     // when they were two functions called one after the other.
     let mut out: Vec<EngineAdvisory> = issues
         .iter()
-        .filter(|issue| issue.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey)
-        .filter(|issue| issue.path.as_deref().is_none_or(is_accidental_escape))
+        .filter(|issue| issue.code == IssueCode::EscapedTemplateKey)
+        .filter(|issue| is_accidental_escape(&issue.path.to_string()))
         .map(|issue| EngineAdvisory {
             check: EngineAdvisory::ESCAPED_TEMPLATE_KEY,
-            path: issue.path.clone().unwrap_or_else(|| "tasks".to_string()),
+            path: issue.path.to_string(),
             message: issue.message.clone(),
         })
         .collect();
@@ -98,7 +85,7 @@ pub fn engine_advisories(
         // Only for a name the engine treats as custom: a built-in's parameters
         // were already walked, and reporting them twice would be worse than
         // not reporting them at all.
-        if dataflow_rs_v3::is_builtin_function(function) {
+        if dataflow_rs::def::BUILTIN_FUNCTIONS.contains(&function) {
             return;
         }
         if !functions.template_paths(function, field).contains(&"") {
@@ -130,43 +117,31 @@ pub fn engine_advisories(
     out.extend(issues.into_iter().filter_map(|issue| {
         // Everything else the engine calls advisory. Selected by severity
         // rather than by naming the codes, so this asks the same question
-        // `screen_workflow` asks and cannot answer it differently. The escape
-        // is already reported above, with a path of its own.
-        if issue.severity() != dataflow_rs_v3::Severity::Advisory
-            || issue.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey
-        {
+        // `engine::quarantines` asks and cannot answer it differently. The
+        // escape is already reported above, with a path of its own.
+        if issue.severity != Severity::Advisory || issue.code == IssueCode::EscapedTemplateKey {
             return None;
         }
-        // The noun rides with the code because `task_id` carries a group's
-        // id for `GROUP_CONTINUE_ON_ERROR` — the engine records a group on
-        // the same field, having nowhere else to put it. Calling that step
-        // a task contradicts the message beside it, which names the group.
-        //
         // The catch-all is the point of selecting by severity: an advisory
-        // code a later dataflow-rs adds is reported under a generic id rather
-        // than dropped for want of a specific one. `task` is the safe noun —
-        // every code but `GROUP_CONTINUE_ON_ERROR` records a task in
-        // `task_id`. Unreachable until such a code exists, so there is nothing
-        // to write a fixture against; the arm is the fixture.
-        let (check, noun) = match issue.code {
-            dataflow_rs_v3::IssueCode::UnguardedValidation => {
-                (EngineAdvisory::UNGUARDED_VALIDATION, "task")
-            }
-            dataflow_rs_v3::IssueCode::GroupContinueOnError => {
-                (EngineAdvisory::GROUP_CONTINUE_ON_ERROR, "group")
-            }
-            _ => (EngineAdvisory::UNCLASSIFIED, "task"),
+        // code with no id of its own is reported under a generic one rather
+        // than dropped for want of a specific one.
+        let check = match issue.code {
+            IssueCode::UnguardedValidation => EngineAdvisory::UNGUARDED_VALIDATION,
+            _ => EngineAdvisory::UNCLASSIFIED,
         };
-        // The engine's `path` for these two is the offending *field*
-        // (`halt_on`, `continue_on_error`), not an authored coordinate —
-        // the step is named by `task_id` instead. Joined here so one line
-        // says which step and which key, which is what the other warning
-        // reporters give and what a pipeline greps.
-        let path = match (&issue.task_id, &issue.path) {
-            (Some(id), Some(field)) => format!("{noun} '{id}'.{field}"),
-            (Some(id), None) => format!("{noun} '{id}'"),
-            (None, Some(field)) => field.clone(),
-            (None, None) => "tasks".to_string(),
+        // The step and the offending key on one line — `task 'check'.on_rejection`
+        // — which is what the other warning reporters give and what a
+        // pipeline greps. A group is named as one.
+        let noun = match issue.step_kind {
+            Some(StepKind::Group) => "group",
+            _ => "task",
+        };
+        let at = issue.path.to_string();
+        let key = at.rsplit('.').next().unwrap_or(&at);
+        let path = match issue.step_id.as_deref() {
+            Some(id) if !id.is_empty() => format!("{noun} '{id}'.{key}"),
+            _ if issue.path.is_root() => "tasks".to_string(),
+            _ => at.clone(),
         };
         Some(EngineAdvisory {
             check,
@@ -198,8 +173,6 @@ impl EngineAdvisory {
     pub const ESCAPED_TEMPLATE_KEY: &'static str = "logic.escaped_template_key";
     /// A `validation` whose failure stops nothing.
     pub const UNGUARDED_VALIDATION: &'static str = "engine.unguarded_validation";
-    /// `continue_on_error` on a group, which the engine drops.
-    pub const GROUP_CONTINUE_ON_ERROR: &'static str = "engine.group_continue_on_error";
     /// A single-key object in a template position whose key names a tensor
     /// operator (1.8), so it is evaluated as a call rather than emitted as
     /// the literal it was before the family existed.
@@ -361,7 +334,7 @@ pub(super) fn reads_the_context(value: &Value) -> bool {
 /// carrying Orion's operators, against an empty context; a constant needs no
 /// other.
 pub(super) fn evaluates_as_a_call(value: &Value) -> bool {
-    use dataflow_rs_v3::datalogic_rs as datalogic;
+    use dataflow_rs::datalogic_rs as datalogic;
     static ENGINE: std::sync::OnceLock<datalogic::Engine> = std::sync::OnceLock::new();
     let engine = ENGINE.get_or_init(|| {
         crate::engine::operators::add_to_datalogic(datalogic::Engine::builder()).build()
@@ -373,6 +346,22 @@ pub(super) fn evaluates_as_a_call(value: &Value) -> bool {
         .session()
         .eval_into::<Value, _>(&compiled, &Value::Object(Default::default()))
         .is_ok()
+}
+
+/// Every issue the engine's parse and its bare check find in `workflow`, in
+/// that order; `None` when the parse refuses it, since there is nothing to
+/// check in a document that is not a workflow.
+fn engine_issues(workflow: &Value) -> Option<Vec<dataflow_rs::Issue>> {
+    static COMPILER: std::sync::LazyLock<dataflow_rs::program::Compiler> =
+        std::sync::LazyLock::new(|| {
+            dataflow_rs::Registry::new(crate::engine::kit::test_exprs())
+                .compiler(dataflow_rs::program::CompileOptions::default())
+        });
+    let parsed = dataflow_rs::def::parse(workflow, crate::engine::parse_options());
+    let def = parsed.def?;
+    let mut issues = parsed.issues;
+    issues.extend(COMPILER.check(&def));
+    Some(issues)
 }
 
 /// Ask the engine which keys in one arbitrary value it would strip a `$` from,
@@ -396,18 +385,16 @@ pub(super) fn escaped_keys_in(value: &Value) -> Vec<(String, String)> {
             ] } }
         }],
     });
-    let Ok(workflow) = dataflow_rs_v3::Workflow::from_json(&synthetic.to_string()) else {
+    let Some(issues) = engine_issues(&synthetic) else {
         return Vec::new();
     };
-    let builder = dataflow_rs_v3::Engine::builder();
-    builder
-        .check_workflow(&workflow)
+    issues
         .into_iter()
-        .filter(|issue| issue.code == dataflow_rs_v3::IssueCode::EscapedTemplateKey)
+        .filter(|issue| issue.code == IssueCode::EscapedTemplateKey)
         .filter_map(|issue| {
-            let path = issue.path?;
-            let suffix = path.strip_prefix(PREFIX)?;
-            is_accidental_escape(&path).then(|| (suffix.to_string(), issue.message))
+            let path = issue.path.to_string();
+            let suffix = path.strip_prefix(PREFIX)?.to_string();
+            is_accidental_escape(&path).then_some((suffix, issue.message))
         })
         .collect()
 }

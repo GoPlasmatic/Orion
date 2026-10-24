@@ -44,7 +44,6 @@ async fn start_kafka() -> (testcontainers::ContainerAsync<Kafka>, String) {
 /// guards are configured for these consumer tests.
 fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     Arc::new(orion::runtime::RuntimeHandle::new(
-        Arc::new(dataflow_rs_v3::Engine::builder().build().unwrap()),
         Arc::new(orion::channel::ChannelSnapshot::empty()),
         orion::engine::FunctionRegistry::builtin().clone(),
     ))
@@ -1390,8 +1389,8 @@ async fn publish_kafka_publishes_to_the_connectors_brokers() {
                         "input": {
                             "connector": "t3-kafka",
                             "topic": topic,
-                            "key_logic": { "var": "data.input.order_id" },
-                            "value_logic": { "var": "data.input" }
+                            "key": { "var": "data.input.order_id" },
+                            "value": { "var": "data.input" }
                         }
                     }
                 }
@@ -1449,7 +1448,7 @@ async fn publish_kafka_publishes_to_the_connectors_brokers() {
             Err(_) => {}
         }
     };
-    assert_eq!(key.as_deref(), Some("ORD-1"), "key_logic must be applied");
+    assert_eq!(key.as_deref(), Some("ORD-1"), "key must be applied");
     assert_eq!(payload["order_id"], "ORD-1");
     assert_eq!(payload["amount"], 42);
 }
@@ -1490,7 +1489,7 @@ async fn publish_kafka_rejects_a_non_kafka_connector() {
             serde_json::json!([{
                 "id": "t1",
                 "name": "Publish",
-                "continue_on_error": true,
+                "on_failure": "continue",
                 "function": {
                     "name": "publish_kafka",
                     "input": { "connector": "t3-retyped", "topic": "whatever" }

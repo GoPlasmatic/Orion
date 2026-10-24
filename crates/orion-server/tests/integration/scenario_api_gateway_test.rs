@@ -55,7 +55,7 @@ async fn test_gateway_path_param_forwarding() {
 
     // Workflow:
     //   1. map: extract user_id from metadata.params into data.user_id
-    //   2. http_call: GET /api/users/<user_id> via path_logic
+    //   2. http_call: GET /api/users/<user_id> via a computed path
     //   3. map: copy upstream response fields to top-level data for easy assertion
     let wf_id = create_and_activate_workflow(
         &app,
@@ -83,8 +83,8 @@ async fn test_gateway_path_param_forwarding() {
                         "input": {
                             "connector": "upstream-api",
                             "method": "GET",
-                            "path_logic": {"cat": ["/api/users/", {"var": "data.user_id"}]},
-                            "response_path": "data.upstream",
+                            "path": {"cat": ["/api/users/", {"var": "data.user_id"}]},
+                            "output": "data.upstream",
                             "timeout_ms": 5000
                         }
                     }

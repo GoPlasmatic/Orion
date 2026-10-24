@@ -67,9 +67,7 @@ pub use admission::{
 pub use artifact::{ArtifactRef, ArtifactStore, FetchError, HeadInfo};
 pub use cache::{CacheKey, LoadedCache};
 pub use error::{Category, Failure};
-pub use handler::{
-    ArtifactSource, InferenceHost, ModelInferFunction, ModelInferHandler, ModelSource, load_model,
-};
+pub use handler::{ArtifactSource, InferenceHost, ModelInferFunction, ModelSource, load_model};
 pub use limits::Limits;
 pub use loader::{
     Adapters, ManifestEntry, ModelEntry, ModelLoadIssue, ModelSet, literal_references,

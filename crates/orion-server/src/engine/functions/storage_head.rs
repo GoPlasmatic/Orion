@@ -10,74 +10,19 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::Output;
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use serde_json::{Value, json};
 
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{ConnectorCall, require_op, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::{ConnectorRegistry, StorageConnectorConfig, sigv4};
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 
 /// This function's name, for the free functions below (F48).
-const NAME: &str = <StorageHeadHandler as ConnectorHandler>::NAME;
-
-/// Workflow function handler for object-metadata lookups.
-pub struct StorageHeadHandler {
-    pub registry: Arc<ConnectorRegistry>,
-    pub client: reqwest::Client,
-}
-
-#[async_trait]
-impl ConnectorHandler for StorageHeadHandler {
-    const NAME: &'static str = "storage_head";
-    type Kind = crate::connector::kind::Storage;
-    type Input = TemplatedInput;
-    /// The object key, resolved against the message — asking about one fixed
-    /// object is not what this function is for.
-    type Parsed = String;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        Ok(resolve_required_str(input, "key", call.name, ctx)?)
-    }
-
-    fn gate(
-        _key: &Self::Parsed,
-        conn: &StorageConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        Ok(require_op(conn.operations.head, "head", connector)?)
-    }
-
-    async fn run(
-        &self,
-        key: Self::Parsed,
-        storage: &StorageConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        Ok(head(&self.client, storage, call.connector, &key)
-            .await?
-            .into())
-    }
-}
+pub(crate) const NAME: &str = "storage_head";
 
 /// The signed HEAD, against a resolved and gated storage connector: the
 /// object's metadata, `{ "exists": false }` for a 404. Shared by the
@@ -315,85 +260,7 @@ mod tests {
         }
     }
 
-    async fn run(input: Value, config: StorageConnectorConfig) -> Result<Value, String> {
-        let registry =
-            std::sync::Arc::new(crate::connector::ConnectorRegistry::new(Default::default()));
-        registry
-            .insert_for_test("media", ConnectorConfig::Storage(config))
-            .await;
-        crate::engine::functions::run_test_task(
-            StorageHeadHandler::NAME,
-            Box::new(super::super::connector_handler::Connector(
-                StorageHeadHandler {
-                    registry,
-                    client: reqwest::Client::new(),
-                },
-            )),
-            input,
-            Value::Null,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn an_existing_object_answers_its_metadata() {
-        let addr = spawn_store(true, None).await;
-        let out = run(
-            json!({"connector": "media", "key": "video/out.mp4", "output": "data.meta"}),
-            storage_config(addr),
-        )
-        .await
-        .expect("test");
-        assert_eq!(
-            out["meta"],
-            json!({
-                "exists": true,
-                "size": 1048576,
-                "etag": "abc123",
-                "last_modified": "Wed, 19 Aug 2026 07:00:00 GMT",
-                "content_type": "video/mp4",
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn a_missing_object_is_data_not_failure() {
-        let addr = spawn_store(false, None).await;
-        let out = run(
-            json!({"connector": "media", "key": "nope.mp4", "output": "data.meta"}),
-            storage_config(addr),
-        )
-        .await
-        .expect("404 must not fail the task");
-        assert_eq!(out["meta"], json!({"exists": false}));
-    }
-
-    #[tokio::test]
-    async fn a_denied_request_is_an_error_and_the_gate_applies() {
-        let addr = spawn_store(true, Some(403)).await;
-        let err = run(
-            json!({"connector": "media", "key": "k", "output": "data.meta"}),
-            storage_config(addr),
-        )
-        .await
-        .expect_err("403 says the question could not be asked");
-        assert!(err.contains("403"), "{err}");
-
-        // Gate refusal is caller-sanitized; the behavioral assertion is that
-        // the gated call errs where the tests above succeed ungated.
-        let addr = spawn_store(true, None).await;
-        let mut config = storage_config(addr);
-        config.operations.head = false;
-        run(
-            json!({"connector": "media", "key": "k", "output": "data.meta"}),
-            config,
-        )
-        .await
-        .expect_err("head=false must refuse");
-    }
-
-    // -- dataflow-rs 4: the config, and a twin of each test above, held to
-    // the handler over the same input --
+    // -- the config, and calls against a store mock, held to 1.12's records --
 
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
@@ -445,47 +312,37 @@ mod tests {
         assert_eq!(issues[0].0, "bucket");
     }
 
-    /// One task through each engine, each against its own store mock.
-    async fn both(
+    /// One task against its own store mock.
+    async fn run(
         input: Value,
         exists: bool,
         status_override: Option<u16>,
         config: impl Fn(std::net::SocketAddr) -> StorageConnectorConfig,
-    ) -> (Seen, Seen) {
-        let mut sides = Vec::new();
-        for v4 in [false, true] {
-            let addr = spawn_store(exists, status_override).await;
-            let registry =
-                std::sync::Arc::new(crate::connector::ConnectorRegistry::new(Default::default()));
-            registry
-                .insert_for_test("media", ConnectorConfig::Storage(config(addr)))
-                .await;
-            let client = reqwest::Client::new();
-            let seen = if v4 {
-                let f = StorageHeadFunction { registry, client };
-                twin::v4(NAME, f, input.clone(), Value::Null).await
-            } else {
-                let handler = Box::new(super::super::connector_handler::Connector(
-                    StorageHeadHandler { registry, client },
-                ));
-                twin::v3(NAME, handler, input.clone(), Value::Null).await
-            };
-            // Each side's mock has its own port, which a failure may name.
-            let port = format!("127.0.0.1:{}", addr.port());
-            sides.push(seen.map_err(|f| twin::Failure {
-                message: f.message.replace(&port, "<store>"),
-                ..f
-            }));
-        }
-        let v4 = sides.pop().expect("v4");
-        (sides.pop().expect("v3"), v4)
+    ) -> Seen {
+        let addr = spawn_store(exists, status_override).await;
+        let registry =
+            std::sync::Arc::new(crate::connector::ConnectorRegistry::new(Default::default()));
+        registry
+            .insert_for_test("media", ConnectorConfig::Storage(config(addr)))
+            .await;
+        let f = StorageHeadFunction {
+            registry,
+            client: reqwest::Client::new(),
+        };
+        let seen = twin::v4(NAME, f, input, Value::Null).await;
+        // The mock has its own port, which a failure may name.
+        let port = format!("127.0.0.1:{}", addr.port());
+        seen.map_err(|f| twin::Failure {
+            message: f.message.replace(&port, "<store>"),
+            ..f
+        })
     }
 
     #[tokio::test]
-    async fn an_existing_object_answers_its_metadata_on_v4() {
+    async fn an_existing_object_answers_its_metadata() {
         let input = json!({"connector": "media", "key": "video/out.mp4", "output": "data.meta"});
-        let (v3, v4) = both(input, true, None, storage_config).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, true, None, storage_config).await;
+        twin::pinned(&v4, "an_existing_object_answers_its_metadata");
         assert_eq!(
             v4.expect("test")["meta"],
             json!({
@@ -499,10 +356,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_object_is_data_not_failure_on_v4() {
+    async fn a_missing_object_is_data_not_failure() {
         let input = json!({"connector": "media", "key": "nope.mp4", "output": "data.meta"});
-        let (v3, v4) = both(input, false, None, storage_config).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, false, None, storage_config).await;
+        twin::pinned(&v4, "a_missing_object_is_data_not_failure");
         assert_eq!(
             v4.expect("404 must not fail the task")["meta"],
             json!({"exists": false})
@@ -510,10 +367,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_denied_request_is_an_error_and_the_gate_applies_on_v4() {
+    async fn a_denied_request_is_an_error_and_the_gate_applies() {
         let input = json!({"connector": "media", "key": "k", "output": "data.meta"});
-        let (v3, v4) = both(input.clone(), true, Some(403), storage_config).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input.clone(), true, Some(403), storage_config).await;
+        twin::pinned(&v4, "a_denied_request/403");
         let failure = v4.expect_err("403 says the question could not be asked");
         assert!(failure.message.contains("403"), "{failure:?}");
 
@@ -522,8 +379,8 @@ mod tests {
             config.operations.head = false;
             config
         };
-        let (v3, v4) = both(input, true, None, gated).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, true, None, gated).await;
+        twin::pinned(&v4, "a_denied_request/gated");
         v4.expect_err("head=false must refuse");
 
         // A key that resolves to nothing, and a connector that is not there.
@@ -531,8 +388,8 @@ mod tests {
             json!({"connector": "media", "key": {"var": "data.none"}}),
             json!({"connector": "absent", "key": "k"}),
         ] {
-            let (v3, v4) = both(input.clone(), true, None, storage_config).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), true, None, storage_config).await;
+            twin::pinned(&v4, format!("a_denied_request/{input}"));
             assert!(v4.is_err(), "{input}");
         }
     }
@@ -551,49 +408,37 @@ mod tests {
             (json!({"var": "data.at"}), 1),
         ] {
             let input = json!({"connector": "media", "key": "k", "output": output});
-            let mut sides = Vec::new();
-            for v4 in [false, true] {
-                let requests = Arc::new(AtomicUsize::new(0));
-                let counter = Arc::clone(&requests);
-                let app = axum::Router::new().fallback(move || {
-                    let counter = Arc::clone(&counter);
-                    async move {
-                        counter.fetch_add(1, Ordering::SeqCst);
-                        axum::http::StatusCode::NOT_FOUND
-                    }
-                });
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                    .await
-                    .expect("bind");
-                let addr = listener.local_addr().expect("addr");
-                tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
-                let registry = std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
-                    Default::default(),
-                ));
-                registry
-                    .insert_for_test("media", ConnectorConfig::Storage(storage_config(addr)))
-                    .await;
-                let client = reqwest::Client::new();
-                let seen = if v4 {
-                    twin::v4(
-                        NAME,
-                        StorageHeadFunction { registry, client },
-                        input.clone(),
-                        data.clone(),
-                    )
-                    .await
-                } else {
-                    let handler = Box::new(super::super::connector_handler::Connector(
-                        StorageHeadHandler { registry, client },
-                    ));
-                    twin::v3(NAME, handler, input.clone(), data.clone()).await
-                };
-                sides.push((seen, requests.load(Ordering::SeqCst)));
-            }
-            assert_eq!(sides[1], sides[0], "{output}");
-            assert_eq!(sides[1].1, asked, "{output}");
+            let requests = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&requests);
+            let app = axum::Router::new().fallback(move || {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    axum::http::StatusCode::NOT_FOUND
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+            let registry =
+                std::sync::Arc::new(crate::connector::ConnectorRegistry::new(Default::default()));
+            registry
+                .insert_for_test("media", ConnectorConfig::Storage(storage_config(addr)))
+                .await;
+            let client = reqwest::Client::new();
+            let seen = twin::v4(
+                NAME,
+                StorageHeadFunction { registry, client },
+                input.clone(),
+                data.clone(),
+            )
+            .await;
+            twin::pinned(&seen, format!("computed_output/{output}"));
+            assert_eq!(requests.load(Ordering::SeqCst), asked, "{output}");
             if asked == 0 {
-                let failure = sides[1].0.as_ref().expect_err("refused");
+                let failure = seen.as_ref().expect_err("refused");
                 assert_eq!(failure.code, "VALIDATION_ERROR");
                 assert_eq!(
                     failure.message,

@@ -368,7 +368,7 @@ impl Catalog {
     /// [`OfflineModels`]: orion::model::OfflineModels
     pub(crate) fn model_handler(
         &self,
-    ) -> (dataflow_rs_v3::BoxedFunctionHandler, Vec<(String, String)>) {
+    ) -> (orion::model::ModelInferFunction, Vec<(String, String)>) {
         let mut entries = Vec::new();
         let mut unavailable = Vec::new();
         for model in &self.models {
@@ -391,12 +391,12 @@ impl Catalog {
                 std::sync::Arc::new(orion::model::InferenceHost::offline(&config, artifacts))
             })
             .clone();
-        let handler = orion::model::ModelInferHandler {
+        let function = orion::model::ModelInferFunction {
             source: orion::model::ModelSource::Offline(offline),
             host: Some(host),
             config,
         };
-        (Box::new(handler), unavailable)
+        (function, unavailable)
     }
 
     /// The compiled components, built once.
@@ -435,7 +435,7 @@ impl Catalog {
             .map_err(|e| e.clone().into())
     }
 
-    /// One handler per function of every plugin whose component is here,
+    /// One function per function of every plugin whose component is here,
     /// for an engine that runs them for real; and the functions of the
     /// plugins whose component is *not* here, which such an engine must
     /// refuse to build against rather than stub.
@@ -454,15 +454,19 @@ impl Catalog {
                 Some(component) => {
                     let limits =
                         orion::plugin::Limits::effective(&sandbox.config, &plugin.manifest.name);
-                    for entry in plugin.entries() {
-                        let name = entry.name.clone();
+                    for (entry, decl) in
+                        plugin.entries().into_iter().zip(&plugin.manifest.functions)
+                    {
                         let handler = orion::plugin::PluginFunctionHandler::new(
                             std::sync::Arc::new(entry),
                             component.clone(),
                             sandbox.runtime.clone(),
                             limits,
                         );
-                        handlers.push((name, Box::new(handler)));
+                        handlers.push(orion::plugin::PluginFunction::new(
+                            handler,
+                            decl.runtime_fields(),
+                        ));
                     }
                 }
                 None => {
@@ -479,8 +483,8 @@ impl Catalog {
 /// What an offline run gets from the catalog's plugins.
 #[derive(Default)]
 pub(crate) struct OfflinePluginHandlers {
-    /// Function name → its handler, for every plugin whose component loaded.
-    pub(crate) handlers: Vec<(String, dataflow_rs_v3::BoxedFunctionHandler)>,
+    /// The functions of every plugin whose component loaded.
+    pub(crate) handlers: Vec<orion::plugin::PluginFunction>,
     /// Function name → the manifest's origin, for every plugin whose
     /// component is not beside its manifest and so cannot run here.
     pub(crate) unavailable: Vec<(String, String)>,
@@ -548,7 +552,6 @@ fn placeholder_entries(names: &[String]) -> Vec<orion::engine::FunctionEntry> {
             description: "plugin function with no manifest in this run".to_string(),
             category: "plugin".to_string(),
             source: orion::engine::functions::schema::Source::Plugin,
-            aliases: Vec::new(),
             input_fields: None,
             writes: orion::engine::functions::schema::WriteShape::OutputPath { default_root: None },
             retry_safety: orion::engine::functions::schema::RetrySafety::Pure,

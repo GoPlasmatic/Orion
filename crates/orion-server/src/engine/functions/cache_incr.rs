@@ -1,112 +1,23 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use serde_json::Value;
 
-use super::cache_write::{rendered_ttl_secs, resolve_ttl_secs};
-use super::connector_handler::{ConnectorHandler, Produced};
-use super::connector_helpers::{
-    ConnectorCall, output_declared, require_op, resolve_optional_i64, resolve_required_str,
-    to_connect_error, to_exec_error,
-};
+use super::cache_write::rendered_ttl_secs;
+use super::connector_helpers::{to_connect_error, to_exec_error};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
 
 /// This function's name, for the free functions below (F48).
-const NAME: &str = <CacheIncrHandler as ConnectorHandler>::NAME;
-
-/// Workflow function handler for an atomic increment on a cache backend.
-///
-/// The primitive a generation counter needs: each bump yields a value no other
-/// writer can be handed, with no clock or random suffix to improvise, and a
-/// cached key that embeds the generation it read retires itself the moment the
-/// counter moves. It also serves plain counters and idle markers.
-pub struct CacheIncrHandler {
-    pub cache_pool: Arc<CachePool>,
-    pub registry: Arc<ConnectorRegistry>,
-}
-
-/// The resolved increment.
-pub struct CacheIncr {
-    key: String,
-    by: i64,
-    ttl: Option<u64>,
-}
-
-#[async_trait]
-impl ConnectorHandler for CacheIncrHandler {
-    const NAME: &'static str = "cache_incr";
-    type Kind = crate::connector::kind::Cache;
-    type Input = TemplatedInput;
-    type Parsed = CacheIncr;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        let key = resolve_required_str(input, "key", call.name, ctx)?;
-        let by = resolve_optional_i64(input, "by", call.name, ctx)?.unwrap_or(1);
-        Ok(CacheIncr {
-            key,
-            by,
-            ttl: resolve_ttl_secs(input, call.name, ctx)?,
-        })
-    }
-
-    fn gate(
-        _parsed: &Self::Parsed,
-        conn: &crate::connector::CacheConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        Ok(require_op(conn.operations.write, "write", connector)?)
-    }
-
-    async fn run(
-        &self,
-        incr: Self::Parsed,
-        conn: &crate::connector::CacheConnectorConfig,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        let value = bump(
-            &self.cache_pool,
-            call.connector,
-            conn,
-            &incr.key,
-            incr.by,
-            incr.ttl,
-        )
-        .await?;
-
-        // As `cache_delete`: recorded only where the task asks, so a bare
-        // counter bump never overwrites `data` with a number.
-        Ok(if output_declared(input) {
-            Value::from(value).into()
-        } else {
-            Produced::nothing()
-        })
-    }
-}
+pub(crate) const NAME: &str = "cache_incr";
 
 /// The increment, against a resolved and gated cache connector: the new
-/// value. `ttl` applies only when the call creates the key. Shared by the
-/// dataflow-rs 3 handler and the dataflow-rs 4 function.
+/// value. `ttl` applies only when the call creates the key.
 async fn bump(
     pool: &CachePool,
     connector: &str,
@@ -253,9 +164,10 @@ mod tests {
     use crate::engine::functions::twin::{self, Seen};
     use dataflow_rs::function::testing;
     use dataflow_rs::program::{IssueCode, Severity};
+    use serde_json::Value;
     use serde_json::json;
 
-    /// The keys the twins look at after a bump.
+    /// The keys a test looks at after a bump.
     const LOOK: &[&str] = &["n", "fresh", "7"];
 
     fn function(cache: &twin::Cache) -> CacheIncrFunction {
@@ -265,31 +177,21 @@ mod tests {
         }
     }
 
-    fn handler(cache: &twin::Cache) -> dataflow_rs_v3::BoxedFunctionHandler {
-        Box::new(super::super::connector_handler::Connector(
-            CacheIncrHandler {
-                cache_pool: cache.pool.clone(),
-                registry: cache.registry.clone(),
-            },
-        ))
-    }
-
-    /// One task through each engine, each against a cache of its own
-    /// holding `n` at 41 and `text` at a string, its connector configured
-    /// with `config`: what each saw, and what each cache holds at [`LOOK`]
-    /// after.
-    async fn both(
-        input: Value,
-        data: Value,
-        config: Value,
-    ) -> ((Seen, Vec<Option<String>>), (Seen, Vec<Option<String>>)) {
+    /// One task against a cache of its own holding `n` at 41 and `text` at
+    /// a string, its connector configured with `config`: what it saw, and
+    /// what the cache holds at [`LOOK`] after.
+    async fn run(input: Value, data: Value, config: Value) -> (Seen, Vec<Option<String>>) {
         let seed: &[(&str, &str)] = &[("n", "41"), ("text", "abc")];
-        let cache = twin::cache(config.clone(), seed).await;
-        let v3 = twin::v3(NAME, handler(&cache), input.clone(), data.clone()).await;
-        let v3 = (v3, cache.held(LOOK).await);
         let cache = twin::cache(config, seed).await;
         let v4 = twin::v4(NAME, function(&cache), input, data).await;
-        (v3, (v4, cache.held(LOOK).await))
+        (v4, cache.held(LOOK).await)
+    }
+
+    /// Pin what a call saw, and what the cache held after, to 1.12's records.
+    #[track_caller]
+    fn pin(seen: &(Seen, Vec<Option<String>>), key: impl std::fmt::Display) {
+        twin::pinned(&seen.0, &key);
+        twin::pinned(&Ok(json!(seen.1)), format!("{key}/held"));
     }
 
     /// Declaration order is the field table's (I179); `key` and `by` are
@@ -354,7 +256,7 @@ mod tests {
     /// an integer, a computed output that names no path before anything is
     /// bumped, a connector that is not there.
     #[tokio::test]
-    async fn bumps_and_refuses_as_on_v3() {
+    async fn bumps_and_refuses_as_1_12_did() {
         let data =
             json!({"by": 5, "neg": -2, "half": 2.5, "obj": {"a": 1}, "n": 3, "at": "data.v"});
         let cases = [
@@ -383,11 +285,11 @@ mod tests {
             json!({"connector": "c", "key": "n", "by": {"throw": "boom"}}),
         ];
         for input in cases {
-            let (v3, v4) = both(input.clone(), data.clone(), json!({})).await;
-            assert_eq!(v4, v3, "{input}");
+            let v4 = run(input.clone(), data.clone(), json!({})).await;
+            pin(&v4, format!("bumps_and_refuses/{input}"));
         }
         // A spot check: the bump's value, where asked, and the counter.
-        let (_, (seen, held)) = both(
+        let (seen, held) = run(
             json!({"connector": "c", "key": "n", "output": "data.v"}),
             json!({}),
             json!({}),
@@ -399,11 +301,11 @@ mod tests {
 
     /// The gate refuses a bump before the counter moves, as 1.12's did.
     #[tokio::test]
-    async fn a_read_only_connector_refuses_a_bump_on_v4() {
+    async fn a_read_only_connector_refuses_a_bump() {
         let input = json!({"connector": "c", "key": "n", "output": "data.v"});
         let gated = json!({"operations": {"read": true, "write": false}});
-        let (v3, v4) = both(input, json!({}), gated).await;
-        assert_eq!(v4, v3);
+        let v4 = run(input, json!({}), gated).await;
+        pin(&v4, "a_read_only_connector_refuses_a_bump");
         let failure = v4.0.expect_err("writes are off");
         assert!(
             failure
@@ -478,10 +380,6 @@ mod tests {
             if at_root {
                 let error = called.outcome.expect_err("a number at a root is refused");
                 assert_eq!(error.code(), "CONFIG_ERROR", "{input}");
-                // 1.12 replaced the root.
-                let cache = twin::cache(json!({}), &[]).await;
-                let v3 = twin::v3(NAME, handler(&cache), input.clone(), json!({})).await;
-                assert!(v3.is_ok(), "{input}: {v3:?}");
             } else {
                 assert_eq!(called.outcome.as_ref().ok(), Some(&Outcome::Ok), "{input}");
             }

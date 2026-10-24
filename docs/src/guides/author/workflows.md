@@ -88,7 +88,7 @@ The condition is evaluated once, on entry. A false result skips the whole span w
 
 `terminal: true` ends the workflow after the step runs; on a group, after the whole span. Together they are the guard clause: *if this, answer and stop*. Without it every later task has to restate the negation of every earlier exit, and those conditions grow with each branch you add.
 
-`terminal` is about position, not outcome. A false `condition` does not halt, and neither does a skipped task. A task that *failed* under `continue_on_error: true` does halt, because the author said nothing after this runs. It also works on a plain task, not only a group.
+`terminal` is about position, not outcome. A false `condition` does not halt, and neither does a skipped task. A task that *failed* under `on_failure: "continue"` does halt, because the author said nothing after this runs. It also works on a plain task, not only a group.
 
 Groups nest up to 8 deep and share one id namespace with tasks. A group id colliding with a task id is refused at create. The field-by-field contract for both shapes is in [Workflow definition](../../reference/workflows.md#task-groups).
 
@@ -156,15 +156,16 @@ Put working state in `temp_data` and keep the response clean:
 
 ## Decide what a failure does
 
-By default a task that errors stops the workflow, and the caller gets an error envelope. To collect errors and keep going instead, set `continue_on_error`:
+By default a task that errors stops the workflow, and the caller gets an error envelope. To record a task's error and keep going instead, set `on_failure` on that task:
 
 ```json
-{ "workflow_id": "order-processing", "continue_on_error": true, "tasks": [ "..." ] }
+{ "id": "enrich", "name": "Enrich", "on_failure": "continue",
+  "function": { "name": "http_call", "input": { "connector": "crm", "output": "data.crm" } } }
 ```
 
-Note the envelope this produces: `"status": "ok"` with a non-empty `errors` array. A client that only checks the HTTP code reads that as success, so anything relying on `continue_on_error` must inspect `errors`.
+Note the envelope this produces: `"status": "ok"` with a non-empty `errors` array. A client that only checks the HTTP code reads that as success, so anything relying on a continued failure must inspect `errors`. `continue_on_error: true` on the workflow is coarser: a failure ends that workflow without failing the request, and its later tasks do not run.
 
-"Errors" here means a handler error or a `5xx`. A task that records a `4xx`, which is what a failing [`validation`](../../reference/functions/validation.md) rule does, is a warning to the engine. It is written to the `errors` array and the next task runs anyway, whatever `continue_on_error` says. To stop on that, put [`"halt_on": "failure"`](../../reference/workflows.md#halting-on-failure) on the task. Without it a check reads correct and gates nothing, which `orion-server lint` reports as `engine.unguarded_validation`.
+"Errors" here means a handler error or a `5xx`. A task that records a `4xx`, which is what a failing [`validation`](../../reference/functions/validation.md) rule does, is a warning to the engine. It is written to the `errors` array and the next task runs anyway, whatever `on_failure` says. To stop on that, put [`"on_rejection": "halt"`](../../reference/workflows.md#halting-on-a-rejection) on the task. Without it a check reads correct and gates nothing, which `orion-server lint` reports as `engine.unguarded_validation`.
 
 For finer control, `filter` takes `on_reject: "halt"` to stop the whole workflow, or `on_reject: "skip"` to skip only that task.
 

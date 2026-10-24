@@ -1,0 +1,244 @@
+{
+  "call/test.fixture.big-output/{\"size\":1000,\"output\":\"data.x\"}": {
+    "ok": {
+      "x": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+  },
+  "call/test.fixture.big-output/{\"size\":{\"var\":\"data.n\"},\"output\":\"data.x\"}": {
+    "ok": {
+      "n": 12,
+      "x": "xxxxxxxxxxxx"
+    }
+  },
+  "call/test.fixture.identity/{\"message\":[{\"var\":\"data.n\"},{\"$oid\":\"x\"},{\"var\":[\"data.gone\",7]}],\"output\":\"data.out.echo\"}": {
+    "ok": {
+      "n": -2,
+      "keep": "this",
+      "out": {
+        "echo": {
+          "message": [
+            -2,
+            {
+              "$oid": "x"
+            },
+            7
+          ]
+        }
+      }
+    }
+  },
+  "call/test.fixture.identity/{\"message\":{\"var\":\"data.raw\"},\"output\":\"data.echoed\"}": {
+    "ok": {
+      "raw": {
+        "mti": "0200",
+        "fields": [
+          1,
+          2,
+          3
+        ],
+        "ok": true,
+        "n": 1.5
+      },
+      "echoed": {
+        "message": {
+          "mti": "0200",
+          "fields": [
+            1,
+            2,
+            3
+          ],
+          "ok": true,
+          "n": 1.5
+        }
+      }
+    }
+  },
+  "call/test.fixture.upper/{\"text\":\"plain\",\"output\":\"data.up\"}": {
+    "ok": {
+      "up": {
+        "TEXT": "PLAIN"
+      }
+    }
+  },
+  "call/test.fixture.upper/{\"text\":{\"cat\":[\"hello \",{\"var\":\"data.who\"}]},\"output\":\"data.up\"}": {
+    "ok": {
+      "who": "world",
+      "up": {
+        "TEXT": "HELLO WORLD"
+      }
+    }
+  },
+  "call/test.fixture.wrap/{\"message\":\"hello\"}": {
+    "ok": {
+      "wrapped": {
+        "message": "hello"
+      },
+      "len": 19
+    }
+  },
+  "identity_reads_its_fields": {
+    "ok": {
+      "raw": {
+        "mti": "0200",
+        "fields": [
+          1,
+          2,
+          3
+        ],
+        "ok": true,
+        "n": 1.5
+      },
+      "who": "world",
+      "echoed": {
+        "message": {
+          "mti": "0200",
+          "fields": [
+            1,
+            2,
+            3
+          ],
+          "ok": true,
+          "n": 1.5
+        },
+        "label": "plain",
+        "count": 3,
+        "greeting": "hello world"
+      }
+    }
+  },
+  "limits/test.fixture.big-output": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.big-output: the plugin returned 200002 bytes, over the 65536 byte limit",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "limits/test.fixture.identity": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.identity: the input is 214 bytes, over the 64 byte limit",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "limits/test.fixture.spin": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.spin: the invocation exhausted its fuel backstop",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "over_the_ops_budget": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.upper: 'text' did not evaluate: Operation budget exceeded: 3 operations charged against a budget of 2 (in operator: var)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "permit/freed": {
+    "ok": {
+      "x": {
+        "message": 1
+      }
+    }
+  },
+  "permit/held": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.identity: no concurrency permit within 100ms (1 already running)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.alloc-forever/{\"output\":\"data.x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.alloc-forever: the invocation exceeded its memory limit",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.bad-code/{\"output\":\"data.x\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: test.fixture.bad-code: the plugin returned an error code outside the ABI grammar (^[A-Z][A-Z0-9_]{0,63}$)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.bad-json/{\"output\":\"data.x\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: test.fixture.bad-json: the plugin returned something that is not JSON",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.big-output/{\"size\":{\"var\":\"data.size\"},\"output\":\"data.x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.big-output: expected number for 'size' (TYPE_MISMATCH)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.caller-input-error/{\"output\":\"data.x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.caller-input-error: BAD_MESSAGE: the message is not ISO 8583",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.internal-error/{\"output\":\"data.x\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: test.fixture.internal-error: BOOM: the guest failed with a newline",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.spin/{\"output\":\"data.x\"}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: test.fixture.spin: the invocation exceeded its deadline",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.trap/{\"output\":\"data.x\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: test.fixture.trap: the plugin trapped",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.upper/{\"text\":{\"no_such_operator\":[{\"var\":\"data.n\"}]},\"output\":\"data.x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.upper: expected string for 'text' (TYPE_MISMATCH)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.upper/{\"text\":{\"throw\":{\"var\":\"data.why\"}},\"output\":\"data.x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.upper: 'text' did not evaluate: Logic evaluation error: Thrown: {\"type\":\"boom\"} (in operator: throw)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "refusal/test.fixture.upper/{\"text\":{\"var\":\"data.missing\"},\"output\":\"data.x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: test.fixture.upper: expected string for 'text' (TYPE_MISMATCH)",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

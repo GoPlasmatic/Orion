@@ -202,7 +202,7 @@ async fn an_allowlisted_cookie_survives_a_channel_call() {
                 "id": "call", "name": "Call",
                 "function": { "name": "channel_call", "input": {
                     "channel": "callee-ch",
-                    "response_path": "data.inner"
+                    "output": "data.inner"
                 } }
             }]),
         ),

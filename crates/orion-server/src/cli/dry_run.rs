@@ -59,15 +59,44 @@ pub(crate) fn offline_secrets(
     }
 }
 
+/// The channel an offline run's workflow is compiled and run on.
+const DRY_RUN_CHANNEL: &str = "__dry_run__";
+
 /// Everything an offline run needs beyond the engine itself.
 pub(crate) struct OfflineRun {
-    pub engine: dataflow_rs_v3::Engine,
-    /// The connector calls the run makes, filled in as it runs — each one
-    /// already labelled with the task that made it, since dataflow-rs 3.7
-    /// carries the task id into the handler.
+    pub engine: dataflow_rs::Engine,
+    /// The connector calls the run makes, filled in as it runs, each one
+    /// labelled with the task that made it.
     pub log: std::sync::Arc<orion::engine::functions::stub::CallLog>,
     /// The tasks the run dispatched, in order.
     pub tasks: std::sync::Arc<TaskRecorder>,
+    /// The stubs, around every host call.
+    layers: Vec<std::sync::Arc<dyn dataflow_rs::function::CallLayer>>,
+}
+
+impl OfflineRun {
+    /// Run the workflow once over `input`, from the message a node builds.
+    async fn run(
+        &self,
+        input: &serde_json::Value,
+        metadata: &serde_json::Value,
+        trace: Option<orion::engine::offline::OfflineTrace>,
+        capture_changes: bool,
+    ) -> orion::engine::offline::OfflineResult {
+        orion::engine::offline::run_single(
+            &self.engine,
+            input,
+            metadata,
+            orion::engine::offline::OfflineRun {
+                trace,
+                max_snapshot_bytes: 0,
+                capture_changes,
+                layers: &self.layers,
+                observer: Some(&*self.tasks),
+            },
+        )
+        .await
+    }
 }
 
 /// The ids of the tasks an offline run dispatched, in dispatch order: once per
@@ -76,11 +105,8 @@ pub(crate) struct OfflineRun {
 /// An engine observer rather than the execution trace, so a run can say which
 /// tasks ran without the trace's cost. A trace snapshots the message at every
 /// step; a long loop made that tens of gigabytes where this is one id per
-/// task run (#353). It also sees what the trace misses: a task that returns
-/// `Err` is reported before the error propagates, where the trace records a
-/// step only after the result is handled. A task whose condition is false is
-/// not dispatched and is not reported, like a workflow whose condition is
-/// false.
+/// task run (#353). A task whose condition is false is not dispatched and is
+/// not reported, like a workflow whose condition is false.
 #[derive(Default)]
 pub(crate) struct TaskRecorder {
     tasks: std::sync::Mutex<Vec<String>>,
@@ -96,10 +122,16 @@ impl TaskRecorder {
     }
 }
 
-impl dataflow_rs_v3::ExecutionObserver for TaskRecorder {
-    fn task_finished(&self, event: &dataflow_rs_v3::TaskEvent<'_>) {
-        if let Ok(mut tasks) = self.tasks.lock() {
-            tasks.push(event.task_id.to_string());
+impl dataflow_rs::Observer for TaskRecorder {
+    fn interest(&self) -> dataflow_rs::observe::Interest {
+        dataflow_rs::observe::Interest::TASKS
+    }
+
+    fn on(&self, event: &dataflow_rs::observe::Event<'_>) {
+        if let dataflow_rs::observe::Event::TaskFinished { info, .. } = event
+            && let Ok(mut tasks) = self.tasks.lock()
+        {
+            tasks.push(info.task_id.to_string());
         }
     }
 }
@@ -112,7 +144,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     definitions: Option<&Catalog>,
     secrets: &orion::engine::ResolvedSecrets,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
-    use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_to_dataflow};
+    use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_json};
 
     let doc = read_expanded_workflow(workflow_path, definitions)?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
@@ -147,20 +179,24 @@ pub(crate) fn build_dry_run_engine_with_stubs(
         &req,
         req.workflow_id.as_deref().unwrap_or("dry-run"),
     )?;
-    let df_workflow = workflow_to_dataflow(&synthetic, "__dry_run__")?;
+    let json = workflow_json(
+        &synthetic,
+        DRY_RUN_CHANNEL,
+        &synthetic.workflow_id,
+        "active",
+        None,
+    )?;
 
-    // Stub handlers are registered for every connector-backed function, even
-    // with no stub file: an unstubbed call then reports which stub to add,
-    // rather than the `FunctionNotFound` an empty map used to give.
+    // The stub layer answers every connector-backed call, even with no stub
+    // file: an unstubbed call then reports which stub to add.
     let log = std::sync::Arc::new(orion::engine::functions::stub::CallLog::new());
     let stubs_name_model_infer = stubs.contains_key(orion::model::handler::NAME);
-    let mut functions =
-        orion::engine::functions::stub::build_stub_functions_with_log(stubs, log.clone());
     // Plugin functions are never stubbed: a plugin is capability-free, so the
     // real component runs, exactly as `crypto` does. A manifest whose
     // component is not beside it has functions this run cannot execute, and
     // a workflow naming one fails here by name rather than as a missing
-    // handler at build.
+    // function at compile.
+    let mut plugin_functions = Vec::new();
     if let Some(catalog) = definitions {
         let OfflinePluginHandlers {
             handlers,
@@ -184,9 +220,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
                 .into());
             }
         }
-        for (name, handler) in handlers {
-            functions.insert(name, handler);
-        }
+        plugin_functions = handlers;
     }
     // Models run for real once a model directory is in hand — a model is a
     // pure function of its inputs and its weights, like a plugin — and a
@@ -199,6 +233,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // against a node's generation.
     let stubs_model = stubs_name_model_infer;
     let infer_tasks = model_infer_tasks(&req.tasks, req.loop_config.as_ref());
+    let mut model_function = None;
     match definitions.filter(|c| !c.models.is_empty()) {
         Some(catalog) if !infer_tasks.is_empty() => {
             let (handler, unavailable) = catalog.model_handler();
@@ -244,7 +279,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
                     .into());
                 }
             }
-            functions.insert(orion::model::handler::NAME.to_string(), handler);
+            model_function = Some(handler);
         }
         Some(_) | None if infer_tasks.is_empty() || stubs_model => {}
         _ => {
@@ -273,18 +308,24 @@ pub(crate) fn build_dry_run_engine_with_stubs(
             .into());
         }
     }
-    // `build_single` registers the custom operators — a dry run must speak the
-    // same expression vocabulary as the serving engine — and screens the
-    // workflow against the handlers above, which is what makes a dry run's
-    // verdict mean something. Screened against the *stub* table on purpose:
-    // the question a dry run answers is "will this run offline", and the stub
-    // table is the handler set it will run against.
-    // Unbounded: an offline run has no `[engine]` config to read a budget
-    // from, and a definition is not refused for being expensive here.
-    let tasks = std::sync::Arc::new(TaskRecorder::default());
-    let engine = orion::engine::build_single(df_workflow, functions, secrets, 0)?
-        .with_observer(tasks.clone());
-    Ok(OfflineRun { engine, log, tasks })
+    // Compiled on the real functions, over inert dependencies, as a node
+    // compiles a row: a workflow a node would quarantine is refused here, and
+    // the run speaks the serving engine's expressions. Unbounded: an offline
+    // run has no `[engine]` config to read a budget from.
+    let stub_models = model_function.is_none();
+    let compiler =
+        orion::engine::offline::offline_compiler(secrets, plugin_functions, model_function)?;
+    let engine = orion::engine::offline::single_engine(&compiler, &json)?;
+    let layers: Vec<std::sync::Arc<dyn dataflow_rs::function::CallLayer>> =
+        vec![std::sync::Arc::new(
+            orion::engine::functions::stub::StubLayer::new(stubs, log.clone(), stub_models),
+        )];
+    Ok(OfflineRun {
+        engine,
+        log,
+        tasks: std::sync::Arc::new(TaskRecorder::default()),
+        layers,
+    })
 }
 
 /// Dry-run a workflow against an input JSON file.
@@ -311,18 +352,10 @@ pub(crate) enum DryRunTrace {
 
 impl DryRunTrace {
     /// The trace to record, or `None` for none.
-    fn options(self) -> Option<dataflow_rs_v3::TraceOptions> {
+    fn options(self) -> Option<orion::engine::offline::OfflineTrace> {
         match self {
-            // The default `TraceOptions` snapshots the whole audit trail at
-            // every step, which is quadratic in the steps: a two-turn run of a
-            // looping workflow printed 1.5 GB (#353). `Own` keeps the one
-            // entry each step wrote, and `changes` is the diff it made.
-            Self::Full => Some(dataflow_rs_v3::TraceOptions {
-                changes: true,
-                snapshot_audit_trail: dataflow_rs_v3::AuditTrailScope::Own,
-                ..Default::default()
-            }),
-            Self::Steps => Some(dataflow_rs_v3::TraceOptions::timings_only()),
+            Self::Full => Some(orion::engine::offline::OfflineTrace::Changes),
+            Self::Steps => Some(orion::engine::offline::OfflineTrace::Steps),
             Self::Off => None,
         }
     }
@@ -384,30 +417,16 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
 
     let catalog = Catalog::load_opt(definitions, plugin_dirs, model_dirs)?;
     let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref(), &secrets)?;
-    // Per-write capture is what a trace's `changes` and the audit trail's
-    // `changes` report; without a trace the run is a node's untraced run.
-    let trace_options = trace_mode.options();
-    let mut message = dataflow_rs_v3::Message::builder()
-        .payload_json(&input)
-        .metadata_json(&metadata)
-        .capture_changes(trace_options.is_some())
-        .build();
-
-    // Own the trace so a hard failure still prints the steps that ran. A dry
-    // run that dies on task three and reports nothing is the least useful
+    // Per-write capture is what the audit trail's `changes` report; without
+    // a trace the run is a node's untraced run. The trace is kept on every
+    // status, so a hard failure still prints the steps that ran: a dry run
+    // that dies on task three and reports nothing is the least useful
     // possible answer to "what does this workflow do?".
-    let (trace, run_error) = match trace_options {
-        Some(options) => {
-            let mut trace = dataflow_rs_v3::ExecutionTrace::with_options(options);
-            let run_error = run
-                .engine
-                .process_message_tracing(&mut message, &mut trace)
-                .await
-                .err();
-            (Some(trace), run_error)
-        }
-        None => (None, run.engine.process_message(&mut message).await.err()),
-    };
+    let trace_options = trace_mode.options();
+    let result = run
+        .run(&input, &metadata, trace_options, trace_options.is_some())
+        .await;
+    let message = &result.message;
     let tasks = run.tasks.take();
 
     // `output` is the data document under its historical name: CI `jq` filters
@@ -417,24 +436,24 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
     let mut output = serde_json::json!({
         "matched": !tasks.is_empty(),
         "tasks": tasks,
-        "output": message.data(),
-        "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
+        "output": serde_json::Value::from(message.context().data()),
+        "errors": serde_json::to_value(message.errors())?,
     });
-    if let Some(trace) = trace {
+    if let Some(trace) = &result.trace {
         output["trace"] = serde_json::to_value(trace)?;
     }
-    for (name, document) in orion::engine::functions::stub::run_documents(&message, &run.log) {
+    for (name, document) in orion::engine::functions::stub::run_documents(message, &run.log) {
         output[name] = document;
     }
-    if let Some(ref e) = run_error {
+    if let Some(ref e) = result.error {
         output["error"] = serde_json::json!(e.to_string());
     }
     println!("{}", serde_json::to_string_pretty(&output)?);
 
     // The trace is on stdout either way; the exit status still reports the
     // failure, so `orion-server dry-run` stays usable as a CI gate.
-    match run_error {
-        Some(e) => Err(orion::errors::OrionError::Engine(e).into()),
+    match result.error {
+        Some(e) => Err(e.into()),
         None => Ok(()),
     }
 }
@@ -719,12 +738,9 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
         .expect
         .keys()
         .any(|path| orion::engine::functions::stub::path_root(path) == "audit_trail");
-    let mut message = dataflow_rs_v3::Message::builder()
-        .payload_json(&case.input)
-        .metadata_json(&metadata)
-        .capture_changes(capture)
-        .build();
-    let run_error = run.engine.process_message(&mut message).await.err();
+    let result = run.run(&case.input, &metadata, None, capture).await;
+    let message = &result.message;
+    let run_error = result.error;
 
     let mut failures = Vec::new();
     if let Some(e) = run_error {
@@ -739,7 +755,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     }
 
     let roots = serde_json::Value::Object(orion::engine::functions::stub::run_documents(
-        &message, &run.log,
+        message, &run.log,
     ));
     for (path, expected) in &case.expect {
         let actual = lookup_path(&roots, path);
@@ -765,17 +781,13 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     failures.extend(check_expected_calls(&case.expect_calls, &run.log));
 
     if let Some(ref expected) = case.expect_tasks {
-        let actual = executed_task_ids(run.tasks.take(), &message);
+        let actual = executed_task_ids(run.tasks.take(), message);
         if &actual != expected {
             failures.push(format!("tasks: expected {expected:?}, ran {actual:?}"));
         }
     }
 
-    let actual_errors: Vec<String> = message
-        .errors()
-        .iter()
-        .map(|e| e.code.to_string())
-        .collect();
+    let actual_errors: Vec<String> = message.errors().iter().map(|e| e.code.clone()).collect();
     if actual_errors != case.expect_errors {
         failures.push(format!(
             "task errors: expected {:?}, got {:?}",
@@ -788,18 +800,17 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
 
 /// The ids of the tasks that ran, in dispatch order.
 ///
-/// From the [`TaskRecorder`] rather than the audit trail: a
-/// `TaskOutcome::Skip` returns before the audit entry is pushed, so the trail
-/// cannot tell "skipped by condition" from "not in the workflow", and which
-/// branch ran is the whole question `expect_tasks` exists to answer.
+/// From the [`TaskRecorder`] rather than the audit trail, which cannot tell
+/// "skipped by condition" from "not in the workflow" — and which branch ran
+/// is the whole question `expect_tasks` exists to answer.
 ///
 /// The message's errors are a second source, for an error that names a task
 /// the engine never dispatched. A task that was dispatched and failed is
 /// already recorded, in the position it ran.
-fn executed_task_ids(mut ids: Vec<String>, message: &dataflow_rs_v3::Message) -> Vec<String> {
-    for id in message.errors().iter().filter_map(|e| e.task_id.as_ref()) {
+fn executed_task_ids(mut ids: Vec<String>, message: &dataflow_rs::Message) -> Vec<String> {
+    for id in message.errors().iter().filter_map(|e| e.task_id.as_deref()) {
         if !ids.iter().any(|seen| seen == id) {
-            ids.push(id.clone());
+            ids.push(id.to_string());
         }
     }
     ids

@@ -30,14 +30,14 @@ pub(crate) async fn engine_status(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, OrionError> {
     let generation = state.runtime.load();
-    let workflows = generation.engine.workflows();
+    let workflows = generation.workflows();
 
     let mut channels: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     let mut active_count = 0u64;
 
     for w in workflows.iter() {
         channels.insert(&w.channel);
-        if matches!(w.status, dataflow_rs_v3::WorkflowStatus::Active) {
+        if w.status == dataflow_rs::def::Status::Active {
             active_count += 1;
         }
     }
@@ -95,7 +95,7 @@ pub(crate) async fn engine_reload(
 
     Ok(data_response(orion_api::EngineReloadedResponse {
         reloaded: true,
-        workflows_count: generation.engine.workflows().len() as u64,
+        workflows_count: generation.workflows().len() as u64,
         generation: generation.id,
         load_issues: Some(load_issues),
     }))

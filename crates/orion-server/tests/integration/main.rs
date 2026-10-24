@@ -139,6 +139,5 @@ mod trace_dlq_poison_test;
 mod trace_dlq_repo_test;
 mod trace_storage_test;
 mod typed_enum_dtos_test;
-mod v4_differential_test;
 mod vault_test;
 mod workflow_lifecycle_test;

@@ -36,11 +36,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **dataflow-rs 3 is gone, and its spellings are no longer read.** Every
+  engine is dataflow-rs 4: serving, `dry-run`, `test` and
+  `POST /workflows/{id}/test`. Definitions are parsed strictly (the v3
+  compat reader is off), so these are refused at create and quarantine a
+  stored row at load, each refusal naming the key to write instead:
+  - a task's `halt_on` and `continue_on_error`: write `on_rejection` and
+    `on_failure` (`"halt_on": "failure"` is `"on_rejection": "halt"`;
+    `"continue_on_error": true` is `"on_failure": "continue"`);
+  - the function name `validate`: write `validation`;
+  - the pre-1.0 input aliases `path_logic`, `body_logic`, `response_path`
+    (`http_call`), `key_logic`, `value_logic` (`publish_kafka`),
+    `channel_logic`, `data_logic`, `response_path` (`channel_call`);
+  - any other key a task, group or workflow does not define. An extension
+    goes in `ext`.
+
+  A task's `name` is optional, as it is to the engine. The function
+  catalogue no longer serves `aliases`, and the
+  `engine.group_continue_on_error` advisory is gone with the key it
+  reported. A trace is dataflow-rs 4's `{initial, steps, truncated}`.
+  The workflow-level `continue_on_error` field is unchanged.
+
 - **Use the published dataflow-rs 4.0.0 release.** Builds no longer require
   a local dataflow-rs checkout. Extension operator families are selected
   explicitly at runtime, preserving the datetime and tensor vocabulary.
   datalogic-rs 5.8.2 and datavalue-rs 0.3.2 supply the expression evaluator.
-  The serving engine remains on 3.15 while the execution cutover is pending.
 
 - **Authoring analysis uses dataflow-rs 4's typed expression compiler and
   operator metadata.** Constant folding and template evaluation use the same

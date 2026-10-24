@@ -725,26 +725,22 @@ impl<T: ConfigField> ConfigField for Members<T> {
 }
 
 /// Each field type through `testing::config_with` and `testing::call` on a
-/// probe function, against its dataflow-rs 3 twin run on a dataflow-rs 3
-/// engine over the same input, message and secret store: the expectation is
-/// computed from the twin, never written out.
+/// probe function, over one input, message and secret store, held to what
+/// 1.12's readers answered (the records under
+/// `tests/fixtures/function-records/`).
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::ResolvedSecrets;
-    use crate::engine::functions::templated_input::TemplatedInput;
-    use crate::engine::operators::{orion_exprs, with_orion_engine_defaults};
-    use async_trait::async_trait;
+    use crate::engine::functions::twin;
+    use crate::engine::operators::orion_exprs;
     use dataflow_rs::expr::{ExprEngine, ExprVisitor};
     use dataflow_rs::function::{FunctionConfig, testing};
     use dataflow_rs::program::AuthoredPath;
     use dataflow_rs::{Function, Message, Outcome};
-    use dataflow_rs_v3::engine::functions::{AsyncFunctionHandler, TemplateCompiler};
-    use dataflow_rs_v3::engine::task_context::TaskContext;
-    use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
     use serde_json::{Map, json};
 
-    /// The store both engines read: a string, a non-string, and a client id.
+    /// The store the probes read: a string, a non-string, and a client id.
     fn secrets() -> ResolvedSecrets {
         let mut values = Map::new();
         values.insert("signing".into(), json!("s3cr3t-signing-key"));
@@ -757,7 +753,7 @@ mod tests {
         orion_exprs(&secrets(), 0).expect("Orion's expressions build")
     }
 
-    /// The message both engines run over.
+    /// The message the probes run over.
     fn data() -> Value {
         json!({
             "suffix": "eu",
@@ -780,16 +776,6 @@ mod tests {
         }
     }
 
-    /// The task `probe`, with `input`, alone in a workflow.
-    fn workflow(input: Option<Value>) -> Value {
-        let mut function = json!({"name": "probe"});
-        function["input"] = input.unwrap_or_else(|| json!({}));
-        json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t", "function": function}]
-        })
-    }
-
     /// `input` (`{field: value}`, or `{}` when `value` is `None`).
     fn input(field: &str, value: Option<&Value>) -> Option<Value> {
         Some(match value {
@@ -798,31 +784,7 @@ mod tests {
         })
     }
 
-    /// Runs `handler` as task `probe` on a dataflow-rs 3 engine built as 1.12
-    /// built one, and returns what it wrote at `data.out`.
-    async fn run_v3<H: AsyncFunctionHandler>(handler: H, input: Option<Value>) -> Value {
-        let workflow: dataflow_rs_v3::Workflow =
-            serde_json::from_value(workflow(input)).expect("a workflow");
-        let engine = with_orion_engine_defaults(dataflow_rs_v3::Engine::builder(), &secrets())
-            .register("probe", handler)
-            .with_workflow(workflow)
-            .build()
-            .expect("the engine builds");
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            OwnedDataValue::from(&data()),
-        );
-        engine
-            .process_message(&mut message)
-            .await
-            .expect("the probe never fails its task");
-        let data: Value = message.data().into();
-        data["out"].clone()
-    }
-
-    /// Runs `f` through `testing::call` over the same message and store, and
+    /// Runs `f` through `testing::call` over the message and store, and
     /// returns what it wrote at `data.out` and `data.input`.
     async fn run_v4<F: Function>(f: F, input: Option<Value>) -> (Value, Value) {
         let message = Message::from_parts(
@@ -848,6 +810,26 @@ mod tests {
         (read("data.out"), read("data.input"))
     }
 
+    /// Holds a probe's `out` to 1.12's record `case` for `value`.
+    #[track_caller]
+    fn pinned(out: &Value, case: &str, value: Option<&Value>) {
+        let key = match value {
+            Some(value) => format!("{case}/{value}"),
+            None => format!("{case}/unset"),
+        };
+        twin::pinned(&Ok(without_path(out)), key);
+    }
+
+    /// `out` with this process's `PATH` spelled `<PATH>`: the `env://PATH`
+    /// cases resolve it, and a record must not depend on the machine.
+    fn without_path(out: &Value) -> Value {
+        let Ok(path) = std::env::var("PATH") else {
+            return out.clone();
+        };
+        let text = out.to_string().replace(&path, "<PATH>");
+        serde_json::from_str(&text).expect("still JSON")
+    }
+
     /// Writes `out` and the call's input, as a layer reads it.
     fn write(ctx: &mut Ctx<'_>, out: &Value) -> dataflow_rs::Result<Outcome> {
         let input = ctx.input()?;
@@ -857,36 +839,6 @@ mod tests {
     }
 
     // -- KeyMaterial ------------------------------------------------------
-
-    /// `crypto`'s `key`, read as 1.12 reads it.
-    struct KeyV3;
-
-    #[async_trait]
-    impl AsyncFunctionHandler for KeyV3 {
-        type Input = TemplatedInput;
-
-        fn compile_input(
-            input: &mut Self::Input,
-            c: &TemplateCompiler,
-        ) -> dataflow_rs_v3::Result<()> {
-            // `crypto`'s table compiles `key` as an expression, as in 1.12.
-            input.compile("crypto", c)
-        }
-
-        async fn execute(
-            &self,
-            ctx: &mut TaskContext<'_>,
-            input: &TemplatedInput,
-        ) -> dataflow_rs_v3::Result<TaskOutcome> {
-            let read = crate::engine::functions::secret_ref::key_material_field(
-                input, "key", "crypto", ctx,
-            )
-            .await;
-            let out = seen(read.map(Value::String).map_err(HandlerError::from));
-            ctx.set_json("data.out", &out);
-            Ok(TaskOutcome::Success)
-        }
-    }
 
     #[derive(Debug, FunctionConfig)]
     struct KeyConfig {
@@ -905,11 +857,11 @@ mod tests {
         }
     }
 
-    /// Every spelling resolves as `key_material_field` resolves it — the
-    /// material, or the class and message of the refusal — and `input()`
+    /// Every spelling resolves as 1.12's `key_material_field` resolved it —
+    /// the material, or the class and message of the refusal — and `input()`
     /// writes the field `null` exactly when it reads a secret.
     #[tokio::test]
-    async fn key_material_resolves_as_key_material_field_does() {
+    async fn key_material_resolves_as_1_12_did() {
         let cases = [
             (Some(json!("a-literal-key")), json!("a-literal-key")),
             (Some(json!("env://PATH")), json!("env://PATH")),
@@ -930,9 +882,8 @@ mod tests {
             (None, Value::Null),
         ];
         for (value, in_input) in cases {
-            let expected = run_v3(KeyV3, input("key", value.as_ref())).await;
             let (out, written) = run_v4(KeyV4, input("key", value.as_ref())).await;
-            assert_eq!(out, expected, "key = {value:?}");
+            pinned(&out, "key_material", value.as_ref());
             assert_eq!(
                 written.get("key").cloned().unwrap_or(Value::Null),
                 in_input,
@@ -942,7 +893,7 @@ mod tests {
                 assert_eq!(written, json!({}), "an unset key is absent from the input");
             }
         }
-        // The material of the store's key, not merely the same as 1.12's.
+        // The material of the store's key.
         let (out, _) = run_v4(KeyV4, input("key", Some(&json!({"secret": "signing"})))).await;
         assert_eq!(out, json!({"ok": "s3cr3t-signing-key"}));
     }
@@ -977,36 +928,6 @@ mod tests {
 
     // -- KeyMaterialList --------------------------------------------------
 
-    /// `jwt_verify`'s `audience`, read as 1.12 reads it.
-    struct ListV3;
-
-    #[async_trait]
-    impl AsyncFunctionHandler for ListV3 {
-        type Input = TemplatedInput;
-
-        fn compile_input(
-            input: &mut Self::Input,
-            c: &TemplateCompiler,
-        ) -> dataflow_rs_v3::Result<()> {
-            input.compile("jwt_verify", c)
-        }
-
-        async fn execute(
-            &self,
-            ctx: &mut TaskContext<'_>,
-            input: &TemplatedInput,
-        ) -> dataflow_rs_v3::Result<TaskOutcome> {
-            let read =
-                crate::engine::functions::jwt_verify::string_or_vec(input, "audience", ctx).await;
-            let out = seen(
-                read.map(|values| Value::Array(values.into_iter().map(Value::String).collect()))
-                    .map_err(HandlerError::from),
-            );
-            ctx.set_json("data.out", &out);
-            Ok(TaskOutcome::Success)
-        }
-    }
-
     #[derive(Debug, FunctionConfig)]
     struct ListConfig {
         audience: Option<KeyMaterialList>,
@@ -1027,11 +948,11 @@ mod tests {
         }
     }
 
-    /// `string_or_vec`'s cases, each read as it reads them: a string, an
-    /// array, holes in either, a secret node as the field or an element, a
-    /// `null` element dropped, and every refusal.
+    /// 1.12's `string_or_vec`'s cases, each read as it read them: a string,
+    /// an array, holes in either, a secret node as the field or an element,
+    /// a `null` element dropped, and every refusal.
     #[tokio::test]
-    async fn key_material_list_reads_as_string_or_vec_does() {
+    async fn key_material_list_reads_as_1_12_did() {
         let cases = [
             Some(json!("aud-literal")),
             Some(json!(["a", "b"])),
@@ -1065,9 +986,8 @@ mod tests {
             Some(json!({"var": "data.sec"})),
         ];
         for value in cases {
-            let expected = run_v3(ListV3, input("audience", value.as_ref())).await;
             let (out, _) = run_v4(ListV4, input("audience", value.as_ref())).await;
-            assert_eq!(out, expected, "audience = {value:?}");
+            pinned(&out, "key_material_list", value.as_ref());
         }
         // A `null` element is dropped; a hole that finds nothing is too.
         let (out, _) = run_v4(
@@ -1124,36 +1044,6 @@ mod tests {
 
     // -- KeyRef -----------------------------------------------------------
 
-    /// `jwt_verify`'s `keys[].key`, read as 1.12 reads it: as written, with
-    /// `secret_ref::key_material`.
-    struct RefV3;
-
-    #[async_trait]
-    impl AsyncFunctionHandler for RefV3 {
-        type Input = TemplatedInput;
-
-        fn compile_input(
-            input: &mut Self::Input,
-            c: &TemplateCompiler,
-        ) -> dataflow_rs_v3::Result<()> {
-            input.compile("jwt_verify", c)
-        }
-
-        async fn execute(
-            &self,
-            ctx: &mut TaskContext<'_>,
-            input: &TemplatedInput,
-        ) -> dataflow_rs_v3::Result<TaskOutcome> {
-            let raw = input.get("key").cloned().unwrap_or(Value::Null);
-            let read =
-                crate::engine::functions::secret_ref::key_material(&raw, "jwt_verify.keys", ctx)
-                    .await;
-            let out = seen(read.map(Value::String).map_err(HandlerError::from));
-            ctx.set_json("data.out", &out);
-            Ok(TaskOutcome::Success)
-        }
-    }
-
     #[derive(Debug, FunctionConfig)]
     struct RefConfig {
         key: KeyRef,
@@ -1171,13 +1061,13 @@ mod tests {
         }
     }
 
-    /// Every spelling resolves as `key_material` resolves it: a string as a
+    /// Every spelling resolves as 1.12's `key_material` resolved it: a string as a
     /// literal or a reference, a secret node from the store, and anything
     /// else refused, an expression included, which is never evaluated. The
     /// input writes the field `null` exactly when it reads a secret, and
     /// anything else as written.
     #[tokio::test]
-    async fn key_ref_resolves_as_key_material_does() {
+    async fn key_ref_resolves_as_1_12_did() {
         let cases = [
             (json!("a-literal-key"), json!("a-literal-key")),
             (json!("env://PATH"), json!("env://PATH")),
@@ -1209,12 +1099,11 @@ mod tests {
             (Value::Null, Value::Null),
         ];
         for (value, in_input) in cases {
-            let expected = run_v3(RefV3, input("key", Some(&value))).await;
             let (out, written) = run_v4(RefV4, input("key", Some(&value))).await;
-            assert_eq!(out, expected, "key = {value}");
+            pinned(&out, "key_ref", Some(&value));
             assert_eq!(written["key"], in_input, "key = {value}");
         }
-        // The material of the store's key, not merely the same as 1.12's.
+        // The material of the store's key.
         let (out, _) = run_v4(RefV4, input("key", Some(&json!({"secret": "signing"})))).await;
         assert_eq!(out, json!({"ok": "s3cr3t-signing-key"}));
     }

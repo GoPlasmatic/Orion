@@ -89,7 +89,8 @@ fn scalar_connector_fields_evaluate_and_documents_still_fold() {
         "tasks": [
             {"id":"seed","name":"seed","function":{"name":"map","input":{"mappings":[
                 {"path":"data.tenant","logic":"acme"},
-                {"path":"data.id","logic":42}]}}},
+                {"path":"data.id","logic":42},
+                {"path":"data.page","logic":5}]}}},
             {"id":"c","name":"c","function":{"name":"cache_read","input":{
                 "connector":"redis",
                 "key":{"cat":["tenant:",{"var":"data.tenant"},":order:",{"var":"data.id"}]},
@@ -97,7 +98,7 @@ fn scalar_connector_fields_evaluate_and_documents_still_fold() {
             {"id":"m","name":"m","function":{"name":"mongo_read","input":{
                 "connector":"mongo","database":"d","collection":"orders",
                 "filter":{"tenant":{"var":"data.tenant"}},
-                "limit":{"+":[1,4]},
+                "limit":{"var":"data.page"},
                 "output":"data.orders"}}}
         ]
     }"#,
@@ -123,7 +124,7 @@ fn scalar_connector_fields_evaluate_and_documents_still_fold() {
         serde_json::json!("tenant:acme:order:42"),
         "{stdout}"
     );
-    // A scalar bound is an expression too.
+    // A bound is a document: its `var` hole folds.
     assert_eq!(
         parsed["calls"]["mongo_read"][0]["input"]["limit"], 5,
         "{stdout}"
@@ -854,7 +855,7 @@ fn an_expected_task_error_is_the_pass_and_names_the_task_that_failed() {
             "workflow": "wf.json",
             "input": {"id": "ORD-1"},
             "expect": {"data.order.customer_name": null},
-            "expect_errors": ["FUNCTION_ERROR", "WORKFLOW_ERROR"],
+            "expect_errors": ["FUNCTION_ERROR"],
             "expect_tasks": ["parse", "lookup"]
         }"#,
     )
@@ -1462,7 +1463,7 @@ fn set_mode_catches_references_a_single_file_lint_cannot_see() {
               "connector":"does-not-exist","database":"x","collection":"y",
               "filter":{},"output":"temp_data.z"}}},
             {"id":"d","name":"d","function":{"name":"channel_call","input":{
-              "channel":"no-such-channel","data_logic":{},"output":"temp_data.q"}}}]}"#,
+              "channel":"no-such-channel","data":{},"output":"temp_data.q"}}}]}"#,
     )
     .unwrap();
 
@@ -1492,7 +1493,7 @@ fn a_boundary_admits_a_reference_the_set_does_not_contain() {
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
             {"id":"d","name":"d","function":{"name":"channel_call","input":{
-              "channel":"deployed-elsewhere","data_logic":{},"output":"temp_data.q"}}}]}"#,
+              "channel":"deployed-elsewhere","data":{},"output":"temp_data.q"}}}]}"#,
     )
     .unwrap();
 
@@ -3658,39 +3659,52 @@ fn dry_run_json(workflow: &str, extra: &[&str]) -> serde_json::Value {
     serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{e}: {stdout}"))
 }
 
-/// Each step's snapshot carries its own audit entry, not the whole trail so
-/// far, so a dry run's output grows with its steps rather than their square.
+/// Each step carries its own changes and no snapshot, so a dry run's trace
+/// grows with its steps rather than their square: the context after a step
+/// is replayed from `initial`, not stored with it.
 #[test]
-fn a_dry_run_step_snapshots_only_its_own_audit_entry() {
+fn a_dry_run_trace_grows_with_its_steps_not_their_square() {
     let workflow = LONG_LOOP_WORKFLOW.replace("\"max\": 3000", "\"max\": 50");
     let out = dry_run_json(&workflow, &[]);
-    let steps = out["trace"]["steps"].as_array().expect("trace.steps");
+    assert!(out["trace"]["initial"].is_object(), "{}", out["trace"]);
+    let steps: Vec<&serde_json::Value> = out["trace"]["steps"]
+        .as_array()
+        .expect("trace.steps")
+        .iter()
+        .filter(|s| s["task_id"].is_string())
+        .collect();
     assert_eq!(steps.len(), 100);
-    for step in steps {
-        let trail = step["message"]["audit_trail"]
-            .as_array()
-            .expect("audit_trail");
+    for step in &steps {
+        assert!(step.get("message").is_none(), "a step holds no snapshot");
+        let changes = step["changes"].as_array().expect("changes");
         assert!(
-            trail.len() <= 1,
-            "a step snapshotted {} entries",
-            trail.len()
+            changes.len() <= 3,
+            "a step holds only its own writes, got {}",
+            changes.len()
         );
     }
     assert_eq!(out["tasks"].as_array().map(Vec::len), Some(100));
     assert_eq!(out["matched"], true);
 }
 
-/// `--trace steps` keeps the path without snapshots; `--trace none` records
+/// `--trace steps` keeps the path without changes; `--trace none` records
 /// nothing but the task list.
 #[test]
 fn dry_run_trace_modes_shape_the_output() {
     let workflow = LONG_LOOP_WORKFLOW.replace("\"max\": 3000", "\"max\": 5");
 
     let steps = dry_run_json(&workflow, &["--trace", "steps"]);
-    let recorded = steps["trace"]["steps"].as_array().expect("trace.steps");
+    let recorded: Vec<&serde_json::Value> = steps["trace"]["steps"]
+        .as_array()
+        .expect("trace.steps")
+        .iter()
+        .filter(|s| s["task_id"].is_string())
+        .collect();
     assert_eq!(recorded.len(), 10);
     assert!(
-        recorded.iter().all(|s| s["message"].is_null()),
+        recorded
+            .iter()
+            .all(|s| s["changes"].as_array().is_some_and(Vec::is_empty)),
         "{recorded:?}"
     );
 

@@ -21,14 +21,11 @@
 use dataflow_rs::Ctx;
 use dataflow_rs::expr::{CompileCx, Interpolated, Rendered};
 use dataflow_rs::program::IssueCode;
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use futures::TryStreamExt;
 use mongodb::bson::{self, Bson, Document};
 use serde_json::Value;
 
-use super::connector_helpers::{is_mongo, resolve_value};
-use super::templated_input::TemplatedInput;
+use super::connector_helpers::is_mongo;
 use crate::connector::DbConnectorConfig;
 use crate::engine::{ErrorClass, HandlerError};
 
@@ -42,29 +39,17 @@ pub(super) fn require_mongo_backend(
     db_config: &DbConnectorConfig,
     handler_name: &str,
     connector_name: &str,
-) -> Result<(), DataflowError> {
+) -> Result<(), HandlerError> {
     if !is_mongo(&db_config.connection_string) {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} requires a MongoDB connector, but '{connector_name}' has a \
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!(
+                "{handler_name} requires a MongoDB connector, but '{connector_name}' has a \
              non-MongoDB connection string (expected a mongodb:// or mongodb+srv:// URL)"
-        )));
+            ),
+        ));
     }
     Ok(())
-}
-
-/// Resolve an optional document-shaped field: fold `{"var": ..}` nodes, then
-/// interpret through the `bson` serde bridge (extended JSON included). Absent
-/// or null is `None`; anything resolving to a non-object is a located error.
-pub(super) fn resolve_document(
-    input: &Value,
-    field: &str,
-    handler_name: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Option<Document>, DataflowError> {
-    match input.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(raw) => document_from_value(&resolve_value(raw, ctx), field, handler_name).map(Some),
-    }
 }
 
 /// The half of [`resolve_document`] after the fold: the folded value as a
@@ -74,14 +59,18 @@ pub(super) fn document_from_value(
     resolved: &Value,
     field: &str,
     handler_name: &str,
-) -> Result<Document, DataflowError> {
+) -> Result<Document, HandlerError> {
     if !resolved.is_object() {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} '{field}' must resolve to an object"
-        )));
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("{handler_name} '{field}' must resolve to an object"),
+        ));
     }
     bson::to_document(resolved).map_err(|e| {
-        DataflowError::Validation(format!("{handler_name} '{field}' is not valid: {e}"))
+        HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("{handler_name} '{field}' is not valid: {e}"),
+        )
     })
 }
 
@@ -97,44 +86,25 @@ pub(super) fn documents_from_values<'a>(
     values: impl IntoIterator<Item = &'a Value>,
     field: &str,
     handler_name: &str,
-) -> Result<Vec<Document>, DataflowError> {
+) -> Result<Vec<Document>, HandlerError> {
     values
         .into_iter()
         .enumerate()
         .map(|(i, item)| {
             if !item.is_object() {
-                return Err(DataflowError::Validation(format!(
-                    "{handler_name} {field}[{i}] must be an object"
-                )));
+                return Err(HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!("{handler_name} {field}[{i}] must be an object"),
+                ));
             }
             bson::to_document(item).map_err(|e| {
-                DataflowError::Validation(format!("{handler_name} {field}[{i}] is not valid: {e}"))
+                HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!("{handler_name} {field}[{i}] is not valid: {e}"),
+                )
             })
         })
         .collect()
-}
-
-/// [`resolve_document`] for a field holding an **array** of documents.
-///
-/// One implementation for `insert_many`'s `documents` and `mongo_write`'s
-/// `array_filters`, which each carried their own copy; `mongo_aggregate`
-/// shares the conversion half through [`documents_from_values`].
-/// Extended-JSON support (`$oid`, `$date`, …) therefore falls out for all
-/// three, which is what makes a typed date comparison inside an array filter
-/// work.
-///
-/// `None` when the field is absent or null.
-pub(super) fn resolve_document_array(
-    input: &Value,
-    field: &str,
-    handler_name: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Option<Vec<Document>>, DataflowError> {
-    let raw = match input.get(field) {
-        None | Some(Value::Null) => return Ok(None),
-        Some(raw) => raw,
-    };
-    document_array_from_value(&resolve_value(raw, ctx), field, handler_name).map(Some)
 }
 
 /// The half of [`resolve_document_array`] after the fold, shared as
@@ -143,11 +113,12 @@ pub(super) fn document_array_from_value(
     resolved: &Value,
     field: &str,
     handler_name: &str,
-) -> Result<Vec<Document>, DataflowError> {
+) -> Result<Vec<Document>, HandlerError> {
     let Value::Array(items) = resolved else {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} '{field}' must resolve to an array of objects"
-        )));
+        return Err(HandlerError::new(
+            ErrorClass::CallerInput,
+            format!("{handler_name} '{field}' must resolve to an array of objects"),
+        ));
     };
     documents_from_values(items.iter(), field, handler_name)
 }
@@ -171,7 +142,7 @@ pub(super) fn rendered_bson<T>(
     ctx: &Ctx<'_>,
     doc: &Interpolated,
     direct: impl FnOnce(&Rendered<'_>) -> Option<T>,
-    judge: impl FnOnce(&Value) -> Result<T, DataflowError>,
+    judge: impl FnOnce(&Value) -> Result<T, HandlerError>,
 ) -> Result<T, HandlerError> {
     let rendered = ctx.render(doc);
     if let Some(read) = direct(&rendered) {
@@ -179,7 +150,7 @@ pub(super) fn rendered_bson<T>(
     }
     let folded =
         serde_json::to_value(&rendered).map_err(|e| HandlerError::new(ErrorClass::Backend, e))?;
-    Ok(judge(&folded)?)
+    judge(&folded)
 }
 
 /// [`resolve_document`] on dataflow-rs 4: an optional document field
@@ -260,34 +231,11 @@ pub(super) fn report_static(
 
 /// The refusal of a document field an op requires and the task leaves unset
 /// or `null`, in 1.12's words, on both engines.
-pub(super) fn requires(field: &str, handler_name: &str) -> DataflowError {
-    DataflowError::Validation(format!("{handler_name} requires '{field}' field"))
-}
-
-/// Resolve an optional non-negative integer field (`limit`, `skip`).
-///
-/// `pub(crate)` for `engine::kit::read::mongo_u64`'s twin test, which holds
-/// the dataflow-rs 4 reader to this one.
-pub(crate) fn resolve_u64(
-    input: &TemplatedInput,
-    field: &str,
-    handler_name: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Option<u64>, DataflowError> {
-    match input.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(raw) => match resolve_value(raw, ctx) {
-            Value::Number(n) => n.as_u64().map(Some).ok_or_else(|| {
-                DataflowError::Validation(format!(
-                    "{handler_name} '{field}' must be a non-negative integer"
-                ))
-            }),
-            other => Err(DataflowError::Validation(format!(
-                "{handler_name} '{field}' must resolve to a non-negative integer, got {}",
-                super::connector_helpers::json_type_name(&other)
-            ))),
-        },
-    }
+pub(super) fn requires(field: &str, handler_name: &str) -> HandlerError {
+    HandlerError::new(
+        ErrorClass::CallerInput,
+        format!("{handler_name} requires '{field}' field"),
+    )
 }
 
 /// Drain a cursor into documents, refusing past `cap` — an unbounded result
@@ -327,14 +275,15 @@ pub(super) async fn drain_capped(
 /// # Errors
 ///
 /// [`DataflowError`] naming the offending document's index.
-pub(super) fn docs_to_json(docs: &[Document], handler_name: &str) -> Result<Value, DataflowError> {
+pub(super) fn docs_to_json(docs: &[Document], handler_name: &str) -> Result<Value, HandlerError> {
     docs.iter()
         .enumerate()
         .map(|(i, doc)| {
             serde_json::to_value(doc).map_err(|e| {
-                DataflowError::Validation(format!(
-                    "{handler_name}: document [{i}] has no JSON representation: {e}"
-                ))
+                HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!("{handler_name}: document [{i}] has no JSON representation: {e}"),
+                )
             })
         })
         .collect::<Result<Vec<Value>, _>>()
@@ -395,17 +344,17 @@ const DUPLICATE_KEY_CODES: [i32; 2] = [11000, 11001];
 /// stop at the SQL connectors.
 ///
 /// [`to_exec_error`]: super::connector_helpers::to_exec_error
-pub(super) fn mongo_error(e: mongodb::error::Error) -> DataflowError {
+pub(super) fn mongo_error(e: mongodb::error::Error) -> HandlerError {
     if let mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(we)) =
         e.kind.as_ref()
         && DUPLICATE_KEY_CODES.contains(&we.code)
     {
-        return crate::errors::integrity_dataflow_error(
+        return HandlerError::from(crate::errors::service::integrity(
             crate::errors::IntegrityKind::Unique,
             e.to_string(),
-        );
+        ));
     }
-    super::connector_helpers::to_exec_error(e).into()
+    super::connector_helpers::to_exec_error(e)
 }
 
 /// The integrity error for a bulk write that applied **nothing** because every
@@ -415,7 +364,7 @@ pub(super) fn mongo_error(e: mongodb::error::Error) -> DataflowError {
 /// there are no per-item failures to judge — all three are cases where a 409
 /// would be a worse answer than the bulk envelope, which names exactly what
 /// happened to each item.
-pub(super) fn all_duplicate_key(failed: &[(usize, Value)], what: &str) -> Option<DataflowError> {
+pub(super) fn all_duplicate_key(failed: &[(usize, Value)], what: &str) -> Option<HandlerError> {
     if failed.is_empty() {
         return None;
     }
@@ -433,10 +382,10 @@ pub(super) fn all_duplicate_key(failed: &[(usize, Value)], what: &str) -> Option
         .first()
         .map(|(_, d)| d.to_string())
         .unwrap_or_default();
-    Some(crate::errors::integrity_dataflow_error(
+    Some(HandlerError::from(crate::errors::service::integrity(
         crate::errors::IntegrityKind::Unique,
         format!("{what} failed, no documents were written: {first}"),
-    ))
+    )))
 }
 
 /// Test-only: the connectors the Mongo trio's tests reach, and a pool cache

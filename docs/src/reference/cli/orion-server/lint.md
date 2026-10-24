@@ -37,8 +37,7 @@ Advisory findings print on stderr and do not fail the command unless `--deny-war
 
 The other two are the engine's, reported here because `Engine::build` does not refuse them. A workflow carrying one loads, serves, and does less than its author wrote:
 
-- `[engine.unguarded_validation]` — a [`validation`](../../functions/validation.md) whose failure changes nothing: a failed rule records `400`, the engine warns on `4xx` and carries on, and every task after it is unguarded. Silenced by [`"halt_on": "failure"`](../../workflows.md#halting-on-failure) on the task, or by a condition on what follows. Collecting failures and carrying on is a legitimate shape, so this says the assertion is not acting as a gate — not that it is wrong.
-- `[engine.group_continue_on_error]` — `continue_on_error` on a task *group*, which the engine parses and drops. Error handling is per task and per workflow; the key belongs on the tasks inside the group, or on the workflow.
+- `[engine.unguarded_validation]` — a [`validation`](../../functions/validation.md) whose failure changes nothing: a failed rule records `400`, the engine warns on `4xx` and carries on, and every task after it is unguarded. Silenced by [`"on_rejection": "halt"`](../../workflows.md#halting-on-a-rejection) on the task, or by a condition on what follows. Collecting failures and carrying on is a legitimate shape, so this says the assertion is not acting as a gate — not that it is wrong.
 
 A sixth id, `[engine.advisory]`, is the catch-all. An engine newer than this Orion may report an advisory it has no specific id for. It is printed with the engine's own message rather than dropped. Seeing one means the server binary is older than the definitions it is checking.
 

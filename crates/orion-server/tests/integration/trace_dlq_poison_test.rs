@@ -10,12 +10,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
-
 use orion::config::{StorageConfig, TraceQueueConfig, TraceStorageConfig};
 use orion::queue::{DlqRetryOptions, QueueMessage};
 use orion::storage::DbPool;
@@ -26,28 +20,30 @@ const MAX_RETRIES: i64 = 2;
 
 /// A task function that always fails, so every processing attempt routes the
 /// message to the DLQ.
+/// Fails every call, as a backend that is down fails it.
 struct AlwaysFail;
 
-#[async_trait]
-impl AsyncFunctionHandler for AlwaysFail {
-    type Input = serde_json::Value;
+impl dataflow_rs::Function for AlwaysFail {
+    type Config = ();
 
-    async fn execute(
+    async fn call(
         &self,
-        _ctx: &mut TaskContext<'_>,
-        _input: &Self::Input,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        Err(DataflowError::FunctionExecution {
-            context: "poison message".to_string(),
-            source: None,
-        })
+        _ctx: &mut dataflow_rs::Ctx<'_>,
+        _cfg: &(),
+    ) -> dataflow_rs::Result<dataflow_rs::Outcome> {
+        Err(
+            orion::engine::HandlerError::new(orion::engine::ErrorClass::Backend, "poison message")
+                .into(),
+        )
     }
 }
 
-/// A serving generation whose only workflow fails every message.
 fn poison_runtime() -> Arc<orion::runtime::RuntimeHandle> {
-    let workflow = dataflow_rs_v3::Workflow::from_json(
-        r#"{
+    let mut registry = dataflow_rs::Registry::new(orion::engine::kit::test_exprs());
+    registry.register("always_fail", AlwaysFail);
+    let engine = dataflow_rs::Engine::builder()
+        .registry(registry)
+        .workflow_json(&serde_json::json!({
             "id": "poison-wf",
             "name": "Poison",
             "priority": 0,
@@ -55,21 +51,22 @@ fn poison_runtime() -> Arc<orion::runtime::RuntimeHandle> {
             "tasks": [
                 {"id": "t1", "name": "Boom", "function": {"name": "always_fail", "input": {}}}
             ]
-        }"#,
-    )
-    .expect("poison workflow parses");
-
-    let engine = dataflow_rs_v3::Engine::builder()
-        .with_workflow(workflow)
-        .register("always_fail", AlwaysFail)
+        }))
         .build()
         .expect("engine builds");
 
-    Arc::new(orion::runtime::RuntimeHandle::new(
-        Arc::new(engine),
+    let handle = orion::runtime::RuntimeHandle::new(
         Arc::new(orion::channel::ChannelSnapshot::empty()),
         orion::engine::FunctionRegistry::builtin().clone(),
-    ))
+    );
+    handle.publish(
+        engine,
+        Arc::new(orion::channel::ChannelSnapshot::empty()),
+        orion::engine::FunctionRegistry::builtin().clone(),
+        Arc::new(orion::plugin::PluginSet::empty()),
+        Arc::new(orion::model::ModelSet::empty()),
+    );
+    Arc::new(handle)
 }
 
 fn sqlite(pool: &DbPool) -> &sqlx::SqlitePool {

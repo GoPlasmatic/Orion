@@ -235,21 +235,27 @@ withheld.
 | `started_at` / `completed_at` / `duration_ms` | once processing started/finished | |
 | `task_trace_json` | per-task tracing was on for the channel | The engine's execution trace; the step table follows |
 
-**`task_trace_json`** is the engine's execution trace, recorded per task when
-the channel opts in with `config.tracing.task_details` (default `false`). Its
-top level is `{ "steps": [...] }`, plus `"truncated": true` when the snapshot
-cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
+**`task_trace_json`** is the engine's execution trace, recorded when the
+channel opts in with `config.tracing.task_details` (default `false`). Its top
+level is `{ "initial": {...}, "steps": [...], "truncated": false }`. `initial`
+is the context the run started from (`data`, `metadata`, `temp_data`), and each
+step carries the changes it made, so replaying the changes in order from
+`initial` gives the context after every step. Request headers, cookies and
+OAuth state are redacted to `null`. `truncated` is `true` when the cap
+(`trace_queue.max_result_size_bytes`) was crossed: from that step on, steps keep
+everything but their changes. Each step entry:
 
 | Field | Type | Notes |
 |---|---|---|
-| `workflow_id` | string | Always present |
-| `task_id` | string \| null | `null` for workflow-level skips |
-| `result` | `"executed"` \| `"skipped"` | The only two outcomes — errors surface on the trace, not the step |
-| `message` | object | Snapshot of the message (`id`, `payload`, `context`, `audit_trail`, `errors`); request headers are redacted |
-| `mapping_contexts` | array | `map` tasks only — per-mapping context snapshots |
-| `started_at` | string | Executed steps only |
-| `duration_us` | number | **Microseconds**, executed steps only |
-| `changes` | array | Per-task diff entries `{path, old_value, new_value}` |
+| `workflow` / `workflow_id` | number / string | The workflow's position in the build, and its id |
+| `task` / `task_id` | number \| null / string \| null | `null` for the workflow's own step: its skip, its failure, or the engine's writes as a loop sweep starts |
+| `result` | `"executed"` \| `"skipped"` \| `"failed"` | `failed` is a failure that went to the workflow's policy or stopped the run |
+| `status` | number \| null | The call's status; `null` for a skip |
+| `changes` | array | The step's writes in order, each `{path, old_value, new_value}`, with `removed: true` for a removal and `replaced: true` for a write that replaced a root rather than merging into it |
+| `mapping_ends` | array | `map` tasks only: where each mapping's changes end, so a replay can stop after any one mapping |
+| `errors` | array | The error records the step added to the message |
+| `elapsed_us` | number | **Microseconds** the call ran |
+| `loop_counter` / `element_index` | number | The loop sweep and the fan-out element, when there is one |
 
 ## Operational endpoints
 

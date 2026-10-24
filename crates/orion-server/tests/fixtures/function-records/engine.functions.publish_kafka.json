@@ -1,0 +1,167 @@
+{
+  "fields_read/{\"connector\":\"events\",\"topic\":\"orders\"}": {
+    "ok": {
+      "id": 7,
+      "region": "eu",
+      "order": {
+        "sku": "A1"
+      },
+      "list": [
+        1,
+        "a"
+      ],
+      "out": {
+        "topic": "orders",
+        "key": null,
+        "value": {
+          "id": 7,
+          "region": "eu",
+          "order": {
+            "sku": "A1"
+          },
+          "list": [
+            1,
+            "a"
+          ]
+        }
+      }
+    }
+  },
+  "fields_read/{\"connector\":\"events\",\"topic\":\"t\",\"key\":{\"var\":\"data.none\"},\"value\":{\"var\":\"data.none\"}}": {
+    "ok": {
+      "id": 7,
+      "region": "eu",
+      "order": {
+        "sku": "A1"
+      },
+      "list": [
+        1,
+        "a"
+      ],
+      "out": {
+        "topic": "t",
+        "key": "null",
+        "value": null
+      }
+    }
+  },
+  "fields_read/{\"connector\":\"events\",\"topic\":7,\"key\":null,\"value\":null}": {
+    "ok": {
+      "id": 7,
+      "region": "eu",
+      "order": {
+        "sku": "A1"
+      },
+      "list": [
+        1,
+        "a"
+      ],
+      "out": {
+        "topic": "7",
+        "key": null,
+        "value": {
+          "id": 7,
+          "region": "eu",
+          "order": {
+            "sku": "A1"
+          },
+          "list": [
+            1,
+            "a"
+          ]
+        }
+      }
+    }
+  },
+  "fields_read/{\"connector\":\"events\",\"topic\":null,\"key\":true,\"value\":[1,{\"var\":\"data.id\"}]}": {
+    "ok": {
+      "id": 7,
+      "region": "eu",
+      "order": {
+        "sku": "A1"
+      },
+      "list": [
+        1,
+        "a"
+      ],
+      "out": {
+        "topic": "null",
+        "key": "true",
+        "value": [
+          1,
+          7
+        ]
+      }
+    }
+  },
+  "fields_read/{\"connector\":\"events\",\"topic\":{\"cat\":[\"orders.\",{\"var\":\"data.region\"}]},\"key\":{\"var\":\"data.id\"},\"value\":{\"var\":\"data.order\"}}": {
+    "ok": {
+      "id": 7,
+      "region": "eu",
+      "order": {
+        "sku": "A1"
+      },
+      "list": [
+        1,
+        "a"
+      ],
+      "out": {
+        "topic": "orders.eu",
+        "key": "7",
+        "value": {
+          "sku": "A1"
+        }
+      }
+    }
+  },
+  "fields_read/{\"connector\":\"events\",\"topic\":{\"var\":\"data.list\"},\"key\":{\"var\":\"data.order\"},\"value\":\"text\"}": {
+    "ok": {
+      "id": 7,
+      "region": "eu",
+      "order": {
+        "sku": "A1"
+      },
+      "list": [
+        1,
+        "a"
+      ],
+      "out": {
+        "topic": "[1,\"a\"]",
+        "key": "{\"sku\":\"A1\"}",
+        "value": "text"
+      }
+    }
+  },
+  "no_producer/{\"connector\":\"absent\",\"topic\":\"t\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "no_producer/{\"connector\":\"api\",\"topic\":\"t\"}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "Connector 'api' is not a Kafka connector"
+    }
+  },
+  "no_producer/{\"connector\":\"closed\",\"topic\":\"t\"}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'publish' is disabled on connector 'closed'"
+    }
+  },
+  "no_producer/{\"connector\":\"events\",\"topic\":{\"cat\":[\"orders.\",{\"var\":\"data.region\"}]}}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Kafka publishing to topic 'orders.eu' is not available. Enable Kafka in configuration to use publish_kafka.",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

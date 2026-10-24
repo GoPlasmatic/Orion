@@ -1,0 +1,244 @@
+{
+  "output_refusal/5": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "output_refusal/[\"data.d\"]": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "output_refusal/{\"a\":1}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hash\",\"algorithm\":\"md5\",\"data\":\"abc\",\"output\":\"data.digest\"} {}": {
+    "ok": {
+      "digest": "900150983cd24fb0d6963f7d28e17f72"
+    }
+  },
+  "{\"op\":\"hash\",\"algorithm\":\"sha1\",\"data\":\"abc\",\"output\":\"data.digest\"} {}": {
+    "ok": {
+      "digest": "a9993e364706816aba3e25717850c26c9cd0d89d"
+    }
+  },
+  "{\"op\":\"hash\",\"algorithm\":\"sha256\",\"data\":\"abc\",\"output\":\"data.digest\"} {}": {
+    "ok": {
+      "digest": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    }
+  },
+  "{\"op\":\"hash\",\"algorithm\":\"sha512\",\"data\":\"abc\",\"output\":\"data.digest\"} {}": {
+    "ok": {
+      "digest": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+    }
+  },
+  "{\"op\":\"hash\",\"data\":\"fffe\",\"input_encoding\":\"hex\",\"output\":\"data.digest\"} {}": {
+    "ok": {
+      "digest": "b3d510ef04275ca8e698e5b3cbb0ece3949ef9252f0cdc839e9ee347409a2209"
+    }
+  },
+  "{\"op\":\"hash\",\"data\":\"zz\",\"input_encoding\":\"hex\",\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: 'data' does not decode: Invalid character 'z' at position 0",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hash\",\"data\":{\"throw\":\"boom\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: crypto: Thrown: {\"type\":\"boom\"} (in operator: throw)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hash\",\"data\":{\"var\":\"data.missing\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: 'data' resolved to null — check the referenced path",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hash\",\"data\":{\"var\":\"data.obj\"},\"input_encoding\":\"hex\",\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: input_encoding applies to string data only — this data is JSON and would be hashed as its compact serialization",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hash\",\"data\":{\"var\":\"data.payload\"},\"output\":\"data.digest\"} {\"payload\":{\"b\":1,\"a\":2}}": {
+    "ok": {
+      "payload": {
+        "b": 1,
+        "a": 2
+      },
+      "digest": "a1d46c3cdb4e5795c8d637f80daeb578ebb1a9a65dc1ed5f11f51794c3c89f3a"
+    }
+  },
+  "{\"op\":\"hmac\",\"algorithm\":\"sha1\",\"key\":\"Jefe\",\"data\":{\"var\":\"data.challenge\"},\"output\":\"data.mac\"} {\"challenge\":\"what do ya want for nothing?\"}": {
+    "ok": {
+      "challenge": "what do ya want for nothing?",
+      "mac": "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"
+    }
+  },
+  "{\"op\":\"hmac\",\"algorithm\":\"sha256\",\"key\":\"Jefe\",\"data\":{\"var\":\"data.challenge\"},\"output\":\"data.mac\"} {\"challenge\":\"what do ya want for nothing?\"}": {
+    "ok": {
+      "challenge": "what do ya want for nothing?",
+      "mac": "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    }
+  },
+  "{\"op\":\"hmac\",\"algorithm\":\"sha512\",\"key\":\"Jefe\",\"data\":{\"var\":\"data.challenge\"},\"output\":\"data.mac\"} {\"challenge\":\"what do ya want for nothing?\"}": {
+    "ok": {
+      "challenge": "what do ya want for nothing?",
+      "mac": "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737"
+    }
+  },
+  "{\"op\":\"hmac\",\"data\":\"x\",\"key\":\"env://ORION_CRYPTO_SURELY_UNSET_4K\",\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: Configuration error: crypto.key: env-var 'ORION_CRYPTO_SURELY_UNSET_4K' is not set (referenced via env:// in a connector config)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hmac\",\"data\":\"x\",\"key\":\"zz\",\"key_encoding\":\"hex\",\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: 'key' does not decode per key_encoding: Invalid character 'z' at position 0",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hmac\",\"data\":\"x\",\"key\":{\"var\":\"data.empty\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: 'key' resolved to an empty value",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hmac\",\"data\":\"x\",\"key\":{\"var\":\"data.n\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: 'crypto.key' must resolve to a string, got 5",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hmac\",\"data\":{\"var\":\"data.missing\"},\"key\":{\"var\":\"data.empty\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: 'key' resolved to an empty value",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hmac\",\"key\":\"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\",\"key_encoding\":\"hex\",\"data\":\"Hi There\",\"encoding\":\"base64\",\"output\":\"data.mac\"} {}": {
+    "ok": {
+      "mac": "sDRMYdjbOFNcqK/OrwvxK4gdwgDJgz2nJuk3bC4yz/c="
+    }
+  },
+  "{\"op\":\"hmac_verify\",\"data\":\"x\",\"key\":\"Jefe\",\"signature\":{\"var\":\"data.obj\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: crypto 'signature' must resolve to a string or number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"hmac_verify\",\"key\":\"Jefe\",\"data\":\"what do ya want for nothing?\",\"signature\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"output\":\"data.ok\"} {}": {
+    "ok": {
+      "ok": false
+    }
+  },
+  "{\"op\":\"hmac_verify\",\"key\":\"Jefe\",\"data\":\"what do ya want for nothing?\",\"signature\":{\"var\":\"data.sig\"},\"output\":\"data.ok\"} {\"sig\":\"5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843\"}": {
+    "ok": {
+      "sig": "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+      "ok": true
+    }
+  },
+  "{\"op\":\"hmac_verify\",\"key\":\"Jefe\",\"data\":\"what do ya want for nothing?\",\"signature\":{\"var\":\"data.sig\"},\"output\":\"data.ok\"} {\"sig\":\"W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM=\"}": {
+    "ok": {
+      "sig": "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM=",
+      "ok": true
+    }
+  },
+  "{\"op\":\"hmac_verify\",\"key\":\"Jefe\",\"data\":\"x\",\"signature\":\"!!not-an-encoding!!\",\"output\":\"data.ok\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: 'signature' is not hex, base64, or base64url",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"password_hash\",\"password\":{\"var\":\"data.obj\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: crypto 'password' must resolve to a string or number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"password_verify\",\"password\":\"pw\",\"hash\":\"$2b$31$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234\",\"output\":\"data.ok\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: stored bcrypt hash cost (31) is outside allowed range 10..=14",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"password_verify\",\"password\":\"pw\",\"hash\":\"$argon2id$v=19$m=1048576,t=2,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG\",\"output\":\"data.ok\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: stored argon2 hash memory_kib (1048576) is outside allowed range 8192..=131072",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"password_verify\",\"password\":\"pw\",\"hash\":\"$argon2id$v=19$m=19456,t=99,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG\",\"output\":\"data.ok\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: stored argon2 hash iterations (99) is outside allowed range 1..=10",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"password_verify\",\"password\":\"x\",\"hash\":\"plainly-not-a-hash\",\"output\":\"data.ok\"} {}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: unrecognized password hash scheme — expected an $argon2*$ PHC string or a $2*$ bcrypt hash",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"password_verify\",\"password\":\"x\",\"hash\":{\"var\":\"data.n\"},\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: unrecognized password hash scheme — expected an $argon2*$ PHC string or a $2*$ bcrypt hash",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "{\"op\":\"password_verify\",\"password\":{\"var\":\"data.missing\"},\"hash\":\"$2b$10$x\",\"output\":\"data.d\"} {\"obj\":{\"a\":1},\"empty\":\"\",\"n\":5,\"s\":\"ok\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: crypto: crypto 'password' must resolve to a string or number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  }
+}

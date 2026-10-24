@@ -75,7 +75,7 @@ pub fn input_expressions<'a>(
     match function {
         "map" => each("mappings", "logic", &mut out),
         "filter" => one("condition", &mut out),
-        "validation" | "validate" => each("rules", "logic", &mut out),
+        "validation" => each("rules", "logic", &mut out),
         "log" => {
             one("message", &mut out);
             if let Some(fields) = map.get("fields").and_then(Value::as_object) {

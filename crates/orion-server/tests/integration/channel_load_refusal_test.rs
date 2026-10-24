@@ -540,16 +540,11 @@ async fn quarantine_reason(app: &axum::Router, channel: &str) -> Option<String> 
         .map(|e| e["reason"].as_str().unwrap_or_default().to_string())
 }
 
-/// F23: `channel` is optional when `channel_logic` is given. The schema and
-/// the docs said so while the struct required it, so this exact workflow
-/// passed admin validation and then failed the engine build.
-///
-/// Screening now runs the handler's own `parse_input` through
-/// `Engine::check_workflow`, so what this asserts is that the real
-/// `channel_call` input type accepts the shape — not that a hand-written
-/// mirror of it does.
+/// `channel_logic`, 1.12's spelling of a computed `channel`, is no longer
+/// read: a stored row carrying it is quarantined at load, naming the key,
+/// rather than running with no target.
 #[tokio::test]
-async fn channel_call_with_only_channel_logic_loads() {
+async fn channel_call_with_only_channel_logic_is_quarantined() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
 
@@ -562,10 +557,12 @@ async fn channel_call_with_only_channel_logic_loads() {
 
     let (status, body) = reload_engine(&app).await;
     assert_eq!(status, StatusCode::OK, "reload must succeed: {body}");
-    assert_eq!(
-        quarantine_reason(&app, "dyn-fanout").await,
-        None,
-        "a channel_call carrying only channel_logic must load"
+    let reason = quarantine_reason(&app, "dyn-fanout")
+        .await
+        .expect("a channel_call carrying only channel_logic is quarantined");
+    assert!(
+        reason.contains("tasks[0].function.input.channel_logic"),
+        "the reason names the key: {reason}"
     );
 }
 
@@ -634,7 +631,7 @@ async fn a_payload_var_defect_loads_and_serves() {
         state
             .runtime
             .load()
-            .engine4
+            .engine
             .as_ref()
             .expect("the generation carries its dataflow-rs 4 engine")
             .program()
@@ -704,7 +701,7 @@ async fn an_output_that_is_no_path_quarantines_its_channel() {
         "cc-result",
         task(
             "channel_call",
-            json!({"channel": "nonexistent", "response_path": "result"}),
+            json!({"channel": "nonexistent", "output": "result"}),
         ),
     )
     .await;
@@ -714,7 +711,7 @@ async fn an_output_that_is_no_path_quarantines_its_channel() {
         task(
             "http_call",
             json!({"connector": "no-path-api", "method": "POST", "path": "/x",
-                   "response_path": "response"}),
+                   "output": "response"}),
         ),
     )
     .await;

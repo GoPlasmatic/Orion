@@ -1,0 +1,490 @@
+{
+  "the_call/{\"connector\":\"absent\",\"database\":\"db\",\"collection\":\"c\",\"filter\":{\"n\":{\"var\":\"data.n\"}},\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"api\",\"database\":\"db\",\"collection\":\"c\",\"filter\":{\"n\":{\"var\":\"data.n\"}},\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "Connector 'api' is not a database connector"
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"c\",\"filter\":\"x\",\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got String instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"c\",\"filter\":{\"n\":{\"var\":\"data.n\"}},\"output\":\"data.documents\",\"limit\":51}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: requested limit 51 exceeds the configured maximum 50",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"c\",\"filter\":{\"n\":{\"var\":\"data.n\"}},\"output\":\"data.documents\"}/{\"operations\":{\"read\":false}}": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'read' is disabled on connector 'docs'"
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"c\",\"filter\":{\"n\":{\"var\":\"data.n\"}},\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "TIMEOUT_ERROR",
+      "message": "Timeout error: mongo_read query timed out after 100ms",
+      "retryable": true,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"docs\",\"database\":\"db\",\"collection\":\"c\",\"filter\":{\"n\":{\"var\":\"data.n\"}},\"output\":{\"var\":\"data.n\"}}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_call/{\"connector\":\"sql\",\"database\":\"db\",\"collection\":\"c\",\"filter\":{\"n\":{\"var\":\"data.n\"}},\"output\":\"data.documents\"}/{}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read requires a MongoDB connector, but 'sql' has a non-MongoDB connection string (expected a mongodb:// or mongodb+srv:// URL)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":\"text\",\"limit\":51}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got String instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":\"text\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got String instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":null}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got Null instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":{\"$oid\":\"665f1f77bcf86cd799439011\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got ObjectId instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":{\"$oid\":\"not-an-object-id\"}}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({\"$oid\": String(\"not-an-object-id\")}), projection: None, sort: None, limit: None, skip: None }"
+    }
+  },
+  "the_find/{\"filter\":{\"$oid\":{\"var\":\"data.id\"}}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got ObjectId instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":{\"_id\":{\"$oid\":{\"var\":\"data.id\"}}}}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({\"_id\": ObjectId(\"665f1f77bcf86cd799439011\")}), projection: None, sort: None, limit: None, skip: None }"
+    }
+  },
+  "the_find/{\"filter\":{\"at\":{\"$date\":{\"var\":\"data.when\"}}},\"limit\":{\"var\":\"data.limit\"},\"skip\":{\"var\":\"data.skip\"}}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({\"at\": DateTime(2026-01-02 3:04:05.0 +00:00:00)}), projection: None, sort: None, limit: Some(5), skip: Some(2) }"
+    }
+  },
+  "the_find/{\"filter\":{\"n\":18446744073709551615}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: BSON does not support unsigned integers.\n                 An attempt to serialize the value: 18446744073709551615 in a signed type failed due to the value's size.",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":{\"n\":{\"$gte\":{\"var\":[\"data.min\",0]}},\"t\":{\"$in\":{\"var\":\"data.tags\"}}},\"projection\":{\"_id\":0,\"n\":1},\"sort\":{\"n\":-1,\"t\":1}}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({\"n\": Document({\"$gte\": Int64(3)}), \"t\": Document({\"$in\": Array([String(\"a\"), String(\"b\")])})}), projection: Some(Document({\"_id\": Int64(0), \"n\": Int64(1)})), sort: Some(Document({\"n\": Int64(-1), \"t\": Int64(1)})), limit: None, skip: None }"
+    }
+  },
+  "the_find/{\"filter\":{\"n\":{\"var\":\"data.big\"},\"deep\":{\"var\":\"data.nested\"},\"w\":{\"var\":\"data.whole\"},\"f\":1.5}}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({\"n\": Int64(9007199254740993), \"deep\": Document({\"a\": Array([Int64(1), Document({\"b\": Null})])}), \"w\": Double(5.0), \"f\": Double(1.5)}), projection: None, sort: None, limit: None, skip: None }"
+    }
+  },
+  "the_find/{\"filter\":{\"var\":\"data.doc\"},\"limit\":50,\"skip\":100}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({\"k\": Int64(1), \"$exists\": Boolean(true)}), projection: None, sort: None, limit: Some(50), skip: Some(100) }"
+    }
+  },
+  "the_find/{\"filter\":{\"var\":\"data.tags\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got Array instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":{\"var\":\"data.text\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: Invalid MongoDB filter: Could not be serialized to Document, got String instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"filter\":{\"x\":{\"var\":\"data.missing\"},\"y\":{\"var\":[\"payload.y\",\"fallback\"]}},\"limit\":null,\"skip\":null,\"projection\":null,\"sort\":null}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({\"x\": Null, \"y\": String(\"fallback\")}), projection: None, sort: None, limit: None, skip: None }"
+    }
+  },
+  "the_find/{\"limit\":\"5\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'limit' must resolve to a non-negative integer, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"limit\":51,\"projection\":\"x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: requested limit 51 exceeds the configured maximum 50",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"limit\":51}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: requested limit 51 exceeds the configured maximum 50",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"limit\":{\"var\":\"data.frac\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"limit\":{\"var\":\"data.missing\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'limit' must resolve to a non-negative integer, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"limit\":{\"var\":\"data.neg\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"limit\":{\"var\":\"data.whole\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'limit' must be a non-negative integer",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"output\":{\"var\":\"data.limit\"},\"filter\":\"text\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"projection\":\"x\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'projection' must resolve to an object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"projection\":{\"var\":\"data.tags\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'projection' must resolve to an object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"skip\":101}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: requested skip 101 exceeds the configured maximum 100",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"skip\":true}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'skip' must resolve to a non-negative integer, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"sort\":{\"$oid\":\"665f1f77bcf86cd799439011\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'sort' is not valid: Could not be serialized to Document, got ObjectId instead",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{\"sort\":{\"var\":\"data.missing\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: mongo_read 'sort' must resolve to an object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "the_find/{}": {
+    "ok": {
+      "id": "665f1f77bcf86cd799439011",
+      "min": 3,
+      "when": "2026-01-02T03:04:05Z",
+      "tags": [
+        "a",
+        "b"
+      ],
+      "doc": {
+        "k": 1,
+        "$exists": true
+      },
+      "limit": 5,
+      "skip": 2,
+      "neg": -1,
+      "frac": 2.5,
+      "whole": 5.0,
+      "big": 9007199254740993,
+      "text": "x",
+      "nested": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "find": "MongoFind { database: \"db\", collection: \"c\", filter: Document({}), projection: None, sort: None, limit: None, skip: None }"
+    }
+  }
+}

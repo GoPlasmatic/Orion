@@ -44,7 +44,6 @@ fn output_field() -> FieldSpec {
         resolvable: false,
         secret_at: &[],
         template_at: &[],
-        alias: None,
     }
 }
 
@@ -290,7 +289,6 @@ impl Manifest {
                 description: f.description.clone(),
                 category: f.category.clone(),
                 source: Source::Plugin,
-                aliases: Vec::new(),
                 input_fields: Some(
                     f.input_fields
                         .iter()
@@ -305,7 +303,6 @@ impl Manifest {
                             // one position a plugin field can be evaluated at,
                             // since the guest receives the resolved value.
                             template_at: if d.template_at { &[""] } else { &[] },
-                            alias: None,
                         })
                         .chain(std::iter::once(output_field()))
                         .collect(),

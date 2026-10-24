@@ -484,8 +484,7 @@ mod tests {
         ];
         let generation = RuntimeGeneration {
             id: 1,
-            engine: Arc::new(dataflow_rs_v3::Engine::builder().build().expect("builds")),
-            engine4: None,
+            engine: None,
             channels: Arc::new(crate::channel::ChannelSnapshot::empty()),
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),
@@ -531,8 +530,7 @@ mod tests {
         ];
         let generation = RuntimeGeneration {
             id: 1,
-            engine: Arc::new(dataflow_rs_v3::Engine::builder().build().expect("builds")),
-            engine4: None,
+            engine: None,
             channels: Arc::new(crate::channel::ChannelSnapshot::empty()),
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),

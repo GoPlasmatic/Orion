@@ -4,7 +4,7 @@
 
 # `jwt_verify`
 
-Verifies a JWS mid-workflow (provider id_tokens for social login, refresh tokens, partner assertions) against static keys, a JWKS, or both. The JWKS cache is the process-wide one the channel's `jwt` mode uses: single-flight refresh, stale-serve, `kid`-rotation refetch. Rejections are typed task errors that `continue_on_error` branches on; the reason is named, the token never is.
+Verifies a JWS mid-workflow (provider id_tokens for social login, refresh tokens, partner assertions) against static keys, a JWKS, or both. The JWKS cache is the process-wide one the channel's `jwt` mode uses: single-flight refresh, stale-serve, `kid`-rotation refetch. Rejections are typed task errors that a later task branches on under `on_failure: "continue"`; the reason is named, the token never is.
 
 ## Synopsis
 

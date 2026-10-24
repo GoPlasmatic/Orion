@@ -3,133 +3,18 @@
 //! assertions. The same shared core and JWKS cache as the channel mode, with
 //! task-error semantics so workflows can branch on failure.
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
-use super::connector_helpers::{apply_output, resolve_optional_u64, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
 use crate::engine::kit::{self, KeyMaterialList, KeyRef, read};
 use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name in metrics, profiles and error messages (F48).
 pub const NAME: &str = "jwt_verify";
-
-/// Workflow function handler that verifies JWTs.
-pub struct JwtVerifyHandler {
-    /// The instance's JWKS cache. Held rather than reached for globally: it
-    /// carries the SSRF-pinned HTTP client and the operator's
-    /// `jwt.allow_private_jwks_urls` policy, neither of which a process-wide
-    /// `OnceLock` could be given.
-    pub jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
-}
-
-#[async_trait]
-impl AsyncFunctionHandler for JwtVerifyHandler {
-    type Input = TemplatedInput;
-
-    /// Compile the expression fields this handler's table declares. The
-    /// `Connector` wrapper does this for the connector handlers; these three
-    /// are self-contained — no connector, no egress — so they implement
-    /// `AsyncFunctionHandler` directly and say it themselves.
-    fn compile_input(
-        input: &mut Self::Input,
-        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs_v3::Result<()> {
-        input.compile("jwt_verify", c)
-    }
-
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        // Literal prologue (F58).
-        let algorithms = algorithms(input.raw())?;
-        let output = input
-            .get("output")
-            .and_then(Value::as_str)
-            .unwrap_or("data");
-
-        let token = resolve_required_str(input, "token", NAME, ctx)?;
-
-        let mut static_keys = Vec::new();
-        for (index, entry) in input
-            .get("keys")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
-            let field = |name: &str| entry.get(name).and_then(Value::as_str);
-            let Some(algorithm) = field("algorithm") else {
-                return Err(validation(&format!(
-                    "'keys[{index}].algorithm' is required"
-                )));
-            };
-            let algorithm = crate::jwt::parse_algorithm(algorithm).map_err(|e| validation(&e))?;
-            let key_ref = match entry.get("key") {
-                None | Some(Value::Null) => {
-                    return Err(validation(&format!("'keys[{index}].key' is required")));
-                }
-                Some(key) => key,
-            };
-            let material = super::secret_ref::key_material(key_ref, "jwt_verify.keys", ctx).await?;
-            let key = crate::jwt::decoding_key(algorithm, &material, field("key_encoding"))
-                .map_err(|e| validation(&format!("'keys[{index}]': {e}")))?;
-            static_keys.push(crate::jwt::StaticKey {
-                kid: field("kid").map(str::to_string),
-                algorithm,
-                key,
-            });
-        }
-
-        let jwks = match input.get("jwks_url").and_then(Value::as_str) {
-            None => None,
-            Some(url) => {
-                crate::jwt::validate_jwks_url(url)
-                    .map_err(|e| validation(&format!("'jwks_url' {e}")))?;
-                Some(crate::jwt::JwksSource {
-                    url: url.to_string(),
-                    cache: self.jwks.clone(),
-                })
-            }
-        };
-        if static_keys.is_empty() && jwks.is_none() {
-            return Err(validation("requires 'keys' and/or 'jwks_url'"));
-        }
-
-        let verifier = crate::jwt::Verifier {
-            static_keys,
-            jwks,
-            algorithms,
-            issuer: string_or_vec(input, "issuer", ctx).await?,
-            audience: string_or_vec(input, "audience", ctx).await?,
-            leeway_secs: resolve_optional_u64(input, "leeway_secs", NAME, ctx)?
-                .unwrap_or(crate::jwt::DEFAULT_LEEWAY_SECS)
-                .min(crate::jwt::MAX_LEEWAY_SECS),
-            require_exp: input
-                .get("require_exp")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-            max_token_bytes: crate::jwt::DEFAULT_MAX_TOKEN_BYTES,
-            validations: std::sync::OnceLock::new(),
-        };
-
-        let claims = verifier.verify(&token).await.map_err(rejected)?;
-
-        apply_output(ctx, output, claims);
-        Ok(TaskOutcome::Success)
-    }
-}
 
 /// A caller-fixable refusal, named: `jwt_verify`'s messages carry the
 /// handler's name themselves.
@@ -137,12 +22,8 @@ fn invalid(msg: &str) -> HandlerError {
     HandlerError::new(ErrorClass::CallerInput, format!("{NAME}: {msg}"))
 }
 
-fn validation(msg: &str) -> DataflowError {
-    invalid(msg).into()
-}
-
 /// A verification's refusal: a typed, branchable task error, the reason and
-/// never the token. Shared by both engines' paths.
+/// never the token.
 fn rejected(reason: crate::jwt::RejectReason) -> HandlerError {
     HandlerError::new(
         ErrorClass::Backend,
@@ -224,9 +105,8 @@ fn check(cfg: &JwtVerifyConfig, cx: &mut CompileCx<'_>) {
     super::mongo_common::report_static(validate_static_input(&input), cx);
 }
 
-/// `jwt_verify` as a dataflow-rs 4 function: the verification
-/// `JwtVerifyHandler` runs, each field read in the same order, a JWKS fetch
-/// inside the run's deadline.
+/// `jwt_verify` as a function: the verification 1.12's handler ran, each
+/// field read in the same order, a JWKS fetch inside the run's deadline.
 pub struct JwtVerifyFunction {
     /// The instance's JWKS cache, shared with the channel `jwt` auth mode.
     pub jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
@@ -249,8 +129,7 @@ impl Function for JwtVerifyFunction {
 }
 
 impl JwtVerifyFunction {
-    /// Where the claims go and the verified claims, read in
-    /// `JwtVerifyHandler::execute`'s order: the allowlist, the output, the
+    /// Where the claims go and the verified claims, read in 1.12's order: the allowlist, the output, the
     /// token, each static key, the JWKS URL, the issuer and audience, the
     /// leeway, then the verification.
     async fn claims<'c>(
@@ -341,69 +220,6 @@ fn algorithms_v4(names: &[String]) -> Result<Vec<jsonwebtoken::Algorithm>, Handl
         .iter()
         .map(|name| crate::jwt::parse_algorithm(name).map_err(|e| invalid(&e)))
         .collect()
-}
-
-fn algorithms(input: &Value) -> Result<Vec<jsonwebtoken::Algorithm>, DataflowError> {
-    let names = input
-        .get("algorithms")
-        .and_then(Value::as_array)
-        .filter(|a| !a.is_empty())
-        .ok_or_else(|| validation("requires a non-empty 'algorithms' allowlist"))?;
-    let mut algorithms = Vec::with_capacity(names.len());
-    for name in names {
-        let Some(name) = name.as_str() else {
-            return Err(validation("'algorithms' entries must be strings"));
-        };
-        algorithms.push(crate::jwt::parse_algorithm(name).map_err(|e| validation(&e))?);
-    }
-    Ok(algorithms)
-}
-
-/// `issuer` / `audience`: a string or an array; string values pass through
-/// the secret resolver so client ids can live as `env://` references (they
-/// round-trip masked exports even though they are not secrets).
-///
-/// `pub(crate)` for `engine::kit::fields::KeyMaterialList`'s twin test,
-/// which holds the dataflow-rs 4 field to this reading.
-pub(crate) async fn string_or_vec(
-    input: &TemplatedInput,
-    field: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Vec<String>, DataflowError> {
-    let raw = match input.get(field) {
-        None | Some(Value::Null) => return Ok(Vec::new()),
-        Some(raw) => super::connector_helpers::resolve_value(raw, ctx),
-    };
-    // A `{"secret": …}` node is one item, not a map of one: it is the reserved
-    // operator's shape, so it has to be recognised before the array arm would
-    // otherwise treat it as a non-string and drop it.
-    let items: Vec<Value> = match raw {
-        raw if super::secret_ref::secret_name(&raw).is_some() => vec![raw],
-        raw @ Value::String(_) => vec![raw],
-        Value::Array(items) => items,
-        _ => {
-            return Err(validation(&format!(
-                "'{field}' must be a string or an array of strings"
-            )));
-        }
-    };
-    let mut resolved = Vec::with_capacity(items.len());
-    for item in items {
-        // A `null` element is dropped, not refused. The elements are
-        // `resolvable`, so `[{"var": "data.aud1"}, {"var": "data.aud2"}]` is a
-        // documented spelling and a request that carries only the first folds
-        // the second to `null` — an absent accepted value, the same thing the
-        // whole-field `None | Null` arm above already treats as "not supplied".
-        // Dropping it narrows what verification accepts, so the failure it can
-        // cause is a rejected token, never an accepted one. Anything else
-        // non-string is still an error: silently dropping a number or a
-        // misspelled operator node would hide a typo in a security control.
-        if item.is_null() {
-            continue;
-        }
-        resolved.push(super::secret_ref::key_material(&item, field, ctx).await?);
-    }
-    Ok(resolved)
 }
 
 // -- Authoring-time validation (shared with schema::validate_input) --
@@ -531,283 +347,14 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::functions::twin::{self, Failure, Seen};
+    use crate::engine::functions::twin::{self, Seen};
     use crate::jwt::jwks::JwksCache;
     use dataflow_rs::function::testing;
     use dataflow_rs::program::Severity;
     use serde_json::json;
     use std::sync::Arc;
 
-    /// Run a two-task workflow — jwt_sign then jwt_verify — through a real
-    /// engine, which is acceptance criterion 5's round-trip.
-    async fn round_trip(
-        sign_input: Value,
-        verify_input: Value,
-        data: Value,
-    ) -> Result<Value, String> {
-        let mut fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
-            Default::default();
-        fns.insert(
-            "jwt_sign".to_string(),
-            Box::new(super::super::jwt_sign::JwtSignHandler),
-        );
-        fns.insert(
-            "jwt_verify".to_string(),
-            Box::new(JwtVerifyHandler {
-                jwks: std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
-                    reqwest::Client::new(),
-                    false,
-                )),
-            }),
-        );
-        crate::engine::functions::run_test_tasks(
-            fns,
-            json!([
-                {"id": "sign", "name": "sign",
-                 "function": {"name": "jwt_sign", "input": sign_input}},
-                {"id": "verify", "name": "verify",
-                 "function": {"name": "jwt_verify", "input": verify_input}},
-            ]),
-            data,
-        )
-        .await
-    }
-
     const HS_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-
-    /// Acceptance criterion 5: sign → verify round-trips for every family —
-    /// HS, RS (PKCS), PS (PSS), ES, EdDSA.
-    #[tokio::test]
-    async fn every_family_round_trips() {
-        use crate::jwt::testkeys;
-        for (alg, sign_key, verify_key) in [
-            ("HS256", HS_SECRET, HS_SECRET),
-            ("HS512", HS_SECRET, HS_SECRET),
-            (
-                "RS256",
-                testkeys::RSA.private.as_str(),
-                testkeys::RSA.public.as_str(),
-            ),
-            (
-                "PS256",
-                testkeys::RSA.private.as_str(),
-                testkeys::RSA.public.as_str(),
-            ),
-            (
-                "ES256",
-                testkeys::EC.private.as_str(),
-                testkeys::EC.public.as_str(),
-            ),
-            (
-                "EdDSA",
-                testkeys::ED.private.as_str(),
-                testkeys::ED.public.as_str(),
-            ),
-        ] {
-            let out = round_trip(
-                json!({"algorithm": alg, "key": sign_key,
-                       "claims": {"sub": {"var": "data.user_id"}, "roles": ["teacher"]},
-                       "expires_in": "24h", "issuer": "example-api",
-                       "output": "data.token"}),
-                json!({"token": {"var": "data.token"},
-                       "algorithms": [alg],
-                       "keys": [{"algorithm": alg, "key": verify_key}],
-                       "issuer": "example-api",
-                       "output": "data.claims"}),
-                json!({"user_id": "user-7"}),
-            )
-            .await
-            .unwrap_or_else(|e| unreachable!("{alg}: {e}"));
-            assert_eq!(out["claims"]["sub"], "user-7", "{alg}");
-            assert_eq!(out["claims"]["iss"], "example-api", "{alg}");
-            assert!(out["claims"]["exp"].is_number(), "{alg}");
-            assert!(out["claims"]["iat"].is_number(), "{alg}");
-        }
-    }
-
-    /// #272: an author-supplied `iat` survives into the token instead of being
-    /// overwritten by the ambient clock.
-    ///
-    /// `iat` is the only registered claim `jwt_sign` touches that has no
-    /// dedicated input field, so nothing more specific exists to beat a claims
-    /// entry — the entry should simply win, exactly as an explicit `exp` does.
-    /// The round trip through `jwt_verify` proves nothing downstream rejects a
-    /// back-dated token: neither `jwt_verify` nor the channel `jwt` auth mode
-    /// inspects `iat`.
-    #[tokio::test]
-    async fn an_explicit_iat_claim_survives_signing() {
-        let back_dated = chrono::Utc::now().timestamp() - 86_400;
-        let out = round_trip(
-            json!({"algorithm": "HS256", "key": HS_SECRET,
-                   "claims": {"sub": "u1", "iat": back_dated},
-                   "expires_in": 300, "output": "data.token"}),
-            json!({"token": {"var": "data.token"},
-                   "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
-                   "output": "data.claims"}),
-            json!({}),
-        )
-        .await
-        .expect("a back-dated iat must sign and verify");
-        assert_eq!(
-            out["claims"]["iat"], back_dated,
-            "an explicit iat must not be overwritten by the ambient clock"
-        );
-    }
-
-    /// The other half: with no `iat` supplied it is still stamped, so the
-    /// change is additive and no existing workflow loses the claim.
-    #[tokio::test]
-    async fn an_absent_iat_is_still_stamped() {
-        let before = chrono::Utc::now().timestamp();
-        let out = round_trip(
-            json!({"algorithm": "HS256", "key": HS_SECRET, "claims": {},
-                   "expires_in": 300, "output": "data.token"}),
-            json!({"token": {"var": "data.token"},
-                   "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
-                   "output": "data.claims"}),
-            json!({}),
-        )
-        .await
-        .expect("sign");
-        let iat = out["claims"]["iat"].as_i64().expect("iat is stamped");
-        assert!(
-            iat >= before && iat <= chrono::Utc::now().timestamp(),
-            "an unsupplied iat is stamped to now, got {iat}"
-        );
-    }
-
-    /// A non-numeric registered date mints a token every verifier rejects, so
-    /// it is refused at sign time where the message can name the claim. `exp`
-    /// takes the same rule — it previously got no check at all when supplied
-    /// through `claims`.
-    #[tokio::test]
-    async fn a_non_numeric_registered_date_is_refused_at_signing() {
-        for (claim, claims) in [
-            (
-                "iat",
-                json!({"iat": "2026-08-20T00:00:00Z", "exp": 9_999_999_999i64}),
-            ),
-            ("exp", json!({"exp": "2026-08-20T00:00:00Z"})),
-        ] {
-            let err = round_trip(
-                json!({"algorithm": "HS256", "key": HS_SECRET,
-                       "claims": claims, "output": "data.token"}),
-                json!({"token": "x", "algorithms": ["HS256"],
-                       "keys": [{"algorithm": "HS256", "key": HS_SECRET}]}),
-                json!({}),
-            )
-            .await
-            .expect_err("a string date must be refused");
-            assert!(
-                err.contains(&format!("claims.{claim}")) && err.contains("NumericDate"),
-                "{claim}: {err}"
-            );
-        }
-    }
-
-    /// Determinism is the structural win: with `iat` and `exp` both pinned, one
-    /// input mints byte-identical tokens, so an offline `*.case.json` case can
-    /// finally assert a `jwt_sign` result. Before this change `iat` moved every
-    /// run and no golden test was possible.
-    #[tokio::test]
-    async fn a_fully_pinned_claim_set_mints_a_deterministic_token() {
-        let sign = json!({"algorithm": "HS256", "key": HS_SECRET,
-                          "claims": {"sub": "u1", "iat": 1_700_000_000i64,
-                                     "exp": 1_900_000_000i64},
-                          "output": "data.token"});
-        let verify = json!({"token": {"var": "data.token"},
-                            "algorithms": ["HS256"],
-                            "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
-                            "output": "data.claims"});
-        let first = round_trip(sign.clone(), verify.clone(), json!({}))
-            .await
-            .expect("sign");
-        let second = round_trip(sign, verify, json!({})).await.expect("sign");
-        assert_eq!(
-            first["token"], second["token"],
-            "a fully pinned claim set must mint the same bytes every run"
-        );
-    }
-
-    /// Cross-family confusion (acceptance criterion 2): an HS-signed token
-    /// against an RS allowlist — and the reverse — must die at the allowlist,
-    /// as a typed task error naming the reason.
-    #[tokio::test]
-    async fn cross_family_tokens_are_rejected() {
-        use crate::jwt::testkeys;
-        let err = round_trip(
-            json!({"algorithm": "HS256", "key": HS_SECRET,
-                   "claims": {}, "expires_in": 300, "output": "data.token"}),
-            json!({"token": {"var": "data.token"},
-                   "algorithms": ["RS256"],
-                   "keys": [{"algorithm": "RS256", "key": testkeys::RSA.public.as_str()}],
-                   "output": "data.claims"}),
-            json!({}),
-        )
-        .await
-        .expect_err("HS token against RS allowlist");
-        assert!(err.contains("alg_rejected"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn verify_failures_are_typed_task_errors() {
-        // Expired token: signed with exp already past (explicit exp claim).
-        let past = chrono::Utc::now().timestamp() - 3600;
-        let err = round_trip(
-            json!({"algorithm": "HS256", "key": HS_SECRET,
-                   "claims": {"exp": past}, "output": "data.token"}),
-            json!({"token": {"var": "data.token"},
-                   "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
-                   "output": "data.claims"}),
-            json!({}),
-        )
-        .await
-        .expect_err("expired");
-        assert!(err.contains("expired"), "{err}");
-
-        // Wrong audience.
-        let err = round_trip(
-            json!({"algorithm": "HS256", "key": HS_SECRET, "claims": {},
-                   "expires_in": 300, "audience": "other-app", "output": "data.token"}),
-            json!({"token": {"var": "data.token"},
-                   "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
-                   "audience": "this-app",
-                   "output": "data.claims"}),
-            json!({}),
-        )
-        .await
-        .expect_err("audience mismatch");
-        assert!(err.contains("audience_mismatch"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn sign_requires_a_deliberate_expiry_and_short_hs_keys_are_refused() {
-        let err = round_trip(
-            json!({"algorithm": "HS256", "key": HS_SECRET, "claims": {},
-                   "output": "data.token"}),
-            json!({"token": "x", "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}]}),
-            json!({}),
-        )
-        .await
-        .expect_err("no expiry");
-        assert!(err.contains("expires_in"), "{err}");
-
-        let err = round_trip(
-            json!({"algorithm": "HS256", "key": "short", "claims": {},
-                   "expires_in": 300, "output": "data.token"}),
-            json!({"token": "x", "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}]}),
-            json!({}),
-        )
-        .await
-        .expect_err("short secret");
-        assert!(err.contains("RFC 7518"), "{err}");
-    }
 
     /// The JWKS path end to end against a live mock: fetch, kid routing, and
     /// the rotation refetch (acceptance criterion 1's JWKS half). Symmetric
@@ -889,9 +436,9 @@ mod tests {
             .expect("rotation refetch");
     }
 
-    // -- dataflow-rs 4: the config, then each test above on both engines --
+    // -- the tasks, against 1.12's records --
 
-    /// The store both engines read below: the signing secret, a value that
+    /// The store the tasks below read: the signing secret, a value that
     /// is not a string, and a client id.
     fn secrets() -> crate::engine::ResolvedSecrets {
         let mut values = serde_json::Map::new();
@@ -912,55 +459,10 @@ mod tests {
         Arc::new(JwksCache::new(client, true))
     }
 
-    /// `steps`, each `(function, input)`, as one workflow on a dataflow-rs
-    /// 3 engine built as 1.12 built one (Orion's operators and the store
-    /// [`secrets`]), over a message whose `data` is `data`: the message's
-    /// `data`, or the failure that stopped it.
-    async fn v3_steps(steps: &[(&str, Value)], data: Value, jwks: Arc<JwksCache>) -> Seen {
-        let tasks: Vec<Value> = steps
-            .iter()
-            .enumerate()
-            .map(|(i, (name, input))| {
-                json!({"id": format!("t{i}"), "name": format!("t{i}"),
-                       "function": {"name": name, "input": input}})
-            })
-            .collect();
-        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true, "tasks": tasks
-        }))
-        .expect("a workflow");
-        let engine = crate::engine::operators::with_orion_engine_defaults(
-            dataflow_rs_v3::Engine::builder(),
-            &secrets(),
-        )
-        .register("jwt_sign", super::super::jwt_sign::JwtSignHandler)
-        .register(NAME, JwtVerifyHandler { jwks })
-        .with_workflow(workflow)
-        .build()
-        .expect("the engine builds");
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            OwnedDataValue::from(&data),
-        );
-        match engine.process_message(&mut message).await {
-            Ok(()) => Ok(message.data().into()),
-            Err(e) => {
-                let record = message.errors().first().expect("the failure is recorded");
-                Err(Failure {
-                    code: record.code.clone(),
-                    message: e.to_string(),
-                    retryable: e.retryable(),
-                    detail: record.detail.clone(),
-                })
-            }
-        }
-    }
-
-    /// The same steps on dataflow-rs 4: one call after another, each over
-    /// the message the one before left, on [`exprs`].
-    async fn v4_steps(steps: &[(&str, Value)], data: Value, jwks: Arc<JwksCache>) -> Seen {
+    /// `steps`, each `(function, input)`, one call after another, each over
+    /// the message the one before left, on [`exprs`], over a message whose
+    /// `data` is `data`: the message's `data`, or the failure that stopped it.
+    async fn steps_on(steps: &[(&str, Value)], data: Value, jwks: Arc<JwksCache>) -> Seen {
         let mut message = dataflow_rs::Message::from_parts(
             OwnedDataValue::Null,
             OwnedDataValue::from(&data),
@@ -989,16 +491,15 @@ mod tests {
         Ok(Value::from(message.context().data()))
     }
 
-    /// `steps` on both engines, each verifier with a JWKS cache of its own.
-    async fn both(steps: &[(&str, Value)], data: Value) -> (Seen, Seen) {
-        let v3 = v3_steps(steps, data.clone(), cache(reqwest::Client::new())).await;
-        let v4 = v4_steps(steps, data, cache(reqwest::Client::new())).await;
-        (v3, v4)
+    /// `steps` with a JWKS cache of their own.
+    async fn run(steps: &[(&str, Value)], data: Value) -> Seen {
+        steps_on(steps, data, cache(reqwest::Client::new())).await
     }
 
-    /// [`round_trip`]'s two tasks on both engines.
-    async fn round_trip_both(sign: Value, verify: Value, data: Value) -> (Seen, Seen) {
-        both(&[("jwt_sign", sign), (NAME, verify)], data).await
+    /// Sign then verify, the round trip: `jwt_sign` over `sign`, then
+    /// `jwt_verify` over `verify`.
+    async fn round_trip(sign: Value, verify: Value, data: Value) -> Seen {
+        run(&[("jwt_sign", sign), (NAME, verify)], data).await
     }
 
     /// `seen` with what depends on the clock or on a signature's randomness
@@ -1056,7 +557,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_family_round_trips_on_v4() {
+    async fn every_family_round_trips() {
         use crate::jwt::testkeys;
         for (alg, sign_key, verify_key) in [
             ("HS256", HS_SECRET, HS_SECRET),
@@ -1082,7 +583,7 @@ mod tests {
                 testkeys::ED.public.as_str(),
             ),
         ] {
-            let (v3, v4) = round_trip_both(
+            let v4 = round_trip(
                 json!({"algorithm": alg, "key": sign_key,
                        "claims": {"sub": {"var": "data.user_id"}, "roles": ["teacher"]},
                        "expires_in": "24h", "issuer": "example-api",
@@ -1095,7 +596,7 @@ mod tests {
                 json!({"user_id": "user-7"}),
             )
             .await;
-            assert_eq!(unclocked(&v4), unclocked(&v3), "{alg}");
+            twin::pinned(&unclocked(&v4), format!("every_family/{alg}"));
             let out = v4.unwrap_or_else(|e| unreachable!("{alg}: {e:?}"));
             assert_eq!(out["claims"]["sub"], "user-7", "{alg}");
             assert_eq!(out["claims"]["iss"], "example-api", "{alg}");
@@ -1105,9 +606,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_explicit_iat_claim_survives_signing_on_v4() {
+    async fn an_explicit_iat_claim_survives_signing() {
         let back_dated = chrono::Utc::now().timestamp() - 86_400;
-        let (v3, v4) = round_trip_both(
+        let v4 = round_trip(
             json!({"algorithm": "HS256", "key": HS_SECRET,
                    "claims": {"sub": "u1", "iat": back_dated},
                    "expires_in": 300, "output": "data.token"}),
@@ -1118,15 +619,14 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(unclocked(&v4), unclocked(&v3));
+        twin::pinned(&unclocked(&v4), "explicit_iat");
         assert_eq!(v4.expect("verified")["claims"]["iat"], back_dated);
-        assert_eq!(v3.expect("verified")["claims"]["iat"], back_dated);
     }
 
     #[tokio::test]
-    async fn an_absent_iat_is_still_stamped_on_v4() {
+    async fn an_absent_iat_is_still_stamped() {
         let before = chrono::Utc::now().timestamp();
-        let (v3, v4) = round_trip_both(
+        let v4 = round_trip(
             json!({"algorithm": "HS256", "key": HS_SECRET, "claims": {},
                    "expires_in": 300, "output": "data.token"}),
             json!({"token": {"var": "data.token"},
@@ -1136,7 +636,7 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(unclocked(&v4), unclocked(&v3));
+        twin::pinned(&unclocked(&v4), "absent_iat");
         let iat = v4.expect("verified")["claims"]["iat"]
             .as_i64()
             .expect("iat is stamped");
@@ -1144,7 +644,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_non_numeric_registered_date_is_refused_at_signing_on_v4() {
+    async fn a_non_numeric_registered_date_is_refused_at_signing() {
         for (claim, claims) in [
             (
                 "iat",
@@ -1152,7 +652,7 @@ mod tests {
             ),
             ("exp", json!({"exp": "2026-08-20T00:00:00Z"})),
         ] {
-            let (v3, v4) = round_trip_both(
+            let v4 = round_trip(
                 json!({"algorithm": "HS256", "key": HS_SECRET,
                        "claims": claims, "output": "data.token"}),
                 json!({"token": "x", "algorithms": ["HS256"],
@@ -1160,7 +660,7 @@ mod tests {
                 json!({}),
             )
             .await;
-            assert_eq!(v4, v3, "{claim}");
+            twin::pinned(&v4, format!("non_numeric_date/{claim}"));
             let err = v4.expect_err("a string date is refused");
             assert!(
                 err.message.contains(&format!("claims.{claim}"))
@@ -1170,10 +670,10 @@ mod tests {
         }
     }
 
-    /// With `iat` and `exp` pinned, both engines mint the same bytes and
-    /// verify them to the same claims.
+    /// With `iat` and `exp` pinned, the token is 1.12's bytes, verified to
+    /// 1.12's claims.
     #[tokio::test]
-    async fn a_fully_pinned_claim_set_mints_a_deterministic_token_on_v4() {
+    async fn a_fully_pinned_claim_set_mints_a_deterministic_token() {
         let sign = json!({"algorithm": "HS256", "key": HS_SECRET,
                           "claims": {"sub": "u1", "iat": 1_700_000_000i64,
                                      "exp": 1_900_000_000i64},
@@ -1182,16 +682,16 @@ mod tests {
                             "algorithms": ["HS256"],
                             "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
                             "output": "data.claims"});
-        let (v3, v4) = round_trip_both(sign, verify, json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = round_trip(sign, verify, json!({})).await;
+        twin::pinned(&v4, "fully_pinned");
         let out = v4.expect("verified");
         assert!(out["token"].is_string());
     }
 
     #[tokio::test]
-    async fn cross_family_tokens_are_rejected_on_v4() {
+    async fn cross_family_tokens_are_rejected() {
         use crate::jwt::testkeys;
-        let (v3, v4) = round_trip_both(
+        let v4 = round_trip(
             json!({"algorithm": "HS256", "key": HS_SECRET,
                    "claims": {}, "expires_in": 300, "output": "data.token"}),
             json!({"token": {"var": "data.token"},
@@ -1201,16 +701,16 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "cross_family");
         let err = v4.expect_err("HS token against RS allowlist");
         assert!(err.message.contains("alg_rejected"), "{err:?}");
         assert_eq!(err.code, "FUNCTION_ERROR");
     }
 
     #[tokio::test]
-    async fn verify_failures_are_typed_task_errors_on_v4() {
+    async fn verify_failures_are_typed_task_errors() {
         let past = chrono::Utc::now().timestamp() - 3600;
-        let (v3, v4) = round_trip_both(
+        let v4 = round_trip(
             json!({"algorithm": "HS256", "key": HS_SECRET,
                    "claims": {"exp": past}, "output": "data.token"}),
             json!({"token": {"var": "data.token"},
@@ -1220,10 +720,10 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "verify_failures/expired");
         assert!(v4.expect_err("expired").message.contains("expired"));
 
-        let (v3, v4) = round_trip_both(
+        let v4 = round_trip(
             json!({"algorithm": "HS256", "key": HS_SECRET, "claims": {},
                    "expires_in": 300, "audience": "other-app", "output": "data.token"}),
             json!({"token": {"var": "data.token"},
@@ -1234,7 +734,7 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "verify_failures/audience");
         assert!(
             v4.expect_err("audience mismatch")
                 .message
@@ -1243,21 +743,12 @@ mod tests {
     }
 
     /// A task with no expiry was refused at authoring by 1.12 and at its
-    /// call; dataflow-rs 4 refuses it at load, in the authoring check's
-    /// words. A short HS secret is refused at the call on both engines.
+    /// call; it is now refused at load, in the authoring check's words. A
+    /// short HS secret is refused at the call, as 1.12 refused it.
     #[tokio::test]
-    async fn sign_requires_a_deliberate_expiry_and_short_hs_keys_are_refused_on_v4() {
+    async fn sign_requires_a_deliberate_expiry_and_short_hs_keys_are_refused() {
         let no_expiry = json!({"algorithm": "HS256", "key": HS_SECRET, "claims": {},
                                "output": "data.token"});
-        let v3 = round_trip(
-            no_expiry.clone(),
-            json!({"token": "x", "algorithms": ["HS256"],
-                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}]}),
-            json!({}),
-        )
-        .await
-        .expect_err("no expiry");
-        assert!(v3.contains("expires_in"), "{v3}");
         let issues = testing::config_with::<super::super::jwt_sign::JwtSignConfig>(
             &kit::test_exprs(),
             no_expiry.clone(),
@@ -1278,7 +769,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let (v3, v4) = round_trip_both(
+        let v4 = round_trip(
             json!({"algorithm": "HS256", "key": "short", "claims": {},
                    "expires_in": 300, "output": "data.token"}),
             json!({"token": "x", "algorithms": ["HS256"],
@@ -1286,7 +777,7 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "short_hs_key");
         assert!(v4.expect_err("short secret").message.contains("RFC 7518"));
     }
 
@@ -1359,32 +850,29 @@ mod tests {
         }
     }
 
-    /// `jwks_fetch_and_kid_rotation_work` through the task on both engines,
-    /// against an HTTPS issuer (the task refuses any other): kid `old`
-    /// verifies from the first fetch, and after rotation an unseen kid
-    /// forces the refetch, on each engine's cache.
+    /// `jwks_fetch_and_kid_rotation_work` through the task, against an
+    /// HTTPS issuer (the task refuses any other): kid `old` verifies from the
+    /// first fetch, and after rotation an unseen kid forces the refetch.
     #[tokio::test]
-    async fn jwks_fetch_and_kid_rotation_work_on_v4() {
+    async fn jwks_fetch_and_kid_rotation_work_through_the_task() {
         use std::sync::atomic::Ordering;
         let jwks = https_jwks().await;
         let verify = json!({"token": {"var": "data.token"}, "algorithms": ["HS256"],
                             "jwks_url": jwks.url, "output": "data.claims"});
-        let (v3_cache, v4_cache) = (cache(jwks.client.clone()), cache(jwks.client.clone()));
+        let jwks_cache = cache(jwks.client.clone());
         let step = |token: String| (json!({"token": token}), [(NAME, verify.clone())]);
         let (data, steps) = step(hs_token("old"));
-        let v3 = v3_steps(&steps, data.clone(), Arc::clone(&v3_cache)).await;
-        let v4 = v4_steps(&steps, data, Arc::clone(&v4_cache)).await;
-        assert_eq!(v4, v3);
+        let v4 = steps_on(&steps, data, Arc::clone(&jwks_cache)).await;
+        twin::pinned(&unclocked(&v4), "jwks_rotation/old");
         assert_eq!(v4.expect("old kid verifies")["claims"]["sub"], "u");
-        assert_eq!(jwks.hits.load(Ordering::SeqCst), 2, "one fetch per cache");
+        assert_eq!(jwks.hits.load(Ordering::SeqCst), 1, "one fetch");
 
         jwks.rotated.store(true, Ordering::SeqCst);
         let (data, steps) = step(hs_token("new"));
-        let v3 = v3_steps(&steps, data.clone(), v3_cache).await;
-        let v4 = v4_steps(&steps, data, v4_cache).await;
-        assert_eq!(v4, v3);
+        let v4 = steps_on(&steps, data, jwks_cache).await;
+        twin::pinned(&unclocked(&v4), "jwks_rotation/new");
         assert_eq!(v4.expect("rotation refetch")["claims"]["sub"], "u");
-        assert_eq!(jwks.hits.load(Ordering::SeqCst), 4, "one refetch per cache");
+        assert_eq!(jwks.hits.load(Ordering::SeqCst), 2, "one refetch");
     }
 
     /// An HTTPS URL on loopback whose listener accepts and never answers, so
@@ -1405,20 +893,13 @@ mod tests {
 
     /// When the fetch's 5 s comes before the run's deadline, it fires as it
     /// did in 1.12: the fetch fails, nothing is cached, and the token is
-    /// rejected `keys_unavailable`, the same failure on both engines. The
-    /// clock is paused, so the 5 s pass at once.
+    /// rejected `keys_unavailable`, 1.12's failure. The clock is paused, so the 5 s pass at once.
     #[tokio::test(start_paused = true)]
     async fn a_jwks_fetch_still_times_out_at_five_seconds_as_1_12s_did() {
         let url = silent_jwks().await;
         let input = json!({"token": {"var": "data.token"}, "algorithms": ["HS256"],
                            "jwks_url": url, "output": "data.claims"});
         let data = json!({"token": hs_token("old")});
-        let v3 = v3_steps(
-            &[(NAME, input.clone())],
-            data.clone(),
-            cache(reqwest::Client::new()),
-        )
-        .await;
         let started = tokio::time::Instant::now();
         let called = testing::call(
             JwtVerifyFunction {
@@ -1436,9 +917,7 @@ mod tests {
         .deadline(std::time::Instant::now() + std::time::Duration::from_secs(60))
         .await;
         let elapsed = started.elapsed();
-        let v4 = twin::seen(&called);
-        assert_eq!(v4, v3);
-        let err = v4.expect_err("the fetch timed out");
+        let err = twin::seen(&called).expect_err("the fetch timed out");
         assert!(err.message.contains("keys_unavailable"), "{err:?}");
         assert!(
             elapsed >= crate::jwt::jwks::FETCH_TIMEOUT
@@ -1585,8 +1064,7 @@ mod tests {
         }
     }
 
-    /// A static key reads as 1.12's element reader read it, on both
-    /// engines: a non-string `kid` or `key_encoding` is unset, the key is a
+    /// A static key reads as 1.12's element reader read it: a non-string `kid` or `key_encoding` is unset, the key is a
     /// string or a `{"secret": …}` node read as written, and anything else,
     /// an expression included, is refused at the call in 1.12's words,
     /// never evaluated.
@@ -1618,12 +1096,12 @@ mod tests {
             json!({"algorithm": "HS256", "key": "short"}),
             json!({"algorithm": "HS256", "key": HS_SECRET, "key_encoding": "rot13"}),
         ] {
-            let (v3, v4) = both(&[(NAME, verify(key.clone()))], data.clone()).await;
-            assert_eq!(v4, v3, "{key}");
+            let v4 = run(&[(NAME, verify(key.clone()))], data.clone()).await;
+            twin::pinned(&unclocked(&v4), format!("static_key/{key}"));
         }
         // The key from the store verifies; the one a `var` would read from
         // the message is refused, though it is the right one.
-        let (_, v4) = both(
+        let v4 = run(
             &[(
                 NAME,
                 verify(json!({"algorithm": "HS256", "key": {"secret": "signing"}})),
@@ -1632,7 +1110,7 @@ mod tests {
         )
         .await;
         assert_eq!(v4.expect("verified")["claims"]["sub"], "u");
-        let (_, v4) = both(
+        let v4 = run(
             &[(
                 NAME,
                 verify(json!({"algorithm": "HS256", "key": {"var": "data.k"}})),
@@ -1665,8 +1143,7 @@ mod tests {
                             "issuer": {"var": "data.iss"}, "audience": [{"var": "data.aud"}],
                             "output": "data.claims"});
         let data = json!({"iss": "env://PATH", "aud": {"secret": "aud"}});
-        let (v3, v4) = round_trip_both(sign, verify, data).await;
-        assert_eq!(unclocked(&v4), unclocked(&v3));
+        let v4 = round_trip(sign, verify, data).await;
         let claims = &v4.expect("the message's references resolved")["claims"];
         assert_eq!(claims["iss"], json!(path));
         assert_eq!(claims["aud"], json!("partner-app"));
@@ -1675,9 +1152,9 @@ mod tests {
     /// A computed `output` writes the claims where it evaluates, by 1.12's
     /// `resolve_output_path` rule. 1.12 never evaluated `jwt_verify`'s
     /// output: it wrote the claims at `data` whatever the expression said,
-    /// replacing the rest of `data`. Twinned against v3: the claims are the
-    /// same, only their place differs (a change O11b's CHANGELOG names). A
-    /// `null` result is `data` on both engines. A result that is no path is
+    /// replacing the rest of `data`. The claims are 1.12's, only their place
+    /// differs (a change O11b's CHANGELOG names). A `null` result is `data`,
+    /// as 1.12 had it. A result that is no path is
     /// refused in 1.12's words before the token is read or any key fetched.
     #[tokio::test]
     async fn a_computed_output_writes_the_claims_where_it_evaluates() {
@@ -1690,21 +1167,19 @@ mod tests {
                             "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
                             "output": {"var": "data.where"}});
         let claims = json!({"sub": "u1", "iat": 1_700_000_000i64, "exp": 1_900_000_000i64});
-        let (v3, v4) = round_trip_both(
+        let v4 = round_trip(
             sign.clone(),
             verify.clone(),
             json!({"where": "data.claims"}),
         )
         .await;
-        // 1.12: at `data`, whatever the expression said.
-        assert_eq!(v3.expect("verified on v3"), claims);
         assert_eq!(
-            v4.expect("verified on v4"),
+            v4.expect("verified"),
             json!({"where": "data.claims", "claims": claims})
         );
 
-        let (v3, v4) = round_trip_both(sign, verify, json!({"kept": false})).await;
-        assert_eq!(v4, v3, "a null result is `data` on both");
+        let v4 = round_trip(sign, verify, json!({"kept": false})).await;
+        twin::pinned(&v4, "computed_output/null");
         assert_eq!(v4.expect("verified"), claims);
 
         let jwks = https_jwks().await;
@@ -1727,7 +1202,7 @@ mod tests {
             ))
             .await;
             let failure = twin::seen(&called).expect_err("no path");
-            assert_eq!(failure, twin::output_refusal(not_a_path));
+            twin::pinned(&Err(failure), format!("output_refusal/{not_a_path}"));
         }
         assert_eq!(jwks.hits.load(Ordering::SeqCst), 0, "no key was fetched");
     }
@@ -1797,12 +1272,6 @@ mod tests {
             assert!(!seen.contains(HS_SECRET), "the secret leaked: {seen}");
         }
 
-        let v3 = v3_steps(
-            &[("jwt_sign", sign), (NAME, verify)],
-            json!({}),
-            cache(reqwest::Client::new()),
-        )
-        .await;
-        assert_eq!(unclocked(&v4), unclocked(&v3));
+        twin::pinned(&unclocked(&v4), "store_round_trip");
     }
 }

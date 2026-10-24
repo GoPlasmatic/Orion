@@ -51,15 +51,15 @@ any other result records the rule's `message` in the response's error list.
 
 ### A failed rule records an error and carries on
 
-**A failed rule records an error; it does not stop the workflow unless you say so.** The task returns a `400` and the message lands in the response's `errors` array. The engine's rule is that `4xx` warns and carries on; `continue_on_error` governs `5xx` and handler errors only. So a `validation`
+**A failed rule records an error; it does not stop the workflow unless you say so.** The task returns a `400` and the message lands in the response's `errors` array. A task's `on_rejection` is `continue` unless you say otherwise; `on_failure` governs `5xx` and handler errors only. So a `validation`
 followed by unguarded tasks proceeds exactly as if it had passed.
 
 Collecting every failure and carrying on is a legitimate shape, which is why
 it is the default. When you meant a gate, add
-[`halt_on`](../workflows.md#halting-on-failure):
+[`on_rejection: "halt"`](../workflows.md#halting-on-a-rejection):
 
 ```json
-{ "id": "check", "name": "Check", "halt_on": "failure",
+{ "id": "check", "name": "Check", "on_rejection": "halt",
   "function": { "name": "validation", "input": { "rules": [
     { "logic": { "==": [1, 1] }, "message": "…" } ] } } }
 ```
@@ -77,5 +77,5 @@ as `engine.unguarded_validation`.
 - [Workflows](../../concepts/workflows.md): the pipeline model these functions run in.
 - [Author a workflow](../../guides/author/workflows.md): conditions, mapping and validation in practice.
 - [Task functions](./index.md): the whole catalogue, and each function's retry safety.
-- [Workflow definition › Halting on failure](../workflows.md#halting-on-failure): turning a validation into a gate.
+- [Workflow definition › Halting on a rejection](../workflows.md#halting-on-a-rejection): turning a validation into a gate.
 - [Workflow definition](../workflows.md#the-data-context): the data context every function reads and writes.

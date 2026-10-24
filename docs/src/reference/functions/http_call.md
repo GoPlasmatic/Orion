@@ -47,11 +47,11 @@ support. The connector supplies the base URL and auth.
 |-------|------|:--------:|---------|-------------|
 | `connector` | string \| JSONLogic | yes | — | Name of the HTTP connector. A computed name is not yet supported |
 | `method` | string | no | `"GET"` | `GET` \| `POST` \| `PUT` \| `PATCH` \| `DELETE`. The one field here that is not JSONLogic |
-| `path` | string \| JSONLogic | no | — | Path appended to the connector's base URL. Accepts the pre-1.0 name `path_logic` |
+| `path` | string \| JSONLogic | no | — | Path appended to the connector's base URL |
 | `headers` | object | no | `{}` | Extra request headers. Each **value** is JSONLogic |
-| `body` | any \| JSONLogic | no | — | Request body. Accepts the pre-1.0 name `body_logic` |
+| `body` | any \| JSONLogic | no | — | Request body |
 | `body_format` | string \| JSONLogic | no | `"json"` | How the body becomes request bytes: `json`, `form`, or `text`; see [Body formats](#body-formats) |
-| `output` | string \| JSONLogic | no | — | Dotted path where the response body is written; omit to discard it. Accepts the pre-1.0 name `response_path` |
+| `output` | string \| JSONLogic | no | — | Dotted path where the response body is written; omit to discard it |
 | `response_format` | string \| JSONLogic | no | `"json"` | How the response is captured at `output`: `json` (parsed) or `text` (a plain string) |
 | `timeout_ms` | number \| JSONLogic | no | `30000` | Per-request timeout in milliseconds |
 
@@ -109,7 +109,7 @@ is not valid JSON. `text` captures the body as a plain string, for gateways that
     "method": "POST",
     "path": "/v1/access_token",
     "body_format": "form",
-    "body_logic": {
+    "body": {
       "grant_type": "refresh_token",
       "refresh_token": { "var": "temp_data.refresh_token" }
     },

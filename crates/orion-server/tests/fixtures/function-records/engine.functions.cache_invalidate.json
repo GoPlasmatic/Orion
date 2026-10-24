@@ -1,0 +1,508 @@
+{
+  "bumps_and_refuses/{\"namespaces\":\"ladder\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_invalidate: cache_invalidate 'namespaces' must resolve to an array of keys",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":\"ladder\"}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"Ladder\"]}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_invalidate: namespace 'Ladder' may contain only lowercase letters, digits, '_', '-', '.' and ':'",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"Ladder\"]}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"a b\"]}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_invalidate: namespace 'a b' may contain only lowercase letters, digits, '_', '-', '.' and ':'",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"a b\"]}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\",null]}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_invalidate: cache_invalidate 'namespaces[1]' must resolve to a string or number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\",null]}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":\"data.inv\"}": {
+    "ok": {
+      "ns": [
+        "a",
+        "season"
+      ],
+      "at": "data.inv",
+      "n": 3,
+      "many": [
+        "n0",
+        "n1",
+        "n2",
+        "n3",
+        "n4",
+        "n5",
+        "n6",
+        "n7",
+        "n8",
+        "n9",
+        "n10",
+        "n11",
+        "n12",
+        "n13",
+        "n14",
+        "n15",
+        "n16",
+        "n17",
+        "n18",
+        "n19",
+        "n20",
+        "n21",
+        "n22",
+        "n23",
+        "n24",
+        "n25",
+        "n26",
+        "n27",
+        "n28",
+        "n29",
+        "n30",
+        "n31",
+        "n32",
+        "n33",
+        "n34",
+        "n35",
+        "n36",
+        "n37",
+        "n38",
+        "n39",
+        "n40",
+        "n41",
+        "n42",
+        "n43",
+        "n44",
+        "n45",
+        "n46",
+        "n47",
+        "n48",
+        "n49",
+        "n50",
+        "n51",
+        "n52",
+        "n53",
+        "n54",
+        "n55",
+        "n56",
+        "n57",
+        "n58",
+        "n59",
+        "n60",
+        "n61",
+        "n62",
+        "n63",
+        "n64"
+      ],
+      "inv": {
+        "namespaces": 1,
+        "stores": 1
+      }
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":\"data.inv\"}/versions": {
+    "ok": [
+      "1",
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":null}": {
+    "ok": {
+      "ns": [
+        "a",
+        "season"
+      ],
+      "at": "data.inv",
+      "n": 3,
+      "many": [
+        "n0",
+        "n1",
+        "n2",
+        "n3",
+        "n4",
+        "n5",
+        "n6",
+        "n7",
+        "n8",
+        "n9",
+        "n10",
+        "n11",
+        "n12",
+        "n13",
+        "n14",
+        "n15",
+        "n16",
+        "n17",
+        "n18",
+        "n19",
+        "n20",
+        "n21",
+        "n22",
+        "n23",
+        "n24",
+        "n25",
+        "n26",
+        "n27",
+        "n28",
+        "n29",
+        "n30",
+        "n31",
+        "n32",
+        "n33",
+        "n34",
+        "n35",
+        "n36",
+        "n37",
+        "n38",
+        "n39",
+        "n40",
+        "n41",
+        "n42",
+        "n43",
+        "n44",
+        "n45",
+        "n46",
+        "n47",
+        "n48",
+        "n49",
+        "n50",
+        "n51",
+        "n52",
+        "n53",
+        "n54",
+        "n55",
+        "n56",
+        "n57",
+        "n58",
+        "n59",
+        "n60",
+        "n61",
+        "n62",
+        "n63",
+        "n64"
+      ]
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":null}/versions": {
+    "ok": [
+      "1",
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":{\"throw\":\"boom\"}}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: cache_invalidate: Thrown: {\"type\":\"boom\"} (in operator: throw)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":{\"throw\":\"boom\"}}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":{\"var\":\"data.missing\"}}": {
+    "ok": {
+      "namespaces": 1,
+      "stores": 1
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":{\"var\":\"data.missing\"}}/versions": {
+    "ok": [
+      "1",
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":{\"var\":\"data.n\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_invalidate: 'output' must resolve to a non-empty dotted path, got number",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[\"ladder\"],\"output\":{\"var\":\"data.n\"}}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[]}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_invalidate: 'namespaces' resolved to an empty list; name at least one",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[]}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":[{\"cat\":[\"sea\",\"son\"]},\"ladder\",7],\"output\":{\"var\":\"data.at\"}}": {
+    "ok": {
+      "ns": [
+        "a",
+        "season"
+      ],
+      "at": "data.inv",
+      "n": 3,
+      "many": [
+        "n0",
+        "n1",
+        "n2",
+        "n3",
+        "n4",
+        "n5",
+        "n6",
+        "n7",
+        "n8",
+        "n9",
+        "n10",
+        "n11",
+        "n12",
+        "n13",
+        "n14",
+        "n15",
+        "n16",
+        "n17",
+        "n18",
+        "n19",
+        "n20",
+        "n21",
+        "n22",
+        "n23",
+        "n24",
+        "n25",
+        "n26",
+        "n27",
+        "n28",
+        "n29",
+        "n30",
+        "n31",
+        "n32",
+        "n33",
+        "n34",
+        "n35",
+        "n36",
+        "n37",
+        "n38",
+        "n39",
+        "n40",
+        "n41",
+        "n42",
+        "n43",
+        "n44",
+        "n45",
+        "n46",
+        "n47",
+        "n48",
+        "n49",
+        "n50",
+        "n51",
+        "n52",
+        "n53",
+        "n54",
+        "n55",
+        "n56",
+        "n57",
+        "n58",
+        "n59",
+        "n60",
+        "n61",
+        "n62",
+        "n63",
+        "n64"
+      ],
+      "inv": {
+        "namespaces": 3,
+        "stores": 1
+      }
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":[{\"cat\":[\"sea\",\"son\"]},\"ladder\",7],\"output\":{\"var\":\"data.at\"}}/versions": {
+    "ok": [
+      "1",
+      "1",
+      null,
+      "1"
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":{\"throw\":\"boom\"}}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: cache_invalidate: Thrown: {\"type\":\"boom\"} (in operator: throw)",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":{\"throw\":\"boom\"}}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":{\"var\":\"data.many\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_invalidate: cache_invalidate 'namespaces' resolved to 65 keys; at most 64 are allowed in one call",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":{\"var\":\"data.many\"}}/versions": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "bumps_and_refuses/{\"namespaces\":{\"var\":\"data.ns\"}}": {
+    "ok": {
+      "ns": [
+        "a",
+        "season"
+      ],
+      "at": "data.inv",
+      "n": 3,
+      "many": [
+        "n0",
+        "n1",
+        "n2",
+        "n3",
+        "n4",
+        "n5",
+        "n6",
+        "n7",
+        "n8",
+        "n9",
+        "n10",
+        "n11",
+        "n12",
+        "n13",
+        "n14",
+        "n15",
+        "n16",
+        "n17",
+        "n18",
+        "n19",
+        "n20",
+        "n21",
+        "n22",
+        "n23",
+        "n24",
+        "n25",
+        "n26",
+        "n27",
+        "n28",
+        "n29",
+        "n30",
+        "n31",
+        "n32",
+        "n33",
+        "n34",
+        "n35",
+        "n36",
+        "n37",
+        "n38",
+        "n39",
+        "n40",
+        "n41",
+        "n42",
+        "n43",
+        "n44",
+        "n45",
+        "n46",
+        "n47",
+        "n48",
+        "n49",
+        "n50",
+        "n51",
+        "n52",
+        "n53",
+        "n54",
+        "n55",
+        "n56",
+        "n57",
+        "n58",
+        "n59",
+        "n60",
+        "n61",
+        "n62",
+        "n63",
+        "n64"
+      ]
+    }
+  },
+  "bumps_and_refuses/{\"namespaces\":{\"var\":\"data.ns\"}}/versions": {
+    "ok": [
+      null,
+      "1",
+      "1",
+      null
+    ]
+  }
+}

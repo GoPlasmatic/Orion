@@ -8,22 +8,14 @@
 
 use std::borrow::Cow;
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
-use super::connector_helpers::{
-    apply_output, parse_duration_secs, resolve_duration_secs, resolve_optional_str, resolve_value,
-};
+use super::connector_helpers::parse_duration_secs;
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::TemplatedInput;
 use crate::engine::kit::{self, KeyMaterial, read};
 use crate::engine::{ErrorClass, HandlerError};
 
@@ -34,102 +26,13 @@ pub const NAME: &str = "jwt_sign";
 /// what they mean with an explicit `exp` claim.
 const MAX_EXPIRES_SECS: u64 = 315_360_000;
 
-/// Workflow function handler that signs JWTs.
-pub struct JwtSignHandler;
-
-#[async_trait]
-impl AsyncFunctionHandler for JwtSignHandler {
-    type Input = TemplatedInput;
-
-    /// Compile the expression fields this handler's table declares. The
-    /// `Connector` wrapper does this for the connector handlers; these three
-    /// are self-contained — no connector, no egress — so they implement
-    /// `AsyncFunctionHandler` directly and say it themselves.
-    fn compile_input(
-        input: &mut Self::Input,
-        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs_v3::Result<()> {
-        input.compile("jwt_sign", c)
-    }
-
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        // Literal prologue (F58): the message-independent refusals first.
-        let algorithm = match input.get("algorithm").and_then(Value::as_str) {
-            Some(name) => crate::jwt::parse_algorithm(name).map_err(|e| validation(&e))?,
-            None => return Err(validation("requires 'algorithm'")),
-        };
-        // Presence only — the value is read last, after everything the message
-        // cannot change (F58). `key` is JSONLogic now, so what it resolves to is
-        // not knowable here, but *whether the task named one* is.
-        if matches!(input.get("key"), None | Some(Value::Null)) {
-            return Err(validation(
-                "requires 'key' ({\"secret\": \"name\"}, a secret reference like \
-                 env://NAME, an expression, or a literal)",
-            ));
-        }
-        let key_encoding = input.get("key_encoding").and_then(Value::as_str);
-        let kid = resolve_optional_str(input, "kid", NAME, ctx)?;
-        let output = input
-            .get("output")
-            .and_then(Value::as_str)
-            .unwrap_or("data");
-
-        // Claims: a resolvable object — {"var": ..} nodes fold, like every
-        // connector function; computed claims are composed with `map` first.
-        let mut claims = match input.get("claims") {
-            None => serde_json::Map::new(),
-            Some(raw) => match resolve_value(raw, ctx) {
-                Value::Object(map) => map,
-                _ => return Err(validation("'claims' must resolve to an object")),
-            },
-        };
-
-        let now = chrono::Utc::now().timestamp();
-        // Registered-claim conveniences; an explicit field wins over a claims
-        // entry of the same name — it is the more specific statement.
-        if let Some(iss) = resolve_optional_str(input, "issuer", NAME, ctx)?.as_deref() {
-            claims.insert("iss".to_string(), Value::String(iss.to_string()));
-        }
-        if let Some(aud) = input.get("audience")
-            && !aud.is_null()
-        {
-            claims.insert("aud".to_string(), resolve_value(aud, ctx));
-        }
-        if let Some(offset) = resolve_duration_secs(input, ctx, NAME, "not_before")? {
-            claims.insert("nbf".to_string(), Value::from(now + offset as i64));
-        }
-        stamp_iat(&mut claims, now)?;
-        stamp_exp(
-            &mut claims,
-            now,
-            resolve_duration_secs(input, ctx, NAME, "expires_in")?,
-        )?;
-
-        // The key resolves last and lives only inside this call.
-        let material = super::secret_ref::key_material_field(input, "key", NAME, ctx).await?;
-        let token = mint(algorithm, &material, key_encoding, kid, claims)?;
-
-        apply_output(ctx, output, Value::String(token));
-        Ok(TaskOutcome::Success)
-    }
-}
-
 /// A caller-fixable refusal, named: `jwt_sign`'s messages carry the
 /// handler's name themselves.
 fn invalid(msg: &str) -> HandlerError {
     HandlerError::new(ErrorClass::CallerInput, format!("{NAME}: {msg}"))
 }
 
-fn validation(msg: &str) -> DataflowError {
-    invalid(msg).into()
-}
-
-/// `iat`, stamped only when the claims object does not supply one: shared
-/// by both engines' paths.
+/// `iat`, stamped only when the claims object does not supply one.
 ///
 /// Unlike `iss`/`aud`/`nbf`/`exp`, `iat` has no dedicated input field — so
 /// there is nothing "more specific" to beat a claims entry, and the entry
@@ -152,8 +55,7 @@ fn stamp_iat(claims: &mut Map<String, Value>, now: i64) -> Result<(), HandlerErr
     }
 }
 
-/// `exp` from `expires_in`'s seconds, bounded, or the claims' own: shared by
-/// both engines' paths. A token without an expiry must be a stated
+/// `exp` from `expires_in`'s seconds, bounded, or the claims' own. A token without an expiry must be a stated
 /// decision, not an omission: either `expires_in`, or an explicit `exp`
 /// claim.
 fn stamp_exp(
@@ -182,8 +84,7 @@ fn stamp_exp(
     }
 }
 
-/// The compact JWS of `claims`, signed with the key `material` makes: shared
-/// by both engines' paths. The key lives only inside this call.
+/// The compact JWS of `claims`, signed with the key `material` makes. The key lives only inside this call.
 fn mint(
     algorithm: jsonwebtoken::Algorithm,
     material: &str,
@@ -277,8 +178,8 @@ fn check(cfg: &JwtSignConfig, cx: &mut CompileCx<'_>) {
     super::mongo_common::report_static(validate_static_input(&input), cx);
 }
 
-/// `jwt_sign` as a dataflow-rs 4 function: the token `JwtSignHandler`
-/// mints, each field read in the same order, the key last.
+/// `jwt_sign` as a function: the token 1.12's handler minted, each field
+/// read in the same order, the key last.
 pub struct JwtSignFunction;
 
 impl Function for JwtSignFunction {
@@ -323,8 +224,8 @@ fn duration_secs(
     read::duration_secs(value.as_deref(), name, NAME)
 }
 
-/// Where the token goes and the token `JwtSignHandler::execute` mints for
-/// this call, read in its order: the literal prologue, the key's presence,
+/// Where the token goes and the token minted for this call, read in 1.12's
+/// order: the literal prologue, the key's presence,
 /// the kid, the output, the claims and their conveniences, the dates, then
 /// the key's material.
 async fn token<'c>(
@@ -497,10 +398,8 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
     },
 ];
 
-/// `jwt_sign` on dataflow-rs 4 against its dataflow-rs 3 handler over the
-/// same input (the round trips through `jwt_verify` live beside it, in
-/// `jwt_verify.rs`): the expectation is computed from the handler, never
-/// written out.
+/// `jwt_sign` against 1.12's records of the same input (the round trips
+/// through `jwt_verify` live beside it, in `jwt_verify.rs`).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,12 +426,12 @@ mod tests {
             .collect()
     }
 
-    /// One task through each engine over the same input and `data`; the
-    /// two must agree, and dataflow-rs 4's answer is returned.
+    /// One task over `input` and `data`, which must be what 1.12 answered
+    /// for them; the answer is returned. Only for a deterministic answer: a
+    /// token stamped from the clock is checked by its claims instead.
     async fn agreed(input: Value, data: Value) -> Seen {
-        let v3 = twin::v3(NAME, Box::new(JwtSignHandler), input.clone(), data.clone()).await;
-        let v4 = twin::v4(NAME, JwtSignFunction, input.clone(), data).await;
-        assert_eq!(v4, v3, "{input}");
+        let v4 = twin::v4(NAME, JwtSignFunction, input.clone(), data.clone()).await;
+        twin::pinned(&v4, format!("{input} {data}"));
         v4
     }
 
@@ -732,7 +631,7 @@ mod tests {
             )
             .await
             .expect_err("no path");
-            assert_eq!(failure, twin::output_refusal(not_a_path));
+            twin::pinned(&Err(failure), format!("output_refusal/{not_a_path}"));
         }
         let failure = twin::v4(NAME, JwtSignFunction, input, json!({"where": 5, "kid": 7}))
             .await
@@ -740,11 +639,11 @@ mod tests {
         assert!(failure.message.contains("'kid'"), "{failure:?}");
     }
 
-    /// With every clock-dependent claim pinned, both engines mint the same
-    /// bytes: the claims folded from the message in the same order, the
+    /// With every clock-dependent claim pinned, the token is 1.12's bytes:
+    /// the claims folded from the message in the same order, the
     /// conveniences added after them, the kid in the header.
     #[tokio::test]
-    async fn a_fully_pinned_token_is_the_same_bytes_on_both_engines() {
+    async fn a_fully_pinned_token_is_1_12s_bytes() {
         let out = agreed(
             json!({"algorithm": "HS256", "key": HS_SECRET, "key_encoding": "utf8",
                    "claims": {"sub": {"var": "data.user"}, "iat": 1_700_000_000i64,
@@ -771,18 +670,13 @@ mod tests {
                            "not_before": "1h", "expires_in": {"var": "data.ttl"},
                            "output": "data.token"});
         let data = json!({"ttl": "2h"});
-        let v3 = twin::v3(NAME, Box::new(JwtSignHandler), input.clone(), data.clone())
+        let out = twin::v4(NAME, JwtSignFunction, input, data)
             .await
-            .expect("signed on v3");
-        let v4 = twin::v4(NAME, JwtSignFunction, input, data)
-            .await
-            .expect("signed on v4");
-        for out in [v3, v4] {
-            let claims = claims_of(&out["token"]);
-            let iat = claims["iat"].as_i64().expect("iat");
-            assert_eq!(claims["nbf"].as_i64(), Some(iat + 3_600), "{claims}");
-            assert_eq!(claims["exp"].as_i64(), Some(iat + 7_200), "{claims}");
-        }
+            .expect("signed");
+        let claims = claims_of(&out["token"]);
+        let iat = claims["iat"].as_i64().expect("iat");
+        assert_eq!(claims["nbf"].as_i64(), Some(iat + 3_600), "{claims}");
+        assert_eq!(claims["exp"].as_i64(), Some(iat + 7_200), "{claims}");
     }
 
     /// What reaches a call and is refused there keeps 1.12's code and text,
@@ -839,37 +733,13 @@ mod tests {
     /// A `{"secret": …}` node in `audience`. 1.12's authoring check let it
     /// through, taking the template-marked field to resolve the node, and
     /// the call folded `var` holes only, so the token carried the node
-    /// itself as its `aud`. dataflow-rs 4 refuses it at load as it refuses
-    /// a secret in any document (`SECRET_IN_DOCUMENT`). A difference the
-    /// plan does not name, pinned for its ruling.
-    #[tokio::test]
-    async fn a_secret_node_in_audience_is_refused_at_load_where_1_12_minted_it_as_data() {
+    /// itself as its `aud`. It is now refused at load, as a secret in any
+    /// document is (`SECRET_IN_DOCUMENT`). A difference the plan does not
+    /// name, pinned for its ruling.
+    #[test]
+    fn a_secret_node_in_audience_is_refused_at_load_where_1_12_minted_it_as_data() {
         let input = json!({"algorithm": "HS256", "key": HS_SECRET, "expires_in": 60,
                            "audience": {"secret": "aud"}, "output": "data.token"});
-        let mut values = Map::new();
-        values.insert("aud".into(), json!("partner-app"));
-        let secrets = crate::engine::ResolvedSecrets::from_values(values);
-        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t", "function": {"name": NAME, "input": input}}]
-        }))
-        .expect("a workflow");
-        let engine = crate::engine::operators::with_orion_engine_defaults(
-            dataflow_rs_v3::Engine::builder(),
-            &secrets,
-        )
-        .register(NAME, JwtSignHandler)
-        .with_workflow(workflow)
-        .build()
-        .expect("1.12 built it");
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        engine
-            .process_message(&mut message)
-            .await
-            .expect("1.12 minted it");
-        let data: Value = message.data().into();
-        assert_eq!(claims_of(&data["token"])["aud"], json!({"secret": "aud"}));
-
         let issues = config_v4(input).map(|_| ()).expect_err("refused at load");
         let issues: Vec<(String, IssueCode)> = issues
             .iter()

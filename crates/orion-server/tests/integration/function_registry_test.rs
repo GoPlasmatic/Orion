@@ -5,7 +5,7 @@
 //! one answer to "what may a workflow name, and what does it accept". Four
 //! things have to stay true for that to be safe:
 //!
-//! - what it declares is what `build_custom_functions` registers, name for
+//! - what it declares is what `register_functions` registers, name for
 //!   name — a handler without an entry is unusable for no visible reason, an
 //!   entry without a handler fails every request;
 //! - the catalogue route serves the *generation's* registry, so an entry a
@@ -32,7 +32,6 @@ fn plugin_entry(name: &str) -> FunctionEntry {
         description: "Echo the message".to_string(),
         category: "transform".to_string(),
         source: Source::Plugin,
-        aliases: Vec::new(),
         input_fields: Some(vec![
             FieldSpec {
                 name: "message".to_string(),
@@ -42,7 +41,6 @@ fn plugin_entry(name: &str) -> FunctionEntry {
                 resolvable: true,
                 secret_at: &[],
                 template_at: &[],
-                alias: None,
             },
             // Implicit on every plugin function (the `OutputPath` contract);
             // the manifest conversion appends it, so the entry declares it.
@@ -54,7 +52,6 @@ fn plugin_entry(name: &str) -> FunctionEntry {
                 resolvable: false,
                 secret_at: &[],
                 template_at: &[],
-                alias: None,
             },
         ]),
         writes: WriteShape::OutputPath {
@@ -79,15 +76,19 @@ fn plugin_entry(name: &str) -> FunctionEntry {
 /// name and never actually had: its doc comment named a test that did not
 /// exist. The live-engine test in `function_schema_test` covers it
 /// transitively; this one asks the handler map directly, so a handler added
-/// to `build_custom_functions` without a schema row fails here with both
+/// to `register_functions` without a schema row fails here with both
 /// names in the message.
 #[tokio::test]
 async fn the_registry_declares_exactly_the_handlers_orion_registers() {
     use std::collections::BTreeSet;
 
     let state = test_state_with_config(orion::config::AppConfig::default()).await;
-    let handlers = orion::engine::build_custom_functions(orion::runtime::handler_deps(&state));
-    let registered: BTreeSet<&str> = handlers.keys().map(String::as_str).collect();
+    let registry = orion::runtime::build_registry(&state);
+    let registered: BTreeSet<&str> = registry
+        .catalogue()
+        .filter(|f| !f.builtin)
+        .map(|f| f.name)
+        .collect();
     let declared: BTreeSet<&str> = FunctionRegistry::builtin()
         .entries()
         .filter(|e| e.source == Source::Orion)
@@ -95,7 +96,7 @@ async fn the_registry_declares_exactly_the_handlers_orion_registers() {
         .collect();
     assert_eq!(
         declared, registered,
-        "the registry's Orion entries and build_custom_functions' keys must be the same set"
+        "the registry's Orion entries and the serving registry's host functions must be the same set"
     );
     assert_eq!(declared.len(), 23);
 }
@@ -117,12 +118,11 @@ async fn the_catalogue_route_serves_the_generations_registry() {
     let expected = serde_json::to_value(state.runtime.load().functions.catalogue()).expect("json");
     assert_eq!(served, expected);
 
-    const KEYS: [&str; 7] = [
+    const KEYS: [&str; 6] = [
         "name",
         "description",
         "category",
         "source",
-        "aliases",
         "input_fields",
         "retry_safety",
     ];
@@ -145,8 +145,10 @@ async fn the_catalogue_route_serves_the_generations_registry() {
         .with_entries(vec![plugin_entry("acme.echo.identity")])
         .expect("extends");
     state.runtime.publish(
-        generation.engine.clone(),
-        generation.engine4.clone(),
+        generation
+            .engine
+            .clone()
+            .expect("the test state publishes an engine"),
         generation.channels.clone(),
         Arc::new(extended),
         generation.plugins.clone(),
@@ -216,8 +218,10 @@ async fn create_time_validation_reads_the_generations_registry() {
         .with_entries(vec![plugin_entry("acme.echo.identity")])
         .expect("extends");
     state.runtime.publish(
-        generation.engine.clone(),
-        generation.engine4.clone(),
+        generation
+            .engine
+            .clone()
+            .expect("the test state publishes an engine"),
         generation.channels.clone(),
         Arc::new(extended),
         generation.plugins.clone(),

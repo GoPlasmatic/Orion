@@ -2,12 +2,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::error::DataflowError;
-use dataflow_rs_v3::engine::task_context::TaskContext;
 use futures::TryStreamExt;
 use mongodb::bson::Document;
 use serde_json::{Map, Value};
@@ -20,27 +17,24 @@ use serde_json::{Map, Value};
 // not this path.
 use sqlx::AssertSqlSafe;
 
-use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure,
-    encode_failure, es_request, is_mongo, require_op_allowed, resolve_params, resolve_row_format,
-    to_connect_error, to_exec_error,
+    QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure, encode_failure,
+    es_request, is_mongo, require_op_allowed, to_connect_error, to_exec_error,
 };
 use super::db_read::rendered_row_format;
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::{Scope, TemplatedInput};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
-use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
+use crate::engine::{ErrorClass, HandlerError};
 use crate::query::{self, GroupKey, SqlDialect};
 use crate::storage::detect_backend;
 
 /// This handler's name, for the helpers that take it as an argument — a
 /// reference to the one place it is written (F48).
-const NAME: &str = <DataQueryHandler as ConnectorHandler>::NAME;
+pub(crate) const NAME: &str = "data_query";
 
 /// Parent keys per `include` child query.
 ///
@@ -52,19 +46,6 @@ const NAME: &str = <DataQueryHandler as ConnectorHandler>::NAME;
 /// `max_limit` is a documented knob, and raising it should not turn an
 /// `include` into a driver error naming neither the knob nor the relation.
 const MAX_INCLUDE_KEYS_PER_QUERY: usize = 1000;
-
-/// Executes a portable `data_query` — one backend-neutral filter + envelope that
-/// renders to native SQL, a MongoDB `find`, or an Elasticsearch search — against a
-/// SQL, Mongo, or ES connector. The translation lives in `src/query/`; this
-/// handler wires it to the connector/pool machinery (ES runs over the HTTP client).
-pub struct DataQueryHandler {
-    pub pool_cache: Arc<SqlPoolCache>,
-    pub mongo_pool_cache: Arc<MongoPoolCache>,
-    pub http_client: reqwest::Client,
-    pub registry: Arc<ConnectorRegistry>,
-    /// Page bounds (`default_limit` / `max_limit` / `max_skip`) from `[query]`.
-    pub limits: crate::config::QueryConfig,
-}
 
 /// A portable query, read from the task with only its `params` folded against
 /// the message.
@@ -106,78 +87,6 @@ fn gate(conn: &ConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     Ok(())
 }
 
-#[async_trait]
-impl ConnectorHandler for DataQueryHandler {
-    const NAME: &'static str = "data_query";
-    /// The portable dialect is the one pair that spans backends, so it names
-    /// the union rather than a type: a `db` or an `es` connector, dispatched
-    /// on the variant below.
-    type Kind = crate::connector::DataBackend;
-    type Input = TemplatedInput;
-    type Parsed = DataQuery<'static>;
-
-    fn registry(&self) -> &Arc<ConnectorRegistry> {
-        &self.registry
-    }
-
-    fn parse(
-        &self,
-        call: &ConnectorCall<'_>,
-        input: &TemplatedInput,
-        ctx: &Scope<'_, '_>,
-    ) -> Result<Self::Parsed, HandlerError> {
-        let query = input
-            .get("query")
-            .ok_or_else(|| {
-                DataflowError::Validation(format!("{} requires 'query' field", call.name))
-            })?
-            .clone();
-
-        Ok(DataQuery {
-            query: Cow::Owned(query),
-            // Resolved against the message — the only point at which the
-            // message touches the query. It produces concrete literals, not
-            // SQL, which the pure translation path then folds into the filter.
-            params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
-            format: resolve_row_format(input, call.name, ctx)?,
-            // Optional inline schema (privileged config authored alongside the
-            // query): renames, type hints, allowlist, relation declarations.
-            schema: input.get("schema").cloned().map(Cow::Owned),
-            database: input
-                .get("database")
-                .and_then(Value::as_str)
-                .map(|database| Cow::Owned(database.to_string())),
-        })
-    }
-
-    fn gate(
-        _parsed: &Self::Parsed,
-        conn: &ConnectorConfig,
-        connector: &str,
-    ) -> Result<(), HandlerError> {
-        gate(conn, connector)
-    }
-
-    async fn run(
-        &self,
-        parsed: Self::Parsed,
-        conn: &ConnectorConfig,
-        call: &ConnectorCall<'_>,
-        _input: &TemplatedInput,
-        _ctx: &mut TaskContext<'_>,
-    ) -> Result<Produced, HandlerError> {
-        let backends = Backends {
-            pool_cache: &self.pool_cache,
-            mongo_pool_cache: &self.mongo_pool_cache,
-            http_client: &self.http_client,
-            limits: &self.limits,
-        };
-        Ok(run_query(backends, &parsed, conn, call.connector, None)
-            .await?
-            .into())
-    }
-}
-
 /// The query's answer, rows or a count, against a resolved and gated `db` or
 /// `es` connector. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
 /// function. `run_deadline` is the deadline of the run the call belongs to,
@@ -201,7 +110,7 @@ async fn run_query(
         ConnectorConfig::Es(es) => {
             // Elasticsearch: render a search body and POST it via HTTP.
             let eq = query::translate_es(query, params, &registry, limits)
-                .map_err(DataflowError::from)?;
+                .map_err(HandlerError::from)?;
             if eq.count {
                 run_es_count(backends.http_client, es, &eq).await?
             } else {
@@ -213,10 +122,13 @@ async fn run_query(
             // The database is required here and nowhere else — a MongoDB
             // connection string carries no default one.
             let database = parsed.database.as_deref().ok_or_else(|| {
-                DataflowError::Validation(format!("{NAME} requires 'database' field"))
+                HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!("{NAME} requires 'database' field"),
+                )
             })?;
             let mq = query::translate_mongo(query, params, &registry, limits)
-                .map_err(DataflowError::from)?;
+                .map_err(HandlerError::from)?;
             let client = backends
                 .mongo_pool_cache
                 .get_client(connector, db)
@@ -263,12 +175,14 @@ async fn run_query(
                 && crate::connector::sql_decode::approx_json_value_bytes(&json_docs)
                     > limits.max_result_bytes
             {
-                return Err(DataflowError::Validation(format!(
-                    "{NAME} result exceeds query.max_result_bytes ({} bytes) \
+                return Err(HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!(
+                        "{NAME} result exceeds query.max_result_bytes ({} bytes) \
                      — select fewer fields, reduce limit, or raise the cap",
-                    limits.max_result_bytes
-                ))
-                .into());
+                        limits.max_result_bytes
+                    ),
+                ));
             }
             json_docs
         }
@@ -280,16 +194,15 @@ async fn run_query(
                 .map_err(to_exec_error)?
                 .into();
             let plan = query::plan_sql(query, params, &registry, dialect, limits)
-                .map_err(DataflowError::from)?;
+                .map_err(HandlerError::from)?;
             let pool = backends
                 .pool_cache
                 .get_pool(connector, db)
                 .await
                 .map_err(to_connect_error)?;
             if plan.count {
-                return Ok(
-                    run_sql_count(&pool, &plan, dialect, db.query_timeout_ms, run_deadline).await?,
-                );
+                return run_sql_count(&pool, &plan, dialect, db.query_timeout_ms, run_deadline)
+                    .await;
             }
             run_sql_with_includes(
                 &pool,
@@ -450,7 +363,7 @@ async fn run_sql_count(
     dialect: SqlDialect,
     timeout_ms: Option<u64>,
     run_deadline: Option<dataflow_rs::run::Instant>,
-) -> Result<Value, DataflowError> {
+) -> Result<Value, HandlerError> {
     let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
     // Two legs now — acquire, then the statement — so they share one budget
     // rather than each getting the connector's whole `query_timeout_ms`.
@@ -488,9 +401,9 @@ async fn run_sql_count(
         .and_then(|r| r.get(query::backend::sql::COUNT_COLUMN))
         .and_then(Value::as_u64)
         .ok_or_else(|| {
-            DataflowError::function_execution(
+            HandlerError::new(
+                ErrorClass::Backend,
                 format!("{NAME}: the count query returned no count"),
-                None,
             )
         })?;
     Ok(count_result(n))
@@ -502,7 +415,7 @@ async fn run_es_count(
     client: &reqwest::Client,
     es: &EsConnectorConfig,
     eq: &query::backend::es::EsQuery,
-) -> Result<Value, DataflowError> {
+) -> Result<Value, HandlerError> {
     let url = format!("{}/{}/_count", es.url.trim_end_matches('/'), eq.index);
     let req = es_request(client, es, reqwest::Method::POST, &url)
         .await?
@@ -511,16 +424,16 @@ async fn run_es_count(
     let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
     if !status.is_success() {
         let preview = super::connector_helpers::format_upstream_error_preview(&body);
-        return Err(DataflowError::function_execution(
+        return Err(HandlerError::new(
+            ErrorClass::Backend,
             format!("Elasticsearch count failed ({status}): {preview}"),
-            None,
         ));
     }
     let n = body.get("count").and_then(Value::as_u64).ok_or_else(|| {
         let preview = super::connector_helpers::format_upstream_error_preview(&body);
-        DataflowError::function_execution(
+        HandlerError::new(
+            ErrorClass::Backend,
             format!("Elasticsearch count returned no count: {preview}"),
-            None,
         )
     })?;
     Ok(count_result(n))
@@ -539,7 +452,7 @@ async fn run_es_search(
     client: &reqwest::Client,
     es: &EsConnectorConfig,
     eq: &query::backend::es::EsQuery,
-) -> Result<Value, DataflowError> {
+) -> Result<Value, HandlerError> {
     let url = format!("{}/{}/_search", es.url.trim_end_matches('/'), eq.index);
     let req = es_request(client, es, reqwest::Method::POST, &url)
         .await?
@@ -548,9 +461,9 @@ async fn run_es_search(
     let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
     if !status.is_success() {
         let preview = super::connector_helpers::format_upstream_error_preview(&body);
-        return Err(DataflowError::function_execution(
+        return Err(HandlerError::new(
+            ErrorClass::Backend,
             format!("Elasticsearch search failed ({status}): {preview}"),
-            None,
         ));
     }
 
@@ -605,19 +518,23 @@ async fn run_sql_with_includes(
     budget: QueryBudget,
     format: crate::connector::sql_decode::RowFormat,
     max_result_bytes: usize,
-) -> Result<Value, DataflowError> {
+) -> Result<Value, HandlerError> {
     let mut total_bytes = 0usize;
-    let check_bytes = |rows: &[Value], total: &mut usize| -> Result<(), DataflowError> {
+    let check_bytes = |rows: &[Value], total: &mut usize| -> Result<(), HandlerError> {
         if max_result_bytes == 0 {
             return Ok(());
         }
         for row in rows {
-            *total = total.saturating_add(crate::connector::sql_decode::approx_json_value_bytes(row));
+            *total =
+                total.saturating_add(crate::connector::sql_decode::approx_json_value_bytes(row));
             if *total > max_result_bytes {
-                return Err(DataflowError::Validation(format!(
-                    "{NAME} result exceeds query.max_result_bytes ({max_result_bytes} bytes) \
+                return Err(HandlerError::new(
+                    ErrorClass::CallerInput,
+                    format!(
+                        "{NAME} result exceeds query.max_result_bytes ({max_result_bytes} bytes) \
                      — select fewer fields, reduce limit, or raise the cap"
-                )));
+                    ),
+                ));
             }
         }
         Ok(())
@@ -854,21 +771,6 @@ mod tests {
          ('u3', 'Carol', 30, NULL), ('u4', 'Dave', 40, NULL)",
     ];
 
-    fn handler(
-        pool_cache: Arc<SqlPoolCache>,
-        registry: Arc<ConnectorRegistry>,
-    ) -> dataflow_rs_v3::BoxedFunctionHandler {
-        Box::new(super::super::connector_handler::Connector(
-            DataQueryHandler {
-                pool_cache,
-                mongo_pool_cache: Arc::new(MongoPoolCache::new(8)),
-                http_client: reqwest::Client::new(),
-                registry,
-                limits: crate::config::QueryConfig::default(),
-            },
-        ))
-    }
-
     fn function(
         pool_cache: Arc<SqlPoolCache>,
         registry: Arc<ConnectorRegistry>,
@@ -882,20 +784,11 @@ mod tests {
         }
     }
 
-    /// One task through each engine, each against a database of its own
-    /// seeded with [`SEED`], its connector configured with `config`.
-    async fn both(input: Value, data: Value, config: Value) -> (Seen, Seen) {
-        let db = twin::sqlite(config.clone(), SEED).await;
-        let v3 = twin::v3(
-            NAME,
-            handler(db.pool_cache.clone(), db.registry.clone()),
-            input.clone(),
-            data.clone(),
-        )
-        .await;
+    /// One task against a database of its own seeded with [`SEED`], its
+    /// connector configured with `config`.
+    async fn run(input: Value, data: Value, config: Value) -> Seen {
         let db = twin::sqlite(config, SEED).await;
-        let v4 = twin::v4(NAME, function(db.pool_cache, db.registry), input, data).await;
-        (v3, v4)
+        twin::v4(NAME, function(db.pool_cache, db.registry), input, data).await
     }
 
     /// A `data_query` task over `users`, every column readable.
@@ -1018,15 +911,7 @@ mod tests {
             } else {
                 assert!(defects.is_empty(), "{input}: {defects:?}");
                 // The same answer, where 1.12 wrote it.
-                let db = twin::sqlite(json!({}), SEED).await;
-                let v3 = twin::v3(
-                    NAME,
-                    handler(db.pool_cache, db.registry),
-                    input.clone(),
-                    Value::Null,
-                )
-                .await;
-                assert_eq!(twin::seen(&called), v3, "{input}");
+                twin::pinned(&twin::seen(&called), format!("root_output/{input}"));
             }
         }
     }
@@ -1034,7 +919,7 @@ mod tests {
     /// The rows are written at `output`: a filter folding a param from the
     /// message, a projection, an ordering; and a count.
     #[tokio::test]
-    async fn rows_are_written_at_output_as_on_v3() {
+    async fn rows_are_written_at_output() {
         let read = query(json!({
             "source": "users",
             "filter": {">": [{"field": "age"}, {"param": "min"}]},
@@ -1043,8 +928,8 @@ mod tests {
         }));
         let mut with_params = read.clone();
         with_params["params"] = json!({"min": {"var": "data.threshold"}});
-        let (v3, v4) = both(with_params, json!({"threshold": 18}), json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = run(with_params, json!({"threshold": 18}), json!({})).await;
+        twin::pinned(&v4, "rows_are_written_at_output/params");
         assert_eq!(
             v4.expect("read")["rows"],
             json!([{"id": "u2", "age": 20}, {"id": "u3", "age": 30}, {"id": "u4", "age": 40}])
@@ -1055,14 +940,14 @@ mod tests {
         for params in [json!([1]), json!({"var": "data.threshold"}), json!(null)] {
             let mut input = read.clone();
             input["params"] = params.clone();
-            let (v3, v4) = both(input, json!({"threshold": 18}), json!({})).await;
-            assert_eq!(v4, v3, "{params}");
+            let v4 = run(input, json!({"threshold": 18}), json!({})).await;
+            twin::pinned(&v4, format!("rows_are_written_at_output/params {params}"));
             assert!(v4.is_err(), "{params}");
         }
 
         let count = query(json!({"source": "users", "count": true}));
-        let (v3, v4) = both(count, Value::Null, json!({})).await;
-        assert_eq!(v4, v3);
+        let v4 = run(count, Value::Null, json!({})).await;
+        twin::pinned(&v4, "rows_are_written_at_output/count");
         assert_eq!(v4.expect("counted")["rows"], json!({"count": 4}));
     }
 
@@ -1070,7 +955,7 @@ mod tests {
     /// read them; a non-string `database` is no database, as 1.12 read it,
     /// which a SQL connector never asks for.
     #[tokio::test]
-    async fn numeric_as_binary_as_and_database_read_as_on_v3() {
+    async fn numeric_as_binary_as_and_database_read_as_1_12_did() {
         let data = json!({"hex": "hex", "b64": "base64", "bad": "money"});
         for (numeric, binary, ok) in [
             (json!("string"), json!({"var": "data.hex"}), true),
@@ -1085,8 +970,8 @@ mod tests {
             input["numeric_as"] = numeric.clone();
             input["binary_as"] = binary.clone();
             input["database"] = json!(5);
-            let (v3, v4) = both(input, data.clone(), json!({})).await;
-            assert_eq!(v4, v3, "{numeric} {binary}");
+            let v4 = run(input, data.clone(), json!({})).await;
+            twin::pinned(&v4, format!("numeric_as_binary_as/{numeric} {binary}"));
             assert_eq!(v4.is_ok(), ok, "{numeric} {binary}: {v4:?}");
         }
     }
@@ -1112,8 +997,9 @@ mod tests {
             (query(json!({"source": "nowhere"})), json!({})),
             (computed, json!({})),
         ] {
-            let (v3, v4) = both(input.clone(), json!({"n": 1}), config).await;
-            assert_eq!(v4, v3, "{input}");
+            let key = format!("refusals/{input} {config}");
+            let v4 = run(input.clone(), json!({"n": 1}), config).await;
+            twin::pinned(&v4, key);
             assert!(v4.is_err(), "{input}");
         }
     }
@@ -1121,27 +1007,20 @@ mod tests {
     /// A connector of another kind is refused before anything is asked of
     /// it, as 1.12 refused it.
     #[tokio::test]
-    async fn a_connector_of_another_kind_is_refused_as_on_v3() {
+    async fn a_connector_of_another_kind_is_refused() {
         let connector = json!({"type": "cache", "backend": "memory"});
         let input = query(json!({"source": "users"}));
         let pool_cache = Arc::new(SqlPoolCache::new(8));
         let registry = twin::connectors(&[("db", connector)]).await;
-        let v3 = twin::v3(
-            NAME,
-            handler(pool_cache.clone(), registry.clone()),
-            input.clone(),
-            Value::Null,
-        )
-        .await;
         let v4 = twin::v4(NAME, function(pool_cache, registry), input, Value::Null).await;
-        assert_eq!(v4, v3);
+        twin::pinned(&v4, "a_connector_of_another_kind_is_refused");
         assert!(v4.is_err());
     }
 
     /// An Elasticsearch search over a mock node: the hits' `_source`s, at
     /// `output`, as 1.12 read them.
     #[tokio::test]
-    async fn an_elasticsearch_search_reads_as_on_v3() {
+    async fn an_elasticsearch_search_reads_as_1_12_did() {
         let app = axum::Router::new().fallback(|| async {
             axum::Json(json!({"hits": {"hits": [
                 {"_id": "1", "_source": {"name": "Alice"}},
@@ -1157,30 +1036,11 @@ mod tests {
             "type": "es", "url": format!("http://{addr}"), "allow_private_urls": true
         });
         let input = query(json!({"source": "users", "fields": ["name"]}));
-        let mut sides = Vec::new();
-        for v4 in [false, true] {
-            let pool_cache = Arc::new(SqlPoolCache::new(8));
-            let registry = twin::connectors(&[("db", connector.clone())]).await;
-            sides.push(if v4 {
-                twin::v4(
-                    NAME,
-                    function(pool_cache, registry),
-                    input.clone(),
-                    Value::Null,
-                )
-                .await
-            } else {
-                twin::v3(
-                    NAME,
-                    handler(pool_cache, registry),
-                    input.clone(),
-                    Value::Null,
-                )
-                .await
-            });
-        }
-        assert_eq!(sides[1], sides[0]);
-        let rows = sides.pop().expect("v4").expect("searched");
+        let pool_cache = Arc::new(SqlPoolCache::new(8));
+        let registry = twin::connectors(&[("db", connector)]).await;
+        let v4 = twin::v4(NAME, function(pool_cache, registry), input, Value::Null).await;
+        twin::pinned(&v4, "an_elasticsearch_search");
+        let rows = v4.expect("searched");
         assert_eq!(rows["rows"], json!([{"name": "Alice"}, {"name": "Bob"}]));
     }
 
@@ -1231,16 +1091,6 @@ mod tests {
         ] {
             let input = query(envelope.clone());
             let db = twin::sqlite(config.clone(), SEED).await;
-            let held = db.pool.acquire().await.expect("the one connection");
-            let v3 = twin::v3(
-                NAME,
-                handler(db.pool_cache.clone(), db.registry.clone()),
-                input.clone(),
-                Value::Null,
-            )
-            .await;
-            drop(held);
-            let db = twin::sqlite(config.clone(), SEED).await;
             let _held = db.pool.acquire().await.expect("the one connection");
             let called = testing::call(function(db.pool_cache.clone(), db.registry.clone()), input)
                 .exprs(kit::test_exprs())
@@ -1248,7 +1098,10 @@ mod tests {
                 .deadline(dataflow_rs::run::Instant::now() + Duration::from_secs(60))
                 .await;
             let v4 = twin::seen(&called);
-            assert_eq!(v4, v3, "{envelope}");
+            twin::pinned(
+                &v4,
+                format!("a_query_timeout_before_the_run_deadline/{envelope}"),
+            );
             let failure = v4.expect_err("the query timed out");
             assert_eq!(failure.code, "TIMEOUT_ERROR");
             assert_eq!(

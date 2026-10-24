@@ -3,9 +3,9 @@
 //! Every failure names the offending construct and where it occurred (`at` is a
 //! best-effort dotted location inside `filter`), so a query-builder UI or a
 //! workflow author can see precisely why a query is not runnable. All variants
-//! map to `DataflowError::Validation` (a 4xx-style error) at the handler edge.
+//! map to a `VALIDATION_ERROR` (a 4xx-style error) at the handler edge.
 
-use dataflow_rs_v3::engine::error::DataflowError;
+use crate::engine::{ErrorClass, HandlerError};
 
 /// A translation-time error, produced during envelope parse, lowering, or render.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,12 +146,12 @@ impl QueryError {
     }
 }
 
-impl From<QueryError> for DataflowError {
+impl From<QueryError> for HandlerError {
     fn from(e: QueryError) -> Self {
         if e.is_connector_detail() {
-            return crate::errors::connector_detail_error(e);
+            return HandlerError::from(crate::errors::service::connector_detail(e));
         }
-        DataflowError::Validation(e.to_string())
+        HandlerError::new(ErrorClass::CallerInput, e)
     }
 }
 

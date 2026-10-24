@@ -101,7 +101,7 @@ async fn test_webhook_normalization() {
                     "name": "channel_call",
                     "input": {
                         "channel": "processor",
-                        "response_path": "data.processor_result"
+                        "output": "data.processor_result"
                     }
                 }
             }

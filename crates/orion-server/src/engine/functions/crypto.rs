@@ -18,24 +18,17 @@
 //! configured). The resolved key and the submitted password exist only inside
 //! this handler — never written to context, never quoted in an error.
 
-use async_trait::async_trait;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
-use dataflow_rs_v3::engine::functions::AsyncFunctionHandler;
-use dataflow_rs_v3::engine::task_context::TaskContext;
-use dataflow_rs_v3::engine::task_outcome::TaskOutcome;
 use hmac::Hmac;
 use md5::Md5;
 use serde_json::{Map, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 
-use super::connector_helpers::{apply_output, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
-use super::templated_input::FieldSource;
-use super::templated_input::TemplatedInput;
 use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
 use crate::engine::kit::{self, KeyMaterial, read};
 use crate::engine::{ErrorClass, HandlerError};
@@ -164,75 +157,6 @@ impl KdfAdmission {
 static KDF_ADMISSION: std::sync::LazyLock<KdfAdmission> =
     std::sync::LazyLock::new(KdfAdmission::default);
 
-/// Workflow function handler for the `crypto` operation envelope. Stateless:
-/// secret references resolve through the process-wide resolver registry.
-pub struct CryptoHandler;
-
-#[async_trait]
-impl AsyncFunctionHandler for CryptoHandler {
-    type Input = TemplatedInput;
-
-    /// Compile the expression fields this handler's table declares. The
-    /// `Connector` wrapper does this for the connector handlers; these three
-    /// are self-contained — no connector, no egress — so they implement
-    /// `AsyncFunctionHandler` directly and say it themselves.
-    fn compile_input(
-        input: &mut Self::Input,
-        c: &dataflow_rs_v3::engine::functions::TemplateCompiler,
-    ) -> dataflow_rs_v3::Result<()> {
-        input.compile("crypto", c)
-    }
-
-    /// The shell: run the body, then name the handler exactly once.
-    ///
-    /// Every parser below yields a **bare** message, because they are shared
-    /// with `validate_static_input`, where the `FieldError`'s own path already
-    /// says which field is wrong and a `"crypto: "` prefix is noise. On this
-    /// path the message travels away from the task that produced it, so it
-    /// needs the name — applied here, at the one point where that becomes
-    /// true, rather than formatted on by every parser and stripped back off by
-    /// the static path (which is what `strip_handler_prefix` was, and it had
-    /// silently stopped working).
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
-        input: &TemplatedInput,
-    ) -> dataflow_rs_v3::Result<TaskOutcome> {
-        run(ctx, input).await.map_err(|e| e.prefixed(NAME).into())
-    }
-}
-
-async fn run(
-    ctx: &mut TaskContext<'_>,
-    input: &TemplatedInput,
-) -> Result<TaskOutcome, HandlerError> {
-    let op = match input.get("op").and_then(Value::as_str) {
-        Some(op) => op,
-        None => return Err(validation("requires 'op' (string)")),
-    };
-    let output = input
-        .get("output")
-        .and_then(Value::as_str)
-        .unwrap_or("data");
-
-    let result = match op {
-        "hash" => hash_op(input, ctx)?,
-        "hmac" => hmac_op(input, ctx, HmacMode::Compute).await?,
-        "hmac_verify" => hmac_op(input, ctx, HmacMode::Verify).await?,
-        "password_hash" => password_hash_op(input, ctx).await?,
-        "password_verify" => password_verify_op(input, ctx).await?,
-        other => {
-            return Err(validation(&format!(
-                "unknown op '{other}' — expected one of {}",
-                OPS.join(", ")
-            )));
-        }
-    };
-
-    apply_output(ctx, output, result);
-    Ok(TaskOutcome::Success)
-}
-
 /// A caller-fixable problem with the task's input, message bare. See the shell
 /// on `execute` for where the handler's name is added.
 fn validation(msg: &str) -> HandlerError {
@@ -309,22 +233,7 @@ fn byte_codec_named(name: Option<&str>, field: &str) -> Result<Option<Codec>, Ha
     }
 }
 
-/// The byte model of #259, applied to `data`: strings per `input_encoding`
-/// (UTF-8 default), any other JSON value as its compact serialization — key
-/// order preserved — so "sign this payload" is first-class and deterministic.
-fn data_bytes(
-    input: &TemplatedInput,
-    ctx: &(impl FieldSource + ?Sized),
-) -> Result<Vec<u8>, HandlerError> {
-    let Some(data) = input.value_of("data", NAME, ctx) else {
-        return Err(validation("this op requires 'data'"));
-    };
-    let codec = byte_codec(input.raw(), "input_encoding")?;
-    bytes_of(data?, codec)
-}
-
-/// [`data_bytes`]'s byte model over the value `data` resolved to: shared by
-/// both engines' paths.
+/// The byte model over the value `data` resolved to.
 fn bytes_of(data: Value, codec: Option<Codec>) -> Result<Vec<u8>, HandlerError> {
     match data {
         Value::String(s) => match codec {
@@ -361,26 +270,9 @@ fn digest_bytes(algorithm: &str, data: &[u8]) -> Vec<u8> {
     }
 }
 
-fn hash_op(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
-    let algorithm = algorithm(input.raw(), HASH_ALGORITHMS, "sha256")?;
-    let codec = output_codec(input.raw())?;
-    let data = data_bytes(input, ctx)?;
-    Ok(Value::String(encode_bytes(
-        codec,
-        &digest_bytes(algorithm, &data),
-    )))
-}
-
 enum HmacMode {
     Compute,
     Verify,
-}
-
-/// The op's `key`, resolved (literal or secret reference) and decoded per
-/// `key_encoding`. The resolved bytes never leave this call chain.
-async fn hmac_key(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
-    let resolved = super::secret_ref::key_material_field(input, "key", NAME, ctx).await?;
-    key_bytes(resolved, byte_codec(input.raw(), "key_encoding"))
 }
 
 /// The resolved key's bytes, by its `key_encoding`'s codec: an empty key is
@@ -430,33 +322,6 @@ fn decode_presented_signature(s: &str) -> Result<Vec<u8>, HandlerError> {
         .or_else(|_| decode_bytes(Codec::Base64, s))
         .or_else(|_| decode_bytes(Codec::Base64Url, s))
         .map_err(|_| validation("'signature' is not hex, base64, or base64url"))
-}
-
-async fn hmac_op(
-    input: &TemplatedInput,
-    ctx: &TaskContext<'_>,
-    mode: HmacMode,
-) -> Result<Value, HandlerError> {
-    // F58 ordering: the message-independent refusals (algorithm, key) come
-    // before anything the message can change (data, signature).
-    let algorithm = algorithm(input.raw(), HMAC_ALGORITHMS, "sha256")?;
-    let key = hmac_key(input, ctx).await?;
-    let data = data_bytes(input, ctx)?;
-
-    match mode {
-        HmacMode::Compute => {
-            let codec = output_codec(input.raw())?;
-            Ok(Value::String(encode_bytes(
-                codec,
-                &mac(algorithm, &key, &data),
-            )))
-        }
-        HmacMode::Verify => {
-            let signature = resolve_required_str(input, "signature", NAME, ctx)?;
-            let signature = decode_presented_signature(&signature)?;
-            Ok(Value::Bool(mac_matches(algorithm, &key, &data, &signature)))
-        }
-    }
 }
 
 /// A `params` cost knob: defaulted, must be an integer inside `range`.
@@ -555,17 +420,7 @@ fn password_params(
     }
 }
 
-async fn password_hash_op(
-    input: &TemplatedInput,
-    ctx: &TaskContext<'_>,
-) -> Result<Value, HandlerError> {
-    let algorithm = algorithm(input.raw(), PASSWORD_ALGORITHMS, "argon2id")?;
-    let password = resolve_required_str(input, "password", NAME, ctx)?;
-    hash_password(password_params(algorithm, input.get("params"))?, password).await
-}
-
-/// `password` hashed by the effective `params`, on the blocking pool: shared
-/// by both engines' paths.
+/// `password` hashed by the effective `params`, on the blocking pool.
 async fn hash_password(params: PasswordParams, password: String) -> Result<Value, HandlerError> {
     match params {
         PasswordParams::Argon2id {
@@ -601,15 +456,6 @@ async fn hash_password(params: PasswordParams, password: String) -> Result<Value
             .await
         }
     }
-}
-
-async fn password_verify_op(
-    input: &TemplatedInput,
-    ctx: &TaskContext<'_>,
-) -> Result<Value, HandlerError> {
-    let password = resolve_required_str(input, "password", NAME, ctx)?;
-    let hash = resolve_required_str(input, "hash", NAME, ctx)?;
-    verify_password(password, hash).await
 }
 
 /// Validate the scheme and encoded cost parameters of a stored password hash
@@ -656,9 +502,9 @@ fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
                 "stored bcrypt hash is malformed: invalid version or segment count",
             ));
         }
-        let cost: u64 = parts[2].parse().map_err(|_| {
-            validation("stored bcrypt hash is malformed: invalid cost parameter")
-        })?;
+        let cost: u64 = parts[2]
+            .parse()
+            .map_err(|_| validation("stored bcrypt hash is malformed: invalid cost parameter"))?;
         if !BCRYPT_COST_RANGE.contains(&cost) {
             return Err(validation(&format!(
                 "stored bcrypt hash cost ({cost}) is outside allowed range {}..={}",
@@ -675,8 +521,7 @@ fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
     }
 }
 
-/// Whether `password` matches the stored `hash`, on the blocking pool:
-/// shared by both engines' paths.
+/// Whether `password` matches the stored `hash`, on the blocking pool.
 async fn verify_password(password: String, hash: String) -> Result<Value, HandlerError> {
     // Scheme auto-detected from the stored hash, which is what turns a
     // bcrypt → argon2id migration into a verify-then-rehash pair inside one
@@ -843,8 +688,8 @@ fn check(cfg: &CryptoConfig, cx: &mut CompileCx<'_>) {
     super::mongo_common::report_static(validate_static_input(&cfg.authored()), cx);
 }
 
-/// `crypto` as a dataflow-rs 4 function: the op `CryptoHandler` runs, each
-/// field read in the same order, the hashing on the blocking pool.
+/// `crypto` as a function: the op, each field read in 1.12's order, the
+/// hashing on the blocking pool.
 pub struct CryptoFunction;
 
 impl Function for CryptoFunction {
@@ -862,8 +707,8 @@ impl Function for CryptoFunction {
     }
 
     /// The output, where 1.12 read it, before the op; the op, its refusals
-    /// named once with the handler's name, as `CryptoHandler::execute`
-    /// names them; then the one write.
+    /// named once with the handler's name, as 1.12 named them; then the one
+    /// write.
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &CryptoConfig) -> dataflow_rs::Result<Outcome> {
         let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
         let result = compute(ctx, cfg).await.map_err(|e| e.prefixed(NAME))?;
@@ -872,7 +717,7 @@ impl Function for CryptoFunction {
     }
 }
 
-/// The op's result, as `run` computes it.
+/// The op's result.
 async fn compute(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerError> {
     match cfg.op.as_str() {
         "hash" => hash_v4(ctx, cfg),
@@ -899,9 +744,8 @@ fn required_v4(
     Ok(read::required_str(value.as_deref(), name, NAME)?.into_owned())
 }
 
-/// [`data_bytes`] for this call: `data` evaluated, then the codec judged,
-/// then the evaluation's error, in that order, as `value_of` then
-/// `byte_codec` then `data?` judged them.
+/// `data`'s bytes for this call: `data` evaluated, then the codec judged,
+/// then the evaluation's error, in that order, as 1.12 judged them.
 fn data_bytes_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Vec<u8>, HandlerError> {
     let Some(expr) = &cfg.data else {
         return Err(validation("this op requires 'data'"));
@@ -1216,240 +1060,6 @@ mod tests {
     use dataflow_rs::program::{IssueCode, Severity};
     use serde_json::json;
 
-    /// Build an engine with one crypto task and run one message through it.
-    async fn run(input: Value, data: Value) -> Result<Value, String> {
-        crate::engine::functions::run_test_task(NAME, Box::new(CryptoHandler), input, data).await
-    }
-
-    #[tokio::test]
-    async fn hash_matches_the_nist_vectors() {
-        // FIPS 180 "abc" vectors (and RFC 1321 for md5) — wrong bytes or a
-        // wrong algorithm dispatch cannot produce these.
-        for (algorithm, expected) in [
-            (
-                "sha256",
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-            ),
-            (
-                "sha512",
-                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a\
-                 2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
-            ),
-            ("sha1", "a9993e364706816aba3e25717850c26c9cd0d89d"),
-            ("md5", "900150983cd24fb0d6963f7d28e17f72"),
-        ] {
-            let out = run(
-                json!({"op": "hash", "algorithm": algorithm,
-                       "data": "abc", "output": "data.digest"}),
-                json!({}),
-            )
-            .await
-            .expect(algorithm);
-            assert_eq!(out["digest"], json!(expected), "{algorithm}");
-        }
-    }
-
-    #[tokio::test]
-    async fn hmac_matches_rfc_4231_and_rfc_2202() {
-        // Test case 2 of both RFCs: key "Jefe", data "what do ya want for
-        // nothing?".
-        for (algorithm, expected) in [
-            (
-                "sha256",
-                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
-            ),
-            (
-                "sha512",
-                "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea250554\
-                 9758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
-            ),
-            ("sha1", "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"),
-        ] {
-            let out = run(
-                json!({"op": "hmac", "algorithm": algorithm, "key": "Jefe",
-                       "data": {"var": "data.challenge"}, "output": "data.mac"}),
-                json!({"challenge": "what do ya want for nothing?"}),
-            )
-            .await
-            .expect(algorithm);
-            assert_eq!(out["mac"], json!(expected), "{algorithm}");
-        }
-    }
-
-    #[tokio::test]
-    async fn hmac_output_encodings_and_binary_key() {
-        // RFC 4231 case 1: 20 bytes of 0x0b as the key — only expressible
-        // through key_encoding — data "Hi There".
-        let expected_hex = "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7";
-        let out = run(
-            json!({"op": "hmac", "key": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
-                   "key_encoding": "hex", "data": "Hi There",
-                   "encoding": "base64", "output": "data.mac"}),
-            json!({}),
-        )
-        .await
-        .expect("test");
-        let expected_b64 = crate::engine::operators::encode_bytes(
-            Codec::Base64,
-            &hex::decode(expected_hex).expect("test"),
-        );
-        assert_eq!(out["mac"], json!(expected_b64));
-    }
-
-    #[tokio::test]
-    async fn hmac_verify_is_a_boolean_with_auto_detected_encoding() {
-        let mac_hex = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843";
-        let mac_b64 = crate::engine::operators::encode_bytes(
-            Codec::Base64,
-            &hex::decode(mac_hex).expect("test"),
-        );
-        // The same MAC verifies presented as hex or as base64.
-        for presented in [mac_hex.to_string(), mac_b64] {
-            let out = run(
-                json!({"op": "hmac_verify", "key": "Jefe",
-                       "data": "what do ya want for nothing?",
-                       "signature": {"var": "data.sig"}, "output": "data.ok"}),
-                json!({"sig": presented}),
-            )
-            .await
-            .expect("test");
-            assert_eq!(out["ok"], json!(true));
-        }
-        // A wrong MAC of the right shape is false, not an error.
-        let out = run(
-            json!({"op": "hmac_verify", "key": "Jefe",
-                   "data": "what do ya want for nothing?",
-                   "signature": "00".repeat(32), "output": "data.ok"}),
-            json!({}),
-        )
-        .await
-        .expect("test");
-        assert_eq!(out["ok"], json!(false));
-        // Garbage that decodes as nothing is an error, not false.
-        let err = run(
-            json!({"op": "hmac_verify", "key": "Jefe", "data": "x",
-                   "signature": "!!not-an-encoding!!", "output": "data.ok"}),
-            json!({}),
-        )
-        .await
-        .expect_err("test");
-        assert!(err.contains("signature"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn non_string_data_is_hashed_as_compact_json() {
-        // The byte model: an object digests as its compact serialization with
-        // authored key order.
-        let out = run(
-            json!({"op": "hash", "data": {"var": "data.payload"}, "output": "data.digest"}),
-            json!({"payload": {"b": 1, "a": 2}}),
-        )
-        .await
-        .expect("test");
-        let expected = hex::encode(Sha256::digest(br#"{"b":1,"a":2}"#));
-        assert_eq!(out["digest"], json!(expected));
-    }
-
-    #[tokio::test]
-    async fn input_encoding_decodes_binary_payloads() {
-        // sha256 of the two raw bytes 0xff 0xfe — unreachable through UTF-8.
-        let out = run(
-            json!({"op": "hash", "data": "fffe", "input_encoding": "hex",
-                   "output": "data.digest"}),
-            json!({}),
-        )
-        .await
-        .expect("test");
-        assert_eq!(
-            out["digest"],
-            json!(hex::encode(Sha256::digest([0xffu8, 0xfe])))
-        );
-    }
-
-    #[tokio::test]
-    async fn password_hash_and_verify_round_trip() {
-        // argon2id default → PHC string → verify true / false.
-        let out = run(
-            json!({"op": "password_hash",
-                   // Minimum-cost params keep the test fast; bounds are
-                   // asserted separately.
-                   "params": {"memory_kib": 8192, "iterations": 1},
-                   "password": "correct horse", "output": "data.phc"}),
-            json!({}),
-        )
-        .await
-        .expect("test");
-        let phc = out["phc"].as_str().expect("test").to_string();
-        assert!(phc.starts_with("$argon2id$"), "{phc}");
-
-        for (candidate, expected) in [("correct horse", true), ("battery staple", false)] {
-            let out = run(
-                json!({"op": "password_verify", "password": candidate,
-                       "hash": {"var": "data.stored"}, "output": "data.ok"}),
-                json!({"stored": phc}),
-            )
-            .await
-            .expect("test");
-            assert_eq!(out["ok"], json!(expected), "{candidate}");
-        }
-    }
-
-    #[tokio::test]
-    async fn bcrypt_hashes_verify_and_support_rehash_detection() {
-        let out = run(
-            json!({"op": "password_hash", "algorithm": "bcrypt",
-                   "params": {"cost": 10},
-                   "password": "legacy pw", "output": "data.hash"}),
-            json!({}),
-        )
-        .await
-        .expect("test");
-        let stored = out["hash"].as_str().expect("test").to_string();
-        // `$2*$` prefix is the rehash-on-login discriminator the issue
-        // documents (`starts_with` in workflow logic).
-        assert!(stored.starts_with("$2"), "{stored}");
-
-        let out = run(
-            json!({"op": "password_verify", "password": "legacy pw",
-                   "hash": {"var": "data.stored"}, "output": "data.ok"}),
-            json!({"stored": stored}),
-        )
-        .await
-        .expect("test");
-        assert_eq!(out["ok"], json!(true));
-    }
-
-    #[tokio::test]
-    async fn malformed_stored_hash_is_an_error_not_false() {
-        // Data corruption must be distinguishable from a wrong password.
-        let err = run(
-            json!({"op": "password_verify", "password": "x",
-                   "hash": "plainly-not-a-hash", "output": "data.ok"}),
-            json!({}),
-        )
-        .await
-        .expect_err("test");
-        assert!(err.contains("hash scheme"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn table_violations_are_refused_at_execution_too() {
-        // The runtime guard behind the authoring-time table — for
-        // definitions that bypassed validation.
-        for input in [
-            json!({"op": "password_hash", "algorithm": "sha256", "password": "x"}),
-            json!({"op": "hash", "algorithm": "argon2id", "data": "x"}),
-            json!({"op": "melt", "data": "x"}),
-            json!({"op": "hmac", "data": "x"}), // key missing
-            json!({"op": "password_hash", "password": "x", "params": {"cost": 4}}),
-            json!({"op": "password_hash", "password": "x",
-                   "params": {"memory_mib": 64}}), // typoed knob
-        ] {
-            let err = run(input.clone(), json!({})).await.expect_err("test");
-            assert!(err.contains("crypto"), "{input}: {err}");
-        }
-    }
-
     #[test]
     fn static_validation_reads_the_same_tables() {
         // Spot checks; the full matrix lives in the schema tests.
@@ -1476,7 +1086,7 @@ mod tests {
         );
     }
 
-    // -- dataflow-rs 4: the config, then each test above on both engines --
+    // -- the config, then calls against 1.12's records --
 
     fn config_v4(input: Value) -> Result<CryptoConfig, Vec<dataflow_rs::Issue>> {
         testing::config_with(&kit::test_exprs(), input)
@@ -1502,12 +1112,12 @@ mod tests {
             .collect()
     }
 
-    /// One task through each engine over the same input and `data`; the
-    /// two must agree, and dataflow-rs 4's answer is returned.
+    /// One task over `input` and `data`, which must be what 1.12 answered
+    /// for them; the answer is returned. Only for deterministic answers: a
+    /// salted hash is checked by verifying it instead.
     async fn agreed(input: Value, data: Value) -> Seen {
-        let v3 = twin::v3(NAME, Box::new(CryptoHandler), input.clone(), data.clone()).await;
-        let v4 = twin::v4(NAME, CryptoFunction, input.clone(), data).await;
-        assert_eq!(v4, v3, "{input}");
+        let v4 = twin::v4(NAME, CryptoFunction, input.clone(), data.clone()).await;
+        twin::pinned(&v4, format!("{input} {data}"));
         v4
     }
 
@@ -1725,12 +1335,12 @@ mod tests {
             )
             .await
             .expect_err("no path");
-            assert_eq!(failure, twin::output_refusal(not_a_path), "{input}");
+            twin::pinned(&Err(failure), format!("output_refusal/{not_a_path}"));
         }
     }
 
     #[tokio::test]
-    async fn hash_matches_the_nist_vectors_on_v4() {
+    async fn hash_matches_the_nist_vectors() {
         for (algorithm, expected) in [
             (
                 "sha256",
@@ -1756,7 +1366,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hmac_matches_rfc_4231_and_rfc_2202_on_v4() {
+    async fn hmac_matches_rfc_4231_and_rfc_2202() {
         for (algorithm, expected) in [
             (
                 "sha256",
@@ -1781,7 +1391,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hmac_output_encodings_and_binary_key_on_v4() {
+    async fn hmac_output_encodings_and_binary_key() {
         let expected_hex = "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7";
         let out = agreed(
             json!({"op": "hmac", "key": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
@@ -1799,7 +1409,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hmac_verify_is_a_boolean_with_auto_detected_encoding_on_v4() {
+    async fn hmac_verify_is_a_boolean_with_auto_detected_encoding() {
         let mac_hex = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843";
         let mac_b64 = crate::engine::operators::encode_bytes(
             Codec::Base64,
@@ -1836,7 +1446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_string_data_is_hashed_as_compact_json_on_v4() {
+    async fn non_string_data_is_hashed_as_compact_json() {
         let out = agreed(
             json!({"op": "hash", "data": {"var": "data.payload"}, "output": "data.digest"}),
             json!({"payload": {"b": 1, "a": 2}}),
@@ -1848,7 +1458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_encoding_decodes_binary_payloads_on_v4() {
+    async fn input_encoding_decodes_binary_payloads() {
         let out = agreed(
             json!({"op": "hash", "data": "fffe", "input_encoding": "hex",
                    "output": "data.digest"}),
@@ -1862,35 +1472,33 @@ mod tests {
         );
     }
 
-    /// A salted hash differs per call, so each engine verifies the other's:
-    /// argon2id from dataflow-rs 4 verifies on both, and so does 1.12's.
+    /// A salted hash differs per call, so it is checked by verifying it.
     #[tokio::test]
-    async fn password_hash_and_verify_round_trip_on_v4() {
+    async fn password_hash_and_verify_round_trip() {
         let hash = json!({"op": "password_hash",
                           "params": {"memory_kib": 8192, "iterations": 1},
                           "password": "correct horse", "output": "data.phc"});
-        let v4 = twin::v4(NAME, CryptoFunction, hash.clone(), json!({}))
+        let out = twin::v4(NAME, CryptoFunction, hash, json!({}))
             .await
-            .expect("hashed on v4");
-        let v3 = run(hash, json!({})).await.expect("hashed on v3");
-        for phc in [&v4["phc"], &v3["phc"]] {
-            let phc = phc.as_str().expect("a PHC string");
-            assert!(phc.starts_with("$argon2id$"), "{phc}");
-            for (candidate, expected) in [("correct horse", true), ("battery staple", false)] {
-                let out = agreed(
-                    json!({"op": "password_verify", "password": candidate,
-                           "hash": {"var": "data.stored"}, "output": "data.ok"}),
-                    json!({"stored": phc}),
-                )
-                .await
-                .expect("test");
-                assert_eq!(out["ok"], json!(expected), "{candidate}");
-            }
+            .expect("hashed");
+        let phc = out["phc"].as_str().expect("a PHC string");
+        assert!(phc.starts_with("$argon2id$"), "{phc}");
+        for (candidate, expected) in [("correct horse", true), ("battery staple", false)] {
+            let out = twin::v4(
+                NAME,
+                CryptoFunction,
+                json!({"op": "password_verify", "password": candidate,
+                       "hash": {"var": "data.stored"}, "output": "data.ok"}),
+                json!({"stored": phc}),
+            )
+            .await
+            .expect("test");
+            assert_eq!(out["ok"], json!(expected), "{candidate}");
         }
     }
 
     #[tokio::test]
-    async fn bcrypt_hashes_verify_and_support_rehash_detection_on_v4() {
+    async fn bcrypt_hashes_verify_and_support_rehash_detection() {
         let out = twin::v4(
             NAME,
             CryptoFunction,
@@ -1903,7 +1511,9 @@ mod tests {
         .expect("test");
         let stored = out["hash"].as_str().expect("test").to_string();
         assert!(stored.starts_with("$2"), "{stored}");
-        let out = agreed(
+        let out = twin::v4(
+            NAME,
+            CryptoFunction,
             json!({"op": "password_verify", "password": "legacy pw",
                    "hash": {"var": "data.stored"}, "output": "data.ok"}),
             json!({"stored": stored}),
@@ -1914,7 +1524,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_stored_hash_is_an_error_not_false_on_v4() {
+    async fn malformed_stored_hash_is_an_error_not_false() {
         let err = agreed(
             json!({"op": "password_verify", "password": "x",
                    "hash": "plainly-not-a-hash", "output": "data.ok"}),
@@ -1926,11 +1536,11 @@ mod tests {
         assert_eq!(err.code, "VALIDATION_ERROR");
     }
 
-    /// `table_violations_are_refused_at_execution_too`'s inputs: 1.12
-    /// refused each at authoring and at execution; dataflow-rs 4 refuses
-    /// each at load, in the authoring check's words, so none reaches a call.
+    /// Inputs the field tables refuse: 1.12 refused each at authoring and
+    /// at execution; each is now refused at load, in the authoring check's
+    /// words, so none reaches a call.
     #[tokio::test]
-    async fn table_violations_are_refused_at_load_on_v4() {
+    async fn table_violations_are_refused_at_load() {
         for input in [
             json!({"op": "password_hash", "algorithm": "sha256", "password": "x"}),
             json!({"op": "hash", "algorithm": "argon2id", "data": "x"}),
@@ -1940,8 +1550,6 @@ mod tests {
             json!({"op": "password_hash", "password": "x",
                    "params": {"memory_mib": 64}}),
         ] {
-            let v3 = run(input.clone(), json!({})).await.expect_err("test");
-            assert!(v3.contains("crypto"), "{input}: {v3}");
             assert_eq!(refusals(input.clone()), authoring(&input), "{input}");
             let called = testing::call(CryptoFunction, input.clone())
                 .exprs(kit::test_exprs())
@@ -2094,7 +1702,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kdf_admission_enforces_queue_deadline_and_retains_permit_until_blocking_task_finishes() {
+    async fn kdf_admission_enforces_queue_deadline_and_retains_permit_until_blocking_task_finishes()
+    {
         use std::sync::{Arc, Barrier};
         use std::time::Duration;
 

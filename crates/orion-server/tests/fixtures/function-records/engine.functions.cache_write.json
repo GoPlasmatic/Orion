@@ -1,0 +1,567 @@
+{
+  "a_read_only_connector_refuses_a_write": {
+    "err": {
+      "code": "connector_detail",
+      "message": "Request validation failed",
+      "retryable": false,
+      "detail": "operation 'write' is disabled on connector 'c'"
+    }
+  },
+  "a_read_only_connector_refuses_a_write/held": {
+    "ok": [
+      "0",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"absent\",\"key\":\"k\",\"value\":1}": {
+    "err": {
+      "code": "FUNCTION_ERROR",
+      "message": "Function execution error: Connector 'absent' not found",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"absent\",\"key\":\"k\",\"value\":1}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":\"123\"}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":\"123\"}/held": {
+    "ok": [
+      "\"123\"",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":\"5m\"}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'ttl_secs' must resolve to a number, got string",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":\"5m\"}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":0}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":0}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":[30]}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'ttl_secs' must resolve to a number, got array",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":[30]}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":null}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":null}/held": {
+    "ok": [
+      "1",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":true}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'ttl_secs' must resolve to a number, got boolean",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":true}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"+\":[1,2]}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'ttl_secs' must resolve to a number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"+\":[1,2]}}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.half\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'ttl_secs' must be a non-negative whole number of seconds, got 2.5",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.half\"}}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.missing\"}}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.missing\"}}/held": {
+    "ok": [
+      "1",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.neg\"}}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'ttl_secs' must be a non-negative whole number of seconds, got -1",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.neg\"}}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.ttl\"}}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.ttl\"}}/held": {
+    "ok": [
+      "1",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.two\"}}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":1,\"ttl_secs\":{\"var\":\"data.two\"}}/held": {
+    "ok": [
+      "1",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":123}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":123}/held": {
+    "ok": [
+      "123",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":[1.5,2.0,{\"var\":\"data.two\"}]}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":[1.5,2.0,{\"var\":\"data.two\"}]}/held": {
+    "ok": [
+      "[1.5,2.0,2.0]",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":null}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":null}/held": {
+    "ok": [
+      "null",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":{\"+\":[1,2]}}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":{\"+\":[1,2]}}/held": {
+    "ok": [
+      "{\"+\":[1,2]}",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":{\"var\":\"data.f\"}}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":{\"var\":\"data.f\"}}/held": {
+    "ok": [
+      "1.25",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":{\"var\":\"data.obj\"}}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":\"k\",\"value\":{\"var\":\"data.obj\"}}/held": {
+    "ok": [
+      "{\"a\":[1,{\"b\":null}]}",
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":7,\"value\":true}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":7,\"value\":true}/held": {
+    "ok": [
+      null,
+      "true",
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":true,\"value\":false}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":true,\"value\":false}/held": {
+    "ok": [
+      null,
+      null,
+      "false",
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":{\"cat\":[\"user:\",{\"var\":\"data.id\"}]},\"value\":{\"$set\":{\"name\":{\"var\":\"data.name\"}},\"n\":[1,{\"var\":[\"data.missing\",\"dflt\"]}]},\"ttl_secs\":60}": {
+    "ok": {
+      "id": 7,
+      "name": "Ada",
+      "obj": {
+        "a": [
+          1,
+          {
+            "b": null
+          }
+        ]
+      },
+      "ttl": 30,
+      "two": 2.0,
+      "half": 2.5,
+      "neg": -1,
+      "f": 1.25
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":{\"cat\":[\"user:\",{\"var\":\"data.id\"}]},\"value\":{\"$set\":{\"name\":{\"var\":\"data.name\"}},\"n\":[1,{\"var\":[\"data.missing\",\"dflt\"]}]},\"ttl_secs\":60}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      "{\"$set\":{\"name\":\"Ada\"},\"n\":[1,\"dflt\"]}"
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":{\"var\":\"data.none\"},\"value\":1}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'key' must resolve to a string or number, got null",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":{\"var\":\"data.none\"},\"value\":1}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":{\"var\":\"data.obj\"},\"value\":1}": {
+    "err": {
+      "code": "VALIDATION_ERROR",
+      "message": "Validation error: cache_write 'key' must resolve to a string or number, got object",
+      "retryable": false,
+      "detail": null
+    }
+  },
+  "writes_and_refuses/{\"connector\":\"c\",\"key\":{\"var\":\"data.obj\"},\"value\":1}/held": {
+    "ok": [
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

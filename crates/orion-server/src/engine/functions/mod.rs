@@ -1,6 +1,5 @@
 pub mod channel_call;
 pub mod connector_call;
-pub mod connector_handler;
 pub mod connector_helpers;
 pub mod http_call;
 pub mod http_common;
@@ -9,7 +8,6 @@ pub mod registry;
 pub mod schema;
 pub mod secret_ref;
 pub mod stub;
-pub mod templated_input;
 
 pub mod cache_delete;
 pub mod cache_incr;
@@ -32,91 +30,23 @@ pub mod send_email;
 pub mod storage_head;
 pub mod storage_presign;
 
-use dataflow_rs_v3::engine::message::Message;
-// Only the `#[cfg(test)]` harness below needs this now that the retry loop
-// itself lives upstream.
+// Only the `#[cfg(test)]` harness below needs this.
 #[cfg(test)]
 use serde_json::Value;
 
-/// Convert a dataflow `HttpMethod` to a reqwest `Method`.
-///
-/// `HttpMethod::as_str` (dataflow-rs 3.1) is tied by an upstream test to the
-/// enum's own `Deserialize` spelling, so the token is always a valid method
-/// name and `from_bytes` cannot actually fail. The fallback keeps this
-/// infallible rather than asserting on that.
-pub fn to_reqwest_method(method: &dataflow_rs_v3::HttpMethod) -> reqwest::Method {
-    reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET)
-}
-
-/// Extract the channel name from a message's metadata.
-pub fn extract_channel(message: &Message) -> &str {
-    message
-        .metadata()
-        .get("channel")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-}
-
-/// Test-only shared harness: run `tasks` through a real engine with `fns`
-/// registered, seed `data` (unless null) into the message context, and return
-/// the message's final `data` — or the first task error, formatted. The
-/// per-handler test modules each used to hand-roll these ~25 lines.
-#[cfg(test)]
-pub(crate) async fn run_test_tasks(
-    fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler>,
-    tasks: Value,
-    data: Value,
-) -> Result<Value, String> {
-    let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(serde_json::json!({
-        "id": "w", "name": "w", "condition": true, "tasks": tasks
-    }))
-    .map_err(|e| e.to_string())?;
-    let engine = dataflow_rs_v3::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-    let mut message = dataflow_rs_v3::Message::from_value(&serde_json::json!({}));
-    if !data.is_null() {
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            dataflow_rs_v3::datavalue::OwnedDataValue::from(&data),
-        );
-    }
-    engine
-        .process_message(&mut message)
-        .await
-        .map_err(|e| e.to_string())?;
-    if let Some(err) = message.errors().first() {
-        return Err(format!("{err:?}"));
-    }
-    Ok(message.data().into())
-}
-
-/// One-task convenience over [`run_test_tasks`].
-#[cfg(test)]
-pub(crate) async fn run_test_task(
-    name: &str,
-    handler: dataflow_rs_v3::BoxedFunctionHandler,
-    input: Value,
-    data: Value,
-) -> Result<Value, String> {
-    let mut fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
-        Default::default();
-    fns.insert(name.to_string(), handler);
-    run_test_tasks(
-        fns,
-        serde_json::json!([{"id": "t", "name": "t", "function": {"name": name, "input": input}}]),
-        data,
-    )
-    .await
-}
-
-/// Test-only: one task through each engine, as a client reads the result, so
-/// a dataflow-rs 4 function's test holds it to its dataflow-rs 3 handler over
-/// the same input — the same writes, outcome and error (the port rules).
+/// Test-only: one task through the engine, as a client reads the result, and
+/// the record of what 1.12 answered for the same input.
 ///
 /// What is compared is what leaves the engine: the message's `data` after
 /// the task, or the failure that stopped it, with its code, the text its
 /// record carries after `"Task t error: "`, its retryability and its
 /// operator-only detail.
+///
+/// The records under `tests/fixtures/function-records/` were the twin tests'
+/// oracle while each function had a dataflow-rs 3 handler beside it: they
+/// are the answers both gave, taken when the two last agreed on every case.
+/// A test asserts against them with [`pinned`]; `ORION_BLESS=1` rewrites the
+/// records it reaches, for a behaviour change made on purpose.
 #[cfg(test)]
 pub(crate) mod twin {
     use std::sync::Arc;
@@ -269,62 +199,6 @@ pub(crate) mod twin {
         }
     }
 
-    /// `handler` as the one task `t` of a dataflow-rs 3 workflow, over a
-    /// message whose `data` is `data` (unless `null`).
-    pub(crate) async fn v3(
-        name: &str,
-        handler: dataflow_rs_v3::BoxedFunctionHandler,
-        input: Value,
-        data: Value,
-    ) -> Seen {
-        v3_status(name, handler, input, data).await.0
-    }
-
-    /// [`v3`], and the status the task's audit entry records when it
-    /// finished: `200`, or the status it answered with (a partial bulk
-    /// write's `207`).
-    pub(crate) async fn v3_status(
-        name: &str,
-        handler: dataflow_rs_v3::BoxedFunctionHandler,
-        input: Value,
-        data: Value,
-    ) -> (Seen, Option<usize>) {
-        let mut fns: std::collections::HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> =
-            Default::default();
-        fns.insert(name.to_string(), handler);
-        let workflow: dataflow_rs_v3::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t", "function": {"name": name, "input": input}}]
-        }))
-        .expect("a workflow");
-        let engine = dataflow_rs_v3::Engine::new(vec![workflow], fns).expect("the engine builds");
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        if !data.is_null() {
-            dataflow_rs_v3::engine::utils::set_nested_value(
-                &mut message.context,
-                "data",
-                OwnedDataValue::from(&data),
-            );
-        }
-        let seen = match engine.process_message(&mut message).await {
-            Ok(()) => Ok(message.data().into()),
-            Err(e) => {
-                let record = message.errors().first().expect("the failure is recorded");
-                let failure = Failure {
-                    code: record.code.clone(),
-                    message: e.to_string(),
-                    retryable: e.retryable(),
-                    detail: record.detail.clone(),
-                };
-                // What the harness reads off the error is what the record says.
-                assert_eq!(record.message, format!("Task t error: {}", failure.message));
-                Err(failure)
-            }
-        };
-        let status = message.audit_trail().last().map(|entry| entry.status);
-        (seen, status)
-    }
-
     /// One call of `f`, registered as `name`, on Orion's expressions, over a
     /// message whose `data` is `data`. The config must compile.
     pub(crate) async fn v4<F: dataflow_rs::Function>(
@@ -379,67 +253,95 @@ pub(crate) mod twin {
         }
     }
 
-    /// 1.12's refusal of an `output` that resolved to `value`, from its
-    /// `resolve_output_path`, as a task's record carries it: the failure a
-    /// dataflow-rs 4 function's computed output gives through
-    /// `kit::output_path`, for a function whose 1.12 handler never
-    /// evaluated its output and so has no twin to compute it from.
-    pub(crate) fn output_refusal(value: Value) -> Failure {
-        use dataflow_rs_v3::engine::task_context::TaskContext;
-        let input = super::templated_input::TemplatedInput::from(json!({ "output": value }));
-        let datalogic = Arc::new(dataflow_rs_v3::datalogic_rs::Engine::new());
-        let mut message = dataflow_rs_v3::Message::from_value(&json!({}));
-        let ctx = TaskContext::new(&mut message, &datalogic);
-        let e = super::connector_helpers::resolve_output_path(&input, "probe", &ctx)
-            .expect_err("not a path");
-        Failure {
-            code: dataflow_rs_v3::ErrorInfo::new(None, None, e.clone()).code,
-            message: e.to_string(),
-            retryable: e.retryable(),
-            detail: None,
+    /// What a call saw, as its record holds it: `{"ok": data}` or
+    /// `{"err": failure}`.
+    fn record_of(seen: &Seen) -> Value {
+        match seen {
+            Ok(data) => json!({"ok": data}),
+            Err(f) => json!({"err": {
+                "code": f.code,
+                "message": f.message,
+                "retryable": f.retryable,
+                "detail": f.detail,
+            }}),
         }
+    }
+
+    /// Where the records of the module at `file` (`src/engine/functions/x.rs`)
+    /// live, and the name they go by.
+    fn records_path(file: &str) -> (String, std::path::PathBuf) {
+        let module = file
+            .rsplit_once("src/")
+            .map_or(file, |(_, rest)| rest)
+            .trim_end_matches(".rs")
+            .replace('/', ".");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/function-records")
+            .join(format!("{module}.json"));
+        (module, path)
+    }
+
+    fn read_records(path: &std::path::Path) -> std::collections::BTreeMap<String, Value> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text).expect("a records file is JSON"),
+            Err(_) => Default::default(),
+        }
+    }
+
+    /// Assert that `seen` is what the calling module's record `key` holds:
+    /// what 1.12 answered for that case. Under `ORION_BLESS=1` the record is
+    /// written instead, and a key written twice in one run with two different
+    /// answers fails, so a loop cannot pin one case over another.
+    #[track_caller]
+    pub(crate) fn pinned(seen: &Seen, key: impl std::fmt::Display) {
+        use std::collections::{BTreeMap, HashMap};
+        use std::sync::{Mutex, OnceLock};
+
+        static BLESSED: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+        static LOADED: OnceLock<Mutex<HashMap<std::path::PathBuf, BTreeMap<String, Value>>>> =
+            OnceLock::new();
+
+        let (module, path) = records_path(std::panic::Location::caller().file());
+        let key = key.to_string();
+        let got = record_of(seen);
+
+        if std::env::var_os("ORION_BLESS").is_some() {
+            let mut blessed = BLESSED.get_or_init(Default::default).lock().expect("lock");
+            let id = format!("{module}::{key}");
+            if let Some(earlier) = blessed.insert(id.clone(), got.clone()) {
+                assert_eq!(earlier, got, "{id} was pinned twice with two answers");
+            }
+            let mut records = read_records(&path);
+            records.insert(key, got);
+            std::fs::create_dir_all(path.parent().expect("a directory"))
+                .expect("the records directory is writable");
+            let mut text = serde_json::to_string_pretty(&records).expect("serializes");
+            text.push('\n');
+            std::fs::write(&path, text).expect("the records file is writable");
+            return;
+        }
+
+        let mut loaded = LOADED.get_or_init(Default::default).lock().expect("lock");
+        let records = loaded
+            .entry(path.clone())
+            .or_insert_with(|| read_records(&path));
+        assert!(
+            records.contains_key(&key),
+            "no record `{key}` in {}; run with ORION_BLESS=1 to write it",
+            path.display()
+        );
+        assert_eq!(
+            &got, &records[&key],
+            "{module}: `{key}` is not what 1.12 answered"
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dataflow_rs_v3::engine::error::DataflowError;
     use std::sync::Arc;
     use std::time::Duration;
-
-    /// Five one-assert tests used to sit here, one per variant, and a new
-    /// upstream variant would have gone untested. Driving off `HttpMethod::ALL`
-    /// covers whatever the enum holds, and the `unwrap_or(GET)` fallback in
-    /// `to_reqwest_method` means a name reqwest cannot parse is silent — so
-    /// assert the round trip, not just that a `Method` came back.
-    #[test]
-    fn every_http_method_maps_to_the_same_reqwest_verb() {
-        for method in dataflow_rs_v3::HttpMethod::ALL {
-            assert_eq!(
-                to_reqwest_method(method).as_str(),
-                method.as_str(),
-                "{method} did not round-trip through reqwest::Method"
-            );
-        }
-    }
-
-    #[test]
-    fn test_extract_channel_with_channel() {
-        let mut message = Message::from_value(&serde_json::json!({"key": "val"}));
-        dataflow_rs_v3::engine::utils::set_nested_value(
-            &mut message.context,
-            "metadata.channel",
-            dataflow_rs_v3::datavalue::OwnedDataValue::from("orders".to_string()),
-        );
-        assert_eq!(extract_channel(&message), "orders");
-    }
-
-    #[test]
-    fn test_extract_channel_without_channel() {
-        let message = Message::from_value(&serde_json::json!({}));
-        assert_eq!(extract_channel(&message), "unknown");
-    }
 
     /// F8: the loop must stop retrying once the deadline is spent, rather
     /// than running attempts + backoff far past the caller's budget. The loop
@@ -462,7 +364,9 @@ mod tests {
                 let seen = seen.clone();
                 async move {
                     seen.fetch_add(1, Ordering::SeqCst);
-                    Err::<Value, _>(DataflowError::Timeout("nope".into()))
+                    Err::<Value, _>(
+                        dataflow_rs::Error::service("TIMEOUT_ERROR", "nope").with_retryable(true),
+                    )
                 }
             },
         )
@@ -531,14 +435,17 @@ mod message_shape_pin {
     /// the message is just less useful in a trace than it was.
     #[tokio::test]
     async fn crypto_execution_messages_keep_the_handler_name() {
-        let err = super::run_test_task(
-            "crypto",
-            Box::new(super::crypto::CryptoHandler),
-            json!({"op": "hash", "data": "x", "algorithm": "not-an-algorithm"}),
+        // A key reference that resolves to nothing fails at execution; an
+        // unknown algorithm no longer gets that far, it is refused at load.
+        let err = super::twin::v4(
+            super::crypto::NAME,
+            super::crypto::CryptoFunction,
+            json!({"op": "hmac", "data": "x", "key": "env://ORION_TEST_UNSET_HMAC_KEY_7f3a"}),
             json!({}),
         )
         .await
-        .expect_err("an unknown algorithm must fail the task");
+        .expect_err("an unresolvable key must fail the task")
+        .message;
         assert!(
             err.contains("crypto: "),
             "an execution-path message must name its handler: {err:?}"

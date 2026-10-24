@@ -3,9 +3,8 @@ use super::*;
 /// One call's fields, as the engine running it read them for this message:
 /// each its value, or the refusal 1.12 gave for it. [`infer`] consumes them
 /// in 1.12's order, so the first refusal a call reports is the one it
-/// always reported. `W` is where the call writes, which only the engine
-/// running it knows how to name.
-pub(super) struct Request<'s, W> {
+/// always reported.
+pub(super) struct Request<'s> {
     /// When the call started: the model's own deadline counts from here.
     pub(super) started: Instant,
     pub(super) model: Result<OwnedDataValue, Refused>,
@@ -15,25 +14,19 @@ pub(super) struct Request<'s, W> {
     /// is unset or gave `null`.
     pub(super) timeout_ms: Result<Option<Value>, Refused>,
     pub(super) raw: Result<bool, Refused>,
-    /// Where the result goes, and whatever 1.12 refused between `raw` and
-    /// the root: `raw` beside `select`, an output that is not a path.
-    pub(super) writes: Result<W, Refused>,
     /// The `input` field's value: the root every adapter reads.
     pub(super) root: Result<OwnedDataValue, Refused>,
     pub(super) select: Option<Select<'s>>,
     /// Whether `stats_output` is set, and so whether the stats are built.
     pub(super) stats: bool,
-    /// The deadline of the run the call belongs to (`Ctx::deadline`); none
-    /// on dataflow-rs 3, whose channel timeout ends the run instead.
+    /// The deadline of the run the call belongs to (`Ctx::deadline`), if it
+    /// has one.
     pub(super) run_deadline: Option<dataflow_rs::run::Instant>,
 }
 
 /// The task's own `select`, with the engine that compiled it.
 pub(super) enum Select<'s> {
-    /// dataflow-rs 3's, compiled by its `TemplateCompiler`.
-    V3(&'s datalogic::Engine, &'s datalogic::Logic),
-    /// dataflow-rs 4's, a [`kit::DetachedExpr`] compiled on the program's
-    /// expression engine.
+    /// A [`kit::DetachedExpr`] compiled on the program's expression engine.
     V4(&'s ExprEngine, &'s Expr<OwnedDataValue>),
 }
 
@@ -47,8 +40,6 @@ impl Select<'_> {
     ) -> Result<(OwnedDataValue, u64), Refused> {
         const CONTEXT: &str = "the select expression failed";
         match self {
-            Self::V3(engine, logic) => evaluate(engine, logic, root)
-                .map_err(|e| datalogic_refused(Some(labels), Category::Adapter, CONTEXT, &e)),
             Self::V4(exprs, expr) => exprs
                 .eval(expr, root)
                 .map(|evaluated| (evaluated.value.into_owned(), evaluated.ops.unwrap_or(0)))
@@ -59,20 +50,19 @@ impl Select<'_> {
 
 /// What a call produced, for the engine running it to write: the result,
 /// the stats when `stats_output` is set, and where they go.
-pub(super) struct Inferred<W> {
+pub(super) struct Inferred {
     pub(super) labels: Labels,
     pub(super) value: OwnedDataValue,
     pub(super) stats: Option<Value>,
-    pub(super) writes: W,
 }
 
-/// The shell around one call, on either engine: the inference counted
+/// The shell around one call: the inference counted
 /// under its outcome, a failure's operator-only detail logged, and its
 /// error named once with the handler's name.
-pub(super) fn settle<W>(
+pub(super) fn settle(
     started: Instant,
-    result: Result<Inferred<W>, Refused>,
-) -> Result<Inferred<W>, HandlerError> {
+    result: Result<Inferred, Refused>,
+) -> Result<Inferred, HandlerError> {
     match result {
         Ok(inferred) => {
             crate::metrics::record_model_inference(
@@ -166,24 +156,6 @@ pub(super) fn evaluation_refused(
     )
 }
 
-/// [`evaluation_refused`] for dataflow-rs 3's `select`, compiled on its own
-/// datalogic engine, whose budget refusal is told by its tag.
-pub(super) fn datalogic_refused(
-    labels: Option<&Labels>,
-    category: Category,
-    context: &str,
-    e: &datalogic::Error,
-) -> Refused {
-    if e.tag() == "BudgetExceeded" {
-        return Refused {
-            labels: labels.cloned(),
-            category,
-            error: HandlerError::from(DataflowError::BudgetExceeded(format!("{context}: {e}"))),
-        };
-    }
-    refuse(labels, Failure::new(category, format!("{context}: {e}")))
-}
-
 /// A field of the task's own that did not evaluate, on dataflow-rs 4: the
 /// error under the field's name, its kind kept, so a budget refusal in
 /// `model` or `input` keeps its code.
@@ -192,18 +164,6 @@ pub(super) fn field_refused(field: &str, e: dataflow_rs::Error) -> Refused {
         labels: None,
         category: Category::CallerInput,
         error: HandlerError::from(e.wrap(format!("'{field}'"))),
-    }
-}
-
-/// [`field_refused`] on dataflow-rs 3: the `DataflowError` is kept as the
-/// original, so a budget refusal keeps its code.
-pub(super) fn field_refused_v3(field: &str, e: DataflowError) -> Refused {
-    let mut error = HandlerError::from(e);
-    error.msg = format!("'{field}': {}", error.msg);
-    Refused {
-        labels: None,
-        category: Category::CallerInput,
-        error,
     }
 }
 
@@ -235,19 +195,6 @@ pub(super) fn kind_of(value: &OwnedDataValue) -> &'static str {
         OwnedDataValue::Tensor(_) => "a tensor",
         _ => "another value",
     }
-}
-
-/// Evaluate dataflow-rs 3's compiled `select` over `root` on `engine`, the
-/// one that compiled it, and take the result out of the arena.
-pub(super) fn evaluate(
-    engine: &datalogic::Engine,
-    logic: &datalogic::Logic,
-    root: &OwnedDataValue,
-) -> Result<(OwnedDataValue, u64), datalogic::Error> {
-    let arena = datalogic::bumpalo::Bump::new();
-    engine
-        .evaluate_metered(logic, root, &arena, engine.resolve_ops_budget(None))
-        .map(|metered| (metered.value.to_owned(), metered.ops))
 }
 
 /// What one call's expressions charged: every input adapter and, unless the
@@ -316,13 +263,13 @@ pub(super) async fn acquire(
     }
 }
 
-/// The call, on either engine, from the fields read to the value written.
-pub(super) async fn infer<W>(
+/// The call, from the fields read to the value written.
+pub(super) async fn infer(
     source: &ModelSource,
     host: Option<&Arc<InferenceHost>>,
     config: &ModelsConfig,
-    request: Request<'_, W>,
-) -> Result<Inferred<W>, Refused> {
+    request: Request<'_>,
+) -> Result<Inferred, Refused> {
     // One set for this call: the entry, its adapters and the engine they
     // were compiled on, off one load of the generation on a node, or the
     // offline set.
@@ -433,7 +380,6 @@ pub(super) async fn infer<W>(
         _ => Some(own),
     };
     let raw = request.raw.map_err(|r| r.labelled(&labels))?;
-    let writes = request.writes.map_err(|r| r.labelled(&labels))?;
 
     // 3. The adapters, on the set's engine, before anything is loaded: a
     // message that does not marshal costs no cold load.
@@ -715,7 +661,6 @@ pub(super) async fn infer<W>(
         labels,
         value,
         stats,
-        writes,
     })
 }
 

@@ -137,21 +137,11 @@ pub struct FieldSchema {
     /// input_expressions` reports these positions to clippy, so a
     /// `{"var": "payload.x"}` in a request path counts as the read it is.
     pub template_at: &'static [&'static str],
-    /// A second accepted spelling for this field, or `None`.
-    ///
-    /// Two fields have one, both spelled `response_path` (the pre-1.0 name of
-    /// `output`): `http_call.output`, via a serde alias on dataflow-rs's
-    /// `HttpCallConfig`, and `channel_call.output`, via an alias on Orion's
-    /// own struct. A serde alias cannot express precedence, so supplying
-    /// **both** spellings is a duplicate-field parse error rather than an
-    /// "`output` wins" rule. `check_fields` reports that here instead of
-    /// letting the workflow load and quarantine its channel.
-    pub alias: Option<&'static str>,
 }
 
 impl FieldSchema {
     /// The neutral row every field table builds on: not required, not
-    /// resolvable, not secret, not templated, no alias.
+    /// resolvable, not secret, not templated.
     ///
     /// The tables are `const` slices, so without this every field on this
     /// struct has to be spelled at all ~137 sites — and adding one costs a
@@ -169,7 +159,6 @@ impl FieldSchema {
         resolvable: false,
         secret_at: &[],
         template_at: &[],
-        alias: None,
     };
 }
 
@@ -691,8 +680,8 @@ impl Source {
 /// The dataflow-rs built-ins: valid in a workflow, executed by the engine,
 /// with no Orion-declared input schema.
 ///
-/// `(name, description, aliases, writes, retry_safety)` — the five things that
-/// vary. Every
+/// `(name, description, writes, retry_safety)` — the four things that vary.
+/// Every
 /// entry is `category: "data"` (the fourth wire value, matching the grouping
 /// `reference/functions/index.md` already gives these in its summary table),
 /// `source: Engine`, and no input schema, so the registry supplies those
@@ -710,61 +699,52 @@ impl Source {
 /// its neighbours. (`log` writes only to this node's own observability output.
 /// A retry repeating a log line is not a duplicated effect in the sense this
 /// field is about.)
-pub(super) const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape, RetrySafety)] = &[
+pub(super) const ENGINE_BUILTINS: &[(&str, &str, WriteShape, RetrySafety)] = &[
     (
         "parse_json",
         "Parse the raw payload into the data context.",
-        &[],
         WriteShape::Target,
         RetrySafety::Pure,
     ),
     (
         "parse_xml",
         "Parse an XML payload into the data context.",
-        &[],
         WriteShape::Target,
         RetrySafety::Pure,
     ),
     (
         "map",
         "Transform and reshape data with JSONLogic mappings.",
-        &[],
         WriteShape::Mappings,
         RetrySafety::Pure,
     ),
     (
         "filter",
         "Gate the pipeline on a JSONLogic condition.",
-        &[],
         WriteShape::Nothing,
         RetrySafety::Pure,
     ),
     (
         "validation",
         "Collect validation errors from JSONLogic rules.",
-        // Upstream accepts both spellings; they are one function.
-        &["validate"],
         WriteShape::Nothing,
         RetrySafety::Pure,
     ),
     (
         "log",
         "Emit a structured log line.",
-        &[],
         WriteShape::Nothing,
         RetrySafety::Pure,
     ),
     (
         "publish_json",
         "Serialize a context field to a JSON string.",
-        &[],
         WriteShape::Target,
         RetrySafety::Pure,
     ),
     (
         "publish_xml",
         "Serialize a context field to an XML string.",
-        &[],
         WriteShape::Target,
         RetrySafety::Pure,
     ),
