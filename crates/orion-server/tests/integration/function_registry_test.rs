@@ -97,7 +97,7 @@ async fn the_registry_declares_exactly_the_handlers_orion_registers() {
         declared, registered,
         "the registry's Orion entries and build_custom_functions' keys must be the same set"
     );
-    assert_eq!(declared.len(), 22);
+    assert_eq!(declared.len(), 23);
 }
 
 /// `GET /admin/functions` is the generation's registry, serialised — and a
@@ -315,7 +315,7 @@ fn the_builtin_registry_is_the_static_tables_and_nothing_else() {
         .entries()
         .filter(|e| e.source == Source::Engine)
         .count();
-    assert_eq!((orion, engine), (22, 8));
+    assert_eq!((orion, engine), (23, 8));
     assert!(orion::engine::functions::registry::interned("acme.never.registered").is_none());
 }
 

@@ -782,7 +782,7 @@ mod tests {
     use crate::extensions::CompositionRoot;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use crate::extensions::contract::{ConnectionReference, EffectiveConnectionIdentity};
-    use crate::extensions::foundation::DRIVER_HTTP;
+    use crate::extensions::foundation::{DRIVER_HTTP, DRIVER_MEMORY_CACHE};
     use std::time::{Duration, Instant};
 
     fn sample_provider_ref() -> ProviderReference {
@@ -883,8 +883,8 @@ mod tests {
                     },
                     WorkflowGroupStep::InvokeSlot {
                         binding_slot: "upstream_api".to_string(),
-                        operation: "get".to_string(),
-                        input: json!({"path": "/v1/contacts/123"}),
+                        operation: "set".to_string(),
+                        input: json!({"key": "contact:123", "value": "synced"}),
                         output_key: "upstream_response".to_string(),
                     },
                 ],
@@ -915,9 +915,9 @@ mod tests {
             "upstream_api".to_string(),
             BindingSlotSpec {
                 slot: "upstream_api".to_string(),
-                provider_id: DRIVER_HTTP.to_string(),
+                provider_id: DRIVER_MEMORY_CACHE.to_string(),
                 implementation: ImplementationKind::Rust,
-                required_operations: BTreeSet::from(["get".to_string()]),
+                required_operations: BTreeSet::from(["set".to_string()]),
             },
         );
 
@@ -953,10 +953,10 @@ mod tests {
             provider: sample_provider_ref(),
         };
         let http_conn = ConnectionReference {
-            connection_id: "http-conn".to_string(),
+            connection_id: "cache-conn".to_string(),
             revision: 1,
             provider: ProviderReference {
-                provider_id: DRIVER_HTTP.to_string(),
+                provider_id: DRIVER_MEMORY_CACHE.to_string(),
                 version: "2.0.0".to_string(),
                 package_digest:
                     "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
@@ -978,7 +978,7 @@ mod tests {
         let mut declared_dependencies = BTreeMap::new();
         declared_dependencies.insert(
             "upstream_api".to_string(),
-            (http_conn, BTreeSet::from(["get".to_string()])),
+            (http_conn, BTreeSet::from(["set".to_string()])),
         );
 
         let run = AdmittedRun::admit(
@@ -1012,8 +1012,8 @@ mod tests {
             panic!("expected composite workflow success, got {res:?}");
         };
         assert_eq!(data["normalized_input"], json!({"contact_id": "123"}));
-        assert_eq!(data["upstream_response"]["status_code"], 200);
-        assert_eq!(data["upstream_response"]["path"], "/v1/contacts/123");
+        assert_eq!(data["upstream_response"]["stored"], true);
+        assert_eq!(data["upstream_response"]["key"], "contact:123");
         // Verify both parent attempt and child dependency attempt debited the shared root budget!
         assert_eq!(run.context().budget().snapshot().spent_attempts, 2);
     }

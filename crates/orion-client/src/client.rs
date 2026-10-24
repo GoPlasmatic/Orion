@@ -123,6 +123,16 @@ impl OrionClient {
         decode(&bytes)
     }
 
+    pub async fn post_dto<Req: serde::Serialize + ?Sized, Resp: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &Req,
+    ) -> Result<Resp, ClientError> {
+        let val = serde_json::to_value(body).map_err(|source| ClientError::Decode { source })?;
+        let bytes = self.execute(Method::POST, path, Some(&val)).await?;
+        decode(&bytes)
+    }
+
     pub async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
         let bytes = self.execute(Method::POST, path, None).await?;
         decode(&bytes)

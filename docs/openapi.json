@@ -2,14 +2,14 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Orion — Declarative Services Runtime API",
-    "description": "Declarative services runtime platform.\n\n**Authentication.** The admin API (`/api/v1/admin/*`), the Prometheus endpoint (`/metrics`), and the trace read endpoints (`/api/v1/admin/traces*`) require an admin API key when `admin_auth.enabled` is true — the default in the shipped Helm chart and HA compose files. Operations that need it carry a `security` block; see the `admin_bearer` / `admin_api_key` schemes for how the key is presented and for the `admin_auth.header` config key that selects between them.\n\nThe data plane (`/api/v1/data/{channel}`) and the health probes are deliberately unauthenticated: channel-level access control is expressed through each channel's `validation_logic` and `origin_allow_list`.\n\n**Errors.** Every non-2xx response uses the `ErrorResponse` envelope: `{\"error\": {\"code\", \"message\", \"request_id\"}}`, plus `details` on validation failures.",
+    "description": "Declarative services runtime platform.\n\n**Authentication.** The admin API (`/api/v2/admin/*`), the Prometheus endpoint (`/metrics`), and the trace read endpoints (`/api/v2/admin/traces*`) require an admin API key when `admin_auth.enabled` is true — the default in the shipped Helm chart and HA compose files. Operations that need it carry a `security` block; see the `admin_bearer` / `admin_api_key` schemes for how the key is presented and for the `admin_auth.header` config key that selects between them.\n\nThe data plane (`/api/v2/data/{channel}`) and the health probes are deliberately unauthenticated: channel-level access control is expressed through each channel's `validation_logic` and `origin_allow_list`.\n\n**Errors.** Every non-2xx response uses the `ErrorResponse` envelope: `{\"error\": {\"code\", \"message\", \"request_id\"}}`, plus `details` on validation failures.",
     "license": {
       "name": "Apache-2.0"
     },
     "version": "1.12.0"
   },
   "paths": {
-    "/api/v1/admin/audit-logs": {
+    "/api/v2/admin/audit-logs": {
       "get": {
         "tags": [
           "Audit"
@@ -143,7 +143,267 @@
         ]
       }
     },
-    "/api/v1/admin/backups": {
+    "/api/v2/admin/authoring/lint": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Lint a provider package manifest and schema bundle",
+        "description": "Validates `manifest.json`, `distribution.json`, and implementation files, returning lint errors, warnings, and the canonical package digest.",
+        "operationId": "authoring_lint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadPackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Package is valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LintResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid file encoding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LintResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Package has lint errors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LintResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/authoring/pack": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Pack a provider package into a deterministic content-addressed bundle",
+        "description": "Validates the package files, computes canonical SHA-256 digests and `inventory.json`, and returns the packed bundle ready for upload.",
+        "operationId": "authoring_pack",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadPackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Deterministically packed provider package",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid file encoding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Package validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/authoring/scaffold": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Generate a deterministic v2 provider package scaffold",
+        "description": "Generates starter manifest, distribution, and implementation files for a `rust`, `workflow`, or `wasm` provider package.",
+        "operationId": "authoring_scaffold",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScaffoldRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Generated provider package scaffold",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScaffoldResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unsupported implementation kind",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/backups": {
       "get": {
         "tags": [
           "Backups"
@@ -267,7 +527,7 @@
         ]
       }
     },
-    "/api/v1/admin/cache/namespaces/{namespace}/invalidate": {
+    "/api/v2/admin/cache/namespaces/{namespace}/invalidate": {
       "post": {
         "tags": [
           "Cache"
@@ -347,7 +607,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels": {
+    "/api/v2/admin/channels": {
       "get": {
         "tags": [
           "Channels"
@@ -552,7 +812,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels/export": {
+    "/api/v2/admin/channels/export": {
       "get": {
         "tags": [
           "Channels"
@@ -671,7 +931,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels/import": {
+    "/api/v2/admin/channels/import": {
       "post": {
         "tags": [
           "Channels"
@@ -762,7 +1022,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels/validate": {
+    "/api/v2/admin/channels/validate": {
       "post": {
         "tags": [
           "Channels"
@@ -830,7 +1090,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels/{id}": {
+    "/api/v2/admin/channels/{id}": {
       "get": {
         "tags": [
           "Channels"
@@ -1075,7 +1335,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels/{id}/status": {
+    "/api/v2/admin/channels/{id}/status": {
       "patch": {
         "tags": [
           "Channels"
@@ -1192,7 +1452,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels/{id}/trigger": {
+    "/api/v2/admin/channels/{id}/trigger": {
       "post": {
         "tags": [
           "Cron"
@@ -1281,7 +1541,7 @@
         ]
       }
     },
-    "/api/v1/admin/channels/{id}/versions": {
+    "/api/v2/admin/channels/{id}/versions": {
       "get": {
         "tags": [
           "Channels"
@@ -1447,7 +1707,587 @@
         ]
       }
     },
-    "/api/v1/admin/connectors": {
+    "/api/v2/admin/connections": {
+      "get": {
+        "tags": [
+          "Connections"
+        ],
+        "summary": "List immutable connection revisions",
+        "description": "Returns all stored connection revisions alongside their provider digests and configuration fingerprints.",
+        "operationId": "list_connections",
+        "responses": {
+          "200": {
+            "description": "Connection revisions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionsListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Connections"
+        ],
+        "summary": "Create an immutable connection revision",
+        "description": "Validates that public_config contains no raw secrets and persists an immutable, content-addressed connection revision.",
+        "operationId": "create_connection_revision",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConnectionRevisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Connection revision created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateConnectionRevisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Raw secret in public_config or non-canonical JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Immutable connection revision conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connections/{id}/probe": {
+      "post": {
+        "tags": [
+          "Connections"
+        ],
+        "summary": "Execute an audited health probe against a connection",
+        "description": "Validates the connection revision's configuration and executes the backing provider's health_check within an admitted run budget.",
+        "operationId": "probe_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional target revision or driver override",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ProbeConnectionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Connection healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionProbeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Provider package revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Connection or provider not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Connection unhealthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionProbeResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connector-packages": {
+      "get": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "List uploaded and admitted connector provider packages",
+        "description": "Returns all ingested provider packages alongside their admission and revocation state.",
+        "operationId": "list_connector_packages",
+        "responses": {
+          "200": {
+            "description": "Connector provider packages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorPackagesListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Upload a verified connector provider package",
+        "description": "Verifies archive bounds, digests, and publisher/version immutability, then stores the package in the deployment store.",
+        "operationId": "upload_connector_package",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadPackageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Package uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadPackageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid package encoding or manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Publisher/version or immutable content conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connector-packages/{digest}/admit": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Admit an uploaded connector provider package",
+        "description": "Evaluates the active edition admission policy against the uploaded package and records a durable admission fingerprint.",
+        "operationId": "admit_connector_package",
+        "parameters": [
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "Package SHA-256 digest (`sha256:<64-hex>`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional lockfile verification payload",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/AdmitPackageRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Package admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmitPackageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Rejected by admission policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Package not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connector-packages/{digest}/revoke": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Revoke an admitted connector provider package",
+        "description": "Marks the package digest as revoked in the deployment store and runtime admission policy, blocking new invocations and deployments.",
+        "operationId": "revoke_connector_package",
+        "parameters": [
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "Package SHA-256 digest (`sha256:<64-hex>`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Optional revocation reason",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/RevokePackageRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Package revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokePackageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Admission not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/connectors": {
       "get": {
         "tags": [
           "Connectors"
@@ -1618,7 +2458,7 @@
         ]
       }
     },
-    "/api/v1/admin/connectors/circuit-breakers": {
+    "/api/v2/admin/connectors/circuit-breakers": {
       "get": {
         "tags": [
           "Connectors"
@@ -1666,7 +2506,7 @@
         ]
       }
     },
-    "/api/v1/admin/connectors/circuit-breakers/{key}": {
+    "/api/v2/admin/connectors/circuit-breakers/{key}": {
       "post": {
         "tags": [
           "Connectors"
@@ -1745,7 +2585,7 @@
         ]
       }
     },
-    "/api/v1/admin/connectors/export": {
+    "/api/v2/admin/connectors/export": {
       "get": {
         "tags": [
           "Connectors"
@@ -1840,7 +2680,7 @@
         ]
       }
     },
-    "/api/v1/admin/connectors/import": {
+    "/api/v2/admin/connectors/import": {
       "post": {
         "tags": [
           "Connectors"
@@ -1931,7 +2771,7 @@
         ]
       }
     },
-    "/api/v1/admin/connectors/validate": {
+    "/api/v2/admin/connectors/validate": {
       "post": {
         "tags": [
           "Connectors"
@@ -1999,7 +2839,7 @@
         ]
       }
     },
-    "/api/v1/admin/connectors/{id}": {
+    "/api/v2/admin/connectors/{id}": {
       "get": {
         "tags": [
           "Connectors"
@@ -2235,7 +3075,7 @@
         ]
       }
     },
-    "/api/v1/admin/connectors/{id}/test": {
+    "/api/v2/admin/connectors/{id}/test": {
       "post": {
         "tags": [
           "Connectors"
@@ -2314,7 +3154,7 @@
         ]
       }
     },
-    "/api/v1/admin/cron/occurrences": {
+    "/api/v2/admin/cron/occurrences": {
       "get": {
         "tags": [
           "Cron"
@@ -2420,7 +3260,7 @@
         ]
       }
     },
-    "/api/v1/admin/cron/occurrences/{id}": {
+    "/api/v2/admin/cron/occurrences/{id}": {
       "get": {
         "tags": [
           "Cron"
@@ -2489,7 +3329,7 @@
         ]
       }
     },
-    "/api/v1/admin/cron/occurrences/{id}/cancel": {
+    "/api/v2/admin/cron/occurrences/{id}/cancel": {
       "post": {
         "tags": [
           "Cron"
@@ -2578,7 +3418,7 @@
         ]
       }
     },
-    "/api/v1/admin/cron/occurrences/{id}/retry": {
+    "/api/v2/admin/cron/occurrences/{id}/retry": {
       "post": {
         "tags": [
           "Cron"
@@ -2667,7 +3507,7 @@
         ]
       }
     },
-    "/api/v1/admin/cron/status": {
+    "/api/v2/admin/cron/status": {
       "get": {
         "tags": [
           "Cron"
@@ -2715,7 +3555,547 @@
         ]
       }
     },
-    "/api/v1/admin/engine/reload": {
+    "/api/v2/admin/deployment-plans": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Plan and validate a candidate deployment manifest",
+        "description": "Validates canonical manifest invariants, provider admission status, and connection references against the requested base revision, returning the reviewed manifest digest and entity diff.",
+        "operationId": "create_deployment_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDeploymentPlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Candidate deployment plan",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentPlanResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Manifest validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Referenced provider package not admitted or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Base revision not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/deployments": {
+      "get": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Get deployment head and committed revision history",
+        "description": "Returns the current deployment store head revision, epoch, node-applied revision, and committed revision rows.",
+        "operationId": "get_deployments_summary",
+        "responses": {
+          "200": {
+            "description": "Deployment summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentsSummaryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Atomically apply a candidate deployment manifest",
+        "description": "Validates the candidate manifest (and optional reviewed_manifest_digest), performs compare-and-swap against base_revision in a single database transaction, and reconciles the local node.",
+        "operationId": "apply_deployment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyDeploymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Deployment committed and accepted for convergence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyDeploymentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Manifest validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Provider not admitted or admission invalidated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Base revision conflict, idempotency conflict, or reviewed digest mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/deployments/rollback": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Roll back to a prior deployment revision",
+        "description": "Creates a new forward deployment revision whose manifest matches target_revision under compare-and-swap against expected_head_revision, then reconciles the local node.",
+        "operationId": "rollback_deployment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackDeploymentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Rollback committed as a new deployment revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RollbackDeploymentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Provider in target revision is no longer admitted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Target revision not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Expected head revision conflict or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/deployments/{revision}": {
+      "get": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Get a committed deployment revision",
+        "description": "Returns the canonical manifest and metadata for a committed deployment revision.",
+        "operationId": "get_deployment_revision",
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "description": "Committed deployment revision number",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Committed deployment revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRevisionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Revision not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/deployments/{revision}/convergence": {
+      "get": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Evaluate node or cluster convergence for a deployment revision",
+        "description": "Reports whether the target node (`?target=this-node`) or all observed cluster replicas (`?target=observed`) have converged to the specified deployment revision.",
+        "operationId": "get_deployment_convergence",
+        "parameters": [
+          {
+            "name": "revision",
+            "in": "path",
+            "description": "Target deployment revision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "target",
+            "in": "query",
+            "description": "Convergence evaluation scope (`this-node` or `observed`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Convergence evaluation report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConvergenceStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/edition-transition-preflight": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Run Enterprise-to-Community edition transition preflight check",
+        "description": "Inspects the specified or active deployment revision for Enterprise-only providers or channels and returns a transition readiness report and backup checklist.",
+        "operationId": "edition_transition_preflight",
+        "requestBody": {
+          "description": "Optional target revision to inspect",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/EditionTransitionPreflightRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Edition transition preflight report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditionTransitionPreflightResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/engine/reload": {
       "post": {
         "tags": [
           "Engine"
@@ -2773,7 +4153,7 @@
         ]
       }
     },
-    "/api/v1/admin/engine/status": {
+    "/api/v2/admin/engine/status": {
       "get": {
         "tags": [
           "Engine"
@@ -2821,7 +4201,7 @@
         ]
       }
     },
-    "/api/v1/admin/functions": {
+    "/api/v2/admin/functions": {
       "get": {
         "tags": [
           "Functions"
@@ -2869,7 +4249,77 @@
         ]
       }
     },
-    "/api/v1/admin/models": {
+    "/api/v2/admin/migration-report": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Generate a legacy v1 -> v2 conversion and migration report",
+        "description": "Inspects legacy v1 connectors, workflows, and channels, maps them to v2 provider packages and connection revisions, and synthesizes a candidate bootstrap deployment manifest if compatible.",
+        "operationId": "create_migration_report",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MigrationReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Legacy v1 -> v2 migration conversion report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationReportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/models": {
       "get": {
         "tags": [
           "Models"
@@ -3066,7 +4516,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/export": {
+    "/api/v2/admin/models/export": {
       "get": {
         "tags": [
           "Models"
@@ -3177,7 +4627,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/import": {
+    "/api/v2/admin/models/import": {
       "post": {
         "tags": [
           "Models"
@@ -3268,7 +4718,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/validate": {
+    "/api/v2/admin/models/validate": {
       "post": {
         "tags": [
           "Models"
@@ -3336,7 +4786,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/{id}": {
+    "/api/v2/admin/models/{id}": {
       "get": {
         "tags": [
           "Models"
@@ -3591,7 +5041,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/{id}/admit": {
+    "/api/v2/admin/models/{id}/admit": {
       "post": {
         "tags": [
           "Models"
@@ -3699,7 +5149,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/{id}/dependencies": {
+    "/api/v2/admin/models/{id}/dependencies": {
       "get": {
         "tags": [
           "Models"
@@ -3768,7 +5218,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/{id}/status": {
+    "/api/v2/admin/models/{id}/status": {
       "patch": {
         "tags": [
           "Models"
@@ -3895,7 +5345,7 @@
         ]
       }
     },
-    "/api/v1/admin/models/{id}/versions": {
+    "/api/v2/admin/models/{id}/versions": {
       "get": {
         "tags": [
           "Models"
@@ -4061,7 +5511,7 @@
         ]
       }
     },
-    "/api/v1/admin/packages": {
+    "/api/v2/admin/packages": {
       "get": {
         "tags": [
           "Packages"
@@ -4140,7 +5590,7 @@
         ]
       }
     },
-    "/api/v1/admin/packages/{name}": {
+    "/api/v2/admin/packages/{name}": {
       "get": {
         "tags": [
           "Packages"
@@ -4306,7 +5756,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins": {
+    "/api/v2/admin/plugins": {
       "get": {
         "tags": [
           "Plugins"
@@ -4503,7 +5953,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins/export": {
+    "/api/v2/admin/plugins/export": {
       "get": {
         "tags": [
           "Plugins"
@@ -4614,7 +6064,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins/import": {
+    "/api/v2/admin/plugins/import": {
       "post": {
         "tags": [
           "Plugins"
@@ -4705,7 +6155,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins/validate": {
+    "/api/v2/admin/plugins/validate": {
       "post": {
         "tags": [
           "Plugins"
@@ -4773,7 +6223,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins/{id}": {
+    "/api/v2/admin/plugins/{id}": {
       "get": {
         "tags": [
           "Plugins"
@@ -5028,7 +6478,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins/{id}/dependencies": {
+    "/api/v2/admin/plugins/{id}/dependencies": {
       "get": {
         "tags": [
           "Plugins"
@@ -5097,7 +6547,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins/{id}/status": {
+    "/api/v2/admin/plugins/{id}/status": {
       "patch": {
         "tags": [
           "Plugins"
@@ -5224,7 +6674,7 @@
         ]
       }
     },
-    "/api/v1/admin/plugins/{id}/versions": {
+    "/api/v2/admin/plugins/{id}/versions": {
       "get": {
         "tags": [
           "Plugins"
@@ -5390,7 +6840,57 @@
         ]
       }
     },
-    "/api/v1/admin/trace-dlq": {
+    "/api/v2/admin/runtime-capabilities": {
+      "get": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Discover runtime capabilities and edition boundaries",
+        "description": "Returns the server's active v2 edition (`community` or `enterprise`), registered channel drivers, provider backends, Wasm worlds/profiles, deployment head revision, and reconciler status.",
+        "operationId": "get_runtime_capabilities",
+        "responses": {
+          "200": {
+            "description": "Runtime capabilities report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeCapabilitiesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/trace-dlq": {
       "get": {
         "tags": [
           "Trace DLQ"
@@ -5478,7 +6978,7 @@
         ]
       }
     },
-    "/api/v1/admin/trace-dlq/purge": {
+    "/api/v2/admin/trace-dlq/purge": {
       "post": {
         "tags": [
           "Trace DLQ"
@@ -5556,7 +7056,7 @@
         ]
       }
     },
-    "/api/v1/admin/trace-dlq/{id}": {
+    "/api/v2/admin/trace-dlq/{id}": {
       "get": {
         "tags": [
           "Trace DLQ"
@@ -5625,7 +7125,7 @@
         ]
       }
     },
-    "/api/v1/admin/trace-dlq/{id}/requeue": {
+    "/api/v2/admin/trace-dlq/{id}/requeue": {
       "post": {
         "tags": [
           "Trace DLQ"
@@ -5704,7 +7204,7 @@
         ]
       }
     },
-    "/api/v1/admin/traces": {
+    "/api/v2/admin/traces": {
       "get": {
         "tags": [
           "Traces"
@@ -5847,7 +7347,7 @@
         ]
       }
     },
-    "/api/v1/admin/traces/{id}": {
+    "/api/v2/admin/traces/{id}": {
       "get": {
         "tags": [
           "Traces"
@@ -5918,7 +7418,7 @@
         }
       }
     },
-    "/api/v1/admin/workflows": {
+    "/api/v2/admin/workflows": {
       "get": {
         "tags": [
           "Workflows"
@@ -6106,7 +7606,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/export": {
+    "/api/v2/admin/workflows/export": {
       "get": {
         "tags": [
           "Workflows"
@@ -6208,7 +7708,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/import": {
+    "/api/v2/admin/workflows/import": {
       "post": {
         "tags": [
           "Workflows"
@@ -6299,7 +7799,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/validate": {
+    "/api/v2/admin/workflows/validate": {
       "post": {
         "tags": [
           "Workflows"
@@ -6367,7 +7867,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/{id}": {
+    "/api/v2/admin/workflows/{id}": {
       "get": {
         "tags": [
           "Workflows"
@@ -6612,7 +8112,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/{id}/dependencies": {
+    "/api/v2/admin/workflows/{id}/dependencies": {
       "get": {
         "tags": [
           "Workflows"
@@ -6681,7 +8181,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/{id}/rollout": {
+    "/api/v2/admin/workflows/{id}/rollout": {
       "patch": {
         "tags": [
           "Workflows"
@@ -6779,7 +8279,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/{id}/status": {
+    "/api/v2/admin/workflows/{id}/status": {
       "patch": {
         "tags": [
           "Workflows"
@@ -6896,7 +8396,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/{id}/test": {
+    "/api/v2/admin/workflows/{id}/test": {
       "post": {
         "tags": [
           "Workflows"
@@ -6985,7 +8485,7 @@
         ]
       }
     },
-    "/api/v1/admin/workflows/{id}/versions": {
+    "/api/v2/admin/workflows/{id}/versions": {
       "get": {
         "tags": [
           "Workflows"
@@ -7151,13 +8651,13 @@
         ]
       }
     },
-    "/api/v1/data/{channel}": {
+    "/api/v2/data/{channel}": {
       "post": {
         "tags": [
           "Data"
         ],
         "summary": "Invoke a channel synchronously",
-        "description": "Invoke a channel's workflow synchronously.\n\nThis is a **templated** path, not a static one. Orion serves the whole data plane from a single catch-all route (`/api/v1/data/{*path}`) and resolves the target channel at request time, so no per-channel path exists in this document:\n\n* **Simple HTTP channels** — a single path segment matched against the channel `name`, e.g. `POST /api/v1/data/order-intake`.\n* **REST channels** — each active channel registers its own method and path pattern (`config.rest.routes`) at engine-reload time; those patterns may span several segments and declare their own path parameters, which arrive in the workflow as `metadata.params`, percent-decoded exactly once (`a%2Fb` becomes `a/b`). Static segments match byte-exact — the path is case-sensitive per RFC 3986. Any HTTP method is accepted — `GET`, `PUT`, `PATCH` and `DELETE` behave identically to the `POST` documented here, with the verb exposed as `metadata.http_method`. Query the admin channel API for the routes a given deployment actually serves.\n\nAppend `/async` to submit to the queue instead — see `POST /api/v1/data/{channel}/async`.\n\nAuthentication is per channel and off by default: `admin_auth` covers the admin plane only. A channel carrying an `auth` block in its config (`api_key` or `hmac`) authenticates every caller on this path and on `/async` alike; a channel without one is open to anyone who can reach the port. `validation_logic` and `origin_allow_list` complement it but are not authentication — `Origin` is client-supplied.",
+        "description": "Invoke a channel's workflow synchronously.\n\nThis is a **templated** path, not a static one. Orion serves the whole data plane from a single catch-all route (`/api/v2/data/{*path}`) and resolves the target channel at request time, so no per-channel path exists in this document:\n\n* **Simple HTTP channels** — a single path segment matched against the channel `name`, e.g. `POST /api/v2/data/order-intake`.\n* **REST channels** — each active channel registers its own method and path pattern (`config.rest.routes`) at engine-reload time; those patterns may span several segments and declare their own path parameters, which arrive in the workflow as `metadata.params`, percent-decoded exactly once (`a%2Fb` becomes `a/b`). Static segments match byte-exact — the path is case-sensitive per RFC 3986. Any HTTP method is accepted — `GET`, `PUT`, `PATCH` and `DELETE` behave identically to the `POST` documented here, with the verb exposed as `metadata.http_method`. Query the admin channel API for the routes a given deployment actually serves.\n\nAppend `/async` to submit to the queue instead — see `POST /api/v2/data/{channel}/async`.\n\nAuthentication is per channel and off by default: `admin_auth` covers the admin plane only. A channel carrying an `auth` block in its config (`api_key` or `hmac`) authenticates every caller on this path and on `/async` alike; a channel without one is open to anyone who can reach the port. `validation_logic` and `origin_allow_list` complement it but are not authentication — `Origin` is client-supplied.",
         "operationId": "process_channel_request",
         "parameters": [
           {
@@ -7314,13 +8814,13 @@
         }
       }
     },
-    "/api/v1/data/{channel}/async": {
+    "/api/v2/data/{channel}/async": {
       "post": {
         "tags": [
           "Data"
         ],
         "summary": "Submit to a channel asynchronously",
-        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: the origin allow-list, the rate limit, `validation_logic`, deduplication and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.\n\n`trace_id` is always present. Async submission is a request for a result to be fetched later, so the trace row is written before the 202 is sent even when `trace_storage.mode` is `off` — that setting still applies in full to the synchronous endpoint, where the caller already has the answer.",
+        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v2/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: the origin allow-list, the rate limit, `validation_logic`, deduplication and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v2/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.\n\n`trace_id` is always present. Async submission is a request for a result to be fetched later, so the trace row is written before the 202 is sent even when `trace_storage.mode` is `off` — that setting still applies in full to the synchronous endpoint, where the caller already has the answer.",
         "operationId": "submit_channel_request_async",
         "parameters": [
           {
@@ -7536,7 +9036,7 @@
         "tags": [
           "Operational"
         ],
-        "description": "Prometheus exposition endpoint. Registered only when `metrics.enabled` is true — otherwise the path 404s, so a deployment with metrics off is not mistaken for a working scrape target.\n\nOn this listener it is guarded by the same admin credential as `/api/v1/admin/*` when `admin_auth.enabled` is true, so scrapers must be configured with the key. Setting `metrics.bind_addr` instead moves the endpoint to a dedicated unauthenticated listener on a private interface and removes it from this one entirely.",
+        "description": "Prometheus exposition endpoint. Registered only when `metrics.enabled` is true — otherwise the path 404s, so a deployment with metrics off is not mistaken for a working scrape target.\n\nOn this listener it is guarded by the same admin credential as `/api/v2/admin/*` when `admin_auth.enabled` is true, so scrapers must be configured with the key. Setting `metrics.bind_addr` instead moves the endpoint to a dedicated unauthenticated listener on a private interface and removes it from this one entirely.",
         "operationId": "metrics_endpoint",
         "responses": {
           "200": {
@@ -7621,6 +9121,98 @@
   },
   "components": {
     "schemas": {
+      "AdmitPackageRequest": {
+        "type": "object",
+        "description": "Request body for admitting an uploaded provider package (`POST /api/v2/admin/connector-packages/{digest}/admit`).",
+        "properties": {
+          "lock": {}
+        }
+      },
+      "AdmitPackageResponse": {
+        "type": "object",
+        "description": "Response from admitting a provider package (`POST /api/v2/admin/connector-packages/{digest}/admit`).",
+        "properties": {
+          "admission": {
+            "$ref": "#/components/schemas/ProviderAdmissionDto"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ApplyDeploymentRequest": {
+        "type": "object",
+        "description": "Request body to atomically apply a candidate deployment (`POST /api/v2/admin/deployments`, `V2-07.4`).",
+        "required": [
+          "idempotency_key",
+          "base_revision",
+          "manifest",
+          "reason"
+        ],
+        "properties": {
+          "base_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "manifest": {},
+          "reason": {
+            "type": "string"
+          },
+          "reviewed_manifest_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ApplyDeploymentResponse": {
+        "type": "object",
+        "description": "Response from applying a candidate deployment (`POST /api/v2/admin/deployments`, `V2-07.4`).",
+        "properties": {
+          "committed_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "evaluation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ConvergenceStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/DeploymentReceiptResponse"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ArchiveEntryDto": {
+        "type": "object",
+        "description": "A single file entry inside a provider package archive (`V2-07.3`, `V2-10.3`).",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
       "ArtifactHead": {
         "type": "object",
         "description": "What the bucket said about the object, when `validate` got that far.",
@@ -7645,7 +9237,7 @@
       },
       "AsyncSubmitResponse": {
         "type": "object",
-        "description": "Acknowledgement returned by `POST /api/v1/data/{channel}/async`.",
+        "description": "Acknowledgement returned by `POST /api/v2/data/{channel}/async`.",
         "required": [
           "trace_id",
           "trace_token"
@@ -7653,7 +9245,7 @@
         "properties": {
           "trace_id": {
             "type": "string",
-            "description": "Id to poll via `GET /api/v1/admin/traces/{id}`. Always present: a 202\nis a receipt for a result, so the row it names is written before this\nresponse is sent (R11)."
+            "description": "Id to poll via `GET /api/v2/admin/traces/{id}`. Always present: a 202\nis a receipt for a result, so the row it names is written before this\nresponse is sent (R11)."
           },
           "trace_token": {
             "type": "string",
@@ -7701,7 +9293,7 @@
       },
       "BackupFile": {
         "type": "object",
-        "description": "The backup `POST /api/v1/admin/backups` just wrote.",
+        "description": "The backup `POST /api/v2/admin/backups` just wrote.",
         "required": [
           "filename",
           "path",
@@ -7728,7 +9320,7 @@
       },
       "BackupListItem": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/backups`. Deliberately not [`BackupFile`]:\nthe listing reads `mtime` off the directory entry and has no `path`, so\nthe two responses differ by two fields.",
+        "description": "One row of `GET /api/v2/admin/backups`. Deliberately not [`BackupFile`]:\nthe listing reads `mtime` off the directory entry and has no `path`, so\nthe two responses differ by two fields.",
         "required": [
           "filename",
           "size_bytes",
@@ -7918,7 +9510,7 @@
       },
       "CircuitBreakerReset": {
         "type": "object",
-        "description": "`POST /api/v1/admin/connectors/circuit-breakers/{key}`.",
+        "description": "`POST /api/v2/admin/connectors/circuit-breakers/{key}`.",
         "required": [
           "reset",
           "key",
@@ -7939,7 +9531,7 @@
       },
       "CircuitBreakerStates": {
         "type": "object",
-        "description": "`GET /api/v1/admin/connectors/circuit-breakers`.",
+        "description": "`GET /api/v2/admin/connectors/circuit-breakers`.",
         "required": [
           "enabled",
           "scope",
@@ -7971,6 +9563,84 @@
           }
         }
       },
+      "ConnectionProbeResponse": {
+        "type": "object",
+        "description": "Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`, `V2-07.3`, `TD-31`).",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "details": {},
+          "driver_id": {
+            "type": "string"
+          },
+          "healthy": {
+            "type": "boolean"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectionRevisionResponse": {
+        "type": "object",
+        "description": "Summary of an immutable connection revision (`GET /api/v2/admin/connections`, `V2-07.3`).",
+        "properties": {
+          "config": {},
+          "config_fingerprint": {
+            "type": "string"
+          },
+          "configuration_digest": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "provider_digest": {
+            "type": "string"
+          },
+          "provider_ref": {},
+          "public_config": {},
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "secret_locator": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secret_locators": {}
+        }
+      },
+      "ConnectionsListResponse": {
+        "type": "object",
+        "description": "Response listing connection revisions (`GET /api/v2/admin/connections`).",
+        "properties": {
+          "connections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConnectionRevisionResponse"
+            }
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "ConnectorDependency": {
         "type": "object",
         "required": [
@@ -7989,7 +9659,7 @@
       },
       "ConnectorExportItem": {
         "type": "object",
-        "description": "One item of `GET /api/v1/admin/connectors/export`.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause an export has to emit the shape `/import` *accepts*, not the shape\nthe read endpoints return: `config` is the parsed object here, where the\nread shape carries `config_json` as a string. Publishing the read type for\nthis route promised three fields the body does not carry (`config_json`,\n`created_at`, `updated_at`) and hid the one it does.",
+        "description": "One item of `GET /api/v2/admin/connectors/export`.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause an export has to emit the shape `/import` *accepts*, not the shape\nthe read endpoints return: `config` is the parsed object here, where the\nread shape carries `config_json` as a string. Publishing the read type for\nthis route promised three fields the body does not carry (`config_json`,\n`created_at`, `updated_at`) and hid the one it does.",
         "required": [
           "id",
           "name",
@@ -8026,7 +9696,7 @@
       },
       "ConnectorListItem": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause `PaginatedEnvelope<ConnectorResponse>` would under-describe the row\nby exactly the three fields an operator reads the list for.",
+        "description": "One row of `GET /api/v2/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause `PaginatedEnvelope<ConnectorResponse>` would under-describe the row\nby exactly the three fields an operator reads the list for.",
         "required": [
           "id",
           "name",
@@ -8124,6 +9794,67 @@
           }
         }
       },
+      "ConnectorPackageSummary": {
+        "type": "object",
+        "description": "Summary of an uploaded/admitted connector provider package (`GET /api/v2/admin/connector-packages`, `V2-07.3`).",
+        "properties": {
+          "admitted": {
+            "type": "boolean"
+          },
+          "artifact_state": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "distribution": {},
+          "implementation": {
+            "type": "string"
+          },
+          "inventory": {},
+          "manifest": {},
+          "package_digest": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "tier": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ConnectorPackagesListResponse": {
+        "type": "object",
+        "description": "Response listing connector provider packages (`GET /api/v2/admin/connector-packages`).",
+        "properties": {
+          "admissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderAdmissionDto"
+            }
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "packages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConnectorPackageSummary"
+            }
+          }
+        }
+      },
       "ConnectorResponse": {
         "type": "object",
         "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized (D27), so a handler that forgets to mask does not compile.",
@@ -8186,6 +9917,38 @@
           "smtp",
           "storage"
         ]
+      },
+      "ConvergenceStatusResponse": {
+        "type": "object",
+        "description": "Node/cluster convergence report for a committed deployment revision (`GET /api/v2/admin/deployments/{revision}/convergence`, `V2-07.4`).",
+        "properties": {
+          "converged": {
+            "type": "boolean"
+          },
+          "converged_nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "degraded_nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pending_nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "target_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "CreateChannelRequest": {
         "type": "object",
@@ -8264,6 +10027,47 @@
           }
         }
       },
+      "CreateConnectionRevisionRequest": {
+        "type": "object",
+        "description": "Request body to create an immutable connection revision (`POST /api/v2/admin/connections`).",
+        "required": [
+          "connection_id",
+          "revision",
+          "provider_digest"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "provider_digest": {
+            "type": "string"
+          },
+          "public_config": {},
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "secret_locator": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateConnectionRevisionResponse": {
+        "type": "object",
+        "description": "Response from creating an immutable connection revision (`POST /api/v2/admin/connections`).",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ConnectionRevisionResponse"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "CreateConnectorRequest": {
         "type": "object",
         "required": [
@@ -8297,6 +10101,28 @@
               "type": "string"
             },
             "description": "Selection labels (K6), same contract as workflow tags — filter with\n`?tag=` on list and export."
+          }
+        }
+      },
+      "CreateDeploymentPlanRequest": {
+        "type": "object",
+        "description": "Request body for planning a candidate deployment (`POST /api/v2/admin/deployment-plans`, `V2-07.4`).",
+        "required": [
+          "base_revision",
+          "manifest"
+        ],
+        "properties": {
+          "base_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "manifest": {},
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -8714,7 +10540,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "The backup `POST /api/v1/admin/backups` just wrote.",
+            "description": "The backup `POST /api/v2/admin/backups` just wrote.",
             "required": [
               "filename",
               "path",
@@ -8880,7 +10706,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`POST /api/v1/admin/connectors/circuit-breakers/{key}`.",
+            "description": "`POST /api/v2/admin/connectors/circuit-breakers/{key}`.",
             "required": [
               "reset",
               "key",
@@ -8910,7 +10736,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`GET /api/v1/admin/connectors/circuit-breakers`.",
+            "description": "`GET /api/v2/admin/connectors/circuit-breakers`.",
             "required": [
               "enabled",
               "scope",
@@ -9149,7 +10975,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`POST /api/v1/admin/trace-dlq/purge`.",
+            "description": "`POST /api/v2/admin/trace-dlq/purge`.",
             "required": [
               "purged",
               "older_than_hours"
@@ -9524,7 +11350,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`GET /api/v1/admin/packages/{name}` — one package's receipts.",
+            "description": "`GET /api/v2/admin/packages/{name}` — one package's receipts.",
             "required": [
               "name",
               "versions"
@@ -9752,7 +11578,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`GET /api/v1/admin/traces/{id}` — the list row plus the payloads.",
+            "description": "`GET /api/v2/admin/traces/{id}` — the list row plus the payloads.",
             "required": [
               "id",
               "status",
@@ -9892,7 +11718,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One row of `GET /api/v1/admin/backups`. Deliberately not [`BackupFile`]:\nthe listing reads `mtime` off the directory entry and has no `path`, so\nthe two responses differ by two fields.",
+              "description": "One row of `GET /api/v2/admin/backups`. Deliberately not [`BackupFile`]:\nthe listing reads `mtime` off the directory entry and has no `path`, so\nthe two responses differ by two fields.",
               "required": [
                 "filename",
                 "size_bytes",
@@ -10030,7 +11856,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One item of `GET /api/v1/admin/connectors/export`.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause an export has to emit the shape `/import` *accepts*, not the shape\nthe read endpoints return: `config` is the parsed object here, where the\nread shape carries `config_json` as a string. Publishing the read type for\nthis route promised three fields the body does not carry (`config_json`,\n`created_at`, `updated_at`) and hid the one it does.",
+              "description": "One item of `GET /api/v2/admin/connectors/export`.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause an export has to emit the shape `/import` *accepts*, not the shape\nthe read endpoints return: `config` is the parsed object here, where the\nread shape carries `config_json` as a string. Publishing the read type for\nthis route promised three fields the body does not carry (`config_json`,\n`created_at`, `updated_at`) and hid the one it does.",
               "required": [
                 "id",
                 "name",
@@ -10188,7 +12014,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One entry of the function catalogue from `GET /api/v1/admin/functions`.",
+              "description": "One entry of the function catalogue from `GET /api/v2/admin/functions`.",
               "required": [
                 "name",
                 "description",
@@ -10535,7 +12361,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`GET /api/v1/admin/workflows/{id}/dependencies` (K9).",
+            "description": "`GET /api/v2/admin/workflows/{id}/dependencies` (K9).",
             "required": [
               "workflow_id",
               "version",
@@ -10673,7 +12499,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`POST /api/v1/admin/workflows/{id}/test` — a dry run against sample input.",
+            "description": "`POST /api/v2/admin/workflows/{id}/test` — a dry run against sample input.",
             "required": [
               "matched",
               "trace",
@@ -10699,9 +12525,158 @@
           }
         }
       },
+      "DeploymentPlanResponse": {
+        "type": "object",
+        "description": "Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`, `V2-07.4`, `TD-31`).",
+        "properties": {
+          "added_entities": {
+            "type": "array",
+            "items": {}
+          },
+          "base_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "candidate_digest": {
+            "type": "string"
+          },
+          "external_effect_warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "findings": {
+            "type": "array",
+            "items": {}
+          },
+          "removed_entities": {
+            "type": "array",
+            "items": {}
+          },
+          "request_hash": {
+            "type": "string"
+          },
+          "reviewed_manifest_digest": {
+            "type": "string"
+          },
+          "updated_entities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DeploymentReceiptResponse": {
+        "type": "object",
+        "description": "Durable deployment apply/rollback receipt (`POST /api/v2/admin/deployments`, `V2-07.4`).",
+        "properties": {
+          "committed_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "manifest_digest": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "principal_id": {
+            "type": "string"
+          },
+          "receiving_node_id": {
+            "type": "string"
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "request_hash": {
+            "type": "string"
+          }
+        }
+      },
+      "DeploymentRevisionResponse": {
+        "type": "object",
+        "description": "Committed deployment revision record (`GET /api/v2/admin/deployments/{revision}`, `V2-07.4`).",
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "manifest": {},
+          "manifest_digest": {
+            "type": "string"
+          },
+          "members_compacted": {
+            "type": "boolean"
+          },
+          "parent_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "DeploymentsSummaryResponse": {
+        "type": "object",
+        "description": "Summary of deployment store head and committed revisions (`GET /api/v2/admin/deployments`).",
+        "properties": {
+          "applied_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "head_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeploymentRevisionResponse"
+            }
+          }
+        }
+      },
       "DlqPurgeResult": {
         "type": "object",
-        "description": "`POST /api/v1/admin/trace-dlq/purge`.",
+        "description": "`POST /api/v2/admin/trace-dlq/purge`.",
         "required": [
           "purged",
           "older_than_hours"
@@ -10717,6 +12692,59 @@
             "format": "int64",
             "description": "Rows deleted.",
             "minimum": 0
+          }
+        }
+      },
+      "EditionTransitionPreflightRequest": {
+        "type": "object",
+        "description": "Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`, `V2-16.4`).",
+        "properties": {
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "EditionTransitionPreflightResponse": {
+        "type": "object",
+        "description": "Enterprise-to-Community edition transition preflight report (`POST /api/v2/admin/edition-transition-preflight`, `V2-16.4`).",
+        "properties": {
+          "backup_retention_checklist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "findings": {
+            "type": "array",
+            "items": {}
+          },
+          "incompatible_channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "incompatible_providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "inspected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "target_edition": {
+            "type": "string"
+          },
+          "transition_allowed": {
+            "type": "boolean"
           }
         }
       },
@@ -10953,7 +12981,7 @@
       },
       "FunctionSchemaItem": {
         "type": "object",
-        "description": "One entry of the function catalogue from `GET /api/v1/admin/functions`.",
+        "description": "One entry of the function catalogue from `GET /api/v2/admin/functions`.",
         "required": [
           "name",
           "description",
@@ -11127,6 +13155,179 @@
             "format": "int64",
             "description": "Content-identical items under `on_conflict=new_version` (K2): nothing\nwritten, not counted in `imported`. Re-importing the same artifact\ntherefore reports 0 imports and N unchanged.",
             "minimum": 0
+          }
+        }
+      },
+      "LegacyChannelItem": {
+        "type": "object",
+        "description": "Snapshot of a legacy v1 channel for migration reporting (`POST /api/v2/admin/migration-report`).",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "workflow_id": {
+            "type": "string"
+          },
+          "workflow_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LegacyConnectorItem": {
+        "type": "object",
+        "description": "Snapshot of a legacy v1 connector for migration reporting (`POST /api/v2/admin/migration-report`).",
+        "required": [
+          "name",
+          "connector_type"
+        ],
+        "properties": {
+          "config": {},
+          "connector_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "LegacyWorkflowItem": {
+        "type": "object",
+        "description": "Snapshot of a legacy v1 workflow for migration reporting (`POST /api/v2/admin/migration-report`).",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "definition": {},
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LintResponse": {
+        "type": "object",
+        "description": "Response from linting a provider package (`POST /api/v2/admin/authoring/lint`, `V2-07.2`).",
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "implementation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "package_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "publisher": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "MigrationReportRequest": {
+        "type": "object",
+        "description": "Request body for generating a legacy v1 -> v2 migration report (`POST /api/v2/admin/migration-report`, `V2-07.5`).",
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LegacyChannelItem"
+            }
+          },
+          "connectors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LegacyConnectorItem"
+            }
+          },
+          "workflows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LegacyWorkflowItem"
+            }
+          }
+        }
+      },
+      "MigrationReportResponse": {
+        "type": "object",
+        "description": "Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`, `V2-07.5`, `TD-31`).",
+        "properties": {
+          "blocking_findings": {
+            "type": "array",
+            "items": {}
+          },
+          "bootstrap_manifest": {},
+          "bootstrap_manifest_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "can_cutover": {
+            "type": "boolean"
+          },
+          "compatible": {
+            "type": "boolean"
+          },
+          "converted_connections": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "edition": {
+            "type": "string"
+          },
+          "findings": {
+            "type": "array",
+            "items": {}
+          },
+          "resolved_connectors": {
+            "type": "array",
+            "items": {}
           }
         }
       },
@@ -11537,9 +13738,28 @@
         ],
         "description": "The `/validate` envelope for models: the shared shape plus what the\nsynchronous half learned about the object."
       },
+      "PackResponse": {
+        "type": "object",
+        "description": "Response from deterministically packing a provider package (`POST /api/v2/admin/authoring/pack`, `V2-07.2`).",
+        "properties": {
+          "files": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "inventory": {},
+          "package_digest": {
+            "type": "string"
+          }
+        }
+      },
       "PackageDetail": {
         "type": "object",
-        "description": "`GET /api/v1/admin/packages/{name}` — one package's receipts.",
+        "description": "`GET /api/v2/admin/packages/{name}` — one package's receipts.",
         "required": [
           "name",
           "versions"
@@ -11863,7 +14083,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause `PaginatedEnvelope<ConnectorResponse>` would under-describe the row\nby exactly the three fields an operator reads the list for.",
+              "description": "One row of `GET /api/v2/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause `PaginatedEnvelope<ConnectorResponse>` would under-describe the row\nby exactly the three fields an operator reads the list for.",
               "required": [
                 "id",
                 "name",
@@ -12727,6 +14947,32 @@
           }
         }
       },
+      "ProbeConnectionRequest": {
+        "type": "object",
+        "description": "Request body for probing a connection revision (`POST /api/v2/admin/connections/{id}/probe`).",
+        "properties": {
+          "driver_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ProbeEnvelope": {
         "type": "object",
         "required": [
@@ -12848,6 +15094,24 @@
           }
         }
       },
+      "ProviderAdmissionDto": {
+        "type": "object",
+        "description": "Provider package admission record (`POST /api/v2/admin/connector-packages/{digest}/admit`).",
+        "properties": {
+          "admission_fingerprint": {
+            "type": "string"
+          },
+          "package_digest": {
+            "type": "string"
+          },
+          "policy_id": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          }
+        }
+      },
       "PurgeTraceDlqRequest": {
         "type": "object",
         "required": [
@@ -12897,6 +15161,89 @@
           }
         }
       },
+      "RevokePackageRequest": {
+        "type": "object",
+        "description": "Request body for revoking an admitted provider package (`POST /api/v2/admin/connector-packages/{digest}/revoke`).",
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RevokePackageResponse": {
+        "type": "object",
+        "description": "Response from revoking a provider package (`POST /api/v2/admin/connector-packages/{digest}/revoke`).",
+        "properties": {
+          "package_digest": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "RollbackDeploymentRequest": {
+        "type": "object",
+        "description": "Request body to roll back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`, `V2-07.4`).",
+        "required": [
+          "idempotency_key",
+          "expected_head_revision",
+          "target_revision"
+        ],
+        "properties": {
+          "expected_head_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "target_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "RollbackDeploymentResponse": {
+        "type": "object",
+        "description": "Response from rolling back to a prior deployment revision (`POST /api/v2/admin/deployments/rollback`, `V2-07.4`).",
+        "properties": {
+          "committed_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/DeploymentReceiptResponse"
+          },
+          "status": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "RolloutUpdateRequest": {
         "type": "object",
         "required": [
@@ -12906,6 +15253,132 @@
           "rollout_percentage": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "RuntimeCapabilitiesResponse": {
+        "type": "object",
+        "description": "Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`, `V2-07.1`, `TD-31`).",
+        "properties": {
+          "active_deployment_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "admission_policy_id": {
+            "type": "string"
+          },
+          "api_version": {
+            "type": "string"
+          },
+          "community_boundary_compliant": {
+            "type": "boolean"
+          },
+          "deployment_head": {},
+          "edition": {
+            "type": "string"
+          },
+          "native_scheduler": {},
+          "node_status": {},
+          "provider_backends": {
+            "type": "array",
+            "items": {}
+          },
+          "reconciler": {},
+          "registered_channel_drivers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "registered_rust_providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "registered_wasm_providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "registered_workflow_providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "schema_profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "supported_wasm_profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "wasm_worlds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ScaffoldRequest": {
+        "type": "object",
+        "description": "Request body to scaffold a new provider package (`POST /api/v2/admin/authoring/scaffold`, `V2-07.2`).",
+        "required": [
+          "publisher",
+          "provider_id",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ScaffoldResponse": {
+        "type": "object",
+        "description": "Response from scaffolding a provider package (`POST /api/v2/admin/authoring/scaffold`, `V2-07.2`).",
+        "properties": {
+          "files": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "implementation": {
+            "type": "string"
+          },
+          "package_digest": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -12939,7 +15412,7 @@
       },
       "TraceDetail": {
         "type": "object",
-        "description": "`GET /api/v1/admin/traces/{id}` — the list row plus the payloads.",
+        "description": "`GET /api/v2/admin/traces/{id}` — the list row plus the payloads.",
         "required": [
           "id",
           "status",
@@ -13165,7 +15638,7 @@
       },
       "TracePageEnvelope": {
         "type": "object",
-        "description": "`GET /api/v1/admin/traces` — a page of trace rows.\n\nNot [`PaginatedEnvelope`] (D8): `total` is present only when the request\nasked for it with `include_total=true`, because the count scans the whole\nfiltered set; and `next_cursor` carries the keyset position of the last row\nso the next page can be fetched without an `offset` skip.",
+        "description": "`GET /api/v2/admin/traces` — a page of trace rows.\n\nNot [`PaginatedEnvelope`] (D8): `total` is present only when the request\nasked for it with `include_total=true`, because the count scans the whole\nfiltered set; and `next_cursor` carries the keyset position of the last row\nso the next page can be fetched without an `offset` skip.",
         "required": [
           "data",
           "limit",
@@ -13418,6 +15891,58 @@
           "tasks": {}
         }
       },
+      "UploadPackageRequest": {
+        "type": "object",
+        "description": "Request body for uploading, linting, or packing a provider package (`POST /api/v2/admin/connector-packages`, `/authoring/lint`, `/authoring/pack`).",
+        "properties": {
+          "admit": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArchiveEntryDto"
+            },
+            "description": "Optional list of `{path, content}` entries (converted into `files` if `files` is empty)."
+          },
+          "files": {
+            "type": "object",
+            "description": "Map of relative path -> UTF-8 or `base64:<...>` file content.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "lock": {}
+        }
+      },
+      "UploadPackageResponse": {
+        "type": "object",
+        "description": "Response from uploading a verified provider package (`POST /api/v2/admin/connector-packages`).",
+        "properties": {
+          "admission": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAdmissionDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "digest": {
+            "type": "string"
+          },
+          "package": {
+            "$ref": "#/components/schemas/ConnectorPackageSummary"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "ValidationEnvelope": {
         "type": "object",
         "required": [
@@ -13471,7 +15996,7 @@
       },
       "WorkflowDependencies": {
         "type": "object",
-        "description": "`GET /api/v1/admin/workflows/{id}/dependencies` (K9).",
+        "description": "`GET /api/v2/admin/workflows/{id}/dependencies` (K9).",
         "required": [
           "workflow_id",
           "version",
@@ -13591,7 +16116,7 @@
       },
       "WorkflowTestResult": {
         "type": "object",
-        "description": "`POST /api/v1/admin/workflows/{id}/test` — a dry run against sample input.",
+        "description": "`POST /api/v2/admin/workflows/{id}/test` — a dry run against sample input.",
         "required": [
           "matched",
           "trace",
@@ -13626,7 +16151,7 @@
       "admin_bearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Admin API key presented as `Authorization: Bearer <key>` — the default. Enforced on `/api/v1/admin/*`, `/metrics`, and `/api/v1/admin/traces*` whenever `admin_auth.enabled` is true, which the shipped Helm chart and HA compose files set. Keys come from `admin_auth.api_keys`, either in plaintext or as `sha256:<64-hex>` digests. The data plane (`POST /api/v1/data/{channel}`) is not covered by this scheme."
+        "description": "Admin API key presented as `Authorization: Bearer <key>` — the default. Enforced on `/api/v2/admin/*`, `/metrics`, and `/api/v2/admin/traces*` whenever `admin_auth.enabled` is true, which the shipped Helm chart and HA compose files set. Keys come from `admin_auth.api_keys`, either in plaintext or as `sha256:<64-hex>` digests. The data plane (`POST /api/v2/data/{channel}`) is not covered by this scheme."
       }
     }
   },
@@ -13686,6 +16211,18 @@
     {
       "name": "Packages",
       "description": "Package receipts — what package versions are staged or applied here (K14)"
+    },
+    {
+      "name": "Deployments",
+      "description": "Immutable v2 deployment planning, CAS apply, convergence, rollback, and migration/edition preflight"
+    },
+    {
+      "name": "Providers",
+      "description": "V2 connector provider package authoring, upload, admission, and revocation"
+    },
+    {
+      "name": "Connections",
+      "description": "Immutable v2 connection revisions and audited health probes"
     },
     {
       "name": "Data",

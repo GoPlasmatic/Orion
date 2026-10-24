@@ -11,8 +11,8 @@ its own lifecycle, not a subroutine of the caller.
 
 | File | What it is |
 |------|------------|
-| `workflow.json` / `channel.json` | `order-enrichment` — the caller, at `POST /api/v1/data/order-enrichment` |
-| `workflow-lookup.json` / `channel-lookup.json` | `customer-lookup` — the callee, independently callable at `POST /api/v1/data/customer-lookup` |
+| `workflow.json` / `channel.json` | `order-enrichment` — the caller, at `POST /api/v2/data/order-enrichment` |
+| `workflow-lookup.json` / `channel-lookup.json` | `customer-lookup` — the callee, independently callable at `POST /api/v2/data/customer-lookup` |
 
 Zero-dependency: runs against a fresh `orion-server` with no connectors or
 database.
@@ -24,11 +24,11 @@ From the repository root, with a server on `http://localhost:8080`:
 ```
 
 That creates and activates both workflows and both channels, POSTs
-`request.json` to `POST /api/v1/data/order-enrichment`, and prints the response.
+`request.json` to `POST /api/v2/data/order-enrichment`, and prints the response.
 The callee is live too, so this works on its own:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/data/customer-lookup \
+curl -s -X POST http://localhost:8080/api/v2/data/customer-lookup \
   -H 'Content-Type: application/json' -d '{"data":{"customer_id":42}}'
 ```
 

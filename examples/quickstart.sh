@@ -18,7 +18,7 @@
 set -euo pipefail
 
 BASE="${1:-${ORION_URL:-http://localhost:8080}}"
-ADMIN="$BASE/api/v1/admin"
+ADMIN="$BASE/api/v2/admin"
 
 say()    { printf '==> %s\n' "$*"; }
 have()   { curl -fsS "$1" > /dev/null 2>&1; }
@@ -93,12 +93,12 @@ fi
 # --- First request ----------------------------------------------------------
 say "Your service is live. Sending a test order:"
 echo
-curl -fsS -X POST "$BASE/api/v1/data/orders" \
+curl -fsS -X POST "$BASE/api/v2/data/orders" \
   -H 'Content-Type: application/json' \
   -d '{ "data": { "order_id": "ORD-9182", "total": 25000 } }'
 echo
 echo
 say "Call it yourself:"
-echo "    curl -X POST $BASE/api/v1/data/orders \\"
+echo "    curl -X POST $BASE/api/v2/data/orders \\"
 echo "      -H 'Content-Type: application/json' \\"
 echo "      -d '{ \"data\": { \"order_id\": \"ORD-0001\", \"total\": 12500 } }'"

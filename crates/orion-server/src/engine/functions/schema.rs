@@ -344,6 +344,7 @@ use super::cache_invalidate::CACHE_INVALIDATE_FIELDS;
 use super::cache_read::CACHE_READ_FIELDS;
 use super::cache_write::CACHE_WRITE_FIELDS;
 use super::channel_call::CHANNEL_CALL_FIELDS;
+use super::connector_call::CONNECTOR_CALL_FIELDS;
 use super::crypto::CRYPTO_FIELDS;
 use super::data_query::DATA_QUERY_FIELDS;
 use super::data_write::DATA_WRITE_FIELDS;
@@ -619,6 +620,19 @@ const REGISTRY: &[FunctionSchema] = &[
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::UnsafeWrite,
         connector: ConnectorRule::of(&[ConnectorType::Kafka]),
+        deny_unknown: true,
+        validate_static: None,
+    },
+    FunctionSchema {
+        name: "connector_call",
+        description: "Invoke a v2 connector provider operation under an owned RunContext.",
+        category: "connector",
+        input_fields: CONNECTOR_CALL_FIELDS,
+        writes: WriteShape::OutputPath {
+            default_root: Some("data"),
+        },
+        retry_safety: RetrySafety::DependsOn { input: "operation" },
+        connector: None,
         deny_unknown: true,
         validate_static: None,
     },

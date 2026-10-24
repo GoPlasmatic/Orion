@@ -52,10 +52,33 @@ async fn test_openapi_spec_all_endpoints() {
         "/api/v2/admin/trace-dlq/{id}",
         "/api/v2/admin/trace-dlq/{id}/requeue",
         "/api/v2/admin/trace-dlq/purge",
+        // V2 deployment, provider, connection, authoring, and migration endpoints:
+        "/api/v2/admin/runtime-capabilities",
+        "/api/v2/admin/connector-packages",
+        "/api/v2/admin/connector-packages/{digest}/admit",
+        "/api/v2/admin/connector-packages/{digest}/revoke",
+        "/api/v2/admin/connections",
+        "/api/v2/admin/connections/{id}/probe",
+        "/api/v2/admin/deployment-plans",
+        "/api/v2/admin/deployments",
+        "/api/v2/admin/deployments/{revision}",
+        "/api/v2/admin/deployments/{revision}/convergence",
+        "/api/v2/admin/deployments/rollback",
+        "/api/v2/admin/authoring/scaffold",
+        "/api/v2/admin/authoring/pack",
+        "/api/v2/admin/authoring/lint",
+        "/api/v2/admin/migration-report",
+        "/api/v2/admin/edition-transition-preflight",
     ];
 
     for path in &expected {
         assert!(paths.contains_key(*path), "Missing path: {}", path);
+    }
+    for key in paths.keys() {
+        assert!(
+            !key.starts_with("/api/v1/"),
+            "OpenAPI spec must not contain legacy /api/v1/ path: {key}"
+        );
     }
 }
 
@@ -66,7 +89,7 @@ async fn openapi_documents_new_b4_tags() {
     let response = app.oneshot(req).await.unwrap();
     let body = common::body_json(response).await;
     // The `tags` block surfaces in the spec so Swagger UI groups
-    // endpoints; B4 added Functions, Audit, Backups.
+    // endpoints; B4 added Functions, Audit, Backups; v2 added Deployments, Providers, Connections.
     let tag_names: Vec<&str> = body["tags"]
         .as_array()
         .unwrap()
@@ -76,6 +99,9 @@ async fn openapi_documents_new_b4_tags() {
     assert!(tag_names.contains(&"Functions"));
     assert!(tag_names.contains(&"Audit"));
     assert!(tag_names.contains(&"Backups"));
+    assert!(tag_names.contains(&"Deployments"));
+    assert!(tag_names.contains(&"Providers"));
+    assert!(tag_names.contains(&"Connections"));
 }
 
 /// C8 regression guard: the served spec must never go back to advertising an

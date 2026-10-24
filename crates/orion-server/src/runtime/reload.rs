@@ -94,11 +94,434 @@ pub async fn reload_engine_with_opts(
     reload_with_scope(state, opts, None, false).await
 }
 
+/// Build and publish the exact entity revisions declared in `target_revision`'s
+/// committed [`crate::extensions::deployment_store::CanonicalManifest`] before
+/// marking convergence in the node reconciler.
+pub async fn reconcile_deployment_revision(
+    state: &AppState,
+    target_revision: u64,
+) -> Result<
+    crate::extensions::reconciler::RuntimeNodeStatus,
+    crate::extensions::deployment_store::DeploymentError,
+> {
+    use crate::extensions::deployment_store::{EntityKind, EntityRef};
+    use crate::extensions::reconciler::CandidateBuildIssue;
+
+    state.composition.reconciler.observe_desired_head();
+    let build_res = reload_with_manifest(
+        state,
+        ReloadOpts::default(),
+        None,
+        false,
+        Some(target_revision),
+        true,
+    )
+    .await;
+
+    let mut build_issues = Vec::new();
+    match build_res {
+        Ok(published) => {
+            if let Some(rev_row) = state.composition.deployments.get_revision(target_revision) {
+                for q in published.channels.quarantined() {
+                    let rev = rev_row
+                        .manifest
+                        .members
+                        .iter()
+                        .find(|m| {
+                            m.entity.kind == EntityKind::Channel && m.entity.id == q.channel_id
+                        })
+                        .map(|m| m.entity.revision)
+                        .unwrap_or(1);
+                    build_issues.push(CandidateBuildIssue::PerEntityExternal {
+                        entity: EntityRef {
+                            kind: EntityKind::Channel,
+                            id: q.channel_id.clone(),
+                            revision: rev,
+                        },
+                        reason: q.reason.clone(),
+                    });
+                }
+            }
+        }
+        Err(reload_err) => {
+            build_issues.push(CandidateBuildIssue::WholeBuildIntegrity {
+                code: "ENGINE_RELOAD_FAILED".to_string(),
+                message: reload_err.to_string(),
+            });
+        }
+    }
+
+    let status_res = state
+        .composition
+        .reconciler
+        .build_and_publish_candidate(target_revision, build_issues);
+    let _ = state
+        .composition
+        .reconciler
+        .persist_local_status_to_db_pool(&state.db_pool)
+        .await;
+    status_res
+}
+
+async fn manifest_definitions(
+    state: &AppState,
+    target_revision: u64,
+) -> Result<crate::storage::repositories::ActiveDefinitions, crate::errors::OrionError> {
+    use std::collections::HashMap;
+
+    use crate::extensions::deployment_store::{ArtifactState, EntityKind, ManifestMember};
+    use crate::storage::models::{Channel, EntityStatus, Model, Plugin, Workflow};
+    use crate::storage::repositories::{channels, models, plugins, versioned, workflows};
+
+    let rev_row = state
+        .composition
+        .deployments
+        .get_revision(target_revision)
+        .ok_or_else(|| {
+            crate::errors::OrionError::NotFound(format!(
+                "Deployment revision {target_revision} not found"
+            ))
+        })?;
+    let manifest = &rev_row.manifest;
+
+    for p in &manifest.providers {
+        let Some(adm) = state.composition.deployments.get_admission(&p.digest) else {
+            return Err(crate::errors::OrionError::validation(format!(
+                "provider '{}' ({}) is not admitted",
+                p.provider_id, p.digest
+            )));
+        };
+        if adm.revoked || state.composition.admission.is_digest_revoked(&p.digest) {
+            return Err(crate::errors::OrionError::validation(format!(
+                "provider '{}' ({}) is revoked",
+                p.provider_id, p.digest
+            )));
+        }
+    }
+
+    let now = chrono::Utc::now().naive_utc();
+    let parse_artifact_json = |member: &ManifestMember| -> Result<
+        Option<serde_json::Value>,
+        crate::errors::OrionError,
+    > {
+        let Some(art) = state
+            .composition
+            .deployments
+            .get_artifact(&member.definition_digest)
+        else {
+            return Ok(None);
+        };
+        if art.state != ArtifactState::Active {
+            return Err(crate::errors::OrionError::validation(format!(
+                "member '{}' artifact '{}' is not ACTIVE",
+                member.entity.id, member.definition_digest
+            )));
+        }
+        let Some(bytes) = art.bytes else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    };
+
+    let mut active_channels = Vec::new();
+    let mut active_workflows = Vec::new();
+    let mut active_plugins = Vec::new();
+    let mut active_models = Vec::new();
+    let mut rollout_overrides: HashMap<(String, u64), i64> = HashMap::new();
+    let mut workflow_counts: HashMap<String, usize> = HashMap::new();
+
+    for m in &manifest.members {
+        if m.entity.kind == EntityKind::Workflow {
+            *workflow_counts.entry(m.entity.id.clone()).or_insert(0) += 1;
+        }
+    }
+
+    for m in &manifest.members {
+        match m.entity.kind {
+            EntityKind::Channel => {
+                let version = i64::try_from(m.entity.revision).unwrap_or(i64::MAX);
+                let req_wf = m
+                    .requires
+                    .iter()
+                    .find(|r| r.kind == EntityKind::Workflow)
+                    .map(|r| r.id.clone());
+
+                let mut ch = if let Some(val) = parse_artifact_json(m)?
+                    && val.is_object()
+                    && (val.get("protocol").is_some()
+                        || val.get("channel_type").is_some()
+                        || val.get("route_pattern").is_some()
+                        || val.get("topic").is_some())
+                {
+                    let protocol = val
+                        .get("protocol")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("rest")
+                        .to_string();
+                    let methods_json = match val.get("methods") {
+                        Some(v) if !v.is_null() => serde_json::to_string(v).ok(),
+                        _ if protocol == "rest" => Some("[\"POST\"]".to_string()),
+                        _ => None,
+                    };
+                    Channel {
+                        channel_id: m.entity.id.clone(),
+                        version,
+                        name: val
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&m.entity.id)
+                            .to_string(),
+                        description: val
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        channel_type: val
+                            .get("channel_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("sync")
+                            .to_string(),
+                        protocol,
+                        methods_json,
+                        route_pattern: val
+                            .get("route_pattern")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        topic: val
+                            .get("topic")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        consumer_group: val
+                            .get("consumer_group")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        transport_config_json: serde_json::to_string(
+                            val.get("transport_config")
+                                .unwrap_or(&serde_json::json!({})),
+                        )
+                        .unwrap_or_else(|_| "{}".to_string()),
+                        workflow_id: val
+                            .get("workflow_id")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                            .or_else(|| req_wf.clone()),
+                        config_json: serde_json::to_string(
+                            val.get("config").unwrap_or(&serde_json::json!({})),
+                        )
+                        .unwrap_or_else(|_| "{}".to_string()),
+                        status: EntityStatus::Active.as_str().to_string(),
+                        priority: val.get("priority").and_then(|v| v.as_i64()).unwrap_or(0),
+                        tags_json: serde_json::to_string(
+                            val.get("tags").unwrap_or(&serde_json::json!([])),
+                        )
+                        .unwrap_or_else(|_| "[]".to_string()),
+                        created_at: now,
+                        updated_at: now,
+                    }
+                } else {
+                    versioned::get_version::<Channel>(
+                        &state.db_pool,
+                        &channels::spec(),
+                        &m.entity.id,
+                        version,
+                    )
+                    .await
+                    .map_err(|_| {
+                        crate::errors::OrionError::validation(format!(
+                            "Manifest channel '{}' revision {} definition not found",
+                            m.entity.id, m.entity.revision
+                        ))
+                    })?
+                };
+
+                ch.status = EntityStatus::Active.as_str().to_string();
+                if let Some(wf_id) = req_wf {
+                    ch.workflow_id = Some(wf_id);
+                }
+                if !m.rollouts.is_empty()
+                    && let Some(ref wf_id) = ch.workflow_id
+                {
+                    for interval in &m.rollouts {
+                        let pct =
+                            i64::from(interval.end_bucket.saturating_sub(interval.start_bucket));
+                        rollout_overrides.insert((wf_id.clone(), interval.workflow_revision), pct);
+                    }
+                }
+                active_channels.push(ch);
+            }
+            EntityKind::Workflow => {}
+            EntityKind::Plugin => {
+                let version = i64::try_from(m.entity.revision).unwrap_or(i64::MAX);
+                let mut plugin = versioned::get_version::<Plugin>(
+                    &state.db_pool,
+                    &plugins::spec(),
+                    &m.entity.id,
+                    version,
+                )
+                .await
+                .map_err(|_| {
+                    crate::errors::OrionError::validation(format!(
+                        "Manifest plugin '{}' revision {} definition not found",
+                        m.entity.id, m.entity.revision
+                    ))
+                })?;
+                plugin.status = EntityStatus::Active.as_str().to_string();
+                active_plugins.push(plugin);
+            }
+            EntityKind::Model => {
+                let version = i64::try_from(m.entity.revision).unwrap_or(i64::MAX);
+                let mut model = versioned::get_version::<Model>(
+                    &state.db_pool,
+                    &models::spec(),
+                    &m.entity.id,
+                    version,
+                )
+                .await
+                .map_err(|_| {
+                    crate::errors::OrionError::validation(format!(
+                        "Manifest model '{}' revision {} definition not found",
+                        m.entity.id, m.entity.revision
+                    ))
+                })?;
+                model.status = EntityStatus::Active.as_str().to_string();
+                active_models.push(model);
+            }
+            EntityKind::Connection => {
+                let conn = state
+                    .composition
+                    .deployments
+                    .get_connection(&m.entity.id, m.entity.revision)
+                    .ok_or_else(|| {
+                        crate::errors::OrionError::validation(format!(
+                            "Manifest connection '{}' revision {} not found",
+                            m.entity.id, m.entity.revision
+                        ))
+                    })?;
+                if conn.configuration_digest != m.definition_digest {
+                    return Err(crate::errors::OrionError::validation(format!(
+                        "Manifest connection '{}' revision {} digest mismatch",
+                        m.entity.id, m.entity.revision
+                    )));
+                }
+            }
+            EntityKind::Source => {}
+        }
+    }
+
+    for m in &manifest.members {
+        if m.entity.kind != EntityKind::Workflow {
+            continue;
+        }
+        let version = i64::try_from(m.entity.revision).unwrap_or(i64::MAX);
+        let mut wf = if let Some(val) = parse_artifact_json(m)?
+            && val.is_object()
+            && val.get("tasks").is_some()
+        {
+            Workflow {
+                workflow_id: m.entity.id.clone(),
+                version,
+                name: val
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&m.entity.id)
+                    .to_string(),
+                description: val
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                priority: val.get("priority").and_then(|v| v.as_i64()).unwrap_or(0),
+                status: EntityStatus::Active.as_str().to_string(),
+                rollout_percentage: val
+                    .get("rollout_percentage")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(100),
+                condition_json: serde_json::to_string(
+                    val.get("condition").unwrap_or(&serde_json::Value::Bool(true)),
+                )
+                .unwrap_or_else(|_| "true".to_string()),
+                tasks_json: serde_json::to_string(
+                    val.get("tasks").unwrap_or(&serde_json::json!([])),
+                )
+                .unwrap_or_else(|_| "[]".to_string()),
+                tags_json: serde_json::to_string(
+                    val.get("tags").unwrap_or(&serde_json::json!([])),
+                )
+                .unwrap_or_else(|_| "[]".to_string()),
+                loop_json: val
+                    .get("loop")
+                    .filter(|v| !v.is_null())
+                    .and_then(|v| serde_json::to_string(v).ok()),
+                continue_on_error: val
+                    .get("continue_on_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                created_at: now,
+                updated_at: now,
+            }
+        } else {
+            versioned::get_version::<Workflow>(
+                &state.db_pool,
+                &workflows::spec(),
+                &m.entity.id,
+                version,
+            )
+            .await
+            .map_err(|_| {
+                crate::errors::OrionError::validation(format!(
+                    "Manifest workflow '{}' revision {} definition not found",
+                    m.entity.id, m.entity.revision
+                ))
+            })?
+        };
+
+        wf.status = EntityStatus::Active.as_str().to_string();
+        if let Some(&pct) = rollout_overrides.get(&(m.entity.id.clone(), m.entity.revision)) {
+            wf.rollout_percentage = pct;
+        } else if workflow_counts.get(&m.entity.id).copied().unwrap_or(1) == 1 {
+            wf.rollout_percentage = 100;
+        }
+        active_workflows.push(wf);
+    }
+
+    active_channels.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.channel_id.cmp(&b.channel_id))
+    });
+    active_workflows.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.workflow_id.cmp(&b.workflow_id))
+            .then_with(|| b.version.cmp(&a.version))
+    });
+    active_plugins.sort_by(|a, b| a.plugin_id.cmp(&b.plugin_id));
+    active_models.sort_by(|a, b| a.model_id.cmp(&b.model_id));
+
+    Ok(crate::storage::repositories::ActiveDefinitions {
+        channels: active_channels,
+        workflows: active_workflows,
+        plugins: active_plugins,
+        models: active_models,
+    })
+}
+
 async fn reload_with_scope(
     state: &AppState,
     opts: ReloadOpts,
     scope: Option<crate::cluster::EpochScope>,
     evict_connector_pools: bool,
+) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
+    let (head_rev, _) = state.composition.deployments.current_head();
+    let manifest_rev = (head_rev > 0).then_some(head_rev);
+    reload_with_manifest(state, opts, scope, evict_connector_pools, manifest_rev, false).await
+}
+
+async fn reload_with_manifest(
+    state: &AppState,
+    opts: ReloadOpts,
+    scope: Option<crate::cluster::EpochScope>,
+    evict_connector_pools: bool,
+    manifest_revision: Option<u64>,
+    enforce_publication_barrier: bool,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     let start = std::time::Instant::now();
 
@@ -132,7 +555,10 @@ async fn reload_with_scope(
             workflows: active_workflows,
             plugins: plugin_rows,
             models: model_rows,
-        } = state.repos.active_definitions().await?;
+        } = match manifest_revision {
+            Some(target_rev) => manifest_definitions(state, target_rev).await?,
+            None => state.repos.active_definitions().await?,
+        };
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
         // The outgoing generation, read once: it is the screen for the new
         // workflows, the base the new engine is built from, and the reuse
@@ -281,6 +707,16 @@ async fn reload_with_scope(
             &active_workflows,
             &models,
         ));
+        if manifest_revision.is_some() && !engine_issues.is_empty() {
+            let details: Vec<String> = engine_issues
+                .iter()
+                .map(|i| format!("channel '{}': {}", i.channel, i.reason))
+                .collect();
+            return Err(crate::errors::OrionError::validation(format!(
+                "Manifest workflow compilation failed: {}",
+                details.join("; ")
+            )));
+        }
 
         // Channels that fail to load are quarantined — refused at every
         // ingress — and the reload proceeds (F35). It used to abort here,
@@ -311,6 +747,18 @@ async fn reload_with_scope(
                 engine_issues,
             )
             .await;
+
+        if enforce_publication_barrier && let Some(target_rev) = manifest_revision {
+            let local = state.composition.reconciler.local_status();
+            let (latest_head, _) = state.composition.deployments.current_head();
+            let desired = local.desired_revision.max(latest_head);
+            if target_rev < desired || target_rev <= local.applied_revision {
+                return Err(crate::errors::OrionError::Conflict(format!(
+                    "candidate revision {target_rev} is superseded (applied={}, desired={desired})",
+                    local.applied_revision
+                )));
+            }
+        }
 
         if scope.is_some_and(|scope| scope.touches_connectors()) && evict_connector_pools {
             state.caches.evict_all_pools().await;

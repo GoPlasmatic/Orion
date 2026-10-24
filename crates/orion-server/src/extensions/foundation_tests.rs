@@ -200,9 +200,16 @@
 
     #[tokio::test]
     async fn v2_14_2_and_3_http_ssrf_guard_and_live_sqlite_execution() {
-        let http = HttpProviderBackend;
+        let http = HttpProviderBackend::new();
         let inv = make_invocation(DRIVER_HTTP, "http-conn", 1, "get");
         let attempt = inv.next_attempt().unwrap();
+
+        // Missing URL returns explicit error instead of fabricated 200 (Claim 5)
+        let missing_url_err = http
+            .invoke(&attempt, "get", json!({"path": "/contacts"}))
+            .await
+            .expect_err("HTTP invocation without URL must not fabricate 200");
+        assert_eq!(missing_url_err.code, codes::INVALID_INPUT);
 
         // Private loopback URL is blocked by SSRF guard (`V2-14.2`)
         let ssrf_err = http
@@ -215,6 +222,31 @@
             .unwrap_err();
         assert_eq!(ssrf_err.code, codes::CAPABILITY_INVALID);
 
+        // PostgreSQL without connection_string or with unreachable host returns explicit error instead of synthetic success (Claim 5)
+        let pg = PostgresProviderBackend::default();
+        let pg_inv_q = make_invocation(DRIVER_POSTGRESQL, "pg-conn", 1, "query");
+        let pg_attempt_q = pg_inv_q.next_attempt().unwrap();
+        let pg_missing_err = pg
+            .invoke(&pg_attempt_q, "query", json!({"sql": "SELECT 1"}))
+            .await
+            .expect_err("Postgres query without connection_string must not return synthetic empty rows");
+        assert_eq!(pg_missing_err.code, codes::INVALID_INPUT);
+
+        let pg_inv_w = make_invocation(DRIVER_POSTGRESQL, "pg-conn", 1, "execute");
+        let pg_attempt_w = pg_inv_w.next_attempt().unwrap();
+        let pg_write_err = pg
+            .invoke(
+                &pg_attempt_w,
+                "execute",
+                json!({
+                    "connection_string": "postgres://postgres:postgres@127.0.0.1:1/nonexistent",
+                    "sql": "INSERT INTO items VALUES (1)"
+                }),
+            )
+            .await
+            .expect_err("Postgres write to unreachable host must not return synthetic rows_affected: 1");
+        assert_eq!(pg_write_err.code, codes::UNAVAILABLE);
+
         // Live SQLite execution against sqlite::memory: (`V2-14.3`)
         let sqlite = SqliteProviderBackend::default();
         let out = sqlite
@@ -223,6 +255,19 @@
             .unwrap();
         assert_eq!(out["count"], 1);
         assert_eq!(out["rows"][0]["edition"], "orion-v2");
+
+        // SQLite errors are never swallowed into synthetic rows: [] or rows_affected: 1 (Claim 5)
+        let sq_inv = make_invocation(DRIVER_SQLITE, "sqlite-err-conn", 1, "execute");
+        let sq_attempt = sq_inv.next_attempt().unwrap();
+        let sq_err = sqlite
+            .invoke(
+                &sq_attempt,
+                "execute",
+                json!({"sql": "INSERT INTO missing_table VALUES (1)"}),
+            )
+            .await
+            .expect_err("SQLite error without explicit connection_string must not return synthetic rows_affected: 1");
+        assert_eq!(sq_err.code, codes::INVALID_INPUT);
     }
 
     #[tokio::test]

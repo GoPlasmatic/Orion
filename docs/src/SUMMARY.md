@@ -156,6 +156,7 @@
   - [`send_email`](./reference/functions/send_email.md)
   - [`storage_presign`](./reference/functions/storage_presign.md)
   - [`storage_head`](./reference/functions/storage_head.md)
+  - [`connector_call`](./reference/functions/connector_call.md)
   - [`channel_call`](./reference/functions/channel_call.md)
   - [`model_infer`](./reference/functions/model_infer.md)
   - [`crypto`](./reference/functions/crypto.md)

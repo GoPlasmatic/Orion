@@ -62,7 +62,7 @@ pub(crate) struct PaginatedEnvelope<T> {
     pub(crate) offset: i64,
 }
 
-/// One row of `GET /api/v1/admin/connectors`: the stored connector with
+/// One row of `GET /api/v2/admin/connectors`: the stored connector with
 /// secrets masked, plus the registry's view of whether it actually loaded.
 ///
 /// Declared separately from [`crate::storage::models::ConnectorResponse`]
@@ -97,7 +97,7 @@ pub(crate) struct ConnectorListItem {
     load_error_stage: Option<String>,
 }
 
-/// One item of `GET /api/v1/admin/connectors/export`.
+/// One item of `GET /api/v2/admin/connectors/export`.
 ///
 /// Declared separately from [`crate::storage::models::ConnectorResponse`]
 /// because an export has to emit the shape `/import` *accepts*, not the shape
@@ -122,7 +122,7 @@ pub(crate) struct ConnectorExportItem {
     content_hash: String,
 }
 
-/// `GET /api/v1/admin/connectors/circuit-breakers`.
+/// `GET /api/v2/admin/connectors/circuit-breakers`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct CircuitBreakerStates {
@@ -137,7 +137,7 @@ pub(crate) struct CircuitBreakerStates {
     breakers: std::collections::HashMap<String, String>,
 }
 
-/// `POST /api/v1/admin/connectors/circuit-breakers/{key}`.
+/// `POST /api/v2/admin/connectors/circuit-breakers/{key}`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct CircuitBreakerReset {
@@ -149,7 +149,7 @@ pub(crate) struct CircuitBreakerReset {
     found_on_this_node: bool,
 }
 
-/// `POST /api/v1/admin/trace-dlq/purge`.
+/// `POST /api/v2/admin/trace-dlq/purge`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct DlqPurgeResult {
@@ -159,7 +159,7 @@ pub(crate) struct DlqPurgeResult {
     older_than_hours: i64,
 }
 
-/// `POST /api/v1/admin/workflows/{id}/test` — a dry run against sample input.
+/// `POST /api/v2/admin/workflows/{id}/test` — a dry run against sample input.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct WorkflowTestResult {
@@ -173,7 +173,7 @@ pub(crate) struct WorkflowTestResult {
     errors: Vec<Value>,
 }
 
-/// The backup `POST /api/v1/admin/backups` just wrote.
+/// The backup `POST /api/v2/admin/backups` just wrote.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct BackupFile {
@@ -184,7 +184,7 @@ pub(crate) struct BackupFile {
     created_at: String,
 }
 
-/// One row of `GET /api/v1/admin/backups`. Deliberately not [`BackupFile`]:
+/// One row of `GET /api/v2/admin/backups`. Deliberately not [`BackupFile`]:
 /// the listing reads `mtime` off the directory entry and has no `path`, so
 /// the two responses differ by two fields.
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -195,7 +195,7 @@ pub(crate) struct BackupListItem {
     modified_at: String,
 }
 
-/// `GET /api/v1/admin/traces` — a page of trace rows.
+/// `GET /api/v2/admin/traces` — a page of trace rows.
 ///
 /// Not [`PaginatedEnvelope`] (D8): `total` is present only when the request
 /// asked for it with `include_total=true`, because the count scans the whole
@@ -218,7 +218,7 @@ pub(crate) struct TracePageEnvelope {
     next_cursor: Option<String>,
 }
 
-/// `GET /api/v1/admin/traces/{id}` — the list row plus the payloads.
+/// `GET /api/v2/admin/traces/{id}` — the list row plus the payloads.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct TraceDetail {
@@ -246,7 +246,7 @@ pub(crate) struct TraceDetail {
     task_trace_json: Option<Value>,
 }
 
-/// One entry of the function catalogue from `GET /api/v1/admin/functions`.
+/// One entry of the function catalogue from `GET /api/v2/admin/functions`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct FunctionSchemaItem {

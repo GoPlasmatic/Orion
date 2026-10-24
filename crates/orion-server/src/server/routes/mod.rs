@@ -416,7 +416,7 @@ true — otherwise the path 404s, so a deployment with metrics off is not \
 mistaken for a working scrape target.
 
 On this listener it is guarded by the same admin credential as \
-`/api/v1/admin/*` when `admin_auth.enabled` is true, so scrapers must be \
+`/api/v2/admin/*` when `admin_auth.enabled` is true, so scrapers must be \
 configured with the key. Setting `metrics.bind_addr` instead moves the \
 endpoint to a dedicated unauthenticated listener on a private interface and \
 removes it from this one entirely.",

@@ -4,54 +4,29 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use serde::Deserialize;
+use orion_api::v2::{
+    EditionTransitionPreflightRequest, EditionTransitionPreflightResponse, MigrationReportRequest,
+    MigrationReportResponse,
+};
 use serde_json::{Value, json};
 
 use crate::extensions::deployment_store::ImmutableDeploymentStore;
 use crate::extensions::{EditionTier, check_connector_availability, map_legacy_connector};
 use crate::server::state::AppState;
 
-#[derive(Debug, Default, Deserialize)]
-pub struct MigrationReportRequest {
-    #[serde(default)]
-    pub connectors: Vec<LegacyConnectorItem>,
-    #[serde(default)]
-    pub workflows: Vec<LegacyWorkflowItem>,
-    #[serde(default)]
-    pub channels: Vec<LegacyChannelItem>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LegacyConnectorItem {
-    pub name: String,
-    pub connector_type: String,
-    #[serde(default)]
-    pub config: Value,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LegacyWorkflowItem {
-    pub id: String,
-    pub version: u64,
-    #[serde(default)]
-    pub definition: Value,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct LegacyChannelItem {
-    pub id: String,
-    pub version: u64,
-    pub workflow_id: String,
-    pub workflow_version: u64,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct EditionTransitionPreflightRequest {
-    pub revision: Option<u64>,
-}
-
 /// `POST /api/v2/admin/migration-report` (`V2-07.3`, `V2-14.5`, `V2-03.5`).
-pub(super) async fn create_migration_report(
+#[utoipa::path(
+    post,
+    path = "/api/v2/admin/migration-report",
+    tag = "Deployments",
+    summary = "Generate a legacy v1 -> v2 conversion and migration report",
+    description = "Inspects legacy v1 connectors, workflows, and channels, maps them to v2 provider packages and connection revisions, and synthesizes a candidate bootstrap deployment manifest if compatible.",
+    request_body = MigrationReportRequest,
+    responses(
+        (status = 200, description = "Legacy v1 -> v2 migration conversion report", body = MigrationReportResponse),
+    )
+)]
+pub(crate) async fn create_migration_report(
     State(state): State<AppState>,
     Json(req): Json<MigrationReportRequest>,
 ) -> impl IntoResponse {
@@ -68,7 +43,11 @@ pub(super) async fn create_migration_report(
                 "implementation": res.implementation.as_str(),
                 "tier": res.tier.as_str(),
             })),
-            Err(finding) => findings.push(finding),
+            Err(finding) => {
+                if let Ok(val) = serde_json::to_value(finding) {
+                    findings.push(val);
+                }
+            }
         }
     }
 
@@ -118,19 +97,40 @@ pub(super) async fn create_migration_report(
         None
     };
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "compatible": findings.is_empty() && bootstrap_manifest.is_some(),
-            "resolved_connectors": resolved_connectors,
-            "findings": findings,
-            "bootstrap_manifest": bootstrap_manifest,
-        })),
-    )
+    let bootstrap_manifest_digest = bootstrap_manifest
+        .as_ref()
+        .and_then(|m| m.canonicalize_and_verify().ok().map(|(_, d)| d));
+    let bootstrap_manifest_val =
+        bootstrap_manifest.and_then(|m| serde_json::to_value(m).ok());
+    let compatible = findings.is_empty() && bootstrap_manifest_val.is_some();
+
+    let resp = MigrationReportResponse {
+        edition: "community".to_string(),
+        compatible,
+        can_cutover: compatible,
+        converted_connections: resolved_connectors.len(),
+        resolved_connectors,
+        findings: findings.clone(),
+        blocking_findings: findings,
+        bootstrap_manifest: bootstrap_manifest_val,
+        bootstrap_manifest_digest,
+    };
+    (StatusCode::OK, Json(resp))
 }
 
 /// `POST /api/v2/admin/edition-transition-preflight` (`V2-16.4`).
-pub(super) async fn edition_transition_preflight(
+#[utoipa::path(
+    post,
+    path = "/api/v2/admin/edition-transition-preflight",
+    tag = "Deployments",
+    summary = "Run Enterprise-to-Community edition transition preflight check",
+    description = "Inspects the specified or active deployment revision for Enterprise-only providers or channels and returns a transition readiness report and backup checklist.",
+    request_body(content = Option<EditionTransitionPreflightRequest>, description = "Optional target revision to inspect"),
+    responses(
+        (status = 200, description = "Edition transition preflight report", body = EditionTransitionPreflightResponse),
+    )
+)]
+pub(crate) async fn edition_transition_preflight(
     State(state): State<AppState>,
     req: Option<Json<EditionTransitionPreflightRequest>>,
 ) -> impl IntoResponse {
@@ -165,22 +165,25 @@ pub(super) async fn edition_transition_preflight(
     }
 
     let transition_allowed = incompatible_providers.is_empty() && incompatible_channels.is_empty();
-    (
-        StatusCode::OK,
-        Json(json!({
-            "data": {
-                "target_edition": "community",
-                "transition_allowed": transition_allowed,
-                "inspected_revision": target_rev,
-                "incompatible_providers": incompatible_providers,
-                "incompatible_channels": incompatible_channels,
-                "findings": findings,
-                "backup_retention_checklist": [
-                    "1. Capture full database snapshot (orion-cli backups create) and verify artifact_objects checksums",
-                    "2. Export encrypted secret store backup and retain historical rollback revisions",
-                    "3. Replace or remove any Enterprise providers/channels in a new candidate revision before starting the Community binary"
-                ]
-            }
-        })),
-    )
+    let dto = EditionTransitionPreflightResponse {
+        target_edition: "community".to_string(),
+        transition_allowed,
+        inspected_revision: target_rev,
+        incompatible_providers,
+        incompatible_channels,
+        findings,
+        backup_retention_checklist: vec![
+            "1. Capture full database snapshot (orion-cli backups create) and verify artifact_objects checksums".to_string(),
+            "2. Export encrypted secret store backup and retain historical rollback revisions".to_string(),
+            "3. Replace or remove any Enterprise providers/channels in a new candidate revision before starting the Community binary".to_string(),
+        ],
+    };
+    let mut val = serde_json::to_value(&dto).unwrap_or(Value::Null);
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert(
+            "data".to_string(),
+            serde_json::to_value(&dto).unwrap_or(Value::Null),
+        );
+    }
+    (StatusCode::OK, Json(val))
 }

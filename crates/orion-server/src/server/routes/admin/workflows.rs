@@ -381,7 +381,7 @@ async fn dry_run_status_change(
 // CLI's offline lint all share one implementation.
 pub(crate) use crate::engine::refs::{channel_call_targets, connector_refs};
 
-/// `GET /api/v1/admin/workflows/{id}/dependencies` (K9).
+/// `GET /api/v2/admin/workflows/{id}/dependencies` (K9).
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct WorkflowDependencies {
     workflow_id: String,

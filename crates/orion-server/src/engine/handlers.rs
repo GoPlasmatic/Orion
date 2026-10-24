@@ -53,6 +53,8 @@ pub struct HandlerDeps<'a> {
     /// rather than the build refusing the function.
     pub models: Option<Arc<crate::model::ModelsRuntime>>,
     pub models_config: &'a crate::config::ModelsConfig,
+    /// The node's v2 provider registry (`rust`, `workflow`, `wasm`) for `connector_call`.
+    pub providers: crate::extensions::ProviderRegistry,
 }
 
 /// Register one connector handler, wrapped and keyed by its own name.
@@ -100,6 +102,7 @@ pub fn build_custom_functions(
         smtp_pool_cache,
         models,
         models_config,
+        providers,
     } = deps;
     let mut fns: HashMap<String, dataflow_rs_v3::BoxedFunctionHandler> = HashMap::new();
 
@@ -305,6 +308,11 @@ pub fn build_custom_functions(
         },
     );
 
+    fns.insert(
+        functions::connector_call::NAME.to_string(),
+        Box::new(functions::connector_call::ConnectorCallHandler { providers }),
+    );
+
     fns
 }
 
@@ -342,6 +350,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         smtp_pool_cache,
         models,
         models_config,
+        providers,
     } = deps;
 
     registry.register(
@@ -511,6 +520,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
             limits: query_config.clone(),
         },
     );
+    functions::connector_call::register_connector_call(registry, providers);
 }
 
 /// The dataflow-rs 4 `Registry` a generation compiles and runs on, before

@@ -39,7 +39,7 @@ cd "$(dirname "$0")"
 
 DIR="${1:-}"
 BASE="${2:-http://localhost:8080}"
-ADMIN="$BASE/api/v1/admin"
+ADMIN="$BASE/api/v2/admin"
 
 DIR="${DIR%/}"
 # Accept a bare package name (`high-value-order`) or its path (`packages/high-value-order`).
@@ -241,12 +241,12 @@ if [[ -f "$ENTRANT_FILE" ]]; then
   echo "    2. orion-cli models create -f $DIR/entrant/model.json --connector <bucket> --key <key> \\"
   echo "           --digest sha256:\$(shasum -a 256 $DIR/entrant/$MODEL_ARTIFACT | cut -d' ' -f1) --wait"
   echo "    3. orion-cli models activate $MODEL_ID"
-  echo "    4. curl -X POST $BASE/api/v1/data$ROUTE -H 'Content-Type: application/json' --data @$REQ_FILE"
+  echo "    4. curl -X POST $BASE/api/v2/data$ROUTE -H 'Content-Type: application/json' --data @$REQ_FILE"
   echo "    The server needs models.enabled = true; see $DIR/README.md."
   exit 0
 fi
 
-echo "==> POST /api/v1/data$ROUTE"
-curl --fail-with-body -sS -X POST "$BASE/api/v1/data$ROUTE" \
+echo "==> POST /api/v2/data$ROUTE"
+curl --fail-with-body -sS -X POST "$BASE/api/v2/data$ROUTE" \
   -H 'Content-Type: application/json' --data @"$REQ_FILE"
 echo

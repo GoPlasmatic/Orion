@@ -446,6 +446,7 @@ pub struct OfflineDeps {
     mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
     models_config: crate::config::ModelsConfig,
+    providers: crate::extensions::ProviderRegistry,
 }
 
 impl OfflineDeps {
@@ -482,6 +483,7 @@ impl OfflineDeps {
             mongo_pool_cache: Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(entries)),
             smtp_pool_cache: Arc::new(crate::connector::smtp_pool::SmtpPoolCache::new(entries)),
             models_config: crate::config::ModelsConfig::default(),
+            providers: crate::extensions::CompositionRoot::community().providers,
             client,
             engine_config,
         }
@@ -507,6 +509,7 @@ impl OfflineDeps {
             smtp_pool_cache: Arc::clone(&self.smtp_pool_cache),
             models: None,
             models_config: &self.models_config,
+            providers: self.providers.clone(),
         }
     }
 }
@@ -1004,6 +1007,7 @@ mod tests {
         "mongo_read",
         "mongo_write",
         "mongo_aggregate",
+        "connector_call",
     ];
 
     /// Every function 1.12 registers can be built over the inert

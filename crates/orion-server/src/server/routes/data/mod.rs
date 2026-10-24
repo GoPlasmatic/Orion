@@ -48,11 +48,11 @@ pub fn data_routes() -> Router<AppState> {
 Invoke a channel's workflow synchronously.
 
 This is a **templated** path, not a static one. Orion serves the whole data \
-plane from a single catch-all route (`/api/v1/data/{*path}`) and resolves the \
+plane from a single catch-all route (`/api/v2/data/{*path}`) and resolves the \
 target channel at request time, so no per-channel path exists in this document:
 
 * **Simple HTTP channels** — a single path segment matched against the channel \
-  `name`, e.g. `POST /api/v1/data/order-intake`.
+  `name`, e.g. `POST /api/v2/data/order-intake`.
 * **REST channels** — each active channel registers its own method and path \
   pattern (`config.rest.routes`) at engine-reload time; those patterns may span \
   several segments and declare their own path parameters, which arrive in the \
@@ -64,7 +64,7 @@ target channel at request time, so no per-channel path exists in this document:
   the routes a given deployment actually serves.
 
 Append `/async` to submit to the queue instead — see \
-`POST /api/v1/data/{channel}/async`.
+`POST /api/v2/data/{channel}/async`.
 
 Authentication is per channel and off by default: `admin_auth` covers the admin \
 plane only. A channel carrying an `auth` block in its config (`api_key` or \
@@ -775,7 +775,7 @@ async fn submit_async(
 
 /// Documentation-only anchor for the async submission path.
 ///
-/// `POST /api/v1/data/{channel}/async` is served by [`dynamic_handler`], which
+/// `POST /api/v2/data/{channel}/async` is served by [`dynamic_handler`], which
 /// strips the `/async` suffix from the catch-all path — one Rust function, two
 /// documented operations. `#[utoipa::path]` can only be applied once per
 /// function, so the async operation hangs off this stub instead of inventing a
@@ -791,13 +791,13 @@ async fn submit_async(
 Queue a channel's workflow for background execution and return immediately.
 
 Accepts the same body and resolves the channel exactly as \
-`POST /api/v1/data/{channel}` (including REST route patterns — append `/async` \
+`POST /api/v2/data/{channel}` (including REST route patterns — append `/async` \
 to any of them). All ingress guards still apply before the queue hand-off: \
 the origin allow-list, the rate limit, `validation_logic`, deduplication and \
 backpressure. The response cache is sync-only, so an async submission never \
 returns a cached body.
 
-Poll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the \
+Poll `GET /api/v2/admin/traces/{id}` with the returned `trace_id` for the \
 result, presenting the returned `trace_token` via the `x-trace-token` header \
 or `?token=` query parameter. The token scopes the poll to this submission \
 (R12); an admin credential also works.
@@ -1005,10 +1005,10 @@ pub(crate) struct ProcessTaskError {
     task_id: Option<String>,
 }
 
-/// Acknowledgement returned by `POST /api/v1/data/{channel}/async`.
+/// Acknowledgement returned by `POST /api/v2/data/{channel}/async`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct AsyncSubmitResponse {
-    /// Id to poll via `GET /api/v1/admin/traces/{id}`. Always present: a 202
+    /// Id to poll via `GET /api/v2/admin/traces/{id}`. Always present: a 202
     /// is a receipt for a result, so the row it names is written before this
     /// response is sent (R11).
     trace_id: String,

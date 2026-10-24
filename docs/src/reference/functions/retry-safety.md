@@ -53,6 +53,7 @@ happens, what does it cost?**
 | [`db_write`](./db_write.md) | `depends_on` `sql` | Raw SQL: an `UPDATE … SET x = 1` is idempotent, an `INSERT` is not. |
 | [`data_write`](./data_write.md) | `depends_on` `op` | `upsert` and `delete` are idempotent; `insert` is not; `update` depends on the expression. |
 | [`mongo_write`](./mongo_write.md) | `depends_on` `op` | Same split: an upsert repeats safely, an insert does not. |
+| [`connector_call`](./connector_call.md) | `depends_on` `operation` | Read operations (`cache.get`, `sql.query`) repeat safely; write operations depend on provider idempotency and `idempotency_key`. |
 | [`channel_call`](./channel_call.md) | `depends_on` `channel` | The answer is whatever the target channel's workflow does. |
 
 Every engine built-in (`map`, `filter`, `parse_json`, …) is `pure`: they read

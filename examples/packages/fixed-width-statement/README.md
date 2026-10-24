@@ -17,7 +17,7 @@ repository root, with such a server on `http://localhost:8080`:
 ```
 
 That uploads and activates the plugin, creates and activates the workflow and
-channel, POSTs `request.json` to `POST /api/v1/data/statements`, and prints the
+channel, POSTs `request.json` to `POST /api/v2/data/statements`, and prints the
 response — `data.statement.amount` is `12500.99`, decoded from the eleven
 minor-unit digits in columns 11–21.
 

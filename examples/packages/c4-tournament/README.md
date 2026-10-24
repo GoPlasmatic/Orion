@@ -84,7 +84,7 @@ orion-cli models get example.c4-tiny        # admission.state: passed; stats.par
 orion-cli models activate example.c4-tiny
 
 # 4. Enter it: the probe on an empty board, then the leaderboard row
-curl -s -X POST localhost:8080/api/v1/data/c4/register -H 'Content-Type: application/json' \
+curl -s -X POST localhost:8080/api/v2/data/c4/register -H 'Content-Type: application/json' \
   --data @examples/packages/c4-tournament/request.json
 ```
 
@@ -99,9 +99,9 @@ entrant is the same three commands with its own manifest and digest.
 ## A turn, a match, a round
 
 ```bash
-curl -s -X POST localhost:8080/api/v1/data/c4/turn  -H 'Content-Type: application/json' --data @examples/packages/c4-tournament/request-turn.json
-curl -s -X POST localhost:8080/api/v1/data/c4/match -H 'Content-Type: application/json' --data @examples/packages/c4-tournament/request-match.json
-curl -s localhost:8080/api/v1/data/c4/leaderboard
+curl -s -X POST localhost:8080/api/v2/data/c4/turn  -H 'Content-Type: application/json' --data @examples/packages/c4-tournament/request-turn.json
+curl -s -X POST localhost:8080/api/v2/data/c4/match -H 'Content-Type: application/json' --data @examples/packages/c4-tournament/request-match.json
+curl -s localhost:8080/api/v2/data/c4/leaderboard
 orion-cli channels trigger c4-round         # a round now, rather than at the top of the hour
 ```
 

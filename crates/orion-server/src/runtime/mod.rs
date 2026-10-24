@@ -45,8 +45,8 @@ pub mod tasks;
 
 pub use generation::{RuntimeGeneration, RuntimeHandle};
 pub use reload::{
-    ReloadOpts, reload_engine, reload_engine_with_opts, resync_from_db,
-    spawn_kafka_restart_supervisor,
+    ReloadOpts, reconcile_deployment_revision, reload_engine, reload_engine_with_opts,
+    resync_from_db, spawn_kafka_restart_supervisor,
 };
 pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, TaskState};
 
@@ -107,5 +107,6 @@ pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::Ha
         smtp_pool_cache: state.caches.smtp_pool_cache.clone(),
         models: state.models.clone(),
         models_config: &state.config.models,
+        providers: state.composition.providers.clone(),
     }
 }

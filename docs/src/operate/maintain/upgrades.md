@@ -37,6 +37,22 @@ The cost of a silently accepted old name decides this. `cors` → `origin_allow_
 
 `orion-server preflight` exists to move both failures earlier. It reads the stored estate and the environment and names every entity that fails. You see them before the rollout rather than during it.
 
+## Breaking upgrade path: v1 to v2
+
+Orion v2 replaces the `/api/v1/*` route prefixes with `/api/v2/*` and introduces immutable candidate deployment revisions, content-addressed connector provider packages, and versioned connections:
+
+1. **HTTP route prefixes move from `/api/v1/*` to `/api/v2/*`:**
+   - Data plane: `/api/v1/data/{*path}` → `/api/v2/data/{*path}` (including `/async` submissions).
+   - Admin plane: `/api/v1/admin/*` → `/api/v2/admin/*`.
+   - OpenAPI specification: `/api/v1/openapi.json` → `/api/v2/openapi.json`.
+   - Requests sent to `/api/v1/*` are no longer mounted and return `404 Not Found`. Update API gateways, ingress rules, scrapers, and client base URLs before rolling the binary.
+2. **Generate a v1 → v2 migration report and candidate bundle:**
+   - Use `POST /api/v2/admin/migration-report` or `orion-cli deployments migration-report -f legacy-estate.json` to map legacy v1 connectors (`http`, `db`, `cache`, `kafka`, `smtp`, `storage`), workflows (`http_call`, `db_read`, `db_write`), and channels into canonical v2 provider packages, `connector_call` operations, connection revisions, and a candidate deployment manifest.
+3. **Verify edition admission compatibility before cutover:**
+   - Use `POST /api/v2/admin/edition-transition-preflight` or `orion-cli deployments edition-preflight` to confirm every referenced provider package digest satisfies the target edition's admission policy.
+4. **Plan, apply, and verify convergence:**
+   - Upload and admit provider packages (`orion-cli providers upload --admit`), create connection revisions (`orion-cli connections create`), then plan and apply the deployment manifest (`orion-cli deployments plan` and `orion-cli deployments apply --wait`).
+
 ## What a version number promises
 
 Orion follows semantic versioning, and 1.0 froze the surfaces that matter to callers and operators. Those are the data-plane request and response shapes, the admin API paths and envelopes, the config keys, and the metric names. Breaking any of them requires a major version. [Versioning and support policy](../../releases/versioning-policy.md) states the policy, the supported-version window, the MSRV, and the platform matrix.

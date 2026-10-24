@@ -49,12 +49,51 @@ pub const COMMUNITY_RUST_DRIVERS: &[&str] = &[
 // ============================================================================
 
 /// Community foundation HTTP/REST connector provider (`org.orion.http`, `V2-14.2`).
-#[derive(Debug, Default)]
-pub struct HttpProviderBackend;
+#[derive(Default)]
+pub struct HttpProviderBackend {
+    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
+}
+
+impl std::fmt::Debug for HttpProviderBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpProviderBackend").finish()
+    }
+}
 
 impl HttpProviderBackend {
     pub fn new() -> Self {
-        Self
+        Self { deployments: None }
+    }
+
+    pub fn with_deployment_store(
+        deployments: super::deployment_store::ImmutableDeploymentStore,
+    ) -> Self {
+        Self {
+            deployments: Some(deployments),
+        }
+    }
+
+    fn resolve_connection_url(
+        &self,
+        identity: &EffectiveConnectionIdentity,
+        input: &Value,
+    ) -> Option<String> {
+        if let Some(url) = input
+            .get("url")
+            .or_else(|| input.get("base_url"))
+            .and_then(Value::as_str)
+        {
+            return Some(url.to_string());
+        }
+        let store = self.deployments.as_ref()?;
+        let conn = store
+            .get_connection(&identity.connection_id, identity.revision)
+            .or_else(|| store.get_active_connection(&identity.connection_id))?;
+        conn.public_config
+            .get("url")
+            .or_else(|| conn.public_config.get("base_url"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
     }
 }
 
@@ -149,93 +188,81 @@ impl ProviderBackend for HttpProviderBackend {
                 ));
             }
 
-            if let Some(url) = input
-                .get("url")
-                .or_else(|| input.get("base_url"))
-                .and_then(Value::as_str)
-            {
-                if let Err(ssrf_reason) =
-                    crate::validation::ssrf::validate_url_not_private(url).await
-                {
-                    return Err(ConnectorError::forbidden(
-                        codes::CAPABILITY_INVALID,
-                        "ssrf_validation",
-                        format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
-                        ctx.invocation().effect_status(),
-                    ));
-                }
+            let identity = ctx.invocation().effective_identity();
+            let Some(url) = self.resolve_connection_url(identity, &input) else {
+                return Err(ConnectorError::invalid_input(
+                    format!(
+                        "HTTP connector invocation on '{}' requires a configured connection 'url' or input 'url'",
+                        identity.connection_id
+                    ),
+                    Some(json!({"pointer": "/url"})),
+                ));
+            };
 
-                if input.get("live").and_then(Value::as_bool).unwrap_or(false) {
-                    let base = url.trim_end_matches('/');
-                    let full_url = format!("{base}{path}");
-                    let req_method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| {
-                        ConnectorError::invalid_input(
-                            format!("Invalid HTTP method '{method}': {e}"),
-                            Some(json!({"pointer": "/method"})),
-                        )
-                    })?;
-                    let client = reqwest::Client::builder()
-                        .redirect(reqwest::redirect::Policy::none())
-                        .timeout(Duration::from_secs(10))
-                        .build()
-                        .map_err(|e| {
-                            ConnectorError::unavailable(
-                                format!("Failed to build HTTP client: {e}"),
-                                EffectStatus::NotStarted,
-                            )
-                        })?;
-                    let mut req_builder = client.request(req_method, &full_url);
-                    if let Some(body_val) = input.get("body")
-                        && !body_val.is_null()
-                    {
-                        req_builder = req_builder.json(body_val);
-                    }
-                    ctx.invocation().record_effect(EffectStatus::Unknown);
-                    let resp = req_builder.send().await.map_err(|e| {
-                        ConnectorError::unavailable(
-                            format!("HTTP request failed: {e}"),
-                            EffectStatus::Unknown,
-                        )
-                    })?;
-                    let status_code = resp.status().as_u16();
-                    let bytes =
-                        crate::http_body::read_bounded(resp, 4 * 1024 * 1024)
-                            .await
-                            .map_err(|e| {
-                                ConnectorError::unavailable(
-                                    format!("Failed to read HTTP response body: {e}"),
-                                    EffectStatus::Completed,
-                                )
-                            })?;
-                    ctx.invocation().record_effect(EffectStatus::Completed);
-                    let parsed_body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-                        Value::String(String::from_utf8_lossy(&bytes).into_owned())
-                    });
-                    let mut metadata = BTreeMap::new();
-                    metadata.insert("driver".to_string(), json!(DRIVER_HTTP));
-                    metadata.insert("attempt".to_string(), json!(ctx.attempt_number()));
-                    return Ok(ConnectorOutput::with_metadata(
-                        json!({
-                            "status_code": status_code,
-                            "method": method,
-                            "path": path,
-                            "body": parsed_body,
-                        }),
-                        metadata,
-                    ));
-                }
+            if let Err(ssrf_reason) =
+                crate::validation::ssrf::validate_url_not_private(&url).await
+            {
+                return Err(ConnectorError::forbidden(
+                    codes::CAPABILITY_INVALID,
+                    "ssrf_validation",
+                    format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
+                    ctx.invocation().effect_status(),
+                ));
             }
 
+            let base = url.trim_end_matches('/');
+            let full_url = format!("{base}{path}");
+            let req_method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| {
+                ConnectorError::invalid_input(
+                    format!("Invalid HTTP method '{method}': {e}"),
+                    Some(json!({"pointer": "/method"})),
+                )
+            })?;
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|e| {
+                    ConnectorError::unavailable(
+                        format!("Failed to build HTTP client: {e}"),
+                        EffectStatus::NotStarted,
+                    )
+                })?;
+            let mut req_builder = client.request(req_method, &full_url);
+            if let Some(body_val) = input.get("body")
+                && !body_val.is_null()
+            {
+                req_builder = req_builder.json(body_val);
+            }
+            ctx.invocation().record_effect(EffectStatus::Unknown);
+            let resp = req_builder.send().await.map_err(|e| {
+                ConnectorError::unavailable(
+                    format!("HTTP request failed: {e}"),
+                    EffectStatus::Unknown,
+                )
+            })?;
+            let status_code = resp.status().as_u16();
+            let bytes = crate::http_body::read_bounded(resp, 4 * 1024 * 1024)
+                .await
+                .map_err(|e| {
+                    ConnectorError::unavailable(
+                        format!("Failed to read HTTP response body: {e}"),
+                        EffectStatus::Completed,
+                    )
+                })?;
+            ctx.invocation().record_effect(EffectStatus::Completed);
+            let parsed_body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                Value::String(String::from_utf8_lossy(&bytes).into_owned())
+            });
             let mut metadata = BTreeMap::new();
             metadata.insert("driver".to_string(), json!(DRIVER_HTTP));
             metadata.insert("attempt".to_string(), json!(ctx.attempt_number()));
-
             Ok(ConnectorOutput::with_metadata(
                 json!({
-                    "status_code": 200,
+                    "status_code": status_code,
                     "method": method,
                     "path": path,
-                    "body": input.get("body").cloned().unwrap_or(Value::Null),
+                    "body": parsed_body,
                 }),
                 metadata,
             ))
@@ -250,6 +277,8 @@ impl ProviderBackend for HttpProviderBackend {
 /// Community foundation PostgreSQL connector provider (`org.orion.postgresql`, `V2-14.3`).
 pub struct PostgresProviderBackend {
     sessions: Arc<VersionedSessionPool<String>>,
+    live_pools: crate::connector::lru_cache::LruCache<sqlx::PgPool>,
+    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
 }
 
 impl PostgresProviderBackend {
@@ -259,11 +288,175 @@ impl PostgresProviderBackend {
                 DRIVER_POSTGRESQL,
                 max_capacity_per_connection,
             )),
+            live_pools: crate::connector::lru_cache::LruCache::with_evict_handler(
+                max_capacity_per_connection.max(4),
+                "v2_postgres",
+                |pool: sqlx::PgPool| {
+                    tokio::spawn(async move {
+                        pool.close().await;
+                    });
+                },
+            ),
+            deployments: None,
         }
+    }
+
+    pub fn with_deployment_store(
+        max_capacity_per_connection: usize,
+        deployments: super::deployment_store::ImmutableDeploymentStore,
+    ) -> Self {
+        let mut backend = Self::new(max_capacity_per_connection);
+        backend.deployments = Some(deployments);
+        backend
     }
 
     pub fn session_pool(&self) -> Arc<VersionedSessionPool<String>> {
         self.sessions.clone()
+    }
+
+    fn resolve_connection_string(
+        &self,
+        identity: &EffectiveConnectionIdentity,
+        input: &Value,
+    ) -> Result<String, ConnectorError> {
+        let conn_str = if let Some(s) = input.get("connection_string").and_then(Value::as_str) {
+            Some(s.to_string())
+        } else if let Some(ref store) = self.deployments {
+            store
+                .get_connection(&identity.connection_id, identity.revision)
+                .or_else(|| store.get_active_connection(&identity.connection_id))
+                .and_then(|c| {
+                    c.public_config
+                        .get("connection_string")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+        } else {
+            None
+        };
+        let Some(conn_str) = conn_str else {
+            return Err(ConnectorError::invalid_input(
+                format!(
+                    "PostgreSQL operation on '{}' requires a configured 'connection_string'",
+                    identity.connection_id
+                ),
+                Some(json!({"pointer": "/connection_string"})),
+            ));
+        };
+        self.validate_config(&json!({"connection_string": conn_str}))?;
+        Ok(conn_str)
+    }
+
+    async fn execute_live_postgres(
+        &self,
+        ctx: &AttemptContext,
+        conn_key: &str,
+        conn_str: &str,
+        operation: &str,
+        statement: &str,
+    ) -> Result<Value, ConnectorError> {
+        use sqlx::{Column, Row, TypeInfo, ValueRef};
+
+        let cache_key = format!("{conn_key}::{conn_str}");
+        let pool = self
+            .live_pools
+            .get_or_create(&cache_key, || {
+                let target_url = conn_str.to_string();
+                async move {
+                    sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(4)
+                        .acquire_timeout(Duration::from_secs(5))
+                        .connect(&target_url)
+                        .await
+                        .map_err(|e| {
+                            ConnectorError::unavailable(
+                                format!("Failed to connect to PostgreSQL target: {e}"),
+                                EffectStatus::NotStarted,
+                            )
+                        })
+                }
+            })
+            .await?;
+
+        let statement_owned = statement.to_string();
+        match operation {
+            "query" | "data_query" => {
+                ctx.invocation().record_effect(EffectStatus::Unknown);
+                let rows = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
+                    .fetch_all(&pool)
+                    .await
+                    .map_err(|e| {
+                        ConnectorError::invalid_input(format!("PostgreSQL query error: {e}"), None)
+                    })?;
+                ctx.invocation().record_effect(EffectStatus::Completed);
+                let mut json_rows = Vec::with_capacity(rows.len());
+                for row in &rows {
+                    let mut map = serde_json::Map::new();
+                    for (idx, col) in row.columns().iter().enumerate() {
+                        let cell_val = if let Ok(raw) = row.try_get_raw(idx) {
+                            if raw.is_null() {
+                                Value::Null
+                            } else {
+                                match raw.type_info().name() {
+                                    "INT2" | "INT4" | "INT8" => row
+                                        .try_get_unchecked::<i64, _>(idx)
+                                        .map(Value::from)
+                                        .unwrap_or(Value::Null),
+                                    "FLOAT4" | "FLOAT8" => row
+                                        .try_get_unchecked::<f64, _>(idx)
+                                        .ok()
+                                        .and_then(serde_json::Number::from_f64)
+                                        .map(Value::Number)
+                                        .unwrap_or(Value::Null),
+                                    "BOOL" => row
+                                        .try_get_unchecked::<bool, _>(idx)
+                                        .map(Value::Bool)
+                                        .unwrap_or(Value::Null),
+                                    "JSON" | "JSONB" => row
+                                        .try_get_unchecked::<Value, _>(idx)
+                                        .unwrap_or(Value::Null),
+                                    _ => row
+                                        .try_get_unchecked::<Option<String>, _>(idx)
+                                        .ok()
+                                        .flatten()
+                                        .map(Value::String)
+                                        .unwrap_or(Value::Null),
+                                }
+                            }
+                        } else {
+                            Value::Null
+                        };
+                        map.insert(col.name().to_string(), cell_val);
+                    }
+                    json_rows.push(Value::Object(map));
+                }
+                Ok(json!({
+                    "rows": json_rows,
+                    "count": rows.len(),
+                    "statement": statement_owned,
+                }))
+            }
+            "execute" | "data_write" => {
+                ctx.invocation().record_effect(EffectStatus::Unknown);
+                let res = sqlx::query(sqlx::AssertSqlSafe(statement_owned.clone()))
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| {
+                        ConnectorError::invalid_input(format!("PostgreSQL write error: {e}"), None)
+                    })?;
+                ctx.invocation().record_effect(EffectStatus::Completed);
+                Ok(json!({
+                    "rows_affected": res.rows_affected(),
+                    "statement": statement_owned,
+                }))
+            }
+            other => Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!("Unsupported PostgreSQL operation '{other}'"),
+                ctx.invocation().effect_status(),
+            )),
+        }
     }
 }
 
@@ -320,6 +513,7 @@ impl ProviderBackend for PostgresProviderBackend {
                 })
                 .await?;
 
+            let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
             match operation {
                 "query" | "data_query" => {
                     let statement = input
@@ -332,17 +526,14 @@ impl ProviderBackend for PostgresProviderBackend {
                                 Some(json!({"pointer": "/sql"})),
                             )
                         })?;
+                    let conn_str = self.resolve_connection_string(identity, &input)?;
+                    let data = self
+                        .execute_live_postgres(ctx, &conn_key, &conn_str, operation, statement)
+                        .await?;
                     let mut metadata = BTreeMap::new();
                     metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
                     metadata.insert("session".to_string(), json!(handle.session()));
-                    Ok(ConnectorOutput::with_metadata(
-                        json!({
-                            "rows": [],
-                            "count": 0,
-                            "statement": statement,
-                        }),
-                        metadata,
-                    ))
+                    Ok(ConnectorOutput::with_metadata(data, metadata))
                 }
                 "execute" | "data_write" => {
                     let statement = input
@@ -355,16 +546,14 @@ impl ProviderBackend for PostgresProviderBackend {
                                 Some(json!({"pointer": "/sql"})),
                             )
                         })?;
+                    let conn_str = self.resolve_connection_string(identity, &input)?;
+                    let data = self
+                        .execute_live_postgres(ctx, &conn_key, &conn_str, operation, statement)
+                        .await?;
                     let mut metadata = BTreeMap::new();
                     metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
                     metadata.insert("session".to_string(), json!(handle.session()));
-                    Ok(ConnectorOutput::with_metadata(
-                        json!({
-                            "rows_affected": 1,
-                            "statement": statement,
-                        }),
-                        metadata,
-                    ))
+                    Ok(ConnectorOutput::with_metadata(data, metadata))
                 }
                 other => Err(ConnectorError::forbidden(
                     codes::OPERATION_FORBIDDEN,
@@ -468,6 +657,7 @@ pub struct SqliteProviderBackend {
     approved_root: PathBuf,
     sessions: Arc<VersionedSessionPool<String>>,
     live_pools: crate::connector::lru_cache::LruCache<sqlx::SqlitePool>,
+    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
 }
 
 impl SqliteProviderBackend {
@@ -487,7 +677,40 @@ impl SqliteProviderBackend {
                     });
                 },
             ),
+            deployments: None,
         }
+    }
+
+    pub fn with_deployment_store(
+        approved_root: impl Into<PathBuf>,
+        max_capacity_per_connection: usize,
+        deployments: super::deployment_store::ImmutableDeploymentStore,
+    ) -> Self {
+        let mut backend = Self::new(approved_root, max_capacity_per_connection);
+        backend.deployments = Some(deployments);
+        backend
+    }
+
+    fn resolve_connection_string(
+        &self,
+        identity: &EffectiveConnectionIdentity,
+        input: &Value,
+    ) -> String {
+        if let Some(s) = input.get("connection_string").and_then(Value::as_str) {
+            return s.to_string();
+        }
+        if let Some(ref store) = self.deployments
+            && let Some(conn) = store
+                .get_connection(&identity.connection_id, identity.revision)
+                .or_else(|| store.get_active_connection(&identity.connection_id))
+            && let Some(s) = conn
+                .public_config
+                .get("connection_string")
+                .and_then(Value::as_str)
+        {
+            return s.to_string();
+        }
+        "sqlite::memory:".to_string()
     }
 
     pub fn session_pool(&self) -> Arc<VersionedSessionPool<String>> {
@@ -739,8 +962,7 @@ impl ProviderBackend for SqliteProviderBackend {
                 .await?;
 
             let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
-            let explicit_conn_str = input.get("connection_string").and_then(Value::as_str);
-            let live_flag = input.get("live").and_then(Value::as_bool).unwrap_or(false);
+            let target_conn = self.resolve_connection_string(identity, &input);
 
             match operation {
                 "query" | "data_query" => {
@@ -757,27 +979,15 @@ impl ProviderBackend for SqliteProviderBackend {
                     let mut metadata = BTreeMap::new();
                     metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
                     metadata.insert("session".to_string(), json!(handle.session()));
-                    let target_conn = explicit_conn_str.unwrap_or("sqlite::memory:");
-                    match self
+                    let data = self
                         .execute_live_sqlite_for_connection(
                             Some(&conn_key),
-                            target_conn,
+                            &target_conn,
                             operation,
                             statement,
                         )
-                        .await
-                    {
-                        Ok(data) => Ok(ConnectorOutput::with_metadata(data, metadata)),
-                        Err(err) if explicit_conn_str.is_some() || live_flag => Err(err),
-                        Err(_) => Ok(ConnectorOutput::with_metadata(
-                            json!({
-                                "rows": [],
-                                "count": 0,
-                                "statement": statement,
-                            }),
-                            metadata,
-                        )),
-                    }
+                        .await?;
+                    Ok(ConnectorOutput::with_metadata(data, metadata))
                 }
                 "execute" | "data_write" => {
                     let statement = input
@@ -793,27 +1003,15 @@ impl ProviderBackend for SqliteProviderBackend {
                     let mut metadata = BTreeMap::new();
                     metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
                     metadata.insert("session".to_string(), json!(handle.session()));
-                    let target_conn = explicit_conn_str.unwrap_or("sqlite::memory:");
-                    match self
+                    let data = self
                         .execute_live_sqlite_for_connection(
                             Some(&conn_key),
-                            target_conn,
+                            &target_conn,
                             operation,
                             statement,
                         )
-                        .await
-                    {
-                        Ok(data) => Ok(ConnectorOutput::with_metadata(data, metadata)),
-                        Err(err) if explicit_conn_str.is_some() || live_flag => Err(err),
-                        Err(_) => Ok(ConnectorOutput::with_metadata(
-                            json!({
-                                "rows_affected": 1,
-                                "last_insert_id": 1,
-                                "statement": statement,
-                            }),
-                            metadata,
-                        )),
-                    }
+                        .await?;
+                    Ok(ConnectorOutput::with_metadata(data, metadata))
                 }
                 other => Err(ConnectorError::forbidden(
                     codes::OPERATION_FORBIDDEN,
@@ -1201,9 +1399,31 @@ pub fn register_community_foundation_providers(
     providers: &ProviderRegistry,
     pools: &ResourcePoolRegistry,
 ) {
-    let http = Arc::new(HttpProviderBackend::new());
-    let pg = Arc::new(PostgresProviderBackend::default());
-    let sqlite = Arc::new(SqliteProviderBackend::default());
+    register_community_foundation_providers_with_store(providers, pools, None);
+}
+
+/// Register all four Community foundation Direct Rust providers bound to `deployments` (`V2-14.2`–`V2-14.4`).
+pub fn register_community_foundation_providers_with_store(
+    providers: &ProviderRegistry,
+    pools: &ResourcePoolRegistry,
+    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
+) {
+    let http = match deployments.clone() {
+        Some(store) => Arc::new(HttpProviderBackend::with_deployment_store(store)),
+        None => Arc::new(HttpProviderBackend::new()),
+    };
+    let pg = match deployments.clone() {
+        Some(store) => Arc::new(PostgresProviderBackend::with_deployment_store(16, store)),
+        None => Arc::new(PostgresProviderBackend::default()),
+    };
+    let sqlite = match deployments {
+        Some(store) => Arc::new(SqliteProviderBackend::with_deployment_store(
+            "./data/connectors/sqlite",
+            8,
+            store,
+        )),
+        None => Arc::new(SqliteProviderBackend::default()),
+    };
     let mem_cache = Arc::new(MemoryCacheProviderBackend::default());
 
     pools.register(pg.session_pool());

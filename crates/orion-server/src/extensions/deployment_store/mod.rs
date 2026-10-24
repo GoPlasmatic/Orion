@@ -275,6 +275,7 @@ pub struct ArchiveEntryInput {
 #[derive(Debug, Clone, Default)]
 pub(super) struct DeploymentDirtySet {
     pub(super) head: bool,
+    pub(super) expected_head_revision: Option<u64>,
     pub(super) artifacts: BTreeSet<String>,
     pub(super) packages: BTreeSet<String>,
     pub(super) admissions: BTreeSet<String>,
@@ -314,23 +315,16 @@ impl Default for DeploymentState {
             revisions: BTreeMap::new(),
             receipts: BTreeMap::new(),
             active_node_revisions: BTreeMap::new(),
-            dirty: DeploymentDirtySet {
-                head: true,
-                ..Default::default()
-            },
+            dirty: DeploymentDirtySet::default(),
         }
     }
 }
-
-/// Opaque point-in-time snapshot of [`ImmutableDeploymentStore`] used to roll
-/// back in-memory mutations if the backing database transaction fails (`TD-13`).
-#[derive(Debug, Clone)]
-pub struct DeploymentStateSnapshot(DeploymentState);
 
 /// Transactional immutable deployment and artifact store (`V2-03`, `V2-04`).
 #[derive(Clone)]
 pub struct ImmutableDeploymentStore {
     pub(super) inner: Arc<Mutex<DeploymentState>>,
+    pub(super) write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for ImmutableDeploymentStore {
@@ -347,6 +341,7 @@ impl ImmutableDeploymentStore {
         };
         Self {
             inner: Arc::new(Mutex::new(state)),
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -358,16 +353,6 @@ impl ImmutableDeploymentStore {
     pub fn set_node_id(&self, node_id: impl Into<String>) {
         let mut g = self.inner.lock().expect("store lock");
         g.node_id = node_id.into();
-    }
-
-    pub fn take_snapshot(&self) -> DeploymentStateSnapshot {
-        let g = self.inner.lock().expect("store lock");
-        DeploymentStateSnapshot(g.clone())
-    }
-
-    pub fn restore_snapshot(&self, snapshot: DeploymentStateSnapshot) {
-        let mut g = self.inner.lock().expect("store lock");
-        *g = snapshot.0;
     }
 
     pub fn current_head(&self) -> (u64, u64) {
@@ -400,6 +385,53 @@ impl ImmutableDeploymentStore {
         g.connections.values().cloned().collect()
     }
 
+    pub fn get_artifact(&self, digest: &str) -> Option<ArtifactObjectRow> {
+        let g = self.inner.lock().expect("store lock");
+        g.artifacts.get(digest).cloned()
+    }
+
+    pub fn get_admission(&self, package_digest: &str) -> Option<ProviderAdmissionRow> {
+        let g = self.inner.lock().expect("store lock");
+        g.admissions.get(package_digest).cloned()
+    }
+
+    pub fn get_connection(
+        &self,
+        connection_id: &str,
+        revision: u64,
+    ) -> Option<ConnectionRevisionRow> {
+        let g = self.inner.lock().expect("store lock");
+        g.connections
+            .get(&(connection_id.to_string(), revision))
+            .cloned()
+    }
+
+    /// Resolve the active connection revision for `connection_id`: when a
+    /// deployment revision is active (`head_revision > 0`) and declares a
+    /// `Connection` member for `connection_id`, return that exact revision;
+    /// otherwise return the highest stored revision for `connection_id`.
+    pub fn get_active_connection(&self, connection_id: &str) -> Option<ConnectionRevisionRow> {
+        let g = self.inner.lock().expect("store lock");
+        if g.head_revision > 0
+            && let Some(rev_row) = g.revisions.get(&g.head_revision)
+        {
+            for member in &rev_row.manifest.members {
+                if member.entity.kind == EntityKind::Connection && member.entity.id == connection_id
+                {
+                    return g
+                        .connections
+                        .get(&(connection_id.to_string(), member.entity.revision))
+                        .cloned();
+                }
+            }
+        }
+        g.connections
+            .values()
+            .filter(|c| c.connection_id == connection_id)
+            .max_by_key(|c| c.revision)
+            .cloned()
+    }
+
     /// V2-04.1: Ingest a bounded archive, rejecting symlinks, path traversal,
     /// decompression ratio bombs (> 20x), duplicate entries, and inventory
     /// mismatches. Upload creates no serving routes or active generations.
@@ -407,6 +439,32 @@ impl ImmutableDeploymentStore {
         &self,
         entries: &[ArchiveEntryInput],
     ) -> Result<ProviderPackageRow, DeploymentError> {
+        let (id_key, package_digest, row, raw_inv, hashed_payloads) =
+            Self::prepare_archive_ingestion(entries)?;
+        let mut g = self.inner.lock().expect("store lock");
+        Self::finish_ingest_verified_archive(
+            &mut g,
+            id_key,
+            package_digest,
+            row,
+            raw_inv,
+            hashed_payloads,
+        )
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(super) fn prepare_archive_ingestion(
+        entries: &[ArchiveEntryInput],
+    ) -> Result<
+        (
+            (String, String, String),
+            String,
+            ProviderPackageRow,
+            Vec<u8>,
+            Vec<(String, Vec<u8>)>,
+        ),
+        DeploymentError,
+    > {
         if entries.is_empty() || entries.len() > 1_024 {
             return Err(DeploymentError::new(
                 "ARCHIVE_ENTRY_COUNT_EXCEEDED",
@@ -512,8 +570,6 @@ impl ImmutableDeploymentStore {
             inventory_json,
         };
 
-        // Pre-compute SHA-256 digests for all payload objects outside the Mutex
-        // lock so large archives (up to 64 MiB) do not block concurrent readers.
         let hashed_payloads: Vec<(String, Vec<u8>)> = payloads
             .into_values()
             .map(|bytes| {
@@ -522,8 +578,23 @@ impl ImmutableDeploymentStore {
             })
             .collect();
 
-        let mut g = self.inner.lock().expect("store lock");
-        let id_key = (publisher, provider_id, version);
+        Ok((
+            (publisher, provider_id, version),
+            package_digest,
+            row,
+            raw_inv,
+            hashed_payloads,
+        ))
+    }
+
+    pub(super) fn finish_ingest_verified_archive(
+        g: &mut DeploymentState,
+        id_key: (String, String, String),
+        package_digest: String,
+        row: ProviderPackageRow,
+        raw_inv: Vec<u8>,
+        hashed_payloads: Vec<(String, Vec<u8>)>,
+    ) -> Result<ProviderPackageRow, DeploymentError> {
         if let Some(existing_digest) = g.publisher_bindings.get(&id_key)
             && existing_digest != &package_digest
         {
@@ -581,6 +652,15 @@ impl ImmutableDeploymentStore {
         lock: Option<&Value>,
     ) -> Result<ProviderAdmissionRow, DeploymentError> {
         let mut g = self.inner.lock().expect("store lock");
+        Self::admit_package_into_state(&mut g, package_digest, policy, lock)
+    }
+
+    pub(super) fn admit_package_into_state(
+        g: &mut DeploymentState,
+        package_digest: &str,
+        policy: &dyn AdmissionPolicy,
+        lock: Option<&Value>,
+    ) -> Result<ProviderAdmissionRow, DeploymentError> {
         let Some(pkg) = g.packages.get(package_digest).cloned() else {
             return Err(DeploymentError::new(
                 "PACKAGE_NOT_FOUND",
@@ -707,6 +787,13 @@ impl ImmutableDeploymentStore {
 
     pub fn revoke_package(&self, package_digest: &str) -> Result<(), DeploymentError> {
         let mut g = self.inner.lock().expect("store lock");
+        Self::revoke_package_into_state(&mut g, package_digest)
+    }
+
+    pub(super) fn revoke_package_into_state(
+        g: &mut DeploymentState,
+        package_digest: &str,
+    ) -> Result<(), DeploymentError> {
         let Some(adm) = g.admissions.get_mut(package_digest) else {
             return Err(DeploymentError::new("ADMISSION_NOT_FOUND", package_digest));
         };
@@ -754,6 +841,24 @@ impl ImmutableDeploymentStore {
         public_config: Value,
         secret_locator: Option<String>,
     ) -> Result<ConnectionRevisionRow, DeploymentError> {
+        let (row, cfg_digest, cfg_bytes) = Self::prepare_connection_revision(
+            connection_id,
+            revision,
+            provider_digest,
+            public_config,
+            secret_locator,
+        )?;
+        let mut g = self.inner.lock().expect("store lock");
+        Self::finish_store_connection_revision(&mut g, row, cfg_digest, cfg_bytes)
+    }
+
+    pub(super) fn prepare_connection_revision(
+        connection_id: &str,
+        revision: u64,
+        provider_digest: &str,
+        public_config: Value,
+        secret_locator: Option<String>,
+    ) -> Result<(ConnectionRevisionRow, String, Vec<u8>), DeploymentError> {
         if revision == 0 {
             return Err(DeploymentError::new(
                 "CONNECTION_REVISION_INVALID",
@@ -778,9 +883,16 @@ impl ImmutableDeploymentStore {
             secret_locator,
             configuration_digest: cfg_digest.clone(),
         };
+        Ok((row, cfg_digest, cfg_bytes))
+    }
 
-        let mut g = self.inner.lock().expect("store lock");
-        let key = (connection_id.to_string(), revision);
+    pub(super) fn finish_store_connection_revision(
+        g: &mut DeploymentState,
+        row: ConnectionRevisionRow,
+        cfg_digest: String,
+        cfg_bytes: Vec<u8>,
+    ) -> Result<ConnectionRevisionRow, DeploymentError> {
+        let key = (row.connection_id.clone(), row.revision);
         if let Some(existing) = g.connections.get(&key) {
             if existing != &row {
                 return Err(DeploymentError::new(
@@ -943,8 +1055,16 @@ impl ImmutableDeploymentStore {
         base_revision: u64,
         candidate_manifest: CanonicalManifest,
     ) -> Result<CandidatePlan, DeploymentError> {
-        let (candidate_bytes, candidate_digest) = candidate_manifest.canonicalize_and_verify()?;
         let g = self.inner.lock().expect("store lock");
+        Self::plan_candidate_on_state(&g, base_revision, candidate_manifest)
+    }
+
+    pub(super) fn plan_candidate_on_state(
+        g: &DeploymentState,
+        base_revision: u64,
+        candidate_manifest: CanonicalManifest,
+    ) -> Result<CandidatePlan, DeploymentError> {
+        let (candidate_bytes, candidate_digest) = candidate_manifest.canonicalize_and_verify()?;
 
         let base_entities: BTreeSet<EntityRef> = if base_revision == 0 {
             BTreeSet::new()
@@ -963,7 +1083,7 @@ impl ImmutableDeploymentStore {
                 .collect()
         };
 
-        Self::verify_manifest_store_closure(&g, &candidate_manifest, "ARTIFACT_NOT_ACTIVE")?;
+        Self::verify_manifest_store_closure(g, &candidate_manifest, "ARTIFACT_NOT_ACTIVE")?;
 
         let next_entities: BTreeSet<EntityRef> = candidate_manifest
             .members
@@ -996,8 +1116,19 @@ impl ImmutableDeploymentStore {
         reason: &str,
         policy: &dyn AdmissionPolicy,
     ) -> Result<DeploymentReceipt, DeploymentError> {
-        let request_hash = plan.compute_request_hash("apply", reason)?;
         let mut g = self.inner.lock().expect("store lock");
+        Self::apply_candidate_into_state(&mut g, principal, idempotency_key, plan, reason, policy)
+    }
+
+    pub(super) fn apply_candidate_into_state(
+        g: &mut DeploymentState,
+        principal: &str,
+        idempotency_key: &str,
+        plan: &CandidatePlan,
+        reason: &str,
+        policy: &dyn AdmissionPolicy,
+    ) -> Result<DeploymentReceipt, DeploymentError> {
+        let request_hash = plan.compute_request_hash("apply", reason)?;
 
         // 1. Receipt-first lookup on (principal, idempotency_key)
         let op_key = (principal.to_string(), idempotency_key.to_string());
@@ -1049,7 +1180,7 @@ impl ImmutableDeploymentStore {
             }
         }
         Self::verify_manifest_store_closure(
-            &g,
+            g,
             &plan.candidate_manifest,
             "ARTIFACT_DRAINING_OR_DELETED",
         )?;
@@ -1073,8 +1204,12 @@ impl ImmutableDeploymentStore {
         }
 
         // 4. Advance head_revision and epoch atomically and persist receipt
+        let prev_head = g.head_revision;
         let next_revision = g.head_revision + 1;
         let next_epoch = g.epoch + 1;
+        if !g.dirty.head {
+            g.dirty.expected_head_revision = Some(prev_head);
+        }
         g.head_revision = next_revision;
         g.epoch = next_epoch;
         g.dirty.head = true;
@@ -1121,8 +1256,28 @@ impl ImmutableDeploymentStore {
         reason: &str,
         policy: &dyn AdmissionPolicy,
     ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
+        let mut g = self.inner.lock().expect("store lock");
+        Self::rollback_to_revision_into_state(
+            &mut g,
+            principal,
+            idempotency_key,
+            expected_head_revision,
+            target_revision,
+            reason,
+            policy,
+        )
+    }
+
+    pub(super) fn rollback_to_revision_into_state(
+        g: &mut DeploymentState,
+        principal: &str,
+        idempotency_key: &str,
+        expected_head_revision: u64,
+        target_revision: u64,
+        reason: &str,
+        policy: &dyn AdmissionPolicy,
+    ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
         let target_manifest = {
-            let g = self.inner.lock().expect("store lock");
             let Some(target) = g.revisions.get(&target_revision) else {
                 return Err(DeploymentError::new(
                     "ROLLBACK_TARGET_NOT_FOUND",
@@ -1138,13 +1293,14 @@ impl ImmutableDeploymentStore {
             target.manifest.clone()
         };
 
-        let mut plan = self.plan_candidate(expected_head_revision, target_manifest)?;
+        let mut plan = Self::plan_candidate_on_state(g, expected_head_revision, target_manifest)?;
         plan.external_effect_warnings.push(
             "Configuration rollback creates a new deployment revision; already-emitted external side effects are not reversed."
                 .to_string(),
         );
         let warnings = plan.external_effect_warnings.clone();
-        let receipt = self.apply_candidate(principal, idempotency_key, &plan, reason, policy)?;
+        let receipt =
+            Self::apply_candidate_into_state(g, principal, idempotency_key, &plan, reason, policy)?;
         Ok((receipt, warnings))
     }
 

@@ -36,6 +36,7 @@ Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmat
 | [`send_email`](./send_email.md) | Connector | SMTP | Send transactional email through an SMTP connector |
 | [`storage_presign`](./storage_presign.md) | Connector | Storage | Compute a time-limited presigned object URL — no data path |
 | [`storage_head`](./storage_head.md) | Connector | Storage | Object metadata (exists/size/etag) |
+| [`connector_call`](./connector_call.md) | Connector | — | Invoke a v2 connector provider operation under an owned RunContext |
 | [`channel_call`](./channel_call.md) | Composition | — | Invoke another channel's workflow in-process |
 | [`model_infer`](./model_infer.md) | Compute | — | Run an admitted ONNX model: the manifest's adapters in, tensors through, the result out |
 | [`cache_invalidate`](./cache_invalidate.md) | Utility | — | Invalidate channel response-cache namespaces on every store |

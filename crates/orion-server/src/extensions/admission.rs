@@ -79,6 +79,31 @@ pub trait AdmissionPolicy: Send + Sync {
         connection_id: &str,
         prior_effect: EffectStatus,
     ) -> Result<(), ConnectorError>;
+
+    /// Monotonically revoke a package digest across all active and retained generations (`CTX-09`).
+    fn revoke_digest(&self, _digest: &str) -> u64 {
+        0
+    }
+
+    /// Check whether a package digest has been monotonically revoked (`CTX-09`).
+    fn is_digest_revoked(&self, _digest: &str) -> bool {
+        false
+    }
+
+    /// Monotonically revoke a provider ID across all active and retained generations (`CTX-09`).
+    fn revoke_provider(&self, _provider_id: &str) -> u64 {
+        0
+    }
+
+    /// Monotonically revoke a connection ID across all active and retained generations (`CTX-09`).
+    fn revoke_connection(&self, _connection_id: &str) -> u64 {
+        0
+    }
+
+    /// Update the node's runtime security lease validity (`CTX-09`).
+    fn set_lease_valid(&self, _valid: bool) -> u64 {
+        0
+    }
 }
 
 /// Community Edition admission and runtime revocation policy (`V2-11.1`, `CTX-09`).
@@ -88,6 +113,7 @@ pub trait AdmissionPolicy: Send + Sync {
 /// - Maintains a monotonic runtime deny-set and lease validity state so `CTX-09`
 ///   revocations take effect immediately across all retained generations.
 pub struct CommunityAdmissionPolicy {
+    revoked_digests: RwLock<BTreeSet<String>>,
     revoked_providers: RwLock<BTreeSet<String>>,
     revoked_connections: RwLock<BTreeSet<String>>,
     lease_valid: AtomicBool,
@@ -103,11 +129,27 @@ impl Default for CommunityAdmissionPolicy {
 impl CommunityAdmissionPolicy {
     pub fn new() -> Self {
         Self {
+            revoked_digests: RwLock::new(BTreeSet::new()),
             revoked_providers: RwLock::new(BTreeSet::new()),
             revoked_connections: RwLock::new(BTreeSet::new()),
             lease_valid: AtomicBool::new(true),
             watermark: AtomicU64::new(0),
         }
+    }
+
+    /// Monotonically revoke a package digest across all active and retained generations (`CTX-09`).
+    pub fn revoke_digest(&self, digest: impl Into<String>) -> u64 {
+        if let Ok(mut set) = self.revoked_digests.write() {
+            set.insert(digest.into());
+        }
+        self.watermark.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Check whether a package digest has been monotonically revoked (`CTX-09`).
+    pub fn is_digest_revoked(&self, digest: &str) -> bool {
+        self.revoked_digests
+            .read()
+            .is_ok_and(|set| set.contains(digest))
     }
 
     /// Monotonically revoke a provider ID across all active and retained generations (`CTX-09`).
@@ -191,11 +233,41 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
             });
         }
 
+        if self.is_digest_revoked(&request.provider.package_digest) {
+            return Err(AdmissionRejection {
+                code: "PROVIDER_REVOKED".to_string(),
+                message: format!(
+                    "Provider package '{}' ({}) has been revoked",
+                    request.provider.provider_id, request.provider.package_digest
+                ),
+            });
+        }
+
         Ok(AdmissionVerdict {
             provider: request.provider.clone(),
             implementation: request.implementation,
             policy_id: self.policy_id().to_string(),
         })
+    }
+
+    fn revoke_digest(&self, digest: &str) -> u64 {
+        CommunityAdmissionPolicy::revoke_digest(self, digest)
+    }
+
+    fn is_digest_revoked(&self, digest: &str) -> bool {
+        CommunityAdmissionPolicy::is_digest_revoked(self, digest)
+    }
+
+    fn revoke_provider(&self, provider_id: &str) -> u64 {
+        CommunityAdmissionPolicy::revoke_provider(self, provider_id)
+    }
+
+    fn revoke_connection(&self, connection_id: &str) -> u64 {
+        CommunityAdmissionPolicy::revoke_connection(self, connection_id)
+    }
+
+    fn set_lease_valid(&self, valid: bool) -> u64 {
+        CommunityAdmissionPolicy::set_lease_valid(self, valid)
     }
 
     fn check_runtime_lease(

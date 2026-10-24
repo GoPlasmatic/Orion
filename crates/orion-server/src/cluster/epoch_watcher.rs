@@ -16,15 +16,150 @@ use crate::server::state::AppState;
 /// the reconciler on single nodes too: a committed change whose inline reload
 /// failed still needs to reach the serving generation without another edit.
 pub fn start_cluster_tasks(state: &AppState) {
-    let watcher_state = state.clone();
-    // Required: a node whose watcher is dead never learns about another
-    // node's mutation, so it keeps serving the configuration it booted with
-    // while every probe stays green — the cluster silently splits.
+    if !state.tasks.is_registered("epoch_watcher") {
+        let watcher_state = state.clone();
+        // Required: a node whose watcher is dead never learns about another
+        // node's mutation, so it keeps serving the configuration it booted with
+        // while every probe stays green — the cluster silently splits.
+        state.tasks.supervise(
+            "epoch_watcher",
+            crate::runtime::Criticality::Required,
+            move |shutdown| run_epoch_watcher(watcher_state.clone(), shutdown),
+        );
+    }
+    start_v2_reconciler(state);
+}
+
+/// Register the supervised v2 state reconciliation loop (`V2-06`, `TD-18`).
+///
+/// Continuously hydrates `ImmutableDeploymentStore` from the state database,
+/// refreshes provider/package revocations into the active `AdmissionPolicy`,
+/// reconciles desired `deployment_head` revisions with retry/backoff, renews
+/// the security lease, and exchanges `runtime_nodes` status heartbeats.
+pub fn start_v2_reconciler(state: &AppState) {
+    if state.tasks.is_registered("v2_reconciler") {
+        return;
+    }
+    let reconciler_state = state.clone();
     state.tasks.supervise(
-        "epoch_watcher",
+        "v2_reconciler",
         crate::runtime::Criticality::Required,
-        move |shutdown| run_epoch_watcher(watcher_state.clone(), shutdown),
+        move |shutdown| run_v2_reconciler(reconciler_state.clone(), shutdown),
     );
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Synchronize revoked provider packages from the deployment store into the
+/// runtime `AdmissionPolicy` deny-set (`CTX-09`).
+pub fn sync_v2_revocations(state: &AppState) {
+    let packages = state.composition.deployments.list_packages();
+    let connections = state.composition.deployments.list_connections();
+    for adm in state.composition.deployments.list_admissions() {
+        if adm.revoked {
+            state.composition.admission.revoke_digest(&adm.package_digest);
+            for pkg in &packages {
+                if pkg.package_digest == adm.package_digest {
+                    state.composition.admission.revoke_provider(&pkg.provider_id);
+                }
+            }
+            for conn in &connections {
+                if conn.provider_digest == adm.package_digest {
+                    state
+                        .composition
+                        .admission
+                        .revoke_connection(&conn.connection_id);
+                }
+            }
+        }
+    }
+}
+
+/// Execute one pass of the v2 state reconciliation loop (`V2-06`, `TD-18`).
+pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
+    let now_ms = unix_now_ms();
+    if let Err(e) = state
+        .composition
+        .deployments
+        .load_from_db_pool(&state.db_pool)
+        .await
+    {
+        if !state.composition.reconciler.is_security_lease_valid(now_ms) {
+            state.composition.admission.set_lease_valid(false);
+        }
+        crate::metrics::record_error("v2_reconciler");
+        tracing::warn!(error = %e, "V2 reconciler: failed to hydrate deployment store from DB");
+        return false;
+    }
+
+    sync_v2_revocations(state);
+
+    state.composition.reconciler.renew_security_lease(
+        now_ms,
+        crate::extensions::reconciler::DEFAULT_SECURITY_LEASE_MS,
+    );
+    state.composition.admission.set_lease_valid(true);
+
+    let desired_rev = state.composition.reconciler.observe_desired_head();
+    let local = state.composition.reconciler.local_status();
+    let mut tick_ok = true;
+
+    if desired_rev > 0 && local.applied_revision != desired_rev {
+        if let Err(e) = crate::runtime::reconcile_deployment_revision(state, desired_rev).await {
+            crate::metrics::record_error("v2_reconciler");
+            tracing::warn!(
+                error = %e,
+                desired_rev,
+                applied_rev = local.applied_revision,
+                "V2 reconciler: failed to reconcile deployment revision; will retry"
+            );
+            tick_ok = false;
+        }
+    }
+
+    if let Err(e) = state
+        .composition
+        .reconciler
+        .persist_local_status_to_db_pool(&state.db_pool)
+        .await
+    {
+        tracing::warn!(error = %e, "V2 reconciler: failed to persist local status heartbeat");
+        tick_ok = false;
+    }
+
+    if let Err(e) = state
+        .composition
+        .reconciler
+        .refresh_observed_nodes_from_db_pool(&state.db_pool)
+        .await
+    {
+        tracing::warn!(error = %e, "V2 reconciler: failed to refresh observed cluster nodes");
+        tick_ok = false;
+    }
+
+    tick_ok
+}
+
+async fn run_v2_reconciler(state: AppState, mut shutdown: crate::runtime::Shutdown) {
+    let poll_ms = state.config.cluster.epoch_poll_interval_ms.max(10);
+    let mut interval = tokio::time::interval(Duration::from_millis(poll_ms));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = shutdown.signalled() => return,
+        }
+        if reconcile_v2_state_once(&state).await {
+            crate::metrics::record_job_success("v2_reconciler");
+        }
+    }
 }
 
 async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdown) {

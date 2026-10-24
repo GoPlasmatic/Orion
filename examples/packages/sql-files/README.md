@@ -37,7 +37,7 @@ orion-server package apply -s http://localhost:8080 -f sql-files.json
 ## Try it
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/data/describe-word \
+curl -s -X POST http://localhost:8080/api/v2/data/describe-word \
   -H 'content-type: application/json' -d '{"word": "orion"}'
 ```
 

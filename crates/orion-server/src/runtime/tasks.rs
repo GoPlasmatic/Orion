@@ -324,6 +324,11 @@ impl TaskRegistry {
         lock(&self.slots).iter().map(|s| s.report()).collect()
     }
 
+    /// Whether a task with `name` is already registered.
+    pub fn is_registered(&self, name: &str) -> bool {
+        lock(&self.slots).iter().any(|s| s.name == name)
+    }
+
     /// The tasks whose state should make `/readyz` answer not-ready.
     pub fn blocking_readiness(&self) -> Vec<&'static str> {
         self.report()

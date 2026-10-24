@@ -25,7 +25,7 @@ use crate::storage::repositories::packages::PutPackageReceiptRequest;
 
 use super::audit_log;
 
-/// `GET /api/v1/admin/packages/{name}` — one package's receipts.
+/// `GET /api/v2/admin/packages/{name}` — one package's receipts.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct PackageDetail {
     name: String,
@@ -36,7 +36,7 @@ pub(crate) struct PackageDetail {
     versions: Vec<PackageReceiptResponse>,
 }
 
-/// Query parameters of `GET /api/v1/admin/packages`.
+/// Query parameters of `GET /api/v2/admin/packages`.
 #[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct PackageListQuery {

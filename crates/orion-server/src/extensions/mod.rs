@@ -178,8 +178,12 @@ impl CompositionRoot {
     pub fn community() -> Self {
         let providers = ProviderRegistry::new();
         let pools = ResourcePoolRegistry::new();
-        foundation::register_community_foundation_providers(&providers, &pools);
         let deployments = ImmutableDeploymentStore::default();
+        foundation::register_community_foundation_providers_with_store(
+            &providers,
+            &pools,
+            Some(deployments.clone()),
+        );
         let admission: Arc<dyn AdmissionPolicy> = Arc::new(CommunityAdmissionPolicy::new());
         providers.set_admission_policy(admission.clone());
         providers.set_deployment_store(deployments.clone());

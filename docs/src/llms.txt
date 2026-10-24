@@ -88,7 +88,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 
 - [Reference](https://docs.goplasmatic.io/reference/index.html): task-oriented routes to APIs, schemas, functions, configuration, metrics, and errors
 - [Reference conventions](https://docs.goplasmatic.io/reference/conventions.html): field-table conventions, version applicability, stable errors and the boundary between contracts and rationale
-- [Admin API](https://docs.goplasmatic.io/reference/admin-api/index.html): every endpoint under /api/v1/admin/, by resource, plus the contracts they all share
+- [Admin API](https://docs.goplasmatic.io/reference/admin-api/index.html): every endpoint under /api/v2/admin/, by resource, plus the contracts they all share
 - [Admin API conventions](https://docs.goplasmatic.io/reference/admin-api/conventions.html): what holds for every admin endpoint: the API key, the envelopes, the lifecycle, status changes, export and promotion
 - [Authentication](https://docs.goplasmatic.io/reference/admin-api/authentication.html): the single header the server reads, plain and sha256 key forms, rotation, and the per-source failed-auth backoff
 - [Response envelopes](https://docs.goplasmatic.io/reference/admin-api/envelopes.html): the admin success and error bodies, paging and sorting per list endpoint, and the five most common errors
@@ -166,7 +166,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [`jwt_sign`](https://docs.goplasmatic.io/reference/functions/jwt_sign.html): the jwt_sign task function: mint a compact JWS with the HS, RS, PS, ES or EdDSA algorithms, a required expiry, and claims folded from the message.
 - [`jwt_verify`](https://docs.goplasmatic.io/reference/functions/jwt_verify.html): the jwt_verify task function: verify a JWS against static keys or a JWKS URL with an algorithm allowlist, issuer and audience checks, and leeway.
 - [Retry safety](https://docs.goplasmatic.io/reference/functions/retry-safety.html): whether a retry of each task function is free, a re-read, idempotent or a duplicate
-- [Runtime function discovery](https://docs.goplasmatic.io/reference/functions/runtime-discovery.html): the live function catalogue GET /api/v1/admin/functions serves
+- [Runtime function discovery](https://docs.goplasmatic.io/reference/functions/runtime-discovery.html): the live function catalogue GET /api/v2/admin/functions serves
 - [Plugin manifest and ABI](https://docs.goplasmatic.io/reference/plugin-manifest.html): the manifest, the component ABI, the limits an invocation runs under, and the shape of a failure
 - [Connector types](https://docs.goplasmatic.io/reference/connectors/index.html): a named connection to an external system: the seven types, the shared blocks every one carries, and where each is specified
 - [Shared connector blocks](https://docs.goplasmatic.io/reference/connectors/common.html): what every connector row carries whatever its type: identity, secret references, masking, auth, request layering, gates and retries
@@ -250,7 +250,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [`orion-cli send`](https://docs.goplasmatic.io/reference/cli/orion-cli/send.html): orion-cli send posts a payload to a channel, sync or async with --wait, wrapping it in the data envelope unless --raw, with optional metadata and profiling.
 - [`orion-cli traces`](https://docs.goplasmatic.io/reference/cli/orion-cli/traces.html): orion-cli traces lists, reads and waits on execution traces, with the trace token an async submission returns and keyset paging for large tables.
 - [`orion-cli engine`](https://docs.goplasmatic.io/reference/cli/orion-cli/engine.html): orion-cli engine shows the running engine's status and hot-reloads it from the database, which is how deferred activations are batched into one reload.
-- [`orion-cli functions`](https://docs.goplasmatic.io/reference/cli/orion-cli/functions.html): orion-cli functions list shows every task function the engine registers and its input schema, the same catalogue GET /api/v1/admin/functions serves.
+- [`orion-cli functions`](https://docs.goplasmatic.io/reference/cli/orion-cli/functions.html): orion-cli functions list shows every task function the engine registers and its input schema, the same catalogue GET /api/v2/admin/functions serves.
 - [`orion-cli metrics`](https://docs.goplasmatic.io/reference/cli/orion-cli/metrics.html): orion-cli metrics fetches GET /metrics from the server as a reformatted list, or the raw Prometheus exposition text with --raw.
 - [`orion-cli audit-logs`](https://docs.goplasmatic.io/reference/cli/orion-cli/audit-logs.html): orion-cli audit-logs lists admin actions with exact-match filters on action, resource type, resource id, principal and time, applied in the database.
 - [`orion-cli backups`](https://docs.goplasmatic.io/reference/cli/orion-cli/backups.html): orion-cli backups creates and lists SQLite database backups through the admin API; the other backends rely on their own snapshot tooling.

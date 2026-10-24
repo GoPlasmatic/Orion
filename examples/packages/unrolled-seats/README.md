@@ -38,7 +38,7 @@ orion-server package apply -s http://localhost:8080 -f unrolled-seats.json
 ## Try it
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/data/score-seats \
+curl -s -X POST http://localhost:8080/api/v2/data/score-seats \
   -H 'content-type: application/json' -d '{"points": [3, 5, 0, 2]}'
 ```
 

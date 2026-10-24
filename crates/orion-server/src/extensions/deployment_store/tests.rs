@@ -460,3 +460,520 @@
             "CONNECTION_DIGEST_MISMATCH"
         );
     }
+
+    #[tokio::test]
+    async fn claim2_cross_replica_db_transactional_cas_and_revocation_enforcement() {
+        use std::str::FromStr;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
+            .await
+            .unwrap();
+        crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
+            .run(&pool)
+            .await
+            .unwrap();
+        let db_pool = crate::storage::DbPool::Sqlite(pool);
+
+        let store_a = ImmutableDeploymentStore::new("replica-a");
+        let store_b = ImmutableDeploymentStore::new("replica-b");
+        let policy = CommunityAdmissionPolicy::new();
+
+        let entries = sample_archive_entries();
+        let pkg = store_a
+            .ingest_verified_archive_in_db(&db_pool, &entries)
+            .await
+            .unwrap();
+        store_a
+            .admit_package_in_db(&db_pool, &pkg.package_digest, &policy, None)
+            .await
+            .unwrap();
+
+        let manifest_a = CanonicalManifest {
+            schema_version: 2,
+            providers: vec![ProviderRef {
+                publisher: pkg.publisher.clone(),
+                provider_id: pkg.provider_id.clone(),
+                version: pkg.version.clone(),
+                digest: pkg.package_digest.clone(),
+            }],
+            provider_lock_digest: None,
+            members: vec![ManifestMember {
+                entity: EntityRef {
+                    kind: EntityKind::Workflow,
+                    id: "wf-a".to_string(),
+                    revision: 1,
+                },
+                definition_digest: sha256_digest(b"wf-a-v1"),
+                owning_package: None,
+                requires: Vec::new(),
+                rollouts: Vec::new(),
+            }],
+        };
+        let manifest_b = CanonicalManifest {
+            schema_version: 2,
+            providers: vec![ProviderRef {
+                publisher: pkg.publisher.clone(),
+                provider_id: pkg.provider_id.clone(),
+                version: pkg.version.clone(),
+                digest: pkg.package_digest.clone(),
+            }],
+            provider_lock_digest: None,
+            members: vec![ManifestMember {
+                entity: EntityRef {
+                    kind: EntityKind::Workflow,
+                    id: "wf-b".to_string(),
+                    revision: 1,
+                },
+                definition_digest: sha256_digest(b"wf-b-v1"),
+                owning_package: None,
+                requires: Vec::new(),
+                rollouts: Vec::new(),
+            }],
+        };
+
+        // Both replicas plan against base_revision = 0 before either applies
+        let plan_a = store_a
+            .plan_candidate_in_db(&db_pool, 0, manifest_a)
+            .await
+            .unwrap();
+        let plan_b = store_b
+            .plan_candidate_in_db(&db_pool, 0, manifest_b)
+            .await
+            .unwrap();
+
+        // Replica A commits revision 1
+        let receipt_a = store_a
+            .apply_candidate_in_db(&db_pool, "alice", "idem-a", &plan_a, "deploy a", &policy)
+            .await
+            .expect("replica A wins CAS on base_revision 0");
+        assert_eq!(receipt_a.committed_revision, 1);
+
+        // Replica B's stale plan against base_revision 0 must fail inside the DB transaction
+        let err_b = store_b
+            .apply_candidate_in_db(&db_pool, "bob", "idem-b", &plan_b, "deploy b", &policy)
+            .await
+            .expect_err("competing deployment on stale base_revision must fail");
+        assert_eq!(err_b.code, "DEPLOYMENT_HEAD_CONFLICT");
+
+        // Now Replica B plans against revision 1, but Replica A revokes the provider package first
+        let plan_b2 = store_b
+            .plan_candidate_in_db(&db_pool, 1, plan_b.candidate_manifest.clone())
+            .await
+            .unwrap();
+        store_a
+            .revoke_package_in_db(&db_pool, &pkg.package_digest)
+            .await
+            .unwrap();
+
+        let err_revoked = store_b
+            .apply_candidate_in_db(&db_pool, "bob", "idem-b2", &plan_b2, "deploy b2", &policy)
+            .await
+            .expect_err("DB-level package revocation must block replica B's apply");
+        assert_eq!(err_revoked.code, "ADMISSION_INVALIDATED");
+    }
+
+    #[tokio::test]
+    async fn claim3_failed_persistence_never_undoes_committed_in_memory_state() {
+        use std::str::FromStr;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
+            .await
+            .unwrap();
+        crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
+            .run(&pool)
+            .await
+            .unwrap();
+        let db_pool = crate::storage::DbPool::Sqlite(pool.clone());
+
+        let store = ImmutableDeploymentStore::new("node-tx");
+        let entries = sample_archive_entries();
+        let pkg = store
+            .ingest_verified_archive_in_db(&db_pool, &entries)
+            .await
+            .unwrap();
+        let policy = CommunityAdmissionPolicy::new();
+        store
+            .admit_package_in_db(&db_pool, &pkg.package_digest, &policy, None)
+            .await
+            .unwrap();
+
+        // Request 1 commits connection revision 1
+        store
+            .store_connection_revision_in_db(
+                &db_pool,
+                "conn-1",
+                1,
+                &pkg.package_digest,
+                json!({"url": "https://one.example.com"}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.list_connections().len(), 1);
+
+        // Simulate a DB write failure for Request 2 after staged mutation succeeds
+        sqlx::query(
+            "CREATE TRIGGER fail_conn_insert BEFORE INSERT ON connection_revisions \
+             BEGIN SELECT RAISE(FAIL, 'simulated write failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let err = store
+            .store_connection_revision_in_db(
+                &db_pool,
+                "conn-2",
+                1,
+                &pkg.package_digest,
+                json!({"url": "https://two.example.com"}),
+                None,
+            )
+            .await
+            .expect_err("DB failure must return error");
+        assert_eq!(err.code, "DB_WRITE_ERROR");
+
+        // Request 1's committed state remains intact and Request 2 was never published to memory
+        let conns = store.list_connections();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].connection_id, "conn-1");
+    }
+
+    #[tokio::test]
+    async fn claim1_and_claim4_manifest_generation_rollback_and_replica_reconciliation() {
+        use std::str::FromStr;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
+            .await
+            .unwrap();
+        crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
+            .run(&pool)
+            .await
+            .unwrap();
+        let db_pool = crate::storage::DbPool::Sqlite(pool);
+
+        let metrics_handle = crate::metrics::init_metrics_with_instance(None);
+
+        let mut cfg_a = crate::config::AppConfig::default();
+        cfg_a.cluster.instance_id = "replica-a".to_string();
+        cfg_a.cluster.epoch_poll_interval_ms = 20;
+        let assembled_a = crate::bootstrap::assemble(crate::bootstrap::AssembleParams {
+            config: std::sync::Arc::new(cfg_a),
+            pool: db_pool.clone(),
+            metrics_handle: metrics_handle.clone(),
+        })
+        .await
+        .expect("assemble replica A");
+        let state_a = assembled_a.state;
+
+        let mut cfg_b = crate::config::AppConfig::default();
+        cfg_b.cluster.instance_id = "replica-b".to_string();
+        cfg_b.cluster.epoch_poll_interval_ms = 20;
+        let assembled_b = crate::bootstrap::assemble(crate::bootstrap::AssembleParams {
+            config: std::sync::Arc::new(cfg_b),
+            pool: db_pool.clone(),
+            metrics_handle,
+        })
+        .await
+        .expect("assemble replica B");
+        let state_b = assembled_b.state;
+
+        // Create workflow v1 and v2 and channel v1 in the shared DB (even as draft/inactive,
+        // manifest_definitions resolves the exact revision named in the manifest!)
+        let wf1 = state_a
+            .repos
+            .workflows
+            .create(&crate::storage::repositories::workflows::CreateWorkflowRequest {
+                workflow_id: Some("orders-wf".to_string()),
+                name: "Orders V1".to_string(),
+                description: None,
+                priority: 0,
+                condition: json!(true),
+                tasks: json!([{
+                    "id": "t1",
+                    "name": "Set V1",
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [{"path": "data.version", "logic": "v1"}]
+                        }
+                    }
+                }]),
+                tags: Vec::new(),
+                loop_config: None,
+                continue_on_error: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(wf1.version, 1);
+
+        let ch1 = state_a
+            .repos
+            .channels
+            .create(&crate::storage::repositories::channels::CreateChannelRequest {
+                channel_id: Some("orders-ch".to_string()),
+                name: "orders-ch".to_string(),
+                description: None,
+                channel_type: crate::storage::models::ChannelType::Sync,
+                protocol: crate::storage::models::ChannelProtocol::Rest,
+                methods: Some(vec!["POST".to_string()]),
+                route_pattern: Some("/orders".to_string()),
+                topic: None,
+                consumer_group: None,
+                transport_config: json!({}),
+                workflow_id: Some("orders-wf".to_string()),
+                config: json!({}),
+                priority: 0,
+                tags: Vec::new(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(ch1.version, 1);
+
+        // Ingest & admit provider package and create connection on Replica A
+        let entries = sample_archive_entries();
+        let pkg = state_a
+            .composition
+            .deployments
+            .ingest_verified_archive_in_db(&state_a.db_pool, &entries)
+            .await
+            .unwrap();
+        state_a
+            .composition
+            .deployments
+            .admit_package_in_db(
+                &state_a.db_pool,
+                &pkg.package_digest,
+                state_a.composition.admission.as_ref(),
+                None,
+            )
+            .await
+            .unwrap();
+        let conn = state_a
+            .composition
+            .deployments
+            .store_connection_revision_in_db(
+                &state_a.db_pool,
+                "crm-http",
+                1,
+                &pkg.package_digest,
+                json!({"url": "https://crm.example.com"}),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Deploy revision 1 containing orders-ch@1, orders-wf@1, and crm-http@1 on Replica A
+        let manifest_rev1 = CanonicalManifest {
+            schema_version: 2,
+            providers: vec![ProviderRef {
+                publisher: pkg.publisher.clone(),
+                provider_id: pkg.provider_id.clone(),
+                version: pkg.version.clone(),
+                digest: pkg.package_digest.clone(),
+            }],
+            provider_lock_digest: None,
+            members: vec![
+                ManifestMember {
+                    entity: EntityRef {
+                        kind: EntityKind::Channel,
+                        id: "orders-ch".to_string(),
+                        revision: 1,
+                    },
+                    definition_digest: sha256_digest(b"orders-ch-v1"),
+                    owning_package: None,
+                    requires: vec![EntityRef {
+                        kind: EntityKind::Workflow,
+                        id: "orders-wf".to_string(),
+                        revision: 1,
+                    }],
+                    rollouts: Vec::new(),
+                },
+                ManifestMember {
+                    entity: EntityRef {
+                        kind: EntityKind::Workflow,
+                        id: "orders-wf".to_string(),
+                        revision: 1,
+                    },
+                    definition_digest: sha256_digest(b"orders-wf-v1"),
+                    owning_package: None,
+                    requires: Vec::new(),
+                    rollouts: Vec::new(),
+                },
+                ManifestMember {
+                    entity: EntityRef {
+                        kind: EntityKind::Connection,
+                        id: "crm-http".to_string(),
+                        revision: 1,
+                    },
+                    definition_digest: conn.configuration_digest.clone(),
+                    owning_package: None,
+                    requires: Vec::new(),
+                    rollouts: Vec::new(),
+                },
+            ],
+        };
+        let plan_rev1 = state_a
+            .composition
+            .deployments
+            .plan_candidate_in_db(&state_a.db_pool, 0, manifest_rev1)
+            .await
+            .unwrap();
+        let receipt_rev1 = state_a
+            .composition
+            .deployments
+            .apply_candidate_in_db(
+                &state_a.db_pool,
+                "admin",
+                "idem-rev1",
+                &plan_rev1,
+                "deploy rev 1",
+                state_a.composition.admission.as_ref(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt_rev1.committed_revision, 1);
+
+        crate::runtime::reconcile_deployment_revision(&state_a, 1)
+            .await
+            .expect("replica A reconciles revision 1");
+        assert_eq!(state_a.composition.reconciler.local_status().applied_revision, 1);
+        assert!(
+            state_a
+                .runtime
+                .load()
+                .channels
+                .get_by_name("orders-ch")
+                .is_some(),
+            "Claim 1: manifest channel orders-ch@1 must be serving on replica A"
+        );
+
+        // Claim 4: Replica B reconciles automatically from the shared DB
+        assert!(crate::cluster::reconcile_v2_state_once(&state_b).await);
+        assert_eq!(state_b.composition.reconciler.local_status().applied_revision, 1);
+        assert!(
+            state_b
+                .runtime
+                .load()
+                .channels
+                .get_by_name("orders-ch")
+                .is_some(),
+            "Claim 4: replica B must automatically learn and serve orders-ch@1"
+        );
+        assert!(
+            state_b
+                .composition
+                .deployments
+                .get_connection("crm-http", 1)
+                .is_some(),
+            "Claim 4: replica B must automatically learn connection crm-http@1"
+        );
+
+        // Deploy revision 2 removing orders-ch (empty members) and verify both replicas stop serving it
+        let manifest_rev2 = CanonicalManifest {
+            schema_version: 2,
+            providers: Vec::new(),
+            provider_lock_digest: None,
+            members: Vec::new(),
+        };
+        let plan_rev2 = state_a
+            .composition
+            .deployments
+            .plan_candidate_in_db(&state_a.db_pool, 1, manifest_rev2)
+            .await
+            .unwrap();
+        let receipt_rev2 = state_a
+            .composition
+            .deployments
+            .apply_candidate_in_db(
+                &state_a.db_pool,
+                "admin",
+                "idem-rev2",
+                &plan_rev2,
+                "remove channel",
+                state_a.composition.admission.as_ref(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt_rev2.committed_revision, 2);
+        crate::runtime::reconcile_deployment_revision(&state_a, 2)
+            .await
+            .expect("replica A reconciles revision 2");
+        assert!(
+            state_a
+                .runtime
+                .load()
+                .channels
+                .get_by_name("orders-ch")
+                .is_none(),
+            "Claim 1: removing channel in revision 2 must stop serving it on replica A"
+        );
+
+        assert!(crate::cluster::reconcile_v2_state_once(&state_b).await);
+        assert_eq!(state_b.composition.reconciler.local_status().applied_revision, 2);
+        assert!(
+            state_b
+                .runtime
+                .load()
+                .channels
+                .get_by_name("orders-ch")
+                .is_none(),
+            "Claim 1 & 4: replica B must stop serving removed channel after reconciling revision 2"
+        );
+
+        // Rollback to revision 1 -> creates revision 3 and restores orders-ch@1
+        let (rollback_receipt, _) = state_a
+            .composition
+            .deployments
+            .rollback_to_revision_in_db(
+                &state_a.db_pool,
+                "admin",
+                "idem-rb3",
+                2,
+                1,
+                "rollback to rev 1",
+                state_a.composition.admission.as_ref(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rollback_receipt.committed_revision, 3);
+        crate::runtime::reconcile_deployment_revision(&state_a, 3)
+            .await
+            .expect("replica A reconciles rollback revision 3");
+        assert!(
+            state_a
+                .runtime
+                .load()
+                .channels
+                .get_by_name("orders-ch")
+                .is_some(),
+            "Claim 1: rollback to revision 1 must restore orders-ch@1 on replica A"
+        );
+
+        // Revoke package on Replica A and verify Replica B refreshes revocations on reconcile
+        state_a
+            .composition
+            .deployments
+            .revoke_package_in_db(&state_a.db_pool, &pkg.package_digest)
+            .await
+            .unwrap();
+        let _ = crate::cluster::reconcile_v2_state_once(&state_b).await;
+        assert!(
+            state_b
+                .composition
+                .admission
+                .is_digest_revoked(&pkg.package_digest),
+            "Claim 4: replica B must refresh package revocation into its AdmissionPolicy"
+        );
+
+        state_a
+            .tasks
+            .shutdown(std::time::Duration::from_secs(1))
+            .await;
+        state_b
+            .tasks
+            .shutdown(std::time::Duration::from_secs(1))
+            .await;
+    }

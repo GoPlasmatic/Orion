@@ -19,7 +19,7 @@ use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterReposit
 pub mod epoch_watcher;
 pub mod job_lease;
 
-pub use epoch_watcher::start_cluster_tasks;
+pub use epoch_watcher::{reconcile_v2_state_once, start_cluster_tasks, start_v2_reconciler};
 pub use job_lease::JobLeaseGate;
 
 /// What a config-epoch bump changed, so a peer can size its resync.

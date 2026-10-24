@@ -193,6 +193,7 @@ pub struct ServingComponents {
     /// `models.enabled`. `None` makes every model route answer that models
     /// are disabled here, and every stored active model a load issue.
     pub models: Option<Arc<crate::model::ModelsRuntime>>,
+    pub composition: crate::extensions::CompositionRoot,
 }
 
 /// The engine's serving components, built in one pass by
@@ -368,6 +369,12 @@ pub async fn build_engine_components(
         None
     };
 
+    let composition = crate::extensions::CompositionRoot::community()
+        .with_resource_pool(sql_pool_cache.clone())
+        .with_resource_pool(mongo_pool_cache.clone())
+        .with_resource_pool(smtp_pool_cache.clone());
+    let providers = composition.providers.clone();
+
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
     // The same dependencies twice, once per engine: the dataflow-rs 3
     // handlers below and the dataflow-rs 4 registry after the producer.
@@ -387,6 +394,7 @@ pub async fn build_engine_components(
         smtp_pool_cache: smtp_pool_cache.clone(),
         models: models.clone(),
         models_config: &config.models,
+        providers: providers.clone(),
     };
     let mut custom_functions = crate::engine::build_custom_functions(handler_deps());
 
@@ -396,6 +404,10 @@ pub async fn build_engine_components(
         connector_registry.clone(),
         config.engine.max_pool_cache_entries,
     )?;
+    let mut composition = composition;
+    if let Some(ref kp) = kafka_producers {
+        composition = composition.with_resource_pool(kp.clone());
+    }
     let registry = crate::engine::serving_registry(handler_deps(), kafka_producers.clone());
 
     let plugins = if config.plugins.enabled {
@@ -428,6 +440,7 @@ pub async fn build_engine_components(
             kafka_producers,
             plugins,
             models,
+            composition,
         },
         custom_functions,
         registry,
@@ -1271,13 +1284,10 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
             );
         }
         Ok(()) => {
+            crate::cluster::epoch_watcher::sync_v2_revocations(&state);
             let (head_rev, _) = state.composition.deployments.current_head();
             if head_rev > 0 {
-                state.composition.reconciler.observe_desired_head();
-                let _ = state
-                    .composition
-                    .reconciler
-                    .build_and_publish_candidate(head_rev, Vec::new());
+                let _ = crate::runtime::reconcile_deployment_revision(&state, head_rev).await;
             }
             let _ = state
                 .composition
@@ -1291,6 +1301,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
                 .await;
         }
     }
+    crate::cluster::start_v2_reconciler(&state);
 
     Ok(Assembled {
         state,
@@ -1337,6 +1348,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         kafka_producers,
         plugins,
         models,
+        composition,
     } = components;
     // Parsed once, unconditionally — not from `rate_limit_state`. Three
     // callers need it whether or not the platform limiter is enabled: the
@@ -1348,14 +1360,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         &config.packages.apply,
     ));
     let boot_id = format!("boot-{}", uuid::Uuid::new_v4().simple());
-    let mut composition = crate::extensions::CompositionRoot::community()
-        .with_node_identity(cluster.instance_id.clone(), boot_id)
-        .with_resource_pool(sql_pool_cache.clone())
-        .with_resource_pool(mongo_pool_cache.clone())
-        .with_resource_pool(smtp_pool_cache.clone());
-    if let Some(ref kp) = kafka_producers {
-        composition = composition.with_resource_pool(kp.clone());
-    }
+    let composition = composition.with_node_identity(cluster.instance_id.clone(), boot_id);
     let provider_pools = composition.pools.clone();
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         runtime,

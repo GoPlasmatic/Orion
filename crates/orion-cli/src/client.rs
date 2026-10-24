@@ -14,16 +14,43 @@ use orion_client::{ClientError, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-#[derive(Debug, Clone)]
+#[cfg(test)]
+type MockTransport =
+    std::sync::Arc<dyn Fn(&str, &str, Option<&Value>) -> Result<Value> + Send + Sync>;
+
+#[derive(Clone)]
 pub struct OrionClient {
     inner: orion_client::OrionClient,
+    #[cfg(test)]
+    mock: Option<MockTransport>,
+}
+
+impl std::fmt::Debug for OrionClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrionClient")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 impl OrionClient {
     pub fn new(base_url: &str) -> Result<Self> {
         let inner = orion_client::OrionClient::new(base_url)
             .map_err(|e| anyhow::anyhow!(e).context("Failed to create HTTP client"))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            #[cfg(test)]
+            mock: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn with_mock_transport(
+        handler: impl Fn(&str, &str, Option<&Value>) -> Result<Value> + Send + Sync + 'static,
+    ) -> Result<Self> {
+        let mut client = Self::new("http://localhost:8080")?;
+        client.mock = Some(std::sync::Arc::new(handler));
+        Ok(client)
     }
 
     pub fn base_url(&self) -> &str {
@@ -33,6 +60,8 @@ impl OrionClient {
     pub fn with_api_key(self, api_key: String, header: Option<String>) -> Self {
         Self {
             inner: self.inner.with_api_key(api_key, header),
+            #[cfg(test)]
+            mock: self.mock,
         }
     }
 
@@ -47,10 +76,17 @@ impl OrionClient {
     pub fn with_change_context(self, context: String) -> Self {
         Self {
             inner: self.inner.with_change_context(context),
+            #[cfg(test)]
+            mock: self.mock,
         }
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        #[cfg(test)]
+        if let Some(ref mock) = self.mock {
+            let val = mock("GET", path, None)?;
+            return Ok(serde_json::from_value(val)?);
+        }
         self.inner.get(path).await.map_err(render)
     }
 
@@ -59,10 +95,34 @@ impl OrionClient {
     }
 
     pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
+        #[cfg(test)]
+        if let Some(ref mock) = self.mock {
+            let val = mock("POST", path, Some(body))?;
+            return Ok(serde_json::from_value(val)?);
+        }
         self.inner.post(path, body).await.map_err(render)
     }
 
+    pub async fn post_dto<Req: serde::Serialize + ?Sized, Resp: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &Req,
+    ) -> Result<Resp> {
+        #[cfg(test)]
+        if let Some(ref mock) = self.mock {
+            let req_val = serde_json::to_value(body)?;
+            let val = mock("POST", path, Some(&req_val))?;
+            return Ok(serde_json::from_value(val)?);
+        }
+        self.inner.post_dto(path, body).await.map_err(render)
+    }
+
     pub async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        #[cfg(test)]
+        if let Some(ref mock) = self.mock {
+            let val = mock("POST", path, None)?;
+            return Ok(serde_json::from_value(val)?);
+        }
         self.inner.post_empty(path).await.map_err(render)
     }
 

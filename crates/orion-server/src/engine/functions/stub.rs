@@ -479,7 +479,10 @@ impl AsyncFunctionHandler for StubHandler {
         // it can be an expression like any other parameter.
         let output = self.output_path(input, ctx)?;
         let input = input.raw();
-        let target = input.get("connector").and_then(Value::as_str);
+        let target = input
+            .get("connector")
+            .or_else(|| input.get("connection"))
+            .and_then(Value::as_str);
         // Recorded before the stub is resolved, so a call that fails for want
         // of a stub still appears in the log — that is the run you most want to
         // see the payload of.
@@ -767,7 +770,7 @@ mod tests {
             count += 1;
         }
         assert_eq!(
-            count, 22,
+            count, 23,
             "every Orion handler is stubbable, and only those"
         );
     }

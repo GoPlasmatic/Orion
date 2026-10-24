@@ -625,7 +625,7 @@ pub(crate) enum ReloadMode {
     Now,
     /// Commit the row but leave the running engine (and, in cluster mode,
     /// every peer) serving the previous configuration until someone calls
-    /// `POST /api/v1/admin/engine/reload`. For a bundle apply this turns
+    /// `POST /api/v2/admin/engine/reload`. For a bundle apply this turns
     /// O(entities) engine rebuilds and epoch bumps into exactly one — the
     /// caller activates everything with `reload=defer` and finishes with one
     /// explicit reload, which also bumps the epoch for the peers.
