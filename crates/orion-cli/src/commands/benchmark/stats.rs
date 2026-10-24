@@ -61,8 +61,21 @@ impl BenchmarkReport {
             .collect();
         durations.sort();
 
-        let latency = if durations.is_empty() {
-            LatencyStats {
+        let latency = match (durations.first(), durations.last()) {
+            (Some(first), Some(last)) => {
+                let sum: Duration = durations.iter().sum();
+                let mean = sum.as_secs_f64() * 1000.0 / durations.len() as f64;
+                LatencyStats {
+                    min_ms: first.as_secs_f64() * 1000.0,
+                    max_ms: last.as_secs_f64() * 1000.0,
+                    mean_ms: mean,
+                    p50_ms: percentile(&durations, 50.0),
+                    p90_ms: percentile(&durations, 90.0),
+                    p95_ms: percentile(&durations, 95.0),
+                    p99_ms: percentile(&durations, 99.0),
+                }
+            }
+            _ => LatencyStats {
                 min_ms: 0.0,
                 max_ms: 0.0,
                 mean_ms: 0.0,
@@ -70,20 +83,7 @@ impl BenchmarkReport {
                 p90_ms: 0.0,
                 p95_ms: 0.0,
                 p99_ms: 0.0,
-            }
-        } else {
-            let sum: Duration = durations.iter().sum();
-            let mean = sum.as_secs_f64() * 1000.0 / durations.len() as f64;
-
-            LatencyStats {
-                min_ms: durations.first().unwrap().as_secs_f64() * 1000.0,
-                max_ms: durations.last().unwrap().as_secs_f64() * 1000.0,
-                mean_ms: mean,
-                p50_ms: percentile(&durations, 50.0),
-                p90_ms: percentile(&durations, 90.0),
-                p95_ms: percentile(&durations, 95.0),
-                p99_ms: percentile(&durations, 99.0),
-            }
+            },
         };
 
         Self {
@@ -109,6 +109,7 @@ fn percentile(sorted: &[Duration], p: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

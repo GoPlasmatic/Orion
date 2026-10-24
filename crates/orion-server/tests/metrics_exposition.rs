@@ -8,6 +8,10 @@
 //! the real recorder — and the rendered body finally gets asserted, not just
 //! the 200.
 
+// Tests unwrap and panic on what they did not expect; the workspace's
+// lints against both are for production code.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 #[path = "integration/common/mod.rs"]
 mod common;
 

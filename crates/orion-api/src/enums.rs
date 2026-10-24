@@ -188,6 +188,7 @@ pub const TRACE_MODE_KAFKA: &str = "kafka";
 pub const TRACE_MODE_CRON: &str = "cron";
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

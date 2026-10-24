@@ -52,6 +52,7 @@ const ALL_SECRET_VALUES: &[&str] = &[SECRET_VALUE, JWT_VALUE, GATE_VALUE];
 /// reserved `ORION_SECRET_*` namespace, as `secret_references_test`: every
 /// other `ORION_*` name is refused at startup as a misspelled override.
 #[ctor::ctor(unsafe)]
+#[allow(unsafe_code)]
 fn install_secret_fixture() {
     // SAFETY: runs pre-main on the sole thread of the process; no concurrent
     // reader of the environment can exist yet.

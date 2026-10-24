@@ -22,6 +22,10 @@ keywords = ["orion", "wasm", "plugin", "component-model"]
 categories = ["wasm", "api-bindings"]
 include = ["/src/**", "/wit/**", "/Cargo.toml", "/README.md"]
 
+
+[lints]
+workspace = true
+
 [dependencies]
 # The same generator the server's own fixture guest was built with; the
 # generated export shims are what `wasm-tools component new` recognises.

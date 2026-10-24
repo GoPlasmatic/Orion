@@ -67,6 +67,10 @@ name = "cluster"
 path = "tests/cluster/main.rs"
 harness = true
 
+
+[lints]
+workspace = true
+
 [dependencies]
 orion-definitions.workspace = true
 # `all-operators` turns on dataflow-rs's passthroughs to the datalogic-rs

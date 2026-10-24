@@ -497,6 +497,7 @@ fn a_reference_is_deferred_at_authoring_and_refused_when_serving() {
 /// resolves, set before `main()` while the process is single-threaded, in the
 /// reserved `ORION_SECRET_*` namespace so a test that loads config ignores them.
 #[ctor::ctor(unsafe)]
+#[allow(unsafe_code)]
 fn install_redirect_env() {
     // SAFETY: runs pre-main on the sole thread of the process.
     unsafe {

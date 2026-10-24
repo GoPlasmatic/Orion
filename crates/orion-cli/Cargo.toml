@@ -19,6 +19,10 @@ categories = ["command-line-utilities", "development-tools"]
 name = "orion-cli"
 path = "src/main.rs"
 
+
+[lints]
+workspace = true
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"

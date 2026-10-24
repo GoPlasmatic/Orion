@@ -272,6 +272,7 @@ fn decode_data<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ClientError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

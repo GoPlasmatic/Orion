@@ -14,6 +14,10 @@ readme = "README.md"
 keywords = ["workflow", "runtime", "api", "client"]
 categories = ["api-bindings", "web-programming::http-client"]
 
+
+[lints]
+workspace = true
+
 [dependencies]
 orion-api.workspace = true
 # Already in the tree via reqwest — direct so `execute` can hand back the

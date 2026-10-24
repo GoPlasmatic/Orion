@@ -716,6 +716,7 @@ pub fn print_list_footer(resp: &Value, shown: usize, noun: &str) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

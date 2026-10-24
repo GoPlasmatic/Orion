@@ -26,7 +26,6 @@
 //! [`bootstrap`] (the startup sequence, doc-hidden but public),
 //! [`server::routes::data`] (the request path) and [`engine`] (the workflow
 //! runtime).
-#![warn(clippy::unwrap_used, clippy::panic)]
 
 #[doc(hidden)]
 pub mod auth;

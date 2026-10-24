@@ -302,6 +302,7 @@ async fn cancel(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &s
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;

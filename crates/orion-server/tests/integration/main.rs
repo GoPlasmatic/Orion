@@ -5,6 +5,10 @@
 //! the per-edit relink cost dramatically. Add new test files under
 //! `tests/integration/` and declare them below.
 
+// Tests unwrap and panic on what they did not expect; the workspace's
+// lints against both are for production code.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 mod boot_packages_test;
 mod clippy_fix_test;
 mod common;
