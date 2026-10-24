@@ -11,12 +11,11 @@ use crate::common;
 const REF_ENV: &str = "ORION_SECRET_CONFIG_REF_STATE_DB";
 const REF_VALUE: &str = "postgres://orion:s3cret@db.internal:5432/orion";
 
-/// Set once, before anything reads the environment. `std::env::set_var` is
-/// `unsafe` in Rust 2024 because another thread may be reading; these run at
-/// the top of each test that needs the value.
+/// Set before `main()`, while the process is single-threaded: the only point
+/// where `set_var` cannot race another test's `getenv`.
+#[ctor::ctor(unsafe)]
 fn set_ref_env() {
-    // SAFETY: the value is constant, so a concurrent reader sees either the
-    // absence or this exact string — never a torn or unexpected one.
+    // SAFETY: runs pre-main on the sole thread of the process.
     unsafe { std::env::set_var(REF_ENV, REF_VALUE) };
 }
 
@@ -30,7 +29,6 @@ fn write(dir: &std::path::Path, name: &str, content: &str) -> String {
 /// way a connector does.
 #[test]
 fn storage_url_takes_an_env_reference() {
-    set_ref_env();
     let scratch = common::ScratchDir::new("config-ref-storage");
     let path = write(
         scratch.path(),
@@ -50,7 +48,6 @@ fn storage_url_takes_an_env_reference() {
 /// other credential in the file its own request.
 #[test]
 fn a_reference_resolves_anywhere_in_the_file() {
-    set_ref_env();
     let scratch = common::ScratchDir::new("config-ref-anywhere");
     let path = write(
         scratch.path(),
@@ -137,7 +134,6 @@ fn an_unbootable_storage_url_fails_validation_outside_cluster_mode() {
 /// operator runs to inspect the config.
 #[test]
 fn a_resolved_password_is_still_masked_on_read_back() {
-    set_ref_env();
     let scratch = common::ScratchDir::new("config-ref-mask");
     let path = write(
         scratch.path(),

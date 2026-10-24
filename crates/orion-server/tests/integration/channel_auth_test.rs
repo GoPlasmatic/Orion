@@ -15,6 +15,19 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use tower::ServiceExt;
 
+/// The variables this module's tests resolve through `env://`, set before
+/// `main()` while the process is single-threaded: the only point where
+/// `set_var` cannot race another test's `getenv`. Each is uniquely named and
+/// in the reserved `ORION_SECRET_*` namespace, so a test that loads config
+/// does not refuse it as a misspelled override.
+#[ctor::ctor(unsafe)]
+fn install_channel_auth_env() {
+    // SAFETY: runs pre-main on the sole thread of the process.
+    unsafe {
+        std::env::set_var("ORION_SECRET_TEST_CHANNEL_KEY", "from-env");
+    }
+}
+
 use crate::common;
 use crate::common::{body_json, json_request};
 
@@ -270,9 +283,6 @@ async fn an_hmac_signed_webhook_is_verified_against_the_raw_body() {
 /// to sit in the stored config.
 #[tokio::test]
 async fn an_api_key_can_come_from_the_environment() {
-    // SAFETY: single-threaded test setup before the app is built.
-    unsafe { std::env::set_var("ORION_TEST_CHANNEL_KEY", "from-env") };
-
     let app = common::test_app().await;
     common::create_and_activate_channel_with_config(
         &app,
@@ -280,7 +290,7 @@ async fn an_api_key_can_come_from_the_environment() {
         common::echo_workflow("env-guarded-wf"),
         json!({ "auth": {
             "mode": "api_key",
-            "keys": ["env://ORION_TEST_CHANNEL_KEY"],
+            "keys": ["env://ORION_SECRET_TEST_CHANNEL_KEY"],
             "header": "X-API-Key"
         }}),
     )
@@ -302,14 +312,12 @@ async fn an_api_key_can_come_from_the_environment() {
         .clone()
         .oneshot(request_with_header(
             "/api/v2/data/env-guarded",
-            ("X-API-Key", "env://ORION_TEST_CHANNEL_KEY"),
+            ("X-API-Key", "env://ORION_SECRET_TEST_CHANNEL_KEY"),
             json!({"data": {}}),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-
-    unsafe { std::env::remove_var("ORION_TEST_CHANNEL_KEY") };
 }
 
 /// A channel with no `auth` key is unauthenticated, exactly as before.

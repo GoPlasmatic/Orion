@@ -294,21 +294,24 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     Ok(config)
 }
 
+/// Serialises the tests that touch the process environment, across every
+/// module of the crate.
+///
+/// `load_config` *scans* the environment (C4d), so a test that sets an
+/// `ORION_*` variable is visible to any other test loading a config at the
+/// same moment — and `std::env::set_var` is `unsafe` in Rust 2024 for the
+/// same reason. Every test that either sets a variable or calls
+/// `load_config` takes this lock first.
+#[cfg(test)]
+pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Serialises the tests that touch the process environment.
-    ///
-    /// `load_config` now *scans* the environment (C4d), so a test that sets an
-    /// `ORION_*` variable is visible to any other test loading a config at the
-    /// same moment — and `std::env::set_var` is `unsafe` in Rust 2024 for the
-    /// same reason. Every test below that either sets a variable or calls
-    /// `load_config` takes this lock first.
-    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
+    use crate::config::env_guard;
 
     #[test]
     fn test_default_config() {

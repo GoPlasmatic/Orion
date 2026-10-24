@@ -86,6 +86,10 @@ pub trait AdmissionPolicy: Send + Sync {
     /// Policy identifier for diagnostics and audit receipts.
     fn policy_id(&self) -> &'static str;
 
+    /// The edition this policy admits for: what the node reports as its
+    /// edition.
+    fn edition(&self) -> EditionTier;
+
     /// Validate a provider package before admission into a deployment generation.
     fn verify_package(
         &self,
@@ -195,6 +199,10 @@ fn is_valid_sha256_digest(digest: &str) -> bool {
 impl AdmissionPolicy for CommunityAdmissionPolicy {
     fn policy_id(&self) -> &'static str {
         "orion.community.admission/1"
+    }
+
+    fn edition(&self) -> EditionTier {
+        EditionTier::Community
     }
 
     fn verify_package(

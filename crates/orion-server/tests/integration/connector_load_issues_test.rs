@@ -11,6 +11,25 @@ use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
+/// The variables this module's tests resolve through `env://`, set before
+/// `main()` while the process is single-threaded: the only point where
+/// `set_var` cannot race another test's `getenv`. Each is uniquely named and
+/// in the reserved `ORION_SECRET_*` namespace, so a test that loads config
+/// does not refuse it as a misspelled override.
+#[ctor::ctor(unsafe)]
+fn install_connector_load_env() {
+    // SAFETY: runs pre-main on the sole thread of the process.
+    unsafe {
+        std::env::set_var(
+            "ORION_SECRET_T338_BAD_SCHEME_URL",
+            "ftp://user:hunter2@files.example.com/",
+        );
+        std::env::set_var("ORION_SECRET_T338_PEER_URL", "http://127.0.0.1:9");
+        std::env::set_var("ORION_SECRET_T338_PEER_PRIVATE", "true");
+        std::env::set_var("ORION_SECRET_T338_NOT_A_BOOL", "sk_live_hunter2");
+    }
+}
+
 /// Create a connector whose secret reference cannot resolve. Creating it
 /// succeeds — the reference is only resolved when the registry loads it.
 async fn create_broken_connector(app: &axum::Router, id: &str) {
@@ -500,19 +519,12 @@ async fn load_failure(app: &axum::Router, name: &str) -> Option<serde_json::Valu
 /// which may carry userinfo.
 #[tokio::test]
 async fn a_reference_url_resolving_to_a_bad_scheme_is_an_endpoint_load_issue() {
-    // SAFETY: a variable no other test reads; set before the app loads it.
-    unsafe {
-        std::env::set_var(
-            "ORION_T338_BAD_SCHEME_URL",
-            "ftp://user:hunter2@files.example.com/",
-        )
-    };
     let app = test_app().await;
     assert_eq!(
         create_http(
             &app,
             "t338-ftp",
-            json!({"url": "env://ORION_T338_BAD_SCHEME_URL"})
+            json!({"url": "env://ORION_SECRET_T338_BAD_SCHEME_URL"})
         )
         .await,
         StatusCode::CREATED,
@@ -529,19 +541,14 @@ async fn a_reference_url_resolving_to_a_bad_scheme_is_an_endpoint_load_issue() {
 /// and the connector loads with it.
 #[tokio::test]
 async fn a_boolean_reference_resolving_to_true_loads() {
-    // SAFETY: variables no other test reads.
-    unsafe {
-        std::env::set_var("ORION_T338_PEER_URL", "http://127.0.0.1:9");
-        std::env::set_var("ORION_T338_PEER_PRIVATE", "true");
-    }
     let app = test_app().await;
     assert_eq!(
         create_http(
             &app,
             "t338-peer",
             json!({
-                "url": "env://ORION_T338_PEER_URL",
-                "allow_private_urls": "env://ORION_T338_PEER_PRIVATE",
+                "url": "env://ORION_SECRET_T338_PEER_URL",
+                "allow_private_urls": "env://ORION_SECRET_T338_PEER_PRIVATE",
             }),
         )
         .await,
@@ -555,8 +562,6 @@ async fn a_boolean_reference_resolving_to_true_loads() {
 /// mis-pointed at.
 #[tokio::test]
 async fn a_boolean_reference_resolving_to_garbage_is_a_deserialize_load_issue() {
-    // SAFETY: a variable no other test reads.
-    unsafe { std::env::set_var("ORION_T338_NOT_A_BOOL", "sk_live_hunter2") };
     let app = test_app().await;
     assert_eq!(
         create_http(
@@ -564,7 +569,7 @@ async fn a_boolean_reference_resolving_to_garbage_is_a_deserialize_load_issue() 
             "t338-garbage",
             json!({
                 "url": "https://api.example.com",
-                "allow_private_urls": "env://ORION_T338_NOT_A_BOOL",
+                "allow_private_urls": "env://ORION_SECRET_T338_NOT_A_BOOL",
             }),
         )
         .await,

@@ -163,11 +163,7 @@ pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> i
     let (head_rev, epoch) = comp.deployments.current_head();
     let local_status = comp.reconciler.local_status();
     let policy_id = comp.admission.policy_id().to_string();
-    let edition = if policy_id.contains("enterprise") {
-        "enterprise"
-    } else {
-        "community"
-    };
+    let edition = comp.admission.edition().as_str();
     let boundary_report = crate::extensions::verify_community_assembly(comp);
     let wasm_profiles = vec![
         crate::extensions::WasmImportProfile::CoreV1

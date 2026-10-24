@@ -16,6 +16,31 @@ use tower::ServiceExt;
 
 use crate::common;
 
+/// The variables this module's tests resolve through `env://`, set before
+/// `main()` while the process is single-threaded: the only point where
+/// `set_var` cannot race another test's `getenv`. Each is uniquely named and
+/// in the reserved `ORION_SECRET_*` namespace, so a test that loads config
+/// does not refuse it as a misspelled override.
+#[ctor::ctor(unsafe)]
+fn install_oauth2_login_env() {
+    // SAFETY: runs pre-main on the sole thread of the process.
+    unsafe {
+        std::env::set_var(
+            "ORION_SECRET_TEST_OAUTH2_DOC_CLIENT_SECRET",
+            "the-client-secret",
+        );
+        std::env::set_var("ORION_SECRET_TEST_OAUTH2_DOC_STATE_SECRET", STATE_SECRET);
+        std::env::set_var(
+            "ORION_SECRET_TEST_OAUTH2_REDIRECT_URI",
+            "https://app.example.com/v1/auth/idp/callback",
+        );
+        std::env::set_var(
+            "ORION_SECRET_TEST_OAUTH2_REDIRECT_URI_HTTP",
+            "http://app.example.com/v1/auth/idp/callback",
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // A fake identity provider
 // ---------------------------------------------------------------------------
@@ -1580,11 +1605,6 @@ async fn a_successful_callback_still_holds_the_idempotency_key() {
 /// the one complete sign-in example in the reference could not be deployed.
 #[tokio::test]
 async fn the_documented_example_deploys_from_vars_and_env() {
-    // SAFETY: names no other test reads, set before the channel loads.
-    unsafe {
-        std::env::set_var("ORION_TEST_OAUTH2_DOC_CLIENT_SECRET", "the-client-secret");
-        std::env::set_var("ORION_TEST_OAUTH2_DOC_STATE_SECRET", STATE_SECRET);
-    }
     let idp = Idp::new();
     let url = start_idp(Arc::clone(&idp)).await;
     let mut config = app_config();
@@ -1605,9 +1625,9 @@ async fn the_documented_example_deploys_from_vars_and_env() {
     let app = common::test_app_with_config(config).await;
     let mut login = login_config(&url);
     login["client_id"] = json!("var://idp_client_id");
-    login["client_secret"] = json!("env://ORION_TEST_OAUTH2_DOC_CLIENT_SECRET");
+    login["client_secret"] = json!("env://ORION_SECRET_TEST_OAUTH2_DOC_CLIENT_SECRET");
     login["redirect_uri"] = json!("var://app_redirect_uri");
-    login["state_secret"] = json!("env://ORION_TEST_OAUTH2_DOC_STATE_SECRET");
+    login["state_secret"] = json!("env://ORION_SECRET_TEST_OAUTH2_DOC_STATE_SECRET");
     deploy(&app, login, echo_grant_workflow()).await;
 
     let resp = app
@@ -1654,18 +1674,11 @@ async fn the_documented_example_deploys_from_vars_and_env() {
 /// on the reference rather than on what it resolves to.
 #[tokio::test]
 async fn redirect_uri_resolves_an_env_reference_at_load() {
-    // SAFETY: a name no other test reads, set before the channel loads.
-    unsafe {
-        std::env::set_var(
-            "ORION_TEST_OAUTH2_REDIRECT_URI",
-            "https://app.example.com/v1/auth/idp/callback",
-        );
-    }
     let idp = Idp::new();
     let url = start_idp(Arc::clone(&idp)).await;
     let app = common::test_app_with_config(app_config()).await;
     let mut login = login_config(&url);
-    login["redirect_uri"] = json!("env://ORION_TEST_OAUTH2_REDIRECT_URI");
+    login["redirect_uri"] = json!("env://ORION_SECRET_TEST_OAUTH2_REDIRECT_URI");
     deploy(&app, login, echo_grant_workflow()).await;
 
     let (state, cookie) = begin(&app).await;
@@ -1689,16 +1702,9 @@ async fn redirect_uri_resolves_an_env_reference_at_load() {
 /// rather than served with a redirect the secret would travel over.
 #[tokio::test]
 async fn a_reference_that_resolves_to_plain_http_quarantines_the_channel() {
-    // SAFETY: a name no other test reads, set before the channel loads.
-    unsafe {
-        std::env::set_var(
-            "ORION_TEST_OAUTH2_REDIRECT_URI_HTTP",
-            "http://app.example.com/v1/auth/idp/callback",
-        );
-    }
     let app = common::test_app_with_config(app_config()).await;
     let mut login = login_config("https://idp.example.com");
-    login["redirect_uri"] = json!("env://ORION_TEST_OAUTH2_REDIRECT_URI_HTTP");
+    login["redirect_uri"] = json!("env://ORION_SECRET_TEST_OAUTH2_REDIRECT_URI_HTTP");
     deploy(&app, login, echo_grant_workflow()).await;
 
     let resp = app

@@ -158,11 +158,18 @@ mod tests {
         Ok(doc)
     }
 
+    /// Set before `main()`, while the process is single-threaded, in the
+    /// reserved `ORION_SECRET_*` namespace so `load_config` ignores it.
+    #[ctor::ctor(unsafe)]
+    fn install_ref_env() {
+        // SAFETY: runs pre-main on the sole thread of the process.
+        unsafe { std::env::set_var("ORION_SECRET_TEST_REF_URL", "postgres://u:p@h/db") };
+    }
+
     #[test]
     fn a_reference_resolves_wherever_it_sits() {
-        // SAFETY: single-threaded test; the value is read back immediately.
-        unsafe { std::env::set_var("ORION_TEST_REF_URL", "postgres://u:p@h/db") };
-        let doc = resolve("[storage]\nurl = \"env://ORION_TEST_REF_URL\"\n").expect("resolves");
+        let doc =
+            resolve("[storage]\nurl = \"env://ORION_SECRET_TEST_REF_URL\"\n").expect("resolves");
         assert_eq!(doc["storage"]["url"].as_str(), Some("postgres://u:p@h/db"));
     }
 

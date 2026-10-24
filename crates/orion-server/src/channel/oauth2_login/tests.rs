@@ -493,21 +493,28 @@ fn a_reference_is_deferred_at_authoring_and_refused_when_serving() {
     );
 }
 
-#[tokio::test]
-async fn compile_resolves_the_redirect_uri_and_checks_the_result() {
-    // SAFETY: names no other test reads, set before anything resolves them.
+/// The redirect URIs `compile_resolves_the_redirect_uri_and_checks_the_result`
+/// resolves, set before `main()` while the process is single-threaded, in the
+/// reserved `ORION_SECRET_*` namespace so a test that loads config ignores them.
+#[ctor::ctor(unsafe)]
+fn install_redirect_env() {
+    // SAFETY: runs pre-main on the sole thread of the process.
     unsafe {
         std::env::set_var(
-            "ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTPS",
+            "ORION_SECRET_TEST_OAUTH2_UNIT_REDIRECT_HTTPS",
             "https://app.example.com/v1/auth/idp/callback",
         );
         std::env::set_var(
-            "ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTP",
+            "ORION_SECRET_TEST_OAUTH2_UNIT_REDIRECT_HTTP",
             "http://app.example.com/v1/auth/idp/callback",
         );
     }
+}
+
+#[tokio::test]
+async fn compile_resolves_the_redirect_uri_and_checks_the_result() {
     let mut cfg = config();
-    cfg.redirect_uri = "env://ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTPS".to_string();
+    cfg.redirect_uri = "env://ORION_SECRET_TEST_OAUTH2_UNIT_REDIRECT_HTTPS".to_string();
     let login = compiled(&cfg).await;
     let redirect = login.begin(None, None, None).expect("a redirect");
     let q = params(&redirect.location);
@@ -517,7 +524,7 @@ async fn compile_resolves_the_redirect_uri_and_checks_the_result() {
     );
 
     let mut cfg = config();
-    cfg.redirect_uri = "env://ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTP".to_string();
+    cfg.redirect_uri = "env://ORION_SECRET_TEST_OAUTH2_UNIT_REDIRECT_HTTP".to_string();
     let err = try_compile(&cfg)
         .await
         .expect_err("plain http after resolution");
