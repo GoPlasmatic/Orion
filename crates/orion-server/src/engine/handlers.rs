@@ -251,11 +251,11 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         mongo_aggregate::NAME,
         mongo_aggregate::MongoAggregateFunction {
             pool_cache: mongo_pool_cache,
-            registry: connectors,
+            registry: connectors.clone(),
             limits: query_config.clone(),
         },
     );
-    functions::connector_call::register_connector_call(registry, providers);
+    functions::connector_call::register_connector_call(registry, providers, connectors);
 }
 
 /// The dataflow-rs 4 `Registry` a generation compiles and runs on, before

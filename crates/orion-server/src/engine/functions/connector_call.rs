@@ -102,6 +102,9 @@ pub struct ConnectorCallConfig {
 #[derive(Clone)]
 pub struct ConnectorCallFunction {
     pub providers: ProviderRegistry,
+    /// Where the circuit breakers live, keyed by (channel, connection) as
+    /// every connector function's are.
+    pub registry: std::sync::Arc<crate::connector::ConnectorRegistry>,
 }
 
 impl Function for ConnectorCallFunction {
@@ -177,14 +180,26 @@ impl Function for ConnectorCallFunction {
             None => None,
         };
 
-        let data = execute_connector_call(
-            &self.providers,
-            ctx.info().workflow_id,
-            cfg,
-            input_val,
-            idempotency_key,
-        )
+        // The connector shell every connector function runs in: the breaker
+        // for this (channel, connection) pair, and the connector metrics.
+        let channel = kit::channel(ctx);
+        let workflow_id = ctx.info().workflow_id;
+        let mut data = None;
+        kit::guarded(NAME, &self.registry, &cfg.connection, channel, async {
+            data = Some(
+                execute_connector_call(
+                    &self.providers,
+                    workflow_id,
+                    cfg,
+                    input_val,
+                    idempotency_key,
+                )
+                .await?,
+            );
+            Ok(Outcome::Ok)
+        })
         .await?;
+        let data = data.unwrap_or(Value::Null);
 
         ctx.set(&output, OwnedDataValue::from(&data))?;
         Ok(Outcome::Ok)
@@ -380,8 +395,18 @@ fn connector_err_to_handler(err: crate::extensions::ConnectorError) -> HandlerEr
 }
 
 /// Register `connector_call` on a `dataflow-rs` 4 [`dataflow_rs::Registry`].
-pub fn register_connector_call(registry: &mut dataflow_rs::Registry, providers: ProviderRegistry) {
-    registry.register(NAME, ConnectorCallFunction { providers });
+pub fn register_connector_call(
+    registry: &mut dataflow_rs::Registry,
+    providers: ProviderRegistry,
+    connectors: std::sync::Arc<crate::connector::ConnectorRegistry>,
+) {
+    registry.register(
+        NAME,
+        ConnectorCallFunction {
+            providers,
+            registry: connectors,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -466,6 +491,58 @@ mod tests {
         .name(NAME)
     }
 
+    /// A retryable failure counts against the (channel, connection) breaker,
+    /// as every connector function's does, and an open breaker refuses the
+    /// next call before it reaches the provider.
+    #[tokio::test]
+    async fn retryable_failures_trip_the_connection_breaker() {
+        let root = CompositionRoot::community();
+        root.deployments
+            .store_connection_revision(
+                "dead-db",
+                1,
+                DIGEST,
+                json!({"connection_string": "postgres://127.0.0.1:1/nothing"}),
+                None,
+            )
+            .expect("revision stored");
+        let func = ConnectorCallFunction {
+            providers: root.providers.clone(),
+            registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                crate::connector::circuit_breaker::CircuitBreakerConfig {
+                    enabled: true,
+                    failure_threshold: 1,
+                    recovery_timeout_secs: 60,
+                    max_breakers: 16,
+                },
+            )),
+        };
+        let query = || {
+            testing::call(
+                func.clone(),
+                json!({
+                    "connection": "dead-db",
+                    "target_id": "org.orion.postgresql",
+                    "operation": "query",
+                    "input": {"sql": "SELECT 1"},
+                    "output": "data.rows"
+                }),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME)
+        };
+        let grants = &[("dead-db", "query")];
+        let first = served(&root, grants, query()).await;
+        let err = first.outcome.expect_err("nothing listens on port 1");
+        assert!(err.is_retryable(), "{}", err.message());
+        let second = served(&root, grants, query()).await;
+        let err = second.outcome.expect_err("the breaker is open");
+        assert!(
+            err.message().contains("circuit") || format!("{err:?}").contains("circuit"),
+            "{err:?}"
+        );
+    }
+
     /// Outside a served run, without a grant for its workflow, or naming a
     /// connection with no revision, a call is refused rather than run on
     /// an invented context.
@@ -474,6 +551,9 @@ mod tests {
         let root = CompositionRoot::community();
         let func = ConnectorCallFunction {
             providers: root.providers.clone(),
+            registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                Default::default(),
+            )),
         };
         let outside = cache_call(&func, "cache.get", json!({"key": "k"})).await;
         let err = outside.outcome.expect_err("refused outside a run");
@@ -521,6 +601,9 @@ mod tests {
         let root = CompositionRoot::community();
         let func = ConnectorCallFunction {
             providers: root.providers.clone(),
+            registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                Default::default(),
+            )),
         };
         let called = testing::call(
             func,
@@ -553,6 +636,9 @@ mod tests {
         let root = CompositionRoot::community();
         let func = ConnectorCallFunction {
             providers: root.providers.clone(),
+            registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                Default::default(),
+            )),
         };
         let message = dataflow_rs::Message::from_parts(
             OwnedDataValue::from(&json!({})),
@@ -591,6 +677,9 @@ mod tests {
         let root = CompositionRoot::community();
         let func = ConnectorCallFunction {
             providers: root.providers.clone(),
+            registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                Default::default(),
+            )),
         };
 
         // 1. Set a value in org.orion.memory-cache via connector_call
