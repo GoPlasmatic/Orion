@@ -44,7 +44,7 @@ And from the workflow behind it, since a channel whose workflow cannot be built 
 
 2. Scan for the rest before they bite. `orion-server preflight` reads the stored estate and names every channel and workflow the current rules refuse.
 3. Fix the stored config through the admin API, by creating a new version; active versions are immutable.
-4. Reload. Quarantine clears only when a later reload builds the channel successfully: activating something else, or `POST /api/v1/admin/engine/reload`. Nothing retries it in the background.
+4. Reload. Quarantine clears only when a later reload builds the channel successfully: activating something else, or `POST /api/v2/admin/engine/reload`. Nothing retries it in the background.
 
 **How to verify.** `/health` no longer lists the channel under `channels.quarantined`, and `components.channels` reads `ok`. There is no metric for quarantine on the synchronous path. `/health` and the reload log are the signals, which is why the `channels` component going `degraded` deserves an alert of its own.
 
@@ -103,8 +103,8 @@ Forwarded headers are honoured only when the peer is on that list. Also check th
 **What to do.** Confirm the backend recovered first; a reset against a still-broken backend trips again:
 
 ```bash
-curl -s http://localhost:8080/api/v1/admin/connectors/circuit-breakers
-curl -s -X POST http://localhost:8080/api/v1/admin/connectors/circuit-breakers/{key}
+curl -s http://localhost:8080/api/v2/admin/connectors/circuit-breakers
+curl -s -X POST http://localhost:8080/api/v2/admin/connectors/circuit-breakers/{key}
 ```
 
 Breakers close on their own once calls succeed, so a manual reset is only for cutting the recovery window short. In cluster mode breakers trip per node, so one replica can be failing fast while another still serves. A reset fans out to every node over the config epoch.
@@ -118,10 +118,10 @@ Breakers close on their own once calls succeed, so a manual reset is only for cu
 **What to do.** Read the errors first; the DLQ is a symptom, not a cause:
 
 ```bash
-curl -s "http://localhost:8080/api/v1/admin/trace-dlq?limit=20" | jq '.data[].error'
+curl -s "http://localhost:8080/api/v2/admin/trace-dlq?limit=20" | jq '.data[].error'
 ```
 
-Then drain faster by raising `trace_queue.dlq_batch_size`, or purge what is beyond use with `POST /api/v1/admin/trace-dlq/purge` and `{"older_than_hours": 168}` as the body. The age is required, and only exhausted entries are deleted. Check whether retry is even on: with `trace_queue.dlq_retry_enabled = false`, the `orion_trace_dlq_depth` gauge stops updating, so a flat line means "nobody is looking", not "empty".
+Then drain faster by raising `trace_queue.dlq_batch_size`, or purge what is beyond use with `POST /api/v2/admin/trace-dlq/purge` and `{"older_than_hours": 168}` as the body. The age is required, and only exhausted entries are deleted. Check whether retry is even on: with `trace_queue.dlq_retry_enabled = false`, the `orion_trace_dlq_depth` gauge stops updating, so a flat line means "nobody is looking", not "empty".
 
 **How to verify.** `orion_trace_dlq_depth` falls, and stays moving.
 

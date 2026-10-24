@@ -41,7 +41,7 @@ shutdown_timeout_secs = 30
 
 **Sizing the lease.** A running attempt holds its claim and its singleton slot for `claim_lease_secs` at a time, renewed every `heartbeat_interval_secs`, whatever its channel's `timeout_ms`. If its node dies, or shutdown cancels it after `shutdown_timeout_secs`, a peer recovers the occurrence and its slot one lease later. Earlier releases sized the lease from the channel's timeout, so a two-hour channel held its key for two hours after a crash.
 
-A live attempt that cannot renew stops itself before its lease can run out, so a peer that takes over never runs beside it. It stops after `claim_lease_secs` minus one heartbeat without a successful renewal: 45 seconds at the defaults. A database outage longer than that cancels running attempts, and they are attempted again once the database is back. Raise `claim_lease_secs` to ride out longer outages, at the cost of slower recovery from a dead node. To free a dead node's slots at once, cancel its occurrences: `POST /api/v1/admin/cron/occurrences/{id}/cancel`.
+A live attempt that cannot renew stops itself before its lease can run out, so a peer that takes over never runs beside it. It stops after `claim_lease_secs` minus one heartbeat without a successful renewal: 45 seconds at the defaults. A database outage longer than that cancels running attempts, and they are attempted again once the database is back. Raise `claim_lease_secs` to ride out longer outages, at the cost of slower recovery from a dead node. To free a dead node's slots at once, cancel its occurrences: `POST /api/v2/admin/cron/occurrences/{id}/cancel`.
 
 ## Related
 

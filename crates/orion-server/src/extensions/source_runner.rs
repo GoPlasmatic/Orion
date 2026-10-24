@@ -281,6 +281,106 @@ impl SourceLeaseCoordinator {
         }
         Ok(())
     }
+
+    /// Persist all active partition claims and fence tokens to the `source_claims` SQLite table (`TD-27`).
+    pub async fn persist_to_sqlite(
+        &self,
+        pool: &sqlx::SqlitePool,
+    ) -> Result<(), SourceCoordinationError> {
+        let claims: Vec<SourcePartitionClaim> = {
+            let guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+            guard.values().map(|s| s.claim.clone()).collect()
+        };
+        let mut tx = pool.begin().await.map_err(|e| SourceCoordinationError {
+            code: "DB_ERROR",
+            message: format!("Failed to begin SQLite transaction for source_claims: {e}"),
+        })?;
+        for c in claims {
+            sqlx::query(
+                "INSERT INTO source_claims \
+                 (channel_id, partition_id, owner_id, revision, checkpoint_namespace, fence_token, lease_until) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(channel_id, partition_id) DO UPDATE SET \
+                 owner_id = excluded.owner_id, \
+                 revision = excluded.revision, \
+                 checkpoint_namespace = excluded.checkpoint_namespace, \
+                 fence_token = excluded.fence_token, \
+                 lease_until = excluded.lease_until, \
+                 updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(&c.key.channel_id)
+            .bind(&c.key.partition_id)
+            .bind(&c.owner_id)
+            .bind(c.revision as i64)
+            .bind(&c.checkpoint_namespace)
+            .bind(c.fence_token as i64)
+            .bind(c.expires_at_ms.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SourceCoordinationError {
+                code: "DB_ERROR",
+                message: format!("Failed to upsert source_claims row: {e}"),
+            })?;
+        }
+        tx.commit().await.map_err(|e| SourceCoordinationError {
+            code: "DB_ERROR",
+            message: format!("Failed to commit source_claims transaction: {e}"),
+        })?;
+        Ok(())
+    }
+
+    /// Hydrate partition claims and fence tokens from the `source_claims` SQLite table (`TD-27`).
+    pub async fn load_from_sqlite(
+        &self,
+        pool: &sqlx::SqlitePool,
+    ) -> Result<usize, SourceCoordinationError> {
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "SELECT channel_id, partition_id, owner_id, revision, checkpoint_namespace, fence_token, lease_until \
+             FROM source_claims",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| SourceCoordinationError {
+            code: "DB_ERROR",
+            message: format!("Failed to query source_claims: {e}"),
+        })?;
+
+        let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        let mut count = 0usize;
+        for r in rows {
+            let channel_id: String = r.get("channel_id");
+            let partition_id: String = r.get("partition_id");
+            let owner_id: String = r.get("owner_id");
+            let revision = r.get::<i64, _>("revision") as u64;
+            let checkpoint_namespace: String = r.get("checkpoint_namespace");
+            let fence_token = r.get::<i64, _>("fence_token") as u64;
+            let lease_until_str: String = r.try_get("lease_until").unwrap_or_default();
+            let expires_at_ms = lease_until_str.parse::<u64>().unwrap_or(0);
+            let key = SourcePartitionKey::new(channel_id, partition_id);
+            let claim = SourcePartitionClaim {
+                key: key.clone(),
+                owner_id,
+                revision,
+                checkpoint_namespace,
+                fence_token,
+                expires_at_ms,
+            };
+            let highest_fence = guard
+                .get(&key)
+                .map(|s| s.highest_fence.max(fence_token))
+                .unwrap_or(fence_token);
+            guard.insert(
+                key,
+                PartitionSlot {
+                    claim,
+                    highest_fence,
+                },
+            );
+            count += 1;
+        }
+        Ok(count)
+    }
 }
 
 /// Lifecycle state of a single polled source item in [`ContiguousCheckpointLedger`] (`V2-15.3`).
@@ -466,6 +566,118 @@ impl ContiguousCheckpointLedger {
             ledger.committed_checkpoint.clone()?,
             ledger.committed_fence,
         ))
+    }
+
+    /// Persist all committed contiguous checkpoints to the `source_checkpoints` SQLite table (`TD-27`).
+    pub async fn persist_to_sqlite(
+        &self,
+        pool: &sqlx::SqlitePool,
+        default_namespace: &str,
+    ) -> Result<(), SourceCoordinationError> {
+        let entries: Vec<(SourcePartitionKey, String, u64, u64, String)> = {
+            let slots = self
+                .coordinator
+                .slots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut out = Vec::new();
+            for (k, l) in guard.iter() {
+                if let Some(ref cp) = l.committed_checkpoint {
+                    let ns = slots
+                        .get(k)
+                        .map(|s| s.claim.checkpoint_namespace.clone())
+                        .unwrap_or_else(|| default_namespace.to_string());
+                    let cursor_json =
+                        serde_json::to_string(cp).unwrap_or_else(|_| "{}".to_string());
+                    out.push((
+                        k.clone(),
+                        ns,
+                        l.committed_fence,
+                        l.committed_seq,
+                        cursor_json,
+                    ));
+                }
+            }
+            out
+        };
+
+        let mut tx = pool.begin().await.map_err(|e| SourceCoordinationError {
+            code: "DB_ERROR",
+            message: format!("Failed to begin SQLite transaction for source_checkpoints: {e}"),
+        })?;
+        for (key, ns, fence, seq, cursor_json) in entries {
+            sqlx::query(
+                "INSERT INTO source_checkpoints \
+                 (channel_id, partition_id, checkpoint_namespace, fence_token, contiguous_offset, cursor_json) \
+                 VALUES (?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(channel_id, partition_id, checkpoint_namespace) DO UPDATE SET \
+                 fence_token = excluded.fence_token, \
+                 contiguous_offset = excluded.contiguous_offset, \
+                 cursor_json = excluded.cursor_json, \
+                 updated_at = CURRENT_TIMESTAMP \
+                 WHERE excluded.fence_token >= source_checkpoints.fence_token",
+            )
+            .bind(&key.channel_id)
+            .bind(&key.partition_id)
+            .bind(&ns)
+            .bind(fence as i64)
+            .bind(seq as i64)
+            .bind(&cursor_json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| SourceCoordinationError {
+                code: "DB_ERROR",
+                message: format!("Failed to upsert source_checkpoints row: {e}"),
+            })?;
+        }
+        tx.commit().await.map_err(|e| SourceCoordinationError {
+            code: "DB_ERROR",
+            message: format!("Failed to commit source_checkpoints transaction: {e}"),
+        })?;
+        Ok(())
+    }
+
+    /// Hydrate committed contiguous checkpoints from the `source_checkpoints` SQLite table (`TD-27`).
+    pub async fn load_from_sqlite(
+        &self,
+        pool: &sqlx::SqlitePool,
+    ) -> Result<usize, SourceCoordinationError> {
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "SELECT channel_id, partition_id, fence_token, contiguous_offset, cursor_json \
+             FROM source_checkpoints",
+        )
+        .fetch_all(pool)
+        .await
+        .map_err(|e| SourceCoordinationError {
+            code: "DB_ERROR",
+            message: format!("Failed to query source_checkpoints: {e}"),
+        })?;
+
+        let mut guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut count = 0usize;
+        for r in rows {
+            let channel_id: String = r.get("channel_id");
+            let partition_id: String = r.get("partition_id");
+            let fence_token = r.get::<i64, _>("fence_token") as u64;
+            let contiguous_offset = r.get::<i64, _>("contiguous_offset") as u64;
+            let cursor_json: String = r.get("cursor_json");
+            let cp: Value = serde_json::from_str(&cursor_json).map_err(|e| {
+                SourceCoordinationError {
+                    code: "CORRUPT_PERSISTED_STATE",
+                    message: format!("Corrupt cursor_json in source_checkpoints: {e}"),
+                }
+            })?;
+            let key = SourcePartitionKey::new(channel_id, partition_id);
+            let ledger = guard.entry(key).or_default();
+            ledger.committed_seq = contiguous_offset;
+            ledger.next_seq = ledger.next_seq.max(contiguous_offset);
+            ledger.committed_checkpoint = Some(cp);
+            ledger.committed_fence = fence_token;
+            count += 1;
+        }
+        Ok(count)
     }
 }
 
@@ -867,5 +1079,70 @@ mod tests {
             .expect("source poll succeeds");
         assert!(batch.items.is_empty());
         assert_eq!(batch.next_checkpoint, Some(json!({"lsn": 42})));
+    }
+
+    #[tokio::test]
+    async fn td27_source_claims_and_checkpoints_persist_to_sqlite() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory pool");
+        sqlx::raw_sql(include_str!(
+            "../../migrations/sqlite/023_v2_immutable_deployments.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("023 migration");
+
+        let coord = SourceLeaseCoordinator::new();
+        let ledger = ContiguousCheckpointLedger::new(coord.clone());
+        let key = SourcePartitionKey::new("orders-source", "part-0");
+
+        let claim = coord
+            .acquire_or_takeover(key.clone(), "node-a", 1, "pg-lsn-v1", 1_000, 5_000)
+            .expect("acquire claim");
+        assert_eq!(claim.fence_token, 1);
+
+        let seq1 = ledger
+            .enqueue_polled_item(&key, 1, 1_100, "deliv-1", json!({"lsn": 777}))
+            .expect("enqueue");
+        ledger
+            .record_settlement_intent(&key, 1, 1_200, seq1, SourceSettlement::Ack)
+            .expect("intent");
+        ledger
+            .confirm_settled_and_advance(&key, 1, 1_200, seq1, false)
+            .expect("confirm");
+
+        coord
+            .persist_to_sqlite(&pool)
+            .await
+            .expect("persist claims");
+        ledger
+            .persist_to_sqlite(&pool, "pg-lsn-v1")
+            .await
+            .expect("persist checkpoints");
+
+        // Hydrate into a fresh coordinator and ledger
+        let coord2 = SourceLeaseCoordinator::new();
+        let ledger2 = ContiguousCheckpointLedger::new(coord2.clone());
+        assert_eq!(coord2.load_from_sqlite(&pool).await.expect("load claims"), 1);
+        assert_eq!(
+            ledger2
+                .load_from_sqlite(&pool)
+                .await
+                .expect("load checkpoints"),
+            1
+        );
+
+        // Next takeover on coord2 must issue fence_token = 2 (preserving monotonic fence across restarts!)
+        let takeover = coord2
+            .acquire_or_takeover(key.clone(), "node-b", 1, "pg-lsn-v1", 10_000, 5_000)
+            .expect("takeover after expiry");
+        assert_eq!(takeover.fence_token, 2);
+        assert_eq!(
+            ledger2.committed_checkpoint(&key),
+            Some((1, json!({"lsn": 777}), 1))
+        );
     }
 }

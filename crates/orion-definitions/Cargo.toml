@@ -6,6 +6,10 @@ rust-version.workspace = true
 description = "Static definition primitives (order-preserving JSON AST, SQL lexer, and source provenance) for the Orion runtime"
 license.workspace = true
 repository.workspace = true
+homepage = "https://docs.goplasmatic.io/"
+readme = "README.md"
+keywords = ["workflow", "runtime", "json", "sql", "lexer"]
+categories = ["data-structures", "parser-implementations"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -66,13 +66,13 @@ A package with no HTTP route deploys the same way, and the script prints what it
 
 | File | Sent to | Purpose |
 |------|---------|---------|
-| `workflow.json` | `POST /api/v1/admin/workflows` | The task pipeline, which is the logic |
-| `workflow-<name>.json` *(optional)* | `POST /api/v1/admin/workflows` | Additional workflows, when the package is more than one service |
-| `channel.json` | `POST /api/v1/admin/channels` | The endpoint that routes to the workflow |
-| `channel-<name>.json` *(optional)* | `POST /api/v1/admin/channels` | Additional channels |
-| `request.json` | `POST /api/v1/data/<route>` | A sample request to try it |
-| `connector.json` *(optional)* | `POST /api/v1/admin/connectors` | A named connection to an external system, when the package needs one |
-| `plugin.toml` + the component it names *(optional)* | `POST /api/v1/admin/plugins` | A WebAssembly plugin the workflows call, uploaded and activated before them. Needs `plugins.enabled = true` |
+| `workflow.json` | `POST /api/v2/admin/workflows` | The task pipeline, which is the logic |
+| `workflow-<name>.json` *(optional)* | `POST /api/v2/admin/workflows` | Additional workflows, when the package is more than one service |
+| `channel.json` | `POST /api/v2/admin/channels` | The endpoint that routes to the workflow |
+| `channel-<name>.json` *(optional)* | `POST /api/v2/admin/channels` | Additional channels |
+| `request.json` | `POST /api/v2/data/<route>` | A sample request to try it |
+| `connector.json` *(optional)* | `POST /api/v2/admin/connectors` | A named connection to an external system, when the package needs one |
+| `plugin.toml` + the component it names *(optional)* | `POST /api/v2/admin/plugins` | A WebAssembly plugin the workflows call, uploaded and activated before them. Needs `plugins.enabled = true` |
 | `entrant/model.json` + the artifact it names *(optional)* | `orion-cli models create` | A model the workflows call. Not deployed by `deploy.sh`: the bytes go in a bucket behind a `storage` connector and the model is registered from there. Needs `models.enabled = true`; the script prints the commands |
 
 Every entity carries a `tags: ["pkg:<name>"]` label. That label is what marks it as part of the package, and what package export selects on.
@@ -91,31 +91,31 @@ cd packages/high-value-order
 Create the workflow. It lands as a draft:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/admin/workflows \
+curl -X POST http://localhost:8080/api/v2/admin/workflows \
   -H 'Content-Type: application/json' --data @workflow.json
 ```
 
 Activate it:
 
 ```bash
-curl -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/status \
+curl -X PATCH http://localhost:8080/api/v2/admin/workflows/high-value-order/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
 Create the channel, then activate it:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/admin/channels \
+curl -X POST http://localhost:8080/api/v2/admin/channels \
   -H 'Content-Type: application/json' --data @channel.json
 
-curl -X PATCH http://localhost:8080/api/v1/admin/channels/high-value-orders/status \
+curl -X PATCH http://localhost:8080/api/v2/admin/channels/high-value-orders/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
 Send the sample request:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/data/high-value-orders \
+curl -X POST http://localhost:8080/api/v2/data/high-value-orders \
   -H 'Content-Type: application/json' --data @request.json
 ```
 
@@ -123,7 +123,7 @@ curl -X POST http://localhost:8080/api/v1/data/high-value-orders \
 > A draft workflow can be dry-run against sample data without serving any traffic. `/test` takes the same `{ "data": … }` envelope and returns an execution trace showing which tasks ran or were skipped:
 >
 > ```bash
-> curl -X POST http://localhost:8080/api/v1/admin/workflows/high-value-order/test \
+> curl -X POST http://localhost:8080/api/v2/admin/workflows/high-value-order/test \
 >   -H 'Content-Type: application/json' --data @request.json
 > ```
 

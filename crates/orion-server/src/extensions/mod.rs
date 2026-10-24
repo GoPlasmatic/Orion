@@ -180,11 +180,14 @@ impl CompositionRoot {
         let pools = ResourcePoolRegistry::new();
         foundation::register_community_foundation_providers(&providers, &pools);
         let deployments = ImmutableDeploymentStore::default();
+        let admission: Arc<dyn AdmissionPolicy> = Arc::new(CommunityAdmissionPolicy::new());
+        providers.set_admission_policy(admission.clone());
+        providers.set_deployment_store(deployments.clone());
         let reconciler = NodeReconciler::new(deployments.clone(), "node-local-1", "boot-1");
         Self {
             channels: ChannelDriverRegistry::community(),
             providers,
-            admission: Arc::new(CommunityAdmissionPolicy::new()),
+            admission,
             pools,
             deployments,
             reconciler,
@@ -206,6 +209,7 @@ impl CompositionRoot {
 
     /// Replace the package and runtime [`AdmissionPolicy`] (e.g. for Enterprise Edition).
     pub fn with_admission_policy(mut self, policy: Arc<dyn AdmissionPolicy>) -> Self {
+        self.providers.set_admission_policy(policy.clone());
         self.admission = policy;
         self
     }

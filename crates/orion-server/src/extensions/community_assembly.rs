@@ -271,7 +271,7 @@ mod tests {
         ));
 
         // 2. Verify and register a custom Wasm connector on the Community root.
-        let wasm_bytes = b"\0asm\x01\x00\x00\x00custom-wasm-connector";
+        let wasm_bytes = b"\0asm\x01\x00\x00\x00";
         let digest = WasmComponentCache::sha256_digest(wasm_bytes);
         let wasm_provider_ref = ProviderReference {
             provider_id: "community.wasm-enricher".to_string(),

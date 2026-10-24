@@ -86,6 +86,8 @@ struct DlqCandidate<'a> {
     payload: &'a serde_json::Value,
     metadata: &'a serde_json::Value,
     retry_count: i64,
+    dlq_entry_id: Option<&'a str>,
+    dlq_max_retries: Option<i64>,
 }
 
 /// One trace's claim on the queue's capacity, released on drop.
@@ -179,7 +181,7 @@ pub(super) async fn dispatcher_loop(
 
         tokio::spawn(async move {
             let _claim = claim;
-            process_trace(item, processing).await;
+            run_supervised_trace(item, processing).await;
         });
     }
 
@@ -259,12 +261,99 @@ async fn route_set_result(
     }
 }
 
+/// Supervise one queued trace so a panicking handler or task still records a
+/// terminal trace status (`FAILED`) and settles any leased DLQ retry entry
+/// as exhausted rather than stranding the trace at `pending`/`running` or
+/// automatically replaying after uncertain side effects (`TD-06`).
+async fn run_supervised_trace(item: QueuedItem, ctx: ProcessingContext) {
+    let trace_id = item.msg.trace_id.clone();
+    let channel = item.msg.channel.clone();
+    let dlq_entry_id = item.dlq_entry_id.clone();
+    let ctx_for_panic = ctx.clone();
+
+    if let Err(join_err) = tokio::spawn(process_trace(item, ctx)).await
+        && join_err.is_panic()
+    {
+        settle_panicked_trace(
+            &ctx_for_panic,
+            &trace_id,
+            &channel,
+            dlq_entry_id.as_deref(),
+        )
+        .await;
+    }
+}
+
+/// Settle a trace whose worker task panicked during execution (`TD-06`).
+async fn settle_panicked_trace(
+    ctx: &ProcessingContext,
+    trace_id: &str,
+    channel: &str,
+    dlq_entry_id: Option<&str>,
+) {
+    const PANIC_ERROR_MSG: &str = "Internal error: trace worker panicked during execution";
+
+    metrics::record_error("trace_worker_panic");
+    tracing::error!(
+        trace_id = %trace_id,
+        channel = %channel,
+        "Trace worker panicked during execution; settling trace as failed without automatic replay"
+    );
+
+    let generation = ctx.runtime.load();
+    let channel_runtime = generation.channels.get_by_name(channel);
+    let effective_trace = channel_runtime
+        .map(|c| c.trace_storage)
+        .unwrap_or_else(|| {
+            crate::channel::registry::EffectiveTraceConfig::resolve(&ctx.global_trace_storage, None)
+        })
+        .for_async_submission();
+
+    if matches!(effective_trace.mode, TraceStorageMode::Sync) {
+        if let Err(e) = ctx
+            .trace_repo
+            .update_status(trace_id, models::TRACE_STATUS_FAILED, Some(PANIC_ERROR_MSG))
+            .await
+        {
+            tracing::error!(
+                trace_id = %trace_id,
+                error = %e,
+                "Failed to settle panicked trace status to failed"
+            );
+        }
+    } else {
+        ctx.set_trace_status(
+            effective_trace.mode,
+            trace_id,
+            models::TRACE_STATUS_FAILED,
+            Some(PANIC_ERROR_MSG),
+        )
+        .await;
+    }
+
+    // Avoid automatic replay when external side effects are uncertain: if this
+    // trace was a leased DLQ retry, mark the DLQ entry exhausted (`TD-06`).
+    if let Some(dlq_id) = dlq_entry_id
+        && let Some(ref dlq) = ctx.dlq_repo
+        && let Err(e) = dlq.mark_exhausted(dlq_id).await
+    {
+        tracing::error!(
+            dlq_id = %dlq_id,
+            trace_id = %trace_id,
+            error = %e,
+            "Failed to mark DLQ entry exhausted after worker panic"
+        );
+    }
+}
+
 /// Process a single queued trace.
 #[tracing::instrument(skip_all, fields(trace_id = %item.msg.trace_id, channel = %item.msg.channel))]
 async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     let QueuedItem {
         mut msg,
         dlq_retry_count,
+        dlq_entry_id,
+        dlq_max_retries,
         // Already released by the dispatcher once this task returns.
         payload_size: _,
     } = item;
@@ -351,6 +440,8 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         payload: &msg.payload,
         metadata: &msg.metadata,
         retry_count: dlq_retry_count,
+        dlq_entry_id: dlq_entry_id.as_deref(),
+        dlq_max_retries,
     };
 
     // A quarantined channel is refused rather than executed. The trace
@@ -425,6 +516,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
                 &ctx,
                 &effective_trace,
                 &trace_id,
+                &dlq,
                 &message,
                 profile.as_ref(),
                 duration_ms,
@@ -491,11 +583,11 @@ async fn mark_running(
                 "Failed to update trace status to running — routing to DLQ"
             );
             metrics::record_error("trace_status_write");
-            enqueue_dlq_row(
+            settle_dlq_on_failure(
                 &ctx.dlq_repo,
                 dlq,
                 &format!("Failed to mark trace running: {e}"),
-                ctx.dlq_max_retries,
+                dlq.dlq_max_retries.unwrap_or(ctx.dlq_max_retries),
             )
             .await;
             let _ = ctx
@@ -518,11 +610,14 @@ async fn mark_running(
 /// The success arm of [`process_trace`]: serialize the finished message
 /// (embedding the profile when requested), enforce the result size limit,
 /// route the result write through the configured persistence mode (with
-/// inline retries in sync mode), and set the final trace status.
+/// inline retries in sync mode), set the final trace status, and settle any
+/// leased DLQ retry entry (`TD-05`).
+#[allow(clippy::too_many_arguments)]
 async fn persist_success(
     ctx: &ProcessingContext,
     effective_trace: &crate::channel::registry::EffectiveTraceConfig,
     trace_id: &str,
+    dlq: &DlqCandidate<'_>,
     message: &dataflow_rs_v3::Message,
     profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
     duration_ms: f64,
@@ -533,12 +628,20 @@ async fn persist_success(
     let result_json = match serialize_result_with_profile(message, profile) {
         Ok(json) => json,
         Err(e) => {
+            let err_msg = format!("Result serialization failed: {e}");
             tracing::error!(trace_id = %trace_id, error = %e, "Failed to serialize trace result");
             ctx.set_trace_status(
                 trace_mode,
                 trace_id,
                 models::TRACE_STATUS_FAILED,
-                Some(&format!("Result serialization failed: {e}")),
+                Some(&err_msg),
+            )
+            .await;
+            settle_dlq_on_failure(
+                &ctx.dlq_repo,
+                dlq,
+                &err_msg,
+                dlq.dlq_max_retries.unwrap_or(ctx.dlq_max_retries),
             )
             .await;
             return;
@@ -547,6 +650,11 @@ async fn persist_success(
 
     // Enforce result size limit
     if ctx.max_result_size_bytes > 0 && result_json.len() > ctx.max_result_size_bytes {
+        let err_msg = format!(
+            "Result size {} bytes exceeds limit of {} bytes",
+            result_json.len(),
+            ctx.max_result_size_bytes
+        );
         tracing::warn!(
             trace_id = %trace_id,
             result_bytes = result_json.len(),
@@ -558,11 +666,14 @@ async fn persist_success(
             trace_mode,
             trace_id,
             models::TRACE_STATUS_FAILED,
-            Some(&format!(
-                "Result size {} bytes exceeds limit of {} bytes",
-                result_json.len(),
-                ctx.max_result_size_bytes
-            )),
+            Some(&err_msg),
+        )
+        .await;
+        settle_dlq_on_failure(
+            &ctx.dlq_repo,
+            dlq,
+            &err_msg,
+            dlq.dlq_max_retries.unwrap_or(ctx.dlq_max_retries),
         )
         .await;
         return;
@@ -628,20 +739,109 @@ async fn persist_success(
     if result_saved {
         ctx.set_trace_status(trace_mode, trace_id, models::TRACE_STATUS_COMPLETED, None)
             .await;
+        settle_dlq_on_success(&ctx.dlq_repo, dlq.dlq_entry_id).await;
     } else {
+        let err_msg = "Result persistence failed after retries";
         tracing::error!(trace_id = %trace_id, "Failed to save trace result after 3 attempts, marking as failed");
         ctx.set_trace_status(
             trace_mode,
             trace_id,
             models::TRACE_STATUS_FAILED,
-            Some("Result persistence failed after retries"),
+            Some(err_msg),
+        )
+        .await;
+        settle_dlq_on_failure(
+            &ctx.dlq_repo,
+            dlq,
+            err_msg,
+            dlq.dlq_max_retries.unwrap_or(ctx.dlq_max_retries),
         )
         .await;
     }
 }
 
+/// Settle a leased DLQ entry after its retry execution succeeded (`TD-05`).
+pub(crate) async fn settle_dlq_on_success(
+    dlq_repo: &Option<Arc<dyn TraceDlqRepository>>,
+    dlq_entry_id: Option<&str>,
+) {
+    let (Some(dlq), Some(dlq_id)) = (dlq_repo, dlq_entry_id) else {
+        return;
+    };
+    if let Err(e) = dlq.remove(dlq_id).await {
+        tracing::error!(
+            dlq_id = %dlq_id,
+            error = %e,
+            "DLQ retry: failed to remove leased entry after successful execution"
+        );
+    } else {
+        tracing::info!(
+            dlq_id = %dlq_id,
+            "DLQ retry: removed leased entry after successful execution"
+        );
+    }
+}
+
+/// Settle a failed trace against the DLQ (`TD-05`).
+///
+/// - When `candidate.dlq_entry_id` is `Some(dlq_id)`, the failure came from a
+///   leased DLQ retry: we update the existing row in place (`mark_exhausted`
+///   when `retry_count >= dlq_max_retries`, or `record_retry` to release the
+///   lease and advance `retry_count`).
+/// - When `candidate.dlq_entry_id` is `None`, this is an initial async trace
+///   failure and a new DLQ row is enqueued via [`enqueue_dlq_row`].
+async fn settle_dlq_on_failure(
+    dlq_repo: &Option<Arc<dyn TraceDlqRepository>>,
+    candidate: &DlqCandidate<'_>,
+    error_str: &str,
+    dlq_max_retries: i64,
+) {
+    if let Some(dlq_id) = candidate.dlq_entry_id {
+        let Some(dlq) = dlq_repo else { return };
+        if candidate.retry_count >= dlq_max_retries {
+            metrics::record_error("dlq_exhausted");
+            metrics::record_trace_dlq_retry("exhausted");
+            if let Err(e) = dlq.mark_exhausted(dlq_id).await {
+                tracing::error!(
+                    dlq_id = %dlq_id,
+                    trace_id = %candidate.trace_id,
+                    error = %e,
+                    "DLQ retry: failed to mark leased entry exhausted after execution failure"
+                );
+            } else {
+                tracing::warn!(
+                    dlq_id = %dlq_id,
+                    trace_id = %candidate.trace_id,
+                    retry_count = candidate.retry_count,
+                    max_retries = dlq_max_retries,
+                    "DLQ retry: max retries exhausted after execution failure"
+                );
+            }
+        } else {
+            let next_retry = chrono::Utc::now().naive_utc();
+            if let Err(e) = dlq.record_retry(dlq_id, next_retry).await {
+                tracing::error!(
+                    dlq_id = %dlq_id,
+                    trace_id = %candidate.trace_id,
+                    error = %e,
+                    "DLQ retry: failed to record retry on leased entry after execution failure"
+                );
+            } else {
+                tracing::info!(
+                    dlq_id = %dlq_id,
+                    trace_id = %candidate.trace_id,
+                    retry_count = candidate.retry_count,
+                    "DLQ retry: released lease and recorded retry after execution failure"
+                );
+            }
+        }
+    } else {
+        enqueue_dlq_row(dlq_repo, candidate, error_str, dlq_max_retries).await;
+    }
+}
+
 /// The failure arm of [`process_trace`]: mark the trace failed through the
-/// configured persistence mode and enqueue the message to the DLQ for retry.
+/// configured persistence mode and settle or enqueue the message in the DLQ.
 async fn handle_failure(
     ctx: &ProcessingContext,
     trace_mode: TraceStorageMode,
@@ -656,10 +856,13 @@ async fn handle_failure(
     )
     .await;
 
-    // Enqueue to DLQ for retry. The new row starts at the retry count
-    // this message's lineage already spent, so `dlq_max_retries`
-    // converges instead of resetting on every failure (Q3).
-    enqueue_dlq_row(&ctx.dlq_repo, dlq, error_str, ctx.dlq_max_retries).await;
+    settle_dlq_on_failure(
+        &ctx.dlq_repo,
+        dlq,
+        error_str,
+        dlq.dlq_max_retries.unwrap_or(ctx.dlq_max_retries),
+    )
+    .await;
 }
 
 /// Enqueue a failed message into the trace DLQ. Shared by the engine-error
@@ -840,5 +1043,249 @@ mod tests {
         );
         drop(survivor);
         assert_eq!(memory.load(Ordering::Relaxed), 0);
+    }
+
+    #[derive(Default)]
+    struct TestTraceSink {
+        updates: std::sync::Mutex<Vec<(String, String, Option<String>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TraceSink for TestTraceSink {
+        async fn create_pending(
+            &self,
+            _channel: &str,
+            _channel_id: Option<&str>,
+            _mode: &str,
+            _input_json: Option<&str>,
+            _access_token_hash: Option<&str>,
+        ) -> Result<models::Trace, crate::errors::OrionError> {
+            unimplemented!()
+        }
+
+        async fn update_status(
+            &self,
+            id: &str,
+            status: &str,
+            error_message: Option<&str>,
+        ) -> Result<models::Trace, crate::errors::OrionError> {
+            self.updates.lock().expect("test").push((
+                id.to_string(),
+                status.to_string(),
+                error_message.map(str::to_string),
+            ));
+            let now = chrono::Utc::now().naive_utc();
+            Ok(models::Trace {
+                id: id.to_string(),
+                channel: "orders".to_string(),
+                channel_id: None,
+                mode: "async".to_string(),
+                status: status.to_string(),
+                input_json: None,
+                result_json: None,
+                error_message: error_message.map(str::to_string),
+                duration_ms: None,
+                started_at: None,
+                completed_at: None,
+                created_at: now,
+                updated_at: now,
+                task_trace_json: None,
+                access_token_hash: None,
+            })
+        }
+
+        async fn set_result(
+            &self,
+            _id: &str,
+            _result_json: &str,
+            _duration_ms: f64,
+            _task_trace_json: Option<&str>,
+        ) -> Result<(), crate::errors::OrionError> {
+            unimplemented!()
+        }
+
+        async fn store_completed(
+            &self,
+            _row: crate::storage::repositories::traces::TraceCompletedRef<'_>,
+        ) -> Result<String, crate::errors::OrionError> {
+            unimplemented!()
+        }
+    }
+
+    #[derive(Default)]
+    struct TestDlqRepo {
+        removed: std::sync::Mutex<Vec<String>>,
+        exhausted: std::sync::Mutex<Vec<String>>,
+        retried: std::sync::Mutex<Vec<String>>,
+        enqueued: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TraceDlqRepository for TestDlqRepo {
+        async fn enqueue(
+            &self,
+            row: crate::storage::repositories::trace_dlq::DlqEnqueue<'_>,
+        ) -> Result<models::TraceDlqEntry, crate::errors::OrionError> {
+            self.enqueued
+                .lock()
+                .expect("test")
+                .push(row.trace_id.to_string());
+            let now = chrono::Utc::now().naive_utc();
+            Ok(models::TraceDlqEntry {
+                id: "dlq-new".to_string(),
+                trace_id: row.trace_id.to_string(),
+                channel: row.channel.to_string(),
+                payload_json: row.payload_json.to_string(),
+                metadata_json: row.metadata_json.to_string(),
+                error_message: row.error_message.to_string(),
+                retry_count: row.retry_count,
+                max_retries: row.max_retries,
+                next_retry_at: now,
+                created_at: now,
+                updated_at: now,
+            })
+        }
+
+        async fn claim_pending(
+            &self,
+            _claimant: &str,
+            _limit: i64,
+            _lease_secs: u64,
+        ) -> Result<Vec<models::TraceDlqEntry>, crate::errors::OrionError> {
+            unimplemented!()
+        }
+
+        async fn record_retry(
+            &self,
+            id: &str,
+            _next_retry_at: chrono::NaiveDateTime,
+        ) -> Result<(), crate::errors::OrionError> {
+            self.retried.lock().expect("test").push(id.to_string());
+            Ok(())
+        }
+
+        async fn remove(&self, id: &str) -> Result<(), crate::errors::OrionError> {
+            self.removed.lock().expect("test").push(id.to_string());
+            Ok(())
+        }
+
+        async fn mark_exhausted(&self, id: &str) -> Result<(), crate::errors::OrionError> {
+            self.exhausted.lock().expect("test").push(id.to_string());
+            Ok(())
+        }
+
+        async fn list_paginated(
+            &self,
+            _filter: &crate::storage::repositories::trace_dlq::TraceDlqFilter,
+        ) -> Result<
+            crate::storage::repositories::helpers::PaginatedResult<models::TraceDlqSummary>,
+            crate::errors::OrionError,
+        > {
+            unimplemented!()
+        }
+
+        async fn count(
+            &self,
+            _filter: &crate::storage::repositories::trace_dlq::TraceDlqFilter,
+        ) -> Result<i64, crate::errors::OrionError> {
+            unimplemented!()
+        }
+
+        async fn get_by_id(
+            &self,
+            _id: &str,
+        ) -> Result<models::TraceDlqEntry, crate::errors::OrionError> {
+            unimplemented!()
+        }
+
+        async fn requeue(
+            &self,
+            _id: &str,
+        ) -> Result<models::TraceDlqEntry, crate::errors::OrionError> {
+            unimplemented!()
+        }
+
+        async fn purge_exhausted(
+            &self,
+            _older_than_hours: u64,
+        ) -> Result<u64, crate::errors::OrionError> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn panicking_trace_records_terminal_failed_status_and_exhausts_leased_dlq_entry() {
+        let trace_sink = Arc::new(TestTraceSink::default());
+        let dlq_repo = Arc::new(TestDlqRepo::default());
+        let dlq_trait: Option<Arc<dyn TraceDlqRepository>> = Some(dlq_repo.clone());
+        let ctx = ProcessingContext {
+            runtime: crate::runtime::generation::test_handle(),
+            trace_repo: trace_sink.clone(),
+            dlq_repo: dlq_trait,
+            processing_timeout_ms: 1000,
+            max_result_size_bytes: 1024 * 1024,
+            dlq_max_retries: 3,
+            rollout_sticky_header: Arc::from("x-request-id"),
+            persistence_queue: crate::queue::TracePersistenceQueue::disabled(),
+            global_trace_storage: crate::config::TraceStorageConfig::default(),
+        };
+
+        settle_panicked_trace(&ctx, "trace-panicked-1", "orders", Some("dlq-leased-1")).await;
+
+        let updates = trace_sink.updates.lock().expect("test");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].0, "trace-panicked-1");
+        assert_eq!(updates[0].1, models::TRACE_STATUS_FAILED);
+        assert!(
+            updates[0]
+                .2
+                .as_deref()
+                .is_some_and(|m| m.contains("panicked")),
+            "expected panic failure message, got {:?}",
+            updates[0].2
+        );
+
+        let exhausted = dlq_repo.exhausted.lock().expect("test");
+        assert_eq!(*exhausted, vec!["dlq-leased-1".to_string()]);
+        assert!(dlq_repo.enqueued.lock().expect("test").is_empty());
+    }
+
+    #[tokio::test]
+    async fn settle_dlq_on_failure_updates_leased_entry_or_exhausts_at_ceiling() {
+        let dlq_repo = Arc::new(TestDlqRepo::default());
+        let dlq_trait: Option<Arc<dyn TraceDlqRepository>> = Some(dlq_repo.clone());
+
+        // Attempt 1 of 3 on a leased DLQ row -> record_retry in place (no duplicate enqueue)
+        let candidate_retry = DlqCandidate {
+            trace_id: "t-retry-1",
+            channel: "orders",
+            payload: &serde_json::json!({"a": 1}),
+            metadata: &serde_json::json!({}),
+            retry_count: 1,
+            dlq_entry_id: Some("dlq-e1"),
+            dlq_max_retries: Some(3),
+        };
+        settle_dlq_on_failure(&dlq_trait, &candidate_retry, "transient err", 3).await;
+        assert_eq!(
+            *dlq_repo.retried.lock().expect("test"),
+            vec!["dlq-e1".to_string()]
+        );
+        assert!(dlq_repo.enqueued.lock().expect("test").is_empty());
+
+        // Attempt 3 of 3 on a leased DLQ row -> mark_exhausted in place
+        let candidate_exhausted = DlqCandidate {
+            trace_id: "t-retry-3",
+            channel: "orders",
+            payload: &serde_json::json!({"a": 1}),
+            metadata: &serde_json::json!({}),
+            retry_count: 3,
+            dlq_entry_id: Some("dlq-e1"),
+            dlq_max_retries: Some(3),
+        };
+        settle_dlq_on_failure(&dlq_trait, &candidate_exhausted, "still failing", 3).await;
+        assert_eq!(
+            *dlq_repo.exhausted.lock().expect("test"),
+            vec!["dlq-e1".to_string()]
+        );
     }
 }

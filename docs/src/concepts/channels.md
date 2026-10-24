@@ -32,7 +32,7 @@ A channel names exactly one workflow. That is what makes the channel the unit of
 Four protocols, set once and immutable across a channel's versions:
 
 - **`rest`**: a method and a path pattern, such as `POST /orders` or `GET /orders/{id}`. Path parameters reach the workflow as request metadata.
-- **`http`**: routes identically to `rest`. Both also stay reachable by channel name at `/api/v1/data/{name}`.
+- **`http`**: routes identically to `rest`. Both also stay reachable by channel name at `/api/v2/data/{name}`.
 - **`kafka`**: the channel declares a topic. Orion registers a consumer for it at startup and on every engine reload.
 - **`cron`**: the channel declares a schedule and a fixed payload. Orion materializes a durable occurrence per scheduled instant and runs it. It is the one protocol with no caller, so it registers no route, no topic, and is not reachable by name.
 
@@ -43,7 +43,7 @@ Four protocols, set once and immutable across a channel's versions:
 | | `sync` | `async` |
 |---|---|---|
 | **Answer** | The finished result | `202` with a trace id |
-| **Result read from** | The response body | `GET /api/v1/admin/traces/{id}` |
+| **Result read from** | The response body | `GET /api/v2/admin/traces/{id}` |
 | **Bounded by** | The channel's `timeout_ms` | The trace queue's capacity |
 
 Use sync for request/response APIs: validation, enrichment, lookups, and transformations the caller needs an answer from. Use async for work the caller should not block on, where a trace id and a later poll are enough. Any REST or HTTP channel serves its async form at `/{route_pattern}/async`, so the same endpoint can be called either way.

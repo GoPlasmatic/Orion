@@ -189,6 +189,10 @@ where
     Ok(total)
 }
 
+/// Maximum byte length of an upstream error body preview included in
+/// execution error messages (`TD-12`).
+pub(crate) const ERROR_BODY_PREVIEW_LIMIT: usize = 512;
+
 /// As much of a body as fits in `limit`, for putting in an error message.
 ///
 /// Never fails and never rejects: the caller has already decided this response

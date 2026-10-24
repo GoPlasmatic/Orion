@@ -22,7 +22,7 @@ The version-independent procedure — back up, preflight, validate config, migra
 | 2 | [Re-run `package lint` on your artifacts](#2-package-lint-checks-more-and-fails-on-less) | Your promotion pipeline gates on `orion-server package lint` |
 | 3 | [Check for a workflow with an empty task list](#3-a-workflow-with-no-tasks-is-refused-at-create) | Anything automated creates workflows in two steps — a placeholder, then the tasks |
 | 4 | [Check for a stored task naming `enrich`](#4-a-workflow-the-engine-cannot-dispatch-quarantines-its-channel) | Your estate predates 1.0, or you import definitions from an instance that does |
-| 5 | [Tolerate a missing `input_fields`](#5-adminfunctions-lists-every-function-not-only-the-schema-registry) | You consume `GET /api/v1/admin/functions` in tooling |
+| 5 | [Tolerate a missing `input_fields`](#5-adminfunctions-lists-every-function-not-only-the-schema-registry) | You consume `GET /api/v2/admin/functions` in tooling |
 | 6 | [Nothing — a limit was loosened](#6-task-groups-may-nest-the-full-8-levels) | You author deeply nested task groups |
 | 7 | [Replace `orion-cli mcp serve`](#7-breaking-the-clis-mcp-server-is-removed) | You connect an AI client to Orion through the CLI's MCP server |
 
@@ -86,7 +86,7 @@ and unlimited, so there is no reason to stage an empty one. To find stored rows 
 
 ```bash
 curl -s -H "Authorization: Bearer $ORION_ADMIN_TOKEN" \
-  http://localhost:8080/api/v1/admin/workflows | \
+  http://localhost:8080/api/v2/admin/workflows | \
   jq -r '.data[] | select((.tasks | length) == 0) | .workflow_id'
 ```
 
@@ -109,7 +109,7 @@ then fail every request with `FunctionNotFound`. Its channel is now [quarantined
 
 ```bash
 curl -s -H "Authorization: Bearer $ORION_ADMIN_TOKEN" \
-  http://localhost:8080/api/v1/admin/workflows | \
+  http://localhost:8080/api/v2/admin/workflows | \
   jq -r '.data[] | .workflow_id as $w | [.. | objects | select(has("function"))
          | .function.name] | unique | map(select(. == "enrich")) | .[] |
          "\($w): \(.)"'

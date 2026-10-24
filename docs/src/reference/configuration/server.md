@@ -41,19 +41,19 @@ Both endpoints are unauthenticated, and the spec publishes the complete admin AP
 | `server.port` | `8080` | `ORION_SERVER__PORT` | To fit an existing port convention. |
 | `server.shutdown_drain_secs` | `30` | `ORION_SERVER__SHUTDOWN_DRAIN_SECS` | Raise it if your slowest request legitimately outlives 30 s, so rolling deploys stop cutting them off. |
 | `server.shutdown_force_timeout_secs` | `30` | `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS` | Hard cap on waiting after the drain window. `0` waits forever — only with an orchestrator that will eventually SIGKILL. |
-| `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for bulk imports or workflow exports above 8 MiB. Applies to `/api/v1/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
+| `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for bulk imports or workflow exports above 8 MiB. Applies to `/api/v2/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
 | `server.data_mounts` | `[]` | `ORION_SERVER__DATA_MOUNTS` | Serve the data plane at extra path prefixes, for deployed clients that call legacy paths. Comma-separated in the env var. |
 
-**`data_mounts` is additive.** `/api/v1/data` stays mounted, so every existing client and `orion-cli` command keeps working — this is not a movable prefix. A channel's `route_pattern` is unchanged; it is also served under each mount:
+**`data_mounts` is additive.** `/api/v2/data` stays mounted, so every existing client and `orion-cli` command keeps working — this is not a movable prefix. A channel's `route_pattern` is unchanged; it is also served under each mount:
 
 ```toml
 [server]
 data_mounts = ["/zoom", "/Legacy-App"]
 ```
 
-A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`. `/async` works under a mount too.
+A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v2/data/zoom/meetings/user`. `/async` works under a mount too.
 
-A mount may not claim a platform route: `/api`, `/health`, `/healthz`, `/readyz`, `/metrics` or `/docs`. The `/api` prefix covers `/api/v1/admin`, `/api/v1/data`, the OpenAPI document and any future `/api/v2`. Two mounts may not nest, which would be a router conflict at boot. All of these are startup errors.
+A mount may not claim a platform route: `/api`, `/health`, `/healthz`, `/readyz`, `/metrics` or `/docs`. The `/api` prefix covers `/api/v2/admin`, `/api/v2/data`, the OpenAPI document and any future `/api/v2`. Two mounts may not nest, which would be a router conflict at boot. All of these are startup errors.
 
 > [!WARNING]
 > The literal `"/"` mounts the data plane at the root. It is accepted, and it is the blunt option: an unmatched URL becomes a channel lookup instead of a `404`, and a **future platform route could shadow a channel already serving that path**: a wrong answer rather than an error. Orion refuses to activate a channel whose served path would fall under a platform route, and warns at startup, but a named mount avoids the hazard entirely by claiming a first-segment namespace. Prefer one.
@@ -97,7 +97,7 @@ Off by default because the layer is unconditional once inserted. It runs DEFLATE
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `server.docs.enabled` | — | `ORION_SERVER__DOCS__ENABLED` | Unset serves Swagger UI (`/docs`) and the spec (`/api/v1/openapi.json`) only when `environment` is not a production variant. Set `true` to serve them in production anyway, `false` to switch them off everywhere. |
+| `server.docs.enabled` | — | `ORION_SERVER__DOCS__ENABLED` | Unset serves Swagger UI (`/docs`) and the spec (`/api/v2/openapi.json`) only when `environment` is not a production variant. Set `true` to serve them in production anyway, `false` to switch them off everywhere. |
 
 ## Related
 

@@ -67,7 +67,7 @@ surprises people:
    allowed_origins = ["https://app.example.com"]
    ```
 
-3. **`/docs` and `/api/v1/openapi.json` are not served** unless you opt back in
+3. **`/docs` and `/api/v2/openapi.json` are not served** unless you opt back in
    with `server.docs.enabled = true`. See
    [`/docs` and the OpenAPI spec](./security-and-access.md#docs-and-the-openapi-spec-are-off-in-production).
 
@@ -83,7 +83,7 @@ Chart installs now run non-root with a **read-only root filesystem**: the only w
 
 - A workload that wrote anywhere else in the container filesystem now fails —
   override `podSecurityContext` / `securityContext` in values if you need it.
-  `POST /api/v1/admin/backups` is one such writer: `storage.backup_dir`
+  `POST /api/v2/admin/backups` is one such writer: `storage.backup_dir`
   defaults to `./backups`, which is on the now read-only rootfs. Set
   `persistence.enabled=true` (the chart then points `backup_dir` at the data
   volume) or give `storage.backup_dir` a path under a writable mount.

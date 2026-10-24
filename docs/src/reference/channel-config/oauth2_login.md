@@ -139,7 +139,7 @@ A block sets *either* `providers` *or* the flat provider fields, never both.
 
 ### A complete channel
 
-`GET /api/v1/data/v1/auth/github` answers `302` to GitHub with a signed state cookie. GitHub redirects back to the callback, Orion verifies the state and exchanges the code, and the workflow runs with the grant in hand:
+`GET /api/v2/data/v1/auth/github` answers `302` to GitHub with a signed state cookie. GitHub redirects back to the callback, Orion verifies the state and exchanges the code, and the workflow runs with the grant in hand:
 
 ```json
 [

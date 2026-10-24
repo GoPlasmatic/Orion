@@ -36,6 +36,9 @@ pub struct DbReadHandler {
     /// LIMIT injected reliably, so rows are streamed and counted — one
     /// `SELECT * FROM big_table` must not OOM the process.
     pub max_rows: usize,
+    /// Hard decoded byte cap across the result set, from
+    /// `query.max_result_bytes` (`0` = unlimited, `TD-09`).
+    pub max_result_bytes: usize,
 }
 
 /// The statement and its bind values.
@@ -200,6 +203,7 @@ impl ConnectorHandler for DbReadHandler {
             call.connector,
             db_config,
             self.max_rows,
+            self.max_result_bytes,
             &read,
             None,
         )
@@ -218,6 +222,7 @@ async fn read_rows(
     connector: &str,
     db_config: &DbConnectorConfig,
     max_rows: usize,
+    max_result_bytes: usize,
     read: &DbRead<'_>,
     run_deadline: Option<dataflow_rs::run::Instant>,
 ) -> Result<Value, HandlerError> {
@@ -261,7 +266,7 @@ async fn read_rows(
                         .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
                 })
                 .await?;
-            let rows = budget.run(NAME, async {
+            budget.run(NAME, async {
                 use futures::TryStreamExt;
                 // `AssertSqlSafe` states what this handler is: the
                 // raw-SQL escape hatch, whose statement is authored in the
@@ -281,14 +286,15 @@ async fn read_rows(
                     }
                 };
                 let mut stream = sqlx_query.fetch(&mut *conn);
-                let mut rows = Vec::new();
+                let mut json_rows = Vec::new();
+                let mut total_bytes = 0usize;
                 // Not `.map_err(|e| e.to_string())`: stringifying here
                 // converted through `From<String>`, which is
                 // unconditionally a backend failure, so a constraint the
                 // driver had already classified was thrown away before
                 // `QueryFailure` could see it.
                 while let Some(row) = stream.try_next().await? {
-                    if rows.len() >= max_rows {
+                    if json_rows.len() >= max_rows {
                         // F42: classified so `timed_query` reports it as a
                         // 400 with the text intact rather than a 500 with
                         // the guidance sanitised away. The guidance *is*
@@ -302,12 +308,30 @@ async fn read_rows(
                             ),
                         );
                     }
-                    rows.push(row);
+                    let mut decoded = rows_to_json(std::slice::from_ref(&row), format)
+                        .map_err(|e| QueryFailure::Classified(decode_failure(NAME, e)))?;
+                    if let Some(decoded_row) = decoded.pop() {
+                        if max_result_bytes > 0 {
+                            total_bytes = total_bytes.saturating_add(
+                                crate::connector::sql_decode::approx_json_value_bytes(&decoded_row),
+                            );
+                            if total_bytes > max_result_bytes {
+                                return Err(
+                                    crate::engine::functions::connector_helpers::QueryFailure::Limit(
+                                        format!(
+                                            "{NAME} result exceeds query.max_result_bytes ({max_result_bytes} bytes) \
+                                             — select fewer columns, add a LIMIT, or raise the cap"
+                                        ),
+                                    ),
+                                );
+                            }
+                        }
+                        json_rows.push(decoded_row);
+                    }
                 }
-                Ok(rows)
+                Ok(json_rows)
             })
-            .await?;
-            rows_to_json(&rows, format).map_err(|e| decode_failure(NAME, e))?
+            .await?
         }
     );
 
@@ -348,6 +372,9 @@ pub struct DbReadFunction {
     pub registry: Arc<ConnectorRegistry>,
     /// Hard row cap, from `query.max_limit` (F10).
     pub max_rows: usize,
+    /// Hard decoded byte cap across the result set, from
+    /// `query.max_result_bytes` (`0` = unlimited, `TD-09`).
+    pub max_result_bytes: usize,
 }
 
 impl Function for DbReadFunction {
@@ -387,6 +414,7 @@ impl Function for DbReadFunction {
                     &cfg.connector,
                     db,
                     self.max_rows,
+                    self.max_result_bytes,
                     &read,
                     run_deadline,
                 )
@@ -614,6 +642,7 @@ mod tests {
             pool_cache: db.pool_cache.clone(),
             registry: db.registry.clone(),
             max_rows,
+            max_result_bytes: 0,
         }))
     }
 
@@ -622,6 +651,7 @@ mod tests {
             pool_cache: db.pool_cache.clone(),
             registry: db.registry.clone(),
             max_rows,
+            max_result_bytes: 0,
         }
     }
 
@@ -894,6 +924,7 @@ mod tests {
                     pool_cache: pool_cache.clone(),
                     registry: registry.clone(),
                     max_rows: 1000,
+                    max_result_bytes: 0,
                 })),
                 input.clone(),
                 Value::Null,
@@ -905,6 +936,7 @@ mod tests {
                     pool_cache,
                     registry,
                     max_rows: 1000,
+                    max_result_bytes: 0,
                 },
                 input,
                 Value::Null,
@@ -972,5 +1004,49 @@ mod tests {
             "Timeout error: db_read query timed out after 150ms"
         );
         assert!(failure.retryable);
+    }
+
+    #[tokio::test]
+    async fn td09_result_byte_cap_refuses_oversized_rows_as_400_limit_error() {
+        let db = twin::sqlite(json!({}), SEED).await;
+        let input = json!({
+            "connector": "db",
+            "query": "SELECT id, name, price, blob FROM items ORDER BY id",
+            "output": "data.rows"
+        });
+        let v3 = twin::v3(
+            NAME,
+            Box::new(super::super::connector_handler::Connector(DbReadHandler {
+                pool_cache: db.pool_cache.clone(),
+                registry: db.registry.clone(),
+                max_rows: 1000,
+                max_result_bytes: 64,
+            })),
+            input.clone(),
+            Value::Null,
+        )
+        .await;
+        let db4 = twin::sqlite(json!({}), SEED).await;
+        let v4 = twin::v4(
+            NAME,
+            DbReadFunction {
+                pool_cache: db4.pool_cache,
+                registry: db4.registry,
+                max_rows: 1000,
+                max_result_bytes: 64,
+            },
+            input,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(v4, v3);
+        let failure = v4.expect_err("oversized result set must be refused");
+        assert_eq!(failure.code, "VALIDATION_ERROR");
+        assert!(
+            failure.message.contains("query.max_result_bytes (64 bytes)"),
+            "expected max_result_bytes diagnostic, got: {}",
+            failure.message
+        );
+        assert!(!failure.retryable);
     }
 }

@@ -8,18 +8,18 @@ Every admin mutation writes an audit row: who did it, what they did, to which en
 
 ## Before you start
 
-You need an admin credential for the instance, or `orion-cli` configured with one. The endpoint is `GET /api/v1/admin/audit-logs`; the CLI takes the same filters as flags.
+You need an admin credential for the instance, or `orion-cli` configured with one. The endpoint is `GET /api/v2/admin/audit-logs`; the CLI takes the same filters as flags.
 
 ## Read the trail
 
 Filter by action, resource, principal or time:
 
 ```bash
-curl -s http://localhost:8080/api/v1/admin/audit-logs
+curl -s http://localhost:8080/api/v2/admin/audit-logs
 
-curl -s "http://localhost:8080/api/v1/admin/audit-logs?action=status_active&resource_type=workflow"
+curl -s "http://localhost:8080/api/v2/admin/audit-logs?action=status_active&resource_type=workflow"
 
-curl -s "http://localhost:8080/api/v1/admin/audit-logs?resource_id=wf-orders&start_time=2026-07-01T00:00:00Z"
+curl -s "http://localhost:8080/api/v2/admin/audit-logs?resource_id=wf-orders&start_time=2026-07-01T00:00:00Z"
 ```
 
 The CLI renders a table from the same filters:
@@ -67,7 +67,7 @@ Reads are not recorded: only mutations, and the two `test` calls that behave lik
 A promotion is many API calls. Send the same `X-Orion-Change-Context` header on each one, and every row it produces carries it under `details.change_context`:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
+curl -s -X POST http://localhost:8080/api/v2/admin/workflows \
   -H 'X-Orion-Change-Context: ticket=OPS-4412' \
   -H 'Content-Type: application/json' --data @workflow.json
 ```
@@ -135,7 +135,7 @@ The newest `reload` row carries `"ticket=TEST-1"`.
 
 ## What is not in the audit log
 
-- **Data-plane requests.** Calls to `/api/v1/data/**` are recorded as [traces](./traces.md), not audit rows. The audit log is about who changed the service, not who used it.
+- **Data-plane requests.** Calls to `/api/v2/data/**` are recorded as [traces](./traces.md), not audit rows. The audit log is about who changed the service, not who used it.
 - **Reads.** Listing workflows is not a mutation and does not write a row.
 - **The old content of an updated entity.** The audit row names what changed; the entity's own version history holds what it was. Both are needed to reconstruct a change, which is one more reason active versions are immutable.
 

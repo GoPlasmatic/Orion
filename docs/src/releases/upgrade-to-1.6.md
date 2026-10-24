@@ -50,7 +50,7 @@ The plugin and cron tables stay empty until a plugin or a cron channel is activa
 ## 2. Plugins are off by default
 
 **What changed.** The plugin sandbox exists in every binary, and
-`plugins.enabled` defaults to `false`. With it off, no Wasmtime engine is constructed, no epoch ticker runs, `POST /api/v1/admin/plugins` answers `400`. A plugin row can still reach this node's database, through a cluster peer's activation or an import. It becomes a `disabled` load issue that quarantines the workflows naming its functions, never an abort.
+`plugins.enabled` defaults to `false`. With it off, no Wasmtime engine is constructed, no epoch ticker runs, `POST /api/v2/admin/plugins` answers `400`. A plugin row can still reach this node's database, through a cluster peer's activation or an import. It becomes a `disabled` load issue that quarantines the workflows naming its functions, never an abort.
 
 **What to do.** Nothing. When you turn it on, read the [production checklist row](../operate/production-checklist.md). The pooling allocator reserves `max_live_instances × max_memory_bytes` of virtual address space at startup, 16 GiB by default. Signing keys go in `[plugins.trust]`.
 
@@ -91,7 +91,7 @@ orion-cli workflows export --status active \
   | jq -r '.. | objects | select(.name? == "db_read") | .input.statement'
 ```
 
-The served field description was wrong on the same line and is now fixed. It gave PostgreSQL's `$1, $2` as the placeholder spelling for all three backends, where SQLite and MySQL use `?`. If your tooling reads `GET /api/v1/admin/functions`, it was being told the wrong thing.
+The served field description was wrong on the same line and is now fixed. It gave PostgreSQL's `$1, $2` as the placeholder spelling for all three backends, where SQLite and MySQL use `?`. If your tooling reads `GET /api/v2/admin/functions`, it was being told the wrong thing.
 
 ## 5. `validate-config` checks the storage URL scheme everywhere
 
@@ -113,7 +113,7 @@ Removing it would break a documented surface on a 1.x server. It is deprecated r
 **What to do.** Move callers to the header, and alert on the counter reaching zero. That is what makes the eventual removal safe to schedule.
 
 ```bash
-curl -H "x-trace-token: $TOKEN" "$ORION/api/v1/data/traces/$TRACE_ID"
+curl -H "x-trace-token: $TOKEN" "$ORION/api/v2/data/traces/$TRACE_ID"
 ```
 
 ## 7. SQL connectors decode on the real driver
@@ -160,9 +160,9 @@ Nothing here is removed and no existing field changes meaning.
 |---|---|
 | `protocol: "cron"` | A fourth `ChannelProtocol`. Older clients that pattern-match on the enum should already tolerate unknown values; `orion-api` deserialization is tolerant by design |
 | `mode: "cron"` on traces | An open string, like `kafka`. Filter with `?mode=cron` |
-| `GET/POST /api/v1/admin/cron/...` | The occurrence ledger. See [Cron occurrences](../reference/admin-api/cron-occurrences.md) |
-| `POST /api/v1/admin/channels/{id}/trigger` | A manual run of a cron channel, through the same claim and singleton |
-| `/api/v1/admin/plugins` | The plugin entity: upload, validate, activate, archive, export |
+| `GET/POST /api/v2/admin/cron/...` | The occurrence ledger. See [Cron occurrences](../reference/admin-api/cron-occurrences.md) |
+| `POST /api/v2/admin/channels/{id}/trigger` | A manual run of a cron channel, through the same claim and singleton |
+| `/api/v2/admin/plugins` | The plugin entity: upload, validate, activate, archive, export |
 | `orion-cli cron`, `orion-cli channels trigger`, `orion-cli plugins` | The CLI side of all three |
 | `components.cron` on `/health` | Present only when the node has something to say about schedules |
 | Seven `orion_cron_*` metrics | [Scheduling](../reference/metrics.md#scheduling) |
@@ -170,7 +170,7 @@ Nothing here is removed and no existing field changes meaning.
 | `last_insert_id` from `db_write` | On MySQL and SQLite, for an `INSERT`/`REPLACE`, as `data_write` already reported |
 | `halt_on` on a task | Ends the workflow when that task failed — the outcome axis to `terminal`'s position axis |
 | `config.oauth2_login` on a channel | Inbound OAuth2 / OIDC sign-in: the redirect, the state cookie, PKCE and the code exchange, with the grant at `metadata.oauth` |
-| `retry_safety` on `GET /api/v1/admin/functions` | Whether a task function is safe to run twice |
+| `retry_safety` on `GET /api/v2/admin/functions` | Whether a task function is safe to run twice |
 
 ## If you deploy in a cluster
 

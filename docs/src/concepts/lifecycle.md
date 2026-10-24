@@ -43,7 +43,7 @@ The running engine is rebuilt only by transitions that change what should be ser
 | Activate, archive, or delete | Yes |
 | Change a rollout percentage | Yes |
 | Update a connector | No engine rebuild; the connector registry reloads |
-| `POST /api/v1/admin/engine/reload` | Yes, on demand |
+| `POST /api/v2/admin/engine/reload` | Yes, on demand |
 
 A reload builds the new engine beside the old one and swaps it in atomically. Requests already in flight finish on the engine they started on, so activation is not a restart and drops no traffic. In cluster mode, the change reaches every replica through a shared config epoch, so you activate once rather than per node.
 

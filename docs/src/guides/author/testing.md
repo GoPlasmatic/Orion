@@ -59,7 +59,7 @@ It also prints advisory warnings on stderr without failing. Today there is one: 
 orion-server lint workflow.json --deny-warnings
 ```
 
-It stays advisory by default because operator names such as `length`, `type`, `keys` and `in` are ordinary field names. A document that legitimately holds a stored rule is a real payload. `POST /api/v1/admin/workflows/validate` reports the same findings in its `warnings` array.
+It stays advisory by default because operator names such as `length`, `type`, `keys` and `in` are ordinary field names. A document that legitimately holds a stored rule is a real payload. `POST /api/v2/admin/workflows/validate` reports the same findings in its `warnings` array.
 
 Every `orion-server` subcommand run without `-c` prints `Note: no config file specified…` on stderr. It is not a finding; redirect it or pass a config file.
 

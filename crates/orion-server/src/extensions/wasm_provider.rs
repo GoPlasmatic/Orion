@@ -220,9 +220,41 @@ impl WasmComponentCache {
             });
         }
 
+        // Validate real WebAssembly binary/component via wasmtime (`TD-26`, `V2-13.1`).
+        Self::validate_wasmtime_binary(bytes)?;
+
+        // Also inspect binary-level module imports when bytes represent a core Wasm module
+        // so ambient `wasi:*` imports embedded in the binary cannot bypass `inspected_imports`.
+        let mut binary_imports: Vec<String> = Vec::new();
+        {
+            let mut config = wasmtime::Config::new();
+            config.consume_fuel(true);
+            config.wasm_component_model(true);
+            if let Ok(engine) = wasmtime::Engine::new(&config)
+                && let Ok(module) = wasmtime::Module::new(&engine, bytes)
+            {
+                for imp in module.imports() {
+                    let mod_name = imp.module();
+                    if mod_name.starts_with("wasi:") || mod_name.starts_with("wasi_") {
+                        return Err(WasmVerifyError {
+                            code: "WASM_AMBIENT_WASI_FORBIDDEN",
+                            message: format!(
+                                "Binary imports ambient WASI module '{mod_name}', which is forbidden by {CONNECTOR_WIT_CONTRACT}"
+                            ),
+                        });
+                    }
+                    binary_imports.push(mod_name.to_string());
+                }
+            }
+        }
+
         let allowed_imports = profile.allowed_imports();
         let mut declared_imports = BTreeSet::new();
-        for &imp in inspected_imports {
+        for imp in inspected_imports
+            .iter()
+            .copied()
+            .chain(binary_imports.iter().map(String::as_str))
+        {
             let trimmed = imp.trim();
             if trimmed.starts_with("wasi:") {
                 return Err(WasmVerifyError {
@@ -661,7 +693,8 @@ mod tests {
     #[test]
     fn v2_13_1_component_cache_rejects_tampered_bytes_ambient_wasi_and_stale_fingerprints() {
         let cache = WasmComponentCache::new("wasmtime-49.0.4:profile-v1", 1024 * 1024);
-        let wasm_bytes = b"\0asm\x01\x00\x00\x00mock-component-payload";
+        // Valid minimal WebAssembly binary with a custom section `\0\x05\x04mock`.
+        let wasm_bytes = b"\0asm\x01\x00\x00\x00\x00\x05\x04mock";
         let digest = WasmComponentCache::sha256_digest(wasm_bytes);
 
         let provider = ProviderReference {
@@ -669,6 +702,26 @@ mod tests {
             version: "1.0.0".to_string(),
             package_digest: digest.clone(),
         };
+
+        // 0. TD-26: Invalid Wasm binary with matching SHA-256 digest is rejected by wasmtime!
+        let bad_wasm = b"not-a-valid-wasm-binary";
+        let bad_provider = ProviderReference {
+            provider_id: "acme.bad-wasm".to_string(),
+            version: "1.0.0".to_string(),
+            package_digest: WasmComponentCache::sha256_digest(bad_wasm),
+        };
+        let invalid_bin_err = cache
+            .verify_and_insert(
+                bad_provider,
+                WasmImportProfile::HttpV1,
+                bad_wasm,
+                &["types", "context", "http"],
+                &["http", "logging"],
+                BTreeSet::from(["send_webhook".to_string()]),
+                false,
+            )
+            .expect_err("invalid Wasm binary must fail wasmtime validation");
+        assert_eq!(invalid_bin_err.code, "WASM_INVALID_BINARY");
 
         // 1. Tampered bytes (wrong digest) rejected.
         let tampered_err = cache
@@ -723,7 +776,7 @@ mod tests {
     async fn v2_13_2_and_3_wasm_provider_enforces_fuel_memory_capabilities_and_output_contract() {
         let root = CompositionRoot::community();
         let cache = WasmComponentCache::new("wasmtime-49.0.4:profile-v1", 1024 * 1024);
-        let wasm_bytes = b"\0asm\x01\x00\x00\x00valid-guest";
+        let wasm_bytes = b"\0asm\x01\x00\x00\x00\x00\x06\x05guest";
         let digest = WasmComponentCache::sha256_digest(wasm_bytes);
         let provider = ProviderReference {
             provider_id: "acme.hmac-webhook".to_string(),

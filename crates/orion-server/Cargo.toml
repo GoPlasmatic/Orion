@@ -234,6 +234,9 @@ prost = "0.14"
 rdkafka = { version = "0.39", default-features = false, features = ["tokio", "ssl-vendored"] }
 utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 # The workspace patches this to upstream's unpublished ZIP 9 security fix.
+# For air-gapped / offline builds (`TD-35`), point `SWAGGER_UI_DOWNLOAD_URL` at
+# a local `file:///.../v5.17.14.zip` archive so `utoipa-swagger-ui`'s build.rs
+# never attempts a live GitHub download.
 utoipa-swagger-ui = { version = "10", features = ["axum"] }
 
 # External DB connectors

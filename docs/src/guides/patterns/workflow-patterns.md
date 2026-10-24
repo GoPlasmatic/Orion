@@ -102,7 +102,7 @@ Run the example:
 ```bash
 ./examples/deploy.sh channel-composition
 
-curl -s -X POST http://localhost:8080/api/v1/data/order-enrichment \
+curl -s -X POST http://localhost:8080/api/v2/data/order-enrichment \
   -H 'Content-Type: application/json' \
   --data @examples/packages/channel-composition/request.json
 ```
@@ -125,7 +125,7 @@ Four things this shows, each a common mistake:
 
 - **The payload is built first.** `channel_call`'s `data` is a single expression, and JSONLogic has no object constructor, so the caller assembles the sub-request in `temp_data` with `map`, then passes it by reference.
 - **`output` receives the callee's whole data context**, not its HTTP envelope. The lookup workflow parses into `data.lookup`, so the caller reads `data.customer.lookup.tier`.
-- **The callee is independently callable.** `POST /api/v1/data/customer-lookup` works on its own, which is what makes it a service rather than a subroutine.
+- **The callee is independently callable.** `POST /api/v2/data/customer-lookup` works on its own, which is what makes it a service rather than a subroutine.
 - **The call is a function call.** No network hop, no serialization round-trip. Cycles are detected and refused.
 
 Two things to know before composing. The called channel applies its own guards, minus the ones a `channel_call` cannot have: no `auth`, no origin check, no dedup. And its `timeout_ms` applies inside your request's budget, so size the caller's timeout above the callee's.

@@ -18,8 +18,8 @@ use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::extensions::{
     AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionReference, ConnectorErrorClass,
-    EffectiveConnectionIdentity, ImplementationKind, ProviderReference, ProviderRegistry,
-    RetryAdvice, RunContext,
+    ConnectorResult, EffectiveConnectionIdentity, ImplementationKind, ProviderReference,
+    ProviderRegistry, RetryAdvice, RunContext, sha256_digest,
 };
 
 pub const NAME: &str = "connector_call";
@@ -107,7 +107,7 @@ impl Function for ConnectorCallFunction {
             .unwrap_or(&cfg.connection)
             .to_string();
 
-        let Some(backend) = self.providers.get(impl_kind, &target_id) else {
+        let Some(_backend) = self.providers.get(impl_kind, &target_id) else {
             return Err(HandlerError::new(
                 ErrorClass::Backend,
                 format!(
@@ -123,41 +123,90 @@ impl Function for ConnectorCallFunction {
                 default_run_context_for_call(&cfg.connection, &cfg.operation, &target_id)
             });
 
+        // Resolve real stored connection revision and package admission status when available (`TD-25`).
+        let mut resolved_revision = 1u64;
+        let mut resolved_package_digest = if target_id.starts_with("sha256:") {
+            target_id.clone()
+        } else {
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string()
+        };
+        let mut resolved_provider_id = target_id.clone();
+        let mut resolved_version = "2.0.0".to_string();
+        let mut resolved_secret_hash = "sha256:none".to_string();
+
+        if let Some(store) = self.providers.deployment_store() {
+            if let Some(conn_row) = store
+                .list_connections()
+                .into_iter()
+                .filter(|c| c.connection_id == cfg.connection)
+                .max_by_key(|c| c.revision)
+            {
+                resolved_revision = conn_row.revision;
+                resolved_package_digest = conn_row.provider_digest.clone();
+                if let Some(loc) = conn_row.secret_locator.as_deref() {
+                    resolved_secret_hash = sha256_digest(loc.as_bytes());
+                }
+            }
+            if let Some(pkg) = store.list_packages().into_iter().find(|p| {
+                p.package_digest == resolved_package_digest || p.provider_id == target_id
+            }) {
+                let is_revoked = store
+                    .list_admissions()
+                    .into_iter()
+                    .any(|a| a.package_digest == pkg.package_digest && a.revoked);
+                if is_revoked {
+                    return Err(HandlerError::new(
+                        ErrorClass::CallerInput,
+                        format!(
+                            "CONNECTOR_PACKAGE_REVOKED: provider package '{}' ({}) has been revoked",
+                            pkg.provider_id, pkg.package_digest
+                        ),
+                    )
+                    .into());
+                }
+                resolved_provider_id = pkg.provider_id;
+                resolved_version = pkg.version;
+                resolved_package_digest = pkg.package_digest;
+            }
+        }
+
         let conn_ref = ConnectionReference {
             connection_id: cfg.connection.clone(),
-            revision: 1,
+            revision: resolved_revision,
             provider: ProviderReference {
-                provider_id: target_id.clone(),
-                version: "2.0.0".to_string(),
-                package_digest: if target_id.starts_with("sha256:") {
-                    target_id.clone()
-                } else {
-                    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                        .to_string()
-                },
+                provider_id: resolved_provider_id,
+                version: resolved_version,
+                package_digest: resolved_package_digest.clone(),
             },
         };
         let effective_conn = EffectiveConnectionIdentity {
-            provider_digest: conn_ref.provider.package_digest.clone(),
+            provider_digest: resolved_package_digest,
             connection_id: cfg.connection.clone(),
-            revision: 1,
-            secret_hash: "sha256:none".to_string(),
+            revision: resolved_revision,
+            secret_hash: resolved_secret_hash,
         };
 
         let invocation = run_ctx
             .start_invocation(conn_ref, effective_conn, &cfg.operation, idempotency_key, 2)
             .map_err(connector_err_to_dataflow)?;
-        let attempt = invocation
-            .next_attempt()
-            .map_err(connector_err_to_dataflow)?;
 
-        let result = backend.invoke(&attempt, &cfg.operation, input_val).await;
-        match result {
-            Ok(out) => {
-                ctx.set(&output, OwnedDataValue::from(&out.data))?;
+        let admission = self.providers.admission_policy();
+        match self
+            .providers
+            .dispatch_attempt(
+                admission.as_ref(),
+                &invocation,
+                impl_kind,
+                &target_id,
+                input_val,
+            )
+            .await
+        {
+            ConnectorResult::Success { data, .. } => {
+                ctx.set(&output, OwnedDataValue::from(&data))?;
                 Ok(Outcome::Ok)
             }
-            Err(error) => Err(connector_err_to_dataflow(error)),
+            ConnectorResult::Error { error } => Err(connector_err_to_dataflow(error)),
         }
     }
 }
@@ -267,7 +316,7 @@ mod tests {
 
         // 3. Verify reserved operation is rejected
         let reserved_called = testing::call(
-            func,
+            func.clone(),
             json!({
                 "connection": "local-cache",
                 "target_id": "org.orion.memory-cache",
@@ -282,5 +331,31 @@ mod tests {
             .outcome
             .expect_err("reserved operation must fail");
         assert!(err.message().contains("CONNECTOR_OPERATION_FORBIDDEN"));
+
+        // 4. TD-25: Verify revoked provider/connection is blocked by dispatch_attempt admission check!
+        let custom_policy = std::sync::Arc::new(crate::extensions::CommunityAdmissionPolicy::new());
+        custom_policy.revoke_provider("org.orion.memory-cache");
+        root.providers.set_admission_policy(custom_policy);
+        let revoked_called = testing::call(
+            func,
+            json!({
+                "connection": "local-cache",
+                "target_id": "org.orion.memory-cache",
+                "operation": "cache.get",
+                "input": { "key": "greeting" },
+                "output": "data.revoked_res"
+            }),
+        )
+        .exprs(crate::engine::kit::test_exprs())
+        .name(NAME)
+        .await;
+        let rev_err = revoked_called
+            .outcome
+            .expect_err("revoked provider must be blocked by dispatch_attempt");
+        assert!(
+            rev_err.message().contains("CONNECTOR_CONNECTION_FORBIDDEN"),
+            "unexpected error: {}",
+            rev_err.message()
+        );
     }
 }

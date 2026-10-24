@@ -8,23 +8,23 @@ The endpoints that create, test and reload a connector, and the breaker endpoint
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/connectors` | Create connector. String fields may use `env://VAR_NAME` to pull values from the process environment. Optional `tags: ["..."]` (selection labels for `?tag=` and package export) and `enabled` (default `true`; a disabled connector is never loaded into the registry, and export → import preserves the flag) |
-| GET | `/api/v1/admin/connectors` | List connectors (secrets masked). Filter with `?tag=` |
-| GET | `/api/v1/admin/connectors/{id}` | Get connector by ID (secrets masked). The config comes back both parsed (`config`) and as the stored string (`config_json`) — [which to read](../connectors/identity.md) |
-| PUT | `/api/v1/admin/connectors/{id}` | Update connector |
-| DELETE | `/api/v1/admin/connectors/{id}` | Delete connector |
-| POST | `/api/v1/admin/connectors/import` | Bulk import connectors. `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing name means (connectors are unversioned, so `new_version` updates in place) |
-| GET | `/api/v1/admin/connectors/export` | Export every matching connector, secrets masked. Filter with `?tag=` |
-| POST | `/api/v1/admin/connectors/validate` | Validate a connector definition without saving |
-| POST | `/api/v1/admin/connectors/{id}/test` | Probe the connector's backend and report whether it is reachable |
-| GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
-| POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
+| POST | `/api/v2/admin/connectors` | Create connector. String fields may use `env://VAR_NAME` to pull values from the process environment. Optional `tags: ["..."]` (selection labels for `?tag=` and package export) and `enabled` (default `true`; a disabled connector is never loaded into the registry, and export → import preserves the flag) |
+| GET | `/api/v2/admin/connectors` | List connectors (secrets masked). Filter with `?tag=` |
+| GET | `/api/v2/admin/connectors/{id}` | Get connector by ID (secrets masked). The config comes back both parsed (`config`) and as the stored string (`config_json`) — [which to read](../connectors/identity.md) |
+| PUT | `/api/v2/admin/connectors/{id}` | Update connector |
+| DELETE | `/api/v2/admin/connectors/{id}` | Delete connector |
+| POST | `/api/v2/admin/connectors/import` | Bulk import connectors. `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing name means (connectors are unversioned, so `new_version` updates in place) |
+| GET | `/api/v2/admin/connectors/export` | Export every matching connector, secrets masked. Filter with `?tag=` |
+| POST | `/api/v2/admin/connectors/validate` | Validate a connector definition without saving |
+| POST | `/api/v2/admin/connectors/{id}/test` | Probe the connector's backend and report whether it is reachable |
+| GET | `/api/v2/admin/connectors/circuit-breakers` | List circuit breaker states |
+| POST | `/api/v2/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
 Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `es` (Elasticsearch). Every connector config accepts an optional `operations` block that enables or disables operation types per connector. The gates are `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` on `db` and `es`. On `cache` they are `read` / `write`, on `kafka` `publish`, and on `http` a `methods` allow-list. Per-type fields and gates are specified in [Connector Types](../connectors/operation-gates.md).
 
 ## Testing a connector
 
-`POST /api/v1/admin/connectors/{id}/test` probes the saved connector's backend, so wrong credentials surface when they are saved rather than at the first real request. It reads the **stored row** with its `env://` references resolved, not the registry. A connector that failed to load has no registry entry, and that is exactly when this endpoint is useful.
+`POST /api/v2/admin/connectors/{id}/test` probes the saved connector's backend, so wrong credentials surface when they are saved rather than at the first real request. It reads the **stored row** with its `env://` references resolved, not the registry. A connector that failed to load has no registry entry, and that is exactly when this endpoint is useful.
 
 ```json
 { "data": { "reachable": true, "supported": true, "connector_type": "db", "probe": "SELECT 1" } }

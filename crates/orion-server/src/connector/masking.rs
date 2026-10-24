@@ -89,7 +89,7 @@ const SECRET_KEY_EXACT: &[&str] = &[
 ];
 
 /// Whether a scalar stored under `key` should be replaced with [`MASK`].
-fn is_secret_key(key: &str) -> bool {
+pub(crate) fn is_secret_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     SECRET_KEY_EXACT.contains(&lower.as_str())
         || SECRET_KEY_SUBSTRINGS.iter().any(|p| lower.contains(p))

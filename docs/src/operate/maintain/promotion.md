@@ -94,7 +94,7 @@ The deferred reload is what makes a partial apply safe. Entities activate in the
 | **1 — receipt claim** | Nothing written | Unaffected | Fix the cause and re-run. A reused applied version needs a version bump. |
 | **2 — staging** | Some entities have new **draft** versions; nothing activated | Unaffected; drafts serve nothing | Fix the artifact and re-run `apply`. A staged receipt may be re-claimed. |
 | **3 — activation** | Entities before the failure are active in the database; those after are still drafts. **The engine has not been reloaded** | Unaffected; the old engine is still serving | Fix the cause and re-run `apply` (it is idempotent), or `POST /engine/reload` to serve what did activate |
-| **4 — reload** | Every entity is active in the database | Unaffected until a reload happens | `POST /api/v1/admin/engine/reload` |
+| **4 — reload** | Every entity is active in the database | Unaffected until a reload happens | `POST /api/v2/admin/engine/reload` |
 | **5 — receipt flip** | The estate is live and correct; the receipt still reads `staged` | Correct | Re-run `apply`; it converges the receipt |
 
 In every case the receipt stays `staged`, which is what makes a corrected re-run at the same version legal. Only an **applied** version is content-immutable.
@@ -168,8 +168,8 @@ The refusal is deliberate. Importing `******` would store it as a real credentia
 To move selected workflows or channels between instances without the package machinery, the per-kind endpoints take the same tags:
 
 ```bash
-curl -s "$ORION/api/v1/admin/workflows/export?tag=payments" | jq '.data' > workflows.json
-curl -s -X POST "$ORION/api/v1/admin/workflows/import?dry_run=true" \
+curl -s "$ORION/api/v2/admin/workflows/export?tag=payments" | jq '.data' > workflows.json
+curl -s -X POST "$ORION/api/v2/admin/workflows/import?dry_run=true" \
   -H 'Content-Type: application/json' --data @workflows.json
 ```
 

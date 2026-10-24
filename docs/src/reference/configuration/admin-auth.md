@@ -4,7 +4,7 @@
 
 # Admin authentication settings
 
-Guards `/api/v1/admin/*` and the trace-read endpoints. Disabled by default so a fresh install is usable; **required** once `environment` starts with `prod` — startup fails without it.
+Guards `/api/v2/admin/*` and the trace-read endpoints. Disabled by default so a fresh install is usable; **required** once `environment` starts with `prod` — startup fails without it.
 
 ## Synopsis
 

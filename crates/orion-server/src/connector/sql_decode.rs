@@ -141,6 +141,28 @@ impl DecodeError {
 
 type Decoded<T> = Result<T, DecodeError>;
 
+/// Approximate in-memory byte footprint of a decoded JSON value, used to
+/// enforce `query.max_result_bytes` (`TD-09`) while streaming SQL/Mongo rows
+/// so wide columns (`TEXT`, `JSONB`, `BYTEA`) cannot exhaust process memory.
+pub fn approx_json_value_bytes(v: &Value) -> usize {
+    match v {
+        Value::Null | Value::Bool(_) => 8,
+        Value::Number(_) => 16,
+        Value::String(s) => 24 + s.len(),
+        Value::Array(items) => {
+            24 + items.iter().fold(0usize, |acc, item| {
+                acc.saturating_add(approx_json_value_bytes(item))
+            })
+        }
+        Value::Object(map) => {
+            24 + map.iter().fold(0usize, |acc, (k, val)| {
+                acc.saturating_add(24 + k.len())
+                    .saturating_add(approx_json_value_bytes(val))
+            })
+        }
+    }
+}
+
 fn column_names<R: Row>(row: &R) -> Vec<String> {
     row.columns().iter().map(|c| c.name().to_string()).collect()
 }

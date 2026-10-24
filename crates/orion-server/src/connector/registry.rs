@@ -471,8 +471,38 @@ impl ConnectorRegistry {
     }
 
     /// Get a connector config by name.
+    ///
+    /// When executing inside an admitted root run (`PINNED_GENERATION`) that
+    /// carries an immutable connector snapshot (`TD-07`), resolves from the
+    /// pinned generation's snapshot so connector tasks within one run observe a
+    /// consistent connector estate across concurrent reloads.
     pub async fn get(&self, name: &str) -> Option<Arc<ConnectorConfig>> {
+        if let Ok(pinned) = crate::runtime::generation::PINNED_GENERATION.try_with(Arc::clone)
+            && let Some(ref pinned_connectors) = pinned.connectors
+        {
+            return pinned_connectors.get(name).cloned();
+        }
         self.configs.load().get(name).cloned()
+    }
+
+    /// Snapshot the current immutable connector map for attachment to a
+    /// [`crate::runtime::RuntimeGeneration`] (`TD-07`).
+    pub fn snapshot_configs(&self) -> Arc<HashMap<String, Arc<ConnectorConfig>>> {
+        self.configs.load_full()
+    }
+
+    /// Restore a previously captured connector map, generation token, and load
+    /// issues after an aborted generation reload (`TD-07`).
+    pub async fn restore_snapshot(
+        &self,
+        configs: Arc<HashMap<String, Arc<ConnectorConfig>>>,
+        generation: u64,
+        issues: Vec<ConnectorLoadIssue>,
+    ) {
+        let _reload_guard = self.reload_lock.lock().await;
+        self.configs.store(configs);
+        self.generation.store(generation, Ordering::Release);
+        *self.load_issues.write().await = issues;
     }
 
     /// Every loaded connector, by name. A snapshot: no lock is held.

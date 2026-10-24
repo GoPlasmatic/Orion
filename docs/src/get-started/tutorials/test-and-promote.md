@@ -231,7 +231,7 @@ applied high-value-order@1.0.0 to http://localhost:9090
 Call the second instance. The service you built on 8080 answers on 9090:
 
 ```bash
-curl -s -X POST http://localhost:9090/api/v1/data/high-value-orders \
+curl -s -X POST http://localhost:9090/api/v2/data/high-value-orders \
   -H 'Content-Type: application/json' \
   --data @examples/packages/high-value-order/request.json
 ```

@@ -14,9 +14,9 @@ Changes to what is exposed, what is masked, and what now needs a credential.
 
 ### Polling an async trace now requires the token returned with the 202
 
-**What changed.** `POST /api/v1/data/{channel}/async` returns a `trace_token` alongside `trace_id`. The read endpoint `GET /api/v1/admin/traces/{id}` requires that token, in the `x-trace-token` header or a `?token=` query parameter, unless the caller presents an admin credential. Previously the endpoint was all-or-nothing admin auth. On a default config it was open to everyone, so any caller could read another caller's payloads by walking trace ids. With admin auth on it was closed to the submitter.
+**What changed.** `POST /api/v2/data/{channel}/async` returns a `trace_token` alongside `trace_id`. The read endpoint `GET /api/v2/admin/traces/{id}` requires that token, in the `x-trace-token` header or a `?token=` query parameter, unless the caller presents an admin credential. Previously the endpoint was all-or-nothing admin auth. On a default config it was open to everyone, so any caller could read another caller's payloads by walking trace ids. With admin auth on it was closed to the submitter.
 
-The trace *list* (`GET /api/v1/admin/traces`) is unchanged in its auth, but now returns payload-free rows. `input_json`, `result_json` and `task_trace_json` are served only by the single-trace GET. That endpoint's `message` also no longer includes the submitter's request context (`context.metadata`).
+The trace *list* (`GET /api/v2/admin/traces`) is unchanged in its auth, but now returns payload-free rows. `input_json`, `result_json` and `task_trace_json` are served only by the single-trace GET. That endpoint's `message` also no longer includes the submitter's request context (`context.metadata`).
 
 **How you'll notice.** A polling client that ignores `trace_token` starts
 getting `401` on its next poll.
@@ -24,18 +24,18 @@ getting `401` on its next poll.
 **What to do.** Capture `trace_token` from the 202 and send it on each poll:
 
 ```bash
-resp=$(curl -s -X POST http://orion:8080/api/v1/data/orders/async \
+resp=$(curl -s -X POST http://orion:8080/api/v2/data/orders/async \
   -H 'Content-Type: application/json' -d '{"data":{"order_id":1}}')
 id=$(jq -r .trace_id <<<"$resp"); tok=$(jq -r .trace_token <<<"$resp")
-curl -s "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
+curl -s "http://orion:8080/api/v2/admin/traces/$id" -H "x-trace-token: $tok"
 ```
 
 Operator tooling that already sends an admin key needs no change. Traces created before the upgrade have no token and stay on the admin trust model. The migration adding `traces.access_token_hash` runs automatically on all three backends.
 
 ### Trace read endpoints require admin auth
 
-**What changed.** `GET /api/v1/admin/traces` and `GET /api/v1/admin/traces/{id}`
-return full input and result payloads but were reachable without a key even with `admin_auth.enabled = true`. They are now guarded alongside `/api/v1/admin/*` and `/metrics`.
+**What changed.** `GET /api/v2/admin/traces` and `GET /api/v2/admin/traces/{id}`
+return full input and result payloads but were reachable without a key even with `admin_auth.enabled = true`. They are now guarded alongside `/api/v2/admin/*` and `/metrics`.
 
 **How you'll notice.** Previously open callers polling for async results get
 `401`. URLs are unchanged.
@@ -44,10 +44,10 @@ return full input and result payloads but were reachable without a key even with
 
 ### `/docs` and the OpenAPI spec are off in production
 
-**What changed.** Swagger UI (`/docs`) and `/api/v1/openapi.json` used to be registered unconditionally and unauthenticated. Every deployment therefore published the complete admin API surface to anonymous callers. They are now gated by `server.docs.enabled`: unset (the default) serves them only when `environment` does not start with `prod`; an explicit `true`/`false` always wins.
+**What changed.** Swagger UI (`/docs`) and `/api/v2/openapi.json` used to be registered unconditionally and unauthenticated. Every deployment therefore published the complete admin API surface to anonymous callers. They are now gated by `server.docs.enabled`: unset (the default) serves them only when `environment` does not start with `prod`; an explicit `true`/`false` always wins.
 
 **How you'll notice.** With `environment = "production"`, `GET /docs` and
-`GET /api/v1/openapi.json` return **404**: not 401. The routes are not registered at all, so their existence is not advertised either.
+`GET /api/v2/openapi.json` return **404**: not 401. The routes are not registered at all, so their existence is not advertised either.
 
 **What to do.** Usually nothing; this is the intended hardening. If production tooling reads the served spec, set `server.docs.enabled = true` (or `ORION_SERVER__DOCS__ENABLED=true`) to opt back in. The alternative is `orion-server dump-openapi > spec.json`, which works offline whatever this setting says.
 
@@ -74,10 +74,10 @@ return full input and result payloads but were reachable without a key even with
 **How you'll notice.** Any client parsing `errors[*].message` for detail gets
 the same constant string every time.
 
-**What to do.** Correlate on `request_id`, which is a **top-level sibling of `errors[]`** rather than a field inside each entry. Fetch the full detail from the persisted trace at `GET /api/v1/admin/traces/{id}`. It is also returned as the `x-request-id` response header. Cached responses store the sanitised body, so a cache hit is consistent with a miss.
+**What to do.** Correlate on `request_id`, which is a **top-level sibling of `errors[]`** rather than a field inside each entry. Fetch the full detail from the persisted trace at `GET /api/v2/admin/traces/{id}`. It is also returned as the `x-request-id` response header. Cached responses store the sanitised body, so a cache hit is consistent with a miss.
 
 > **This is data-plane only, and it has a gap by default.**
-> `GET /api/v1/admin/traces/{id}` returns the **unsanitised** result. That
+> `GET /api/v2/admin/traces/{id}` returns the **unsanitised** result. That
 > endpoint is guarded only when `admin_auth.enabled = true`, and the default is
 > `false`. Enable admin auth for the sanitisation to hold end to end.
 
@@ -93,7 +93,7 @@ the same constant string every time.
 
 ### Masking is an allowlist now, and channel auth material is masked too
 
-**What changed.** Connector configs used to be masked by a *denylist* of secret-looking key names. A credential under a name the list never anticipated, such as `signing_cert_pem` or a custom header value, was served in clear by `GET /api/v1/admin/connectors`. Masking is inverted: only the structural vocabulary the connector types define (endpoints, timeouts, operation gates, identity fields) is readable, and every other value answers `"******"`. All `headers` *values* are masked — header names stay visible.
+**What changed.** Connector configs used to be masked by a *denylist* of secret-looking key names. A credential under a name the list never anticipated, such as `signing_cert_pem` or a custom header value, was served in clear by `GET /api/v2/admin/connectors`. Masking is inverted: only the structural vocabulary the connector types define (endpoints, timeouts, operation gates, identity fields) is readable, and every other value answers `"******"`. All `headers` *values* are masked — header names stay visible.
 
 Channel configs, which were never masked at all, now mask `auth.keys` and `auth.secret`. The update path gained the same round-trip handling connectors have: a masked value sent back on `PUT` is restored from the stored config. A sentinel with no stored counterpart is refused with a `400` naming the field.
 
@@ -104,7 +104,7 @@ connector configs through the admin API sees `"******"` where it saw values. Exp
 
 ### Connector reads redact credentials inside URLs
 
-**What changed.** `GET /api/v1/admin/connectors` already masked
+**What changed.** `GET /api/v2/admin/connectors` already masked
 secret-named keys (`password`, `token`, `api_key`, …) with `******`. It now also strips **userinfo from URL-shaped values at any depth**, so `https://elastic:hunter2@es:9200` comes back as `https://elastic:******@es:9200`. This is what finally covers `url` and `brokers[]`. A credential-free URL is still shown in full — masking it wholesale would hide connector endpoints from the admin UI for no security gain.
 
 **Query parameters with secret-looking names are masked too.** `?api_key=…`,
@@ -164,7 +164,7 @@ One interaction is worth knowing. A `cache` connector's `write` gate covers ever
 
 ### Audit-log queries reject unknown parameters
 
-**What changed.** `GET /api/v1/admin/audit-logs` used to ignore unrecognized
+**What changed.** `GET /api/v2/admin/audit-logs` used to ignore unrecognized
 query parameters, so a typo silently returned **unfiltered** results that looked like a successful narrow query. Unknown parameters now return `400`.
 
 **How you'll notice.**

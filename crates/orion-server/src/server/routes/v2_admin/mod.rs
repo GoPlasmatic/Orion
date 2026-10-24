@@ -103,7 +103,8 @@ pub(super) fn deployment_err_response(err: DeploymentError) -> (StatusCode, Json
         "PACKAGE_NOT_FOUND"
         | "ADMISSION_NOT_FOUND"
         | "BASE_REVISION_NOT_FOUND"
-        | "ROLLBACK_TARGET_NOT_FOUND" => StatusCode::NOT_FOUND,
+        | "ROLLBACK_TARGET_NOT_FOUND"
+        | "CONNECTION_REVISION_NOT_FOUND" => StatusCode::NOT_FOUND,
         "PUBLISHER_VERSION_CONFLICT"
         | "IMMUTABLE_CONTENT_CONFLICT"
         | "IMMUTABLE_CONNECTION_CONFLICT"
@@ -113,6 +114,11 @@ pub(super) fn deployment_err_response(err: DeploymentError) -> (StatusCode, Json
         | "PROVIDER_REVOKED"
         | "ADMISSION_INVALIDATED"
         | "BACKFILL_ENTERPRISE_PROVIDER_REQUIRED" => StatusCode::FORBIDDEN,
+        "DB_TRANSACTION_ERROR"
+        | "DB_WRITE_ERROR"
+        | "DB_COMMIT_ERROR"
+        | "DB_READ_ERROR" => StatusCode::SERVICE_UNAVAILABLE,
+        "CORRUPT_PERSISTED_STATE" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     };
     (
@@ -121,23 +127,33 @@ pub(super) fn deployment_err_response(err: DeploymentError) -> (StatusCode, Json
     )
 }
 
-pub(super) fn principal_id(ext: Option<Extension<AdminPrincipal>>) -> String {
-    ext.map(|Extension(p)| p.key_id)
+pub(super) fn principal_id(ext: &Option<Extension<AdminPrincipal>>) -> String {
+    ext.as_ref()
+        .map(|Extension(p)| p.key_id.clone())
         .unwrap_or_else(|| crate::server::routes::admin::ANONYMOUS_PRINCIPAL.to_string())
 }
 
-pub(super) async fn sync_v2_deployments_to_db(state: &AppState) {
+pub(super) async fn sync_v2_deployments_to_db(
+    state: &AppState,
+    rollback_snapshot: crate::extensions::deployment_store::DeploymentStateSnapshot,
+) -> Result<(), (StatusCode, Json<Value>)> {
     if let Err(e) = state
         .composition
         .deployments
         .persist_to_db_pool(&state.db_pool)
         .await
     {
+        state
+            .composition
+            .deployments
+            .restore_snapshot(rollback_snapshot);
         tracing::error!(
             error = %e,
-            "Failed to persist v2 deployment store state to database"
+            "Failed to persist v2 deployment store state to database; rolled back in-memory mutation"
         );
+        return Err(deployment_err_response(e));
     }
+    Ok(())
 }
 
 pub(super) fn decode_files_map(
@@ -157,11 +173,24 @@ pub(super) fn decode_files_map(
     Ok(out)
 }
 
-/// `GET /api/v2/admin/runtime-capabilities` (`V2-07.5`).
+/// `GET /api/v2/admin/runtime-capabilities` (`V2-07.5`, `TD-32`).
 async fn get_runtime_capabilities(State(state): State<AppState>) -> impl IntoResponse {
     let comp = &state.composition;
     let (head_rev, epoch) = comp.deployments.current_head();
     let local_status = comp.reconciler.local_status();
+    let policy_id = comp.admission.policy_id();
+    let edition = if policy_id.contains("enterprise") {
+        "enterprise"
+    } else {
+        "community"
+    };
+    let boundary_report = crate::extensions::verify_community_assembly(comp);
+    let wasm_profiles = [
+        crate::extensions::WasmImportProfile::CoreV1.id(),
+        crate::extensions::WasmImportProfile::HttpV1.id(),
+        crate::extensions::WasmImportProfile::HttpCompositionV1.id(),
+        crate::extensions::WasmImportProfile::SessionsV1.id(),
+    ];
     let providers: Vec<Value> = comp
         .providers
         .registered_drivers()
@@ -176,13 +205,14 @@ async fn get_runtime_capabilities(State(state): State<AppState>) -> impl IntoRes
 
     Json(json!({
         "api_version": "v2",
-        "edition": "community",
-        "schema_profiles": ["orion-json-schema/1"],
-        "wasm_worlds": ["orion:connector@2.0.0", "orion:plugin@1.0.0"],
-        "wasm_import_profiles": ["core-v2"],
+        "edition": edition,
+        "schema_profiles": [crate::extensions::PROFILE_ID],
+        "wasm_worlds": [crate::extensions::CONNECTOR_WIT_CONTRACT, "orion:plugin@1.0.0"],
+        "wasm_import_profiles": wasm_profiles,
+        "community_boundary_compliant": boundary_report.is_compliant(),
         "channel_drivers": comp.channels.protocol_ids(),
         "provider_backends": providers,
-        "admission_policy_id": comp.admission.policy_id(),
+        "admission_policy_id": policy_id,
         "deployment_head": {
             "revision": head_rev,
             "epoch": epoch,
@@ -197,4 +227,64 @@ async fn get_runtime_capabilities(State(state): State<AppState>) -> impl IntoRes
             "max_in_flight": comp.native_scheduler.max_in_flight(),
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn td31_td32_v2_admin_capabilities_and_dtos_match_wire_contract() {
+        let comp = crate::extensions::CompositionRoot::community();
+        let (head_rev, epoch) = comp.deployments.current_head();
+        let local_status = comp.reconciler.local_status();
+        let policy_id = comp.admission.policy_id();
+        let boundary_report =
+            crate::extensions::verify_community_assembly(&comp);
+        let wasm_profiles = [
+            crate::extensions::WasmImportProfile::CoreV1.id(),
+            crate::extensions::WasmImportProfile::HttpV1.id(),
+            crate::extensions::WasmImportProfile::HttpCompositionV1.id(),
+            crate::extensions::WasmImportProfile::SessionsV1.id(),
+        ];
+        let payload = json!({
+            "api_version": "v2",
+            "edition": "community",
+            "schema_profiles": [crate::extensions::PROFILE_ID],
+            "wasm_worlds": [crate::extensions::CONNECTOR_WIT_CONTRACT, "orion:plugin@1.0.0"],
+            "wasm_import_profiles": wasm_profiles,
+            "community_boundary_compliant": boundary_report.is_compliant(),
+            "channel_drivers": comp.channels.protocol_ids(),
+            "provider_backends": [],
+            "admission_policy_id": policy_id,
+            "deployment_head": { "revision": head_rev, "epoch": epoch },
+            "reconciler": {
+                "applied_revision": local_status.applied_revision,
+                "backoff_attempt": local_status.backoff_attempt,
+                "quarantined_entities": local_status.quarantined_entities,
+            },
+            "native_scheduler": {
+                "in_flight": comp.native_scheduler.in_flight(),
+                "max_in_flight": comp.native_scheduler.max_in_flight(),
+            }
+        });
+
+        let dto: orion_api::v2::RuntimeCapabilitiesResponse =
+            serde_json::from_value(payload).expect("deserialize RuntimeCapabilitiesResponse");
+        assert_eq!(dto.api_version, "v2");
+        assert_eq!(dto.edition, "community");
+        assert!(dto.community_boundary_compliant);
+        assert_eq!(
+            dto.wasm_worlds,
+            vec!["orion:connector@1.0.0", "orion:plugin@1.0.0"]
+        );
+        assert_eq!(
+            dto.supported_wasm_profiles,
+            vec!["core-v1", "http-v1", "http-composition-v1", "sessions-v1"]
+        );
+        assert_eq!(
+            dto.registered_channel_drivers,
+            vec!["cron", "http", "rest", "source"]
+        );
+    }
 }

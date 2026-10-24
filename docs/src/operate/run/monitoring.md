@@ -142,7 +142,7 @@ Cluster mode only. `degraded` means this node committed a change, applied it loc
 
 The signal exists because nothing else reports it. An admin mutation that commits and then fails to reload answers 2xx, deliberately. The row is `active` and the next successful reload serves it. A 5xx would tell the client its change failed when it did not. The natural response, retrying, writes a second version or collides with the first. The same argument [`config_propagation`](#componentsconfig_propagation) makes for a lost epoch bump. The cluster epoch watcher's resync has no caller to tell at all.
 
-`POST /api/v1/admin/engine/reload` is the exception. A caller who *asked* for a reload is told when it failed, because there is no committed write for the error to misdescribe. `/readyz` is unaffected, for the same reason as `config_propagation`. This node is serving, only not the newest config, and ejecting it would trade a stale-config problem for an availability one.
+`POST /api/v2/admin/engine/reload` is the exception. A caller who *asked* for a reload is told when it failed, because there is no committed write for the error to misdescribe. `/readyz` is unaffected, for the same reason as `config_propagation`. This node is serving, only not the newest config, and ejecting it would trade a stale-config problem for an availability one.
 
 ### `components.background_tasks`
 
@@ -160,7 +160,7 @@ The retention jobs (trace cleanup, audit-log cleanup) are the non-essential ones
 
 With an admin credential, `/health` adds a `background_tasks` array naming each task, its state, and how many times the supervisor has restarted it. A running task with a non-zero restart count is the one worth alerting on: it is up now, and it has been failing.
 
-For a running instance's own view, `GET /api/v1/admin/engine/status` returns the version, uptime, workflow counts, and the channel list.
+For a running instance's own view, `GET /api/v2/admin/engine/status` returns the version, uptime, workflow counts, and the channel list.
 
 ## Verify
 

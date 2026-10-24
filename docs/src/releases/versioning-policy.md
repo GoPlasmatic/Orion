@@ -32,13 +32,13 @@ Orion follows [semantic versioning](https://semver.org):
 - **Major** (`2.0.0`) — reserved for breaking changes to the Admin/Data APIs,
   configuration semantics, or workflow/channel definitions.
 
-The versioned API prefix (`/api/v1/`) is independent of the crate version: `v1` endpoints keep their request/response contracts for the life of the 1.x line. Endpoint additions and new optional fields are not considered breaking.
+The versioned API prefix (`/api/v2/`) is independent of the crate version: `v1` endpoints keep their request/response contracts for the life of the 1.x line. Endpoint additions and new optional fields are not considered breaking.
 
 ### What the 1.0 promise covers
 
 | Surface | Covered? |
 |---|---|
-| HTTP Admin and Data APIs under `/api/v1/` | **Yes** — the contract above |
+| HTTP Admin and Data APIs under `/api/v2/` | **Yes** — the contract above |
 | Configuration keys and their semantics | **Yes** — a minor may add keys with behaviour-preserving defaults, never repurpose one |
 | Workflow, channel and connector JSON | **Yes** — a document that validates on 1.0 validates for the 1.x line |
 | Prometheus metric names and labels | **Yes** — renames wait for a major |

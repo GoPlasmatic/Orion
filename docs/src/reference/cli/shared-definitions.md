@@ -98,7 +98,7 @@ A constant may reference another constant, use a value fragment or hold an `$eac
 A finding inside an expansion names the trail that produced it, such as `(fragment 'guard' › $each p = 3)`.
 
 > [!NOTE]
-> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v1/admin/workflows` does not accept `$from`, `use`, `$use` or `$each`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already compiled.
+> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v2/admin/workflows` does not accept `$from`, `use`, `$use` or `$each`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already compiled.
 
 ## Statements in `.sql` files
 

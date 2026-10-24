@@ -69,13 +69,16 @@ pub(super) async fn upload_connector_package(
         })
         .collect();
 
+    let snapshot = state.composition.deployments.take_snapshot();
     match state
         .composition
         .deployments
         .ingest_verified_archive(&entries)
     {
         Ok(row) => {
-            sync_v2_deployments_to_db(&state).await;
+            if let Err(err_resp) = sync_v2_deployments_to_db(&state, snapshot).await {
+                return err_resp;
+            }
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,
                 &principal,
@@ -97,13 +100,16 @@ pub(super) async fn admit_connector_package(
     req: Option<Json<AdmitPackageRequest>>,
 ) -> impl IntoResponse {
     let lock = req.and_then(|Json(r)| r.lock);
+    let snapshot = state.composition.deployments.take_snapshot();
     match state.composition.deployments.admit_package(
         &digest,
         state.composition.admission.as_ref(),
         lock.as_ref(),
     ) {
         Ok(adm) => {
-            sync_v2_deployments_to_db(&state).await;
+            if let Err(err_resp) = sync_v2_deployments_to_db(&state, snapshot).await {
+                return err_resp;
+            }
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,
                 &principal,
@@ -123,9 +129,12 @@ pub(super) async fn revoke_connector_package(
     principal: Option<Extension<AdminPrincipal>>,
     Path(digest): Path<String>,
 ) -> impl IntoResponse {
+    let snapshot = state.composition.deployments.take_snapshot();
     match state.composition.deployments.revoke_package(&digest) {
         Ok(()) => {
-            sync_v2_deployments_to_db(&state).await;
+            if let Err(err_resp) = sync_v2_deployments_to_db(&state, snapshot).await {
+                return err_resp;
+            }
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,
                 &principal,

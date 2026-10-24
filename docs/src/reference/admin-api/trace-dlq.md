@@ -21,10 +21,10 @@ These endpoints are the operator view of that queue. Inspect what is stuck, put 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/trace-dlq` | List DLQ entries, paginated (`?offset=`, `?limit=`). Summaries only — the failed payload is omitted; fetch one by id for it |
-| GET | `/api/v1/admin/trace-dlq/{id}` | Get one entry including the failed payload and error metadata |
-| POST | `/api/v1/admin/trace-dlq/{id}/requeue` | Reset the entry to `retry_count = 0` and schedule it for immediate retry — including one already exhausted |
-| POST | `/api/v1/admin/trace-dlq/purge` | Delete **exhausted** entries (retries used up). Body: `{"older_than_hours": N}` (required; `0` purges every exhausted entry). Live entries are never purged |
+| GET | `/api/v2/admin/trace-dlq` | List DLQ entries, paginated (`?offset=`, `?limit=`). Summaries only — the failed payload is omitted; fetch one by id for it |
+| GET | `/api/v2/admin/trace-dlq/{id}` | Get one entry including the failed payload and error metadata |
+| POST | `/api/v2/admin/trace-dlq/{id}/requeue` | Reset the entry to `retry_count = 0` and schedule it for immediate retry — including one already exhausted |
+| POST | `/api/v2/admin/trace-dlq/purge` | Delete **exhausted** entries (retries used up). Body: `{"older_than_hours": N}` (required; `0` purges every exhausted entry). Live entries are never purged |
 
 ## Related
 

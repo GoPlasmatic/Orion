@@ -151,24 +151,24 @@ environment. Drop `orion_engine_lock_wait_seconds` from dashboards and alerts â€
 
 | Before | After |
 |---|---|
-| `GET /api/v1/data/traces` | `GET /api/v1/admin/traces` |
-| `GET /api/v1/data/traces/{id}` | `GET /api/v1/admin/traces/{id}` |
+| `GET /api/v2/data/traces` | `GET /api/v2/admin/traces` |
+| `GET /api/v2/data/traces/{id}` | `GET /api/v2/admin/traces/{id}` |
 
 **There is no redirect.** The old paths now resolve as *channel* names on the data-plane catch-all. A request to one returns 404 rather than a 308, or runs a channel you happen to have named `traces`.
 
 **Why.** The list endpoint was already admin-guarded, so its placement on the
-data plane was a naming lie. It was also a functional one. `/traces` and `/traces/{id}` were static routes, and axum resolves static segments before the `/{*path}` catch-all. So **a channel named `traces` was permanently unreachable**, `POST /api/v1/data/traces` returned 405, and the rate limiter carried a special case to skip the name. None of that was documented or checked, and it silently did not work.
+data plane was a naming lie. It was also a functional one. `/traces` and `/traces/{id}` were static routes, and axum resolves static segments before the `/{*path}` catch-all. So **a channel named `traces` was permanently unreachable**, `POST /api/v2/data/traces` returned 405, and the rate limiter carried a special case to skip the name. None of that was documented or checked, and it silently did not work.
 
-**How you'll notice.** Any async client that polls `GET /api/v1/data/traces/{id}`
+**How you'll notice.** Any async client that polls `GET /api/v2/data/traces/{id}`
 starts getting 404. Operator tooling hitting the list gets the same.
 
-**What to do.** Update the paths. The access rules are unchanged. The list needs an admin credential, and the single-trace GET takes *either* an admin credential or the submission's `trace_token` (see the next section). It lives under `/api/v1/admin` and is the one path in that namespace not covered by the blanket admin guard.
+**What to do.** Update the paths. The access rules are unchanged. The list needs an admin credential, and the single-trace GET takes *either* an admin credential or the submission's `trace_token` (see the next section). It lives under `/api/v2/admin` and is the one path in that namespace not covered by the blanket admin guard.
 
 ```bash
 # before
-curl "http://orion:8080/api/v1/data/traces/$id"  -H "x-trace-token: $tok"
+curl "http://orion:8080/api/v2/data/traces/$id"  -H "x-trace-token: $tok"
 # after
-curl "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
+curl "http://orion:8080/api/v2/admin/traces/$id" -H "x-trace-token: $tok"
 ```
 
 ### OpenAPI schema components renamed
@@ -189,8 +189,8 @@ The fifth is different: the trace-list envelope was renamed because its
 
 The generic envelope names follow (`DataEnvelope_Connector` â†’ `DataEnvelope_ConnectorResponse`, and so on). Regenerate your client and rename the referenced types; no field access changes.
 
-The last row is a correction rather than a rename. The endpoint `GET /api/v1/admin/trace-dlq` has never returned `payload_json` or `metadata_json`: it selects a payload-free projection, so one request cannot dump every failed request's body. The published schema claimed both fields anyway, because the row struct that *did* have them was also the wire type. If you generated a client that modelled
-DLQ list rows as carrying payloads, those fields were always absent at runtime. Fetch a single entry with `GET /api/v1/admin/trace-dlq/{id}` for the payload.
+The last row is a correction rather than a rename. The endpoint `GET /api/v2/admin/trace-dlq` has never returned `payload_json` or `metadata_json`: it selects a payload-free projection, so one request cannot dump every failed request's body. The published schema claimed both fields anyway, because the row struct that *did* have them was also the wire type. If you generated a client that modelled
+DLQ list rows as carrying payloads, those fields were always absent at runtime. Fetch a single entry with `GET /api/v2/admin/trace-dlq/{id}` for the payload.
 
 **One error code changed with it:** a database failure while listing audit logs
 now returns `{"error": {"code": "STORAGE_ERROR"}}` instead of `INTERNAL_ERROR`. The status is still 500. That is what every other list endpoint already returned, and what the *count* half of this same query already returned.

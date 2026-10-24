@@ -4,7 +4,7 @@
 
 # `auth`
 
-`auth` authenticates HTTP callers of a data channel. It covers `POST /api/v1/data/{channel}` and the `/async` submission identically — appending `/async` is not a bypass. Without an `auth` block, the channel is reachable by anyone who can reach the port; [`[admin_auth]`](../configuration/admin-auth.md) protects `/api/v1/admin` only.
+`auth` authenticates HTTP callers of a data channel. It covers `POST /api/v2/data/{channel}` and the `/async` submission identically — appending `/async` is not a bypass. Without an `auth` block, the channel is reachable by anyone who can reach the port; [`[admin_auth]`](../configuration/admin-auth.md) protects `/api/v2/admin` only.
 
 
 ## Fields

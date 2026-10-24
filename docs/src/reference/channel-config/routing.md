@@ -24,9 +24,9 @@ These fields sit on the channel object itself, beside `config`. They decide how 
 | `consumer_group` | string | no | — | Kafka consumer group name. At most 255 characters. |
 | `priority` | number | no | `0` | Route-match precedence. Routes match by priority descending, then segment count descending, then channel name — deterministic on every node. |
 
-`rest` and `http` route identically: both must declare `methods` and `route_pattern`, both register in the route table, and both stay reachable by name at `/api/v1/data/{name}`. An async channel's pattern serves at `/{pattern}/async`, whatever its `channel_type`. A `kafka` channel registers its `topic` as a consumer at startup and on engine reload. Config-file topic mappings take precedence over channel-declared ones; see [Kafka settings](../configuration/kafka.md).
+`rest` and `http` route identically: both must declare `methods` and `route_pattern`, both register in the route table, and both stay reachable by name at `/api/v2/data/{name}`. An async channel's pattern serves at `/{pattern}/async`, whatever its `channel_type`. A `kafka` channel registers its `topic` as a consumer at startup and on engine reload. Config-file topic mappings take precedence over channel-declared ones; see [Kafka settings](../configuration/kafka.md).
 
-A `cron` channel declares none of those four fields, and each is refused. It registers no HTTP route and no Kafka subscription, and it is **not** reachable by name at `/api/v1/data/{name}` either. Its schedule is the only thing that starts it. See [Cron transport](./cron.md).
+A `cron` channel declares none of those four fields, and each is refused. It registers no HTTP route and no Kafka subscription, and it is **not** reachable by name at `/api/v2/data/{name}` either. Its schedule is the only thing that starts it. See [Cron transport](./cron.md).
 
 **`route_pattern` grammar.** The pattern must start with `/`. It must not contain whitespace, `?`, `#`, or `%`. No segment may be empty (no `//`, no trailing `/`). A parameter is a whole segment written `{name}`; the name must match `[A-Za-z_][A-Za-z0-9_]*` and be unique within the pattern. Captured parameters reach the workflow as `metadata.params`. See the [Workflow Schema](../workflows.md).
 

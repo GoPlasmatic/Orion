@@ -82,6 +82,14 @@ pub struct RuntimeGeneration {
     /// any active row did not load. `model_infer` resolves through it on
     /// both engines; `/health` and `GET /models/{id}` read it.
     pub models: Arc<ModelSet>,
+    /// Immutable snapshot of resolved connector configurations published with
+    /// this generation (`TD-07`). When `Some`, connector tasks executing under
+    /// [`PINNED_GENERATION`] resolve against this snapshot rather than reading
+    /// a concurrently reloaded [`crate::connector::ConnectorRegistry`].
+    pub connectors:
+        Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
+    /// Run-wide resource budget ceilings configured for this generation (`TD-03`).
+    pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
 }
 
 /// The live generation, swapped wholesale on reload.
@@ -131,6 +139,8 @@ impl RuntimeHandle {
                 functions,
                 plugins: Arc::new(PluginSet::empty()),
                 models: Arc::new(ModelSet::empty()),
+                connectors: None,
+                run_budget_limits: Default::default(),
             }),
             published: AtomicU64::new(0),
         }
@@ -170,6 +180,34 @@ impl RuntimeHandle {
         plugins: Arc<PluginSet>,
         models: Arc<ModelSet>,
     ) -> u64 {
+        self.publish_with_estate(
+            engine,
+            engine4,
+            channels,
+            functions,
+            plugins,
+            models,
+            None,
+            Default::default(),
+        )
+    }
+
+    /// Publish the next generation together with its immutable connector
+    /// snapshot (`TD-07`) and configured run budget limits (`TD-03`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_with_estate(
+        &self,
+        engine: Arc<dataflow_rs_v3::Engine>,
+        engine4: Option<dataflow_rs::Engine>,
+        channels: Arc<ChannelSnapshot>,
+        functions: Arc<FunctionRegistry>,
+        plugins: Arc<PluginSet>,
+        models: Arc<ModelSet>,
+        connectors: Option<
+            Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>,
+        >,
+        run_budget_limits: crate::engine::budget::RunBudgetLimits,
+    ) -> u64 {
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
         self.current.store(Arc::new(RuntimeGeneration {
             id,
@@ -179,6 +217,8 @@ impl RuntimeHandle {
             functions,
             plugins,
             models,
+            connectors,
+            run_budget_limits,
         }));
         id
     }

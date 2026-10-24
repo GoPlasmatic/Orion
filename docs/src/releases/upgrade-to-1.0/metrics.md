@@ -19,8 +19,8 @@ The metric name is unchanged. The old label carried a raw client IP — unbounde
 | `scope` value | Meaning |
 |---------------|---------|
 | *(channel name)* | A per-channel limiter defined in that channel's `config_json` |
-| `admin` | The platform limiter for `/api/v1/admin*` |
-| `data` | The platform limiter for `/api/v1/data*` |
+| `admin` | The platform limiter for `/api/v2/admin*` |
+| `data` | The platform limiter for `/api/v2/data*` |
 | `operational` | Everything else |
 
 **Channel-labelled metrics now use `_unknown` for unregistered channels.** When a request names a channel the registry does not hold, the `channel` label is the literal string `_unknown`. The leading underscore keeps it out of the caller-supplied namespace. Otherwise anyone could inflate the metric cardinality by POSTing to arbitrary paths. Two metrics are capped:

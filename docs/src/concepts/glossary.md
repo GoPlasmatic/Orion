@@ -28,13 +28,13 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Connector**: a named connection to an external system (`http`, `db`, `cache`, `es`, `kafka`, `smtp`, `storage`) that tasks reference by name. See [Connectors](./connectors.md).
 
-**Control plane**: the admin API under `/api/v1/admin/`, and the CLI and Console that drive it. See [Admin API](../reference/admin-api/index.md).
+**Control plane**: the admin API under `/api/v2/admin/`, and the CLI and Console that drive it. See [Admin API](../reference/admin-api/index.md).
 
 **Cron channel**: a channel whose `protocol` is `cron`: a six-field schedule and a fixed payload, with no route, topic or caller. See [Cron transport](../reference/channel-config/cron.md).
 
 **Data context**: the JSON document a workflow's tasks read and write; its top level is exactly `data`, `metadata` and `temp_data`. See [Workflows](./workflows.md#the-data-context).
 
-**Data plane**: the endpoints under `/api/v1/data/` where channels answer requests. See [Data API](../reference/data-api.md).
+**Data plane**: the endpoints under `/api/v2/data/` where channels answer requests. See [Data API](../reference/data-api.md).
 
 **Dedup key (idempotency key)**: the per-channel value, a header or the Kafka record key, that marks a request as a duplicate inside the dedup window. See [Channel configuration](../reference/channel-config/deduplication.md).
 
@@ -50,7 +50,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Generation**: one published value holding the engine, the channel estate, the function registry, the plugin set and the model set, swapped atomically on reload. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
 
-**Hot reload**: replacing the running generation inside a live process; admin mutations and `POST /api/v1/admin/engine/reload` take effect without a restart. See [The entity lifecycle](./lifecycle.md#what-moves-the-engine).
+**Hot reload**: replacing the running generation inside a live process; admin mutations and `POST /api/v2/admin/engine/reload` take effect without a restart. See [The entity lifecycle](./lifecycle.md#what-moves-the-engine).
 
 **Ingress**: any path work enters a channel: a synchronous request, an `/async` submission, a Kafka record, a `channel_call`, or a claimed cron occurrence.
 
@@ -80,7 +80,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Rollout bucket**: the stable request hash that decides which workflow version serves a call during a percentage rollout. See [Workflow definition](../reference/workflows.md#rollout).
 
-**Route pattern**: a channel's REST method and path template, with parameters, matched against requests under `/api/v1/data/`. See [Data API](../reference/data-api.md#route-resolution).
+**Route pattern**: a channel's REST method and path template, with parameters, matched against requests under `/api/v2/data/`. See [Data API](../reference/data-api.md#route-resolution).
 
 **Shaped response**: a response mode in which the workflow sets the HTTP status, headers and body through `data._orion.response`. See [Data API](../reference/data-api.md#shaped-responses).
 

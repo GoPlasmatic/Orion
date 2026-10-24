@@ -258,7 +258,19 @@ async fn run_query(
             // Shared with `mongo_read`/`mongo_aggregate`, so an
             // unserializable document is the same named error on every
             // MongoDB read path rather than a silently shorter array here.
-            super::mongo_common::docs_to_json(&docs, NAME)?
+            let json_docs = super::mongo_common::docs_to_json(&docs, NAME)?;
+            if limits.max_result_bytes > 0
+                && crate::connector::sql_decode::approx_json_value_bytes(&json_docs)
+                    > limits.max_result_bytes
+            {
+                return Err(DataflowError::Validation(format!(
+                    "{NAME} result exceeds query.max_result_bytes ({} bytes) \
+                     — select fewer fields, reduce limit, or raise the cap",
+                    limits.max_result_bytes
+                ))
+                .into());
+            }
+            json_docs
         }
         ConnectorConfig::Db(db) => {
             // SQL: dialect from the connection-string scheme, the same
@@ -285,6 +297,7 @@ async fn run_query(
                 dialect,
                 QueryBudget::within(db.query_timeout_ms, run_deadline),
                 parsed.format,
+                limits.max_result_bytes,
             )
             .await?
         }
@@ -497,14 +510,16 @@ async fn run_es_count(
 
     let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
     if !status.is_success() {
+        let preview = super::connector_helpers::format_upstream_error_preview(&body);
         return Err(DataflowError::function_execution(
-            format!("Elasticsearch count failed ({status}): {body}"),
+            format!("Elasticsearch count failed ({status}): {preview}"),
             None,
         ));
     }
     let n = body.get("count").and_then(Value::as_u64).ok_or_else(|| {
+        let preview = super::connector_helpers::format_upstream_error_preview(&body);
         DataflowError::function_execution(
-            format!("Elasticsearch count returned no count: {body}"),
+            format!("Elasticsearch count returned no count: {preview}"),
             None,
         )
     })?;
@@ -532,8 +547,9 @@ async fn run_es_search(
 
     let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
     if !status.is_success() {
+        let preview = super::connector_helpers::format_upstream_error_preview(&body);
         return Err(DataflowError::function_execution(
-            format!("Elasticsearch search failed ({status}): {body}"),
+            format!("Elasticsearch search failed ({status}): {preview}"),
             None,
         ));
     }
@@ -588,7 +604,24 @@ async fn run_sql_with_includes(
     dialect: SqlDialect,
     budget: QueryBudget,
     format: crate::connector::sql_decode::RowFormat,
+    max_result_bytes: usize,
 ) -> Result<Value, DataflowError> {
+    let mut total_bytes = 0usize;
+    let check_bytes = |rows: &[Value], total: &mut usize| -> Result<(), DataflowError> {
+        if max_result_bytes == 0 {
+            return Ok(());
+        }
+        for row in rows {
+            *total = total.saturating_add(crate::connector::sql_decode::approx_json_value_bytes(row));
+            if *total > max_result_bytes {
+                return Err(DataflowError::Validation(format!(
+                    "{NAME} result exceeds query.max_result_bytes ({max_result_bytes} bytes) \
+                     — select fewer fields, reduce limit, or raise the cap"
+                )));
+            }
+        }
+        Ok(())
+    };
     let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
     // `SqlxValues` implements `IntoArguments` for all three drivers as well as
     // `Any`, so the builder above needs no change — only the execute site
@@ -626,6 +659,7 @@ async fn run_sql_with_includes(
             rows_to_json(&rows, format).map_err(|e| decode_failure(NAME, e))?
         }
     );
+    check_bytes(&parents, &mut total_bytes)?;
 
     for inc in &plan.includes {
         // Distinct, non-null parent keys to fetch children for.
@@ -680,6 +714,7 @@ async fn run_sql_with_includes(
                     rows_to_json(&crows, format).map_err(|e| decode_failure(NAME, e))?
                 }
             );
+            check_bytes(&children, &mut total_bytes)?;
             for mut child in children {
                 let Some(fk) = child.get(&inc.foreign).and_then(GroupKey::from_json) else {
                     continue;

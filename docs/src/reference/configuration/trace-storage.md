@@ -4,7 +4,7 @@
 
 # Trace persistence settings
 
-Orion's own per-request trace records — rows in the `traces` table, read through `/api/v1/admin/traces`. Unrelated to the OTLP export in `[tracing]` above; before 1.0 these keys lived under `[tracing.storage]`, which is exactly the confusion the split removes. A channel can override the mode with its `config.tracing` field; unset per-channel fields fall back to what is set here.
+Orion's own per-request trace records — rows in the `traces` table, read through `/api/v2/admin/traces`. Unrelated to the OTLP export in `[tracing]` above; before 1.0 these keys lived under `[tracing.storage]`, which is exactly the confusion the split removes. A channel can override the mode with its `config.tracing` field; unset per-channel fields fall back to what is set here.
 
 ## Synopsis
 

@@ -65,15 +65,15 @@ The primitives of one service group into a [package](./packages.md): the named, 
 ## Sync, async and scheduled
 
 ```text
-Sync     POST /api/v1/data/{channel}         → immediate JSON response
-Async    POST /api/v1/data/{channel}/async   → returns a trace id for polling
-REST     GET  /api/v1/data/orders/{id}       → matched by route pattern
+Sync     POST /api/v2/data/{channel}         → immediate JSON response
+Async    POST /api/v2/data/{channel}/async   → returns a trace id for polling
+REST     GET  /api/v2/data/orders/{id}       → matched by route pattern
 Kafka    topic: order.placed                 → consumed automatically
 Cron     schedule: 0 15 2 * * *              → runs on its own, with no caller
 ```
 
 - **Use a sync channel** for a request/response API where the caller waits for the answer.
-- **Use an async channel** for a submission the caller should not block on. The caller gets a trace id at once and polls `GET /api/v1/admin/traces/{id}` for the result.
+- **Use an async channel** for a submission the caller should not block on. The caller gets a trace id at once and polls `GET /api/v2/admin/traces/{id}` for the result.
 - **Use a Kafka channel** for an event stream, where the topic is the ingress.
 - **Use a [cron channel](../guides/patterns/scheduled-workflows.md)** for work with no caller at all. There is nothing to route to and nothing to authenticate, and every scheduled instant becomes a durable occurrence you can read back.
 

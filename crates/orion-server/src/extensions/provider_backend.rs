@@ -144,6 +144,8 @@ type ProviderBackendMap = BTreeMap<(ImplementationKind, String), Arc<dyn Provide
 #[derive(Clone, Default)]
 pub struct ProviderRegistry {
     backends: Arc<RwLock<ProviderBackendMap>>,
+    admission: Arc<RwLock<Option<Arc<dyn AdmissionPolicy>>>>,
+    deployments: Arc<RwLock<Option<super::deployment_store::ImmutableDeploymentStore>>>,
 }
 
 impl std::fmt::Debug for ProviderRegistry {
@@ -158,6 +160,36 @@ impl std::fmt::Debug for ProviderRegistry {
 impl ProviderRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Attach an [`AdmissionPolicy`] to this registry so callers such as
+    /// `connector_call` always enforce runtime lease and deny-set checks (`TD-25`).
+    pub fn set_admission_policy(&self, policy: Arc<dyn AdmissionPolicy>) {
+        if let Ok(mut guard) = self.admission.write() {
+            *guard = Some(policy);
+        }
+    }
+
+    /// Return the configured [`AdmissionPolicy`], or a default [`super::admission::CommunityAdmissionPolicy`].
+    pub fn admission_policy(&self) -> Arc<dyn AdmissionPolicy> {
+        self.admission
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(|| Arc::new(super::admission::CommunityAdmissionPolicy::new()))
+    }
+
+    /// Attach an [`super::deployment_store::ImmutableDeploymentStore`] so callers can resolve
+    /// pinned connection revisions and package revocation status (`TD-25`).
+    pub fn set_deployment_store(&self, store: super::deployment_store::ImmutableDeploymentStore) {
+        if let Ok(mut guard) = self.deployments.write() {
+            *guard = Some(store);
+        }
+    }
+
+    /// Return the attached [`super::deployment_store::ImmutableDeploymentStore`], if any.
+    pub fn deployment_store(&self) -> Option<super::deployment_store::ImmutableDeploymentStore> {
+        self.deployments.read().ok().and_then(|g| g.clone())
     }
 
     /// Register a [`ProviderBackend`] by `(kind, driver_id)`.

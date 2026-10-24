@@ -33,12 +33,12 @@ The same asymmetry governs sampling: `trace_storage.sample_rate` applies to sync
 Submit, then read the result with the token the `202` returned:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
+curl -s -X POST http://localhost:8080/api/v2/data/orders/async \
   -H "Content-Type: application/json" \
   -d '{ "data": { "order_id": "ORD-123" } }'
 
 curl -s -H "x-trace-token: <token>" \
-  http://localhost:8080/api/v1/admin/traces/<trace-id>
+  http://localhost:8080/api/v2/admin/traces/<trace-id>
 ```
 
 The CLI does both halves in one command. It keeps the token from the `202` and polls with it:
@@ -71,7 +71,7 @@ Two bounds decide what a burst does. `buffer_size` caps the number of queued sub
 A message consumed from Kafka runs the same admission guards and the same workflow dispatch as an HTTP request. It produces a `traces` row like one. The row's `mode` is `kafka`, so it can be told apart from the two HTTP paths:
 
 ```bash
-curl "$ORION/api/v1/data/traces?mode=kafka&limit=20" -H "x-api-key: $KEY"
+curl "$ORION/api/v2/data/traces?mode=kafka&limit=20" -H "x-api-key: $KEY"
 ```
 
 A scheduled run writes `mode = "cron"`, with the channel's authored `transport_config.payload` as its `input_json` and the occurrence's id in the [ledger](../../reference/admin-api/cron-occurrences.md) linking the two. It follows the `/async` contract rather than the sync one. `trace_storage.mode = "off"` is upgraded to `sync` and sampling is forced. The occurrence is the only thing that observes the run, and a run nobody can debug is worth less than the storage it saves. `errors_only` still applies as documented.
@@ -113,8 +113,8 @@ dlq_lease_secs = 60
 A row that exhausts its retries is marked exhausted and stops being retried. It stays in the table for you to inspect. Inspect and purge over the admin API:
 
 ```bash
-curl -s "http://localhost:8080/api/v1/admin/trace-dlq"
-curl -s -X POST "http://localhost:8080/api/v1/admin/trace-dlq/purge" \
+curl -s "http://localhost:8080/api/v2/admin/trace-dlq"
+curl -s -X POST "http://localhost:8080/api/v2/admin/trace-dlq/purge" \
   -H 'Content-Type: application/json' -d '{"older_than_hours": 168}'
 ```
 
@@ -142,8 +142,8 @@ The cleanup job deletes in chunks so a large backlog does not lock the table. In
 List recent traces and read one back:
 
 ```bash
-curl -s "http://localhost:8080/api/v1/admin/traces?channel=orders&status=failed&limit=20"
-curl -s "http://localhost:8080/api/v1/admin/traces/<trace-id>"
+curl -s "http://localhost:8080/api/v2/admin/traces?channel=orders&status=failed&limit=20"
+curl -s "http://localhost:8080/api/v2/admin/traces/<trace-id>"
 ```
 
 `status` takes one of `pending`, `running`, `completed`, `failed`. It is matched literally rather than validated. A value outside that set, such as `error`, comes back as an empty page rather than a `400`.

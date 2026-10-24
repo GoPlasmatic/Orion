@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::{deployment_err_response, principal_id, sync_v2_deployments_to_db};
 use crate::extensions::deployment_store::CanonicalManifest;
-use crate::extensions::reconciler::ConvergenceTarget;
+use crate::extensions::reconciler::{CandidateBuildIssue, ConvergenceTarget};
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::state::AppState;
 
@@ -86,7 +86,7 @@ pub(super) async fn apply_deployment(
     principal: Option<Extension<AdminPrincipal>>,
     Json(req): Json<ApplyDeploymentRequest>,
 ) -> impl IntoResponse {
-    let actor = principal_id(principal);
+    let actor = principal_id(&principal);
     let plan = match state
         .composition
         .deployments
@@ -96,6 +96,7 @@ pub(super) async fn apply_deployment(
         Err(e) => return deployment_err_response(e),
     };
 
+    let snapshot = state.composition.deployments.take_snapshot();
     let receipt = match state.composition.deployments.apply_candidate(
         &actor,
         &req.idempotency_key,
@@ -107,14 +108,36 @@ pub(super) async fn apply_deployment(
         Err(e) => return deployment_err_response(e),
     };
 
-    // Reconcile this node against the newly committed revision and reload RuntimeGeneration
-    sync_v2_deployments_to_db(&state).await;
+    if let Err(err_resp) = sync_v2_deployments_to_db(&state, snapshot).await {
+        return err_resp;
+    }
+
+    crate::server::routes::admin::audit_log(
+        &state.audit_queue,
+        &principal,
+        "v2_deployment_apply",
+        "deployment",
+        &receipt.committed_revision.to_string(),
+    );
+
+    // Reconcile this node against the newly committed revision and reload RuntimeGeneration (`TD-17`, `TD-18`)
     state.composition.reconciler.observe_desired_head();
+    let mut build_issues = Vec::new();
+    if let Err(reload_err) = crate::runtime::reload_engine(&state).await {
+        build_issues.push(CandidateBuildIssue::WholeBuildIntegrity {
+            code: "ENGINE_RELOAD_FAILED".to_string(),
+            message: reload_err.to_string(),
+        });
+    }
     let _ = state
         .composition
         .reconciler
-        .build_and_publish_candidate(receipt.committed_revision, Vec::new());
-    let _ = crate::runtime::reload_engine(&state).await;
+        .build_and_publish_candidate(receipt.committed_revision, build_issues);
+    let _ = state
+        .composition
+        .reconciler
+        .persist_local_status_to_db_pool(&state.db_pool)
+        .await;
 
     (
         StatusCode::ACCEPTED,
@@ -151,7 +174,15 @@ pub(super) async fn get_deployment_convergence(
 ) -> impl IntoResponse {
     let local_node_id = state.composition.reconciler.local_status().identity.node_id;
     let target = match query.target.as_deref().unwrap_or("this-node") {
-        "observed" => ConvergenceTarget::ObservedNodes([local_node_id].into_iter().collect()),
+        "observed" => {
+            let observed = state
+                .composition
+                .reconciler
+                .refresh_observed_nodes_from_db_pool(&state.db_pool)
+                .await
+                .unwrap_or_else(|_| state.composition.reconciler.observed_node_ids());
+            ConvergenceTarget::ObservedNodes(observed)
+        }
         _ => ConvergenceTarget::ThisNode(local_node_id),
     };
     let report = state
@@ -170,7 +201,8 @@ pub(super) async fn rollback_deployment(
     principal: Option<Extension<AdminPrincipal>>,
     Json(req): Json<RollbackDeploymentRequest>,
 ) -> impl IntoResponse {
-    let actor = principal_id(principal);
+    let actor = principal_id(&principal);
+    let snapshot = state.composition.deployments.take_snapshot();
     match state.composition.deployments.rollback_to_revision(
         &actor,
         &req.idempotency_key,
@@ -180,13 +212,33 @@ pub(super) async fn rollback_deployment(
         state.composition.admission.as_ref(),
     ) {
         Ok((receipt, warnings)) => {
-            sync_v2_deployments_to_db(&state).await;
+            if let Err(err_resp) = sync_v2_deployments_to_db(&state, snapshot).await {
+                return err_resp;
+            }
+            crate::server::routes::admin::audit_log(
+                &state.audit_queue,
+                &principal,
+                "v2_deployment_rollback",
+                "deployment",
+                &format!("{}->{}", req.target_revision, receipt.committed_revision),
+            );
             state.composition.reconciler.observe_desired_head();
+            let mut build_issues = Vec::new();
+            if let Err(reload_err) = crate::runtime::reload_engine(&state).await {
+                build_issues.push(CandidateBuildIssue::WholeBuildIntegrity {
+                    code: "ENGINE_RELOAD_FAILED".to_string(),
+                    message: reload_err.to_string(),
+                });
+            }
             let _ = state
                 .composition
                 .reconciler
-                .build_and_publish_candidate(receipt.committed_revision, Vec::new());
-            let _ = crate::runtime::reload_engine(&state).await;
+                .build_and_publish_candidate(receipt.committed_revision, build_issues);
+            let _ = state
+                .composition
+                .reconciler
+                .persist_local_status_to_db_pool(&state.db_pool)
+                .await;
             (
                 StatusCode::ACCEPTED,
                 Json(json!({

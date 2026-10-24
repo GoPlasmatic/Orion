@@ -68,7 +68,7 @@ A TTL alone trades staleness against misses. A short one misses while the data s
 Each namespace has a version counter in the response-cache store. An entry records the versions current when its request looked the cache up, and it is served only while they are still current. Invalidating a namespace bumps its counter, so every entry stored under an older version stops matching, on every channel that declares the namespace. There is no scan and no delete. A stale entry is overwritten by the next miss, or expires at its TTL. Invalidate from either side:
 
 - A workflow task: [`cache_invalidate`](../functions/cache_invalidate.md) with `{"namespaces": ["ladder"]}`, in the workflow that makes the write.
-- An operator: [`POST /api/v1/admin/cache/namespaces/ladder/invalidate`](../admin-api/cache.md), for a change no workflow made.
+- An operator: [`POST /api/v2/admin/cache/namespaces/ladder/invalidate`](../admin-api/cache.md), for a change no workflow made.
 
 Behaviour:
 

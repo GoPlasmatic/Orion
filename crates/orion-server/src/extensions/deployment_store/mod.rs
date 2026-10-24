@@ -26,9 +26,112 @@ use super::package_identity::{
 };
 use super::schema_profile::{check_manifest_bundle, validate_safe_package_path};
 
-// ============================================================
-// V2-03.2..V2-03.4 & V2-04.1..V2-04.6: Immutable Storage & Lifecycle
-// ============================================================
+fn is_public_config_secret_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    const SECRET_PATTERNS: &[&str] = &[
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "token",
+        "api_key",
+        "apikey",
+        "api-key",
+        "private_key",
+        "private-key",
+        "access_key",
+        "access-key",
+        "authorization",
+        "credential",
+        "bearer",
+        "passphrase",
+        "signing_key",
+    ];
+    SECRET_PATTERNS.iter().any(|pat| lower.contains(pat))
+}
+
+fn validate_no_secrets_in_public_config(value: &Value) -> Result<(), DeploymentError> {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map {
+                if is_public_config_secret_key(k) {
+                    return Err(DeploymentError::new(
+                        "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
+                        format!(
+                            "secret key '{k}' must use secret_locator, not public_config"
+                        ),
+                    ));
+                }
+                validate_no_secrets_in_public_config(v)?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => {
+            for item in items {
+                validate_no_secrets_in_public_config(item)?;
+            }
+            Ok(())
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.starts_with("Bearer ") || trimmed.starts_with("Basic ") {
+                return Err(DeploymentError::new(
+                    "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
+                    "authorization credentials must use secret_locator, not public_config",
+                ));
+            }
+            if let Some(after_scheme) = trimmed.split("://").nth(1) {
+                let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+                if authority.contains('@') {
+                    return Err(DeploymentError::new(
+                        "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
+                        "credential-bearing URL userinfo must use secret_locator, not public_config",
+                    ));
+                }
+            }
+            if let Ok(parsed) = url::Url::parse(trimmed) {
+                if !parsed.username().is_empty() || parsed.password().is_some() {
+                    return Err(DeploymentError::new(
+                        "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
+                        "credential-bearing URL userinfo must use secret_locator, not public_config",
+                    ));
+                }
+                for (qk, _) in parsed.query_pairs() {
+                    if is_public_config_secret_key(&qk) {
+                        return Err(DeploymentError::new(
+                            "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
+                            format!(
+                                "secret URL query parameter '{qk}' must use secret_locator, not public_config"
+                            ),
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn extract_inventory_file_digests(inventory_json: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(files) = inventory_json.get("files").and_then(Value::as_array) {
+        for entry in files {
+            if let Some(d) = entry
+                .get("digest")
+                .or_else(|| entry.get("sha256"))
+                .and_then(Value::as_str)
+            {
+                if d.starts_with("sha256:") {
+                    out.push(d.to_string());
+                } else {
+                    out.push(format!("sha256:{d}"));
+                }
+            }
+        }
+    }
+    out
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[error("{code}: {message}")]
@@ -169,8 +272,21 @@ pub struct ArchiveEntryInput {
     pub is_symlink: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
+pub(super) struct DeploymentDirtySet {
+    pub(super) head: bool,
+    pub(super) artifacts: BTreeSet<String>,
+    pub(super) packages: BTreeSet<String>,
+    pub(super) admissions: BTreeSet<String>,
+    pub(super) connections: BTreeSet<(String, u64)>,
+    pub(super) revisions: BTreeSet<u64>,
+    pub(super) receipts: BTreeSet<(String, String)>,
+    pub(super) compacted_member_revisions: BTreeSet<u64>,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct DeploymentState {
+    pub(super) node_id: String,
     pub(super) head_revision: u64,
     pub(super) epoch: u64,
     pub(super) artifacts: BTreeMap<String, ArtifactObjectRow>,
@@ -181,13 +297,40 @@ pub(super) struct DeploymentState {
     pub(super) revisions: BTreeMap<u64, DeploymentRevisionRow>,
     pub(super) receipts: BTreeMap<(String, String), DeploymentReceipt>,
     pub(super) active_node_revisions: BTreeMap<String, BTreeSet<u64>>,
+    pub(super) dirty: DeploymentDirtySet,
 }
+
+impl Default for DeploymentState {
+    fn default() -> Self {
+        Self {
+            node_id: "node-local-1".to_string(),
+            head_revision: 0,
+            epoch: 0,
+            artifacts: BTreeMap::new(),
+            packages: BTreeMap::new(),
+            publisher_bindings: BTreeMap::new(),
+            admissions: BTreeMap::new(),
+            connections: BTreeMap::new(),
+            revisions: BTreeMap::new(),
+            receipts: BTreeMap::new(),
+            active_node_revisions: BTreeMap::new(),
+            dirty: DeploymentDirtySet {
+                head: true,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// Opaque point-in-time snapshot of [`ImmutableDeploymentStore`] used to roll
+/// back in-memory mutations if the backing database transaction fails (`TD-13`).
+#[derive(Debug, Clone)]
+pub struct DeploymentStateSnapshot(DeploymentState);
 
 /// Transactional immutable deployment and artifact store (`V2-03`, `V2-04`).
 #[derive(Clone)]
 pub struct ImmutableDeploymentStore {
     pub(super) inner: Arc<Mutex<DeploymentState>>,
-    node_id: String,
 }
 
 impl Default for ImmutableDeploymentStore {
@@ -198,10 +341,33 @@ impl Default for ImmutableDeploymentStore {
 
 impl ImmutableDeploymentStore {
     pub fn new(node_id: impl Into<String>) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(DeploymentState::default())),
+        let state = DeploymentState {
             node_id: node_id.into(),
+            ..Default::default()
+        };
+        Self {
+            inner: Arc::new(Mutex::new(state)),
         }
+    }
+
+    pub fn node_id(&self) -> String {
+        let g = self.inner.lock().expect("store lock");
+        g.node_id.clone()
+    }
+
+    pub fn set_node_id(&self, node_id: impl Into<String>) {
+        let mut g = self.inner.lock().expect("store lock");
+        g.node_id = node_id.into();
+    }
+
+    pub fn take_snapshot(&self) -> DeploymentStateSnapshot {
+        let g = self.inner.lock().expect("store lock");
+        DeploymentStateSnapshot(g.clone())
+    }
+
+    pub fn restore_snapshot(&self, snapshot: DeploymentStateSnapshot) {
+        let mut g = self.inner.lock().expect("store lock");
+        *g = snapshot.0;
     }
 
     pub fn current_head(&self) -> (u64, u64) {
@@ -378,6 +544,7 @@ impl ImmutableDeploymentStore {
         // Store payload objects and package inventory as ACTIVE artifacts
         for (obj_digest, bytes) in hashed_payloads {
             let size_bytes = bytes.len();
+            g.dirty.artifacts.insert(obj_digest.clone());
             g.artifacts
                 .entry(obj_digest.clone())
                 .or_insert_with(|| ArtifactObjectRow {
@@ -388,6 +555,7 @@ impl ImmutableDeploymentStore {
                     bytes: Some(bytes),
                 });
         }
+        g.dirty.artifacts.insert(package_digest.clone());
         g.artifacts.insert(
             package_digest.clone(),
             ArtifactObjectRow {
@@ -399,6 +567,7 @@ impl ImmutableDeploymentStore {
             },
         );
         g.publisher_bindings.insert(id_key, package_digest.clone());
+        g.dirty.packages.insert(package_digest.clone());
         g.packages.insert(package_digest, row.clone());
         Ok(row)
     }
@@ -528,6 +697,9 @@ impl ImmutableDeploymentStore {
             policy_id: verdict.policy_id,
             revoked: false,
         };
+        g.dirty
+            .admissions
+            .insert(admission.package_digest.clone());
         g.admissions
             .insert(admission.package_digest.clone(), admission.clone());
         Ok(admission)
@@ -539,11 +711,41 @@ impl ImmutableDeploymentStore {
             return Err(DeploymentError::new("ADMISSION_NOT_FOUND", package_digest));
         };
         adm.revoked = true;
+        g.dirty.admissions.insert(package_digest.to_string());
         Ok(())
     }
 
+    /// Store an immutable definition artifact blob (e.g. workflow or channel
+    /// definition bytes) as an `ACTIVE` content-addressed artifact (`TD-19`).
+    pub fn store_definition_artifact(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<ArtifactObjectRow, DeploymentError> {
+        let digest = sha256_digest(&bytes);
+        let size_bytes = bytes.len();
+        let row = ArtifactObjectRow {
+            digest: digest.clone(),
+            size_bytes,
+            state: ArtifactState::Active,
+            drain_epoch: None,
+            bytes: Some(bytes),
+        };
+        let mut g = self.inner.lock().expect("store lock");
+        if let Some(existing) = g.artifacts.get(&digest)
+            && existing.state != ArtifactState::Active
+        {
+            return Err(DeploymentError::new(
+                "ARTIFACT_NOT_ACTIVE",
+                format!("definition artifact '{digest}' is not ACTIVE"),
+            ));
+        }
+        g.dirty.artifacts.insert(digest.clone());
+        g.artifacts.insert(digest, row.clone());
+        Ok(row)
+    }
+
     /// V2-03.2: Store an immutable connection revision with versioned secret
-    /// locator and redacted public configuration digest.
+    /// locator and redacted public configuration digest (`TD-20`).
     pub fn store_connection_revision(
         &self,
         connection_id: &str,
@@ -558,19 +760,15 @@ impl ImmutableDeploymentStore {
                 "revision must be >= 1",
             ));
         }
-        // Reject raw secret keys inside public_config
-        if let Some(obj) = public_config.as_object()
-            && obj
-                .keys()
-                .any(|k| k.contains("secret") || k.contains("password"))
-        {
-            return Err(DeploymentError::new(
-                "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
-                "secret values must use secret_locator, not public_config",
-            ));
-        }
-        let cfg_bytes = serde_json::to_vec(&public_config)
-            .map_err(|_| DeploymentError::new("CONNECTION_CONFIG_INVALID", connection_id))?;
+        // Reject raw secret keys or credential-bearing URLs at any nesting depth
+        validate_no_secrets_in_public_config(&public_config)?;
+
+        let cfg_bytes = canonical_bytes(&public_config).map_err(|e| {
+            DeploymentError::new(
+                "CONNECTION_CONFIG_INVALID",
+                format!("{connection_id}: {}", e.code),
+            )
+        })?;
         let cfg_digest = sha256_digest(&cfg_bytes);
         let row = ConnectionRevisionRow {
             connection_id: connection_id.to_string(),
@@ -592,6 +790,7 @@ impl ImmutableDeploymentStore {
             }
             return Ok(existing.clone());
         }
+        g.dirty.artifacts.insert(cfg_digest.clone());
         g.artifacts.insert(
             cfg_digest.clone(),
             ArtifactObjectRow {
@@ -602,8 +801,139 @@ impl ImmutableDeploymentStore {
                 bytes: Some(cfg_bytes),
             },
         );
+        g.dirty.connections.insert(key.clone());
         g.connections.insert(key, row.clone());
         Ok(row)
+    }
+
+    /// Validate that all provider metadata, connection revisions, and member
+    /// definition artifacts referenced by `manifest` are consistent and active (`TD-19`).
+    fn verify_manifest_store_closure(
+        g: &DeploymentState,
+        manifest: &CanonicalManifest,
+        missing_artifact_code: &str,
+    ) -> Result<(), DeploymentError> {
+        for p in &manifest.providers {
+            let Some(adm) = g.admissions.get(&p.digest) else {
+                return Err(DeploymentError::new(
+                    "PROVIDER_NOT_ADMITTED",
+                    format!(
+                        "provider '{}' ({}) is not admitted",
+                        p.provider_id, p.digest
+                    ),
+                ));
+            };
+            if adm.revoked {
+                return Err(DeploymentError::new(
+                    "PROVIDER_REVOKED",
+                    format!("provider '{}' ({}) is revoked", p.provider_id, p.digest),
+                ));
+            }
+            if let Some(pkg) = g.packages.get(&p.digest)
+                && (pkg.publisher != p.publisher
+                    || pkg.provider_id != p.provider_id
+                    || pkg.version != p.version)
+            {
+                return Err(DeploymentError::new(
+                    "PROVIDER_METADATA_MISMATCH",
+                    format!(
+                        "provider ref ({}/{}/{}) does not match stored package metadata ({}/{}/{}) for '{}'",
+                        p.publisher,
+                        p.provider_id,
+                        p.version,
+                        pkg.publisher,
+                        pkg.provider_id,
+                        pkg.version,
+                        p.digest
+                    ),
+                ));
+            }
+            if g.artifacts
+                .get(&p.digest)
+                .is_none_or(|a| a.state != ArtifactState::Active)
+            {
+                return Err(DeploymentError::new(
+                    missing_artifact_code,
+                    format!("provider artifact '{}' is not ACTIVE", p.digest),
+                ));
+            }
+        }
+
+        let declared_provider_digests: HashSet<&str> = manifest
+            .providers
+            .iter()
+            .map(|p| p.digest.as_str())
+            .collect();
+
+        for m in &manifest.members {
+            if let Some(art) = g.artifacts.get(&m.definition_digest)
+                && art.state != ArtifactState::Active
+            {
+                return Err(DeploymentError::new(
+                    missing_artifact_code,
+                    format!("member artifact '{}' is not ACTIVE", m.definition_digest),
+                ));
+            }
+            if let Some(ref owning_pkg) = m.owning_package {
+                if !declared_provider_digests.contains(owning_pkg.as_str()) {
+                    return Err(DeploymentError::new(
+                        "OWNING_PACKAGE_NOT_DECLARED",
+                        format!(
+                            "member '{}' references owning_package '{}' not declared in manifest.providers",
+                            m.entity.id, owning_pkg
+                        ),
+                    ));
+                }
+                if let Some(pkg) = g.packages.get(owning_pkg) {
+                    let pkg_digests = extract_inventory_file_digests(&pkg.inventory_json);
+                    if !pkg_digests.is_empty() && !pkg_digests.contains(&m.definition_digest) {
+                        return Err(DeploymentError::new(
+                            "MEMBER_ARTIFACT_NOT_IN_PACKAGE",
+                            format!(
+                                "member '{}' definition_digest '{}' is not in owning_package '{}' inventory",
+                                m.entity.id, m.definition_digest, owning_pkg
+                            ),
+                        ));
+                    }
+                }
+            }
+            if m.entity.kind == EntityKind::Connection {
+                let Some(conn_row) = g
+                    .connections
+                    .get(&(m.entity.id.clone(), m.entity.revision))
+                else {
+                    return Err(DeploymentError::new(
+                        "CONNECTION_REVISION_NOT_FOUND",
+                        format!(
+                            "connection '{}' revision {} is not in store",
+                            m.entity.id, m.entity.revision
+                        ),
+                    ));
+                };
+                if conn_row.configuration_digest != m.definition_digest {
+                    return Err(DeploymentError::new(
+                        "CONNECTION_DIGEST_MISMATCH",
+                        format!(
+                            "connection '{}' revision {} configuration_digest '{}' does not match manifest definition_digest '{}'",
+                            m.entity.id,
+                            m.entity.revision,
+                            conn_row.configuration_digest,
+                            m.definition_digest
+                        ),
+                    ));
+                }
+                if !declared_provider_digests.contains(conn_row.provider_digest.as_str()) {
+                    return Err(DeploymentError::new(
+                        "CONNECTION_PROVIDER_NOT_DECLARED",
+                        format!(
+                            "connection '{}' revision {} references provider '{}' not declared in manifest.providers",
+                            m.entity.id, m.entity.revision, conn_row.provider_digest
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// V2-04.3: Build a `CandidatePlan` outside any write transaction, checking
@@ -633,33 +963,7 @@ impl ImmutableDeploymentStore {
                 .collect()
         };
 
-        // Check that all providers in the candidate manifest are admitted and not revoked
-        for p in &candidate_manifest.providers {
-            let Some(adm) = g.admissions.get(&p.digest) else {
-                return Err(DeploymentError::new(
-                    "PROVIDER_NOT_ADMITTED",
-                    format!(
-                        "provider '{}' ({}) is not admitted",
-                        p.provider_id, p.digest
-                    ),
-                ));
-            };
-            if adm.revoked {
-                return Err(DeploymentError::new(
-                    "PROVIDER_REVOKED",
-                    format!("provider '{}' ({}) is revoked", p.provider_id, p.digest),
-                ));
-            }
-            if g.artifacts
-                .get(&p.digest)
-                .is_none_or(|a| a.state != ArtifactState::Active)
-            {
-                return Err(DeploymentError::new(
-                    "ARTIFACT_NOT_ACTIVE",
-                    format!("provider artifact '{}' is not ACTIVE", p.digest),
-                ));
-            }
-        }
+        Self::verify_manifest_store_closure(&g, &candidate_manifest, "ARTIFACT_NOT_ACTIVE")?;
 
         let next_entities: BTreeSet<EntityRef> = candidate_manifest
             .members
@@ -743,24 +1047,28 @@ impl ImmutableDeploymentStore {
                     format!("admission for '{}' is revoked or policy changed", p.digest),
                 ));
             }
-            if g.artifacts
-                .get(&p.digest)
-                .is_none_or(|a| a.state != ArtifactState::Active)
-            {
-                return Err(DeploymentError::new(
-                    "ARTIFACT_DRAINING_OR_DELETED",
-                    format!("artifact '{}' is not ACTIVE", p.digest),
-                ));
-            }
         }
+        Self::verify_manifest_store_closure(
+            &g,
+            &plan.candidate_manifest,
+            "ARTIFACT_DRAINING_OR_DELETED",
+        )?;
+
+        // Ensure all member definition digests are registered in `g.artifacts` so
+        // two-phase GC tracks their lifecycle (`TD-19`).
         for m in &plan.candidate_manifest.members {
-            if let Some(art) = g.artifacts.get(&m.definition_digest)
-                && art.state != ArtifactState::Active
-            {
-                return Err(DeploymentError::new(
-                    "ARTIFACT_DRAINING_OR_DELETED",
-                    format!("member artifact '{}' is not ACTIVE", m.definition_digest),
-                ));
+            if !g.artifacts.contains_key(&m.definition_digest) {
+                g.dirty.artifacts.insert(m.definition_digest.clone());
+                g.artifacts.insert(
+                    m.definition_digest.clone(),
+                    ArtifactObjectRow {
+                        digest: m.definition_digest.clone(),
+                        size_bytes: 0,
+                        state: ArtifactState::Active,
+                        drain_epoch: None,
+                        bytes: None,
+                    },
+                );
             }
         }
 
@@ -769,6 +1077,9 @@ impl ImmutableDeploymentStore {
         let next_epoch = g.epoch + 1;
         g.head_revision = next_revision;
         g.epoch = next_epoch;
+        g.dirty.head = true;
+        g.dirty.revisions.insert(next_revision);
+        g.dirty.receipts.insert(op_key.clone());
 
         g.revisions.insert(
             next_revision,
@@ -792,7 +1103,7 @@ impl ImmutableDeploymentStore {
             committed_revision: next_revision,
             manifest_digest: plan.candidate_digest.clone(),
             epoch: next_epoch,
-            receiving_node_id: self.node_id.clone(),
+            receiving_node_id: g.node_id.clone(),
         };
         g.receipts.insert(op_key, receipt.clone());
         Ok(receipt)
@@ -845,12 +1156,14 @@ impl ImmutableDeploymentStore {
     }
 
     /// V2-04.6: Two-phase epoch-fenced garbage collection (`ACTIVE -> DRAINING -> DELETED`)
-    /// and intermediate `deployment_members` compaction.
+    /// and intermediate `deployment_members` compaction (`TD-22`, `TD-23`).
     ///
     /// Protects:
     /// - Current `deployment_head`
     /// - Recent rollback window (`retain_recent_revisions`)
     /// - Any revision held in `active_node_revisions`
+    /// - Newly staged (never yet deployed) non-revoked packages, connections, and payload files
+    /// - All constituent payload file digests of protected packages
     pub fn mark_and_collect_garbage(
         &self,
         retain_recent_revisions: usize,
@@ -872,15 +1185,68 @@ impl ImmutableDeploymentStore {
             }
         }
 
+        // Track all digests ever referenced by any committed revision so newly
+        // staged packages/connections (never yet deployed) are not prematurely collected.
+        let mut ever_deployed_digests: HashSet<String> = HashSet::new();
+        for rev in g.revisions.values() {
+            if let Some(ref lock_digest) = rev.manifest.provider_lock_digest {
+                ever_deployed_digests.insert(lock_digest.clone());
+            }
+            for p in &rev.manifest.providers {
+                ever_deployed_digests.insert(p.digest.clone());
+                if let Some(pkg) = g.packages.get(&p.digest) {
+                    for fd in extract_inventory_file_digests(&pkg.inventory_json) {
+                        ever_deployed_digests.insert(fd);
+                    }
+                }
+            }
+            for m in &rev.manifest.members {
+                ever_deployed_digests.insert(m.definition_digest.clone());
+            }
+        }
+
         let mut protected_digests: HashSet<String> = HashSet::new();
         for rev_id in &protected_revisions {
             if let Some(rev) = g.revisions.get(rev_id) {
+                if let Some(ref lock_digest) = rev.manifest.provider_lock_digest {
+                    protected_digests.insert(lock_digest.clone());
+                }
                 for p in &rev.manifest.providers {
                     protected_digests.insert(p.digest.clone());
+                    if let Some(pkg) = g.packages.get(&p.digest) {
+                        for fd in extract_inventory_file_digests(&pkg.inventory_json) {
+                            protected_digests.insert(fd);
+                        }
+                    }
                 }
                 for m in &rev.manifest.members {
                     protected_digests.insert(m.definition_digest.clone());
+                    if let Some(ref owning_pkg) = m.owning_package {
+                        protected_digests.insert(owning_pkg.clone());
+                        if let Some(pkg) = g.packages.get(owning_pkg) {
+                            for fd in extract_inventory_file_digests(&pkg.inventory_json) {
+                                protected_digests.insert(fd);
+                            }
+                        }
+                    }
                 }
+            }
+        }
+
+        // Protect newly staged packages (uploaded/admitted and never yet deployed nor revoked)
+        // along with their payload file digests, and newly staged connection revisions.
+        for (pkg_digest, pkg) in &g.packages {
+            let is_revoked = g.admissions.get(pkg_digest).is_some_and(|a| a.revoked);
+            if !ever_deployed_digests.contains(pkg_digest) && !is_revoked {
+                protected_digests.insert(pkg_digest.clone());
+                for fd in extract_inventory_file_digests(&pkg.inventory_json) {
+                    protected_digests.insert(fd);
+                }
+            }
+        }
+        for conn in g.connections.values() {
+            if !ever_deployed_digests.contains(&conn.configuration_digest) {
+                protected_digests.insert(conn.configuration_digest.clone());
             }
         }
 
@@ -894,6 +1260,10 @@ impl ImmutableDeploymentStore {
                 rev.members_compacted = true;
                 compacted_revisions.push(rev_id);
             }
+        }
+        for rev_id in &compacted_revisions {
+            g.dirty.revisions.insert(*rev_id);
+            g.dirty.compacted_member_revisions.insert(*rev_id);
         }
 
         let mut newly_draining = Vec::new();
@@ -909,12 +1279,22 @@ impl ImmutableDeploymentStore {
                     newly_draining.push(digest.clone());
                 }
                 ArtifactState::Draining => {
-                    art.state = ArtifactState::Deleted;
-                    art.bytes = None;
-                    newly_deleted.push(digest.clone());
+                    if art.drain_epoch.is_none_or(|de| current_epoch > de) {
+                        art.state = ArtifactState::Deleted;
+                        art.bytes = None;
+                        newly_deleted.push(digest.clone());
+                    }
                 }
                 ArtifactState::Deleted => {}
             }
+        }
+        for d in newly_draining.iter().chain(newly_deleted.iter()) {
+            g.dirty.artifacts.insert(d.clone());
+        }
+        if !newly_draining.is_empty() || !newly_deleted.is_empty() || !compacted_revisions.is_empty()
+        {
+            g.epoch += 1;
+            g.dirty.head = true;
         }
 
         (newly_draining, newly_deleted, compacted_revisions)
@@ -960,13 +1340,16 @@ impl ImmutableDeploymentStore {
                     digest: p_digest,
                 },
             );
+            let cfg_bytes = canonical_bytes(cfg).map_err(|e| {
+                DeploymentError::new("CONNECTION_CONFIG_INVALID", format!("{conn_id}: {}", e.code))
+            })?;
             members.push(ManifestMember {
                 entity: EntityRef {
                     kind: EntityKind::Connection,
                     id: (*conn_id).to_string(),
                     revision: 1,
                 },
-                definition_digest: sha256_digest(&serde_json::to_vec(cfg).unwrap_or_default()),
+                definition_digest: sha256_digest(&cfg_bytes),
                 owning_package: None,
                 requires: Vec::new(),
                 rollouts: Vec::new(),
@@ -974,13 +1357,16 @@ impl ImmutableDeploymentStore {
         }
 
         for (wf_id, rev, wf_json) in legacy_workflows {
+            let wf_bytes = canonical_bytes(wf_json).map_err(|e| {
+                DeploymentError::new("WORKFLOW_CONFIG_INVALID", format!("{wf_id}: {}", e.code))
+            })?;
             members.push(ManifestMember {
                 entity: EntityRef {
                     kind: EntityKind::Workflow,
                     id: (*wf_id).to_string(),
                     revision: *rev,
                 },
-                definition_digest: sha256_digest(&serde_json::to_vec(wf_json).unwrap_or_default()),
+                definition_digest: sha256_digest(&wf_bytes),
                 owning_package: None,
                 requires: Vec::new(),
                 rollouts: Vec::new(),
@@ -1024,334 +1410,4 @@ impl ImmutableDeploymentStore {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
-mod tests {
-    use super::*;
-    use crate::extensions::CommunityAdmissionPolicy;
-    use std::path::PathBuf;
-
-    fn sample_archive_entries() -> Vec<ArchiveEntryInput> {
-        let fixture_dir =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/package-identity");
-        let bundle: Value = serde_json::from_str(
-            &std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap(),
-        )
-        .unwrap();
-        let pkg = &bundle["providers"][1]; // helper wasm package with no dependencies
-        let mut entries = Vec::new();
-        for (path, text) in pkg["payloads"].as_object().unwrap() {
-            let bytes = text.as_str().unwrap().as_bytes().to_vec();
-            entries.push(ArchiveEntryInput {
-                path: path.clone(),
-                compressed_size: bytes.len(),
-                bytes,
-                is_symlink: false,
-            });
-        }
-        let inv_bytes = canonical_bytes(&pkg["inventory"]).unwrap();
-        entries.push(ArchiveEntryInput {
-            path: "inventory.json".to_string(),
-            compressed_size: inv_bytes.len(),
-            bytes: inv_bytes,
-            is_symlink: false,
-        });
-        entries
-    }
-
-    #[test]
-    fn v2_03_1_typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
-        // Reject integer/digest confusion on ProviderRef
-        let bad_provider = ProviderRef {
-            publisher: "org.orion".to_string(),
-            provider_id: "org.orion.http".to_string(),
-            version: "42".to_string(),
-            digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-                .to_string(),
-        };
-        assert_eq!(
-            bad_provider.validate().unwrap_err().code,
-            "PROVIDER_REF_INVALID"
-        );
-
-        // Reject overlapping and gapped rollout intervals
-        let gap_rollout = vec![
-            RolloutInterval {
-                workflow_revision: 1,
-                start_bucket: 0,
-                end_bucket: 50,
-            },
-            RolloutInterval {
-                workflow_revision: 2,
-                start_bucket: 60,
-                end_bucket: 100,
-            },
-        ];
-        assert_eq!(
-            validate_rollout_partition(&gap_rollout).unwrap_err().code,
-            "ROLLOUT_PARTITION_INVALID"
-        );
-
-        // Valid partition [0, 20) + [20, 100)
-        let valid_rollout = vec![
-            RolloutInterval {
-                workflow_revision: 2,
-                start_bucket: 0,
-                end_bucket: 20,
-            },
-            RolloutInterval {
-                workflow_revision: 1,
-                start_bucket: 20,
-                end_bucket: 100,
-            },
-        ];
-        validate_rollout_partition(&valid_rollout).expect("disjoint full partition");
-    }
-
-    #[test]
-    fn v2_04_1_2_3_4_5_6_end_to_end_archive_admit_plan_apply_rollback_and_gc() {
-        let store = ImmutableDeploymentStore::new("node-test-1");
-        let policy = CommunityAdmissionPolicy::new();
-
-        // 1. Reject symlink in archive (V2-04.1)
-        let mut bad_entries = sample_archive_entries();
-        bad_entries[0].is_symlink = true;
-        assert_eq!(
-            store
-                .ingest_verified_archive(&bad_entries)
-                .unwrap_err()
-                .code,
-            "ARCHIVE_SYMLINK_DENIED"
-        );
-
-        // 2. Ingest verified archive and admit package (V2-04.1, V2-04.2)
-        let entries = sample_archive_entries();
-        let pkg = store.ingest_verified_archive(&entries).expect("ingested");
-        let adm = store
-            .admit_package(&pkg.package_digest, &policy, None)
-            .expect("admitted");
-        assert!(!adm.revoked);
-
-        // Upload/install alone does not advance deployment_head
-        assert_eq!(store.current_head(), (0, 0));
-
-        // 3. Plan & commit revision 1 (V2-04.3, V2-04.4)
-        let manifest_v1 = CanonicalManifest {
-            schema_version: 2,
-            providers: vec![ProviderRef {
-                publisher: pkg.publisher.clone(),
-                provider_id: pkg.provider_id.clone(),
-                version: pkg.version.clone(),
-                digest: pkg.package_digest.clone(),
-            }],
-            provider_lock_digest: None,
-            members: vec![ManifestMember {
-                entity: EntityRef {
-                    kind: EntityKind::Workflow,
-                    id: "orders-wf".to_string(),
-                    revision: 1,
-                },
-                definition_digest: sha256_digest(b"wf-v1"),
-                owning_package: None,
-                requires: Vec::new(),
-                rollouts: Vec::new(),
-            }],
-        };
-        let plan_v1 = store.plan_candidate(0, manifest_v1).expect("planned v1");
-        let receipt_v1 = store
-            .apply_candidate("alice", "idem-1", &plan_v1, "initial deploy", &policy)
-            .expect("applied v1");
-        assert_eq!(receipt_v1.committed_revision, 1);
-        assert_eq!(store.current_head(), (1, 1));
-
-        // Lost-response retry with same principal + idempotency_key + request returns original receipt
-        let retry_v1 = store
-            .apply_candidate("alice", "idem-1", &plan_v1, "initial deploy", &policy)
-            .expect("idempotent retry");
-        assert_eq!(retry_v1, receipt_v1);
-        assert_eq!(store.current_head(), (1, 1));
-
-        // Reusing idempotency_key with different reason/request fails
-        let conflict = store
-            .apply_candidate("alice", "idem-1", &plan_v1, "changed reason", &policy)
-            .unwrap_err();
-        assert_eq!(conflict.code, "IDEMPOTENCY_KEY_CONFLICT");
-
-        // 4. Plan & commit revision 2
-        let manifest_v2 = CanonicalManifest {
-            schema_version: 2,
-            providers: Vec::new(),
-            provider_lock_digest: None,
-            members: vec![ManifestMember {
-                entity: EntityRef {
-                    kind: EntityKind::Workflow,
-                    id: "orders-wf".to_string(),
-                    revision: 2,
-                },
-                definition_digest: sha256_digest(b"wf-v2"),
-                owning_package: None,
-                requires: Vec::new(),
-                rollouts: Vec::new(),
-            }],
-        };
-        let plan_v2 = store.plan_candidate(1, manifest_v2).expect("planned v2");
-        let receipt_v2 = store
-            .apply_candidate("alice", "idem-2", &plan_v2, "upgrade wf", &policy)
-            .expect("applied v2");
-        assert_eq!(receipt_v2.committed_revision, 2);
-
-        // 5. Rollback to revision 1 creates revision 3 (V2-04.5)
-        let (rollback_receipt, warnings) = store
-            .rollback_to_revision("alice", "idem-3", 2, 1, "rollback to v1", &policy)
-            .expect("rolled back to v1");
-        assert_eq!(rollback_receipt.committed_revision, 3);
-        assert_eq!(rollback_receipt.manifest_digest, receipt_v1.manifest_digest);
-        assert!(!warnings.is_empty());
-
-        // 6. Two-phase GC marks unreferenced artifacts DRAINING then DELETED (V2-04.6)
-        let mut empty_manifest = CanonicalManifest {
-            schema_version: 2,
-            providers: Vec::new(),
-            provider_lock_digest: None,
-            members: Vec::new(),
-        };
-        let plan_v4 = store.plan_candidate(3, empty_manifest.clone()).unwrap();
-        store
-            .apply_candidate("alice", "idem-4", &plan_v4, "clear estate", &policy)
-            .unwrap();
-        let (draining, deleted, compacted) = store.mark_and_collect_garbage(1);
-        assert!(!draining.is_empty());
-        assert!(deleted.is_empty());
-        assert!(!compacted.is_empty());
-
-        // Attempting to plan with a DRAINING artifact is rejected
-        empty_manifest.providers.push(ProviderRef {
-            publisher: pkg.publisher,
-            provider_id: pkg.provider_id,
-            version: pkg.version,
-            digest: pkg.package_digest.clone(),
-        });
-        assert_eq!(
-            store.plan_candidate(4, empty_manifest).unwrap_err().code,
-            "ARTIFACT_NOT_ACTIVE"
-        );
-
-        // Second GC sweep transitions DRAINING -> DELETED while receipts remain intact
-        let (_, deleted2, _) = store.mark_and_collect_garbage(1);
-        assert!(deleted2.contains(&pkg.package_digest));
-    }
-
-    #[test]
-    fn v2_03_5_legacy_backfill_converts_community_estate_and_blocks_enterprise_connectors() {
-        let http_cfg = json!({ "type": "http", "base_url": "https://api.example.com" });
-        let wf_json = json!({ "id": "wf1", "tasks": [] });
-        let manifest = ImmutableDeploymentStore::build_legacy_bootstrap_manifest(
-            EditionTier::Community,
-            &[("ext-api", &http_cfg)],
-            &[("wf1", 1, &wf_json)],
-            &[("orders", 1, "wf1", 1)],
-        )
-        .expect("community estate converts");
-        assert_eq!(manifest.providers.len(), 1);
-        assert_eq!(manifest.providers[0].provider_id, "org.orion.http");
-
-        // Enterprise connector (kafka) blocks Community backfill with actionable code
-        let kafka_cfg = json!({ "type": "kafka", "brokers": ["localhost:9092"] });
-        let err = ImmutableDeploymentStore::build_legacy_bootstrap_manifest(
-            EditionTier::Community,
-            &[("events-bus", &kafka_cfg)],
-            &[],
-            &[],
-        )
-        .unwrap_err();
-        assert_eq!(err.code, "BACKFILL_ENTERPRISE_PROVIDER_REQUIRED");
-    }
-
-    #[tokio::test]
-    async fn v2_03_2_to_4_sqlite_migration_and_persistence_roundtrip() {
-        use std::str::FromStr;
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
-            .await
-            .unwrap();
-        crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
-            .run(&pool)
-            .await
-            .expect("sqlite migrations including 023_v2_immutable_deployments must apply");
-
-        let store = ImmutableDeploymentStore::new("node-sql-1");
-        let policy = CommunityAdmissionPolicy::new();
-        let entries = sample_archive_entries();
-        let pkg = store.ingest_verified_archive(&entries).unwrap();
-        store
-            .admit_package(&pkg.package_digest, &policy, None)
-            .unwrap();
-        store
-            .store_connection_revision(
-                "orders-db",
-                1,
-                &pkg.package_digest,
-                json!({"url": "https://api.example.com"}),
-                Some("vault://secrets/orders#v1".to_string()),
-            )
-            .unwrap();
-
-        let manifest = CanonicalManifest {
-            schema_version: 2,
-            providers: vec![ProviderRef {
-                publisher: pkg.publisher.clone(),
-                provider_id: pkg.provider_id.clone(),
-                version: pkg.version.clone(),
-                digest: pkg.package_digest.clone(),
-            }],
-            provider_lock_digest: None,
-            members: vec![ManifestMember {
-                entity: EntityRef {
-                    kind: EntityKind::Workflow,
-                    id: "orders-wf".to_string(),
-                    revision: 1,
-                },
-                definition_digest: sha256_digest(b"wf-sql-v1"),
-                owning_package: None,
-                requires: Vec::new(),
-                rollouts: Vec::new(),
-            }],
-        };
-        let plan = store.plan_candidate(0, manifest).unwrap();
-        store
-            .apply_candidate("alice", "sql-idem-1", &plan, "persist test", &policy)
-            .unwrap();
-
-        store
-            .persist_to_sqlite(&pool)
-            .await
-            .expect("persist_to_sqlite succeeds");
-
-        let (head_rev, epoch): (i64, i64) = sqlx::query_as(
-            "SELECT head_revision, epoch FROM deployment_head WHERE singleton_id = 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!((head_rev, epoch), (1, 1));
-
-        let (op_rev,): (i64,) = sqlx::query_as(
-            "SELECT committed_revision FROM deployment_operations WHERE principal = 'alice' AND idempotency_key = 'sql-idem-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(op_rev, 1);
-
-        let restored = ImmutableDeploymentStore::default();
-        restored
-            .load_from_sqlite(&pool)
-            .await
-            .expect("load_from_sqlite succeeds");
-        assert_eq!(restored.current_head(), (1, 1));
-        assert_eq!(restored.list_revisions().len(), 1);
-        assert_eq!(restored.list_packages().len(), 1);
-        assert_eq!(restored.list_admissions().len(), 1);
-        assert_eq!(restored.list_connections().len(), 1);
-    }
-}
+mod tests;

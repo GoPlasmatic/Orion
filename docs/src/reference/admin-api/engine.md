@@ -8,8 +8,8 @@ Reading the running engine, and reloading it.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/engine/status` | Engine status: version, uptime, workflow counts, channels, the generation served, its load issues and this node's capabilities |
-| POST | `/api/v1/admin/engine/reload` | Hot-reload channels and workflows, answering with the generation published and its load issues |
+| GET | `/api/v2/admin/engine/status` | Engine status: version, uptime, workflow counts, channels, the generation served, its load issues and this node's capabilities |
+| POST | `/api/v2/admin/engine/reload` | Hot-reload channels and workflows, answering with the generation published and its load issues |
 
 ## What a generation could not load
 

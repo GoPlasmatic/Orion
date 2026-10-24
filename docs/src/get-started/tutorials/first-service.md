@@ -35,7 +35,7 @@ The workflow parses the incoming payload, then writes one new field derived from
 <section data-tab="curl">
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
+curl -s -X POST http://localhost:8080/api/v2/admin/workflows \
   -H "Content-Type: application/json" \
   -d '{
     "workflow_id": "order-summary",
@@ -78,7 +78,7 @@ Activation is a status change on the workflow you created:
 <section data-tab="curl">
 
 ```bash
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-summary/status \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/order-summary/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
 ```
 
@@ -102,13 +102,13 @@ The channel is the endpoint. It names the route, the methods it answers, and the
 <section data-tab="curl">
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/channels \
+curl -s -X POST http://localhost:8080/api/v2/admin/channels \
   -H "Content-Type: application/json" \
   -d '{ "channel_id": "order-summary", "name": "order-summary", "channel_type": "sync",
         "protocol": "rest", "route_pattern": "/order-summary",
         "methods": ["POST"], "workflow_id": "order-summary" }'
 
-curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/order-summary/status \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/channels/order-summary/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
 ```
 
@@ -135,7 +135,7 @@ Send a request to the route you declared:
 <section data-tab="curl">
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/data/order-summary \
+curl -s -X POST http://localhost:8080/api/v2/data/order-summary \
   -H "Content-Type: application/json" \
   -d '{ "data": { "order_id": "ORD-42", "total": 125 } }'
 ```

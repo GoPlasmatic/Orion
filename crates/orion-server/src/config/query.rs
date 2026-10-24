@@ -20,6 +20,9 @@ pub struct QueryConfig {
     pub max_limit: u64,
     /// Hard maximum `skip` offset. A query skipping more is rejected.
     pub max_skip: u64,
+    /// Hard maximum decoded result-set size in bytes across `db_read` and
+    /// `data_query` (`0` = unlimited). Defaults to 16 MiB (`TD-09`).
+    pub max_result_bytes: usize,
 }
 
 impl Default for QueryConfig {
@@ -28,6 +31,7 @@ impl Default for QueryConfig {
             default_limit: 100,
             max_limit: 1000,
             max_skip: 10_000,
+            max_result_bytes: 16 * 1024 * 1024,
         }
     }
 }

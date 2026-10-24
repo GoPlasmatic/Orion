@@ -12,7 +12,7 @@ You need admin access to the instance's config and the ability to restart it. Se
 
 ## Authenticate the admin plane
 
-`/api/v1/admin/**` and `/metrics` are unauthenticated until you turn this on. Anyone who can reach the port can rewrite your workflows:
+`/api/v2/admin/**` and `/metrics` are unauthenticated until you turn this on. Anyone who can reach the port can rewrite your workflows:
 
 ```toml
 [admin_auth]
@@ -32,14 +32,14 @@ Guessing is already rate-limited. After five consecutive failures a client is pu
 With `header = "Authorization"` the key travels as `Bearer <key>`; any other header name takes the raw value:
 
 ```bash
-curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/api/v1/admin/workflows
-curl -H "X-API-Key: your-secret-key"            http://localhost:8080/api/v1/admin/workflows
+curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/api/v2/admin/workflows
+curl -H "X-API-Key: your-secret-key"            http://localhost:8080/api/v2/admin/workflows
 ```
 
 ## Decide how the data plane authenticates
 
 > [!WARNING]
-> `admin_auth` does not protect `/api/v1/data/**`. A data channel is open to anything that can reach the port unless *that channel* declares an `auth` block.
+> `admin_auth` does not protect `/api/v2/data/**`. A data channel is open to anything that can reach the port unless *that channel* declares an `auth` block.
 
 Three modes are built in, all configured per channel:
 
@@ -188,7 +188,7 @@ Check the config, then prove the admin plane refuses an anonymous caller:
 
 ```bash
 orion-server validate-config -c config.toml
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/api/v1/admin/workflows
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/api/v2/admin/workflows
 ```
 
 The first prints the effective config with secrets masked and refuses a malformed proxy entry. The second prints `401`. With TLS on, `curl -sI https://…` shows a `strict-transport-security` header.

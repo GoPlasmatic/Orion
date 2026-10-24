@@ -18,12 +18,12 @@ Cut a draft from the active version, edit it, and list the history:
 <section data-tab="curl">
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/workflows/order-processing/versions
+curl -s -X POST http://localhost:8080/api/v2/admin/workflows/order-processing/versions
 
-curl -s -X PUT http://localhost:8080/api/v1/admin/workflows/order-processing \
+curl -s -X PUT http://localhost:8080/api/v2/admin/workflows/order-processing \
   -H 'Content-Type: application/json' --data @workflow.json
 
-curl -s http://localhost:8080/api/v1/admin/workflows/order-processing/versions
+curl -s http://localhost:8080/api/v2/admin/workflows/order-processing/versions
 ```
 
 </section>
@@ -48,7 +48,7 @@ Ask whether the activation would succeed, without writing anything:
 <section data-tab="curl">
 
 ```bash
-curl -s -X PATCH "http://localhost:8080/api/v1/admin/workflows/order-processing/status?dry_run=true" \
+curl -s -X PATCH "http://localhost:8080/api/v2/admin/workflows/order-processing/status?dry_run=true" \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
@@ -73,7 +73,7 @@ Change the status:
 <section data-tab="curl">
 
 ```bash
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-processing/status \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/order-processing/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
@@ -97,11 +97,11 @@ Mark each change without rebuilding, then reload once:
 <section data-tab="curl">
 
 ```bash
-curl -s -X PATCH "http://localhost:8080/api/v1/admin/workflows/a/status?reload=defer" \
+curl -s -X PATCH "http://localhost:8080/api/v2/admin/workflows/a/status?reload=defer" \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
-curl -s -X PATCH "http://localhost:8080/api/v1/admin/workflows/b/status?reload=defer" \
+curl -s -X PATCH "http://localhost:8080/api/v2/admin/workflows/b/status?reload=defer" \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
-curl -s -X POST  http://localhost:8080/api/v1/admin/engine/reload
+curl -s -X POST  http://localhost:8080/api/v2/admin/engine/reload
 ```
 
 </section>
@@ -124,15 +124,15 @@ Activate a new version at a percentage instead of all at once, ramp it, then pro
 
 ```bash
 # 10% of traffic to the new version
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-processing/status \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/order-processing/status \
   -H 'Content-Type: application/json' -d '{"status": "active", "rollout_percentage": 10}'
 
 # Ramp
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-processing/rollout \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/order-processing/rollout \
   -H 'Content-Type: application/json' -d '{"rollout_percentage": 50}'
 
 # Promote fully; this archives the previously active version
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-processing/rollout \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/order-processing/rollout \
   -H 'Content-Type: application/json' -d '{"rollout_percentage": 100}'
 ```
 
@@ -161,17 +161,17 @@ Over the admin API directly, it is four calls:
 
 ```bash
 # 1. Find the version you want back
-curl -s http://localhost:8080/api/v1/admin/workflows/order-processing/versions
+curl -s http://localhost:8080/api/v2/admin/workflows/order-processing/versions
 
 # 2. Cut a fresh draft from the current version
-curl -s -X POST http://localhost:8080/api/v1/admin/workflows/order-processing/versions
+curl -s -X POST http://localhost:8080/api/v2/admin/workflows/order-processing/versions
 
 # 3. Put the known-good content into that draft
-curl -s -X PUT http://localhost:8080/api/v1/admin/workflows/order-processing \
+curl -s -X PUT http://localhost:8080/api/v2/admin/workflows/order-processing \
   -H 'Content-Type: application/json' -d @order-processing-v3.json
 
 # 4. Activate it; the bad version is archived as this one goes live
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-processing/status \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/order-processing/status \
   -H 'Content-Type: application/json' -d '{"status": "active"}'
 ```
 
@@ -183,14 +183,14 @@ The per-kind endpoints export and import plain JSON:
 
 ```bash
 # Snapshot into version control
-curl -s "http://localhost:8080/api/v1/admin/workflows/export?status=active" | jq '.data' > workflows.json
+curl -s "http://localhost:8080/api/v2/admin/workflows/export?status=active" | jq '.data' > workflows.json
 
 # Preview the import; writes nothing
-curl -s -X POST "http://localhost:8080/api/v1/admin/workflows/import?dry_run=true" \
+curl -s -X POST "http://localhost:8080/api/v2/admin/workflows/import?dry_run=true" \
   -H 'Content-Type: application/json' --data @workflows.json
 
 # Import, as drafts
-curl -s -X POST "http://localhost:8080/api/v1/admin/workflows/import" \
+curl -s -X POST "http://localhost:8080/api/v2/admin/workflows/import" \
   -H 'Content-Type: application/json' --data @workflows.json
 ```
 
@@ -199,7 +199,7 @@ Each `/export` emits exactly what its `/import` accepts. `?tag=` and `?status=` 
 By default an import is create-only and a collision is an error. `?on_conflict=skip` leaves existing entities alone; `?on_conflict=new_version` cuts a new draft version carrying the imported content. Under either of those two modes, re-importing an unmodified export reports `unchanged` for everything, which is what makes the import safe to retry from CI:
 
 ```bash
-curl -s -X POST "http://localhost:8080/api/v1/admin/workflows/import?on_conflict=new_version" \
+curl -s -X POST "http://localhost:8080/api/v2/admin/workflows/import?on_conflict=new_version" \
   -H 'Content-Type: application/json' --data @workflows.json
 ```
 

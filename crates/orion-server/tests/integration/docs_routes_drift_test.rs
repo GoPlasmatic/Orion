@@ -212,7 +212,9 @@ fn references(file: &Path) -> Vec<Reference> {
             let Some((method, target)) = span.trim().split_once(' ') else {
                 continue;
             };
-            if !is_http_method(method) || !target.starts_with("/api/v1/") {
+            if !is_http_method(method)
+                || (!target.starts_with("/api/v1/") && !target.starts_with("/api/v2/"))
+            {
                 continue;
             }
             let (_, query) = split_target(target);

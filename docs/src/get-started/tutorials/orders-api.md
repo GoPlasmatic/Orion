@@ -134,7 +134,7 @@ The trace is `completed` and shows `parse`, `validate`, `record` and `history` i
 Send an invalid order to the live endpoint:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/data/record-order \
+curl -sS -X POST http://localhost:8080/api/v2/data/record-order \
   -H 'Content-Type: application/json' \
   -d '{"data":{"customer_id":1,"item":"Invalid","total":-1}}' | jq
 ```

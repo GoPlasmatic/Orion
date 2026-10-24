@@ -191,12 +191,17 @@ pub struct QueueMessage {
 /// `dlq_retry_count` is how many DLQ cycles this message's lineage has already
 /// burned: 0 for a fresh submission, the originating row's count + 1 for a DLQ
 /// resubmission. Carrying it forward is what makes `queue.dlq_max_retries`
-/// enforceable — the retry loop deletes the DLQ row once resubmission
-/// succeeds, so without it every workflow failure re-entered the DLQ at 0 and
-/// a deterministically-failing message looped forever (Q3).
+/// enforceable (Q3).
+///
+/// `dlq_entry_id` and `dlq_max_retries` identify the durable `trace_dlq` row
+/// whose claim lease backs a retry attempt (`TD-05`). The row is kept under
+/// lease while the item is queued and executing, and settled (`remove`,
+/// `record_retry`, or `mark_exhausted`) only after execution finishes.
 pub(crate) struct QueuedItem {
     pub(crate) msg: QueueMessage,
     pub(crate) dlq_retry_count: i64,
+    pub(crate) dlq_entry_id: Option<String>,
+    pub(crate) dlq_max_retries: Option<i64>,
     /// Bytes reserved for this item by `enqueue`, carried so the dispatcher
     /// releases exactly what was reserved instead of re-serializing the
     /// payload to recompute it. Set by `enqueue`; submitters leave it 0.
@@ -259,6 +264,8 @@ impl TraceQueue {
         self.enqueue(QueuedItem {
             msg,
             dlq_retry_count: 0,
+            dlq_entry_id: None,
+            dlq_max_retries: None,
             payload_size: 0,
         })
         .await
@@ -310,16 +317,21 @@ impl TraceQueue {
     }
 
     /// Re-submit a message claimed from the DLQ, carrying the retry count its
-    /// lineage has already spent so a repeat failure re-enters the DLQ one
-    /// step closer to exhaustion instead of back at zero (Q3).
+    /// lineage has already spent and the durable DLQ entry ID/max-retries so
+    /// post-execution settlement updates or removes the leased DLQ row only
+    /// after processing completes (Q3, `TD-05`).
     pub(crate) async fn submit_dlq_retry(
         &self,
         msg: QueueMessage,
+        dlq_entry_id: String,
         dlq_retry_count: i64,
+        dlq_max_retries: i64,
     ) -> Result<(), crate::errors::OrionError> {
         self.enqueue(QueuedItem {
             msg,
             dlq_retry_count,
+            dlq_entry_id: Some(dlq_entry_id),
+            dlq_max_retries: Some(dlq_max_retries),
             payload_size: 0,
         })
         .await

@@ -256,12 +256,148 @@ async fn execute_admitted_on_generation_inner(
     metadata: &Value,
     opts: ExecOpts<'_>,
 ) -> Execution {
-    if opts.capture.is_none()
-        && let Some(ref engine4) = generation.engine4
-    {
-        return execute_admitted_on_v4(engine4, channel, data, metadata, opts).await;
+    if let Some(ref engine4) = generation.engine4 {
+        return execute_admitted_on_v4(
+            engine4,
+            channel,
+            data,
+            metadata,
+            opts,
+            generation.run_budget_limits,
+        )
+        .await;
     }
     execute_admitted(&generation.engine, channel, data, metadata, opts).await
+}
+
+fn v4_trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOptions {
+    let redact = ["metadata.headers", "metadata.cookies", "metadata.oauth"]
+        .into_iter()
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    let mut opts = dataflow_rs::observe::TraceOptions::default()
+        .timings(true)
+        .changes(true)
+        .redact(redact);
+    if max_snapshot_bytes > 0 {
+        opts = opts.max_bytes(max_snapshot_bytes);
+    }
+    opts
+}
+
+fn v4_trace_to_v3(
+    v4_trace: &dataflow_rs::observe::Trace,
+    v4_msg: &dataflow_rs::Message,
+    initial_payload: &Value,
+    capture: TraceCapture,
+) -> dataflow_rs_v3::ExecutionTrace {
+    let mut v3_trace = dataflow_rs_v3::ExecutionTrace::with_options(dataflow_rs_v3::TraceOptions {
+        changes: true,
+        snapshot_audit_trail: dataflow_rs_v3::AuditTrailScope::Own,
+        max_snapshot_bytes: capture.max_snapshot_bytes,
+        ..Default::default()
+    });
+
+    for (idx, (step, step_ctx)) in v4_trace
+        .steps
+        .iter()
+        .zip(v4_trace.contexts())
+        .enumerate()
+    {
+        match (&step.task_id, step.result) {
+            (None, dataflow_rs::observe::StepResult::Skipped) => {
+                v3_trace.add_step(
+                    dataflow_rs_v3::ExecutionStep::workflow_skipped(&step.workflow_id)
+                        .with_loop_counter(step.loop_counter),
+                );
+            }
+            (None, _) => {
+                // Internal engine workflow-level write (e.g. loop sweep entry);
+                // `v4_trace.contexts()` already applied its changes for later task steps.
+            }
+            (Some(task_id), dataflow_rs::observe::StepResult::Skipped) => {
+                v3_trace.add_step(
+                    dataflow_rs_v3::ExecutionStep::task_skipped(&step.workflow_id, task_id)
+                        .with_loop_counter(step.loop_counter)
+                        .with_element_index(step.element_index),
+                );
+            }
+            (Some(task_id), _) => {
+                let mut step_msg = dataflow_rs_v3::Message::builder()
+                    .id(v4_msg.id())
+                    .payload_json(initial_payload)
+                    .capture_changes(false)
+                    .audit_mode(dataflow_rs_v3::AuditMode::Off)
+                    .build();
+                step_msg.context = step_ctx.as_value().clone();
+                for rec in &step.errors {
+                    let mut eb =
+                        dataflow_rs_v3::ErrorInfo::builder(rec.code.as_str(), rec.message.as_str());
+                    if let Some(timestamp) = rec.timestamp.as_deref() {
+                        eb = eb.timestamp(timestamp);
+                    }
+                    if let Some(path) = rec.path.as_deref() {
+                        eb = eb.path(path);
+                    }
+                    if let Some(workflow_id) = rec.workflow_id.as_deref() {
+                        eb = eb.workflow_id(workflow_id);
+                    }
+                    if let Some(t_id) = rec.task_id.as_deref() {
+                        eb = eb.task_id(t_id);
+                    }
+                    if let Some(detail) = rec.detail.as_deref() {
+                        eb = eb.detail(detail);
+                    }
+                    if let Some(element_index) = rec.element_index {
+                        eb = eb.element_index(element_index);
+                    }
+                    step_msg.add_error(eb.build());
+                }
+
+                let v3_changes: Vec<dataflow_rs_v3::engine::message::Change> = step
+                    .changes
+                    .iter()
+                    .filter(|c| {
+                        &*c.path != "metadata.progress"
+                            && !c.path.starts_with("metadata._orion_errors")
+                    })
+                    .map(|c| dataflow_rs_v3::engine::message::Change {
+                        path: Arc::clone(&c.path),
+                        old_value: c.old_value.clone(),
+                        new_value: c.new_value.clone(),
+                        removed: c.removed,
+                    })
+                    .collect();
+
+                let mut v3_step =
+                    dataflow_rs_v3::ExecutionStep::executed(&step.workflow_id, task_id, &step_msg)
+                        .with_changes(v3_changes)
+                        .with_loop_counter(step.loop_counter)
+                        .with_element_index(step.element_index);
+
+                if v4_trace.truncated && step.changes.is_empty() {
+                    v3_step.message = None;
+                }
+                if let Some(elapsed) = step.elapsed {
+                    v3_step = v3_step.with_timing(
+                        chrono::Utc::now(),
+                        u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+                    );
+                }
+                if let Some(map_ctxs) = v4_trace.mapping_contexts(idx) {
+                    v3_step = v3_step.with_mapping_contexts(
+                        map_ctxs
+                            .into_iter()
+                            .map(|c| Value::from(c.as_value()))
+                            .collect(),
+                    );
+                }
+                v3_trace.add_step(v3_step);
+            }
+        }
+    }
+
+    v3_trace
 }
 
 async fn execute_admitted_on_v4(
@@ -270,13 +406,14 @@ async fn execute_admitted_on_v4(
     data: &Value,
     metadata: &Value,
     opts: ExecOpts<'_>,
+    budget_limits: super::budget::RunBudgetLimits,
 ) -> Execution {
     use dataflow_rs::datavalue::OwnedDataValue;
     use dataflow_rs::run::{AuditMode, RunOptions, RunStatus};
 
     let mut v4_msg = dataflow_rs::Message::from_parts(
         OwnedDataValue::from(data),
-        OwnedDataValue::Null,
+        OwnedDataValue::from(data),
         OwnedDataValue::from(metadata),
     );
 
@@ -289,10 +426,16 @@ async fn execute_admitted_on_v4(
         };
     }
 
-    let mut run_opts = RunOptions::default()
-        .channel(channel)
-        .capture_changes(false)
-        .audit(AuditMode::Off);
+    let accountant = super::budget::SharedRunAccountant::new(budget_limits);
+    let mut run_opts = accountant.apply(
+        RunOptions::default()
+            .channel(channel)
+            .capture_changes(false)
+            .audit(AuditMode::Off),
+    );
+    if let Some(capture) = opts.capture {
+        run_opts = run_opts.trace(v4_trace_options(capture.max_snapshot_bytes));
+    }
     if let Some(bucket) = opts.routing_bucket {
         run_opts = run_opts.routing_bucket(bucket);
     }
@@ -315,6 +458,9 @@ async fn execute_admitted_on_v4(
     };
     let duration = started.elapsed();
 
+    let task_trace = opts
+        .capture
+        .and_then(|capture| run.trace().map(|t| v4_trace_to_v3(t, &v4_msg, data, capture)));
     let message = v4_message_to_v3(&v4_msg, data, metadata);
     let outcome = match run.status() {
         RunStatus::Completed => {
@@ -345,7 +491,7 @@ async fn execute_admitted_on_v4(
 
     Execution {
         message,
-        task_trace: None,
+        task_trace,
         outcome,
         duration,
     }
@@ -366,6 +512,7 @@ fn v4_message_to_v3(
     };
 
     let mut v3_msg = dataflow_rs_v3::Message::builder()
+        .id(v4_msg.id())
         .payload_json(initial_payload)
         .metadata_json(meta_ref)
         .capture_changes(false)
@@ -385,10 +532,30 @@ fn v4_message_to_v3(
             dataflow_rs_v3::datavalue::OwnedDataValue::from(&temp_val),
         );
     }
+    // Copy every error diagnostic field shared between dataflow-rs v4
+    // `ErrorRecord` and v3 `ErrorInfo` (`code`, `message`, `path`,
+    // `workflow_id`, `task_id`, `timestamp`, `detail`, `element_index`).
+    // Note: `rec.cause` (`Arc<dyn Error>`) and `rec.site` (`ErrorSite`) are
+    // v4-only in-memory diagnostics with no v3 `ErrorInfo` counterpart.
     for rec in v4_msg.errors() {
         let mut eb = dataflow_rs_v3::ErrorInfo::builder(rec.code.as_str(), rec.message.as_str());
+        if let Some(timestamp) = rec.timestamp.as_deref() {
+            eb = eb.timestamp(timestamp);
+        }
+        if let Some(path) = rec.path.as_deref() {
+            eb = eb.path(path);
+        }
+        if let Some(workflow_id) = rec.workflow_id.as_deref() {
+            eb = eb.workflow_id(workflow_id);
+        }
         if let Some(task_id) = rec.task_id.as_deref() {
             eb = eb.task_id(task_id);
+        }
+        if let Some(detail) = rec.detail.as_deref() {
+            eb = eb.detail(detail);
+        }
+        if let Some(element_index) = rec.element_index {
+            eb = eb.element_index(element_index);
         }
         v3_msg.add_error(eb.build());
     }
@@ -898,5 +1065,332 @@ mod tests {
         .await;
         assert_eq!(cancel_exec.outcome, NormalizedRunOutcome::Cancelled);
         assert_eq!(cancel_exec.outcome.status_label(), "cancelled");
+    }
+
+    #[test]
+    fn v4_message_to_v3_preserves_message_id_and_all_error_diagnostic_fields() {
+        let v4_msg: dataflow_rs::Message = serde_json::from_value(serde_json::json!({
+            "id": "msg-preserve-id-01",
+            "payload": { "hello": "world" },
+            "context": {
+                "data": { "hello": "world" },
+                "metadata": { "channel": "orders" },
+                "temp_data": {}
+            },
+            "audit_trail": [],
+            "errors": [{
+                "code": "CONNECTOR_ERROR",
+                "message": "upstream failed",
+                "path": "data.orders.0",
+                "workflow_id": "wf-orders",
+                "task_id": "task-call-api",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "detail": "HTTP 502 from internal-gateway: upstream connection reset",
+                "element_index": 3
+            }]
+        }))
+        .expect("deserialize v4 message");
+        let expected_id = v4_msg.id().to_string();
+
+        let v3_msg = v4_message_to_v3(
+            &v4_msg,
+            &serde_json::json!({ "hello": "world" }),
+            &serde_json::json!({ "channel": "orders" }),
+        );
+
+        assert_eq!(v3_msg.id(), expected_id, "v4 message ID must be preserved");
+        assert_eq!(v3_msg.errors().len(), 1);
+        let err = &v3_msg.errors()[0];
+        assert_eq!(err.code, "CONNECTOR_ERROR");
+        assert_eq!(err.message, "upstream failed");
+        assert_eq!(err.path.as_deref(), Some("data.orders.0"));
+        assert_eq!(err.workflow_id.as_deref(), Some("wf-orders"));
+        assert_eq!(err.task_id.as_deref(), Some("task-call-api"));
+        assert_eq!(err.timestamp.as_deref(), Some("2026-01-01T00:00:00Z"));
+        assert_eq!(
+            err.detail.as_deref(),
+            Some("HTTP 502 from internal-gateway: upstream connection reset")
+        );
+        assert_eq!(err.element_index, Some(3));
+    }
+
+    #[tokio::test]
+    async fn execute_admitted_on_generation_preserves_for_each_and_detail_diagnostics() {
+        let v3_engine = std::sync::Arc::new(
+            dataflow_rs_v3::Engine::new(vec![], std::collections::HashMap::new())
+                .expect("empty v3 engine"),
+        );
+        let mut registry = dataflow_rs::Registry::new(crate::engine::kit::test_exprs());
+        registry.register(
+            crate::engine::functions::crypto::NAME,
+            crate::engine::functions::crypto::CryptoFunction,
+        );
+        let v4_engine = dataflow_rs::Engine::builder()
+            .registry(registry)
+            .config(
+                dataflow_rs::run::EngineConfig::default()
+                    .error_context(crate::engine::ERROR_CONTEXT.clone()),
+            )
+            .workflow_json(&serde_json::json!({
+                "id": "wf-fanout",
+                "channel": "orders",
+                "tasks": [
+                    {
+                        "id": "t-validate-item",
+                        "for_each": { "over": { "var": "data.items" }, "as": "item" },
+                        "function": {
+                            "name": "crypto",
+                            "input": {
+                                "op": "hmac_verify",
+                                "key": "secret",
+                                "data": "msg",
+                                "signature": { "var": "temp_data.item" },
+                                "output": "data.ok"
+                            }
+                        }
+                    }
+                ]
+            }))
+            .build()
+            .expect("v4 engine builds");
+
+        let handle = crate::runtime::generation::test_handle();
+        handle.publish(
+            v3_engine,
+            Some(v4_engine),
+            std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
+            crate::engine::FunctionRegistry::builtin().clone(),
+            std::sync::Arc::new(crate::plugin::PluginSet::empty()),
+            std::sync::Arc::new(crate::model::ModelSet::empty()),
+        );
+        let generation = handle.load();
+
+        let exec = execute_admitted_on_generation(
+            &generation,
+            "orders",
+            &serde_json::json!({ "items": ["00".repeat(32), "!!not-an-encoding!!"] }),
+            &serde_json::json!({ "trace_id": "t-1" }),
+            ExecOpts::default(),
+        )
+        .await;
+
+        assert!(!exec.outcome.is_ok());
+        assert!(!exec.message.id().is_empty());
+        assert!(!exec.message.errors().is_empty());
+        let err = &exec.message.errors()[0];
+        assert_eq!(err.workflow_id.as_deref(), Some("wf-fanout"));
+        assert_eq!(err.task_id.as_deref(), Some("t-validate-item"));
+        assert_eq!(err.element_index, Some(1));
+        assert!(err.timestamp.as_deref().is_some_and(|ts| !ts.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn td02_traced_execution_runs_on_v4_engine_and_redacts_sensitive_metadata() {
+        // Empty v3 engine: proves traced execution runs on `engine4`, not `engine`.
+        let v3_engine = std::sync::Arc::new(
+            dataflow_rs_v3::Engine::new(vec![], std::collections::HashMap::new())
+                .expect("empty v3 engine"),
+        );
+        let v4_engine = dataflow_rs::Engine::builder()
+            .config(
+                dataflow_rs::run::EngineConfig::default()
+                    .error_context(crate::engine::ERROR_CONTEXT.clone()),
+            )
+            .workflow_json(&serde_json::json!({
+                "id": "wf-traced-v4",
+                "channel": "orders",
+                "tasks": [
+                    {
+                        "id": "t-map",
+                        "function": {
+                            "name": "map",
+                            "input": {
+                                "mappings": [
+                                    { "path": "data.doubled", "logic": { "*": [{ "var": "data.x" }, 2] } }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }))
+            .build()
+            .expect("v4 engine builds");
+
+        let handle = crate::runtime::generation::test_handle();
+        handle.publish(
+            v3_engine,
+            Some(v4_engine),
+            std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
+            crate::engine::FunctionRegistry::builtin().clone(),
+            std::sync::Arc::new(crate::plugin::PluginSet::empty()),
+            std::sync::Arc::new(crate::model::ModelSet::empty()),
+        );
+        let generation = handle.load();
+
+        let exec = execute_admitted_on_generation(
+            &generation,
+            "orders",
+            &serde_json::json!({ "x": 21 }),
+            &serde_json::json!({
+                "channel": "orders",
+                "headers": { "x-secret-header": "top-secret-header-val" },
+                "cookies": { "session": "top-secret-cookie-val" },
+                "oauth": { "access_token": "top-secret-oauth-token" }
+            }),
+            ExecOpts {
+                capture: Some(TraceCapture {
+                    max_snapshot_bytes: 0,
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
+
+        assert!(exec.outcome.is_ok());
+        assert_eq!(
+            serde_json::Value::from(exec.message.data())["doubled"],
+            serde_json::json!(42)
+        );
+        let trace = exec.task_trace.expect("traced v4 run must return ExecutionTrace");
+        assert_eq!(trace.steps.len(), 1);
+        let step = &trace.steps[0];
+        assert_eq!(step.workflow_id, "wf-traced-v4");
+        assert_eq!(step.task_id.as_deref(), Some("t-map"));
+        assert!(step.message.is_some());
+        assert!(
+            step.changes.as_ref().is_some_and(|c| c.len() == 1),
+            "per-step changes should exclude metadata.progress and contain the map write"
+        );
+        let trace_json = serde_json::to_string(&trace).expect("serializes");
+        assert!(!trace_json.contains("top-secret-header-val"));
+        assert!(!trace_json.contains("top-secret-cookie-val"));
+        assert!(!trace_json.contains("top-secret-oauth-token"));
+    }
+
+    #[tokio::test]
+    async fn td03_generation_run_budget_halts_excessive_task_dispatches() {
+        let v3_engine = std::sync::Arc::new(
+            dataflow_rs_v3::Engine::new(vec![], std::collections::HashMap::new())
+                .expect("empty v3 engine"),
+        );
+        let v4_engine = dataflow_rs::Engine::builder()
+            .config(
+                dataflow_rs::run::EngineConfig::default()
+                    .error_context(crate::engine::ERROR_CONTEXT.clone()),
+            )
+            .workflow_json(&serde_json::json!({
+                "id": "wf-loop",
+                "channel": "orders",
+                "loop": { "counter": "i", "max": 10 },
+                "tasks": [
+                    {
+                        "id": "t-step",
+                        "function": {
+                            "name": "map",
+                            "input": {
+                                "mappings": [
+                                    { "path": "data.step", "logic": { "var": "temp_data.i" } }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }))
+            .build()
+            .expect("v4 engine builds");
+
+        let handle = crate::runtime::generation::test_handle();
+        handle.publish_with_estate(
+            v3_engine,
+            Some(v4_engine),
+            std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
+            crate::engine::FunctionRegistry::builtin().clone(),
+            std::sync::Arc::new(crate::plugin::PluginSet::empty()),
+            std::sync::Arc::new(crate::model::ModelSet::empty()),
+            None,
+            super::super::budget::RunBudgetLimits {
+                max_tasks: Some(3),
+                ..Default::default()
+            },
+        );
+        let generation = handle.load();
+
+        let exec = execute_admitted_on_generation(
+            &generation,
+            "orders",
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            ExecOpts::default(),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                exec.outcome,
+                RunOutcome::EngineError(dataflow_rs_v3::DataflowError::BudgetExceeded(_))
+            ),
+            "expected BudgetExceeded when loop exceeds max_tasks=3, got {:?}",
+            exec.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn td07_pinned_generation_isolates_connector_snapshot_across_rotation() {
+        let registry = crate::connector::ConnectorRegistry::default();
+        let initial_cfg = crate::connector::ConnectorConfig::Cache(
+            serde_json::from_value(serde_json::json!({
+                "backend": "redis",
+                "url": "redis://cache-gen1.internal:6379"
+            }))
+            .expect("valid cache config"),
+        );
+        registry.insert_for_test("shared-cache", initial_cfg).await;
+
+        let handle = crate::runtime::generation::test_handle();
+        handle.publish_with_estate(
+            handle.load().engine.clone(),
+            None,
+            std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
+            crate::engine::FunctionRegistry::builtin().clone(),
+            std::sync::Arc::new(crate::plugin::PluginSet::empty()),
+            std::sync::Arc::new(crate::model::ModelSet::empty()),
+            Some(registry.snapshot_configs()),
+            Default::default(),
+        );
+        let pinned_gen = handle.load();
+
+        // Rotate connector in the live registry to a different URL.
+        let rotated_cfg = crate::connector::ConnectorConfig::Cache(
+            serde_json::from_value(serde_json::json!({
+                "backend": "redis",
+                "url": "redis://cache-gen2.internal:6379"
+            }))
+            .expect("valid cache config"),
+        );
+        registry.insert_for_test("shared-cache", rotated_cfg).await;
+
+        // Outside a pinned generation, the live registry returns the new URL.
+        let live = registry.get("shared-cache").await.expect("live config");
+        let crate::connector::ConnectorConfig::Cache(live_cache) = live.as_ref() else {
+            panic!("expected cache connector");
+        };
+        assert_eq!(
+            live_cache.url.as_deref(),
+            Some("redis://cache-gen2.internal:6379")
+        );
+
+        // Inside `PINNED_GENERATION`, `registry.get` returns the pinned snapshot's URL.
+        crate::runtime::generation::PINNED_GENERATION
+            .scope(pinned_gen, async {
+                let pinned = registry.get("shared-cache").await.expect("pinned config");
+                let crate::connector::ConnectorConfig::Cache(pinned_cache) = pinned.as_ref() else {
+                    panic!("expected cache connector");
+                };
+                assert_eq!(
+                    pinned_cache.url.as_deref(),
+                    Some("redis://cache-gen1.internal:6379")
+                );
+            })
+            .await;
     }
 }

@@ -11,7 +11,7 @@ Admin API endpoints require an API key when `admin_auth.enabled` is true. The se
 ```bash
 # Default configuration (admin_auth.header = "Authorization")
 curl -H "Authorization: Bearer your-secret-key" \
-  http://localhost:8080/api/v1/admin/workflows
+  http://localhost:8080/api/v2/admin/workflows
 ```
 
 To use a custom header instead, set `admin_auth.header`, and note this
@@ -21,7 +21,7 @@ To use a custom header instead, set `admin_auth.header`, and note this
 ```bash
 # Requires admin_auth.header = "X-API-Key" in config
 curl -H "X-API-Key: your-secret-key" \
-  http://localhost:8080/api/v1/admin/workflows
+  http://localhost:8080/api/v2/admin/workflows
 ```
 
 Configure it through `[admin_auth]` in config, or the `ORION_ADMIN_AUTH__ENABLED=true` environment variable. Keys listed under `admin_auth.read_only_api_keys` authorise `GET`/`HEAD` only; every mutating method answers `403`.

@@ -490,6 +490,8 @@ mod tests {
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),
             models: Arc::new(set(&rows)),
+            connectors: None,
+            run_budget_limits: Default::default(),
         };
         let workflows = [
             workflow(
@@ -535,6 +537,8 @@ mod tests {
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),
             models: Arc::new(set(&rows)),
+            connectors: None,
+            run_budget_limits: Default::default(),
         };
         let workflows = [workflow(
             "router",

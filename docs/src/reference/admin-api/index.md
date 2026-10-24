@@ -4,9 +4,9 @@
 
 # Admin API
 
-Every endpoint under `/api/v1/admin/`, by the resource it addresses, and the contracts they all share.
+Every endpoint under `/api/v2/admin/`, by the resource it addresses, and the contracts they all share.
 
-All admin endpoints are under `/api/v1/admin/`. When [admin authentication](./authentication.md) is enabled, requests must include a valid API key. Success and error bodies follow the [response envelopes](./envelopes.md) below.
+All admin endpoints are under `/api/v2/admin/`. When [admin authentication](./authentication.md) is enabled, requests must include a valid API key. Success and error bodies follow the [response envelopes](./envelopes.md) below.
 
 | Resource | Operations |
 |---|---|

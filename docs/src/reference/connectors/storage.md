@@ -44,7 +44,7 @@ write URL at all. What one such URL permits is the task's to say — see
 [Bounding an upload](../functions/storage_presign.md#bounding-an-upload) for the
 size and type bounds `storage_presign` signs into it.
 
-`POST /api/v1/admin/connectors/{name}/test` performs one signed HEAD of the
+`POST /api/v2/admin/connectors/{name}/test` performs one signed HEAD of the
 bucket. There is no retry field: presigning is local computation, and
 `storage_head` follows the estate rule that only `http` connectors retry.
 

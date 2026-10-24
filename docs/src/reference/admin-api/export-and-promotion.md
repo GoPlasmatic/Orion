@@ -12,8 +12,8 @@ Every `/import` endpoint accepts at most **1000 items per request** and answers 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/{workflows,channels,connectors,plugins,models}/export` | Export every entity of that kind. `?tag=` and `?status=` narrow the set. Plugin components are inlined only with `?include_artifacts=true`; a model always exports as a reference, never as bytes |
-| POST | `/api/v1/admin/{workflows,channels,connectors,plugins,models}/import` | Bulk import. `?on_conflict=` selects the collision policy; `?dry_run=true` reports what would happen |
+| GET | `/api/v2/admin/{workflows,channels,connectors,plugins,models}/export` | Export every entity of that kind. `?tag=` and `?status=` narrow the set. Plugin components are inlined only with `?include_artifacts=true`; a model always exports as a reference, never as bytes |
+| POST | `/api/v2/admin/{workflows,channels,connectors,plugins,models}/import` | Bulk import. `?on_conflict=` selects the collision policy; `?dry_run=true` reports what would happen |
 
 Each export reads inside **one repeatable-read transaction**, so the result is a consistent snapshot. Rows mutated mid-export cannot be skipped or duplicated. On MySQL this relies on InnoDB's default REPEATABLE READ isolation, and lowering it session-wide weakens the guarantee.
 

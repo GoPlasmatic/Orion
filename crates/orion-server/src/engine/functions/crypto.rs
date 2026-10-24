@@ -74,6 +74,96 @@ const ARGON2_PARALLELISM_RANGE: std::ops::RangeInclusive<u64> = 1..=4;
 const BCRYPT_DEFAULT_COST: u32 = 12;
 const BCRYPT_COST_RANGE: std::ops::RangeInclusive<u64> = 10..=14;
 
+/// Default maximum concurrent password KDF operations (`TD-04`).
+const DEFAULT_KDF_MAX_CONCURRENCY: usize = 16;
+/// Default maximum aggregate Argon2/bcrypt memory in flight (512 MiB in KiB) (`TD-04`).
+const DEFAULT_KDF_MAX_MEMORY_KIB: u32 = 524_288;
+/// Default maximum queue wait time before rejecting a KDF request under load (`TD-04`).
+const DEFAULT_KDF_QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Nominal memory footprint attributed to one bcrypt operation (4 KiB).
+const BCRYPT_MEMORY_KIB: u32 = 4;
+
+/// Process-wide KDF admission controller bounding concurrent blocking-pool
+/// threads and aggregate memory-hard KDF allocation (`TD-04`).
+struct KdfAdmission {
+    concurrency: std::sync::Arc<tokio::sync::Semaphore>,
+    memory_kib: std::sync::Arc<tokio::sync::Semaphore>,
+    max_memory_kib: u32,
+    queue_timeout: std::time::Duration,
+}
+
+struct KdfPermit {
+    _concurrency: tokio::sync::OwnedSemaphorePermit,
+    _memory_kib: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Default for KdfAdmission {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_KDF_MAX_CONCURRENCY,
+            DEFAULT_KDF_MAX_MEMORY_KIB,
+            DEFAULT_KDF_QUEUE_TIMEOUT,
+        )
+    }
+}
+
+impl KdfAdmission {
+    fn new(
+        max_concurrency: usize,
+        max_memory_kib: u32,
+        queue_timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            concurrency: std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1))),
+            memory_kib: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                (max_memory_kib.max(1)) as usize,
+            )),
+            max_memory_kib: max_memory_kib.max(1),
+            queue_timeout,
+        }
+    }
+
+    async fn acquire(&self, requested_memory_kib: u32) -> Result<KdfPermit, HandlerError> {
+        let mem_units = requested_memory_kib.clamp(1, self.max_memory_kib);
+        let conc_sem = std::sync::Arc::clone(&self.concurrency);
+        let mem_sem = std::sync::Arc::clone(&self.memory_kib);
+
+        let acquire_fut = async move {
+            let conc_permit = conc_sem.acquire_owned().await.map_err(|_| {
+                HandlerError::new(
+                    ErrorClass::Backend,
+                    "password KDF admission closed".to_string(),
+                )
+            })?;
+            let mem_permit = mem_sem.acquire_many_owned(mem_units).await.map_err(|_| {
+                HandlerError::new(
+                    ErrorClass::Backend,
+                    "password KDF memory admission closed".to_string(),
+                )
+            })?;
+            Ok::<KdfPermit, HandlerError>(KdfPermit {
+                _concurrency: conc_permit,
+                _memory_kib: mem_permit,
+            })
+        };
+
+        tokio::time::timeout(self.queue_timeout, acquire_fut)
+            .await
+            .map_err(|_| {
+                HandlerError::new(
+                    ErrorClass::Timeout,
+                    format!(
+                        "password KDF queue timed out after {}ms waiting for admission",
+                        self.queue_timeout.as_millis()
+                    ),
+                )
+            })?
+    }
+}
+
+static KDF_ADMISSION: std::sync::LazyLock<KdfAdmission> =
+    std::sync::LazyLock::new(KdfAdmission::default);
+
 /// Workflow function handler for the `crypto` operation envelope. Stateless:
 /// secret references resolve through the process-wide resolver registry.
 pub struct CryptoHandler;
@@ -484,8 +574,9 @@ async fn hash_password(params: PasswordParams, password: String) -> Result<Value
             parallelism,
         } => {
             // Memory-hard by design, so off the async worker (W: ~20 MiB and
-            // tens of milliseconds per call at the defaults).
-            spawn_hashing(move || {
+            // tens of milliseconds per call at the defaults) and gated by
+            // KdfAdmission (`TD-04`).
+            spawn_hashing(memory_kib, move || {
                 use argon2::password_hash::PasswordHasher;
                 use argon2::{Algorithm, Argon2, Params, Version};
                 let params = Params::new(memory_kib, iterations, parallelism, None)
@@ -502,7 +593,7 @@ async fn hash_password(params: PasswordParams, password: String) -> Result<Value
             .await
         }
         PasswordParams::Bcrypt { cost } => {
-            spawn_hashing(move || {
+            spawn_hashing(BCRYPT_MEMORY_KIB, move || {
                 bcrypt::hash(&password, cost)
                     .map(Value::String)
                     .map_err(|e| format!("bcrypt hashing failed: {e}"))
@@ -521,15 +612,79 @@ async fn password_verify_op(
     verify_password(password, hash).await
 }
 
+/// Validate the scheme and encoded cost parameters of a stored password hash
+/// *before* acquiring KDF admission or spawning onto the blocking pool (`TD-04`).
+/// Returns the memory footprint in KiB to charge against [`KdfAdmission`].
+fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
+    if hash.starts_with("$argon2") {
+        use argon2::Params;
+        use argon2::password_hash::phc::PasswordHash;
+        let parsed = PasswordHash::new(hash)
+            .map_err(|e| validation(&format!("stored hash is not a valid PHC string: {e}")))?;
+        let params = Params::try_from(&parsed)
+            .map_err(|e| validation(&format!("stored argon2 hash has invalid parameters: {e}")))?;
+        let m_cost = u64::from(params.m_cost());
+        if !ARGON2_MEMORY_KIB_RANGE.contains(&m_cost) {
+            return Err(validation(&format!(
+                "stored argon2 hash memory_kib ({m_cost}) is outside allowed range {}..={}",
+                ARGON2_MEMORY_KIB_RANGE.start(),
+                ARGON2_MEMORY_KIB_RANGE.end()
+            )));
+        }
+        let t_cost = u64::from(params.t_cost());
+        if !ARGON2_ITERATIONS_RANGE.contains(&t_cost) {
+            return Err(validation(&format!(
+                "stored argon2 hash iterations ({t_cost}) is outside allowed range {}..={}",
+                ARGON2_ITERATIONS_RANGE.start(),
+                ARGON2_ITERATIONS_RANGE.end()
+            )));
+        }
+        let p_cost = u64::from(params.p_cost());
+        if !ARGON2_PARALLELISM_RANGE.contains(&p_cost) {
+            return Err(validation(&format!(
+                "stored argon2 hash parallelism ({p_cost}) is outside allowed range {}..={}",
+                ARGON2_PARALLELISM_RANGE.start(),
+                ARGON2_PARALLELISM_RANGE.end()
+            )));
+        }
+        Ok(params.m_cost())
+    } else if hash.starts_with("$2") {
+        // Standard modular crypt format: `$2a$<cost>$<22-char salt><31-char hash>`
+        let parts: Vec<&str> = hash.split('$').collect();
+        if parts.len() != 4 || !matches!(parts[1], "2a" | "2b" | "2x" | "2y") {
+            return Err(validation(
+                "stored bcrypt hash is malformed: invalid version or segment count",
+            ));
+        }
+        let cost: u64 = parts[2].parse().map_err(|_| {
+            validation("stored bcrypt hash is malformed: invalid cost parameter")
+        })?;
+        if !BCRYPT_COST_RANGE.contains(&cost) {
+            return Err(validation(&format!(
+                "stored bcrypt hash cost ({cost}) is outside allowed range {}..={}",
+                BCRYPT_COST_RANGE.start(),
+                BCRYPT_COST_RANGE.end()
+            )));
+        }
+        Ok(BCRYPT_MEMORY_KIB)
+    } else {
+        Err(validation(
+            "unrecognized password hash scheme — expected an $argon2*$ PHC string or a \
+             $2*$ bcrypt hash",
+        ))
+    }
+}
+
 /// Whether `password` matches the stored `hash`, on the blocking pool:
 /// shared by both engines' paths.
 async fn verify_password(password: String, hash: String) -> Result<Value, HandlerError> {
     // Scheme auto-detected from the stored hash, which is what turns a
     // bcrypt → argon2id migration into a verify-then-rehash pair inside one
-    // login workflow. Wrong password → false; a *malformed* stored hash is a
-    // task error — silent-false would make data corruption indistinguishable
-    // from a bad credential.
-    spawn_hashing(move || {
+    // login workflow. Wrong password → false; a *malformed* stored hash or an
+    // encoded cost outside policy bounds is a task error — validated before
+    // spawning onto the blocking pool (`TD-04`).
+    let memory_kib = preflight_verify_hash(&hash)?;
+    spawn_hashing(memory_kib, move || {
         if hash.starts_with("$argon2") {
             use argon2::password_hash::{Error, PasswordVerifier, phc::PasswordHash};
             let parsed = PasswordHash::new(&hash)
@@ -554,17 +709,36 @@ async fn verify_password(password: String, hash: String) -> Result<Value, Handle
     .await
 }
 
-/// Run a CPU-bound hashing closure on the blocking pool. Password KDFs are
-/// deliberately slow; running them inline would stall an async worker for
-/// tens of milliseconds per login.
-async fn spawn_hashing<F>(f: F) -> Result<Value, HandlerError>
+/// Run a CPU-bound hashing closure on the blocking pool under [`KDF_ADMISSION`].
+/// Password KDFs are deliberately slow; running them inline would stall an
+/// async worker for tens of milliseconds per login, and running them without
+/// admission would let concurrent logins exhaust the blocking pool or memory.
+async fn spawn_hashing<F>(memory_kib: u32, f: F) -> Result<Value, HandlerError>
 where
     F: FnOnce() -> Result<Value, String> + Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| HandlerError::new(ErrorClass::Backend, format!("hashing task failed: {e}")))?
-        .map_err(|e| validation(&e))
+    spawn_hashing_with_admission(&KDF_ADMISSION, memory_kib, f).await
+}
+
+async fn spawn_hashing_with_admission<F>(
+    admission: &KdfAdmission,
+    memory_kib: u32,
+    f: F,
+) -> Result<Value, HandlerError>
+where
+    F: FnOnce() -> Result<Value, String> + Send + 'static,
+{
+    let permit = admission.acquire(memory_kib).await?;
+    tokio::task::spawn_blocking(move || {
+        // Hold the KDF permit inside the blocking closure so an abandoned
+        // caller cannot release concurrency/memory permits while the CPU/memory
+        // work is still executing on the blocking thread (`TD-04`).
+        let _permit = permit;
+        f()
+    })
+    .await
+    .map_err(|e| HandlerError::new(ErrorClass::Backend, format!("hashing task failed: {e}")))?
+    .map_err(|e| validation(&e))
 }
 
 // -- dataflow-rs 4 --
@@ -1870,5 +2044,110 @@ mod tests {
         assert_eq!(inputs[0]["key"], Value::Null, "{inputs:?}");
         assert!(!inputs[0].to_string().contains(SIGNING));
         assert!(!format!("{:?}", called.changes).contains(SIGNING));
+    }
+
+    #[tokio::test]
+    async fn password_verify_rejects_excessive_encoded_argon2_and_bcrypt_costs_before_kdf() {
+        // Argon2 hash with m=1048576 (1 GiB, above 131_072 KiB max)
+        let excessive_argon2_m =
+            "$argon2id$v=19$m=1048576,t=2,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG";
+        let err = agreed(
+            json!({"op": "password_verify", "password": "pw",
+                   "hash": excessive_argon2_m, "output": "data.ok"}),
+            json!({}),
+        )
+        .await
+        .expect_err("excessive argon2 memory_kib must be rejected");
+        assert!(
+            err.message.contains("memory_kib") && err.message.contains("outside allowed range"),
+            "{err:?}"
+        );
+
+        // Argon2 hash with t=99 (above 10 max)
+        let excessive_argon2_t =
+            "$argon2id$v=19$m=19456,t=99,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG";
+        let err = agreed(
+            json!({"op": "password_verify", "password": "pw",
+                   "hash": excessive_argon2_t, "output": "data.ok"}),
+            json!({}),
+        )
+        .await
+        .expect_err("excessive argon2 iterations must be rejected");
+        assert!(
+            err.message.contains("iterations") && err.message.contains("outside allowed range"),
+            "{err:?}"
+        );
+
+        // Bcrypt hash with cost=31 (above 14 max)
+        let excessive_bcrypt = "$2b$31$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234";
+        let err = agreed(
+            json!({"op": "password_verify", "password": "pw",
+                   "hash": excessive_bcrypt, "output": "data.ok"}),
+            json!({}),
+        )
+        .await
+        .expect_err("excessive bcrypt cost must be rejected");
+        assert!(
+            err.message.contains("cost (31)") && err.message.contains("outside allowed range"),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn kdf_admission_enforces_queue_deadline_and_retains_permit_until_blocking_task_finishes() {
+        use std::sync::{Arc, Barrier};
+        use std::time::Duration;
+
+        let admission = Arc::new(KdfAdmission::new(1, 16_384, Duration::from_millis(30)));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let release_barrier = Arc::new(Barrier::new(2));
+        let barrier_in_worker = Arc::clone(&release_barrier);
+        let admission_first = Arc::clone(&admission);
+
+        // Spawn a KDF job that acquires the single permit and blocks on `release_barrier`,
+        // then immediately abort the caller future once the blocking closure has started.
+        let first_handle = tokio::spawn(async move {
+            spawn_hashing_with_admission(&admission_first, 8_192, move || {
+                let _ = started_tx.send(());
+                barrier_in_worker.wait();
+                Ok(Value::Bool(true))
+            })
+            .await
+        });
+
+        started_rx.await.expect("blocking task started");
+        // Abandon the caller while the blocking closure is still running!
+        first_handle.abort();
+        let _ = first_handle.await;
+
+        // While the blocking closure is still blocked on `release_barrier`,
+        // a second caller must NOT be able to acquire the permit and must time out.
+        let second_err = spawn_hashing_with_admission(&admission, 8_192, || Ok(Value::Bool(true)))
+            .await
+            .expect_err("second KDF request must time out while first blocking task still runs");
+        assert!(
+            second_err.msg.contains("timed out"),
+            "expected queue timeout error, got: {second_err:?}"
+        );
+
+        // Now release the first blocking closure and verify the permit becomes available again.
+        tokio::task::spawn_blocking(move || {
+            release_barrier.wait();
+        })
+        .await
+        .expect("barrier wait finishes");
+
+        // Wait briefly for the blocking closure to drop its permit.
+        let retry_admission = KdfAdmission {
+            concurrency: Arc::clone(&admission.concurrency),
+            memory_kib: Arc::clone(&admission.memory_kib),
+            max_memory_kib: admission.max_memory_kib,
+            queue_timeout: Duration::from_millis(500),
+        };
+        let third_ok =
+            spawn_hashing_with_admission(&retry_admission, 8_192, || Ok(Value::Bool(true)))
+                .await
+                .expect("permit must be released once blocking task finishes");
+        assert_eq!(third_ok, Value::Bool(true));
     }
 }

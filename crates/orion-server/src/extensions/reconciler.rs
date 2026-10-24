@@ -94,8 +94,10 @@ impl NodeReconciler {
         node_id: impl Into<String>,
         boot_id: impl Into<String>,
     ) -> Self {
+        let node_id_str = node_id.into();
+        store.set_node_id(node_id_str.clone());
         let identity = NodeIdentity {
-            node_id: node_id.into(),
+            node_id: node_id_str,
             boot_id: boot_id.into(),
         };
         let mut map = BTreeMap::new();
@@ -125,6 +127,11 @@ impl NodeReconciler {
     pub fn local_status(&self) -> RuntimeNodeStatus {
         let g = self.nodes.lock().expect("nodes lock");
         g[&self.local_identity.node_id].clone()
+    }
+
+    pub fn observed_node_ids(&self) -> BTreeSet<String> {
+        let g = self.nodes.lock().expect("nodes lock");
+        g.keys().cloned().collect()
     }
 
     pub fn register_peer_node(&self, node_id: &str, boot_id: &str) {
@@ -304,6 +311,177 @@ impl NodeReconciler {
         g.get(&self.local_identity.node_id)
             .is_some_and(|node| now_ms <= node.security_lease_expires_at_ms)
     }
+
+    /// Persist this node's [`RuntimeNodeStatus`] to the `runtime_nodes` table across
+    /// any configured [`crate::storage::DbPool`] (`TD-18`).
+    pub async fn persist_local_status_to_db_pool(
+        &self,
+        pool: &crate::storage::DbPool,
+    ) -> Result<(), DeploymentError> {
+        let status = self.local_status();
+        let retained_vec: Vec<u64> = status.retained_revisions.iter().copied().collect();
+        let retained_json =
+            serde_json::to_string(&retained_vec).unwrap_or_else(|_| "[]".to_string());
+
+        match pool {
+            crate::storage::DbPool::Sqlite(p) => {
+                sqlx::query(
+                    "INSERT INTO runtime_nodes (node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json, security_lease_until, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
+                     ON CONFLICT(node_id) DO UPDATE SET \
+                       boot_id = excluded.boot_id, \
+                       desired_revision = excluded.desired_revision, \
+                       applied_revision = excluded.applied_revision, \
+                       applied_manifest_digest = excluded.applied_manifest_digest, \
+                       configuration_degraded = excluded.configuration_degraded, \
+                       retained_revisions_json = excluded.retained_revisions_json, \
+                       security_lease_until = CURRENT_TIMESTAMP, \
+                       updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(&status.identity.node_id)
+                .bind(&status.identity.boot_id)
+                .bind(status.desired_revision as i64)
+                .bind(status.applied_revision as i64)
+                .bind(status.applied_manifest_digest.as_deref())
+                .bind(status.configuration_degraded)
+                .bind(&retained_json)
+                .execute(p)
+                .await
+                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+            }
+            crate::storage::DbPool::Postgres(p) => {
+                sqlx::query(
+                    "INSERT INTO runtime_nodes (node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json, security_lease_until, updated_at) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
+                     ON CONFLICT(node_id) DO UPDATE SET \
+                       boot_id = EXCLUDED.boot_id, \
+                       desired_revision = EXCLUDED.desired_revision, \
+                       applied_revision = EXCLUDED.applied_revision, \
+                       applied_manifest_digest = EXCLUDED.applied_manifest_digest, \
+                       configuration_degraded = EXCLUDED.configuration_degraded, \
+                       retained_revisions_json = EXCLUDED.retained_revisions_json, \
+                       security_lease_until = CURRENT_TIMESTAMP, \
+                       updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(&status.identity.node_id)
+                .bind(&status.identity.boot_id)
+                .bind(status.desired_revision as i64)
+                .bind(status.applied_revision as i64)
+                .bind(status.applied_manifest_digest.as_deref())
+                .bind(status.configuration_degraded)
+                .bind(&retained_json)
+                .execute(p)
+                .await
+                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+            }
+            crate::storage::DbPool::Mysql(p) => {
+                sqlx::query(
+                    "INSERT INTO runtime_nodes (node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json, security_lease_until, updated_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
+                     ON DUPLICATE KEY UPDATE \
+                       boot_id = VALUES(boot_id), \
+                       desired_revision = VALUES(desired_revision), \
+                       applied_revision = VALUES(applied_revision), \
+                       applied_manifest_digest = VALUES(applied_manifest_digest), \
+                       configuration_degraded = VALUES(configuration_degraded), \
+                       retained_revisions_json = VALUES(retained_revisions_json), \
+                       security_lease_until = CURRENT_TIMESTAMP, \
+                       updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(&status.identity.node_id)
+                .bind(&status.identity.boot_id)
+                .bind(status.desired_revision as i64)
+                .bind(status.applied_revision as i64)
+                .bind(status.applied_manifest_digest.as_deref())
+                .bind(status.configuration_degraded)
+                .bind(&retained_json)
+                .execute(p)
+                .await
+                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Load all observed cluster nodes from the `runtime_nodes` table into `self.nodes`
+    /// and update `self.store`'s retained revision sets (`TD-18`).
+    pub async fn refresh_observed_nodes_from_db_pool(
+        &self,
+        pool: &crate::storage::DbPool,
+    ) -> Result<BTreeSet<String>, DeploymentError> {
+        type PersistedNodeTuple = (String, String, i64, i64, Option<String>, bool, String);
+        let query_sql = "SELECT node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json FROM runtime_nodes";
+        let rows: Vec<PersistedNodeTuple> = match pool {
+            crate::storage::DbPool::Sqlite(p) => match sqlx::query_as(query_sql).fetch_all(p).await
+            {
+                Ok(r) => r,
+                Err(e) if e.to_string().contains("no such table") => return Ok(self.observed_node_ids()),
+                Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
+            },
+            crate::storage::DbPool::Postgres(p) => {
+                match sqlx::query_as(query_sql).fetch_all(p).await {
+                    Ok(r) => r,
+                    Err(e) if e.to_string().contains("does not exist") => {
+                        return Ok(self.observed_node_ids());
+                    }
+                    Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
+                }
+            }
+            crate::storage::DbPool::Mysql(p) => match sqlx::query_as(query_sql).fetch_all(p).await {
+                Ok(r) => r,
+                Err(e) if e.to_string().contains("doesn't exist") => {
+                    return Ok(self.observed_node_ids());
+                }
+                Err(e) => return Err(DeploymentError::new("DB_READ_ERROR", e.to_string())),
+            },
+        };
+
+        let mut retained_updates = Vec::new();
+        {
+            let mut g = self.nodes.lock().expect("nodes lock");
+            for (
+                node_id,
+                boot_id,
+                desired_rev,
+                applied_rev,
+                manifest_digest,
+                degraded,
+                retained_str,
+            ) in rows
+            {
+                let retained: BTreeSet<u64> =
+                    serde_json::from_str::<Vec<u64>>(&retained_str)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect();
+                retained_updates.push((node_id.clone(), retained.clone()));
+
+                if node_id == self.local_identity.node_id {
+                    continue;
+                }
+                g.insert(
+                    node_id.clone(),
+                    RuntimeNodeStatus {
+                        identity: NodeIdentity { node_id, boot_id },
+                        desired_revision: desired_rev.max(0) as u64,
+                        applied_revision: applied_rev.max(0) as u64,
+                        applied_manifest_digest: manifest_digest,
+                        configuration_degraded: degraded,
+                        quarantined_entities: Vec::new(),
+                        last_error: None,
+                        backoff_attempt: 0,
+                        backoff_delay_ms: 0,
+                        security_lease_expires_at_ms: DEFAULT_SECURITY_LEASE_MS,
+                        retained_revisions: retained,
+                    },
+                );
+            }
+        }
+        for (node_id, retained) in retained_updates {
+            self.store.update_node_retained_revisions(&node_id, retained);
+        }
+        Ok(self.observed_node_ids())
+    }
 }
 
 #[cfg(test)]
@@ -396,5 +574,76 @@ mod tests {
         reconciler.renew_security_lease(1_000, 5_000);
         assert!(reconciler.is_security_lease_valid(5_500));
         assert!(!reconciler.is_security_lease_valid(6_500));
+    }
+
+    #[tokio::test]
+    async fn td18_td34_runtime_nodes_sqlite_persistence_and_observed_convergence() {
+        use std::str::FromStr;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap())
+            .await
+            .unwrap();
+        crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
+            .run(&pool)
+            .await
+            .unwrap();
+        let db_pool = crate::storage::DbPool::Sqlite(pool);
+
+        let root_a = crate::extensions::CompositionRoot::community()
+            .with_node_identity("node-alpha", "boot-alpha");
+        assert_eq!(
+            root_a.deployments.node_id(),
+            "node-alpha",
+            "with_node_identity must synchronize store and reconciler node_id"
+        );
+
+        let policy = CommunityAdmissionPolicy::new();
+        let m = CanonicalManifest {
+            schema_version: 2,
+            providers: Vec::new(),
+            provider_lock_digest: None,
+            members: Vec::new(),
+        };
+        let plan = root_a.deployments.plan_candidate(0, m).unwrap();
+        let receipt = root_a
+            .deployments
+            .apply_candidate("admin", "idem-obs", &plan, "deploy", &policy)
+            .unwrap();
+        assert_eq!(receipt.receiving_node_id, "node-alpha");
+
+        root_a.reconciler.observe_desired_head();
+        root_a
+            .reconciler
+            .build_and_publish_candidate(1, Vec::new())
+            .unwrap();
+        root_a
+            .reconciler
+            .persist_local_status_to_db_pool(&db_pool)
+            .await
+            .unwrap();
+
+        // Second node ("node-beta") has not yet applied revision 1
+        let store_b = ImmutableDeploymentStore::new("node-beta");
+        let rec_b = NodeReconciler::new(store_b, "node-beta", "boot-beta");
+        rec_b
+            .persist_local_status_to_db_pool(&db_pool)
+            .await
+            .unwrap();
+
+        let observed = root_a
+            .reconciler
+            .refresh_observed_nodes_from_db_pool(&db_pool)
+            .await
+            .unwrap();
+        assert!(observed.contains("node-alpha"));
+        assert!(observed.contains("node-beta"));
+
+        let conv_pending =
+            root_a
+                .reconciler
+                .evaluate_convergence(1, &ConvergenceTarget::ObservedNodes(observed.clone()));
+        assert!(!conv_pending.converged);
+        assert_eq!(conv_pending.pending_nodes, vec!["node-beta".to_string()]);
     }
 }

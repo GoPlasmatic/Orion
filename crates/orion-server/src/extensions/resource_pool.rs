@@ -36,6 +36,9 @@ pub trait ConnectionPoolCache: Send + Sync {
     fn evict_all<'a>(&'a self) -> BoxPoolFuture<'a, ()>;
 }
 
+type TypedPoolMap = BTreeMap<TypeId, Arc<dyn Any + Send + Sync>>;
+type TypedNamedPoolMap = BTreeMap<(TypeId, String), Arc<dyn Any + Send + Sync>>;
+
 /// Registry of provider-owned connection-pool caches (`V2-11.1`).
 ///
 /// Allows Community foundation providers and Enterprise providers to register
@@ -44,7 +47,8 @@ pub trait ConnectionPoolCache: Send + Sync {
 #[derive(Default, Clone)]
 pub struct ResourcePoolRegistry {
     caches: Arc<RwLock<Vec<Arc<dyn ConnectionPoolCache>>>>,
-    typed: Arc<RwLock<BTreeMap<TypeId, Arc<dyn Any + Send + Sync>>>>,
+    typed: Arc<RwLock<TypedPoolMap>>,
+    typed_by_id: Arc<RwLock<TypedNamedPoolMap>>,
 }
 
 impl std::fmt::Debug for ResourcePoolRegistry {
@@ -66,11 +70,15 @@ impl ResourcePoolRegistry {
     where
         C: ConnectionPoolCache + 'static,
     {
+        let cache_id = cache.cache_id().to_string();
         if let Ok(mut caches) = self.caches.write() {
             caches.push(cache.clone());
         }
         if let Ok(mut typed) = self.typed.write() {
-            typed.insert(TypeId::of::<C>(), cache);
+            typed.insert(TypeId::of::<C>(), cache.clone());
+        }
+        if let Ok(mut typed_by_id) = self.typed_by_id.write() {
+            typed_by_id.insert((TypeId::of::<C>(), cache_id), cache);
         }
     }
 
@@ -78,6 +86,15 @@ impl ResourcePoolRegistry {
     pub fn get<C: Send + Sync + 'static>(&self) -> Option<Arc<C>> {
         let guard = self.typed.read().ok()?;
         let any_arc = guard.get(&TypeId::of::<C>())?.clone();
+        Arc::downcast::<C>(any_arc).ok()
+    }
+
+    /// Retrieve a previously registered typed pool cache by its `cache_id` (`TD-28`).
+    pub fn get_by_id<C: Send + Sync + 'static>(&self, cache_id: &str) -> Option<Arc<C>> {
+        let guard = self.typed_by_id.read().ok()?;
+        let any_arc = guard
+            .get(&(TypeId::of::<C>(), cache_id.to_string()))?
+            .clone();
         Arc::downcast::<C>(any_arc).ok()
     }
 
@@ -144,6 +161,11 @@ struct SessionPoolState<S> {
     /// Shared capacity semaphores keyed by stable `(provider_digest, connection_id)` so
     /// retained revisions and rotated secrets share one capacity ceiling (`CTX-08`).
     capacity: BTreeMap<(String, String), Arc<Semaphore>>,
+    /// Monotonic global eviction epoch incremented on `evict_all` so in-flight creators
+    /// started before blanket eviction cannot populate the cache (`TD-28`).
+    global_eviction_epoch: u64,
+    /// Per-connector eviction epochs incremented on `evict(connector_name)` (`TD-28`).
+    connector_eviction_epochs: BTreeMap<String, u64>,
 }
 
 /// Version- and credential-fenced session pool (`V2-05.4`, `CTX-08`).
@@ -171,6 +193,8 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
                 invalidated: BTreeSet::new(),
                 min_revision: BTreeMap::new(),
                 capacity: BTreeMap::new(),
+                global_eviction_epoch: 0,
+                connector_eviction_epochs: BTreeMap::new(),
             }),
         }
     }
@@ -228,7 +252,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<S, ConnectorError>>,
     {
-        let (semaphore, cached) = {
+        let (semaphore, cached, start_global_epoch, start_connector_epoch) = {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if Self::is_fenced(&guard, identity) {
                 return Err(ConnectorError::capability_invalid(
@@ -246,7 +270,13 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
                 .or_insert_with(|| Arc::new(Semaphore::new(self.max_capacity_per_connection)))
                 .clone();
             let existing = guard.sessions.get(identity).cloned();
-            (sem, existing)
+            let g_epoch = guard.global_eviction_epoch;
+            let c_epoch = guard
+                .connector_eviction_epochs
+                .get(&identity.connection_id)
+                .copied()
+                .unwrap_or(0);
+            (sem, existing, g_epoch, c_epoch)
         };
 
         // Non-blocking capacity check so a suspended parent holding the only permit
@@ -273,12 +303,25 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
         // Create outside the lock.
         let created = creator().await?;
 
-        // Re-check fence after async creation (`CTX-08`): if `identity` was invalidated
-        // while `creator` was running, refuse to insert into the cache.
+        // Re-check fence after async creation (`CTX-08`, `TD-28`): if `identity` was invalidated
+        // or evicted while `creator` was running, refuse to insert into the cache.
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if Self::is_fenced(&guard, identity) {
             return Err(ConnectorError::capability_invalid(
                 "Connection identity was invalidated during session creation",
+                EffectStatus::NotStarted,
+            ));
+        }
+        let current_c_epoch = guard
+            .connector_eviction_epochs
+            .get(&identity.connection_id)
+            .copied()
+            .unwrap_or(0);
+        if guard.global_eviction_epoch != start_global_epoch
+            || current_c_epoch != start_connector_epoch
+        {
+            return Err(ConnectorError::capability_invalid(
+                "Connection session was evicted during creation",
                 EffectStatus::NotStarted,
             ));
         }
@@ -308,6 +351,11 @@ impl<S: Clone + Send + Sync + 'static> ConnectionPoolCache for VersionedSessionP
     fn evict<'a>(&'a self, connector_name: &'a str) -> BoxPoolFuture<'a, ()> {
         Box::pin(async move {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let epoch = guard
+                .connector_eviction_epochs
+                .entry(connector_name.to_string())
+                .or_insert(0);
+            *epoch = epoch.saturating_add(1);
             guard
                 .sessions
                 .retain(|k, _| k.connection_id != connector_name);
@@ -317,6 +365,7 @@ impl<S: Clone + Send + Sync + 'static> ConnectionPoolCache for VersionedSessionP
     fn evict_all<'a>(&'a self) -> BoxPoolFuture<'a, ()> {
         Box::pin(async move {
             let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            guard.global_eviction_epoch = guard.global_eviction_epoch.saturating_add(1);
             guard.sessions.clear();
         })
     }
@@ -406,5 +455,56 @@ mod tests {
             .expect("rev2 acquires");
         assert_eq!(h_new.session(), "session-rev2-secB");
         assert_eq!(pool.cached_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn td28_evict_fences_in_flight_creator_and_typed_registry_preserves_distinct_cache_ids() {
+        let registry = ResourcePoolRegistry::new();
+        let pg_pool = Arc::new(VersionedSessionPool::<String>::new("org.orion.postgresql", 2));
+        let sqlite_pool = Arc::new(VersionedSessionPool::<String>::new("org.orion.sqlite", 2));
+        registry.register(pg_pool.clone());
+        registry.register(sqlite_pool.clone());
+
+        // Both pools share TypeId::of::<VersionedSessionPool<String>>() and are retrievable by cache_id!
+        assert_eq!(
+            registry
+                .get_by_id::<VersionedSessionPool<String>>("org.orion.postgresql")
+                .expect("pg pool")
+                .cache_id(),
+            "org.orion.postgresql"
+        );
+        assert_eq!(
+            registry
+                .get_by_id::<VersionedSessionPool<String>>("org.orion.sqlite")
+                .expect("sqlite pool")
+                .cache_id(),
+            "org.orion.sqlite"
+        );
+
+        // Start a slow creator on pg_pool, call evict_connector("orders-db") while creator is in flight,
+        // and verify the stale creator cannot repopulate the cache!
+        let id = sample_id(1, "sha256:sec-evict");
+        let (start_tx, start_rx) = oneshot::channel::<()>();
+        let (finish_tx, finish_rx) = oneshot::channel::<()>();
+        let pg_clone = pg_pool.clone();
+        let id_clone = id.clone();
+
+        let task = tokio::spawn(async move {
+            pg_clone
+                .acquire(&id_clone, || async move {
+                    let _ = start_tx.send(());
+                    let _ = finish_rx.await;
+                    Ok("stale-after-evict".to_string())
+                })
+                .await
+        });
+
+        start_rx.await.expect("creator started");
+        registry.evict_connector("orders-db").await;
+        let _ = finish_tx.send(());
+
+        let res = task.await.expect("joined");
+        assert!(res.is_err(), "creator started before evict must be fenced");
+        assert_eq!(pg_pool.cached_count(), 0);
     }
 }

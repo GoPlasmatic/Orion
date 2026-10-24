@@ -153,10 +153,62 @@ pub async fn send_es(
     Ok((status, body))
 }
 
+/// Redact secret-bearing keys and URL credentials/query secrets from an
+/// upstream JSON error body and format a bounded preview capped at
+/// [`crate::http_body::ERROR_BODY_PREVIEW_LIMIT`] (512 bytes) (`TD-12`).
+pub fn format_upstream_error_preview(body: &Value) -> String {
+    let redacted = redact_error_json(body, 0);
+    let raw = redacted.to_string();
+    truncate_error_preview(&raw, crate::http_body::ERROR_BODY_PREVIEW_LIMIT)
+}
+
+fn redact_error_json(val: &Value, depth: usize) -> Value {
+    if depth > 16 {
+        return Value::String("...(nested)...".to_string());
+    }
+    match val {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                if crate::connector::is_secret_key(k) {
+                    out.insert(
+                        k.clone(),
+                        Value::String(crate::connector::MASK.to_string()),
+                    );
+                } else {
+                    out.insert(k.clone(), redact_error_json(v, depth + 1));
+                }
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .take(32)
+                .map(|v| redact_error_json(v, depth + 1))
+                .collect(),
+        ),
+        Value::String(s) => Value::String(crate::connector::redact_url_secrets_or_raw(s)),
+        other => other.clone(),
+    }
+}
+
+fn truncate_error_preview(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}... (truncated)", &s[..end])
+}
+
 /// Uniform error for a non-2xx Elasticsearch write response.
 pub fn es_write_error(status: reqwest::StatusCode, body: &Value) -> DataflowError {
+    let preview = format_upstream_error_preview(body);
     DataflowError::function_execution(
-        format!("Elasticsearch write failed ({status}): {body}"),
+        format!("Elasticsearch write failed ({status}): {preview}"),
         None,
     )
 }
@@ -1495,6 +1547,48 @@ mod error_taxonomy_tests {
             back.to_string(),
             "The request conflicts with an existing record",
             "Display is the caller-safe half and must not carry the driver text"
+        );
+    }
+
+    #[test]
+    fn upstream_error_preview_redacts_secrets_and_truncates_to_512_bytes() {
+        let long_reason = "x".repeat(1000);
+        let body = serde_json::json!({
+            "error": {
+                "type": "mapper_parsing_exception",
+                "reason": long_reason,
+                "api_key": "super-secret-api-key",
+                "authorization": "Bearer secret-jwt-token",
+                "endpoint": "https://admin:hunter2@es.internal:9200/orders/_doc?token=my-secret"
+            }
+        });
+        let preview = format_upstream_error_preview(&body);
+        assert!(
+            !preview.contains("super-secret-api-key"),
+            "secret key value must be redacted: {preview}"
+        );
+        assert!(
+            !preview.contains("secret-jwt-token"),
+            "authorization value must be redacted: {preview}"
+        );
+        assert!(
+            !preview.contains("hunter2"),
+            "URL userinfo password must be redacted: {preview}"
+        );
+        assert!(
+            !preview.contains("my-secret"),
+            "URL query secret must be redacted: {preview}"
+        );
+        assert!(
+            preview.ends_with("... (truncated)"),
+            "oversized body must be truncated: {preview}"
+        );
+        let prefix = preview.strip_suffix("... (truncated)").unwrap();
+        assert!(
+            prefix.len() <= crate::http_body::ERROR_BODY_PREVIEW_LIMIT,
+            "preview prefix length {} exceeds limit {}",
+            prefix.len(),
+            crate::http_body::ERROR_BODY_PREVIEW_LIMIT
         );
     }
 }

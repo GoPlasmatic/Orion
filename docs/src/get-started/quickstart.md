@@ -43,7 +43,7 @@ Output:
 A workflow is the logic. This one has two tasks: parse the request, then flag it when `total` is over 10,000. Post it to the admin API:
 
 ```bash
-curl -fsS -X POST http://localhost:8080/api/v1/admin/workflows \
+curl -fsS -X POST http://localhost:8080/api/v2/admin/workflows \
   -H 'Content-Type: application/json' \
   -d '{
     "workflow_id": "quickstart-orders",
@@ -73,7 +73,7 @@ Activation is a status change:
 
 ```bash
 curl -fsS -X PATCH \
-  http://localhost:8080/api/v1/admin/workflows/quickstart-orders/status \
+  http://localhost:8080/api/v2/admin/workflows/quickstart-orders/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
@@ -84,13 +84,13 @@ Orion builds a new engine with this workflow in it and swaps it in. Nothing rest
 A channel is the endpoint. It binds a route to the workflow, and it can only be activated once that workflow is active:
 
 ```bash
-curl -fsS -X POST http://localhost:8080/api/v1/admin/channels \
+curl -fsS -X POST http://localhost:8080/api/v2/admin/channels \
   -H 'Content-Type: application/json' \
   -d '{ "channel_id": "orders", "name": "orders", "channel_type": "sync",
         "protocol": "rest", "route_pattern": "/orders",
         "methods": ["POST"], "workflow_id": "quickstart-orders" }'
 
-curl -fsS -X PATCH http://localhost:8080/api/v1/admin/channels/orders/status \
+curl -fsS -X PATCH http://localhost:8080/api/v2/admin/channels/orders/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
@@ -99,7 +99,7 @@ curl -fsS -X PATCH http://localhost:8080/api/v1/admin/channels/orders/status \
 Send an order over the threshold to the route you declared:
 
 ```bash
-curl -fsS -X POST http://localhost:8080/api/v1/data/orders \
+curl -fsS -X POST http://localhost:8080/api/v2/data/orders \
   -H 'Content-Type: application/json' \
   -d '{ "data": { "order_id": "ORD-9182", "total": 25000 } }'
 ```
@@ -127,7 +127,7 @@ Output, with an `id` that differs on every call:
 Send an order under the threshold and confirm the `flag` task stays quiet:
 
 ```bash
-curl -fsS -X POST http://localhost:8080/api/v1/data/orders \
+curl -fsS -X POST http://localhost:8080/api/v2/data/orders \
   -H 'Content-Type: application/json' \
   -d '{ "data": { "order_id": "ORD-0001", "total": 50 } }'
 ```

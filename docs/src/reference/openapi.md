@@ -12,7 +12,7 @@ Three copies of the same document:
 
 | Source | Where | Reflects |
 |---|---|---|
-| A running server | `GET /api/v1/openapi.json` | The exact binary you are running |
+| A running server | `GET /api/v2/openapi.json` | The exact binary you are running |
 | Offline | [`orion-server dump-openapi`](./cli/orion-server/dump-openapi.md) | The binary on your `PATH`, without starting a server |
 | The repository | [`docs/openapi.json`](https://github.com/GoPlasmatic/Orion/blob/main/docs/openapi.json) | The committed snapshot, regenerated on every API change |
 
@@ -20,7 +20,7 @@ This book cannot render the spec inline. Open the snapshot on GitHub, or load an
 
 ## Parameters
 
-`server.docs.enabled` controls both `/docs` and `/api/v1/openapi.json`:
+`server.docs.enabled` controls both `/docs` and `/api/v2/openapi.json`:
 
 | Value | Effect |
 |---|---|

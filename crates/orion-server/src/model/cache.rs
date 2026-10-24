@@ -38,10 +38,14 @@
 //! What was resident and is no longer is remembered by digest, so a health
 //! read can tell "never loaded here" from "loaded and evicted".
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use super::runtimes::{LoadError, LoadedModel};
+
+/// Maximum number of evicted `(digest, binding)` tombstones retained in
+/// `Inner::gone` (`TD-10`).
+const MAX_GONE_ENTRIES: usize = 1_024;
 
 /// What a loaded session is keyed by — the same four things it is a
 /// function of: the bytes, the binding, the runtime and the device.
@@ -67,9 +71,26 @@ struct Inner {
     entries: HashMap<CacheKey, Entry>,
     /// The `(digest, binding)` pairs that were resident at some point and
     /// are no longer, on any runtime — what tells `evicted` from `never
-    /// loaded`.
+    /// loaded`, bounded by [`MAX_GONE_ENTRIES`] (`TD-10`).
     gone: HashSet<(String, String)>,
+    gone_order: VecDeque<(String, String)>,
     tick: u64,
+}
+
+fn record_gone(inner: &mut Inner, pair: (String, String)) {
+    if inner.gone.contains(&pair) {
+        inner.gone_order.retain(|item| item != &pair);
+    } else {
+        while inner.gone.len() >= MAX_GONE_ENTRIES {
+            if let Some(oldest) = inner.gone_order.pop_front() {
+                inner.gone.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        inner.gone.insert(pair.clone());
+    }
+    inner.gone_order.push_back(pair);
 }
 
 /// The cache. Cheap to share; every method takes `&self`.
@@ -77,9 +98,7 @@ pub struct LoadedCache {
     max_bytes: u64,
     inner: Mutex<Inner>,
     /// One mutex per key, held for the length of a load so concurrent first
-    /// callers share it. Kept for the life of the process: the set of keys
-    /// is the set of bindings × runtimes this node has ever loaded, which is
-    /// small.
+    /// callers share it and pruned when idle (`TD-10`).
     flights: Mutex<HashMap<CacheKey, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -125,7 +144,29 @@ impl LoadedCache {
             .entry(key.clone())
             .or_default()
             .clone();
-        let _in_flight = flight.lock().await;
+
+        struct FlightCleanup<'a> {
+            flights: &'a Mutex<HashMap<CacheKey, Arc<tokio::sync::Mutex<()>>>>,
+            key: CacheKey,
+            flight: Arc<tokio::sync::Mutex<()>>,
+        }
+        impl Drop for FlightCleanup<'_> {
+            fn drop(&mut self) {
+                let mut flights = self.flights.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(existing) = flights.get(&self.key)
+                    && Arc::ptr_eq(existing, &self.flight)
+                    && Arc::strong_count(&self.flight) <= 2
+                {
+                    flights.remove(&self.key);
+                }
+            }
+        }
+        let _cleanup = FlightCleanup {
+            flights: &self.flights,
+            key: key.clone(),
+            flight,
+        };
+        let _in_flight = _cleanup.flight.lock().await;
         // A caller that waited behind a load finds it resident now — cold
         // for this call, because it paid the wait, but loaded once.
         if let Some(model) = self.hit(&key) {
@@ -163,9 +204,13 @@ impl LoadedCache {
                 "Model is larger than models.max_loaded_bytes: served for this call and not \
                  kept resident"
             );
-            inner.gone.insert((key.digest, key.binding));
+            record_gone(&mut inner, (key.digest, key.binding));
             crate::metrics::set_model_loaded_bytes(total(&inner));
             return;
+        }
+        let reloaded_pair = (key.digest.clone(), key.binding.clone());
+        if inner.gone.remove(&reloaded_pair) {
+            inner.gone_order.retain(|item| item != &reloaded_pair);
         }
         inner.entries.insert(
             key,
@@ -192,7 +237,7 @@ impl LoadedCache {
                     "Model evicted: models.max_loaded_bytes reached"
                 );
             }
-            inner.gone.insert((victim.digest, victim.binding));
+            record_gone(&mut inner, (victim.digest, victim.binding));
         }
         crate::metrics::set_model_loaded_bytes(total(&inner));
     }
@@ -485,5 +530,41 @@ mod tests {
             "one load for eight callers"
         );
         assert_eq!(cache.max_bytes(), 100);
+        assert!(
+            cache.flights.lock().unwrap().is_empty(),
+            "idle flight locks must be pruned after completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn td10_flights_pruned_on_failure_and_gone_tombstones_bounded() {
+        let cache = LoadedCache::new(50);
+        for i in 0..(MAX_GONE_ENTRIES + 64) {
+            let d = format!("failed-{i}");
+            let _ = cache
+                .get_or_load(key(&d), || async {
+                    Err(LoadError::new("parse", "transient failure"))
+                })
+                .await;
+        }
+        assert!(
+            cache.flights.lock().unwrap().is_empty(),
+            "failed loads must not leak entries in flights"
+        );
+
+        for i in 0..(MAX_GONE_ENTRIES + 64) {
+            let d = format!("evict-{i}");
+            cache
+                .get_or_load(key(&d), || async move { Ok(fake(&d, 40)) })
+                .await
+                .expect("loads");
+        }
+        let inner = cache.inner.lock().unwrap();
+        assert!(
+            inner.gone.len() <= MAX_GONE_ENTRIES,
+            "gone tombstones must be bounded by MAX_GONE_ENTRIES, got {}",
+            inner.gone.len()
+        );
+        assert_eq!(inner.gone.len(), inner.gone_order.len());
     }
 }

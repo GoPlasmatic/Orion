@@ -12,7 +12,7 @@ You need shell access to the host, or to the database, and the ability to stop a
 
 | Backend | In-product backup | Restore |
 |---------|-------------------|---------|
-| SQLite | `POST /api/v1/admin/backups` (`VACUUM INTO`), single node only | Stop the server, replace the file, start it again |
+| SQLite | `POST /api/v2/admin/backups` (`VACUUM INTO`), single node only | Stop the server, replace the file, start it again |
 | PostgreSQL | Not provided; use your snapshot and PITR tooling (`pg_dump`, `pg_basebackup`, managed automated backups) | Restore with the same tooling, then start Orion |
 | MySQL | Not provided; use your snapshot and PITR tooling (`mysqldump`, binlog PITR, managed backups) | Restore with the same tooling, then start Orion |
 
@@ -23,8 +23,8 @@ This is a deliberate boundary rather than a gap. A managed PostgreSQL already ha
 Create a backup and list the ones on this node:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/backups
-curl -s http://localhost:8080/api/v1/admin/backups
+curl -s -X POST http://localhost:8080/api/v2/admin/backups
+curl -s http://localhost:8080/api/v2/admin/backups
 ```
 
 The endpoint runs `VACUUM INTO`, which produces a consistent copy without stopping the server. It writes `storage.backup_dir/orion_backup_<UTC timestamp>.db`, timestamped to the millisecond so two backups in the same second are distinct files.

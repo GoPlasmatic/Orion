@@ -40,12 +40,12 @@ Everything already returning `{"data": …}` — all CRUD reads and writes, ever
 
 ```bash
 # before
-curl -s localhost:8080/api/v1/admin/engine/status | jq '.workflows_count'
+curl -s localhost:8080/api/v2/admin/engine/status | jq '.workflows_count'
 # after
-curl -s localhost:8080/api/v1/admin/engine/status | jq '.data.workflows_count'
+curl -s localhost:8080/api/v2/admin/engine/status | jq '.data.workflows_count'
 ```
 
-Error bodies are unaffected — they stay `{"error": {code, message}}`, so `.data` present and `.error` present remain mutually exclusive. The data plane is unaffected too: `POST /api/v1/data/…` still answers `{"status": "ok", "data": …}` as before.
+Error bodies are unaffected — they stay `{"error": {code, message}}`, so `.data` present and `.error` present remain mutually exclusive. The data plane is unaffected too: `POST /api/v2/data/…` still answers `{"status": "ok", "data": …}` as before.
 
 **Upgrade your clients in the same window.** This break is on the admin plane,
 which is what the CLI and the console talk to. A client that predates 1.0 reads the old shape and will show empty or missing values against a 1.0 server rather than failing loudly.
@@ -62,7 +62,7 @@ The `orion-server dry-run` CLI subcommand prints the **unwrapped** shape (`{matc
 
 ### The trace list no longer returns `total` by default
 
-**What changed.** `GET /api/v1/admin/traces` used to answer
+**What changed.** `GET /api/v2/admin/traces` used to answer
 `{data, total, limit, offset}` on every page. `total` is now **omitted** unless the request asks for it with `?include_total=true`. Two fields are new: `next_cursor` on the response, and `cursor` on the request. This is the one list endpoint that deviates from the shared pagination contract; every other one still returns `total` unconditionally.
 
 **Why.** `total` was a `COUNT(*)` over the whole filtered set, recomputed on *every* page of the largest table Orion writes to. That is a full scan on PostgreSQL and InnoDB. Most callers page through the list and never read the number. Deep `offset` paging has the same shape of problem: the database counts past every skipped row. Keyset (`cursor`) paging skips nothing and counts past nothing, so page 500 costs what page 1 costs.
@@ -75,15 +75,15 @@ or — better for anything that walks the list — switch to the cursor:
 
 ```bash
 # before
-curl -s "http://orion:8080/api/v1/admin/traces?limit=100" | jq '.total'
+curl -s "http://orion:8080/api/v2/admin/traces?limit=100" | jq '.total'
 
 # after: ask for the count explicitly
-curl -s "http://orion:8080/api/v1/admin/traces?limit=100&include_total=true" | jq '.total'
+curl -s "http://orion:8080/api/v2/admin/traces?limit=100&include_total=true" | jq '.total'
 
 # after: page without a count and without an OFFSET
-page=$(curl -s "http://orion:8080/api/v1/admin/traces?limit=100")
+page=$(curl -s "http://orion:8080/api/v2/admin/traces?limit=100")
 cursor=$(jq -r '.next_cursor // empty' <<<"$page")
-curl -s "http://orion:8080/api/v1/admin/traces?limit=100&cursor=$cursor"
+curl -s "http://orion:8080/api/v2/admin/traces?limit=100&cursor=$cursor"
 ```
 
 `next_cursor` is present only while a further page may exist — its absence is how you know you have reached the end. Treat the value as **opaque**; its encoding is not part of the API contract.
@@ -169,7 +169,7 @@ If you branch only on HTTP status, the 400 and 504 cases are untouched and the o
 
 ### Updating an entity with no draft is a 404, not a 400
 
-**What changed.** `PUT /api/v1/admin/workflows/{id}` answered `400` with *"No draft version found"* when the entity had no draft, as did the channel equivalent and `PATCH …/status` activation. Every other missing-row lookup in the admin API answers `404`. Which status a missing thing produced depended on which lifecycle method you reached first. All no-draft misses now answer `404 NOT_FOUND` with the same message.
+**What changed.** `PUT /api/v2/admin/workflows/{id}` answered `400` with *"No draft version found"* when the entity had no draft, as did the channel equivalent and `PATCH …/status` activation. Every other missing-row lookup in the admin API answers `404`. Which status a missing thing produced depended on which lifecycle method you reached first. All no-draft misses now answer `404 NOT_FOUND` with the same message.
 
 Alongside it, the admin list surfaces were normalised: connector listings accept `sort_by` (`name` default, `connector_type`, `created_at`, `updated_at`) and `sort_order`. Previously they were hard-wired to `name ASC`, which remains the default. The version-history, trace, DLQ and audit-log query parameters are now declared in the OpenAPI document instead of only in prose.
 
@@ -181,7 +181,7 @@ message text, it is unchanged.
 
 ### Duplicate creates now return 409
 
-`POST /api/v1/admin/workflows` and `POST /api/v1/admin/channels` with an id that already exists now return `409 Conflict` with `{"error": {"code": "CONFLICT", "message": "…"}}`. Through 0.3.x these returned `500 INTERNAL_ERROR`. Clients or retry logic that treated the 500 as transient should treat the 409 as a permanent client error. Pick a different id, or use the import endpoints, which report conflicts per item without failing the batch.
+`POST /api/v2/admin/workflows` and `POST /api/v2/admin/channels` with an id that already exists now return `409 Conflict` with `{"error": {"code": "CONFLICT", "message": "…"}}`. Through 0.3.x these returned `500 INTERNAL_ERROR`. Clients or retry logic that treated the 500 as transient should treat the 409 as a permanent client error. Pick a different id, or use the import endpoints, which report conflicts per item without failing the batch.
 
 ### A closed trace queue answers 503, not 500
 
@@ -200,7 +200,7 @@ closed while requests still arrive. A client retrying on 503 now retries this to
 **What changed.** When the async trace queue was full, submission blocked
 waiting for capacity — an unbounded hang under load. It now sheds immediately.
 
-**How you'll notice.** `POST /api/v1/data/{channel}/async` (and the REST-routed
+**How you'll notice.** `POST /api/v2/data/{channel}/async` (and the REST-routed
 `…/async` equivalents) returns **`503`** with code **`SERVICE_UNAVAILABLE`** —
 *not* `QUEUE_FULL`. Disambiguate from other 503 answers by the message
 (`Trace queue is full (N messages pending)` or `Trace queue memory limit exceeded …`) or, better, by `orion_trace_queue_rejected_total{reason="full"|"memory"}`.
@@ -451,7 +451,7 @@ the field. Stored rows are not re-checked at load. A pre-1.0 row over the limit 
 
 ### A REST route matches byte-exactly, and decodes parameters once
 
-**What changed.** Three visible changes on `/api/v1/data/*`:
+**What changed.** Three visible changes on `/api/v2/data/*`:
 
 - **Case matters now.** `/ORDERS/1` no longer matches a channel declaring
   `/orders/{id}` — it answers 404. Fix client URLs, or register the alternate casing

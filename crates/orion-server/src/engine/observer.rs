@@ -29,6 +29,7 @@
 //! artifact keyed by connector, including a per-message JSONLogic resolution
 //! for `channel_call` (F49) that the engine has no concept of.
 
+use dataflow_rs::observe::{Event as V4Event, Interest as V4Interest, Observer as V4Observer};
 use dataflow_rs_v3::{ExecutionObserver, TaskEvent, WorkflowFinished};
 
 /// Emits `orion_task_duration_seconds{workflow,task,function}` per dispatched
@@ -61,6 +62,40 @@ impl ExecutionObserver for MetricsObserver {
         // Prometheus label space, which is the one thing these metrics are
         // careful never to allow.
         crate::metrics::record_workflow_duration(event.workflow_id, event.duration.as_secs_f64());
+    }
+}
+
+impl V4Observer for MetricsObserver {
+    fn interest(&self) -> V4Interest {
+        V4Interest::WORKFLOWS | V4Interest::TASKS | V4Interest::TIMINGS
+    }
+
+    fn on(&self, event: &V4Event<'_>) {
+        match event {
+            V4Event::TaskFinished {
+                info,
+                elapsed: Some(duration),
+                ..
+            } => {
+                crate::metrics::record_task_duration(
+                    info.workflow_id,
+                    info.task_id,
+                    interned_function_name(info.function),
+                    duration.as_secs_f64(),
+                );
+            }
+            V4Event::WorkflowFinished {
+                record,
+                elapsed: Some(duration),
+                ..
+            } => {
+                crate::metrics::record_workflow_duration(
+                    record.id,
+                    duration.as_secs_f64(),
+                );
+            }
+            _ => {}
+        }
     }
 }
 

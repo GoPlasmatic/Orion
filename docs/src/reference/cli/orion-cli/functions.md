@@ -1,4 +1,4 @@
-<!-- description: orion-cli functions list shows every task function the engine registers and its input schema, the same catalogue GET /api/v1/admin/functions serves. -->
+<!-- description: orion-cli functions list shows every task function the engine registers and its input schema, the same catalogue GET /api/v2/admin/functions serves. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 

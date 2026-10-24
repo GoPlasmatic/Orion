@@ -104,7 +104,7 @@ intended as an HTTP-only control, either remove it or give it a `key_logic` that
 
 ### The platform limiter and the channel's now stack
 
-**What changed.** The pre-1.0 middleware skipped the platform `[rate_limit]` data budget in one case. That was a request whose target channel declared its own `rate_limit` block, and whose limiter admitted it. A channel-level limit *replaced* the platform one. The two now layer. Every `/api/v1/data` request is metered against the platform budget (`endpoints.data_rps`, else `default_rps`) first, then against the channel's own limit in the ingress guards. A channel deliberately configured with a higher rate than the platform default used to be served at the channel's rate. It is now clamped to the platform's.
+**What changed.** The pre-1.0 middleware skipped the platform `[rate_limit]` data budget in one case. That was a request whose target channel declared its own `rate_limit` block, and whose limiter admitted it. A channel-level limit *replaced* the platform one. The two now layer. Every `/api/v2/data` request is metered against the platform budget (`endpoints.data_rps`, else `default_rps`) first, then against the channel's own limit in the ingress guards. A channel deliberately configured with a higher rate than the platform default used to be served at the channel's rate. It is now clamped to the platform's.
 
 **How you'll notice.** With `rate_limit.enabled = true`, a high-volume channel starts answering `429` at the platform rate after the upgrade. That happens when its `rate_limit.requests_per_second` exceeds `endpoints.data_rps` (or `default_rps`). The counter `orion_rate_limit_rejections_total{group="data"}` climbs while the channel's own limit never trips.
 

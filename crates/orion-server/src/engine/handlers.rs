@@ -197,6 +197,7 @@ pub fn build_custom_functions(
             pool_cache: sql_pool_cache.clone(),
             registry: registry.clone(),
             max_rows: query_config.max_limit as usize,
+            max_result_bytes: query_config.max_result_bytes,
         },
     );
     register(
@@ -419,6 +420,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
             pool_cache: sql_pool_cache.clone(),
             registry: connectors.clone(),
             max_rows: query_config.max_limit as usize,
+            max_result_bytes: query_config.max_result_bytes,
         },
     );
     registry.register(

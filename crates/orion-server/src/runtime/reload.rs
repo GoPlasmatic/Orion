@@ -108,6 +108,16 @@ async fn reload_with_scope(
     // See `AppStateInner::reload_lock`.
     let _reload_guard = state.reload_lock.lock().await;
 
+    let prev_connector_state = if scope.is_some_and(|scope| scope.touches_connectors()) {
+        Some((
+            state.connector_registry.snapshot_configs(),
+            state.connector_registry.config_generation(),
+            state.connector_registry.load_issues().await,
+        ))
+    } else {
+        None
+    };
+
     let result = async {
         // Registry replacement belongs to the same serialized operation as
         // channel construction, including peer-driven and connector reloads.
@@ -116,9 +126,6 @@ async fn reload_with_scope(
                 .connector_registry
                 .reload(state.repos.connectors.as_ref())
                 .await?;
-            if evict_connector_pools {
-                state.caches.evict_all_pools().await;
-            }
         }
         let crate::storage::repositories::ActiveDefinitions {
             channels,
@@ -305,18 +312,24 @@ async fn reload_with_scope(
             )
             .await;
 
+        if scope.is_some_and(|scope| scope.touches_connectors()) && evict_connector_pools {
+            state.caches.evict_all_pools().await;
+        }
+
         // One store, both halves. There is no window in which a reader is held
         // off, so this needs neither a timeout nor a carefully-scoped drop
         // before the Kafka restart below — and no window in which a request is
         // admitted by one generation and executed by another, which is what
         // two stores here could not avoid however they were ordered.
-        let generation = state.runtime.publish(
+        let generation = state.runtime.publish_with_estate(
             new_engine,
             Some(new_engine4),
             Arc::new(new_channels),
             functions,
             plugins,
             models,
+            Some(state.connector_registry.snapshot_configs()),
+            state.config.engine.run_budget_limits(),
         );
         let published = state.runtime.load();
 
@@ -406,6 +419,12 @@ async fn reload_with_scope(
                 .store(false, std::sync::atomic::Ordering::Release);
         }
         Err(e) => {
+            if let Some((prev_configs, prev_gen, prev_issues)) = prev_connector_state {
+                state
+                    .connector_registry
+                    .restore_snapshot(prev_configs, prev_gen, prev_issues)
+                    .await;
+            }
             crate::metrics::record_engine_reload("failure");
             state
                 .reload_degraded

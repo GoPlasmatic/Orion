@@ -10,22 +10,22 @@ The data API is the runtime request path. A request resolves to a channel, the c
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/data/{channel}` | Process message synchronously (bare channel name) |
-| `POST` | `/api/v1/data/{channel}/async` | Submit for async processing (returns trace ID) |
-| `ANY` | `/api/v1/data/{path...}` | REST route matching: method + path matched against channel route patterns |
-| `ANY` | `/api/v1/data/{path...}/async` | Async submission through REST route matching |
-| `GET` | `/api/v1/admin/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=`; page with `?cursor=`; count with `?include_total=true` |
-| `GET` | `/api/v1/admin/traces/{id}` | Poll one trace. Requires the submission's `trace_token` or an admin credential |
+| `POST` | `/api/v2/data/{channel}` | Process message synchronously (bare channel name) |
+| `POST` | `/api/v2/data/{channel}/async` | Submit for async processing (returns trace ID) |
+| `ANY` | `/api/v2/data/{path...}` | REST route matching: method + path matched against channel route patterns |
+| `ANY` | `/api/v2/data/{path...}/async` | Async submission through REST route matching |
+| `GET` | `/api/v2/admin/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=`; page with `?cursor=`; count with `?include_total=true` |
+| `GET` | `/api/v2/admin/traces/{id}` | Poll one trace. Requires the submission's `trace_token` or an admin credential |
 
-The trace *list* is guarded like `/api/v1/admin/*` and `/metrics` when admin auth is enabled, and its rows carry no payloads. The single-trace GET follows a two-lane rule instead. A valid admin credential always works. An async submission's `trace_token` grants access to that one trace, so a data-plane caller can poll its own result without holding an admin key. Channel endpoints stay unauthenticated.
+The trace *list* is guarded like `/api/v2/admin/*` and `/metrics` when admin auth is enabled, and its rows carry no payloads. The single-trace GET follows a two-lane rule instead. A valid admin credential always works. An async submission's `trace_token` grants access to that one trace, so a data-plane caller can poll its own result without holding an admin key. Channel endpoints stay unauthenticated.
 
 ## Route resolution
 
-When a request arrives at `/api/v1/data/{path}`, Orion resolves the target channel in this order:
+When a request arrives at `/api/v2/data/{path}`, Orion resolves the target channel in this order:
 
 1. **Async check:** a trailing `/async` suffix is stripped and switches the request to async mode.
 2. **REST route table:** the HTTP method and path are matched against channel `route_pattern` values, such as `GET /orders/{order_id}`.
-3. **Channel name fallback:** a single path segment is looked up as a channel name, so `/api/v1/data/orders` reaches the channel named `orders`.
+3. **Channel name fallback:** a single path segment is looked up as a channel name, so `/api/v2/data/orders` reaches the channel named `orders`.
 
 REST routes are matched by priority (descending) then specificity (segment count). Matching is byte-exact: the path is case-sensitive per RFC 3986, so `/ORDERS/1` does not match `/orders/{id}`. Path parameters are extracted, percent-decoded exactly once (`a%2Fb` arrives as `a/b`), and injected into the message metadata. A path carrying an invalid percent-sequence is answered with `400`.
 
@@ -35,24 +35,24 @@ Send a POST to the channel name or a matching REST route:
 
 ```bash
 # By channel name
-curl -s -X POST http://localhost:8080/api/v1/data/orders \
+curl -s -X POST http://localhost:8080/api/v2/data/orders \
   -H "Content-Type: application/json" \
   -d '{ "data": { "order_id": "ORD-123", "total": 25000 } }'
 
 # By REST route pattern
-curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
+curl -s -X GET http://localhost:8080/api/v2/data/orders/ORD-123/items/ITEM-1
 ```
 
 ### Serving at other paths
 
-The data plane is always mounted at `/api/v1/data`. [`server.data_mounts`](./configuration/server.md) adds prefixes it *also* answers on, for deployed clients that call legacy paths and cannot be changed:
+The data plane is always mounted at `/api/v2/data`. [`server.data_mounts`](./configuration/server.md) adds prefixes it *also* answers on, for deployed clients that call legacy paths and cannot be changed:
 
 ```toml
 [server]
 data_mounts = ["/zoom"]
 ```
 
-A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`, `/async` included. Route patterns are written exactly as the client calls them. They are matched prefix-free, so nothing about the channel changes.
+A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v2/data/zoom/meetings/user`, `/async` included. Route patterns are written exactly as the client calls them. They are matched prefix-free, so nothing about the channel changes.
 
 This is additive: the canonical prefix stays, so `orion-cli` and every existing integration keep working. A mount cannot claim a platform route, and the root mount `"/"` carries a caveat. See the configuration reference.
 
@@ -139,7 +139,7 @@ A channel can let its workflow set the HTTP status, headers and body of its resp
 Append `/async` to submit for background processing:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
+curl -s -X POST http://localhost:8080/api/v2/data/orders/async \
   -H "Content-Type: application/json" \
   -d '{ "data": { "order_id": "ORD-456" } }'
 ```
@@ -158,7 +158,7 @@ The token is shown once; only its hash is stored, and it scopes the poll to this
 Poll for the result with the token in the `x-trace-token` header:
 
 ```bash
-curl -s http://localhost:8080/api/v1/admin/traces/550e8400-e29b-41d4-a716-446655440000 \
+curl -s http://localhost:8080/api/v2/admin/traces/550e8400-e29b-41d4-a716-446655440000 \
   -H "x-trace-token: b1946ac92492d2347c6235b4d2611184"
 ```
 
@@ -170,13 +170,13 @@ List and filter traces:
 
 ```bash
 # List all traces
-curl -s http://localhost:8080/api/v1/admin/traces
+curl -s http://localhost:8080/api/v2/admin/traces
 
 # Filter by channel and status
-curl -s "http://localhost:8080/api/v1/admin/traces?channel=orders&status=completed"
+curl -s "http://localhost:8080/api/v2/admin/traces?channel=orders&status=completed"
 
 # Filter by mode
-curl -s "http://localhost:8080/api/v1/admin/traces?mode=async"
+curl -s "http://localhost:8080/api/v2/admin/traces?mode=async"
 ```
 
 ### Paging a large `traces` table
@@ -189,11 +189,11 @@ The page envelope is `{data, limit, offset}`. Two things are conditional:
 
 ```bash
 # First page
-curl -s "http://localhost:8080/api/v1/admin/traces?limit=100"
+curl -s "http://localhost:8080/api/v2/admin/traces?limit=100"
 # → {"data": [...], "limit": 100, "offset": 0, "next_cursor": "1753900000123456.<uuid>"}
 
 # Next page
-curl -s "http://localhost:8080/api/v1/admin/traces?limit=100&cursor=1753900000123456.<uuid>"
+curl -s "http://localhost:8080/api/v2/admin/traces?limit=100&cursor=1753900000123456.<uuid>"
 ```
 
 `cursor` is rejected with a `400` beside `offset` (two paging modes) or with `sort_by` set to anything but `created_at`. The reasoning, why offset paging degrades and why `updated_at` cannot carry a cursor, is in [Cursor paging](../concepts/design-notes.md#cursor-paging).
@@ -202,7 +202,7 @@ Get a specific trace (async traces need their `trace_token`; sync traces
 follow the admin trust model):
 
 ```bash
-curl -s http://localhost:8080/api/v1/admin/traces/{trace-id} \
+curl -s http://localhost:8080/api/v2/admin/traces/{trace-id} \
   -H "x-trace-token: {trace-token}"
 ```
 
@@ -210,7 +210,7 @@ Every trace read answers with `Cache-Control: no-store`. The body is the submiss
 
 ### The `?token=` query parameter is deprecated
 
-`GET /api/v1/admin/traces/{id}?token={trace-token}` still authorizes, for clients that cannot set headers. Prefer the header, and migrate if you are using it, because a URL is not a private place. It reaches browser history, reverse proxy and CDN access logs, and analytics pipelines. It reaches the `Referer` header of anything the page loads next, and every chat window a support ticket is pasted into. A header reaches none of those.
+`GET /api/v2/admin/traces/{id}?token={trace-token}` still authorizes, for clients that cannot set headers. Prefer the header, and migrate if you are using it, because a URL is not a private place. It reaches browser history, reverse proxy and CDN access logs, and analytics pipelines. It reaches the `Referer` header of anything the page loads next, and every chat window a support ticket is pasted into. A header reaches none of those.
 
 Reads authorized this way answer with `Deprecation: true`, and the server counts them in `orion_trace_token_query_reads_total`. An operator can confirm nothing depends on the parameter before it is removed in a future major version.
 
@@ -260,7 +260,7 @@ cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
 | GET | `/readyz` | Kubernetes readiness probe. 503 if DB, startup, cluster Redis (cluster mode), or Kafka ingestion (when enabled) not ready |
 | GET | `/metrics` | Prometheus metrics (when enabled) |
 | GET | `/docs` | Swagger UI |
-| GET | `/api/v1/openapi.json` | OpenAPI 3.1 specification |
+| GET | `/api/v2/openapi.json` | OpenAPI 3.1 specification |
 
 ## Related
 

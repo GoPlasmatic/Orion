@@ -25,7 +25,7 @@ It takes **no connector**. A response-cache entry can live in the default store 
 
 It moves counters and nothing else. A workflow cannot write a response body into a channel's cache, and neither `cache_write` nor `cache_delete` reaches the response cache's keys.
 
-The operator's form is [`POST /api/v1/admin/cache/namespaces/{namespace}/invalidate`](../admin-api/cache.md).
+The operator's form is [`POST /api/v2/admin/cache/namespaces/{namespace}/invalidate`](../admin-api/cache.md).
 
 **Retry safety:** `idempotent_write`. A second bump retires nothing the first did not; the only cost is one more miss per channel. See [Retry safety](./retry-safety.md).
 

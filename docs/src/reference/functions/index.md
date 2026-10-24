@@ -6,7 +6,7 @@
 
 A workflow is an ordered list of **tasks**, and every task invokes one built-in **function** with an `input` object. Functions read and write the [data context](../workflows.md#the-data-context), the JSON document that flows through the pipeline. This hub lists every function the release documented here ships; each name links to its own page.
 
-Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) engine. The rest are Orion handlers that talk to [connectors](../connectors/index.md), compose channels, or compute locally. `GET /api/v1/admin/functions` serves the authoritative list on a running instance; see [Runtime function discovery](./runtime-discovery.md).
+Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) engine. The rest are Orion handlers that talk to [connectors](../connectors/index.md), compose channels, or compute locally. `GET /api/v2/admin/functions` serves the authoritative list on a running instance; see [Runtime function discovery](./runtime-discovery.md).
 
 <div class="table-filter" data-label="Filter functions"></div>
 
@@ -44,7 +44,7 @@ Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmat
 | [`jwt_verify`](./jwt_verify.md) | Utility | — | Verify a JWT against static keys or a JWKS |
 
 > [!NOTE]
-> The **Category** column groups the table for reading. It is not the wire value: `GET /api/v1/admin/functions` serves a `category` of `connector`, `control`, `data`, `compute`, or `utility` for every function, so tooling should branch on those rather than on the labels here.
+> The **Category** column groups the table for reading. It is not the wire value: `GET /api/v2/admin/functions` serves a `category` of `connector`, `control`, `data`, `compute`, or `utility` for every function, so tooling should branch on those rather than on the labels here.
 
 When a function fails, the data-plane response follows [Errors and response envelopes](../errors.md). Use its stable error code and the trace's task ID to identify the failing step; do not parse the message text. Each function's page describes its own validation and runtime failures.
 

@@ -58,7 +58,7 @@ This is the connector definition:
 Post it. Connectors are live on creation; there is no activation step, and the registry reloads on every connector change:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/connectors \
+curl -s -X POST http://localhost:8080/api/v2/admin/connectors \
   -H 'Content-Type: application/json' --data @connector.json
 ```
 
@@ -79,10 +79,10 @@ Three tasks: parse the request, insert the order, read back the customer with th
 Create and activate it:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
+curl -s -X POST http://localhost:8080/api/v2/admin/workflows \
   -H 'Content-Type: application/json' --data @workflow.json
 
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/record-order/status \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/record-order/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
@@ -104,10 +104,10 @@ The channel binds `POST /record-order` to the workflow:
 Create and activate it:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/channels \
+curl -s -X POST http://localhost:8080/api/v2/admin/channels \
   -H 'Content-Type: application/json' --data @channel.json
 
-curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/record-order/status \
+curl -s -X PATCH http://localhost:8080/api/v2/admin/channels/record-order/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
@@ -118,7 +118,7 @@ Both calls answer a successful admin envelope, and `orion-cli channels list` sho
 Send the sample request that ships beside the definitions:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/data/record-order \
+curl -s -X POST http://localhost:8080/api/v2/data/record-order \
   -H 'Content-Type: application/json' --data @request.json
 ```
 

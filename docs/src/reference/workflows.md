@@ -11,7 +11,7 @@ A workflow is a versioned, JSON-defined pipeline of tasks. A [channel](../concep
 
 ## Synopsis
 
-Send this shape to `POST /api/v1/admin/workflows`; `PUT .../{id}` updates the draft. Fields marked *server-managed* are set by Orion and returned in responses; you do not send them on create.
+Send this shape to `POST /api/v2/admin/workflows`; `PUT .../{id}` updates the draft. Fields marked *server-managed* are set by Orion and returned in responses; you do not send them on create.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
@@ -471,12 +471,12 @@ key `(workflow_id, version)`. Status moves in one direction:
 
 | Action | Endpoint |
 |--------|----------|
-| Validate without saving | `POST /api/v1/admin/workflows/validate` |
-| Create (as draft) | `POST /api/v1/admin/workflows` |
-| New draft version of an existing id | `POST /api/v1/admin/workflows/{id}/versions` |
-| Dry-run against sample data | `POST /api/v1/admin/workflows/{id}/test` |
-| Change status | `PATCH /api/v1/admin/workflows/{id}/status` |
-| Adjust rollout | `PATCH /api/v1/admin/workflows/{id}/rollout` |
+| Validate without saving | `POST /api/v2/admin/workflows/validate` |
+| Create (as draft) | `POST /api/v2/admin/workflows` |
+| New draft version of an existing id | `POST /api/v2/admin/workflows/{id}/versions` |
+| Dry-run against sample data | `POST /api/v2/admin/workflows/{id}/test` |
+| Change status | `PATCH /api/v2/admin/workflows/{id}/status` |
+| Adjust rollout | `PATCH /api/v2/admin/workflows/{id}/rollout` |
 
 The Admin API owns endpoint semantics: see
 [Lifecycle](./admin-api/lifecycle.md) for the first four rows and

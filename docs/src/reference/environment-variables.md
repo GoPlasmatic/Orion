@@ -177,7 +177,7 @@ Name them anything, with one restriction. Orion refuses to start on an `ORION_*`
 | Config file, `${VAR:-default}` | The default is used. An empty default is legal. |
 | Config file, `${VAR:?message}` | Startup fails, quoting the message, the file and the position. An empty value fails the same way. |
 | Config file, `[secrets]` | **Startup fails**, naming the entry and never its value. The alternative is an instance that runs and fails at the remote system with nothing pointing back here. |
-| Connector `config` | That connector is **skipped at load**. The server still starts and every other connector serves; `/health` reports `components.connectors: degraded`, and the connector's row in `GET /api/v1/admin/connectors` carries `load_status: "failed"` with a `load_error`. Every task using it fails. |
+| Connector `config` | That connector is **skipped at load**. The server still starts and every other connector serves; `/health` reports `components.connectors: degraded`, and the connector's row in `GET /api/v2/admin/connectors` carries `load_status: "failed"` with a `load_error`. Every task using it fails. |
 | Channel `auth` | The channel is **quarantined** — refused at every ingress rather than served with the guard missing. `/health` reports `components.channels: degraded`. |
 | Workflow `crypto` / `jwt_sign` / `jwt_verify` | The task fails when it runs, with a validation error naming the field. Nothing catches it earlier: the value is read at execution. |
 | A workflow field that resolves nothing | Refused at create, update and `lint` with `UNRESOLVED_SECRET_REF` — the variable is never consulted, because the reference would never have been resolved. |

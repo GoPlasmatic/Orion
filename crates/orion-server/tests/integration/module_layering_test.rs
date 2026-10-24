@@ -173,6 +173,21 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("model", &["crate::package::"]),
     ("cron", &["crate::package::"]),
     ("storage", &["crate::package::"]),
+    // V2 extension seams and composition root sit below the HTTP server,
+    // bootstrap, reload, package CLI, and background workers (`TD-36`).
+    (
+        "extensions",
+        &[
+            "crate::server::",
+            "crate::bootstrap::",
+            "crate::runtime::reload",
+            "crate::runtime::handler_deps",
+            "crate::package::",
+            "crate::cron::",
+            "crate::queue::",
+            "crate::kafka::",
+        ],
+    ),
 ];
 
 /// Edges that are real, deliberate, and left alone — each with the reason.

@@ -15,7 +15,7 @@ This is a different question from whether an *error* was transient. Orion
 already classifies that per error — a connection failure is retryable, a
 rejected query is not. The table below answers the other half: **if the retry
 happens, what does it cost?**
-`GET /api/v1/admin/functions` serves the same answer per function as
+`GET /api/v2/admin/functions` serves the same answer per function as
 `retry_safety`, so tooling can read it rather than hard-coding this table.
 
 ## Answers

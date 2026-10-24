@@ -8,7 +8,7 @@ Querying the row every admin mutation writes, and what that row holds.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/audit-logs` | List audit log entries, newest first. Filters (AND-combined, exact match): `?action=`, `?resource_type=`, `?resource_id=`, `?principal=`; time range: `?start_time=` (inclusive) and `?end_time=` (exclusive), RFC 3339; paging: `?offset=`, `?limit=` (clamped to 1–1000, default 50). An unknown parameter returns `400` |
+| GET | `/api/v2/admin/audit-logs` | List audit log entries, newest first. Filters (AND-combined, exact match): `?action=`, `?resource_type=`, `?resource_id=`, `?principal=`; time range: `?start_time=` (inclusive) and `?end_time=` (exclusive), RFC 3339; paging: `?offset=`, `?limit=` (clamped to 1–1000, default 50). An unknown parameter returns `400` |
 
 **What a row records.** Every admin mutation writes one, including
 `POST /workflows/{id}/test`, which runs the workflow's tasks against live connectors and so is a side-effecting operation, not a dry run.

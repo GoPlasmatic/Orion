@@ -37,7 +37,7 @@ sender live here; the message lives on the task.
 | `allow_private_urls` | boolean | no | `false` | Allow private and internal addresses — the usual opt-in for an internal relay |
 | `timeout_ms` | integer | no | `10000` | Per-send timeout (connect + protocol exchange) |
 
-`POST /api/v1/admin/connectors/{name}/test` probes connect + EHLO + TLS +
+`POST /api/v2/admin/connectors/{name}/test` probes connect + EHLO + TLS +
 authentication without sending mail, through the same pooled transport real
 sends use. There is no `retry` field, and `send_email` never retries on its
 own: SMTP has no idempotency key, so a re-driven timeout is a duplicate

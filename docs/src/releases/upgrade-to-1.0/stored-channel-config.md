@@ -22,7 +22,7 @@ refusal is scoped to the offending row — the server boots, binds, and serves e
   `Channel '<name>' failed to load and is not being served: <reason>`. Because
   it is also absent from the route table, a REST channel's path stops matching
   and falls through to the usual not-found handling.
-- **Reload and admin mutations still succeed.** `POST /api/v1/admin/engine/reload`
+- **Reload and admin mutations still succeed.** `POST /api/v2/admin/engine/reload`
   and the mutations that trigger a reload — activate, archive, delete, rollout —
   complete normally; the rest of the rebuild is unaffected. In cluster mode the
   epoch watcher keeps advancing, so nodes continue to pick up config changes.

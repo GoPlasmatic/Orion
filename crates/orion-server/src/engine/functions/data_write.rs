@@ -862,8 +862,9 @@ async fn run_by_query(
             .unwrap_or(0)
             > 0;
     if failed {
+        let preview = super::connector_helpers::format_upstream_error_preview(&resp);
         return Err(DataflowError::function_execution(
-            format!("Elasticsearch {endpoint} had failures: {resp}"),
+            format!("Elasticsearch {endpoint} had failures: {preview}"),
             None,
         ));
     }

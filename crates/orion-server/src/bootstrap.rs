@@ -629,13 +629,15 @@ impl EngineComponents {
         // flag is set by the caller afterwards — but publishing them as a pair
         // is what makes the boot path and the reload path the same shape, and
         // there is only one way to publish.
-        serving.runtime.publish(
+        serving.runtime.publish_with_estate(
             Arc::new(built_engine),
             Some(engine4),
             Arc::new(channels_snapshot),
             functions,
             plugins,
             models,
+            Some(serving.connector_registry.snapshot_configs()),
+            config.engine.run_budget_limits(),
         );
 
         // Warm what `models.preload` selects, in the background — the same
@@ -1252,25 +1254,41 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
 
     // ARCH-02: Hydrate the v2 ImmutableDeploymentStore from the state database on boot
     // so previously committed deployment revisions and head state survive restarts
-    // across SQLite, PostgreSQL, and MySQL.
-    if let Err(e) = state
+    // across SQLite, PostgreSQL, and MySQL. Fail closed if persisted state is corrupt (`TD-16`).
+    match state
         .composition
         .deployments
         .load_from_db_pool(&state.db_pool)
         .await
     {
-        tracing::warn!(
-            error = %e,
-            "Failed to hydrate v2 deployment store from database at startup"
-        );
-    } else {
-        let (head_rev, _) = state.composition.deployments.current_head();
-        if head_rev > 0 {
-            state.composition.reconciler.observe_desired_head();
+        Err(e) if e.code == "CORRUPT_PERSISTED_STATE" => {
+            return Err(Box::new(e));
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to hydrate v2 deployment store from database at startup"
+            );
+        }
+        Ok(()) => {
+            let (head_rev, _) = state.composition.deployments.current_head();
+            if head_rev > 0 {
+                state.composition.reconciler.observe_desired_head();
+                let _ = state
+                    .composition
+                    .reconciler
+                    .build_and_publish_candidate(head_rev, Vec::new());
+            }
             let _ = state
                 .composition
                 .reconciler
-                .build_and_publish_candidate(head_rev, Vec::new());
+                .refresh_observed_nodes_from_db_pool(&state.db_pool)
+                .await;
+            let _ = state
+                .composition
+                .reconciler
+                .persist_local_status_to_db_pool(&state.db_pool)
+                .await;
         }
     }
 

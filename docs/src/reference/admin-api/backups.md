@@ -8,8 +8,8 @@ Creating and listing SQLite backups, and why there is no restore endpoint.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/backups` | Create a database backup (SQLite only — `VACUUM INTO` a timestamped file in `storage.backup_dir`) — `400` in cluster mode |
-| GET | `/api/v1/admin/backups` | List backup files currently in `storage.backup_dir` — `400` in cluster mode |
+| POST | `/api/v2/admin/backups` | Create a database backup (SQLite only — `VACUUM INTO` a timestamped file in `storage.backup_dir`) — `400` in cluster mode |
+| GET | `/api/v2/admin/backups` | List backup files currently in `storage.backup_dir` — `400` in cluster mode |
 
 ## Related
 

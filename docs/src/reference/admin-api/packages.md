@@ -16,9 +16,9 @@ Packaging itself lives in client tooling built on the per-kind endpoints above: 
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/packages` | List receipt rows (paginated, `?limit=`/`?offset=`), ordered by package name, newest first within a package. `?current=true` lists each package's current receipt instead, with its `inventory` |
-| GET | `/api/v1/admin/packages/{name}` | One package's receipts, plus `current` — the newest `applied` version |
-| PUT | `/api/v1/admin/packages/{name}` | Record or advance a receipt. Body: `{"version", "content_hash", "state": "staged"\|"applied", "inventory"}` |
+| GET | `/api/v2/admin/packages` | List receipt rows (paginated, `?limit=`/`?offset=`), ordered by package name, newest first within a package. `?current=true` lists each package's current receipt instead, with its `inventory` |
+| GET | `/api/v2/admin/packages/{name}` | One package's receipts, plus `current` — the newest `applied` version |
+| PUT | `/api/v2/admin/packages/{name}` | Record or advance a receipt. Body: `{"version", "content_hash", "state": "staged"\|"applied", "inventory"}` |
 
 The intended apply sequence has four steps. **Claim** the receipt as `staged`, which is the atomic same-version-different-content rejection and doubles as a guard against two concurrent applies. Stage the artifact's entities through the `/import` endpoints. Activate them in dependency order: plugins → connectors → models → workflows → channels. Then flip the receipt to `applied`. A failed apply leaves the receipt `staged`, so a corrected re-run at the same version is legal — only a draft can be updated. Re-putting an *older* applied version with its own original hash is also legal, and makes it current again. That is the rollback path: entities roll forward carrying the old content, and nothing moves backward.
 

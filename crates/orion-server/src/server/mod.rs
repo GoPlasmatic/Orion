@@ -152,10 +152,11 @@ pub fn build_router(state: AppState) -> Router {
             .then(|| state.cluster.instance_id.clone());
         router.layer(TraceLayer::new_for_http().make_span_with(
             move |req: &axum::extract::Request<_>| {
+                let uri = request_span_uri(req);
                 let span = tracing::info_span!(
                     "request",
                     method = %req.method(),
-                    uri = %req.uri(),
+                    uri = %uri,
                     version = ?req.version(),
                     instance_id = tracing::field::Empty,
                 );
@@ -582,4 +583,38 @@ mod tests {
         let config = cors(&["https://valid.com", "not a valid origin \x00"]);
         let _layer = build_cors(&config);
     }
+
+    #[test]
+    fn request_span_uri_strips_query_parameters_and_secrets() {
+        let trace_req = axum::http::Request::builder()
+            .uri("/api/v2/traces/trace-123?token=super-secret-trace-token&expand=true")
+            .body(())
+            .expect("request builds");
+        let trace_uri = request_span_uri(&trace_req);
+        assert_eq!(trace_uri, "/api/v2/traces/trace-123");
+        assert!(!trace_uri.contains("super-secret-trace-token"));
+        assert!(!trace_uri.contains("token="));
+
+        let oauth_req = axum::http::Request::builder()
+            .uri("/auth/callback?code=oauth-secret-code&state=oauth-secret-state")
+            .body(())
+            .expect("request builds");
+        let oauth_uri = request_span_uri(&oauth_req);
+        assert_eq!(oauth_uri, "/auth/callback");
+        assert!(!oauth_uri.contains("oauth-secret-code"));
+        assert!(!oauth_uri.contains("oauth-secret-state"));
+    }
+}
+
+/// Extract a query-free URI path for HTTP request tracing spans (`TD-11`).
+///
+/// Prefers the matched route template (`MatchedPath`) when available and falls
+/// back to `req.uri().path()`, ensuring query parameters such as `?token=` on
+/// trace detail routes or `?code=&state=` on OAuth callbacks never enter span
+/// attributes or log lines.
+fn request_span_uri<B>(req: &axum::http::Request<B>) -> &str {
+    req.extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(axum::extract::MatchedPath::as_str)
+        .unwrap_or_else(|| req.uri().path())
 }

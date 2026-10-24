@@ -1,15 +1,15 @@
-<!-- description: GET /api/v1/admin/functions serves the live function catalogue: every name with its category, source, aliases, retry safety and input schema. -->
+<!-- description: GET /api/v2/admin/functions serves the live function catalogue: every name with its category, source, aliases, retry safety and input schema. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
 # Runtime function discovery
 
-`GET /api/v1/admin/functions` returns the live catalogue of task functions a running instance accepts, with the input schema of every function Orion declares one for. Tooling and assistants read it instead of this site, so generated workflows use the field names the instance checks.
+`GET /api/v2/admin/functions` returns the live catalogue of task functions a running instance accepts, with the input schema of every function Orion declares one for. Tooling and assistants read it instead of this site, so generated workflows use the field names the instance checks.
 
 ## Synopsis
 
 ```bash
-curl -s http://localhost:8080/api/v1/admin/functions \
+curl -s http://localhost:8080/api/v2/admin/functions \
   -H "Authorization: Bearer $ORION_ADMIN_KEY"
 ```
 

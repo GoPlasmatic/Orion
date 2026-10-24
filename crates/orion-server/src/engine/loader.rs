@@ -498,7 +498,8 @@ pub fn serving_engine_with_policy(
         program,
         dataflow_rs::run::EngineConfig::default()
             .error_context(crate::engine::ERROR_CONTEXT.clone())
-            .with_condition_error_policy(condition_policy),
+            .with_condition_error_policy(condition_policy)
+            .observer(std::sync::Arc::new(crate::engine::MetricsObserver)),
     )
 }
 

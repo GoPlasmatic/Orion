@@ -23,7 +23,7 @@ Declare the method, the path pattern, and the workflow:
 }
 ```
 
-Path parameters are whole segments written `{name}`, and reach the workflow as request metadata. Routes match byte-exactly, including case: `/Orders` does not reach a channel declaring `/orders`. Every REST channel also stays reachable by name at `/api/v1/data/{name}`, which is what `orion-cli send` and the examples use.
+Path parameters are whole segments written `{name}`, and reach the workflow as request metadata. Routes match byte-exactly, including case: `/Orders` does not reach a channel declaring `/orders`. Every REST channel also stays reachable by name at `/api/v2/data/{name}`, which is what `orion-cli send` and the examples use.
 
 ## Go async
 
@@ -139,7 +139,7 @@ By default a sync channel returns the standard envelope with the final `data` co
 Ask whether the activation would succeed, without making it:
 
 ```bash
-curl -s -X PATCH "http://localhost:8080/api/v1/admin/channels/orders/status?dry_run=true" \
+curl -s -X PATCH "http://localhost:8080/api/v2/admin/channels/orders/status?dry_run=true" \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 

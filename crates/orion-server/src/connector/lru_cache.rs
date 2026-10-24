@@ -137,6 +137,7 @@ impl<V> CacheEntry<V> {
 /// pool) without holding the lock.
 pub struct LruCache<V: Clone> {
     entries: RwLock<HashMap<CacheKey, CacheEntry<V>>>,
+    flights: std::sync::Mutex<HashMap<CacheKey, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     invalidated: AtomicU64,
     max_entries: usize,
     cache_label: &'static str,
@@ -151,6 +152,7 @@ impl<V: Clone> LruCache<V> {
     pub fn new(max_entries: usize, cache_label: &'static str) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
+            flights: std::sync::Mutex::new(HashMap::new()),
             invalidated: AtomicU64::new(0),
             max_entries,
             cache_label,
@@ -166,6 +168,7 @@ impl<V: Clone> LruCache<V> {
     ) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
+            flights: std::sync::Mutex::new(HashMap::new()),
             invalidated: AtomicU64::new(0),
             max_entries,
             cache_label,
@@ -233,24 +236,69 @@ impl<V: Clone> LruCache<V> {
         Fut: std::future::Future<Output = Result<V, E>>,
     {
         // Fast path: read lock with zero-allocation borrowed lookup
+        {
+            let entries = self.entries.read().await;
+            if let Some(entry) = entries.get(&key as &dyn CacheKeyLookup) {
+                entry.touch();
+                return Ok(entry.value.clone());
+            }
+        }
+
+        // TD-08: Per-effective-key single-flight creation with bounded bookkeeping.
+        // Concurrent callers for the same `(name, config_digest)` coalesce behind
+        // one flight mutex while unrelated connectors proceed independently.
+        let owned_key = key.into_owned();
+        let flight = {
+            let mut flights = self.flights.lock().expect("flights lock");
+            flights
+                .entry(owned_key.clone())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        struct FlightCleanup<'a, V: Clone> {
+            cache: &'a LruCache<V>,
+            key: CacheKey,
+            flight: std::sync::Arc<tokio::sync::Mutex<()>>,
+        }
+        impl<V: Clone> Drop for FlightCleanup<'_, V> {
+            fn drop(&mut self) {
+                if let Ok(mut flights) = self.cache.flights.lock()
+                    && let Some(cur) = flights.get(&self.key)
+                    && std::sync::Arc::ptr_eq(cur, &self.flight)
+                    && std::sync::Arc::strong_count(&self.flight) <= 2
+                {
+                    flights.remove(&self.key);
+                }
+            }
+        }
+        let _cleanup = FlightCleanup {
+            cache: self,
+            key: owned_key.clone(),
+            flight,
+        };
+        let _flight_guard = _cleanup.flight.lock().await;
+
+        // Re-check under the read lock in case an earlier holder of this flight
+        // already created and inserted the entry.
         let generation = {
             let entries = self.entries.read().await;
             if let Some(entry) = entries.get(&key as &dyn CacheKeyLookup) {
                 entry.touch();
                 return Ok(entry.value.clone());
             }
-            self.invalidated.load(Ordering::Relaxed)
+            self.invalidated.load(Ordering::Acquire)
         };
 
         // Create outside the write lock
         let value = create_fn().await?;
 
-        // Insert under write lock; if another task raced, use theirs
+        // Insert under write lock; if another task raced across an eviction
+        // boundary, use theirs and dispose ours.
         let mut entries = self.entries.write().await;
         // Eviction also invalidates creations that have not inserted yet.
         // The caller can finish using its value, but it must not refill the
         // cache after a credential rotation or explicit invalidation.
-        if self.invalidated.load(Ordering::Relaxed) != generation {
+        if self.invalidated.load(Ordering::Acquire) != generation {
             return Ok(value);
         }
         if let Some(existing) = entries.get(&key as &dyn CacheKeyLookup) {
@@ -280,7 +328,7 @@ impl<V: Clone> LruCache<V> {
             }
         }
 
-        entries.insert(key.into_owned(), CacheEntry::new(value.clone()));
+        entries.insert(owned_key, CacheEntry::new(value.clone()));
         Ok(value)
     }
 
@@ -289,7 +337,10 @@ impl<V: Clone> LruCache<V> {
     pub async fn evict(&self, key: &str) {
         let removed = {
             let mut entries = self.entries.write().await;
-            self.invalidated.fetch_add(1, Ordering::Relaxed);
+            self.invalidated.fetch_add(1, Ordering::Release);
+            if let Ok(mut flights) = self.flights.lock() {
+                flights.retain(|k, _| k.name != key);
+            }
             let keys: Vec<_> = entries.keys().filter(|k| k.name == key).cloned().collect();
             keys.into_iter()
                 .filter_map(|k| entries.remove(&k))
@@ -307,7 +358,10 @@ impl<V: Clone> LruCache<V> {
     pub async fn evict_all(&self) {
         let drained: Vec<V> = {
             let mut entries = self.entries.write().await;
-            self.invalidated.fetch_add(1, Ordering::Relaxed);
+            self.invalidated.fetch_add(1, Ordering::Release);
+            if let Ok(mut flights) = self.flights.lock() {
+                flights.clear();
+            }
             entries.drain().map(|(_, e)| e.value).collect()
         };
         for value in drained {
@@ -449,43 +503,54 @@ mod tests {
         assert_eq!(closed.load(AtomicOrdering::SeqCst), 4);
     }
 
-    /// F17, insert-race branch: the loser's freshly created value never
-    /// enters the cache, so it too must reach the evict handler — it is a
-    /// fully connected pool.
+    /// TD-08: Concurrent callers for the same key coalesce into a single
+    /// creation, so no duplicate pool is opened or disposed on a cold-start burst.
     #[tokio::test]
-    async fn evict_handler_fires_for_race_losing_value() {
+    async fn single_flight_coalesces_concurrent_misses_and_cleans_up_flights() {
+        let created = Arc::new(AtomicUsize::new(0));
         let closed = Arc::new(AtomicUsize::new(0));
         let closed_ref = closed.clone();
         let cache: Arc<LruCache<u32>> =
             Arc::new(LruCache::with_evict_handler(4, "test", move |_v| {
                 closed_ref.fetch_add(1, AtomicOrdering::SeqCst);
             }));
-        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let start_barrier = Arc::new(tokio::sync::Barrier::new(4));
 
         let mut handles = Vec::new();
-        for v in [1u32, 2u32] {
+        for v in [1u32, 2, 3, 4] {
             let cache = cache.clone();
-            let barrier = barrier.clone();
+            let barrier = start_barrier.clone();
+            let created = created.clone();
             handles.push(tokio::spawn(async move {
+                barrier.wait().await;
                 let val: Result<u32, ()> = cache
                     .get_or_create("key", || async move {
-                        barrier.wait().await;
+                        created.fetch_add(1, AtomicOrdering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
                         Ok(v)
                     })
                     .await;
                 val.expect("test")
             }));
         }
-        let (a, b) = (
-            handles.remove(0).await.expect("test"),
-            handles.remove(0).await.expect("test"),
-        );
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.expect("test"));
+        }
 
-        assert_eq!(a, b, "both callers must see the winner's value");
+        assert!(
+            results.windows(2).all(|w| w[0] == w[1]),
+            "all callers must share the single created value"
+        );
         assert_eq!(
-            closed.load(AtomicOrdering::SeqCst),
+            created.load(AtomicOrdering::SeqCst),
             1,
-            "the race loser's value must be disposed, not dropped"
+            "single-flight must run creator once for a concurrent burst"
+        );
+        assert_eq!(closed.load(AtomicOrdering::SeqCst), 0);
+        assert!(
+            cache.flights.lock().expect("flights").is_empty(),
+            "idle flight mutexes must be reclaimed after completion"
         );
     }
 
@@ -648,19 +713,31 @@ mod tests {
 
     #[tokio::test]
     async fn test_race_uses_existing() {
-        // Simulate a race: two callers try to create the same key.
-        // The second caller should find the first's value already inserted.
+        // Simulate a race: two callers try to create the same key concurrently.
+        // Single-flight coalescing ensures only one creator runs and both see the same value;
+        // if the first creation fails, a subsequent retry still succeeds.
         let cache = Arc::new(LruCache::new(4, "test"));
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let creations = Arc::new(AtomicUsize::new(0));
+
+        // First verify failed creation allows retry and cleans up flight entry:
+        let err_res: Result<String, &str> = cache
+            .get_or_create("key1", || async { Err("transient failure") })
+            .await;
+        assert_eq!(err_res, Err("transient failure"));
+        assert!(cache.flights.lock().expect("flights").is_empty());
 
         let cache1 = cache.clone();
         let barrier1 = barrier.clone();
+        let creations1 = creations.clone();
         let h1 = tokio::spawn(async move {
+            barrier1.wait().await;
             let val: Result<String, String> = cache1
                 .get_or_create("key1", || {
-                    let barrier1 = barrier1.clone();
+                    let creations1 = creations1.clone();
                     async move {
-                        barrier1.wait().await;
+                        creations1.fetch_add(1, AtomicOrdering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                         Ok("from_task_1".to_string())
                     }
                 })
@@ -670,12 +747,15 @@ mod tests {
 
         let cache2 = cache.clone();
         let barrier2 = barrier.clone();
+        let creations2 = creations.clone();
         let h2 = tokio::spawn(async move {
+            barrier2.wait().await;
             let val: Result<String, String> = cache2
                 .get_or_create("key1", || {
-                    let barrier2 = barrier2.clone();
+                    let creations2 = creations2.clone();
                     async move {
-                        barrier2.wait().await;
+                        creations2.fetch_add(1, AtomicOrdering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                         Ok("from_task_2".to_string())
                     }
                 })
@@ -687,7 +767,7 @@ mod tests {
         let v1 = v1.expect("test");
         let v2 = v2.expect("test");
 
-        // Both tasks should return the same value (whichever won the race)
         assert_eq!(v1, v2, "both tasks should see the same cached value");
+        assert_eq!(creations.load(AtomicOrdering::SeqCst), 1);
     }
 }

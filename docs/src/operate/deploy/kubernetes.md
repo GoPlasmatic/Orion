@@ -87,7 +87,7 @@ helm install orion oci://ghcr.io/goplasmatic/charts/orion \
 Admin requests then need the key:
 
 ```bash
-curl -H "Authorization: Bearer <key>" https://orion.example.com/api/v1/admin/engine/status
+curl -H "Authorization: Bearer <key>" https://orion.example.com/api/v2/admin/engine/status
 ```
 
 TLS terminates at the Ingress in this setup. The Ingress routes only the main HTTP port; the metrics listener is deliberately not exposed.

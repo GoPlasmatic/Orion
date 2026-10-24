@@ -134,8 +134,33 @@ async fn run_dlq_retry(
                     }
                 };
 
-                let metadata: serde_json::Value =
+                let mut metadata: serde_json::Value =
                     serde_json::from_str(&entry.metadata_json).unwrap_or_default();
+                let next_attempt = entry.retry_count + 1;
+                // Stamp stable DLQ retry lineage and idempotency identity into
+                // metadata so downstream handlers and at-least-once replays
+                // after a crash/lease expiry share a deterministic key (`TD-05`).
+                if !metadata.is_object() {
+                    metadata = serde_json::Value::Object(serde_json::Map::new());
+                }
+                if let Some(meta_obj) = metadata.as_object_mut() {
+                    meta_obj.insert(
+                        "_orion_dlq_id".to_string(),
+                        serde_json::Value::String(entry.id.clone()),
+                    );
+                    meta_obj.insert(
+                        "_orion_dlq_origin_trace_id".to_string(),
+                        serde_json::Value::String(entry.trace_id.clone()),
+                    );
+                    meta_obj.insert(
+                        "_orion_dlq_attempt".to_string(),
+                        serde_json::Value::Number(next_attempt.into()),
+                    );
+                    meta_obj.insert(
+                        "_orion_idempotency_key".to_string(),
+                        serde_json::Value::String(format!("dlq:{}:{}", entry.id, next_attempt)),
+                    );
+                }
 
                 // Create a new pending trace for the retry. DLQ rows only
                 // carry the channel *name*; resolve the ID from the live
@@ -171,10 +196,13 @@ async fn run_dlq_retry(
                     }
                 };
 
-                // Submit to the trace queue. The row is deleted below once the
-                // submit succeeds, so the attempt this resubmission represents
-                // travels with the message — a repeat failure re-enters the
-                // DLQ at `retry_count + 1` rather than 0 (Q3).
+                // Submit to the trace queue. Under TD-05, the DLQ row is NOT
+                // deleted at enqueue time — it stays under its `claim_pending`
+                // lease while the worker executes the retry and is settled
+                // (`remove`, `record_retry`, or `mark_exhausted`) only after
+                // execution finishes. If the node crashes after enqueue and
+                // before settlement, the claim lease expires and the entry is
+                // durably re-claimed.
                 let submit_result = trace_queue
                     .submit_dlq_retry(
                         QueueMessage {
@@ -186,28 +214,21 @@ async fn run_dlq_retry(
                             profile_requested: false,
                             backpressure_permit: None,
                         },
-                        entry.retry_count + 1,
+                        entry.id.clone(),
+                        next_attempt,
+                        entry.max_retries,
                     )
                     .await;
 
                 match submit_result {
                     Ok(()) => {
-                        // Successfully re-submitted — remove from DLQ
                         metrics::record_trace_dlq_retry("retried");
-                        if let Err(e) = dlq_repo.remove(&entry.id).await {
-                            tracing::error!(
-                                dlq_id = %entry.id,
-                                error = %e,
-                                "DLQ retry: failed to remove entry after successful resubmit"
-                            );
-                        } else {
-                            tracing::info!(
-                                dlq_id = %entry.id,
-                                retry = entry.retry_count + 1,
-                                new_trace_id = %new_trace.id,
-                                "DLQ retry: trace re-submitted successfully"
-                            );
-                        }
+                        tracing::info!(
+                            dlq_id = %entry.id,
+                            retry = next_attempt,
+                            new_trace_id = %new_trace.id,
+                            "DLQ retry: trace handed off to worker queue under lease"
+                        );
                     }
                     Err(e) => {
                         // Queue is full or closed — bump retry count with backoff
@@ -570,8 +591,28 @@ mod tests {
         // Advance past the second tick (actual poll)
         advance_and_yield(Duration::from_secs(1)).await;
 
-        // Drain the submitted message to unblock the sender
-        let _ = rx.try_recv();
+        // Receive the submitted message: under TD-05, the DLQ row must NOT be
+        // removed merely because enqueue succeeded (so a crash before worker
+        // execution does not lose the durable retry record).
+        let item = rx.try_recv().expect("retry item should be enqueued");
+        assert_eq!(item.dlq_entry_id.as_deref(), Some("e1"));
+        assert_eq!(item.dlq_retry_count, 1);
+        assert_eq!(item.dlq_max_retries, Some(5));
+        assert_eq!(item.msg.metadata["_orion_dlq_id"], "e1");
+        assert_eq!(item.msg.metadata["_orion_dlq_attempt"], 1);
+        assert_eq!(item.msg.metadata["_orion_idempotency_key"], "dlq:e1:1");
+        assert!(
+            dlq_repo.state.lock().expect("test").removed_ids.is_empty(),
+            "DLQ entry must remain leased until worker execution settles it"
+        );
+
+        // Now simulate the worker completing execution and settling the DLQ row.
+        let dlq_repo_trait: Option<Arc<dyn TraceDlqRepository>> = Some(dlq_repo.clone());
+        crate::queue::processing::settle_dlq_on_success(
+            &dlq_repo_trait,
+            item.dlq_entry_id.as_deref(),
+        )
+        .await;
         advance_and_yield(Duration::from_millis(100)).await;
 
         tasks.shutdown(Duration::from_secs(5)).await;
@@ -579,7 +620,7 @@ mod tests {
         let state = dlq_repo.state.lock().expect("test");
         assert!(
             state.removed_ids.contains(&"e1".to_string()),
-            "entry should be removed after successful retry, removed: {:?}",
+            "entry should be removed after post-execution settlement, removed: {:?}",
             state.removed_ids
         );
     }

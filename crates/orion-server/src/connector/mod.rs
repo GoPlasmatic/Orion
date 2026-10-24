@@ -26,7 +26,7 @@ pub use config::{
     VALID_HTTP_METHODS, VariantParse, is_mongo_url,
 };
 pub use kind::{ConnectorKind, ConnectorTarget, DataBackend, PoolSlot};
-pub(crate) use masking::MASK;
+pub(crate) use masking::{MASK, is_secret_key};
 pub use masking::{
     find_masked_value, mask_channel_config, mask_connector, mask_secrets, redact_url_secrets,
     redact_url_secrets_or_raw, unmask_channel_config, unmask_config,

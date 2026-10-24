@@ -8,12 +8,12 @@ Invalidating a channel response-cache namespace by hand.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/cache/namespaces/{namespace}/invalidate` | Bump the namespace's version in every response-cache store. Every channel whose [`cache.namespaces`](../channel-config/cache.md#invalidation) lists it misses on its next request |
+| POST | `/api/v2/admin/cache/namespaces/{namespace}/invalidate` | Bump the namespace's version in every response-cache store. Every channel whose [`cache.namespaces`](../channel-config/cache.md#invalidation) lists it misses on its next request |
 
 It is the operator's form of the [`cache_invalidate`](../functions/cache_invalidate.md) function. Use it for a change no workflow made, such as a board flipped by hand or a row fixed in the database.
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/admin/cache/namespaces/ladder/invalidate \
+curl -X POST http://localhost:8080/api/v2/admin/cache/namespaces/ladder/invalidate \
   -H "x-api-key: $ORION_API_KEY"
 ```
 

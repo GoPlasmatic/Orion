@@ -457,6 +457,7 @@ mod tests {
             default_limit: 10,
             max_limit: 50,
             max_skip: 100,
+            ..QueryConfig::default()
         }
     }
 

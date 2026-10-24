@@ -15,7 +15,7 @@ You need a server on `http://localhost:8080` and a reachable external system to 
 Post the definition. It is live at once. Connectors have no draft step and no activation, the registry reloads on every change, and an update replaces the stored config rather than versioning it:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/connectors \
+curl -s -X POST http://localhost:8080/api/v2/admin/connectors \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "orders-db",
@@ -112,14 +112,14 @@ Use the portable dialect by default. Reach for raw SQL only when the dialect can
 Test the connector from the API:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/connectors/orders-db/test
+curl -s -X POST http://localhost:8080/api/v2/admin/connectors/orders-db/test
 ```
 
 For a `db` or `cache` connector this opens a real connection. For `http` it issues a real GET with real credentials, which is the point: a wrong bearer token is invisible until traffic hits it. A `401` or `403` is reported as *not* reachable. Before the server is running at all, `orion-server test-connectivity` probes the configured database and, when enabled, Kafka.
 
 ## Keep it healthy
 
-Each connector has its own circuit breaker and, for HTTP, its own retry policy. Turn breakers on globally with `engine.circuit_breaker.enabled = true`; they are off by default. Inspect and reset them at `/api/v1/admin/connectors/circuit-breakers`. See [Timeouts, retries and circuit breakers](../../operate/run/failure-handling.md).
+Each connector has its own circuit breaker and, for HTTP, its own retry policy. Turn breakers on globally with `engine.circuit_breaker.enabled = true`; they are off by default. Inspect and reset them at `/api/v2/admin/connectors/circuit-breakers`. See [Timeouts, retries and circuit breakers](../../operate/run/failure-handling.md).
 
 ## Next steps
 

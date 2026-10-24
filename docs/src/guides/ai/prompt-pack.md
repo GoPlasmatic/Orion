@@ -11,7 +11,7 @@ The [agent skill](./agent-skill.md) is the richest way to give an AI assistant c
 You need an LLM you can give a system prompt or a long first message to, and an Orion instance it can reach over HTTP. Adjust the base URL in the block if the instance is not local.
 
 > [!NOTE]
-> The block is hand-maintained and matches Orion 1.8.0. It is deliberately short: a summary an LLM can hold, not a specification. It tells the model to read `GET /api/v1/admin/functions` for exact input schemas rather than trusting the list it carries. If your instance is newer than this page, that endpoint is the authority; this text is the orientation.
+> The block is hand-maintained and matches Orion 1.8.0. It is deliberately short: a summary an LLM can hold, not a specification. It tells the model to read `GET /api/v2/admin/functions` for exact input schemas rather than trusting the list it carries. If your instance is newer than this page, that endpoint is the authority; this text is the orientation.
 
 ## The block
 
@@ -53,7 +53,7 @@ and map tasks write via paths like "data.order.flagged". The final data
 context is returned to the caller.
 
 Built-in task functions (get exact input schemas from
-GET /api/v1/admin/functions, always check before using one):
+GET /api/v2/admin/functions, always check before using one):
 parse_json, parse_xml, filter, map, validation, http_call, channel_call,
 data_query, data_write (portable, backend-neutral DB read/write, preferred),
 db_read, db_write (raw SQL escape hatch), cache_read, cache_write,
@@ -90,14 +90,14 @@ always async.
 
 1. Create returns a DRAFT. Nothing serves traffic until activated.
 2. Test drafts before activating:
-   POST /api/v1/admin/workflows/{id}/test  with body { "data": { ... } }
+   POST /api/v2/admin/workflows/{id}/test  with body { "data": { ... } }
    → returns an execution trace (which tasks ran / were skipped).
-3. Activate: PATCH /api/v1/admin/workflows/{id}/status  {"status":"active"}
+3. Activate: PATCH /api/v2/admin/workflows/{id}/status  {"status":"active"}
    (same for channels). The engine hot-reloads; no restart.
 4. Active versions are IMMUTABLE. To change one, create a new version and
    activate it:
-   POST /api/v1/admin/workflows/{id}/versions   cut a fresh draft
-   PUT  /api/v1/admin/workflows/{id}            put the new content in it
+   POST /api/v2/admin/workflows/{id}/versions   cut a fresh draft
+   PUT  /api/v2/admin/workflows/{id}            put the new content in it
    then activate as above.
 5. Rollback is rolling FORWARD to the old content. Nothing reactivates an
    archived version in place; status addresses a workflow id, not a version.
@@ -106,17 +106,17 @@ always async.
 
 ## Core API calls
 
-POST  /api/v1/admin/workflows                      create workflow (draft)
-POST  /api/v1/admin/workflows/{id}/test            dry-run with sample data
-PATCH /api/v1/admin/workflows/{id}/status          {"status":"active"}
-POST  /api/v1/admin/channels                       create channel (draft)
-PATCH /api/v1/admin/channels/{id}/status           {"status":"active"}
-POST  /api/v1/admin/connectors                     create connector (live immediately)
-GET   /api/v1/admin/functions                      function input schemas
-GET   /api/v1/openapi.json                         full OpenAPI 3.1 spec
-POST  /api/v1/data/{route}                         call a deployed service
-POST  /api/v1/data/{route}/async                   async: returns trace_id
-GET   /api/v1/admin/traces/{trace_id}               poll async result
+POST  /api/v2/admin/workflows                      create workflow (draft)
+POST  /api/v2/admin/workflows/{id}/test            dry-run with sample data
+PATCH /api/v2/admin/workflows/{id}/status          {"status":"active"}
+POST  /api/v2/admin/channels                       create channel (draft)
+PATCH /api/v2/admin/channels/{id}/status           {"status":"active"}
+POST  /api/v2/admin/connectors                     create connector (live immediately)
+GET   /api/v2/admin/functions                      function input schemas
+GET   /api/v2/openapi.json                         full OpenAPI 3.1 spec
+POST  /api/v2/data/{route}                         call a deployed service
+POST  /api/v2/data/{route}/async                   async: returns trace_id
+GET   /api/v2/admin/traces/{trace_id}               poll async result
 
 ## Working style
 
@@ -136,7 +136,7 @@ GET   /api/v1/admin/traces/{trace_id}               poll async result
 
 ## Verify
 
-Ask the assistant to create a draft workflow and test it before activating anything. A model that has read the block posts to `/api/v1/admin/workflows`, then to `/test` with a `{ "data": … }` body. It reads the trace back before it touches `/status`. A worked session using exactly these calls is [Build your first service](../../get-started/tutorials/first-service.md).
+Ask the assistant to create a draft workflow and test it before activating anything. A model that has read the block posts to `/api/v2/admin/workflows`, then to `/test` with a `{ "data": … }` body. It reads the trace back before it touches `/status`. A worked session using exactly these calls is [Build your first service](../../get-started/tutorials/first-service.md).
 
 > [!TIP]
 > The docs site also serves [`llms.txt`](https://docs.goplasmatic.io/llms.txt), a machine-readable index, and [`llms-full.txt`](https://docs.goplasmatic.io/llms-full.txt), the whole book as one file. Point your tools at those for full documentation context.

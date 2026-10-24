@@ -83,6 +83,19 @@ pub struct EngineConfig {
     /// which is what one call's heaviest evaluation charged and therefore
     /// what this ceiling has to clear.
     pub ops_budget: u64,
+    /// Cumulative task-dispatch ceiling for one root run (including loops,
+    /// fan-out branches, and nested `channel_call` invocations) (`TD-03`).
+    /// `0` (default) disables the ceiling.
+    pub max_run_tasks: u64,
+    /// Cumulative expression-operation ceiling across one root run (`TD-03`).
+    /// `0` (default) disables the ceiling.
+    pub max_run_expr_ops: u64,
+    /// Cumulative custom host-unit ceiling across one root run (`TD-03`).
+    /// `0` (default) disables the ceiling.
+    pub max_run_custom_units: u64,
+    /// Maximum concurrent in-flight task dispatches within one root run (`TD-03`).
+    /// `0` (default) disables the ceiling.
+    pub max_run_in_flight: u64,
 }
 
 impl Default for EngineConfig {
@@ -100,11 +113,25 @@ impl Default for EngineConfig {
             rollout_sticky_header: String::new(),
             fail_on_connector_load_error: false,
             ops_budget: 0,
+            max_run_tasks: 0,
+            max_run_expr_ops: 0,
+            max_run_custom_units: 0,
+            max_run_in_flight: 0,
         }
     }
 }
 
 impl EngineConfig {
+    /// Convert configured `0`-or-positive run budget fields into [`crate::engine::budget::RunBudgetLimits`].
+    pub fn run_budget_limits(&self) -> crate::engine::budget::RunBudgetLimits {
+        crate::engine::budget::RunBudgetLimits {
+            max_tasks: (self.max_run_tasks > 0).then_some(self.max_run_tasks),
+            max_expr_ops: (self.max_run_expr_ops > 0).then_some(self.max_run_expr_ops),
+            max_custom_units: (self.max_run_custom_units > 0).then_some(self.max_run_custom_units),
+            max_in_flight: (self.max_run_in_flight > 0).then_some(self.max_run_in_flight),
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
         require_nonzero(
             u64::from(self.max_channel_call_depth),

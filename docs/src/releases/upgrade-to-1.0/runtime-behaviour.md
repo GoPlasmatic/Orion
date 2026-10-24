@@ -153,7 +153,7 @@ first-occurrence or state-based alert.
 
 ### Workflow export reads in bounded pages
 
-`GET /api/v1/admin/workflows/export` still returns every matching workflow in one response; it now reads the database in bounded 500-row pages instead of one unbounded query.
+`GET /api/v2/admin/workflows/export` still returns every matching workflow in one response; it now reads the database in bounded 500-row pages instead of one unbounded query.
 
 **One caveat if you use export as a backup:** it is no longer a point-in-time
 snapshot. The pages are independent queries, so a workflow created, deleted or renamed during an export can be missed or appear twice in a single response. Quiesce workflow mutations during export, or re-export until two consecutive responses match, when you need a consistent copy.
@@ -186,7 +186,7 @@ Two new per-channel settings arrive: `rate_limit.on_backend_error` and `deduplic
 
 - **`storage.backup_retention_count`**: unset by default, which keeps every
   backup (the pre-1.0 behaviour). Set it to bound SQLite backups: after each
-  successful `POST /api/v1/admin/backups` the oldest `orion_backup_*.db` files
+  successful `POST /api/v2/admin/backups` the oldest `orion_backup_*.db` files
   are pruned so at most N remain. `0` is refused at startup. Env override
   `ORION_STORAGE__BACKUP_RETENTION_COUNT`; set it to an empty string to clear.
 - **`orion_job_last_success_timestamp_seconds{job}`**: a gauge for the

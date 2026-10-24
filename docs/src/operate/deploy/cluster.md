@@ -137,7 +137,7 @@ Both packaged deployments wire this in already. The Helm chart runs migrations a
 Confirm that a change made through one node reaches the others:
 
 ```bash
-curl -s -X POST http://node-a:8080/api/v1/admin/engine/reload
+curl -s -X POST http://node-a:8080/api/v2/admin/engine/reload
 sleep 3
 curl -s http://node-b:8080/health | jq '{status, config_propagation: .components.config_propagation}'
 ```
@@ -146,7 +146,7 @@ curl -s http://node-b:8080/health | jq '{status, config_propagation: .components
 
 ## Backups change shape in a cluster
 
-`POST /api/v1/admin/backups` returns `400` in cluster mode. The file would land on one arbitrary replica, and cluster storage is PostgreSQL or MySQL, which the SQLite backup mechanism cannot copy anyway. Use your database's own tooling: automated snapshots plus point-in-time recovery on a managed service, or `pg_dump` and `mysqldump` self-managed. Redis needs no backup; everything in it is reconstructible ephemeral state. See [Back up and restore](../maintain/backup-restore.md).
+`POST /api/v2/admin/backups` returns `400` in cluster mode. The file would land on one arbitrary replica, and cluster storage is PostgreSQL or MySQL, which the SQLite backup mechanism cannot copy anyway. Use your database's own tooling: automated snapshots plus point-in-time recovery on a managed service, or `pg_dump` and `mysqldump` self-managed. Redis needs no backup; everything in it is reconstructible ephemeral state. See [Back up and restore](../maintain/backup-restore.md).
 
 ## Shard channels across pools
 

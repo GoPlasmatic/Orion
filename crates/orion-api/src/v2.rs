@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`, `V2-07.1`).
+/// Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`, `V2-07.1`, `TD-31`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RuntimeCapabilitiesResponse {
@@ -23,8 +23,16 @@ pub struct RuntimeCapabilitiesResponse {
     pub admission_policy_id: String,
     #[serde(default)]
     pub community_boundary_compliant: bool,
-    #[serde(default)]
+    #[serde(default, alias = "channel_drivers")]
     pub registered_channel_drivers: Vec<String>,
+    #[serde(default)]
+    pub schema_profiles: Vec<String>,
+    #[serde(default)]
+    pub wasm_worlds: Vec<String>,
+    #[serde(default, alias = "wasm_import_profiles")]
+    pub supported_wasm_profiles: Vec<String>,
+    #[serde(default)]
+    pub provider_backends: Vec<Value>,
     #[serde(default)]
     pub registered_rust_providers: Vec<String>,
     #[serde(default)]
@@ -32,7 +40,11 @@ pub struct RuntimeCapabilitiesResponse {
     #[serde(default)]
     pub registered_wasm_providers: Vec<String>,
     #[serde(default)]
-    pub supported_wasm_profiles: Vec<String>,
+    pub deployment_head: Value,
+    #[serde(default)]
+    pub reconciler: Value,
+    #[serde(default)]
+    pub native_scheduler: Value,
     #[serde(default)]
     pub active_deployment_revision: u64,
     #[serde(default)]
@@ -49,7 +61,7 @@ pub struct ConnectorPackageSummary {
     pub provider_id: String,
     #[serde(default)]
     pub version: String,
-    #[serde(default)]
+    #[serde(default, alias = "package_digest")]
     pub digest: String,
     #[serde(default)]
     pub implementation: String,
@@ -72,16 +84,20 @@ pub struct ConnectionRevisionResponse {
     #[serde(default)]
     pub revision: u64,
     #[serde(default)]
-    pub provider_ref: Value,
+    pub provider_digest: String,
     #[serde(default)]
+    pub provider_ref: Value,
+    #[serde(default, alias = "public_config")]
     pub config: Value,
+    #[serde(default)]
+    pub secret_locator: Option<String>,
     #[serde(default)]
     pub secret_locators: Value,
     #[serde(default)]
     pub config_fingerprint: String,
 }
 
-/// Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`, `V2-07.3`).
+/// Result of an explicit connection health probe (`POST /api/v2/admin/connections/{id}/probe`, `V2-07.3`, `TD-31`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ConnectionProbeResponse {
@@ -90,30 +106,34 @@ pub struct ConnectionProbeResponse {
     #[serde(default)]
     pub revision: u64,
     #[serde(default)]
+    pub driver_id: String,
+    #[serde(default)]
+    pub healthy: bool,
+    #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub latency_ms: u64,
-    #[serde(default)]
+    #[serde(default, alias = "error")]
     pub details: Value,
 }
 
-/// Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`, `V2-07.4`).
+/// Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`, `V2-07.4`, `TD-31`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DeploymentPlanResponse {
     #[serde(default)]
     pub base_revision: u64,
-    #[serde(default)]
+    #[serde(default, alias = "candidate_digest")]
     pub reviewed_manifest_digest: String,
     #[serde(default)]
     pub request_hash: String,
     #[serde(default)]
-    pub added_entities: Vec<String>,
+    pub added_entities: Vec<Value>,
     #[serde(default)]
     pub updated_entities: Vec<String>,
     #[serde(default)]
-    pub removed_entities: Vec<String>,
-    #[serde(default)]
+    pub removed_entities: Vec<Value>,
+    #[serde(default, alias = "external_effect_warnings")]
     pub findings: Vec<Value>,
 }
 
@@ -171,18 +191,22 @@ pub struct ConvergenceStatusResponse {
     pub degraded_nodes: Vec<String>,
 }
 
-/// Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`, `V2-07.5`).
+/// Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`, `V2-07.5`, `TD-31`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct MigrationReportResponse {
     #[serde(default)]
     pub edition: String,
-    #[serde(default)]
+    #[serde(default, alias = "compatible")]
     pub can_cutover: bool,
     #[serde(default)]
     pub converted_connections: usize,
     #[serde(default)]
+    pub resolved_connectors: Vec<Value>,
+    #[serde(default, alias = "findings")]
     pub blocking_findings: Vec<Value>,
+    #[serde(default)]
+    pub bootstrap_manifest: Option<Value>,
     #[serde(default)]
     pub bootstrap_manifest_digest: Option<String>,
 }

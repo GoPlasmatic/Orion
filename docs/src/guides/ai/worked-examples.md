@@ -47,7 +47,7 @@ discount, premium from 100 to 500 with 5%, standard below 100 with none.
 ```bash
 ./examples/deploy.sh order-classification
 
-curl -s -X POST http://localhost:8080/api/v1/data/order-tiers \
+curl -s -X POST http://localhost:8080/api/v2/data/order-tiers \
   -H 'Content-Type: application/json' \
   -d '{ "data": { "amount": 750, "product": "Diamond Ring" } }'
 ```
@@ -78,7 +78,7 @@ warning.
 ```bash
 ./examples/deploy.sh iot-sensor-alert
 
-curl -s -X POST http://localhost:8080/api/v1/data/sensors \
+curl -s -X POST http://localhost:8080/api/v2/data/sensors \
   -H 'Content-Type: application/json' \
   -d '{ "data": { "sensor_id": "SENSOR-42", "temperature": 95 } }'
 ```
@@ -108,7 +108,7 @@ fields.
 ```bash
 ./examples/deploy.sh webhook-transform
 
-curl -s -X POST http://localhost:8080/api/v1/data/webhooks \
+curl -s -X POST http://localhost:8080/api/v2/data/webhooks \
   -H 'Content-Type: application/json' \
   --data @examples/packages/webhook-transform/request.json
 ```
@@ -143,7 +143,7 @@ sends SMS only for high and critical.
 ```bash
 ./examples/deploy.sh notification-routing
 
-curl -s -X POST http://localhost:8080/api/v1/data/notifications \
+curl -s -X POST http://localhost:8080/api/v2/data/notifications \
   -H 'Content-Type: application/json' \
   -d '{ "data": { "message": "Disk usage at 92%", "severity": "high" } }'
 ```

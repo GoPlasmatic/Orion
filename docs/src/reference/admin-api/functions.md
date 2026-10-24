@@ -8,7 +8,7 @@ The endpoint that tells a client which task functions exist, and what each one a
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/functions` | The catalogue of every task function a workflow may name, with the input-field schema of each one that declares one (category, type, required flag, description). `source` is `orion` for a handler Orion input-validates at create time and `engine` for a dataflow-rs built-in, which carries no `input_fields`. Used by CLI tools and IDEs for autocompletion and by workflow validators to give field-pathed errors |
+| GET | `/api/v2/admin/functions` | The catalogue of every task function a workflow may name, with the input-field schema of each one that declares one (category, type, required flag, description). `source` is `orion` for a handler Orion input-validates at create time and `engine` for a dataflow-rs built-in, which carries no `input_fields`. Used by CLI tools and IDEs for autocompletion and by workflow validators to give field-pathed errors |
 
 ## Related
 

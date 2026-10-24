@@ -58,8 +58,8 @@ Once on, failures against a connector trip its breaker. Calls then fail fast wit
 Inspect and reset them over the admin API:
 
 ```bash
-curl -s http://localhost:8080/api/v1/admin/connectors/circuit-breakers
-curl -s -X POST http://localhost:8080/api/v1/admin/connectors/circuit-breakers/{key}
+curl -s http://localhost:8080/api/v2/admin/connectors/circuit-breakers
+curl -s -X POST http://localhost:8080/api/v2/admin/connectors/circuit-breakers/{key}
 ```
 
 In cluster mode breakers trip per node. Each replica learns independently that a backend is down, while a reset fans out to every node over the config epoch. That asymmetry is deliberate. Tripping is an observation, and each node observes for itself; resetting is a decision, and you make it once.
@@ -121,7 +121,7 @@ Prove the drain settings on your own hardware:
 deploy/ha/rolling-drill.sh
 ```
 
-It drives traffic through a load balancer while one node is `SIGTERM`ed, and asserts every response was a 2xx. For the breakers, `GET /api/v1/admin/connectors/circuit-breakers` lists each key with its state once `engine.circuit_breaker.enabled` is on.
+It drives traffic through a load balancer while one node is `SIGTERM`ed, and asserts every response was a 2xx. For the breakers, `GET /api/v2/admin/connectors/circuit-breakers` lists each key with its state once `engine.circuit_breaker.enabled` is on.
 
 ## Next steps
 

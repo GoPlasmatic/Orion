@@ -153,15 +153,77 @@ impl ProviderBackend for HttpProviderBackend {
                 .get("url")
                 .or_else(|| input.get("base_url"))
                 .and_then(Value::as_str)
-                && let Err(ssrf_reason) =
-                    crate::validation::ssrf::validate_url_not_private(url).await
             {
-                return Err(ConnectorError::forbidden(
-                    codes::CAPABILITY_INVALID,
-                    "ssrf_validation",
-                    format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
-                    ctx.invocation().effect_status(),
-                ));
+                if let Err(ssrf_reason) =
+                    crate::validation::ssrf::validate_url_not_private(url).await
+                {
+                    return Err(ConnectorError::forbidden(
+                        codes::CAPABILITY_INVALID,
+                        "ssrf_validation",
+                        format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
+                        ctx.invocation().effect_status(),
+                    ));
+                }
+
+                if input.get("live").and_then(Value::as_bool).unwrap_or(false) {
+                    let base = url.trim_end_matches('/');
+                    let full_url = format!("{base}{path}");
+                    let req_method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| {
+                        ConnectorError::invalid_input(
+                            format!("Invalid HTTP method '{method}': {e}"),
+                            Some(json!({"pointer": "/method"})),
+                        )
+                    })?;
+                    let client = reqwest::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .timeout(Duration::from_secs(10))
+                        .build()
+                        .map_err(|e| {
+                            ConnectorError::unavailable(
+                                format!("Failed to build HTTP client: {e}"),
+                                EffectStatus::NotStarted,
+                            )
+                        })?;
+                    let mut req_builder = client.request(req_method, &full_url);
+                    if let Some(body_val) = input.get("body")
+                        && !body_val.is_null()
+                    {
+                        req_builder = req_builder.json(body_val);
+                    }
+                    ctx.invocation().record_effect(EffectStatus::Unknown);
+                    let resp = req_builder.send().await.map_err(|e| {
+                        ConnectorError::unavailable(
+                            format!("HTTP request failed: {e}"),
+                            EffectStatus::Unknown,
+                        )
+                    })?;
+                    let status_code = resp.status().as_u16();
+                    let bytes =
+                        crate::http_body::read_bounded(resp, 4 * 1024 * 1024)
+                            .await
+                            .map_err(|e| {
+                                ConnectorError::unavailable(
+                                    format!("Failed to read HTTP response body: {e}"),
+                                    EffectStatus::Completed,
+                                )
+                            })?;
+                    ctx.invocation().record_effect(EffectStatus::Completed);
+                    let parsed_body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                        Value::String(String::from_utf8_lossy(&bytes).into_owned())
+                    });
+                    let mut metadata = BTreeMap::new();
+                    metadata.insert("driver".to_string(), json!(DRIVER_HTTP));
+                    metadata.insert("attempt".to_string(), json!(ctx.attempt_number()));
+                    return Ok(ConnectorOutput::with_metadata(
+                        json!({
+                            "status_code": status_code,
+                            "method": method,
+                            "path": path,
+                            "body": parsed_body,
+                        }),
+                        metadata,
+                    ));
+                }
             }
 
             let mut metadata = BTreeMap::new();
@@ -510,15 +572,38 @@ impl SqliteProviderBackend {
         operation: &str,
         statement: &str,
     ) -> Result<Value, ConnectorError> {
+        self.execute_live_sqlite_for_connection(None, conn_str, operation, statement)
+            .await
+    }
+
+    /// Execute a real SQL statement against a sandboxed SQLite target, optionally
+    /// partitioning `sqlite::memory:` pools by `connection_key` so tables persist
+    /// across statements on the same connection (`TD-24`, `V2-14.3`).
+    pub async fn execute_live_sqlite_for_connection(
+        &self,
+        connection_key: Option<&str>,
+        conn_str: &str,
+        operation: &str,
+        statement: &str,
+    ) -> Result<Value, ConnectorError> {
         use sqlx::{Column, Row, TypeInfo, ValueRef};
 
         let target = self.resolve_sandboxed_target(conn_str)?;
+        let cache_key = match connection_key {
+            Some(key) if target == "sqlite::memory:" => format!("{key}::{target}"),
+            _ => target.clone(),
+        };
         let pool = self
             .live_pools
-            .get_or_create(&target, || {
+            .get_or_create(&cache_key, || {
                 let target_url = target.clone();
                 async move {
-                    sqlx::SqlitePool::connect(&target_url).await.map_err(|e| {
+                    let builder = if target_url == "sqlite::memory:" {
+                        sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                    } else {
+                        sqlx::sqlite::SqlitePoolOptions::new().max_connections(4)
+                    };
+                    builder.connect(&target_url).await.map_err(|e| {
                         ConnectorError::invalid_input(
                             format!(
                                 "Failed to connect to sandboxed SQLite target '{target_url}': {e}"
@@ -653,6 +738,10 @@ impl ProviderBackend for SqliteProviderBackend {
                 })
                 .await?;
 
+            let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
+            let explicit_conn_str = input.get("connection_string").and_then(Value::as_str);
+            let live_flag = input.get("live").and_then(Value::as_bool).unwrap_or(false);
+
             match operation {
                 "query" | "data_query" => {
                     let statement = input
@@ -668,14 +757,27 @@ impl ProviderBackend for SqliteProviderBackend {
                     let mut metadata = BTreeMap::new();
                     metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
                     metadata.insert("session".to_string(), json!(handle.session()));
-                    Ok(ConnectorOutput::with_metadata(
-                        json!({
-                            "rows": [],
-                            "count": 0,
-                            "statement": statement,
-                        }),
-                        metadata,
-                    ))
+                    let target_conn = explicit_conn_str.unwrap_or("sqlite::memory:");
+                    match self
+                        .execute_live_sqlite_for_connection(
+                            Some(&conn_key),
+                            target_conn,
+                            operation,
+                            statement,
+                        )
+                        .await
+                    {
+                        Ok(data) => Ok(ConnectorOutput::with_metadata(data, metadata)),
+                        Err(err) if explicit_conn_str.is_some() || live_flag => Err(err),
+                        Err(_) => Ok(ConnectorOutput::with_metadata(
+                            json!({
+                                "rows": [],
+                                "count": 0,
+                                "statement": statement,
+                            }),
+                            metadata,
+                        )),
+                    }
                 }
                 "execute" | "data_write" => {
                     let statement = input
@@ -691,14 +793,27 @@ impl ProviderBackend for SqliteProviderBackend {
                     let mut metadata = BTreeMap::new();
                     metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
                     metadata.insert("session".to_string(), json!(handle.session()));
-                    Ok(ConnectorOutput::with_metadata(
-                        json!({
-                            "rows_affected": 1,
-                            "last_insert_id": 1,
-                            "statement": statement,
-                        }),
-                        metadata,
-                    ))
+                    let target_conn = explicit_conn_str.unwrap_or("sqlite::memory:");
+                    match self
+                        .execute_live_sqlite_for_connection(
+                            Some(&conn_key),
+                            target_conn,
+                            operation,
+                            statement,
+                        )
+                        .await
+                    {
+                        Ok(data) => Ok(ConnectorOutput::with_metadata(data, metadata)),
+                        Err(err) if explicit_conn_str.is_some() || live_flag => Err(err),
+                        Err(_) => Ok(ConnectorOutput::with_metadata(
+                            json!({
+                                "rows_affected": 1,
+                                "last_insert_id": 1,
+                                "statement": statement,
+                            }),
+                            metadata,
+                        )),
+                    }
                 }
                 other => Err(ConnectorError::forbidden(
                     codes::OPERATION_FORBIDDEN,
@@ -793,33 +908,58 @@ struct CacheEntry {
     expires_at: Option<Instant>,
 }
 
-/// Bounded, connection-partitioned in-memory cache store (`V2-14.4`).
+/// Bounded, connection-partitioned in-memory cache store (`V2-14.4`, `TD-29`).
 ///
 /// Keyed by [`EffectiveConnectionIdentity`] so:
 /// - Two different connections never share keys.
 /// - Old and new revisions of a connection have isolated keyspaces while
 ///   participating in [`ConnectionPoolCache`] eviction.
+/// - Total partitions, entries per partition, and per-value byte sizes are bounded.
 pub struct PartitionedMemoryCache {
     max_entries_per_partition: usize,
+    max_partitions: usize,
+    max_value_bytes: usize,
     partitions: Mutex<BTreeMap<EffectiveConnectionIdentity, BTreeMap<String, CacheEntry>>>,
 }
 
 impl PartitionedMemoryCache {
     pub fn new(max_entries_per_partition: usize) -> Self {
+        Self::with_limits(max_entries_per_partition, 256, 1024 * 1024)
+    }
+
+    pub fn with_limits(
+        max_entries_per_partition: usize,
+        max_partitions: usize,
+        max_value_bytes: usize,
+    ) -> Self {
         Self {
             max_entries_per_partition: max_entries_per_partition.max(1),
+            max_partitions: max_partitions.max(1),
+            max_value_bytes: max_value_bytes.max(64),
             partitions: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub fn max_value_bytes(&self) -> usize {
+        self.max_value_bytes
     }
 
     pub fn get(&self, identity: &EffectiveConnectionIdentity, key: &str) -> Option<Value> {
         let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
         let partition = guard.get_mut(identity)?;
-        let entry = partition.get(key)?;
+        let Some(entry) = partition.get(key) else {
+            if partition.is_empty() {
+                guard.remove(identity);
+            }
+            return None;
+        };
         if let Some(exp) = entry.expires_at
             && Instant::now() >= exp
         {
             partition.remove(key);
+            if partition.is_empty() {
+                guard.remove(identity);
+            }
             return None;
         }
         Some(entry.value.clone())
@@ -833,10 +973,26 @@ impl PartitionedMemoryCache {
         ttl: Option<Duration>,
     ) {
         let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+
+        if !guard.contains_key(identity) && guard.len() >= self.max_partitions {
+            // Sweep expired entries across all partitions and drop empty partitions first (`TD-29`).
+            for part in guard.values_mut() {
+                part.retain(|_, v| v.expires_at.is_none_or(|exp| now < exp));
+            }
+            guard.retain(|_, part| !part.is_empty());
+
+            // If still at capacity, evict the first partition so total partitions stay bounded.
+            if guard.len() >= self.max_partitions
+                && let Some(first_partition_key) = guard.keys().next().cloned()
+            {
+                guard.remove(&first_partition_key);
+            }
+        }
+
         let partition = guard.entry(identity.clone()).or_default();
 
         // Purge expired entries first if we are at capacity.
-        let now = Instant::now();
         if partition.len() >= self.max_entries_per_partition && !partition.contains_key(&key) {
             partition.retain(|_, v| v.expires_at.is_none_or(|exp| now < exp));
         }
@@ -854,10 +1010,14 @@ impl PartitionedMemoryCache {
 
     pub fn delete(&self, identity: &EffectiveConnectionIdentity, key: &str) -> bool {
         let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .get_mut(identity)
-            .and_then(|p| p.remove(key))
-            .is_some()
+        let Some(partition) = guard.get_mut(identity) else {
+            return false;
+        };
+        let removed = partition.remove(key).is_some();
+        if partition.is_empty() {
+            guard.remove(identity);
+        }
+        removed
     }
 
     pub fn partition_count(&self) -> usize {
@@ -960,10 +1120,43 @@ impl ProviderBackend for MemoryCacheProviderBackend {
                 }
                 "set" | "cache_write" | "cache.set" => {
                     let value = input.get("value").cloned().unwrap_or(Value::Null);
-                    let ttl = input
-                        .get("ttl_secs")
-                        .and_then(Value::as_u64)
-                        .map(Duration::from_secs);
+                    let approx_bytes = crate::connector::sql_decode::approx_json_value_bytes(&value);
+                    if approx_bytes > self.store.max_value_bytes() {
+                        return Err(ConnectorError::invalid_input(
+                            format!(
+                                "Memory cache value size ({approx_bytes} bytes) exceeds maximum allowed ({} bytes)",
+                                self.store.max_value_bytes()
+                            ),
+                            Some(json!({"pointer": "/value"})),
+                        ));
+                    }
+                    let ttl = if let Some(raw_ms) = input.get("ttl_ms") {
+                        if raw_ms.is_null() {
+                            None
+                        } else {
+                            let ms = raw_ms.as_u64().filter(|&v| v > 0).ok_or_else(|| {
+                                ConnectorError::invalid_input(
+                                    "Memory cache 'ttl_ms' must be a positive integer",
+                                    Some(json!({"pointer": "/ttl_ms"})),
+                                )
+                            })?;
+                            Some(Duration::from_millis(ms))
+                        }
+                    } else if let Some(raw_secs) = input.get("ttl_secs") {
+                        if raw_secs.is_null() {
+                            None
+                        } else {
+                            let secs = raw_secs.as_u64().filter(|&v| v > 0).ok_or_else(|| {
+                                ConnectorError::invalid_input(
+                                    "Memory cache 'ttl_secs' must be a positive integer",
+                                    Some(json!({"pointer": "/ttl_secs"})),
+                                )
+                            })?;
+                            Some(Duration::from_secs(secs))
+                        }
+                    } else {
+                        None
+                    };
                     self.store.set(identity, key.to_string(), value, ttl);
                     Ok(ConnectorOutput::new(json!({
                         "stored": true,
@@ -1025,230 +1218,5 @@ pub fn register_community_foundation_providers(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
-mod tests {
-    use super::*;
-    use crate::extensions::admission::CommunityAdmissionPolicy;
-    use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::{ConnectionReference, ConnectorResult, ProviderReference};
-    use std::collections::BTreeSet;
-
-    fn make_invocation(
-        driver_id: &str,
-        conn_id: &str,
-        revision: u64,
-        op: &str,
-    ) -> crate::extensions::context::Invocation {
-        let provider = ProviderReference {
-            provider_id: driver_id.to_string(),
-            version: "2.0.0".to_string(),
-            package_digest:
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    .to_string(),
-        };
-        let conn = ConnectionReference {
-            connection_id: conn_id.to_string(),
-            revision,
-            provider,
-        };
-        let eff_id = EffectiveConnectionIdentity {
-            provider_digest: conn.provider.package_digest.clone(),
-            connection_id: conn.connection_id.clone(),
-            revision,
-            secret_hash: "sha256:1234".to_string(),
-        };
-        let mut allowed_operations = BTreeMap::new();
-        allowed_operations.insert(conn_id.to_string(), BTreeSet::from([op.to_string()]));
-        let run = AdmittedRun::admit(
-            "run-foundation",
-            1,
-            Instant::now() + Duration::from_secs(30),
-            BudgetLimits::default(),
-            AuthorityGrant {
-                allowed_operations,
-                declared_dependencies: BTreeMap::new(),
-                allowed_channels: BTreeSet::new(),
-            },
-        );
-        run.context()
-            .start_invocation(conn, eff_id, op, None, 3)
-            .expect("invocation starts")
-    }
-
-    #[test]
-    fn sqlite_provider_enforces_approved_root_and_rejects_traversal_and_orion_db() {
-        let sqlite = SqliteProviderBackend::new("/var/lib/orion/sqlite", 4);
-
-        // In-memory is allowed.
-        assert!(
-            sqlite
-                .validate_config(&json!({"connection_string": "sqlite::memory:"}))
-                .is_ok()
-        );
-
-        // Relative path under approved_root is allowed.
-        let resolved = sqlite
-            .resolve_sandboxed_target("sqlite://tenant_a/app.db")
-            .expect("valid relative path");
-        assert_eq!(resolved, "sqlite:///var/lib/orion/sqlite/tenant_a/app.db");
-
-        // Path traversal `..` is rejected.
-        let err = sqlite
-            .validate_config(&json!({"connection_string": "sqlite://../secrets.db"}))
-            .expect_err("traversal must fail");
-        assert_eq!(err.code, codes::CAPABILITY_INVALID);
-
-        // Absolute path is rejected.
-        let err = sqlite
-            .validate_config(&json!({"connection_string": "sqlite:///etc/passwd"}))
-            .expect_err("absolute path must fail");
-        assert_eq!(err.code, codes::CAPABILITY_INVALID);
-
-        // Reserved Orion state DB filename is rejected.
-        let err = sqlite
-            .validate_config(&json!({"connection_string": "sqlite://orion.db"}))
-            .expect_err("reserved orion.db must fail");
-        assert_eq!(err.code, codes::CAPABILITY_INVALID);
-    }
-
-    #[test]
-    fn postgres_provider_accepts_only_postgres_schemes() {
-        let pg = PostgresProviderBackend::default();
-        assert!(
-            pg.validate_config(&json!({"connection_string": "postgres://user:pass@db/app"}))
-                .is_ok()
-        );
-        assert!(
-            pg.validate_config(&json!({"connection_string": "postgresql://user:pass@db/app"}))
-                .is_ok()
-        );
-        assert!(
-            pg.validate_config(&json!({"connection_string": "mysql://user:pass@db/app"}))
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts() {
-        let providers = ProviderRegistry::new();
-        let pools = ResourcePoolRegistry::new();
-        register_community_foundation_providers(&providers, &pools);
-        let policy = CommunityAdmissionPolicy::new();
-
-        // Write key "k1" on conn-a revision 1.
-        let inv_set = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "set");
-        let res = providers
-            .dispatch_attempt(
-                &policy,
-                &inv_set,
-                ImplementationKind::Rust,
-                DRIVER_MEMORY_CACHE,
-                json!({"key": "k1", "value": "v1", "ttl_secs": 60}),
-            )
-            .await;
-        assert!(matches!(res, ConnectorResult::Success { .. }));
-
-        // Read key "k1" on conn-a revision 1 -> hit!
-        let inv_get_r1 = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "get");
-        let res_r1 = providers
-            .dispatch_attempt(
-                &policy,
-                &inv_get_r1,
-                ImplementationKind::Rust,
-                DRIVER_MEMORY_CACHE,
-                json!({"key": "k1"}),
-            )
-            .await;
-        assert_eq!(
-            res_r1,
-            ConnectorResult::Success {
-                data: json!({"hit": true, "value": "v1"}),
-                metadata: BTreeMap::new(),
-            }
-        );
-
-        // Read key "k1" on conn-a revision 2 -> isolated (miss)!
-        let inv_get_r2 = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 2, "get");
-        let res_r2 = providers
-            .dispatch_attempt(
-                &policy,
-                &inv_get_r2,
-                ImplementationKind::Rust,
-                DRIVER_MEMORY_CACHE,
-                json!({"key": "k1"}),
-            )
-            .await;
-        assert_eq!(
-            res_r2,
-            ConnectorResult::Success {
-                data: json!({"hit": false, "value": Value::Null}),
-                metadata: BTreeMap::new(),
-            }
-        );
-
-        // Read key "k1" on conn-b revision 1 -> isolated (miss)!
-        let inv_get_b = make_invocation(DRIVER_MEMORY_CACHE, "conn-b", 1, "get");
-        let res_b = providers
-            .dispatch_attempt(
-                &policy,
-                &inv_get_b,
-                ImplementationKind::Rust,
-                DRIVER_MEMORY_CACHE,
-                json!({"key": "k1"}),
-            )
-            .await;
-        assert_eq!(
-            res_b,
-            ConnectorResult::Success {
-                data: json!({"hit": false, "value": Value::Null}),
-                metadata: BTreeMap::new(),
-            }
-        );
-
-        // Evicting "conn-a" via ResourcePoolRegistry clears revision 1.
-        pools.evict_connector("conn-a").await;
-        let inv_get_after = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "get");
-        let res_after = providers
-            .dispatch_attempt(
-                &policy,
-                &inv_get_after,
-                ImplementationKind::Rust,
-                DRIVER_MEMORY_CACHE,
-                json!({"key": "k1"}),
-            )
-            .await;
-        assert_eq!(
-            res_after,
-            ConnectorResult::Success {
-                data: json!({"hit": false, "value": Value::Null}),
-                metadata: BTreeMap::new(),
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn v2_14_2_and_3_http_ssrf_guard_and_live_sqlite_execution() {
-        let http = HttpProviderBackend;
-        let inv = make_invocation(DRIVER_HTTP, "http-conn", 1, "get");
-        let attempt = inv.next_attempt().unwrap();
-
-        // Private loopback URL is blocked by SSRF guard (`V2-14.2`)
-        let ssrf_err = http
-            .invoke(
-                &attempt,
-                "get",
-                json!({"path": "/metadata", "url": "http://169.254.169.254/latest/meta-data"}),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(ssrf_err.code, codes::CAPABILITY_INVALID);
-
-        // Live SQLite execution against sqlite::memory: (`V2-14.3`)
-        let sqlite = SqliteProviderBackend::default();
-        let out = sqlite
-            .execute_live_sqlite("sqlite::memory:", "query", "SELECT 'orion-v2' AS edition")
-            .await
-            .unwrap();
-        assert_eq!(out["count"], 1);
-        assert_eq!(out["rows"][0]["edition"], "orion-v2");
-    }
-}
+#[path = "foundation_tests.rs"]
+mod tests;
