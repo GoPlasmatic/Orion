@@ -44,10 +44,18 @@ test_backups_list() {
     assert_json_has_key "$CLI_OUTPUT" '.'
 }
 
-test_packages_list() {
-    cli packages list
+test_connections_list() {
+    cli connections list
     assert_exit_code 0 "$CLI_EXIT"
-    assert_json_has_key "$CLI_OUTPUT" '.'
+    assert_json_has_key "$CLI_OUTPUT" '.connections'
+}
+
+test_deployments_capabilities() {
+    # The built-in drivers a compiled connection names by digest are listed
+    # here; `deployments apply -d` reads them, so their shape is pinned.
+    cli deployments capabilities
+    assert_exit_code 0 "$CLI_EXIT"
+    assert_contains "$(jq -r '[.provider_backends[].driver_id] | join(",")' <<< "$CLI_OUTPUT")" "org.orion.http"
 }
 
 test_dlq_list() {
@@ -61,7 +69,7 @@ test_audit_logs_filters_are_accepted() {
     # answering a 200 of unfiltered rows, so a filter name the CLI spells
     # wrong fails loudly here rather than returning a silently wider answer.
     cli audit-logs list \
-        --action create --resource-type workflow --resource-id nothing \
+        --action v2_definition_upload --resource-type definition --resource-id nothing \
         --principal anonymous --start-time 2020-01-01T00:00:00Z \
         --end-time 2999-01-01T00:00:00Z --limit 5
     assert_exit_code 0 "$CLI_EXIT"
@@ -71,17 +79,18 @@ test_audit_logs_filters_are_accepted() {
 }
 
 test_list_flags_are_accepted() {
-    # Paging and sorting exist on the server for these three lists; the flag
-    # wiring is what this pins — a dropped parameter would still exit 0.
-    cli workflows list --limit 5 --offset 0 --sort-by name --sort-order asc
+    # Paging (and, for traces, sorting) exist on the server for these lists;
+    # the flag wiring is what this pins — a dropped parameter would still
+    # exit 0.
+    cli traces list --limit 5 --offset 0 --sort-by created_at --sort-order asc
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.limit' '5'
 
-    cli channels list --limit 5 --sort-by name --sort-order asc
+    cli dlq list --limit 5 --offset 0
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.limit' '5'
 
-    cli connectors list --limit 5 --sort-by name --sort-order desc
+    cli cron list --limit 5 --offset 0
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.limit' '5'
 }
@@ -101,7 +110,8 @@ run_test "functions list names the built-in functions" test_functions_list
 run_test "metrics fails cleanly when the endpoint is off" test_metrics_reports_the_endpoint_being_off
 run_test "audit-logs list returns a JSON page"         test_audit_logs_list
 run_test "backups list returns a JSON page"            test_backups_list
-run_test "packages list returns a JSON page"           test_packages_list
+run_test "connections list returns the revisions"      test_connections_list
+run_test "deployments capabilities lists the drivers"  test_deployments_capabilities
 run_test "dlq list returns a JSON page"                test_dlq_list
 run_test "audit-logs filters are all accepted"         test_audit_logs_filters_are_accepted
 run_test "list paging and sorting flags reach the server" test_list_flags_are_accepted

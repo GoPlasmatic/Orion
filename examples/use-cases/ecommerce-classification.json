@@ -1,11 +1,11 @@
 {
   "name": "E-Commerce Order Classification",
   "description": "Classify orders by value tier with computed discounts using multi-workflow priority ordering",
-  "workflows": [{ "file": "../packages/order-classification/workflow.json" }],
+  "packages": ["../packages/order-classification"],
   "tests": [
     {
       "name": "VIP order gets tier and discount",
-      "channel": "orders",
+      "channel": "order-tiers",
       "input": { "amount": 750, "product": "Diamond Ring" },
       "expect": {
         ".status": "ok",
@@ -16,7 +16,7 @@
     },
     {
       "name": "Premium order gets moderate discount",
-      "channel": "orders",
+      "channel": "order-tiers",
       "input": { "amount": 250, "product": "Gold Watch" },
       "expect": {
         ".status": "ok",
@@ -26,7 +26,7 @@
     },
     {
       "name": "Standard order gets no discount",
-      "channel": "orders",
+      "channel": "order-tiers",
       "input": { "amount": 25, "product": "Sticker" },
       "expect": {
         ".status": "ok",
@@ -36,7 +36,7 @@
     },
     {
       "name": "Boundary value at 500 is VIP",
-      "channel": "orders",
+      "channel": "order-tiers",
       "input": { "amount": 500 },
       "expect": {
         ".status": "ok",

@@ -1,7 +1,7 @@
 {
   "name": "IoT Sensor Alert Classification",
   "description": "Classify sensor readings by severity with validation and filtering",
-  "workflows": [{ "file": "../packages/iot-sensor-alert/workflow.json" }],
+  "packages": ["../packages/iot-sensor-alert"],
   "tests": [
     {
       "name": "Normal temperature classified correctly",

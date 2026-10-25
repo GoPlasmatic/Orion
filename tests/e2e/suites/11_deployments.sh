@@ -5,11 +5,12 @@
 # directory with `orion-server compile --format deployment`, deployed with
 # `orion-cli deployments apply -d`, and the channel serving it. Then one
 # workflow changes, the set recompiles and re-applies, and only that member's
-# revision moves; an unchanged directory applies nothing.
+# revision moves; an unchanged directory applies nothing; a member left out of
+# the next apply stops serving; and a rollback serves the earlier revision
+# again.
 #
-# The suite runs its own server. Once a deployment is committed, a node builds
-# what it serves from the head manifest alone, and the shared server the other
-# suites use serves their entities through the v1 tables.
+# The suite runs its own server, so the revision numbers it asserts are the
+# only ones that server ever committed.
 
 begin_suite "Deployments"
 
@@ -37,6 +38,7 @@ JSON
     ORION_STORAGE__URL="sqlite:$DEP_DIR/orion.db?mode=rwc" \
         ORION_SERVER__HOST=127.0.0.1 \
         ORION_SERVER__PORT="$port" \
+        ORION_SERVER__SHUTDOWN_DRAIN_SECS=0 \
         ORION_LOGGING__LEVEL=warn \
         "$ORION_BIN" > "$DEP_DIR/server.log" 2>&1 &
     DEP_PID=$!
@@ -128,10 +130,41 @@ test_an_unchanged_directory_applies_nothing() {
     assert_exit_code 1 "$CLI_EXIT" "no revision 3 was committed"
 }
 
+# An apply replaces the head's members with the directory's: the channel
+# file removed from the set, its channel is removed from the head.
+test_a_member_left_out_stops_serving() {
+    set -e
+    rm "$DEP_DIR/set/channel.json"
+    compile_deployment
+
+    cli deployments apply -d "$DEP_DIR/dist"
+    assert_exit_code 0 "$CLI_EXIT" "apply: $CLI_STDERR"
+    assert_json_eq "$CLI_OUTPUT" ".committed_revision" "3"
+    assert_contains "$CLI_STDERR" "- channel order-tiers@1"
+
+    cli send order-tiers -d '{"amount": 750}'
+    assert_ne "$CLI_EXIT" 0 "a channel the head no longer deploys must not serve"
+}
+
+test_a_rollback_serves_the_earlier_revision() {
+    set -e
+    cli deployments rollback --target-revision 2 --expected-head-revision 3 \
+        --idempotency-key e2e-rollback-to-2 --reason "e2e rollback"
+    assert_exit_code 0 "$CLI_EXIT" "rollback: $CLI_STDERR"
+    assert_eq "$(member_revision 4 channel order-tiers)" "1"
+    assert_eq "$(member_revision 4 workflow order-classification)" "2"
+
+    cli send order-tiers -d '{"amount": 750}'
+    assert_exit_code 0 "$CLI_EXIT" "send: $CLI_STDERR"
+    assert_json_eq "$CLI_OUTPUT" ".data.order.discount_pct" "20"
+}
+
 if start_deployment_server; then
     run_test "deployments: a compiled set deploys with apply -d and serves" test_deployment_compiles_and_serves
     run_test "deployments: a recompiled change moves only that member's revision" test_redeploy_moves_only_the_changed_member
     run_test "deployments: an unchanged directory applies nothing" test_an_unchanged_directory_applies_nothing
+    run_test "deployments: a member left out of the next apply stops serving" test_a_member_left_out_stops_serving
+    run_test "deployments: a rollback serves the earlier revision again" test_a_rollback_serves_the_earlier_revision
 else
     log_fail "the deployment server did not start; the deployment tests did not run"
     TESTS_RUN=$((TESTS_RUN + 1))

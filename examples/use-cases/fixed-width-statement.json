@@ -1,8 +1,7 @@
 {
   "name": "Fixed-Width Statement (plugin codec)",
   "description": "Decode a fixed-width bank-statement line with the acme.fixedwidth plugin, then summarise it with a map",
-  "plugins": [{ "manifest": "../packages/fixed-width-statement/plugin.toml" }],
-  "workflows": [{ "file": "../packages/fixed-width-statement/workflow.json" }],
+  "packages": ["../packages/fixed-width-statement"],
   "tests": [
     {
       "name": "A statement line decodes into typed fields",

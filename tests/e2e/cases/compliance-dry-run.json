@@ -1,8 +1,9 @@
 {
   "name": "Compliance Risk Classification",
-  "description": "Classify transactions by risk level with dry-run trace verification",
+  "description": "Classify transactions by risk level, run once through POST /definitions/test (with its trace) and then served",
   "workflows": [
     {
+      "workflow_id": "risk-classifier",
       "name": "Risk Classifier",
       "priority": 10,
       "condition": true,
@@ -45,8 +46,8 @@
   ],
   "tests": [
     {
-      "name": "Dry-run high risk transaction",
-      "dry_run_rule": 0,
+      "name": "Definition test: high risk transaction",
+      "dry_run": "risk-classifier",
       "input": { "amount": 50000, "currency": "USD" },
       "expect": {
         ".matched": "true",
@@ -55,8 +56,8 @@
       }
     },
     {
-      "name": "Dry-run normal risk transaction",
-      "dry_run_rule": 0,
+      "name": "Definition test: normal risk transaction",
+      "dry_run": "risk-classifier",
       "input": { "amount": 500, "currency": "EUR" },
       "expect": {
         ".matched": "true",
@@ -65,8 +66,8 @@
       }
     },
     {
-      "name": "Dry-run shows correct step count",
-      "dry_run_rule": 0,
+      "name": "Definition test traces every step",
+      "dry_run": "risk-classifier",
       "input": { "amount": 50000 },
       "expect": {
         ".matched": "true",

@@ -1,7 +1,7 @@
 {
   "name": "Webhook Payload Transformation",
   "description": "Parse incoming webhook and normalize schema via mapping",
-  "workflows": [{ "file": "../packages/webhook-transform/workflow.json" }],
+  "packages": ["../packages/webhook-transform"],
   "tests": [
     {
       "name": "Full webhook pipeline transforms data",
@@ -30,8 +30,8 @@
       }
     },
     {
-      "name": "Dry-run shows execution trace",
-      "dry_run_rule": 0,
+      "name": "A definition test shows the execution trace",
+      "dry_run": "webhook-transform",
       "input": { "origin": "slack", "type": "message", "body": { "text": "hello" } },
       "expect": {
         ".matched": "true",

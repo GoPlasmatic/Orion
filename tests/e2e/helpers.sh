@@ -2,7 +2,7 @@
 # tests/e2e/helpers.sh — All shared E2E test functions
 #
 # Sourced by run.sh. Provides: framework, assertions, CLI wrappers,
-# server lifecycle, and cleanup utilities.
+# server lifecycle, definition-set deployment, and the case-file runner.
 
 # ═══════════════════════════════════════════════════════════════════
 # FRAMEWORK
@@ -71,6 +71,9 @@ end_suite() {
 
 # ── Individual Test ─────────────────────────────────────────────
 # Usage: run_test "test name" test_function_name
+#
+# The function runs in a subshell under errexit, so the first failing
+# assertion fails the test rather than only the last one.
 run_test() {
     local name="$1"
     local func="$2"
@@ -80,7 +83,7 @@ run_test() {
 
     set +e
     local output
-    output=$("$func" 2>&1)
+    output=$(set -e; "$func" 2>&1)
     local exit_code=$?
     set -e
 
@@ -343,7 +346,7 @@ start_server() {
     ORION_LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-log.XXXXXX")
     ORION_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-config.XXXXXX")
 
-    # The instance declares one var and one secret, so suite 15 can drive the
+    # The instance declares one var and one secret, so suite 08 can drive the
     # whole config-file → boot → serve path: `${VAR}` substitution into
     # `[vars]`, an `env://` reference in `[secrets]` resolved at startup, and
     # both reaching a workflow. The in-process tests build an `AppConfig` in
@@ -359,6 +362,11 @@ start_server() {
     # the thing this suite exists to cover — never actually run.
     export E2E_VAR_TOPIC_PREFIX="eu-west"
     export ORION_SECRET_E2E_PARTNER_HMAC="e2e-partner-hmac-value"
+    # The credentials the connector-secrets case's connections reference as
+    # `env://` locators: a deployment carries the reference, and the node
+    # resolves it from its own environment.
+    export E2E_CONNECTOR_BEARER_TOKEN="super-secret-bearer-token-123"
+    export E2E_CONNECTOR_BASIC_PASSWORD="s3cret-p4ss!"
 
     # Orion 1.0 config schema: storage.url (not path), trace_queue (not
     # queue), and [server] no longer takes a workers count.
@@ -472,85 +480,182 @@ show_server_log() {
 
 
 # ═══════════════════════════════════════════════════════════════════
-# CLEANUP
+# DEFINITION SETS AND DEPLOYMENTS
 # ═══════════════════════════════════════════════════════════════════
-
-# clean_all_workflows — delete every workflow from the server
-clean_all_workflows() {
-    local ids
-    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color workflows list 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color workflows delete "$id" 2>/dev/null || true
-    done <<< "$ids"
-}
-
-# clean_all_channels — delete every channel from the server
-clean_all_channels() {
-    local ids
-    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color channels list 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color channels delete "$id" 2>/dev/null || true
-    done <<< "$ids"
-}
-
-# clean_all_connectors — delete all non-internal connectors
-clean_all_connectors() {
-    local json_output
-    json_output=$("$ORION_CLI" --server "$ORION_URL" --output json --yes --no-color connectors list 2>/dev/null) || return 0
-
-    local ids
-    ids=$(echo "$json_output" | jq -r '.data[]? | select(.name != "__data_api__") | .id' 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color connectors delete "$id" 2>/dev/null || true
-    done <<< "$ids"
-}
-
-# reset_server_state — clean everything and reload engine
-# create_channel <name> <workflow_id> [channel_type]
-# v1.0: every send resolves to a channel, and an active channel names exactly
-# one active workflow. Creates and activates the channel; the caller reloads.
 #
-# A 4th argument is merged in as the channel's `config` — the way a case
-# exercises a config-dependent ingress (`request.body_mode`, say) without a
-# bespoke suite.
-create_channel() {
-    local name="$1"
-    local workflow_id="$2"
-    local channel_type="${3:-sync}"
-    local config="${4:-}"
+# A node serves exactly its committed deployment head. A test writes a
+# definition set (a directory of workflow/channel/connector JSON, plus any
+# plugin.toml with its component), compiles it with `orion-server compile`
+# and deploys it with `orion-cli deployments apply -d`. An apply *replaces*
+# the head's members with the directory's: whatever the previous test
+# deployed and this set does not carry stops serving. So a test that needs
+# several services deploys them as one set, and no test cleans up after
+# another.
+
+# new_set [name] — a fresh definition-set directory inside the test's temp
+# dir; prints its path.
+new_set() {
+    local dir="$TEST_TMPDIR/${1:-set}"
+    mkdir -p "$dir"
+    echo "$dir"
+}
+
+# set_workflow <set_dir> <workflow_id> <workflow json> — writes the workflow
+# into the set under that id.
+set_workflow() {
+    local dir="$1" id="$2" body="$3"
+    jq --arg id "$id" '. + {workflow_id: $id}' <<< "$body" > "$dir/workflow-$id.json"
+}
+
+# set_channel <set_dir> <name> <workflow_id> [channel_type] [config json] —
+# an HTTP channel routed at /<name>, accepting POST, bound to the workflow.
+# A 5th argument is merged in as the channel's `config` — how a test
+# exercises a config-dependent ingress (`request.body_mode`, tracing).
+set_channel() {
+    local dir="$1" name="$2" workflow_id="$3" channel_type="${4:-sync}" config="${5:-}"
     local body
-    body="{\"name\":\"$name\",\"channel_type\":\"$channel_type\",\"protocol\":\"http\",\"workflow_id\":\"$workflow_id\",\"methods\":[\"POST\"],\"route_pattern\":\"/$name\"}"
+    body=$(jq -n --arg n "$name" --arg w "$workflow_id" --arg t "$channel_type" \
+        '{channel_id: $n, name: $n, channel_type: $t, protocol: "http",
+          workflow_id: $w, methods: ["POST"], route_pattern: ("/" + $n)}')
     if [[ -n "$config" && "$config" != "null" ]]; then
-        body=$(jq -c --argjson cfg "$config" '. + {config: $cfg}' <<< "$body")
+        body=$(jq --argjson cfg "$config" '. + {config: $cfg}' <<< "$body")
     fi
-    cli_quiet channels create -d "$body"
-    cli_quiet channels activate "$CLI_OUTPUT"
+    echo "$body" > "$dir/channel-$name.json"
 }
 
-# clean_all_plugins — delete every plugin. After the workflows: a plugin
-# delete is refused while an active workflow calls one of its functions.
-clean_all_plugins() {
-    local ids
-    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color plugins list 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color plugins delete "$id" 2>/dev/null || true
-    done <<< "$ids"
+# set_plugin <set_dir> <manifest> — copies a plugin.toml and the component it
+# names (read beside it) into the set, in a directory of its own.
+set_plugin() {
+    local dir="$1" manifest="$2"
+    local component name
+    component=$(sed -n 's/^component[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)
+    name=$(basename "$manifest" .toml)
+    mkdir -p "$dir/plugin-$name"
+    cp "$manifest" "$dir/plugin-$name/"
+    cp "$(dirname "$manifest")/$component" "$dir/plugin-$name/"
 }
 
-reset_server_state() {
-    clean_all_workflows
-    clean_all_channels
-    clean_all_connectors
-    clean_all_plugins
-    "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color engine reload 2>/dev/null || true
+COMPILE_OUTPUT=""
+COMPILE_EXIT=0
+
+# compile_set <set_dir> — `orion-server compile` into <set_dir>.dist.
+# COMPILE_OUTPUT holds everything it printed; returns its exit code.
+compile_set() {
+    local dir="$1"
+    rm -rf "$dir.dist"
+    set +e
+    COMPILE_OUTPUT=$("$ORION_BIN" compile "$dir" -o "$dir.dist" 2>&1)
+    COMPILE_EXIT=$?
+    set -e
+    log_debug "compile $dir => exit=$COMPILE_EXIT"
+    log_debug "output: $COMPILE_OUTPUT"
+    return $COMPILE_EXIT
+}
+
+# apply_dist <dist_dir> — `deployments apply -d`, leaving CLI_OUTPUT,
+# CLI_STDERR and CLI_EXIT for the caller.
+#
+# Plugins first: `POST /definitions` checks a workflow against the functions
+# the node serves *now*, so a workflow calling a plugin function the head
+# does not deploy yet is refused at upload, even though the same deployment
+# carries the plugin. When an apply that carries plugins fails, the plugins
+# are deployed alone (the compiled directory with every other member left
+# out), and the whole directory is applied again. A directory the head
+# already deploys applies nothing, so a re-run never takes this path.
+apply_dist() {
+    local dist="$1"
+    cli deployments apply -d "$dist"
+    if [[ "$CLI_EXIT" -ne 0 ]] && jq -e 'any(.members[]; .kind == "plugin")' "$dist/deployment.json" >/dev/null; then
+        local stage="$dist.plugins"
+        rm -rf "$stage"
+        mkdir -p "$stage/connections"
+        cp -R "$dist/definitions" "$stage/"
+        jq '.members |= map(select(.kind == "plugin"))' "$dist/deployment.json" > "$stage/deployment.json"
+        cli deployments apply -d "$stage"
+        [[ "$CLI_EXIT" -eq 0 ]] || return 0
+        cli deployments apply -d "$dist"
+    fi
+}
+
+# deploy_set <set_dir> — compile, then apply. On a compile failure CLI_EXIT
+# is the compiler's exit code and CLI_STDERR what it printed, so a caller
+# asserts on one pair either way.
+deploy_set() {
+    local dir="$1"
+    if ! compile_set "$dir"; then
+        CLI_OUTPUT=""
+        CLI_STDERR="$COMPILE_OUTPUT"
+        CLI_EXIT=$COMPILE_EXIT
+        return 0
+    fi
+    apply_dist "$dir.dist"
+}
+
+# deploy_ok <set_dir> — deploy_set, failing the test unless it deployed.
+deploy_ok() {
+    deploy_set "$1"
+    if [[ "$CLI_EXIT" -ne 0 ]]; then
+        echo "DEPLOY FAILED (exit $CLI_EXIT): $1" >&2
+        echo "$CLI_STDERR" >&2
+        return 1
+    fi
+}
+
+# deploy_one <workflow json | file> <workflow_id> <channel> [channel_type] [config]
+# — the common case: one workflow behind one HTTP channel, deployed as the
+# whole head.
+deploy_one() {
+    local wf="$1" id="$2" channel="$3" channel_type="${4:-sync}" config="${5:-}"
+    local dir
+    dir=$(new_set "$id")
+    [[ -f "$wf" ]] && wf=$(cat "$wf")
+    set_workflow "$dir" "$id" "$wf"
+    set_channel "$dir" "$channel" "$id" "$channel_type" "$config"
+    deploy_ok "$dir"
+}
+
+# undeploy_all — commit an empty head, so nothing serves. A no-op when the
+# head already deploys nothing. `compile` refuses an empty set, so this is
+# the one place a manifest is applied with -f.
+undeploy_all() {
+    local summary head members
+    summary=$(curl -sf "$ORION_URL/api/v2/admin/deployments") || return 1
+    head=$(jq -r '.head_revision' <<< "$summary")
+    members=$(jq -r --argjson h "$head" \
+        '[.revisions[] | select(.revision == $h) | .manifest.members[]] | length' <<< "$summary")
+    [[ "$head" -eq 0 || "$members" -eq 0 ]] && return 0
+
+    local manifest digest
+    manifest=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-empty-XXXXXX")
+    echo '{"schema_version": 2, "providers": [], "members": []}' > "$manifest"
+    cli deployments plan -f "$manifest" --base-revision "$head"
+    digest=$(jq -r '.reviewed_manifest_digest' <<< "$CLI_OUTPUT")
+    cli deployments apply -f "$manifest" --base-revision "$head" \
+        --reviewed-digest "$digest" --idempotency-key "e2e-undeploy-$head"
+    rm -f "$manifest"
+    [[ "$CLI_EXIT" -eq 0 ]] || { echo "undeploy failed: $CLI_STDERR" >&2; return 1; }
+}
+
+# definition_of <dist_dir> <kind> <id> — the compiled definition document a
+# member names (`{"kind": …, "definition": {…}}`), read from the directory.
+definition_of() {
+    local dist="$1" kind="$2" id="$3" digest
+    digest=$(jq -r --arg k "$kind" --arg i "$id" \
+        '.members[] | select(.kind == $k and .id == $i) | .definition' "$dist/deployment.json")
+    cat "$dist/definitions/${digest#sha256:}.json"
+}
+
+# test_definition <workflow definition json> <data json> — POST
+# /definitions/test: run a bare workflow definition once on this node.
+# There is no CLI verb for it; the answer lands in CLI_OUTPUT.
+test_definition() {
+    local body
+    body=$(jq -n --argjson d "$1" --argjson x "$2" '{definition: $d, data: $x}')
+    set +e
+    CLI_OUTPUT=$(curl -sS -X POST "$ORION_URL/api/v2/admin/definitions/test" \
+        -H 'content-type: application/json' -d "$body")
+    CLI_EXIT=$?
+    set -e
 }
 
 
@@ -558,103 +663,61 @@ reset_server_state() {
 # DATA-DRIVEN TEST CASES
 # ═══════════════════════════════════════════════════════════════════
 
-# _run_before_actions <case_file> <test_index> <rule_ids...>
-# Execute "before" actions for a test (archive/activate workflows, reload engine)
-_run_before_actions() {
-    local case_file="$1"
-    local test_idx="$2"
-    shift 2
-    local rule_ids=()
-    [[ $# -gt 0 ]] && rule_ids=("$@")
-
-    local action_count
-    action_count=$(jq ".tests[$test_idx].before // [] | length" "$case_file")
-
-    for ((a=0; a<action_count; a++)); do
-        local action
-        action=$(jq -r ".tests[$test_idx].before[$a].action" "$case_file")
-
-        case "$action" in
-            archive_rule)
-                local ri
-                ri=$(jq -r ".tests[$test_idx].before[$a].rule_index" "$case_file")
-                cli_quiet workflows archive "${rule_ids[$ri]}"
-                ;;
-            activate_rule)
-                local ri
-                ri=$(jq -r ".tests[$test_idx].before[$a].rule_index" "$case_file")
-                cli_quiet workflows activate "${rule_ids[$ri]}"
-                ;;
-            reload)
-                cli_quiet engine reload
-                ;;
-        esac
-    done
-}
-
-# _run_case_test <case_file> <test_index> <rule_ids...>
-# Execute a single test from a case file and assert expectations
+# _run_case_test <case_file> <test_index>
+# Execute a single test from a case file and assert expectations.
 _run_case_test() {
     local case_file="$1"
     local test_idx="$2"
-    shift 2
-    local rule_ids=()
-    [[ $# -gt 0 ]] && rule_ids=("$@")
-
-    # Run before actions if any
-    if [[ ${#rule_ids[@]} -gt 0 ]]; then
-        _run_before_actions "$case_file" "$test_idx" "${rule_ids[@]}"
-    else
-        _run_before_actions "$case_file" "$test_idx"
-    fi
+    local t=".tests[$test_idx]"
 
     local response=""
+    local mode
+    mode=$(jq -r "$t | if has(\"dry_run\") then \"dry_run\"
+                       elif has(\"read_connection\") then \"read_connection\"
+                       else \"send\" end" "$case_file")
+    local input
+    input=$(jq -c "$t.input // {}" "$case_file")
 
-    # Determine test mode
-    local has_read_connector
-    has_read_connector=$(jq ".tests[$test_idx] | has(\"read_connector\")" "$case_file")
-    local has_dry_run
-    has_dry_run=$(jq ".tests[$test_idx] | has(\"dry_run_rule\")" "$case_file")
+    case "$mode" in
+        dry_run)
+            # The named workflow as the case's deployment compiled it, run
+            # once through POST /definitions/test.
+            local wf_id definition
+            wf_id=$(jq -r "$t.dry_run" "$case_file")
+            definition=$(definition_of "$_CASE_DIST" workflow "$wf_id" | jq -c '.definition')
+            test_definition "$definition" "$input"
+            response="$CLI_OUTPUT"
+            ;;
+        read_connection)
+            # The stored connection revision the case's n-th connector
+            # compiled to, as `connections list` answers it.
+            local idx conn_id
+            idx=$(jq -r "$t.read_connection" "$case_file")
+            conn_id=$(jq -r ".connectors[$idx] | .id // .name" "$case_file")
+            cli connections list
+            response=$(jq -c --arg id "$conn_id" \
+                '[.connections[] | select(.connection_id == $id)] | max_by(.revision)' <<< "$CLI_OUTPUT")
+            ;;
+        send)
+            local channel raw
+            channel=$(jq -r "$t.channel" "$case_file")
+            # `"raw": true` sends the payload unwrapped — the only way to
+            # address a channel with request.body_mode = "payload", which
+            # would otherwise see the envelope itself as its data.
+            raw=$(jq -r "$t.raw // false" "$case_file")
+            if [[ "$raw" == "true" ]]; then
+                cli send "$channel" --raw -d "$input"
+            else
+                cli send "$channel" -d "$input"
+            fi
+            response="$CLI_OUTPUT"
+            ;;
+    esac
 
-    if [[ "$has_read_connector" == "true" ]]; then
-        # Read connector test
-        local conn_idx
-        conn_idx=$(jq -r ".tests[$test_idx].read_connector" "$case_file")
-        local conn_id="${CASE_CONNECTOR_IDS[$conn_idx]}"
-        cli connectors get "$conn_id"
-        response="$CLI_OUTPUT"
-    elif [[ "$has_dry_run" == "true" ]]; then
-        # Dry-run test
-        local rule_idx
-        rule_idx=$(jq -r ".tests[$test_idx].dry_run_rule" "$case_file")
-        local rule_id="${rule_ids[$rule_idx]}"
-        local input
-        input=$(jq -c ".tests[$test_idx].input" "$case_file")
-        cli workflows test "$rule_id" -d "$input"
-        response="$CLI_OUTPUT"
-    else
-        # Default: sync send
-        local channel
-        channel=$(jq -r ".tests[$test_idx].channel" "$case_file")
-        local input
-        input=$(jq -c ".tests[$test_idx].input" "$case_file")
-        # `"raw": true` sends the payload unwrapped — the only way to address a
-        # channel with request.body_mode = "payload", which would otherwise see
-        # the envelope itself as its data.
-        local raw
-        raw=$(jq -r ".tests[$test_idx].raw // false" "$case_file")
-        if [[ "$raw" == "true" ]]; then
-            cli send "$channel" --raw -d "$input"
-        else
-            cli send "$channel" -d "$input"
-        fi
-        response="$CLI_OUTPUT"
-    fi
-
-    # v1.0 failure-path tests: expect_error asserts the command failed
-    # (e.g. a send to a channel quarantined by archiving its workflow).
+    # expect_error asserts the command failed (a send to a channel the
+    # deployment does not carry, say).
     local expect_error
-    expect_error=$(jq -r ".tests[$test_idx].expect_error // false" "$case_file")
+    expect_error=$(jq -r "$t.expect_error // false" "$case_file")
     if [[ "$expect_error" == "true" ]]; then
         if [[ "$CLI_EXIT" -eq 0 ]]; then
             echo "ASSERTION FAILED: expected the command to fail, got exit 0" >&2
@@ -664,14 +727,13 @@ _run_case_test() {
         return 0
     fi
 
-    # Assert expectations
     local expect_keys
-    expect_keys=$(jq -r ".tests[$test_idx].expect | keys[]" "$case_file")
+    expect_keys=$(jq -r "$t.expect | keys[]" "$case_file")
 
     while IFS= read -r jq_expr; do
         [[ -z "$jq_expr" ]] && continue
         local expected
-        expected=$(jq -r ".tests[$test_idx].expect[$(jq -aR <<< "$jq_expr")]" "$case_file")
+        expected=$(jq -r "$t.expect[$(jq -aR <<< "$jq_expr")]" "$case_file")
         local actual
         actual=$(echo "$response" | jq -r "$jq_expr" 2>/dev/null) || {
             echo "ASSERTION FAILED: jq parse error on '$jq_expr'" >&2
@@ -688,129 +750,113 @@ _run_case_test() {
     done <<< "$expect_keys"
 }
 
-# Global state for data-driven test runner (used to pass context through run_test)
+# Global state for the data-driven runner (passed through run_test, which
+# runs each test in a subshell).
 _CASE_FILE=""
 _CASE_TEST_IDX=0
-_CASE_RULE_IDS=()
-CASE_CONNECTOR_IDS=()
+_CASE_DIST=""
 
-# Wrapper called by run_test — reads globals set by run_case_file
 _case_test_wrapper() {
-    if [[ ${#_CASE_RULE_IDS[@]} -gt 0 ]]; then
-        _run_case_test "$_CASE_FILE" "$_CASE_TEST_IDX" "${_CASE_RULE_IDS[@]}"
-    else
-        _run_case_test "$_CASE_FILE" "$_CASE_TEST_IDX"
+    _run_case_test "$_CASE_FILE" "$_CASE_TEST_IDX"
+}
+
+# _build_case_set <case_file> <set_dir> — write the case's definition set.
+_build_case_set() {
+    local case_file="$1" set_dir="$2"
+    local case_dir
+    case_dir="$(cd "$(dirname "$case_file")" && pwd)"
+
+    # Whole definition sets — an example package as it ships, its own
+    # channels included.
+    local pkg
+    while IFS= read -r pkg; do
+        [[ -z "$pkg" ]] && continue
+        cp -R "$case_dir/$pkg" "$set_dir/$(basename "$pkg")"
+    done < <(jq -r '.packages // [] | .[]' "$case_file")
+
+    local i count
+    count=$(jq '.plugins // [] | length' "$case_file")
+    for ((i=0; i<count; i++)); do
+        set_plugin "$set_dir" "$case_dir/$(jq -r ".plugins[$i].manifest" "$case_file")"
+    done
+
+    count=$(jq '.connectors // [] | length' "$case_file")
+    for ((i=0; i<count; i++)); do
+        jq ".connectors[$i]" "$case_file" > "$set_dir/connector-$i.json"
+    done
+
+    # A workflow entry is {"file": "<path>"} (relative to the case file) or
+    # an inline definition; an inline one without a workflow_id gets
+    # `wf-<n>`.
+    local first_workflow=""
+    count=$(jq '.workflows // [] | length' "$case_file")
+    for ((i=0; i<count; i++)); do
+        local wf_file body
+        wf_file=$(jq -r ".workflows[$i].file // empty" "$case_file")
+        if [[ -n "$wf_file" ]]; then
+            body=$(jq -c . "$case_dir/$wf_file")
+        else
+            body=$(jq -c --arg id "wf-$i" ".workflows[$i] | .workflow_id //= \$id" "$case_file")
+        fi
+        echo "$body" > "$set_dir/workflow-$i.json"
+        [[ -n "$first_workflow" ]] || first_workflow=$(jq -r '.workflow_id' <<< "$body")
+    done
+
+    # Channels: explicit ones, each bound to the workflow it names (what a
+    # channel_call composition needs); otherwise, for a case that brings its
+    # own workflows, one sync channel per channel name the tests send to,
+    # bound to the first workflow, with the case-level `channel_config`.
+    count=$(jq '.channels // [] | length' "$case_file")
+    if [[ "$count" -gt 0 ]]; then
+        for ((i=0; i<count; i++)); do
+            set_channel "$set_dir" "$(jq -r ".channels[$i].name" "$case_file")" \
+                "$(jq -r ".channels[$i].workflow_id" "$case_file")"
+        done
+    elif [[ -n "$first_workflow" ]]; then
+        local config ch
+        config=$(jq -c '.channel_config // empty' "$case_file")
+        while IFS= read -r ch; do
+            [[ -z "$ch" ]] && continue
+            set_channel "$set_dir" "$ch" "$first_workflow" sync "$config"
+        done < <(jq -r '[.tests[].channel // empty] | unique | .[]' "$case_file")
     fi
 }
 
 # run_case_file <case_file>
-# Run all tests defined in a JSON case file
+# Build the case's definition set, deploy it, and run every test it lists.
 run_case_file() {
     local case_file="$1"
     local case_name
     case_name=$(jq -r '.name' "$case_file")
 
     begin_suite "$case_name"
-    reset_server_state
 
-    # Create connectors
-    CASE_CONNECTOR_IDS=()
-    local conn_count
-    conn_count=$(jq '.connectors // [] | length' "$case_file")
-    for ((i=0; i<conn_count; i++)); do
-        local conn_data
-        conn_data=$(jq -c ".connectors[$i]" "$case_file")
-        cli_quiet connectors create -d "$conn_data"
-        CASE_CONNECTOR_IDS+=("$CLI_OUTPUT")
-    done
+    local set_dir
+    set_dir="$(mktemp -d "${TMPDIR:-/tmp}/orion-e2e-case-XXXXXX")/set"
+    mkdir -p "$set_dir"
+    _build_case_set "$case_file" "$set_dir"
 
-    local case_dir
-    case_dir="$(cd "$(dirname "$case_file")" && pwd)"
-
-    # Upload and activate plugins, before the workflows that call them: a
-    # workflow naming a plugin function is refused at create until the plugin
-    # is active. An entry is {"manifest": "<path>"}, relative to the case
-    # file, and the component is read beside the manifest as `plugins create`
-    # always reads it.
-    local plugin_count
-    plugin_count=$(jq '.plugins // [] | length' "$case_file")
-    for ((i=0; i<plugin_count; i++)); do
-        local manifest
-        manifest=$(jq -r ".plugins[$i].manifest" "$case_file")
-        cli_quiet plugins create -f "$case_dir/$manifest"
-        cli_quiet plugins activate "$CLI_OUTPUT"
-    done
-
-    # Create workflows, activate them, store IDs
-    _CASE_RULE_IDS=()
-    local rule_count
-    rule_count=$(jq '.workflows // [] | length' "$case_file")
-    for ((i=0; i<rule_count; i++)); do
-        # A workflow entry is either inline JSON or {"file": "<path>"} with
-        # the path relative to the case file. File references single-source
-        # the workflow from the example package it exercises, so the e2e
-        # suite tests the shipped JSON instead of a copy that can drift.
-        local rule_data wf_file
-        wf_file=$(jq -r ".workflows[$i].file // empty" "$case_file")
-        if [[ -n "$wf_file" ]]; then
-            rule_data=$(jq -c . "$case_dir/$wf_file")
-        else
-            rule_data=$(jq -c ".workflows[$i]" "$case_file")
-        fi
-        cli_quiet workflows create -d "$rule_data"
-        local _rule_id="$CLI_OUTPUT"
-        _CASE_RULE_IDS+=("$_rule_id")
-        cli_quiet workflows activate "$_rule_id"
-    done
-
-    # v1.0: sends resolve to a channel bound to one workflow.
-    #
-    # A case that needs channels bound to *different* workflows — a
-    # channel_call composition, where the caller and the callee are separate
-    # services — declares them explicitly:
-    #
-    #   "channels": [ { "name": "customer-lookup", "workflow_id": "customer-lookup" } ]
-    #
-    # Otherwise every channel the tests target is bound to the case's first
-    # workflow, which is what a single-workflow scenario wants.
-    local explicit_channels
-    explicit_channels=$(jq -r '.channels // [] | length' "$case_file")
-    if [[ "$explicit_channels" -gt 0 ]]; then
-        for ((i=0; i<explicit_channels; i++)); do
-            local ch_name ch_wf
-            ch_name=$(jq -r ".channels[$i].name" "$case_file")
-            ch_wf=$(jq -r ".channels[$i].workflow_id" "$case_file")
-            create_channel "$ch_name" "$ch_wf"
-        done
-    else
-        local case_channels case_channel_config
-        case_channels=$(jq -r '[.tests[].channel // empty] | unique | .[]' "$case_file")
-        # Case-level, because this branch already assumes one workflow for the
-        # whole case; a per-channel config belongs in the explicit form above.
-        case_channel_config=$(jq -c '.channel_config // empty' "$case_file")
-        if [[ -n "$case_channels" && ${#_CASE_RULE_IDS[@]} -gt 0 ]]; then
-            while IFS= read -r ch; do
-                [[ -z "$ch" ]] && continue
-                create_channel "$ch" "${_CASE_RULE_IDS[0]}" "sync" "$case_channel_config"
-            done <<< "$case_channels"
-        fi
+    deploy_set "$set_dir"
+    if [[ "$CLI_EXIT" -ne 0 ]]; then
+        TESTS_RUN=$((TESTS_RUN + 1))
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+        FAILED_NAMES+=("$case_name: deploy")
+        log_fail "$case_name: the case's definition set did not deploy"
+        echo "$CLI_STDERR" | sed 's/^/        /' >&2
+        rm -rf "$(dirname "$set_dir")"
+        end_suite
+        return 0
     fi
 
-    # Reload engine if we created workflows or connectors
-    if [[ $rule_count -gt 0 ]] || [[ $conn_count -gt 0 ]]; then
-        cli_quiet engine reload
-    fi
-
-    # Run each test
     _CASE_FILE="$case_file"
-    local test_count
+    _CASE_DIST="$set_dir.dist"
+    local test_count i
     test_count=$(jq '.tests | length' "$case_file")
     for ((i=0; i<test_count; i++)); do
         _CASE_TEST_IDX=$i
-        local test_name
-        test_name=$(jq -r ".tests[$i].name" "$case_file")
-        run_test "$test_name" _case_test_wrapper
+        run_test "$(jq -r ".tests[$i].name" "$case_file")" _case_test_wrapper
     done
 
+    rm -rf "$(dirname "$set_dir")"
     end_suite
 }

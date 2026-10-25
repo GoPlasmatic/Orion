@@ -18,7 +18,7 @@ examples/
 ├── plugins/            # plugin source: a Rust crate on orion-plugin-sdk + build.sh
 ├── workflow-tests/     # offline *.case.json regression suite (references packages/)
 ├── use-cases/          # live e2e scenarios for the packages (run by tests/e2e)
-├── deploy.sh           # deploy one package end-to-end
+├── deploy.sh           # compile + deploy one or more packages, send their requests
 └── quickstart.sh       # your first service in one command
 ```
 
@@ -35,7 +35,18 @@ curl -s -X POST http://localhost:8080/api/v2/data/high-value-orders \
 ```
 
 A deployment states everything a node serves. Applying a second package's
-directory replaces the first, so deploy one package at a time.
+directory replaces the first. To run several side by side, compile them as
+one set — `deploy.sh` does that, then sends each package's `request.json`:
+
+```bash
+./examples/deploy.sh high-value-order                       # one package
+./examples/deploy.sh order-classification webhook-transform # both, as one deployment
+```
+
+It finds `orion-server` and `orion-cli` under `target/` (build both with
+`cargo build -p orion-server -p orion-cli`), on `PATH`, or through
+`ORION_BIN` / `ORION_CLI`. `quickstart.sh` deploys a one-workflow service the
+same way.
 
 ## The packages
 

@@ -27,12 +27,7 @@ SECRET_WF='{"name":"Signs with the store","condition":true,"tasks":[
 # A `${VAR}` in the config file becomes a var, and the type survives TOML →
 # JSON: `max_retries` is the number 3, not the string "3".
 test_a_declared_var_reaches_a_workflow() {
-    reset_server_state
-    cli_quiet workflows create -d "$VARS_WF"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel vars-ch "$wf"
-    cli_quiet engine reload
+    deploy_one "$VARS_WF" reads-a-var vars-ch
 
     cli send vars-ch -d '{}'
     assert_exit_code 0 "$CLI_EXIT"
@@ -43,12 +38,7 @@ test_a_declared_var_reaches_a_workflow() {
 # Envelope mode merges the caller's own metadata, so the stamp has to land on
 # top of it — otherwise a request names the topic prefix its own run uses.
 test_a_caller_cannot_forge_a_var() {
-    reset_server_state
-    cli_quiet workflows create -d "$VARS_WF"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel forge-ch "$wf"
-    cli_quiet engine reload
+    deploy_one "$VARS_WF" reads-a-var forge-ch
 
     local response
     response=$(curl -sf -X POST "$ORION_URL/api/v2/data/forge-ch" \
@@ -61,12 +51,7 @@ test_a_caller_cannot_forge_a_var() {
 # The reference in `[secrets]` resolved during startup, and the workflow
 # reaches its value by name.
 test_a_declared_secret_signs() {
-    reset_server_state
-    cli_quiet workflows create -d "$SECRET_WF"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel sign-ch "$wf"
-    cli_quiet engine reload
+    deploy_one "$SECRET_WF" signs sign-ch
 
     cli send sign-ch -d '{}'
     assert_exit_code 0 "$CLI_EXIT"
@@ -80,12 +65,7 @@ test_a_declared_secret_signs() {
 # The guarantee, from outside the process: the value is in neither the
 # response nor any trace the server hands back.
 test_a_secret_reaches_no_response_or_trace() {
-    reset_server_state
-    cli_quiet workflows create -d "$SECRET_WF"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel leak-ch "$wf" sync '{"tracing":{"task_details":true}}'
-    cli_quiet engine reload
+    deploy_one "$SECRET_WF" signs leak-ch sync '{"tracing":{"task_details":true}}'
 
     cli send leak-ch -d '{}'
     assert_exit_code 0 "$CLI_EXIT"
@@ -103,41 +83,55 @@ test_a_secret_reaches_no_response_or_trace() {
     assert_not_contains "$detail" "$ORION_SECRET_E2E_PARTNER_HMAC" \
         "the secret reached a per-step trace"
 
-    # And the definition on the server holds the name, which is what makes the
-    # workflow promotable between instances unchanged.
-    cli workflows get "$wf"
-    assert_contains "$CLI_OUTPUT" "partner_hmac"
-    assert_not_contains "$CLI_OUTPUT" "$ORION_SECRET_E2E_PARTNER_HMAC" \
+    # And the definition the node stored holds the name, which is what makes
+    # the deployment promotable between instances unchanged.
+    local digest stored
+    digest=$(jq -r '.members[] | select(.kind == "workflow") | .definition' \
+        "$TEST_TMPDIR/signs.dist/deployment.json")
+    stored=$(curl -sf "$ORION_URL/api/v2/admin/definitions/$digest")
+    assert_contains "$stored" "partner_hmac"
+    assert_not_contains "$stored" "$ORION_SECRET_E2E_PARTNER_HMAC" \
         "the stored definition must hold the name, not the value"
 }
 
-# A name this instance does not declare is refused when the engine is built,
-# so the channel is quarantined rather than served with the key resolving to
-# null. Nothing about that refusal may quote a value.
+# A name this instance does not declare is refused when the node stores the
+# definition, so the deployment never commits and nothing serves with the key
+# resolving to null. `compile` cannot know the target's [secrets] and only
+# notes the requirement.
 test_an_undeclared_secret_is_refused() {
-    reset_server_state
-    cli_quiet workflows create -d '{"name":"Undeclared","condition":true,"tasks":[
+    local dir
+    dir=$(new_set)
+    set_workflow "$dir" undeclared '{"name":"Undeclared","condition":true,"tasks":[
       {"id":"sign","name":"Sign","function":{"name":"crypto","input":{
         "op":"hmac","algorithm":"sha256","key":{"secret":"no_such_secret"},
         "data":"x","output":"data.mac"}}}]}'
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel unknown-ch "$wf"
-    cli_quiet engine reload
+    set_channel "$dir" unknown-ch undeclared
+    deploy_set "$dir"
+    assert_ne "$CLI_EXIT" 0 "a deployment naming an undeclared secret must not apply"
+
+    # The node's own refusal, with the field and the name.
+    local response
+    response=$(curl -s -X POST "$ORION_URL/api/v2/admin/definitions" \
+        -H 'content-type: application/json' \
+        -d @"$(grep -l '"workflow"' "$dir.dist"/definitions/*.json)")
+    assert_json_eq "$response" '.error.code' 'VALIDATION_ERROR'
+    assert_contains "$response" "no_such_secret"
 
     cli send unknown-ch -d '{}'
     assert_ne "$CLI_EXIT" 0 "a workflow naming an undeclared secret must not serve"
 }
 
 # The authoring-time half: a reference in a field that resolves none is
-# refused at create, not accepted and then requested as a literal URL.
-test_a_stray_reference_is_refused_at_create() {
-    reset_server_state
-    cli workflows create -d '{"name":"Stray","condition":true,"tasks":[
+# refused at compile, not deployed and then requested as a literal URL.
+test_a_stray_reference_is_refused_at_compile() {
+    local dir
+    dir=$(new_set)
+    set_workflow "$dir" stray '{"name":"Stray","condition":true,"tasks":[
       {"id":"call","name":"Call","function":{"name":"http_call","input":{
         "connector":"crm","path":"env://API_BASE"}}}]}'
+    deploy_set "$dir"
     assert_ne "$CLI_EXIT" 0 "a reference in a field that resolves none must be refused"
-    assert_contains "$CLI_OUTPUT$CLI_STDERR" "env://API_BASE"
+    assert_contains "$CLI_STDERR" "env://API_BASE"
 }
 
 run_test "a declared var reaches a workflow"        test_a_declared_var_reaches_a_workflow
@@ -145,6 +139,6 @@ run_test "a caller cannot forge a var"              test_a_caller_cannot_forge_a
 run_test "a declared secret signs"                  test_a_declared_secret_signs
 run_test "a secret reaches no response or trace"    test_a_secret_reaches_no_response_or_trace
 run_test "an undeclared secret is refused"          test_an_undeclared_secret_is_refused
-run_test "a stray reference is refused at create"   test_a_stray_reference_is_refused_at_create
+run_test "a stray reference is refused at compile"  test_a_stray_reference_is_refused_at_compile
 
 end_suite

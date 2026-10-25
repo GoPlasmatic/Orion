@@ -8,21 +8,42 @@
 #
 # Deploys the "quickstart-orders" service against a running Orion instance
 # (default http://localhost:8080): a workflow that flags orders over $10,000,
-# and a POST /orders channel that exposes it. Safe to re-run — existing
-# objects are left in place. Requires only curl.
+# and a POST /orders channel that exposes it. The script writes the two
+# definitions to a scratch directory, compiles them with `orion-server
+# compile` and deploys the result with `orion-cli deployments apply -d` —
+# the same path every Orion deployment takes.
+#
+# A deployment is the whole of what a node serves, so this replaces whatever
+# the instance served before. Safe to re-run: an unchanged deployment applies
+# nothing. Needs `orion-server` and `orion-cli` (on PATH, through
+# ORION_BIN / ORION_CLI, or built in this clone's target/) and curl.
 #
 # The workflow id is quickstart-orders, not high-value-order, deliberately:
-# examples/packages/high-value-order ships the same logic as a *tagged* package,
-# and sharing one id meant whichever ran first won — leaving the package's
-# `pkg:high-value-order` tag off the workflow that ended up deployed.
+# examples/packages/high-value-order ships the same logic as a package of its
+# own, and the two are told apart by id.
 set -euo pipefail
 
 BASE="${1:-${ORION_URL:-http://localhost:8080}}"
-ADMIN="$BASE/api/v2/admin"
 
-say()    { printf '==> %s\n' "$*"; }
-have()   { curl -fsS "$1" > /dev/null 2>&1; }
-active() { curl -fsS "$1" 2> /dev/null | grep -q '"status":"active"'; }
+say()  { printf '==> %s\n' "$*"; }
+have() { curl -fsS "$1" > /dev/null 2>&1; }
+
+# The binaries: an explicit path, this clone's build (when run from one), or
+# PATH. Piped into bash there is no clone, so PATH it is.
+SCRIPT_DIR=""
+[[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]] && SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+find_bin() {
+  local var="$1" name="$2" candidate
+  if [[ -n "${!var:-}" ]]; then echo "${!var}"; return; fi
+  for candidate in ${SCRIPT_DIR:+"$SCRIPT_DIR/../target/debug/$name" "$SCRIPT_DIR/../target/release/$name"} \
+                   "$(command -v "$name" || true)"; do
+    [[ -n "$candidate" && -x "$candidate" ]] && { echo "$candidate"; return; }
+  done
+  echo "error: $name not found — install it, or set $var=<path to $name>" >&2
+  exit 1
+}
+ORION_BIN="$(find_bin ORION_BIN orion-server)"
+ORION_CLI="$(find_bin ORION_CLI orion-cli)"
 
 # Wait for the server (a fresh `orion-server` needs a moment to come up).
 for _ in $(seq 1 10); do
@@ -35,60 +56,65 @@ have "$BASE/healthz" || {
   exit 1
 }
 
-# --- Workflow: flag orders over $10,000 ------------------------------------
-if have "$ADMIN/workflows/quickstart-orders"; then
-  say "Workflow 'quickstart-orders' already exists"
-else
-  say "Create workflow 'quickstart-orders'"
-  curl -fsS -X POST "$ADMIN/workflows" -H 'Content-Type: application/json' -d '{
-    "workflow_id": "quickstart-orders",
-    "name": "High-Value Order",
-    "condition": true,
-    "tasks": [
-      { "id": "parse", "name": "Parse payload", "function": {
-          "name": "parse_json",
-          "input": { "source": "payload", "target": "order" }
-      }},
-      { "id": "flag", "name": "Flag order",
-        "condition": { ">": [{ "var": "data.order.total" }, 10000] },
-        "function": {
-          "name": "map",
-          "input": { "mappings": [
-            { "path": "data.order.flagged", "logic": true },
-            { "path": "data.order.alert", "logic": { "cat": ["High-value order: $", { "var": "data.order.total" }] } }
-          ]}
-      }}
-    ]
-  }' > /dev/null
-fi
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/quickstart"
 
-if active "$ADMIN/workflows/quickstart-orders"; then
-  say "Workflow already active"
-else
-  say "Activate workflow"
-  curl -fsS -X PATCH "$ADMIN/workflows/quickstart-orders/status" \
-    -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
-fi
+# --- Workflow: flag orders over $10,000 ------------------------------------
+cat > "$WORK/quickstart/workflow.json" <<'JSON'
+{
+  "workflow_id": "quickstart-orders",
+  "name": "High-Value Order",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } }
+    },
+    {
+      "id": "flag",
+      "name": "Flag order",
+      "condition": { ">": [{ "var": "data.order.total" }, 10000] },
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.order.flagged", "logic": true },
+            {
+              "path": "data.order.alert",
+              "logic": { "cat": ["High-value order: $", { "var": "data.order.total" }] }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+JSON
 
 # --- Channel: POST /orders --------------------------------------------------
-if have "$ADMIN/channels/orders"; then
-  say "Channel 'orders' already exists"
-else
-  say "Create channel 'orders'"
-  curl -fsS -X POST "$ADMIN/channels" -H 'Content-Type: application/json' -d '{
-    "channel_id": "orders", "name": "orders", "channel_type": "sync",
-    "protocol": "rest", "route_pattern": "/orders",
-    "methods": ["POST"], "workflow_id": "quickstart-orders"
-  }' > /dev/null
-fi
+cat > "$WORK/quickstart/channel.json" <<'JSON'
+{
+  "channel_id": "orders",
+  "name": "orders",
+  "channel_type": "sync",
+  "protocol": "rest",
+  "route_pattern": "/orders",
+  "methods": ["POST"],
+  "workflow_id": "quickstart-orders"
+}
+JSON
 
-if active "$ADMIN/channels/orders"; then
-  say "Channel already active"
-else
-  say "Activate channel"
-  curl -fsS -X PATCH "$ADMIN/channels/orders/status" \
-    -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
-fi
+say "Compile the definitions"
+"$ORION_BIN" compile "$WORK/quickstart" -o "$WORK/deployment" > "$WORK/compile.log" 2>&1 || {
+  cat "$WORK/compile.log" >&2
+  exit 1
+}
+
+say "Deploy to $BASE"
+REVISION="$("$ORION_CLI" --server "$BASE" --yes --quiet deployments apply -d "$WORK/deployment")"
+say "Serving deployment revision $REVISION"
 
 # --- First request ----------------------------------------------------------
 say "Your service is live. Sending a test order:"

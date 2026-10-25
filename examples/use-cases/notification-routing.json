@@ -1,7 +1,7 @@
 {
   "name": "Notification Routing Pipeline",
   "description": "Route notifications by severity: filter low, email for medium+, SMS for high+",
-  "workflows": [{ "file": "../packages/notification-routing/workflow.json" }],
+  "packages": ["../packages/notification-routing"],
   "tests": [
     {
       "name": "Low severity is logged but no email/SMS",

@@ -4,15 +4,10 @@
 begin_suite "Asynchronous Data Processing"
 
 test_async_submit_and_poll() {
-    reset_server_state
-    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel orders "$wf" async
-    cli_quiet engine reload
+    deploy_one "$FIXTURES_DIR/workflows/simple_log.json" simple-log orders async
 
-    # v1.0: reading a trace needs its trace_token (or an admin credential),
-    # so submit in json mode and thread the token through.
+    # Reading a trace needs its trace_token (or an admin credential), so
+    # submit in json mode and thread the token through.
     cli send orders --async-mode -d '{"order_id":"ASYNC-001","amount":99}'
     assert_exit_code 0 "$CLI_EXIT"
     local trace_id trace_token
@@ -27,12 +22,7 @@ test_async_submit_and_poll() {
 }
 
 test_async_with_wait_flag() {
-    reset_server_state
-    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel orders "$wf" async
-    cli_quiet engine reload
+    deploy_one "$FIXTURES_DIR/workflows/simple_log.json" simple-log orders async
 
     cli send orders --async-mode --wait --timeout 15 -d '{"order_id":"ASYNC-002"}'
     assert_exit_code 0 "$CLI_EXIT"
@@ -40,12 +30,7 @@ test_async_with_wait_flag() {
 }
 
 test_async_trace_get() {
-    reset_server_state
-    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel events "$wf" async
-    cli_quiet engine reload
+    deploy_one "$FIXTURES_DIR/workflows/simple_log.json" simple-log events async
 
     cli send events --async-mode -d '{"event":"click"}'
     assert_exit_code 0 "$CLI_EXIT"
@@ -63,12 +48,7 @@ test_async_trace_get() {
 }
 
 test_async_quiet_returns_trace_id() {
-    reset_server_state
-    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel orders "$wf" async
-    cli_quiet engine reload
+    deploy_one "$FIXTURES_DIR/workflows/simple_log.json" simple-log orders async
 
     cli_quiet send orders --async-mode -d '{"order_id":"ASYNC-Q"}'
     assert_exit_code 0 "$CLI_EXIT"
@@ -79,12 +59,7 @@ test_async_quiet_returns_trace_id() {
 # with `send --wait` since the two were unified — so these cover both.
 
 test_traces_wait_emits_json_on_success() {
-    reset_server_state
-    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel orders "$wf" async
-    cli_quiet engine reload
+    deploy_one "$FIXTURES_DIR/workflows/simple_log.json" simple-log orders async
 
     cli send orders --async-mode -d '{"order_id":"WAIT-JSON"}'
     assert_exit_code 0 "$CLI_EXIT"
@@ -115,12 +90,7 @@ assert_wait_output_is_parseable_json() {
 }
 
 test_wait_timeout_still_emits_json_and_never_exits_one() {
-    reset_server_state
-    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    local wf="$CLI_OUTPUT"
-    cli_quiet workflows activate "$wf"
-    create_channel orders "$wf" async
-    cli_quiet engine reload
+    deploy_one "$FIXTURES_DIR/workflows/simple_log.json" simple-log orders async
 
     cli send orders --async-mode -d '{"order_id":"WAIT-TO"}'
     local trace_id trace_token

@@ -237,7 +237,7 @@ runtime-behaviour cases live in `tests/e2e/cases/`. It needs `jq` and
 
 ```bash
 just e2e                    # or: ./tests/e2e/run.sh
-./tests/e2e/run.sh 07 08    # a subset, by suite-number prefix
+./tests/e2e/run.sh 03 04    # a subset, by suite-number prefix
 ```
 
 ### Doc tests

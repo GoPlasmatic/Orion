@@ -36,7 +36,7 @@ Three principles shape the setup:
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
 | Touched a **rider crate** (`orion-api`, `orion-client`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all five crates share `workspace.package.version` and a release moves it |
 | Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
-| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-referee`) |
+| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-referee`; it needs both binaries, `cargo build -p orion-server -p orion-cli`) |
 | Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
@@ -150,20 +150,23 @@ runner per invocation) — kept drift-free by `ci_filter_drift_test`.*
 
 ## Layer 4 — end-to-end suite (`tests/e2e/`)
 
-The workspace-level suite at the repo root: 19 shell suites drive a real
+The workspace-level suite at the repo root: 11 shell suites drive a real
 `orion-server` binary over HTTP with the `orion-cli` binary, both built from
 the same tree — the one place the full contract chain (server ⇄ `orion-api`
 ⇄ `orion-client` ⇄ CLI rendering) is exercised end to end at one commit.
-Suite 13 is data-driven, from two case directories with distinct
-roles: [`examples/use-cases/`](examples/use-cases/) deploys the shipped
-example packages (workflows referenced by file, never copied) and asserts
-their live responses, and `tests/e2e/cases/` holds runtime-behaviour cases
-(archive quarantine, dry-run traces, secret masking, error paths). Adding a
-`.json` case to either extends the suite with no code changes.
+Every test deploys what it needs the way an operator does: a definition set
+compiled with `orion-server compile` and applied with `orion-cli deployments
+apply -d`, replacing the node's head. Suite 06 is data-driven, from two case
+directories with distinct roles: [`examples/use-cases/`](examples/use-cases/)
+deploys the shipped example packages whole (never copied) and asserts their
+live responses, and `tests/e2e/cases/` holds runtime-behaviour cases
+(definition test traces, connection secret locators, error paths, body
+modes). Adding a `.json` case to either extends the suite with no code
+changes.
 
 ```bash
 just e2e                  # build both binaries + full suite
-./tests/e2e/run.sh 07 08  # a subset
+./tests/e2e/run.sh 03 04  # a subset
 ```
 
 *Needs `jq`, `curl`. CI: `cli-e2e` job, every PR. Suite map and knobs:
@@ -180,8 +183,10 @@ The examples are executable and CI treats them as a gate (`examples` job):
   (`just workflow-tests`, which passes `--plugin-dir` for each).
 - **Live:** CI boots a real server with plugins enabled (plus Postgres for
   `postgres-orders`), runs `quickstart.sh` twice and `deploy.sh` for
-  **every** package twice — deployability and idempotency are both asserted,
-  and `deploy.sh` uploads and activates a package's `plugin.toml` first.
+  **every** package twice — deployability and idempotency are both asserted.
+  Both scripts compile with `orion-server compile` and deploy with
+  `orion-cli deployments apply -d`; each deploy replaces the node's head, so
+  every package is proven on its own, and the second run applies nothing.
 - **From source:** the `plugin-sdk` CI job rebuilds the test fixture and the
   example codec from their Rust sources on the shipped `orion-plugin-sdk`,
   runs the ABI case suite against the fresh fixture and the example cases
@@ -223,6 +228,12 @@ shared runners are noise. Run on dedicated hardware at release checkpoints;
 each release's record is committed under `crates/orion-server/tests/benchmark/results/vX.Y.Z/`
 (procedure: `RELEASING.md`).
 
+Its setup still drives the v1 admin routes (workflow and channel CRUD,
+`POST /engine/reload`), which the server no longer has: until it is ported
+onto compile + `deployments apply -d`, and its `multi` and `reload`
+scenarios redesigned for a node that serves one deployment head, the script
+does not run against this tree.
+
 ## CI at a glance
 
 Push/PR: `changes`, `fmt`, `lint`, `msrv`, `test`, `cli-e2e`, `examples`,
@@ -249,8 +260,8 @@ recompiled from cold.
   output.
 - **Not every CLI command group has e2e depth.** `send`, `traces`, `engine`,
   `health` and `cron` are exercised by the behaviour suites, and
-  `suites/14_read_only_commands.sh` covers `functions`, `audit-logs`,
-  `backups` and `dlq` at smoke depth: enough to catch a broken output shape or
+  `suites/07_read_only_commands.sh` covers `functions`, `audit-logs`,
+  `backups`, `dlq`, `connections` and `deployments capabilities` at smoke depth: enough to catch a broken output shape or
   envelope, not enough to call them tested.
 - **The e2e suite runs SQLite only.** Backend variance is covered at the
   integration layer (layer 3); duplicating the shell suite per backend was

@@ -13,7 +13,7 @@ in [`TESTING.md`](../../TESTING.md).
 just e2e                     # from the repo root — builds both binaries, runs everything
 ./tests/e2e/run.sh           # same thing
 ./tests/e2e/run.sh 01_health # one suite
-./tests/e2e/run.sh 07 08     # several, by number prefix
+./tests/e2e/run.sh 03 04     # several, by number prefix
 ```
 
 Environment knobs (all optional):
@@ -28,8 +28,31 @@ Environment knobs (all optional):
 | `E2E_KEEP_SERVER=1` | Leave the server running after the tests |
 
 The runner starts a throwaway server (temp SQLite database, temp config,
-random port), waits for `/health`, runs the suites, and tears everything
-down — nothing to start or clean up manually.
+random port, plugins on, one `[vars]` entry and one `[secrets]` entry),
+waits for `/health`, runs the suites, and tears everything down — nothing to
+start or clean up manually.
+
+## How a test deploys
+
+A node serves exactly its committed deployment head, so every test deploys
+what it needs the way an operator does: it writes a definition set into its
+temp directory (`new_set`, `set_workflow`, `set_channel`, `set_plugin` in
+`helpers.sh`), compiles it with `orion-server compile` and applies it with
+`orion-cli deployments apply -d` (`deploy_set`, or `deploy_one` for one
+workflow behind one channel). An apply **replaces** the head's members with
+the directory's, so a test needing several services deploys them as one set,
+and nothing needs cleaning between tests; `undeploy_all` commits an empty
+head when a test needs nothing serving. A refused compile or apply leaves
+`CLI_EXIT` non-zero and the reason in `CLI_STDERR`, so a refusal is asserted
+the same way either way. Each test runs under errexit, so its first failing
+assertion fails it.
+
+A workflow that calls a plugin function is refused at upload while the node
+does not serve that plugin yet, even when the same deployment carries it
+(`POST /definitions` checks against the serving functions). `apply_dist`
+works around it: when an apply carrying plugins fails, it deploys the
+plugins alone, then the whole directory again. `examples/deploy.sh` does the
+same.
 
 ## Layout
 
@@ -37,35 +60,24 @@ down — nothing to start or clean up manually.
 tests/e2e/
 ├── run.sh          # entry point: prerequisites, build, server lifecycle, suite discovery
 ├── helpers.sh      # framework: assertions, CLI wrappers, server control, case runner
-├── suites/         # 18 suites, sourced in filename order
-├── cases/          # data-driven runtime-behaviour cases (run by suite 13)
-└── fixtures/       # workflow / connector / request JSON used by the suites
+├── suites/         # 11 suites, sourced in filename order
+├── cases/          # data-driven runtime-behaviour cases (run by suite 06)
+└── fixtures/       # workflow / request JSON used by the suites
 ```
 
 | Suite | Covers |
 |-------|--------|
-| `01_health` | Health & connectivity |
-| `02_workflows_crud` | Workflows CRUD |
-| `03_workflows_status` | Workflow status lifecycle (draft → active → archived) |
-| `04_workflows_import_export` | Bulk import/export, `--dry-run` |
-| `05_workflows_test` | Server-side workflow dry runs |
-| `06_connectors_crud` | Connectors CRUD |
-| `07_data_sync` | Synchronous data processing through channels |
-| `08_data_async` | Async processing, traces, `trace_token` |
-| `09_channels_lifecycle` | Channel CRUD, status transitions, versions, export filters |
-| `10_engine_control` | Engine status and hot reload |
-| `11_error_handling` | Error envelope rendering, failure exit codes |
-| `12_full_lifecycle` | A full create→activate→send→archive walk |
-| `13_use_cases` | Data-driven cases: scenarios from [`examples/use-cases/`](../../examples/use-cases/) (which deploy the shipped example packages) plus the runtime-behaviour cases in `cases/` |
-| `14_read_only_commands` | The read-only CLI verbs — `functions`, `metrics`, `audit-logs`, `backups`, `packages`, `dlq`, `completions`, `config show` |
-| `15_vars_and_secrets` | `[vars]` and `[secrets]` end to end: the harness's config file declares one of each, so this is the only layer that covers `${VAR}` substitution into a var, an `env://` reference resolved at startup, and both reaching a workflow on a real process |
-| `16_plugins` | The plugin entity through the CLI against a server with the sandbox on: upload from a manifest (the component read beside it), activate, a workflow serving through a plugin function including a `template_at` field, the archive gate, export with artifacts, import, delete. Suite 13's `fixed-width-statement` case deploys the example codec the same way (`"plugins"` in the case file) |
-| `17_cron` | A schedule through the CLI against a real server: create and activate a `protocol: "cron"` channel, watch occurrences appear on their own, trigger one by hand with `channels trigger`, and read the ledger back with `cron status|list|get|retry`. The schedule fires every second, so nothing waits on a guessed duration |
-| `19_deployments` | The v2 deployment path on a server of its own (a committed deployment makes a node serve from its manifest alone): the `order-classification` example compiled with `orion-server compile --format deployment`, deployed with `deployments plan\|apply -d` and served over the data plane; one workflow changed, recompiled and re-applied, and only its member's revision moving; an unchanged directory applying nothing |
-
-The suites speak the v1.0 API: every send goes through a channel bound to
-exactly one workflow (`create_channel` in `helpers.sh`), and reading a
-trace needs the `trace_token` from the async submit.
+| `01_health` | Health (JSON, quiet, YAML) and engine status: nothing deployed, then a two-service set |
+| `02_definition_test` | `POST /definitions/test` — a compiled workflow definition run once on the node without deploying it: its output, a skipped task in the trace, a refused definition, nothing deployed after |
+| `03_data_sync` | Synchronous sends through deployed channels; an unknown channel refused; a redeploy replacing what serves |
+| `04_data_async` | Async submits, `traces wait`/`get`, `trace_token`, `send --wait`, the timeout contract |
+| `05_error_handling` | Failure exit codes: a malformed payload, sets `compile` refuses (a channel naming a missing workflow, an unknown function, an inline credential), an apply of a non-deployment, and a refused deploy leaving the head serving |
+| `06_use_cases` | Data-driven cases: scenarios from [`examples/use-cases/`](../../examples/use-cases/) (which deploy the shipped example packages whole) plus the runtime-behaviour cases in `cases/` |
+| `07_read_only_commands` | The read-only CLI verbs — `functions`, `metrics`, `audit-logs`, `backups`, `connections`, `deployments capabilities`, `dlq`, the list paging flags, `completions`, `config show` |
+| `08_vars_and_secrets` | `[vars]` and `[secrets]` end to end: the harness's config file declares one of each, so this is the only layer that covers `${VAR}` substitution into a var, an `env://` reference resolved at startup, and both reaching a workflow on a real process; the stored definition holds the secret's name; an undeclared secret refused at upload; a stray reference refused at compile |
+| `09_plugins` | A plugin as a deployment member: the fixture manifest and component compiled in, its functions in the catalogue and serving two workflows (a `template_at` field included), a re-apply committing nothing, a deployment without it dropping its functions, and a workflow calling it refused on a node that does not serve it. Suite 06's `fixed-width-statement` case deploys the example codec the same way |
+| `10_cron` | A schedule through the CLI: a deployed `protocol: "cron"` channel firing every second, occurrences read back with `cron status\|list\|get`, `cron trigger` running one now, an undeploy removing the schedule, and caller-shaped config and five-field expressions refused at compile |
+| `11_deployments` | Deployment revisions on a server of its own (so its revision numbers are exact): the `order-classification` example compiled and deployed with `deployments plan\|apply -d`; one workflow changed and only its member's revision moving; an unchanged directory applying nothing; a member left out of the next apply stopping; `deployments rollback` serving the earlier revision again |
 
 ## Adding coverage
 
@@ -73,7 +85,7 @@ A new test inside an existing suite is a bash function plus a
 `run_test "name" fn` line. A new suite is a new `NN_name.sh` in `suites/`
 (sourced in filename order; keep one concern per suite). Data-driven cases
 (format: [`examples/use-cases/README.md`](../../examples/use-cases/README.md))
-are picked up by suite 13 automatically and split by role: a *scenario*
-showing off a shipped example package goes in `examples/use-cases/` with its
-workflow referenced by file; a *runtime-behaviour* check (lifecycle,
-masking, error paths) goes in `cases/` here.
+are picked up by suite 06 automatically and split by role: a *scenario*
+showing off a shipped example package goes in `examples/use-cases/` and
+deploys the package whole (`"packages"`); a *runtime-behaviour* check
+(secret locators, error paths, ingress modes) goes in `cases/` here.

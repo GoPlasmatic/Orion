@@ -1,14 +1,7 @@
 {
   "name": "In-Process Channel Composition",
   "description": "One service calls another with channel_call — no network hop — and prices an order from the tier the called channel returns",
-  "workflows": [
-    { "file": "../packages/channel-composition/workflow-lookup.json" },
-    { "file": "../packages/channel-composition/workflow.json" }
-  ],
-  "channels": [
-    { "name": "customer-lookup", "workflow_id": "customer-lookup" },
-    { "name": "order-enrichment", "workflow_id": "order-enrichment" }
-  ],
+  "packages": ["../packages/channel-composition"],
   "tests": [
     {
       "name": "the called channel answers on its own",

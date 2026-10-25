@@ -1,16 +1,26 @@
 #!/usr/bin/env bash
 #
-# Deploy and run one example package end-to-end.
+# Deploy one or more example packages and run them end-to-end.
 #
-#   ./deploy.sh <package> [base-url]
+#   ./deploy.sh <package>... [base-url]
 #
-# A package is the set of entities that ship together — its channels, their
-# workflows, and the connector when the package needs one. The script creates
-# and activates every workflow, then every channel (creating the connector
-# first, if the package ships a connector.json), then POSTs request.json to the
-# primary channel's route and prints the response. Idempotent: re-running
-# against the same instance skips objects that already exist. Requires curl and
-# python3.
+# A package is a definition set: its channels, their workflows, and the
+# connector or plugin it needs. The script compiles the packages with
+# `orion-server compile` into one deployment directory, deploys it with
+# `orion-cli deployments apply -d`, then POSTs each package's request.json to
+# its primary channel's route and prints the response.
+#
+# A deployment is the whole of what a node serves: applying one replaces the
+# node's deployment head, so whatever it served before and these packages do
+# not carry stops serving. To run several packages side by side, name them in
+# one invocation — they are compiled into one set. Idempotent: re-running
+# with the same packages applies nothing ("Up to date") and sends the
+# requests again.
+#
+# Needs `orion-server` (to compile) and `orion-cli` (to deploy): set
+# ORION_BIN / ORION_CLI, or build the workspace (`cargo build -p orion-server
+# -p orion-cli`) so they are found under target/, or put them on PATH. Also
+# needs curl and python3.
 #
 # File conventions inside a package directory:
 #   workflow.json          the primary workflow          (required)
@@ -20,210 +30,149 @@
 #   connector.json         a connector the package needs (optional)
 #   connector-<name>.json  additional connectors         (optional)
 #   plugin.toml            a plugin, with its component  (optional)
+#   shared.json, sql/…     source-form authoring the compile resolves (optional)
 #   request.json           a sample request              (optional)
 #
-# A package whose primary channel has no route_pattern — a cron channel — is
-# deployed the same way; the script prints the schedule instead of sending a
-# request.
+# A connector's credential is an `env://` reference resolved on the server,
+# so the server's environment must define it (postgres-orders needs
+# ORDERS_DB_URL). A package with a plugin needs a server with
+# `plugins.enabled = true`. A package whose primary channel has no
+# route_pattern — a cron channel — is deployed the same way; the script
+# prints the schedule instead of sending a request.
 #
 # Example:
 #   ./deploy.sh high-value-order
 #   ./deploy.sh channel-composition http://localhost:8080
+#   ./deploy.sh order-classification webhook-transform
 set -euo pipefail
 
+CALLER_DIR="$(pwd)"
 cd "$(dirname "$0")"
+EXAMPLES_DIR="$(pwd)"
 
-DIR="${1:-}"
-BASE="${2:-http://localhost:8080}"
-ADMIN="$BASE/api/v2/admin"
+BASE="http://localhost:8080"
+PACKAGES=()
+for arg in "$@"; do
+  case "$arg" in
+    http://*|https://*) BASE="$arg" ;;
+    *)
+      arg="${arg%/}"
+      # A path from the caller's directory, from examples/, or a bare
+      # package name (`high-value-order` for `packages/high-value-order`).
+      for candidate in "$CALLER_DIR/$arg" "$arg" "packages/$arg"; do
+        if [[ -d "$candidate" ]]; then
+          PACKAGES+=("$(cd "$candidate" && pwd)")
+          continue 2
+        fi
+      done
+      echo "no such package: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
 
-DIR="${DIR%/}"
-# Accept a bare package name (`high-value-order`) or its path (`packages/high-value-order`).
-if [[ -n "$DIR" && ! -d "$DIR" && -d "packages/$DIR" ]]; then
-  DIR="packages/$DIR"
-fi
-
-if [[ -z "$DIR" || ! -d "$DIR" ]]; then
-  echo "usage: ./deploy.sh <package> [base-url]" >&2
+if [[ ${#PACKAGES[@]} -eq 0 ]]; then
+  echo "usage: ./deploy.sh <package>... [base-url]" >&2
   echo "example: ./deploy.sh high-value-order" >&2
   exit 1
 fi
-# A package written in source form — `$sql`, `$from`, `$use`, `$each`, or a
-# `shared.json` beside the definitions — is compiled before anything is sent.
-# The admin API is canonical-only by design and refuses source form with
-# `UNCOMPILED_SOURCE`, so this is the same `compile` step a promotion does,
-# run into a scratch directory whose file names are the ones below.
-if grep -qlE '"\$(sql|from|use|each|param)"' "$DIR"/*.json 2>/dev/null || [[ -f "$DIR/shared.json" ]]; then
-  ORION_BIN="${ORION_BIN:-}"
-  if [[ -z "$ORION_BIN" ]]; then
-    for candidate in ../target/debug/orion-server ../target/release/orion-server "$(command -v orion-server || true)"; do
-      [[ -x "$candidate" ]] && { ORION_BIN="$candidate"; break; }
-    done
-  fi
-  if [[ -z "$ORION_BIN" ]]; then
-    echo "$DIR is written in source form and needs 'orion-server compile' first." >&2
-    echo "Build it (cargo build) or set ORION_BIN=<path to orion-server>." >&2
-    exit 1
-  fi
-  COMPILED="$(mktemp -d)"
-  trap 'rm -rf "$COMPILED"' EXIT
-  echo "==> Compile '$DIR' (source form) -> canonical definitions"
-  "$ORION_BIN" compile "$DIR" --name "$(basename "$DIR")" --version 0.0.0 \
-    --format dir -o "$COMPILED" > /dev/null
-  # Everything the deploy reads that compile does not emit: the sample
-  # request, a plugin and its component.
-  for extra in request.json plugin.toml; do
-    [[ -e "$DIR/$extra" ]] && cp -R "$DIR/$extra" "$COMPILED/"
+
+for pkg in "${PACKAGES[@]}"; do
+  [[ -f "$pkg/channel.json" ]] || { echo "missing $pkg/channel.json" >&2; exit 1; }
+done
+
+# The binaries: an explicit path, the workspace's own build, or PATH.
+find_bin() {
+  local var="$1" name="$2" candidate
+  if [[ -n "${!var:-}" ]]; then echo "${!var}"; return; fi
+  for candidate in "$EXAMPLES_DIR/../target/debug/$name" "$EXAMPLES_DIR/../target/release/$name" \
+                   "$(command -v "$name" || true)"; do
+    [[ -n "$candidate" && -x "$candidate" ]] && { echo "$candidate"; return; }
   done
-  PLUGIN_COMPONENT_FILE="$(ls "$DIR"/*.wasm 2>/dev/null | head -1 || true)"
-  [[ -n "$PLUGIN_COMPONENT_FILE" ]] && cp "$PLUGIN_COMPONENT_FILE" "$COMPILED/"
-  DIR="$COMPILED"
+  echo "$name not found: build it (cargo build -p $name) or set $var=<path>" >&2
+  exit 1
+}
+ORION_BIN="$(find_bin ORION_BIN orion-server)"
+ORION_CLI="$(find_bin ORION_CLI orion-cli)"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# One package compiles as itself; several are copied side by side into one
+# set, which `compile` walks recursively.
+if [[ ${#PACKAGES[@]} -eq 1 ]]; then
+  SET="${PACKAGES[0]}"
+else
+  SET="$WORK/set"
+  mkdir -p "$SET"
+  for pkg in "${PACKAGES[@]}"; do
+    cp -R "$pkg" "$SET/$(basename "$pkg")"
+  done
 fi
 
-WF_FILE="$DIR/workflow.json"
-CH_FILE="$DIR/channel.json"
-REQ_FILE="$DIR/request.json"
+NAMES="$(for pkg in "${PACKAGES[@]}"; do basename "$pkg"; done | paste -sd ' ' -)"
+echo "==> Compile $NAMES"
+if ! "$ORION_BIN" compile "$SET" -o "$WORK/deployment" > "$WORK/compile.log" 2>&1; then
+  cat "$WORK/compile.log" >&2
+  exit 1
+fi
 
-for f in "$WF_FILE" "$CH_FILE"; do
-  [[ -f "$f" ]] || { echo "missing $f" >&2; exit 1; }
-done
+# --quiet: an apply prints the revision the node now serves; its plan goes
+# to stderr.
+cli() { "$ORION_CLI" --server "$BASE" --yes --quiet "$@"; }
+
+echo "==> Deploy to $BASE"
+# Plugins first, when they have to be: the server checks an uploaded workflow
+# against the functions it serves now, so a workflow calling a plugin
+# function is refused while the plugin is not yet deployed — even with the
+# plugin in the same deployment. If an apply carrying plugins fails, deploy
+# the plugins alone, then the whole directory again.
+if ! REVISION="$(cli deployments apply -d "$WORK/deployment" 2> "$WORK/apply.log")"; then
+  if grep -q '"kind": "plugin"' "$WORK/deployment/deployment.json"; then
+    echo "==> Deploy the plugins first, then everything"
+    mkdir -p "$WORK/plugins/connections"
+    cp -R "$WORK/deployment/definitions" "$WORK/plugins/"
+    python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+d["members"] = [m for m in d["members"] if m["kind"] == "plugin"]
+json.dump(d, open(sys.argv[2], "w"), indent=2)' \
+      "$WORK/deployment/deployment.json" "$WORK/plugins/deployment.json"
+    cli deployments apply -d "$WORK/plugins" > /dev/null
+    REVISION="$(cli deployments apply -d "$WORK/deployment")"
+  else
+    cat "$WORK/apply.log" >&2
+    exit 1
+  fi
+else
+  cat "$WORK/apply.log" >&2
+fi
+echo "==> Serving deployment revision $REVISION"
 
 # Read a field out of a JSON file with the stdlib (no jq dependency). Prints
 # nothing when the field is absent, so a caller can test for it.
 json_field() {
   python3 -c 'import json,sys
 d = json.load(open(sys.argv[1]))
-v = d.get(sys.argv[2])
-print("" if v is None else v)' "$1" "$2"
+for key in sys.argv[2].split("."):
+    d = d.get(key) if isinstance(d, dict) else None
+print("" if d is None else d)' "$1" "$2"
 }
 
-# One top-level string from a plugin manifest. Deliberately not `tomllib`:
-# that is Python 3.11+, and this script promises to run on `python3` — which
-# is still 3.10 on Ubuntu 22.04 LTS, and was the CI runner that caught it.
-# The two keys it is ever asked for (`name`, `component`) are bare top-level
-# assignments above the first `[[functions]]` table, so reading exactly that
-# much of the grammar is enough and stays honest about its limits.
-manifest_field() {
-  python3 -c 'import re,sys
-path, want = sys.argv[1], sys.argv[2]
-for line in open(path, encoding="utf-8"):
-    line = line.strip()
-    if line.startswith("["):
-        break            # a table header ends the top-level block
-    m = re.match(r"([A-Za-z0-9_-]+)\s*=\s*\"([^\"]*)\"", line)
-    if m and m.group(1) == want:
-        print(m.group(2))
-        sys.exit(0)
-sys.exit(f"{path}: no top-level {want} = \"...\"")' "$1" "$2"
-}
-
-have()   { curl -fsS "$1" > /dev/null 2>&1; }
-active() { curl -fsS "$1" 2> /dev/null | grep -q '"status":"active"'; }
-
-# The primary entity first, then any siblings, so a package that composes
-# channels deploys its callee alongside its caller in one run.
-workflow_files()  { echo "$WF_FILE"; ls "$DIR"/workflow-*.json 2>/dev/null || true; }
-channel_files()   { echo "$CH_FILE"; ls "$DIR"/channel-*.json 2>/dev/null || true; }
-connector_files() { ls "$DIR"/connector.json "$DIR"/connector-*.json 2>/dev/null || true; }
-
-# A package that ships a plugin (plugin.toml beside the component it names)
-# installs and activates it first: a workflow calling one of its functions is
-# refused at create until the plugin is active. The server must run with
-# `plugins.enabled = true`. The body is the same JSON `orion-cli plugins
-# create -f` sends — manifest text plus the component as base64.
-PLUGIN_FILE="$DIR/plugin.toml"
-if [[ -f "$PLUGIN_FILE" ]]; then
-  PLUGIN_ID=$(manifest_field "$PLUGIN_FILE" name)
-  PLUGIN_COMPONENT=$(manifest_field "$PLUGIN_FILE" component)
-  if have "$ADMIN/plugins/$PLUGIN_ID"; then
-    echo "==> Plugin '$PLUGIN_ID' already exists"
-  else
-    echo "==> Create plugin '$PLUGIN_ID'"
-    python3 -c 'import base64, json, os, sys
-manifest_path, component = sys.argv[1], sys.argv[2]
-text = open(manifest_path, encoding="utf-8").read()
-with open(os.path.join(os.path.dirname(manifest_path), component), "rb") as f:
-    encoded = base64.b64encode(f.read()).decode()
-json.dump({"manifest": text, "component": encoded}, sys.stdout)' \
-        "$PLUGIN_FILE" "$PLUGIN_COMPONENT" \
-      | curl --fail-with-body -sS -X POST "$ADMIN/plugins" \
-          -H 'Content-Type: application/json' --data @- > /dev/null
+for pkg in "${PACKAGES[@]}"; do
+  CH_FILE="$pkg/channel.json"
+  CH_ID="$(json_field "$CH_FILE" channel_id)"
+  ROUTE="$(json_field "$CH_FILE" route_pattern)"
+  if [[ -z "$ROUTE" ]]; then
+    # A cron channel has no HTTP route; its schedule is what runs the workflow.
+    echo "==> Deployed. '$CH_ID' runs on schedule '$(json_field "$CH_FILE" transport_config.schedule)'"
+    continue
   fi
-  if active "$ADMIN/plugins/$PLUGIN_ID"; then
-    echo "==> Plugin '$PLUGIN_ID' already active"
-  else
-    echo "==> Activate plugin '$PLUGIN_ID'"
-    curl --fail-with-body -sS -X PATCH "$ADMIN/plugins/$PLUGIN_ID/status" \
-      -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
+  if [[ ! -f "$pkg/request.json" ]]; then
+    echo "==> Deployed. '$CH_ID' has no request.json to send."
+    continue
   fi
-fi
-
-while IFS= read -r conn; do
-  [[ -n "$conn" ]] || continue
-  CONN_ID=$(json_field "$conn" id)
-  if have "$ADMIN/connectors/$CONN_ID"; then
-    echo "==> Connector '$CONN_ID' already exists"
-  else
-    echo "==> Create connector '$CONN_ID'"
-    curl --fail-with-body -sS -X POST "$ADMIN/connectors" \
-      -H 'Content-Type: application/json' --data @"$conn" > /dev/null
-  fi
-done < <(connector_files)
-
-while IFS= read -r wf; do
-  [[ -n "$wf" ]] || continue
-  WF_ID=$(json_field "$wf" workflow_id)
-  if have "$ADMIN/workflows/$WF_ID"; then
-    echo "==> Workflow '$WF_ID' already exists"
-  else
-    echo "==> Create workflow '$WF_ID'"
-    curl --fail-with-body -sS -X POST "$ADMIN/workflows" \
-      -H 'Content-Type: application/json' --data @"$wf" > /dev/null
-  fi
-  if active "$ADMIN/workflows/$WF_ID"; then
-    echo "==> Workflow '$WF_ID' already active"
-  else
-    echo "==> Activate workflow '$WF_ID'"
-    curl --fail-with-body -sS -X PATCH "$ADMIN/workflows/$WF_ID/status" \
-      -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
-  fi
-done < <(workflow_files)
-
-while IFS= read -r ch; do
-  [[ -n "$ch" ]] || continue
-  CH_ID=$(json_field "$ch" channel_id)
-  if have "$ADMIN/channels/$CH_ID"; then
-    echo "==> Channel '$CH_ID' already exists"
-  else
-    echo "==> Create channel '$CH_ID'"
-    curl --fail-with-body -sS -X POST "$ADMIN/channels" \
-      -H 'Content-Type: application/json' --data @"$ch" > /dev/null
-  fi
-  if active "$ADMIN/channels/$CH_ID"; then
-    echo "==> Channel '$CH_ID' already active"
-  else
-    echo "==> Activate channel '$CH_ID'"
-    curl --fail-with-body -sS -X PATCH "$ADMIN/channels/$CH_ID/status" \
-      -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
-  fi
-done < <(channel_files)
-
-ROUTE=$(json_field "$CH_FILE" route_pattern)
-
-if [[ -z "$ROUTE" ]]; then
-  # A cron channel has no HTTP route; its schedule is what runs the workflow.
-  SCHEDULE=$(python3 -c 'import json,sys
-print(json.load(open(sys.argv[1])).get("transport_config", {}).get("schedule", "?"))' "$CH_FILE")
-  echo "==> Deployed. '$(json_field "$CH_FILE" channel_id)' runs on schedule '$SCHEDULE'"
-  exit 0
-fi
-
-if [[ ! -f "$REQ_FILE" ]]; then
-  echo "==> Deployed. No request.json to send."
-  exit 0
-fi
-
-echo "==> POST /api/v2/data$ROUTE"
-curl --fail-with-body -sS -X POST "$BASE/api/v2/data$ROUTE" \
-  -H 'Content-Type: application/json' --data @"$REQ_FILE"
-echo
+  echo "==> POST /api/v2/data$ROUTE"
+  curl --fail-with-body -sS -X POST "$BASE/api/v2/data$ROUTE" \
+    -H 'Content-Type: application/json' --data @"$pkg/request.json"
+  echo
+done

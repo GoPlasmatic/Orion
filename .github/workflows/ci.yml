@@ -224,8 +224,11 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
+      # Both binaries: deploy.sh and quickstart.sh compile with orion-server
+      # and deploy with orion-cli, and a bare `cargo build` builds only the
+      # server (default-members).
       - name: Build
-        run: cargo build
+        run: cargo build -p orion-server -p orion-cli
 
       - name: Lint example workflows
         run: |
@@ -247,7 +250,9 @@ jobs:
       - name: Start Postgres (postgres-orders package)
         run: docker compose -f examples/packages/postgres-orders/docker-compose.yml up --wait postgres
 
-      # Plugins on: the fixed-width-statement package uploads one.
+      # Plugins on: the fixed-width-statement and c4-referee packages deploy
+      # one. ORDERS_DB_URL is the env:// reference postgres-orders' connection
+      # names; the node resolves it from its own environment.
       - name: Start Orion
         run: |
           ORION_STORAGE__URL="sqlite:/tmp/orion-examples.db?mode=rwc" \
@@ -267,6 +272,8 @@ jobs:
           ./examples/quickstart.sh
           ./examples/quickstart.sh
 
+      # Each deploy replaces the node's head with that one package, so every
+      # package is proven on its own; the second run applies nothing.
       - name: Deploy every example package end-to-end (twice — idempotency)
         run: |
           cd examples
