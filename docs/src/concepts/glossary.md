@@ -16,7 +16,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Case file**: a `*.case.json` regression test that runs a workflow offline and asserts paths in its output. See [Test a workflow offline](../guides/author/testing.md).
 
-**Channel**: a named service endpoint that receives work over HTTP, from a Kafka topic or on a cron schedule, and hands it to a workflow. See [Channels](./channels.md).
+**Channel**: a named service endpoint that receives work over HTTP or on a cron schedule, and hands it to a workflow. See [Channels](./channels.md).
 
 **channel_call**: the built-in function that invokes another channel's workflow in-process from a running task. See [Task functions](../reference/functions/channel_call.md).
 
@@ -26,19 +26,19 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Config epoch**: a shared counter in the database, advanced by every mutation; cluster replicas poll it and resync when it moves. See [Run a cluster](../operate/deploy/cluster.md).
 
-**Connector**: a named connection to an external system (`http`, `db`, `cache`, `es`, `kafka`, `smtp`, `storage`) that tasks reference by name. See [Connectors](./connectors.md).
+**Connector**: a named connection to an external system (`http`, `db`, `cache`, `storage`) that tasks reference by name. See [Connectors](./connectors.md).
 
 **Control plane**: the admin API under `/api/v2/admin/`, and the CLI and Console that drive it. See [Admin API](../reference/admin-api/index.md).
 
-**Cron channel**: a channel whose `protocol` is `cron`: a six-field schedule and a fixed payload, with no route, topic or caller. See [Cron transport](../reference/channel-config/cron.md).
+**Cron channel**: a channel whose `protocol` is `cron`: a six-field schedule and a fixed payload, with no route and no caller. See [Cron transport](../reference/channel-config/cron.md).
 
 **Data context**: the JSON document a workflow's tasks read and write; its top level is exactly `data`, `metadata` and `temp_data`. See [Workflows](./workflows.md#the-data-context).
 
 **Data plane**: the endpoints under `/api/v2/data/` where channels answer requests. See [Data API](../reference/data-api.md).
 
-**Dedup key (idempotency key)**: the per-channel value, a header or the Kafka record key, that marks a request as a duplicate inside the dedup window. See [Channel configuration](../reference/channel-config/deduplication.md).
+**Dedup key (idempotency key)**: the per-channel value, read from a request header, that marks a request as a duplicate inside the dedup window. See [Channel configuration](../reference/channel-config/deduplication.md).
 
-**Dialect (portable data dialect)**: the backend-neutral query and write language that `data_query` and `data_write` lower to SQL, MongoDB or Elasticsearch. See [Portable data dialect](../reference/data-dialect.md).
+**Dialect (portable data dialect)**: the backend-neutral query and write language that `data_query` and `data_write` lower to PostgreSQL, MySQL or SQLite. See [Portable data dialect](../reference/data-dialect.md).
 
 **Draft / active / archived**: the three entity statuses: drafts are editable, active versions are immutable and served, archived versions are retired. See [The entity lifecycle](./lifecycle.md).
 
@@ -52,7 +52,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Hot reload**: replacing the running generation inside a live process; admin mutations and `POST /api/v2/admin/engine/reload` take effect without a restart. See [The entity lifecycle](./lifecycle.md#what-moves-the-engine).
 
-**Ingress**: any path work enters a channel: a synchronous request, an `/async` submission, a Kafka record, a `channel_call`, or a claimed cron occurrence.
+**Ingress**: any path work enters a channel: a synchronous request, an `/async` submission, a `channel_call`, or a claimed cron occurrence.
 
 **Ingress guards**: the per-channel checks (rate limit, auth, origin, validation, dedup, response cache, backpressure) that run on every ingress before the workflow. See [Channel configuration](../reference/channel-config/index.md).
 

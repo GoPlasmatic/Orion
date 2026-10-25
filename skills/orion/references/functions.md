@@ -26,17 +26,15 @@ secret references, defaults, `source` (`builtin` or `plugin`), and
 | HTTP service | `http_call` |
 | Portable database access | `data_query`, `data_write` |
 | Raw SQL escape hatch | `db_read`, `db_write` |
-| Native MongoDB | `mongo_read`, `mongo_write`, `mongo_aggregate` |
 | Cache | `cache_read` (`keys` for several), `cache_write`, `cache_delete`, `cache_incr` (generation counters) |
 | Invalidate a channel response cache | `cache_invalidate` |
-| Kafka or email | `publish_kafka`, `send_email` |
 | Object metadata/presigning | `storage_head`, `storage_presign` |
 | Call another Orion service | `channel_call` |
 | Cryptography or JWT | `crypto`, `jwt_sign`, `jwt_verify` |
 | A codec or calculation that already exists as code | a plugin function, named `<plugin>.<label>` |
 
 Prefer the portable data dialect unless the operation genuinely requires raw
-SQL or native MongoDB. It is parameterized, backend-neutral, and checked against
+SQL. It is parameterized, backend-neutral, and checked against
 connector operation gates.
 
 ## Task shape
@@ -162,8 +160,7 @@ tree. A missing component fails as `PLUGIN_ARTIFACT_UNAVAILABLE`.
 
 `retry_safety` on each catalog entry answers what a *second* run costs — not
 whether an error was transient. It matters because Orion retries in places an
-author may not have in mind: the trace DLQ replays a failed async delivery, a
-Kafka redelivery re-runs everything after an uncommitted offset, `http_call`
+author may not have in mind: the trace DLQ replays a failed async delivery, `http_call`
 retries its own transport failures, and a cron occurrence can be retried by
 hand.
 

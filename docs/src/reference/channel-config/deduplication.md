@@ -30,7 +30,7 @@
 Rules:
 
 - Keys are scoped per channel. A request that does not carry the header is not checked.
-- The key is claimed before the workflow runs and settled once the outcome is durable. A delivery that fails without settling is re-processed on retry, not refused as a duplicate of itself. The full claim/settle argument is in [Availability](../../concepts/lifecycle.md).
+- The key is claimed before the workflow runs. Once the request is admitted, the claim stands for the rest of the window whatever the workflow does, so a retry with the same key answers `409`. A guard that refuses the request after the claim, backpressure for one, releases the key. The argument is in [Design notes](../../concepts/design-notes.md#deduplication-the-claim-stands-for-the-window).
 - `deny` on payment-style workloads trades availability for the guarantee that a duplicate can never slip through an outage.
 
 **`channel_call` is exempt.** An in-process call is a step inside a request already deduplicated at its own ingress and carries no key of its own. It would inherit the parent's, so a workflow calling one channel once per line item would see its second call refused.
@@ -39,7 +39,7 @@ Rules:
 
 ## Related
 
-- [The entity lifecycle](../../concepts/lifecycle.md): the claim-and-settle argument.
+- [Design notes](../../concepts/design-notes.md#deduplication-the-claim-stands-for-the-window): why the claim stands for the window.
 - [Connector types › Cache](../connectors/cache.md): the connector that backs the store.
 - [Deploy a cluster](../../operate/deploy/cluster.md): the shared store a cluster requires.
 - [Channel configuration](./index.md): every key, with its page.

@@ -86,8 +86,8 @@ The raw request body is outside that JSONLogic document. Parsing functions read
 it as `source: "payload"` and write beneath `data`.
 
 HTTP metadata may include channel, method, lower-cased/masked headers, route
-params, query values, and explicitly opted-in cookies. Kafka metadata includes
-topic, partition, offset, and a UTF-8 key. `channel_call` inherits metadata
+params, query values, and explicitly opted-in cookies. A cron run carries
+`metadata.trigger`, written only by the cron worker. `channel_call` inherits metadata
 while overwriting the channel identity and adding call-chain fields.
 
 Do not trust caller-provided metadata for authorization. Orion overwrites its
@@ -130,7 +130,7 @@ codes may be more specific than the generic engine codes.
 }
 ```
 
-For async HTTP or Kafka work, an unhandled failure follows trace/DLQ policy.
+For async HTTP work, an unhandled failure follows trace/DLQ policy.
 Inspect the trace rather than assuming the acknowledgement means completion.
 
 ## Loops
@@ -156,8 +156,7 @@ quarantined. Use activation `--dry-run` before changing traffic.
 
 HTTP rollout can be sticky using the configured identity header, otherwise the
 forwarded client IP, with random-per-request fallback when neither is present.
-`channel_call` preserves the parent rollout decision. Kafka is admitted
-without an HTTP caller bucket.
+`channel_call` preserves the parent rollout decision.
 
 Promoting a version fully archives the replaced active version. For rollback,
 copy known-good archived content into a new draft, test, and activate it—or

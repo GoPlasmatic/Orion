@@ -23,7 +23,7 @@ The category is wide. Airflow schedules DAGs across a cluster; [Restate](https:/
 |  | Durable execution engines | Orion |
 |---|---|---|
 | What it is | A runtime that journals every step so a run can resume | A runtime that serves service definitions you send it |
-| Unit of work | A run, with an id, resumable | One request, one Kafka record, or one scheduled occurrence |
+| Unit of work | A run, with an id, resumable | One request or one scheduled occurrence |
 | How you write the logic | Handlers or DAGs in TypeScript, Java, Python or Go | JSON, posted to a running server |
 | Where state lives | In the engine's journal, which *is* the product | In the run's data context while it lasts; nothing after it unless you wrote it to a datastore |
 | How a change ships | Deploy the code, register the new version | One API call, hot-reloaded, no restart |
@@ -77,7 +77,7 @@ They compose cleanly in either direction, and this is the common production shap
 
 ## What Orion cannot do here
 
-- **No resume.** A redelivered Kafka record runs again from the first task, so the steps that already succeeded run twice. Nothing picks up mid-pipeline, and a crash loses an in-flight `/async` submission outright.
+- **No resume.** A retried cron occurrence runs again from the first task, so the steps that already succeeded run twice. Nothing picks up mid-pipeline, and a crash loses an in-flight `/async` submission outright.
 - **No timers inside a run.** A cron channel starts a workflow on a schedule, but nothing can pause one. There is no `sleep` and no delayed invocation.
 - **No human-in-the-loop primitive.** There is no awakeable, no task token, and no way for an external system to complete a paused run.
 - **No per-key state or single-writer guarantee.** A workflow can keep state in a datastore, but the runtime holds none between requests, and nothing serializes two runs touching the same key. [Deduplication](../../reference/channel-config/deduplication.md) bounds replays within a window; it is not keyed state.

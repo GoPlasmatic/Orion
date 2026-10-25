@@ -1,4 +1,4 @@
-<!-- description: Ready-to-deploy Orion example packages — order classification, webhook transforms, Kafka events, IoT alerts — each with a step-by-step walkthrough. -->
+<!-- description: Ready-to-deploy Orion example packages — order classification, webhook transforms, scheduled rollups, IoT alerts — each with a step-by-step walkthrough. -->
 <!-- type: tutorial -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -10,7 +10,7 @@ The repository ships twelve ready-to-deploy services, each a *package*: one serv
 
 - What files a package directory holds, and which admin call each one is sent to.
 - What `deploy.sh` does, and how to do the same by hand.
-- Which examples need a broker, a plugin sandbox or a model, and which need nothing.
+- Which examples need a plugin sandbox or a model, and which need nothing.
 - Where the offline regression suite for the examples lives.
 
 ## Before you start
@@ -43,7 +43,7 @@ With the server running:
 
 `deploy.sh` creates and activates every workflow the package ships, then every channel, creating a connector first if the package has one. It then posts `request.json` to the primary channel and prints the response. Re-running it is safe: objects that already exist are skipped.
 
-A package with no HTTP route deploys the same way, and the script prints what it now listens to instead of sending a request. `kafka-order-events` prints its topic and needs a broker plus a server started with `[kafka] enabled = true`; `nightly-rollup` prints its schedule. `c4-tournament` deploys its plugin, connector, workflows and channels, then prints the commands that register its model entrant from a bucket. A model's bytes are fetched by the node rather than posted to it.
+A package with no HTTP route deploys the same way, and the script prints what it now listens to instead of sending a request. `nightly-rollup` prints its schedule. `c4-tournament` deploys its plugin, connector, workflows and channels, then prints the commands that register its model entrant from a bucket. A model's bytes are fetched by the node rather than posted to it.
 
 ## The packages
 
@@ -56,7 +56,6 @@ A package with no HTTP route deploys the same way, and the script prints what it
 | [`notification-routing`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/notification-routing) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
 | [`postgres-orders`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/postgres-orders) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
 | [`channel-composition`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/channel-composition) | `POST /order-enrichment` | **Two services:** one calls the other in-process with `channel_call` |
-| [`kafka-order-events`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/kafka-order-events) | topic `orders.events` | **Kafka ingress:** consumes a topic and stamps the record's coordinates. Needs `kafka.enabled = true` and a broker |
 | [`fixed-width-statement`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/fixed-width-statement) | `POST /statements` | **Plugin-backed:** a fixed-width codec compiled to WebAssembly decodes the line, a `map` summarizes it. Needs `plugins.enabled = true`; the codec's source is in [`examples/plugins/fixed-width/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/plugins/fixed-width) |
 | [`order-summary`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/order-summary) | `POST /order-summary` | The dependency-free files behind [Build your first service](./first-service.md) |
 | [`nightly-rollup`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/nightly-rollup) | `0 15 2 * * *` (no route) | **Scheduled:** a `protocol: "cron"` channel runs the workflow on a six-field expression, and every instant becomes a durable occurrence. See [Run work on a schedule](../../guides/patterns/scheduled-workflows.md) |
@@ -145,7 +144,7 @@ It exits non-zero on any failure, so it gates CI beside `orion-server lint`. [`e
 
 - A package directory is a set of admin-API request bodies plus a sample request, tagged `pkg:<name>`.
 - `deploy.sh` posts them in dependency order and activates each; doing it by hand is four calls.
-- The self-contained packages need nothing but a server. Kafka, plugin and model packages need the matching runtime setting turned on.
+- The self-contained packages need nothing but a server. Plugin and model packages need the matching runtime setting turned on.
 - `examples/workflow-tests/` proves the packages offline; `examples/use-cases/` proves them against a live server.
 
 ## Next steps

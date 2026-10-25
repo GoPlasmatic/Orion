@@ -25,7 +25,7 @@ A *workflow* is an ordered pipeline of tasks: the business logic a channel runs.
 
 ## Tasks
 
-A task has an `id`, a `name`, and one `function` with its `input`. Functions are built in: parsing, mapping, validating, filtering, logging, and the connector-backed ones that call databases, HTTP APIs, caches and Kafka. You pick and configure them; you do not write them.
+A task has an `id`, a `name`, and one `function` with its `input`. Functions are built in: parsing, mapping, validating, filtering, logging, and the connector-backed ones that call databases, HTTP APIs, caches and object storage. You pick and configure them; you do not write them.
 
 ```json
 {

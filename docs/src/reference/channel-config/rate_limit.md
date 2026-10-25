@@ -55,7 +55,7 @@ The limit applies on every ingress, whether or not the platform limiter ([`[rate
 Names are matched case-insensitively; they are lowercased at load. The list **adds to** the built-in set rather than replacing it. Declaring a header can never take `x-tenant-id` away from an expression that already reads it. Listing a built-in again is a no-op. The set stays closed by default because the request path materializes exactly the names that might be read. A channel does not pay an allocation per header for a key that references one of them.
 
 > [!WARNING]
-> A header is caller-supplied and therefore spoofable, so a key derived from one bounds an **honest** client. That is the right trade for a burst control, and the wrong one for a quota: forging a token-bucket key gets you a different bucket, not a bigger one, but forging a quota key is the whole attack. For per-user quotas, count in the workflow — `db_write`/`mongo_write` can increment and read back atomically, and keep this guard on top as the per-caller burst control.
+> A header is caller-supplied and therefore spoofable, so a key derived from one bounds an **honest** client. That is the right trade for a burst control, and the wrong one for a quota: forging a token-bucket key gets you a different bucket, not a bigger one, but forging a quota key is the whole attack. For per-user quotas, count in the workflow — `db_write` can increment and read back atomically, and keep this guard on top as the per-caller burst control.
 
 The key is part of the control, not a hint:
 

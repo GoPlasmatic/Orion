@@ -9,7 +9,7 @@ A definition set can say a thing once: a shared value, a task sequence, a parame
 ## Synopsis
 
 ```json
-{ "constants": { "db": { "connector": "sias-mongo", "database": "app" } },
+{ "constants": { "db": { "connector": "app-db", "numeric_as": "string" } },
   "errors":    { "USER_NOT_FOUND": { "status": 400, "body": "User Not Found !" } } }
 ```
 
@@ -18,10 +18,10 @@ A definition set can say a thing once: a shared value, a task sequence, a parame
 **`$from` splices a named value** into the object it sits in:
 
 ```json
-{ "input": { "$from": "constants.db", "collection": "users" } }
+{ "input": { "$from": "constants.db", "query": { "source": "users" } } }
 ```
 
-resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users"}`. It is a **merge, not a substitution**, and **siblings win**, so a call site overrides one field without copying the rest. A `$from` alone in its object, naming a scalar or array, replaces the whole node.
+resolves to `{"connector": "app-db", "numeric_as": "string", "query": {"source": "users"}}`. It is a **merge, not a substitution**, and **siblings win**, so a call site overrides one field without copying the rest. A `$from` alone in its object, naming a scalar or array, replaces the whole node.
 
 **Fragments are named task sequences**, parameterised:
 

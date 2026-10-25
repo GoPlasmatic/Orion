@@ -179,7 +179,7 @@ The chart ships `helm test` hooks, inert until run:
 helm test orion
 ```
 
-`test-connectivity` runs the binary's own `test-connectivity` subcommand: it opens the storage pool, counts pending migrations, and probes Kafka when enabled. `test-api` checks `/health` and `/readyz`, and that the metrics port serves Prometheus exposition text without a credential. To inspect by hand:
+`test-connectivity` runs the binary's own `test-connectivity` subcommand: it opens the storage pool and counts pending migrations. `test-api` checks `/health` and `/readyz`, and that the metrics port serves Prometheus exposition text without a credential. To inspect by hand:
 
 ```bash
 kubectl get pods -l app.kubernetes.io/name=orion,app.kubernetes.io/instance=orion

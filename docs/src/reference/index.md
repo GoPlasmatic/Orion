@@ -17,7 +17,7 @@ For a guided task, start from [Guides](../guides/index.md); for the idea behind 
 | Write a JSONLogic condition or mapping | [Expression language](./expressions.md) |
 | Configure authentication, limits, caching or response behaviour on a channel | [Channel configuration](./channel-config/index.md) |
 | Configure an external system | [Connector types](./connectors/index.md) |
-| Query SQL, MongoDB or Elasticsearch portably | [Portable data dialect](./data-dialect.md) |
+| Query PostgreSQL, MySQL or SQLite portably | [Portable data dialect](./data-dialect.md) |
 | Package a WebAssembly task function | [Plugin manifest and ABI](./plugin-manifest.md) |
 | Configure an Orion server | [Server configuration](./configuration/index.md) and [Environment variables](./environment-variables.md) |
 | Look up a CLI command | [CLI](./cli/index.md) |

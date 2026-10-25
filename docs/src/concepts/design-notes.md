@@ -8,19 +8,15 @@ You do not need this page to run Orion. Every rule below is stated in one senten
 
 Each note opens with the rule as shipped, makes the case, and links the page that states the rule normatively. This is also the one page in the book where runtime internals (`ArcSwap`, semaphores, hash framing) are fair game.
 
-## Deduplication: claim, then settle
+## Deduplication: the claim stands for the window
 
-**The rule as shipped:** a delivery whose idempotency key was settled inside the window is refused; a retry of a delivery that never settled runs.
+**The rule as shipped:** an idempotency key is claimed before the workflow runs. A repeat of a claimed key inside the window is refused with `409 Conflict`.
 
-Deduplication matters most on Kafka ingest, because Kafka is at-least-once by design. A rebalance or a lost offset commit replays records the workflow already ran. The key is the record header named by the channel's `deduplication.header` when the producer sets one, else the record key. That is the natural idempotency key. A record recognized as a duplicate is skipped and its offset committed. Nothing is dead-lettered, because nothing failed.
+Over HTTP one request is one delivery. Nothing redelivers it: a retry is the caller's choice, and it is a second delivery. So once a request is admitted, its claim stands for the rest of the window, whatever the workflow does. A replay of the key gets `409`, which is what a replay should get. `/async` is the same. The caller holds a `trace_id` and polls it, so the outcome of the queued work does not change the answer to a second submission. A caller that retries a failed request sends a new key or waits out the window.
 
-"Recognized as a duplicate" means something precise, and the distinction is what keeps deduplication from eating traffic. The key is **claimed** before the workflow runs, which is the only point at which the check is atomic against a concurrent delivery. It is marked **settled** only when the delivery is durably accounted for: the workflow completed, or the record was preserved in the dead-letter queue. That is exactly the condition under which the record's offset is committed. A record that is refused, times out, or fails without a confirmed DLQ write releases its claim and leaves its offset uncommitted. Kafka redelivers it. The redelivery presents the same delivery identity (`topic/partition/offset`) the claim was made under. It is recognized as the *same* delivery rather than a second one, and it runs. Only a delivery that arrives after the key was settled is skipped.
+The claim is the one point where the check is atomic against a concurrent request carrying the same key. Two such requests cannot both run, because exactly one of them claims the key. In a cluster the claim is a conditional insert into the shared database, so the guarantee holds across nodes.
 
-Without that distinction, the first attempt's own claim would refuse its retry. The ingress would read the refusal as "already handled" and commit the offset. That is a record committed having never run: the failure mode deduplication exists to prevent, inverted.
-
-Over HTTP there is no settle step to reason about. One request is one delivery. The claim stands for the rest of the window, and a replay of the key is answered `409 Conflict`, which is what a replay should get.
-
-The residual risk is the transport's, not the guard's. A record whose workflow completed but whose offset commit was lost is redelivered and *is* suppressed, because its key was settled. A record that never reached a committed outcome is reprocessed. Deduplication narrows at-least-once; it does not make Kafka exactly once.
+A refusal after the claim gives the key back. Backpressure shedding the request is one. Nothing ran, so the caller's retry is judged on its merits rather than answered `409` until the window ends. An answer that is not a refusal, such as a response-cache hit, leaves the claim standing.
 
 Two boundary decisions follow from the same logic:
 
@@ -43,15 +39,17 @@ The same conservatism runs in the other direction. A request that resolves **non
 
 Stated normatively in: [Channel Configuration](../reference/channel-config/index.md).
 
-## Kafka's timeout clamp
+## The `/async` timeout clamp
 
-**The rule as shipped:** on the Kafka and `/async` ingresses, a channel's `timeout_ms` may shorten the transport's deadline but never lengthen it. The value is clamped to `kafka.processing_timeout_ms` and `trace_queue.processing_timeout_ms` respectively.
+**The rule as shipped:** on the `/async` ingress, a channel's `timeout_ms` may shorten the queue's deadline but never lengthen it. The value is clamped to `trace_queue.processing_timeout_ms`.
 
-On the synchronous HTTP path a channel's `timeout_ms` is honoured as declared: nothing but the caller waits on it. On the two queued paths the deadline protects something shared. A Kafka dispatch blocks the consumer's poll loop. A channel asking for ten minutes on a topic would take the consumer past librdkafka's `max.poll.interval.ms`, 300 s by default. The consumer would be evicted from its group mid-record. An `/async` dispatch occupies one of a fixed number of queue workers, so an over-long channel deadline starves every other channel's queued work.
+On the synchronous HTTP path a channel's `timeout_ms` is honoured as declared: nothing but the caller waits on it. On the queued path the deadline protects something shared. An `/async` dispatch occupies one of a fixed number of queue workers, so an over-long channel deadline starves every other channel's queued work.
 
-`timeout_ms` is channel configuration: mutable at runtime through the admin API, and not validated against either ceiling. The clamp is what keeps a config change from becoming an outage. The worst a channel can do is time out sooner than the operator's ceiling. It can never hold the poll loop or a worker past it. A channel that needs longer on those paths needs the transport setting raised. That decision belongs to the operator who owns the consumer and the worker pool, not to the channel author.
+`timeout_ms` is channel configuration: mutable at runtime through the admin API, and not validated against the ceiling. The clamp is what keeps a config change from becoming an outage. The worst a channel can do is time out sooner than the operator's ceiling. It can never hold a worker past it. A channel that needs longer on that path needs the queue setting raised. That decision belongs to the operator who owns the worker pool, not to the channel author.
 
-Stated normatively in: [Timeouts, Retries & Circuit Breakers](../operate/run/failure-handling.md#bound-how-long-anything-may-take), with both ceilings in [Configuration](../reference/configuration/index.md).
+A cron occurrence has no such ceiling. `cron.default_timeout_ms` is a default for a channel that sets no `timeout_ms`, and a channel may ask for longer. Occurrences run on their own `cron.workers`, so a long one cannot starve `/async` work.
+
+Stated normatively in: [Timeouts, Retries & Circuit Breakers](../operate/run/failure-handling.md#bound-how-long-anything-may-take), with the ceiling in [Configuration](../reference/configuration/trace-queue.md).
 
 ## Why forwarded headers are ignored by default
 
@@ -101,7 +99,6 @@ The sequence is:
 
 1. **Build off to the side.** The reload captures the active channels, workflows, plugins and models in one repeatable database snapshot, releases that read transaction, and constructs the next generation away from request readers. A node-local mutex serializes reloads and connector refreshes. If the engine cannot be built, the reload aborts with nothing published and the running generation is untouched. The failure mode is "the old configuration keeps serving", never "nothing serves", and never a node left half-updated.
 2. **Publish once.** One store makes both halves visible together. A channel that fails to load is quarantined, refused at every ingress and reported through `GET /health`, and the reload proceeds for every other channel. The alternative, aborting the whole reload for one broken `config_json`, would make every activate, archive and delete hostage to the estate's worst row.
-3. **Then tend the consumer.** After the store, the Kafka consumer is restarted only if the reload changed the set of subscribed topics. Otherwise it is paused and resumed around the swap. In cluster mode, epoch-driven reloads add per-node jitter to a full restart, so the replicas do not all leave and rejoin the consumer group at the same instant.
 
 Published entity changes commit their configuration epoch with the entity and audit rows. Every node, including a single node, watches for unapplied epochs and retries failed reloads. Connector-scoped or unknown advances also refresh the connector registry and evict cached connector pools; definition-only advances preserve those pools. A local connector change invalidates only its affected pool names and rebuilds dependent channel guards.
 
@@ -113,7 +110,7 @@ Stated normatively in: [The Entity Lifecycle](./lifecycle.md#what-moves-the-engi
 
 There are two decisions here: guards as data, and the order.
 
-Four ingresses can dispatch a message to a channel: synchronous HTTP, `/async` submission, Kafka, and in-process `channel_call`. The channel's declared contract must hold on whichever one the message arrived on. A single function applies the guards, and *which* guards run is data. There is a per-transport guard set, one constant row per ingress, rather than a comment repeated at four call sites. Adding an ingress means adding a row, and every exclusion in the matrix is a property of the transport rather than an oversight. A Kafka record has no `Origin` header to check and is already authenticated by the broker connection. An `/async` submission answers `202` with a trace id and has no response body to cache. A `channel_call` is a step inside a request that was authenticated and deduplicated at its own ingress. Enforcing either again would break composition without making it safer.
+Four ingresses can dispatch a message to a channel: synchronous HTTP, `/async` submission, in-process `channel_call`, and a claimed cron occurrence. The channel's declared contract must hold on whichever one the message arrived on. A single function applies the guards, and *which* guards run is data. There is a per-transport guard set, one constant row per ingress, rather than a comment repeated at four call sites. Adding an ingress means adding a row, and every exclusion in the matrix is a property of the transport rather than an oversight. A cron occurrence has no caller, so there is nobody to authenticate, rate-limit or check the origin of. An `/async` submission answers `202` with a trace id and has no response body to cache. A `channel_call` is a step inside a request that was authenticated and deduplicated at its own ingress. Enforcing either again would break composition without making it safer.
 
 The order is deliberate:
 
@@ -123,9 +120,9 @@ The order is deliberate:
 - **Deduplication before the cache lookup**, so a replayed idempotency key is answered `409` rather than served a cached body. The two guards answer different questions, "did this delivery already happen?" and "is the answer already known?", and the idempotency contract outranks the optimization.
 - **Backpressure last.** A cache hit should not consume a concurrency permit it never needed. The permit is also the only guard that can refuse *after* the idempotency key has been claimed, so its refusal releases the claim before returning. A shed request does not burn a key it never got to use.
 
-An admitted request leaves the pipeline carrying what the rest of processing needs. That is the backpressure permit, the context for storing the response in the cache, the resolved deadline, and the dedup claim to settle. [Kafka's timeout clamp](#kafkas-timeout-clamp) explains the deadline.
+An admitted request leaves the pipeline carrying what the rest of processing needs. That is the backpressure permit, the context for storing the response in the cache, the resolved deadline, and the dedup claim. [The `/async` timeout clamp](#the-async-timeout-clamp) explains the deadline.
 
-One nuance surprises often enough to state here. Applying the rate limit on every transport means the same limiter is *consulted* everywhere, not that the four ingresses share one bucket. The default bucket key is whatever caller identity the transport has: client IP over HTTP, topic on Kafka, the calling channel for `channel_call`. So `requests_per_second` is a per-identity rate on each ingress. Only a `rate_limit.key_logic` that returns a transport-independent value turns it into one shared throughput cap.
+One nuance surprises often enough to state here. Applying the rate limit on every transport means the same limiter is *consulted* everywhere, not that the ingresses share one bucket. The default bucket key is whatever caller identity the transport has: client IP over HTTP, the calling channel for `channel_call`. So `requests_per_second` is a per-identity rate on each ingress. Only a `rate_limit.key_logic` that returns a transport-independent value turns it into one shared throughput cap.
 
 Stated normatively in: [How Orion Works](./how-orion-works.md#one-requests-journey) and [Channel Configuration](../reference/channel-config/index.md).
 

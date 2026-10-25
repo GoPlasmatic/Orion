@@ -4,7 +4,7 @@
 
 # Shared connector blocks
 
-What every connector row carries whatever its type, and the rules that apply to all seven.
+What every connector row carries whatever its type, and the rules that apply to all four.
 
 | Page | Holds |
 |---|---|
@@ -21,4 +21,4 @@ What every connector row carries whatever its type, and the rules that apply to 
 - [Connector types](./index.md): every type, and the shared blocks all of them carry.
 - [Task functions](../functions/index.md): the functions that call through a connector.
 - [Admin API — Connectors](../admin-api/connectors.md): the endpoints, and the reachability probe.
-- [The seven types](./types.md): the seven types, and the `config` each takes.
+- [The four types](./types.md): the four types, and the `config` each takes.

@@ -1,8 +1,8 @@
 # Orion
 
-> Orion is a declarative services runtime for microservices, AI agent tools, business rules, event processing, scheduled jobs, and webhook data ingestion. Logic is declared as JSON specifications and exposed through channels (REST routes, plain HTTP, Kafka topics, or a cron schedule) through an administrative REST API, which orion-cli drives from the terminal. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
+> Orion is a declarative services runtime for microservices, AI agent tools, business rules, event processing, scheduled jobs, and webhook data ingestion. Logic is declared as JSON specifications and exposed through channels (REST routes, plain HTTP, or a cron schedule) through an administrative REST API, which orion-cli drives from the terminal. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
 
-Key facts: workflows are pipelines of tasks using JSONLogic; everything is created as a draft, tested with dry-run, then activated (the engine hot-reloads); active versions are immutable; connectors are named connections to external systems (HTTP, SQL, MongoDB, Elasticsearch, Kafka, an in-memory cache) referenced from tasks by name; a plugin adds a custom task function as a sandboxed WebAssembly component; a model is an ONNX graph held in object storage and admitted before it serves. The full documentation concatenated into one file is at https://docs.goplasmatic.io/llms-full.txt
+Key facts: workflows are pipelines of tasks using JSONLogic; everything is created as a draft, tested with dry-run, then activated (the engine hot-reloads); active versions are immutable; connectors are named connections to external systems (HTTP, SQL, object storage, an in-memory cache) referenced from tasks by name; a plugin adds a custom task function as a sandboxed WebAssembly component; a model is an ONNX graph held in object storage and admitted before it serves. The full documentation concatenated into one file is at https://docs.goplasmatic.io/llms-full.txt
 
 
 ## Get started
@@ -18,7 +18,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Run the example packages](https://docs.goplasmatic.io/get-started/tutorials/examples.html): the deployable example packages, with the step-by-step walkthrough
 - [Decide](https://docs.goplasmatic.io/get-started/decide/index.html): decide whether Orion fits: the one-page fit check, a use-case router, and five side-by-side comparisons with the neighbouring tool categories
 - [Is Orion right for you?](https://docs.goplasmatic.io/get-started/decide/is-orion-right-for-you.html): the one chart of neighbouring tools, where Orion fits, and where it is the wrong tool
-- [Choose a use case](https://docs.goplasmatic.io/get-started/decide/choose-a-use-case.html): learning paths for REST, webhooks, Kafka, databases, and AI-assisted authoring
+- [Choose a use case](https://docs.goplasmatic.io/get-started/decide/choose-a-use-case.html): learning paths for REST, webhooks, scheduled work, databases, and AI-assisted authoring
 - [Orion and durable execution engines](https://docs.goplasmatic.io/get-started/decide/vs-durable-execution.html): Temporal, Restate, Step Functions, Airflow — resume vs answer-and-forget, and why weight is not the distinction
 - [Orion and API gateways](https://docs.goplasmatic.io/get-started/decide/vs-api-gateways.html): Kong, Envoy, APISIX, KrakenD — the gateway polices, Orion terminates; what to keep on each side
 - [Orion and automation platforms](https://docs.goplasmatic.io/get-started/decide/vs-automation-platforms.html): n8n, Zapier, Make, Node-RED — app catalogue and speed vs production request traffic
@@ -57,7 +57,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Set up the agent skill](https://docs.goplasmatic.io/guides/ai/agent-skill.html): installing the Orion agent skill so an assistant can author, test and deploy through orion-cli
 - [Prompt pack for any LLM](https://docs.goplasmatic.io/guides/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
 - [Worked examples: prompt to service](https://docs.goplasmatic.io/guides/ai/worked-examples.html): four services from prompt to deployed JSON, included from the tested example packages
-- [Patterns and integrations](https://docs.goplasmatic.io/guides/patterns/index.html): reusable workflow patterns and the integrations around them: Kafka ingress, scheduled work, CI/CD with packages and the Orion Console
+- [Patterns and integrations](https://docs.goplasmatic.io/guides/patterns/index.html): reusable workflow patterns and the integrations around them: scheduled work, CI/CD with packages and the Orion Console
 - [Common workflow patterns](https://docs.goplasmatic.io/guides/patterns/workflow-patterns.html): reading the request, exclusive branches, enrichment, channel_call composition, error collection
 - [Run work on a schedule](https://docs.goplasmatic.io/guides/patterns/scheduled-workflows.html): cron channels — the six-field expression, time zones and DST, misfire policies, non-overlap, the occurrence ledger
 - [CI/CD with packages](https://docs.goplasmatic.io/guides/patterns/ci-cd.html): offline PR gates, plan/apply pipelines, drift detection, rollback
@@ -81,7 +81,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Promote between environments](https://docs.goplasmatic.io/operate/maintain/promotion.html): the five package verbs, receipts, secrets, mid-apply failure modes, rollback
 - [Back up and restore](https://docs.goplasmatic.io/operate/maintain/backup-restore.html): per-backend backup, the offline restore procedure, package artifacts as estate backup
 - [Upgrade an instance](https://docs.goplasmatic.io/operate/maintain/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
-- [Troubleshooting](https://docs.goplasmatic.io/operate/maintain/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, Kafka lag, conditions over payload
+- [Troubleshooting](https://docs.goplasmatic.io/operate/maintain/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, conditions over payload
 
 ## Reference
 
@@ -143,8 +143,8 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [`publish_json`](https://docs.goplasmatic.io/reference/functions/publish_json.html): the publish_json task function: serialize a field of the data context to a JSON string stored at another field, optionally pretty-printed.
 - [`publish_xml`](https://docs.goplasmatic.io/reference/functions/publish_xml.html): the publish_xml task function: serialize a field of the data context to an XML string under a named root element, stored at another field.
 - [`http_call`](https://docs.goplasmatic.io/reference/functions/http_call.html): the http_call task function: call an external API through an HTTP connector with a JSONLogic path, headers and body, retries and a circuit breaker.
-- [`data_query`](https://docs.goplasmatic.io/reference/functions/data_query.html): the data_query task function: one backend-neutral query envelope run against a SQL, MongoDB or Elasticsearch connector through the portable dialect.
-- [`data_write`](https://docs.goplasmatic.io/reference/functions/data_write.html): the data_write task function: a backend-neutral insert, update, delete or upsert rendered natively for SQL, MongoDB or Elasticsearch connectors.
+- [`data_query`](https://docs.goplasmatic.io/reference/functions/data_query.html): the data_query task function: one backend-neutral query envelope run against a SQL connector through the portable dialect.
+- [`data_write`](https://docs.goplasmatic.io/reference/functions/data_write.html): the data_write task function: a backend-neutral insert, update, delete or upsert rendered natively for SQL connectors.
 - [`db_read`](https://docs.goplasmatic.io/reference/functions/db_read.html): the db_read task function: run a raw SELECT with bound parameters against a SQL connector, with the column decoding and parameter typing rules.
 - [`db_write`](https://docs.goplasmatic.io/reference/functions/db_write.html): the db_write task function: run a raw INSERT, UPDATE or DELETE with bound parameters against a SQL connector and report the rows affected.
 - [`cache_read`](https://docs.goplasmatic.io/reference/functions/cache_read.html): the cache_read task function: read one key, or several in one round trip, from a per-node in-memory cache connector, with null for a missing key.
@@ -162,21 +162,21 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Retry safety](https://docs.goplasmatic.io/reference/functions/retry-safety.html): whether a retry of each task function is free, a re-read, idempotent or a duplicate
 - [Runtime function discovery](https://docs.goplasmatic.io/reference/functions/runtime-discovery.html): the live function catalogue GET /api/v2/admin/functions serves
 - [Plugin manifest and ABI](https://docs.goplasmatic.io/reference/plugin-manifest.html): the manifest, the component ABI, the limits an invocation runs under, and the shape of a failure
-- [Connector types](https://docs.goplasmatic.io/reference/connectors/index.html): a named connection to an external system: the seven types, the shared blocks every one carries, and where each is specified
+- [Connector types](https://docs.goplasmatic.io/reference/connectors/index.html): a named connection to an external system: the four types, the shared blocks every one carries, and where each is specified
 - [Shared connector blocks](https://docs.goplasmatic.io/reference/connectors/common.html): what every connector row carries whatever its type: identity, secret references, masking, auth, request layering, gates and retries
 - [Definition and identity](https://docs.goplasmatic.io/reference/connectors/identity.html): name, config, enabled and tags; the two masked copies of config a read returns, and when the parsed one is null
 - [Secrets by reference](https://docs.goplasmatic.io/reference/connectors/secrets.html): env:// and vault:// in any config string, the reserved ORION_SECRET_ prefix, and what an unset variable does at load
 - [Secret masking](https://docs.goplasmatic.io/reference/connectors/masking.html): connector reads and exports mask by allowlist; references pass through, literals do not survive export then import
-- [Connector authentication](https://docs.goplasmatic.io/reference/connectors/authentication.html): bearer, basic and apikey on http and es connectors, plus the managed oauth2 grant Orion acquires, caches and refreshes
+- [Connector authentication](https://docs.goplasmatic.io/reference/connectors/authentication.html): bearer, basic and apikey on http connectors, plus the managed oauth2 grant Orion acquires, caches and refreshes
 - [Request layering](https://docs.goplasmatic.io/reference/connectors/request-layering.html): the four header layers and three query-parameter layers http_call applies, in precedence order; why credentials belong in query_params
 - [Operation gates](https://docs.goplasmatic.io/reference/connectors/operation-gates.html): the operations block per type, which gate blocks which task function, the http method allow-list, and cache-backed channel stores
 - [Retries and circuit breakers](https://docs.goplasmatic.io/reference/connectors/reliability.html): the http-only retry loop, its shared deadline and idempotent-method rule, and the per channel:connector breaker
-- [The seven types](https://docs.goplasmatic.io/reference/connectors/types.html): the seven types — http, kafka, db, cache, es, smtp, storage — with what each backs and the task functions it serves
+- [The four types](https://docs.goplasmatic.io/reference/connectors/types.html): the four types — http, db, cache, storage — with what each backs and the task functions it serves
 - [`http` connectors](https://docs.goplasmatic.io/reference/connectors/http.html): base url, default method and headers, query_params, auth, retry, max_response_size, allow_private_urls and the method allow-list
-- [`db` connectors](https://docs.goplasmatic.io/reference/connectors/db.html): connection_string selects PostgreSQL, MySQL, SQLite or MongoDB; pool bounds, per-operation gates and the dialect guards
+- [`db` connectors](https://docs.goplasmatic.io/reference/connectors/db.html): connection_string selects PostgreSQL, MySQL or SQLite; pool bounds, per-operation gates and the dialect guards
 - [`cache` connectors](https://docs.goplasmatic.io/reference/connectors/cache.html): the per-node memory backend, and the read and write operation gates
 - [`storage` connectors](https://docs.goplasmatic.io/reference/connectors/storage.html): S3-compatible bucket, region, endpoint and credentials for storage_presign and storage_head; presign and metadata only, no data path
-- [Portable data dialect](https://docs.goplasmatic.io/reference/data-dialect.html): backend-neutral query/write envelope across SQL, MongoDB, Elasticsearch
+- [Portable data dialect](https://docs.goplasmatic.io/reference/data-dialect.html): backend-neutral query/write envelope across PostgreSQL, MySQL and SQLite
 - [Server configuration](https://docs.goplasmatic.io/reference/configuration/index.html): every Orion server setting with its real default and ORION_* environment variable, grouped by what you are configuring, one page per config section.
 - [Core settings](https://docs.goplasmatic.io/reference/configuration/core.html): the core orion-server settings: how settings resolve, the environment, vars and secrets, the server, storage, cluster mode and startup packages.
 - [How settings are resolved](https://docs.goplasmatic.io/reference/configuration/how-settings-are-resolved.html): the three layers an Orion setting resolves through: struct defaults, the config file with ${VAR} and env:// references, then ORION_SECTION__KEY variables.

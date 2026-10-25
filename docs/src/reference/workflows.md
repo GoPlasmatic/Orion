@@ -161,7 +161,7 @@ The 1.x spellings are no longer read: a task's `halt_on` or `continue_on_error` 
 | `"halt_on": "never"`, `"continue_on_error": false` | nothing: these are the defaults |
 | `"function": { "name": "validate" }` | `"name": "validation"` |
 
-The pre-1.0 input aliases are no longer read either: `http_call`'s `path_logic`, `body_logic` and `response_path`, `publish_kafka`'s `key_logic` and `value_logic`, and `channel_call`'s `channel_logic`, `data_logic` and `response_path` are unknown keys. Write `path`, `body`, `output`, `key`, `value`, `channel` and `data`.
+The pre-1.0 input aliases are no longer read either: `http_call`'s `path_logic`, `body_logic` and `response_path`, and `channel_call`'s `channel_logic`, `data_logic` and `response_path` are unknown keys. Write `path`, `body`, `output`, `channel` and `data`.
 
 ### Fan-out
 
@@ -255,19 +255,6 @@ supplies one, then stamps its own keys on top:
 `oauth` (the [sign-in](./channel-config/oauth2_login.md) grant) and `trigger` (a [cron](./channel-config/cron.md) occurrence) are stripped from the caller's object the same way. Only their guard or the cron worker writes them.
 
 Orion stamps nothing else on the HTTP path: no client IP, no request path, no trace id. A channel in [`request.body_mode = "payload"`](./channel-config/request.md) takes no caller `metadata` at all; the object is server-stamped keys only.
-
-**Kafka.** A consumed record stamps:
-
-| Key | Value |
-|-----|-------|
-| `channel` | The channel bound to the topic |
-| `kafka_topic` | Source topic |
-| `kafka_partition` | Partition number |
-| `kafka_offset` | Record offset |
-| `kafka_key` | The record key — stamped only when it is valid UTF-8 |
-| `vars` | The `[vars]` config section, as on the HTTP path — a workflow reads the same deployment values whichever transport reached it |
-
-Kafka record headers are not copied into `metadata`.
 
 **`channel_call`.** The called workflow inherits the parent's `metadata`.
 Orion overwrites `channel` with the target channel's name and adds two

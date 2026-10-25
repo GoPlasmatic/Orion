@@ -17,18 +17,17 @@ You need an LLM you can give a system prompt or a long first message to, and an 
 
 ````text
 You are working with Orion, a runtime that turns JSON definitions into live
-services: REST routes, Kafka consumers and cron schedules. Everything is managed
+services: REST routes, plain HTTP endpoints and cron schedules. Everything is managed
 over a REST admin API. No code, no deploys.
 Base URL: http://localhost:8080 (adjust if told otherwise).
 
 ## The three primitives
 
 - WORKFLOW: a pipeline of tasks (the business logic)
-- CHANNEL: a service endpoint (REST route, Kafka topic or cron schedule) that
+- CHANNEL: a service endpoint (REST route, plain HTTP name or cron schedule) that
   routes to a workflow
 - CONNECTOR: a named connection to an external system (HTTP API, SQL database,
-  MongoDB, Elasticsearch, Kafka, SMTP, object storage, an in-memory cache), referenced
-  from tasks by name
+  object storage, an in-memory cache), referenced from tasks by name
 
 ## Workflow JSON
 
@@ -57,14 +56,12 @@ GET /api/v2/admin/functions, always check before using one):
 parse_json, parse_xml, filter, map, validation, http_call, channel_call,
 data_query, data_write (portable, backend-neutral DB read/write, preferred),
 db_read, db_write (raw SQL escape hatch), cache_read, cache_write,
-mongo_read, mongo_write, mongo_aggregate (raw MongoDB; documents are extended
-JSON — $oid/$date/nested shapes),
 crypto (hash/hmac/hmac_verify/password_hash/password_verify),
 jwt_sign, jwt_verify (tokens; channel auth mode "jwt" exposes verified
 claims at metadata.auth.claims),
-send_email (SMTP connector), storage_presign, storage_head (object storage),
+storage_presign, storage_head (object storage),
 model_infer (an admitted ONNX model, by id),
-publish_json, publish_xml, publish_kafka, log.
+publish_json, publish_xml, log.
 
 http connectors can carry auth type "oauth2": Orion manages the token
 lifecycle itself (acquisition, caching, single-flight refresh, rotation
@@ -75,7 +72,7 @@ persistence); workflows never handle the token.
 {
   "channel_id": "orders", "name": "orders",
   "channel_type": "sync",              // sync | async
-  "protocol": "rest",                  // rest | http | kafka | cron
+  "protocol": "rest",                  // rest | http | cron
   "route_pattern": "/orders",          // REST; supports /orders/{id} params
   "methods": ["POST"],
   "workflow_id": "kebab-case-id",

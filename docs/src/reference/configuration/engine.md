@@ -35,7 +35,7 @@ max_breakers = 10000
 
 ## Description
 
-Breakers are keyed per channel and connector, so one noisy channel does not trip a shared connector for everyone else. The state is per node. Every connector-backed task function passes through its breaker, not only `http_call`: `db_read`/`db_write`, `cache_read`/`cache_write`, `mongo_read`/`mongo_write`/`mongo_aggregate`, `publish_kafka` and the portable `data_query`/`data_write` dialect.
+Breakers are keyed per channel and connector, so one noisy channel does not trip a shared connector for everyone else. The state is per node. Every connector-backed task function passes through its breaker, not only `http_call`: `db_read`/`db_write`, `cache_read`/`cache_write` and the portable `data_query`/`data_write` dialect.
 
 ## Options
 
@@ -59,7 +59,7 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 
 ### Run budgets
 
-The four `max_run_*` settings bound one *run*: everything a request, a Kafka record or a cron occurrence starts, including the `channel_call` runs it makes, which share their caller's counters. A run that crosses a ceiling stops, and the caller gets `400` with code `VALIDATION_ERROR` and a message naming the budget, for example `run task budget exceeded (101 > 100 max tasks)`.
+The four `max_run_*` settings bound one *run*: everything a request or a cron occurrence starts, including the `channel_call` runs it makes, which share their caller's counters. A run that crosses a ceiling stops, and the caller gets `400` with code `VALIDATION_ERROR` and a message naming the budget, for example `run task budget exceeded (101 > 100 max tasks)`.
 
 They complement `ops_budget`, which bounds a single expression evaluation: a workflow can stay under `ops_budget` on every evaluation and still loop through millions of them.
 

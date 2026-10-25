@@ -1,12 +1,12 @@
-<!-- description: The auth block on http and es connectors: the bearer, basic and apikey schemes, and the managed oauth2 grant Orion acquires and refreshes itself. -->
+<!-- description: The auth block on an http connector: the bearer, basic and apikey schemes, and the managed oauth2 grant Orion acquires, caches and refreshes itself. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-19 -->
 
 # Connector authentication
 
-The `auth` object an `http` or `es` connector carries, and the one scheme Orion manages for you.
+The `auth` object an `http` connector carries, and the one scheme Orion manages for you.
 
-`http` and `es` connectors accept an `auth` object. Three schemes carry **static** credentials:
+`http` connectors accept an `auth` object. Three schemes carry **static** credentials:
 
 | Scheme | Fields | Example |
 |--------|--------|---------|
@@ -14,7 +14,7 @@ The `auth` object an `http` or `es` connector carries, and the one scheme Orion 
 | `basic` | `username`, `password` | `{ "type": "basic", "username": "svc", "password": "env://SVC_PASSWORD" }` |
 | `apikey` | `header`, `key` | `{ "type": "apikey", "header": "X-API-Key", "key": "env://API_KEY" }` |
 
-The fourth, [`oauth2`](#managed-oauth2), is **managed**: Orion acquires, caches, refreshes, and (under rotation) persists the token itself. `http` connectors only.
+The fourth, [`oauth2`](#managed-oauth2), is **managed**: Orion acquires, caches, refreshes, and (under rotation) persists the token itself.
 
 Put a token here rather than in an `Authorization` header: `"Bearer env://API_TOKEN"` in `headers` is sent as written, because a reference must be the whole value. See [A reference is the whole value](./secrets.md#a-reference-is-the-whole-value).
 

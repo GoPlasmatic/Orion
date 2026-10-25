@@ -12,15 +12,15 @@ A *channel* is a service endpoint. It says where traffic arrives, which workflow
   "nodes": [
     { "id": "rest", "label": "POST /orders", "sublabel": "rest · sync", "type": "channel" },
     { "id": "async", "label": "POST /reports/async", "sublabel": "rest · async", "type": "channel" },
-    { "id": "kafka", "label": "topic order.placed", "sublabel": "kafka", "type": "channel", "shape": "queue" },
+    { "id": "cron", "label": "0 15 2 * * *", "sublabel": "cron · async", "type": "channel" },
     { "id": "wf1", "label": "order-processing", "type": "service" },
     { "id": "wf2", "label": "report-build", "type": "service" },
-    { "id": "wf3", "label": "order-events", "type": "service" }
+    { "id": "wf3", "label": "nightly-rollup", "type": "service" }
   ],
   "edges": [
     { "from": "rest", "to": "wf1" },
     { "from": "async", "to": "wf2" },
-    { "from": "kafka", "to": "wf3" }
+    { "from": "cron", "to": "wf3" }
   ]
 }
 ```
@@ -29,12 +29,11 @@ A channel names exactly one workflow. That is what makes the channel the unit of
 
 ## Protocols
 
-Four protocols, set once and immutable across a channel's versions:
+Three protocols, set once and immutable across a channel's versions:
 
 - **`rest`**: a method and a path pattern, such as `POST /orders` or `GET /orders/{id}`. Path parameters reach the workflow as request metadata.
 - **`http`**: routes identically to `rest`. Both also stay reachable by channel name at `/api/v2/data/{name}`.
-- **`kafka`**: the channel declares a topic. Orion registers a consumer for it at startup and on every engine reload.
-- **`cron`**: the channel declares a schedule and a fixed payload. Orion materializes a durable occurrence per scheduled instant and runs it. It is the one protocol with no caller, so it registers no route, no topic, and is not reachable by name.
+- **`cron`**: the channel declares a schedule and a fixed payload. Orion materializes a durable occurrence per scheduled instant and runs it. It is the one protocol with no caller, so it registers no route and is not reachable by name.
 
 ## Sync or async
 
@@ -68,7 +67,7 @@ A channel declares its own guards in a `config` object, and Orion enforces them 
 
 Every key, default and interaction is specified in [Channel configuration](../reference/channel-config/index.md). Two properties are worth carrying in your head from here:
 
-- **Guards apply per ingress, not per protocol.** A Kafka record, an `/async` submission and an in-process `channel_call` get the same contract as a synchronous request, minus only what their transport cannot carry. A Kafka record has no `Origin` header to check.
+- **Guards apply per ingress, not per protocol.** An `/async` submission, an in-process `channel_call` and a cron occurrence get the same contract as a synchronous request, minus only what their transport cannot carry. A cron occurrence has no caller to authenticate.
 - **A config that no longer parses quarantines the channel.** It is refused at every ingress rather than served with a guard silently missing. See [The entity lifecycle](./lifecycle.md).
 
 ## Channels calling channels

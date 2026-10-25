@@ -4,7 +4,7 @@
 
 # Guards by ingress
 
-Which of a channel's guards run on which ingress, and the order they apply in. A channel is reachable on up to five ingresses, and each guard runs on the ones marked Yes.
+Which of a channel's guards run on which ingress, and the order they apply in. A channel is reachable on up to four ingresses, and each guard runs on the ones marked Yes.
 
 ## Description
 

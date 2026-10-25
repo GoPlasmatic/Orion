@@ -21,7 +21,7 @@ Automation platforms optimize for building an integration in minutes across doze
 |  | Automation platforms | Orion |
 |---|---|---|
 | What it is | A builder and host for cross-app automations | A runtime that serves service definitions you send it |
-| Unit of work | A scenario or flow, usually triggered on a schedule or webhook | A [channel](../../concepts/channels.md) answering a request, a Kafka record or a scheduled occurrence |
+| Unit of work | A scenario or flow, usually triggered on a schedule or webhook | A [channel](../../concepts/channels.md) answering a request or a scheduled occurrence |
 | How you write the logic | Drag and drop in a browser | JSON, posted to a running server |
 | Where state lives | In the platform, with per-run history | In the run's data context while it lasts; nothing after it unless you wrote it to a datastore |
 | How a change ships | Save in the editor | One API call, versioned, hot-reloaded |
@@ -73,7 +73,7 @@ The clean split is by traffic class, not by capability. Keep the SaaS glue on th
 
 ## What Orion cannot do here
 
-- **No app catalogue.** There are seven connector types: `http`, `kafka`, `db`, `cache`, `es`, `smtp` and `storage`. Reaching Salesforce means an `http_call` against its API, written by you.
+- **No app catalogue.** There are four connector types: `http`, `db`, `cache` and `storage`. Reaching Salesforce means an `http_call` against its API, written by you.
 - **No interactive OAuth.** An `http` connector's `oauth2` auth manages the token lifecycle itself, for client-credentials and refresh-token grants. There is no authorization-code dance: a grant that begins in a browser is completed elsewhere, and Orion is seeded with its refresh token.
 - **No polling triggers.** A cron channel runs a workflow on a schedule, so "every 15 minutes" is covered. A mailbox watcher or a poll of a SaaS API is not: work still has to arrive as a request, a record or a scheduled instant.
 - **No item-based execution model.** A platform runs every node once per input item and shows you the items. An Orion [`loop`](../../reference/workflows.md#loop) is a counter you index the array with: sequential, bounded by a `max` you declare, and finished before the response goes out.
@@ -85,6 +85,6 @@ The clean split is by traffic class, not by capability. Keep the SaaS glue on th
 
 - [Is Orion right for you?](./is-orion-right-for-you.md): the chart, and the other neighbours.
 - [Orion and durable execution engines](./vs-durable-execution.md): where the long-running work goes instead.
-- [Connector types](../../reference/connectors/index.md): the seven types, and how credentials are held.
+- [Connector types](../../reference/connectors/index.md): the four types, and how credentials are held.
 - [Version and roll out changes](../../guides/author/versioning.md): what "rollback" means here.
 - [Use the Orion Console](../../guides/patterns/console.md): the browser view, and what it is for.

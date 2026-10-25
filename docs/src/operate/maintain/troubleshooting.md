@@ -48,7 +48,7 @@ And from the workflow behind it, since a channel whose workflow cannot be built 
 
 **How to verify.** `/health` no longer lists the channel under `channels.quarantined`, and `components.channels` reads `ok`. There is no metric for quarantine on the synchronous path. `/health` and the reload log are the signals, which is why the `channels` component going `degraded` deserves an alert of its own.
 
-**Traffic meanwhile.** Sync and `/async` HTTP requests get the `503` above. Kafka records for a quarantined channel are routed to the DLQ rather than dropped, so they are replayable once you fix the config. A `channel_call` targeting a quarantined channel fails the calling task the same way.
+**Traffic meanwhile.** Sync and `/async` HTTP requests get the `503` above. A `channel_call` targeting a quarantined channel fails the calling task the same way.
 
 ## A channel answers `404` "not found or not active"
 
@@ -68,7 +68,7 @@ If the channel is `active` but the request still `404`s, the route pattern is th
 
 ## `/health` says `degraded` but returns HTTP 200
 
-**Why.** This is deliberate. A failing *database* is `503` with `"status": "degraded"`. A failed connector load, a quarantined channel, or a dead Kafka consumer is `"status": "degraded"` at HTTP 200. The instance is still serving. A `503` would eject a healthy node from its load balancer over a component nothing in flight may even use.
+**Why.** This is deliberate. A failing *database* is `503` with `"status": "degraded"`. A failed connector load or a quarantined channel is `"status": "degraded"` at HTTP 200. The instance is still serving. A `503` would eject a healthy node from its load balancer over a component nothing in flight may even use.
 
 **What to do.** Point monitors at the `status` field, not only the HTTP code, then read the detail with an admin credential:
 
@@ -124,16 +124,6 @@ curl -s "http://localhost:8080/api/v2/admin/trace-dlq?limit=20" | jq '.data[].er
 Then drain faster by raising `trace_queue.dlq_batch_size`, or purge what is beyond use with `POST /api/v2/admin/trace-dlq/purge` and `{"older_than_hours": 168}` as the body. The age is required, and only exhausted entries are deleted. Check whether retry is even on: with `trace_queue.dlq_retry_enabled = false`, the `orion_trace_dlq_depth` gauge stops updating, so a flat line means "nobody is looking", not "empty".
 
 **How to verify.** `orion_trace_dlq_depth` falls, and stays moving.
-
-## Kafka lag climbs but nothing errors
-
-**Why.** Channel guards are throttling the topic. When a record is deferred by a rate limit or backpressure, its offset is not committed and the record is redelivered. That is throttling, not loss, and it shows up as lag rather than errors.
-
-**What to do.** Look for a sustained `kafka_guard_deferred` rate in `orion_errors_total`. Then raise the channel's `rate_limit` and `backpressure.max_concurrent_per_node`, or add consumers. Messages are processed strictly sequentially per consumer, because the at-least-once commit contract requires it. Throughput scales by running more instances in the same consumer group, not by raising a concurrency knob.
-
-If `/readyz` is failing too, Kafka ingestion is degraded rather than throttled. Check broker reachability with `orion-server test-connectivity`.
-
-**How to verify.** Consumer lag falls, and `kafka_guard_deferred` stops rising.
 
 ## Async submissions never leave `pending`
 

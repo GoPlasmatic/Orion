@@ -20,7 +20,7 @@ The endpoints that create, test and reload a connector, and the breaker endpoint
 | GET | `/api/v2/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v2/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
-Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `es` (Elasticsearch). Every connector config accepts an optional `operations` block that enables or disables operation types per connector. The gates are `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` on `db` and `es`. On `cache` they are `read` / `write`, on `kafka` `publish`, and on `http` a `methods` allow-list. Per-type fields and gates are specified in [Connector Types](../connectors/operation-gates.md).
+Connector types: `http`, `db` (PostgreSQL/MySQL/SQLite), `cache` (per-node memory), `storage` (S3-compatible). Every connector config accepts an optional `operations` block that enables or disables operation types per connector. The gates are `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` on `db`. On `cache` they are `read` / `write`, on `storage` `presign_get` / `presign_put` / `head`, and on `http` a `methods` allow-list. Per-type fields and gates are specified in [Connector Types](../connectors/operation-gates.md).
 
 ## Testing a connector
 
@@ -30,19 +30,16 @@ Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache
 { "data": { "reachable": true, "supported": true, "connector_type": "db", "probe": "SELECT 1" } }
 ```
 
-A backend that cannot be reached is still a `200`: the probe ran, and `reachable: false` with an `error` string is its answer. The failure is the backend's, not Orion's. Three kinds have no probe: `es`, `kafka`, and a `db` connector pointing at MongoDB through a `mongodb://` URL. For those, `supported: false` distinguishes the permanent capability gap from an outage. Key monitoring on `supported && !reachable`, not on `reachable` alone.
+A backend that cannot be reached is still a `200`: the probe ran, and `reachable: false` with an `error` string is its answer. The failure is the backend's, not Orion's. Every type has a probe. `supported` is `false` only for a stored type this binary does not know. Key monitoring on `supported && !reachable`, not on `reachable` alone.
 
 | Type | Probe | Touches the backend? |
 |---|---|---|
 | `db` (SQL) | `SELECT 1` through the shared pool | Yes, read-only |
-| `db` (MongoDB) | not implemented (`supported: false`) | No |
 | `cache` | reads one probe key | Yes, read-only — nothing is written |
 | `http` | `GET` the configured URL with the connector's auth, 5 s timeout | **Yes — one real request** |
-| `es`, `kafka` | not implemented (`supported: false`) | No |
+| `storage` | a signed `HEAD` of the bucket | Yes, read-only |
 
 The HTTP probe issues a genuine request with genuine credentials, which is the point: a wrong bearer token is invisible until traffic hits it. A `401`/`403` is reported as **not** reachable. The host answered, but the connector's credentials are wrong, and that is the failure the endpoint exists to surface. It goes through the same client and SSRF policy as a real `http_call`, so a probe cannot pass where traffic would fail. Every call is written to the audit log.
-
-Kafka brokers are covered by `orion-server test-connectivity`.
 
 ## Related
 

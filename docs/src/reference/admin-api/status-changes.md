@@ -10,7 +10,7 @@ Two query parameters compose with every status and rollout transition:
 
 ## Activation pre-flight (`dry_run`)
 
-`PATCH /{kind}/{id}/status?dry_run=true` runs every gate the real transition runs, and answers the `/validate` envelope (`{"data": {"valid", "errors", "warnings"}}`) without writing. The gates are draft existence, connector existence, type and MongoDB `database` (workflows), route collisions and the workflow-active gate (channels), and rollout arithmetic. Gates that the real request fails as a 4xx are reported as `errors` entries in a 200, including "not found". One pass over a whole bundle therefore collects every finding instead of stopping at the first.
+`PATCH /{kind}/{id}/status?dry_run=true` runs every gate the real transition runs, and answers the `/validate` envelope (`{"data": {"valid", "errors", "warnings"}}`) without writing. The gates are draft existence, connector existence and type (workflows), route collisions and the workflow-active gate (channels), and rollout arithmetic. Gates that the real request fails as a 4xx are reported as `errors` entries in a 200, including "not found". One pass over a whole bundle therefore collects every finding instead of stopping at the first.
 
 ## Batching reloads (`reload=defer`)
 

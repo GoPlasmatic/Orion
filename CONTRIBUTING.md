@@ -69,7 +69,7 @@ crates/orion-server/
   jwt/                 # Shared JWT core: verify, sign, JWKS cache
   metrics.rs           # Prometheus metrics collection
   plugin/              # WebAssembly plugins: Wasmtime sandbox, manifest, handler, limits
-  query/               # Portable data dialect (data_query / data_write -> SQL/Mongo/ES)
+  query/               # Portable data dialect (data_query / data_write -> SQL)
   queue/               # Async trace processing, DLQ retry
   runtime/             # The published generation (engine + channel estate), reload, task supervisor
   server/              # Axum routes (routes/), middleware, AppState

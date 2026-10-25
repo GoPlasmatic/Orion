@@ -215,7 +215,7 @@ Five operators take a shape or a value that is often got wrong. Each bullet stat
 
 ## Connector fields: expressions, and documents
 
-Most of a connector task's fields are JSONLogic, evaluated against the message like anything else on this page. A cache key, a storage key, an email subject or recipient, a TTL, a JWT audience and the data going into `crypto` all are:
+Most of a connector task's fields are JSONLogic, evaluated against the message like anything else on this page. A cache key, a storage key, a TTL, a JWT audience and the data going into `crypto` all are:
 
 ```json
 { "connector": "cache",
@@ -224,19 +224,20 @@ Most of a connector task's fields are JSONLogic, evaluated against the message l
 
 A field written as a plain literal is JSONLogic for itself, so the static spelling is unchanged and costs nothing. It folds once when the engine is built, and only a field that reads the message is evaluated per request.
 
-The document-shaped fields are the exception, and deliberately so. A MongoDB `document`, `documents`, `update`, `filter`, `array_filters`, `projection` or `sort`; an aggregation `pipeline`; `cache_write`'s `value`; `jwt_sign`'s `claims`; the `params` of the SQL and dialect functions. These fold `{"var": "some.path"}` nodes against the message, at any depth, and treat every other node as a literal.
+The document-shaped fields are the exception, and deliberately so: `cache_write`'s `value`, `jwt_sign`'s `claims`, and the `params` of the SQL and dialect functions. These fold `{"var": "some.path"}` nodes against the message, at any depth, and treat every other node as a literal.
 
 ```json
-{ "op": "insert_one",
-  "document": {
+{ "connector": "sessions",
+  "key": { "var": "data.session_id" },
+  "value": {
     "userId":    { "var": "data.user_id" },
     "expiresAt": { "cat": ["2026-", { "var": "data.month" }] }
   } }
 ```
 
-`userId` gets the value. `expiresAt` gets the object `{"cat": [...]}`, stored in MongoDB verbatim, and in a `filter`, a node like that matches nothing. There is no error at write time. `{"val": …}` is folded no more than `cat` is, despite being a documented operator: only `var` is.
+`userId` gets the value. `expiresAt` gets the object `{"cat": [...]}`, cached verbatim. There is no error at write time. `{"val": …}` is folded no more than `cat` is, despite being a documented operator: only `var` is.
 
-The reason is `$`. These are exactly the fields that carry MongoDB operators and extended-JSON wrappers such as `$set`, `$push`, `$oid` and `$date`. One `$` is stripped from every key in a position the engine evaluates. Making them expressions would turn `{"$set": …}` into `{"set": …}` in every stored definition that was not hand-corrected, silently. The scalar fields carry no such keys, so they carry the capability instead.
+The reason is that these fields hold data, not logic. A document is cached, signed or bound as written. A single-key object inside one is often meant literally: `{"max": 3}` in claims, `{"$ref": "#/item"}` in a cached value. Evaluating them would turn such objects into operator calls, and strip one `$` from every key in a position the engine evaluates, silently. The scalar fields hold no such objects, so they carry the capability instead.
 
 Compute the value in a `map` task first and reference the result:
 

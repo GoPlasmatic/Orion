@@ -92,7 +92,7 @@ Three tokens appear inside envelopes, and they never collide:
 
 Every resolved value is a bound parameter. No user value is ever string-interpolated; the dialect is injection-safe by construction.
 
-An object or array is not a value: anywhere a scalar is expected, `{"$oid": …}` or `{"$date": …}` included, an object is refused with a located error.
+An object or array is not a value: anywhere a scalar is expected, an object is refused with a located error.
 
 On PostgreSQL a filter value is bound to the type the server declares for the column it is compared against. `{"eq": 5}` and `{"eq": "5"}` therefore reach an integer column as the same query. The schema's own `type` stays a declaration rather than the source of truth; the database is asked directly. See [column types](./functions/db_read.md#column-types) for the types this covers and what happens outside them.
 
@@ -395,7 +395,7 @@ A gated call fails with a validation error naming the operation and connector (`
 
 That pair is only sufficient because `db_read` refuses to run a write. Its statement must open with `SELECT`, `WITH`, `VALUES` or `TABLE`, and a `WITH` carrying a data-modifying CTE (`WITH gone AS (DELETE … RETURNING …) …`) is refused too. Without that check `db_read` was a second write path. `fetch` executes whatever statement it is handed, so `DELETE … RETURNING` ran under the `read` gate, and the bound in [Schema guards](#schema-guards) could not hold. `EXPLAIN` is not admitted either: `EXPLAIN ANALYZE DELETE …` executes the delete.
 
-These gates are the `db` set, the set the portable dialect runs through. Other connector types carry gates for their own operations: `read` and `write` on `cache`, `publish` on `kafka`, a method allowlist on `http`. [Connector types](./connectors/index.md) documents each.
+These gates are the `db` set, the set the portable dialect runs through. Other connector types carry gates for their own operations: `read` and `write` on `cache`, `presign_get`, `presign_put` and `head` on `storage`, a method allowlist on `http`. [Connector types](./connectors/index.md) documents each.
 
 ### Schema guards
 

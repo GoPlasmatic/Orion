@@ -1,10 +1,10 @@
-<!-- description: The seven connector types Orion has — http, kafka, db, cache, es, smtp and storage — with what each backs and the task functions it serves. -->
+<!-- description: The four connector types Orion has — http, db, cache and storage — with what each one backs, the config it takes and the task functions it serves. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
-# The seven types
+# The four types
 
-The seven types a connector may be, and the `config` each one takes.
+The four types a connector may be, and the `config` each one takes.
 
 | Type | Backs | Task functions |
 |------|-------|----------------|

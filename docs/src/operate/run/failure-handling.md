@@ -27,7 +27,7 @@ The channel timeout is the one to set deliberately, because it is the promise yo
 { "config": { "timeout_ms": 5000 } }
 ```
 
-It applies on every ingress (sync, `/async`, Kafka and `channel_call`), with per-ingress ceilings that clamp it where the transport demands. The per-ingress defaults and the clamp table are in [Timeouts](../../reference/channel-config/timeout_ms.md); why Kafka clamps at all is in [Kafka's timeout clamp](../../concepts/design-notes.md#kafkas-timeout-clamp).
+It applies on every ingress (sync, `/async`, `channel_call` and cron), with a ceiling that clamps it on `/async`. The per-ingress defaults and the clamp table are in [Timeouts](../../reference/channel-config/timeout_ms.md); why `/async` clamps at all is in [The `/async` timeout clamp](../../concepts/design-notes.md#the-async-timeout-clamp).
 
 Set connector timeouts *below* the channel timeout. A query allowed 30 s inside a channel that gives up at 5 s wastes a database connection for 25 s. Nobody is waiting for the answer.
 
@@ -41,7 +41,7 @@ HTTP retries use exponential backoff, capped at 60 s, and apply only to retryabl
 For everything else, the retry lives one level up:
 
 - **Async traces** that fail go to the dead-letter queue and are retried there. See [Drain the dead-letter queue](./traces.md#drain-the-dead-letter-queue).
-- **Kafka records** are not committed on failure, so the consumer redelivers them. A `[kafka.dlq]` topic catches what keeps failing.
+- **Cron occurrences** that fail settle `failed` in the [ledger](../../reference/admin-api/cron-occurrences.md), and `POST /api/v2/admin/cron/occurrences/{id}/retry` attempts the same occurrence again.
 - **Sync requests** return the error to the caller, who is the only party that knows whether retrying is safe.
 
 ## Stop calling a failing backend
@@ -99,7 +99,7 @@ Records carry the code, task id and status, never the message, which can embed a
 1. **`/readyz` flips to `503` at once**, so the balancer pulls the node from rotation.
 2. **The node keeps accepting and serving** for `server.shutdown_drain_secs` (default 30 s), so requests the balancer routes here during its own poll interval still succeed.
 3. **Accepting stops.** In-flight requests get up to `server.shutdown_force_timeout_secs` (default 30 s; `0` = unbounded).
-4. Kafka consumers stop, the trace cleanup and DLQ retry jobs stop, the async trace queue drains under its own timeout, OpenTelemetry spans flush, and the process exits.
+4. The trace cleanup and DLQ retry jobs stop, the async trace queue drains under its own timeout, OpenTelemetry spans flush, and the process exits.
 
 ```toml
 [server]

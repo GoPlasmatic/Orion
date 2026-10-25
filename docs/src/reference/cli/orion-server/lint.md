@@ -57,7 +57,7 @@ A sixth id, `[engine.advisory]`, is the catch-all. An engine newer than this Ori
 ```
 $ orion-server lint ./definitions
 note: definitions/request.json is not a channel, workflow or connector — skipped
-error: [closure.connector] workflow 'auth-login': connector 'sias-mongo' is neither in the set nor declared on the boundary
+error: [closure.connector] workflow 'auth-login': connector 'app-db' is neither in the set nor declared on the boundary
 warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call targets dynamically — closure checking cannot cover those calls
 ./definitions: 0 connector(s), 62 workflow(s), 62 channel(s) — 1 error(s), 1 warning(s)
 ```

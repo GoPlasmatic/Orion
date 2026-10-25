@@ -125,7 +125,7 @@ See [`compile`](../../reference/cli/orion-server/compile.md) for the other outpu
 
 ## Reach outside the process
 
-Connector-backed tasks call databases, HTTP APIs, caches and Kafka. They name a connector rather than a URL, and write their result to an `output` path:
+Connector-backed tasks call databases, HTTP APIs, caches and object storage. They name a connector rather than a URL, and write their result to an `output` path:
 
 ```json
 { "id": "enrich", "name": "Look up the customer",
@@ -138,7 +138,7 @@ Connector-backed tasks call databases, HTTP APIs, caches and Kafka. They name a 
 
 Because the credentials live on the connector and not in the task, your workflow JSON stays safe to commit. See [Connect a database or API](./connectors.md).
 
-Reach for `data_query` and `data_write` first: one backend-neutral envelope that lowers to SQL, MongoDB or Elasticsearch. Drop to `db_read` and `db_write` only when you need SQL the dialect cannot express.
+Reach for `data_query` and `data_write` first: one backend-neutral envelope that lowers to PostgreSQL, MySQL or SQLite. Drop to `db_read` and `db_write` only when you need SQL the dialect cannot express.
 
 ## Use the scratch space
 

@@ -66,36 +66,9 @@ max_queue_memory_bytes = 104857600   # total queued bytes before submissions get
 
 Two bounds decide what a burst does. `buffer_size` caps the number of queued submissions; `max_queue_memory_bytes` caps their total payload size. Whichever is reached first, new submissions answer `503` rather than growing memory without limit. That is load shedding, not queueing forever.
 
-## Kafka and cron traces
-
-A message consumed from Kafka runs the same admission guards and the same workflow dispatch as an HTTP request. It produces a `traces` row like one. The row's `mode` is `kafka`, so it can be told apart from the two HTTP paths:
-
-```bash
-curl "$ORION/api/v2/data/traces?mode=kafka&limit=20" -H "x-api-key: $KEY"
-```
+## Cron traces
 
 A scheduled run writes `mode = "cron"`, with the channel's authored `transport_config.payload` as its `input_json` and the occurrence's id in the [ledger](../../reference/admin-api/cron-occurrences.md) linking the two. It follows the `/async` contract rather than the sync one. `trace_storage.mode = "off"` is upgraded to `sync` and sampling is forced. The occurrence is the only thing that observes the run, and a run nobody can debug is worth less than the storage it saves. `errors_only` still applies as documented.
-
-The channel's `config.tracing` and the global `trace_storage.mode` apply to a Kafka message as they do everywhere else. `off`, `errors_only` and `sample_rate` all suppress the row exactly as they do for an HTTP one, and a suppressed trace costs no serialization.
-
-Two fields differ from an HTTP trace, and both are deliberate:
-
-| Field | On a Kafka trace | Why |
-|---|---|---|
-| `channel_id` | absent | A Kafka channel is addressed by topic. The consumer resolves it by name, and the id is a second lookup for a column nothing reads on this path. |
-| `input_json` | absent | The record's payload is already carried on the stored result, so storing it again would double the row for a value it holds. |
-
-Beside the trace, a Kafka channel still has:
-
-| Signal | Where |
-|---|---|
-| Per-message outcome counts (`ok`, `error`, `timeout`, `duplicate`) | `orion_messages_total{channel,status}`; see [Monitor and alert](./monitoring.md) |
-| Processing duration | `orion_message_duration_seconds{channel}` |
-| Consumer lag, rebalances, ingest health | the `orion_kafka_*` metrics and `/health`'s `kafka` component |
-| The failing record itself | the Kafka DLQ topic (`kafka.dlq`), which carries the record and the reason |
-| Per-message detail | the process log; every refusal and failure is logged with `topic` and `channel` |
-
-The record, not the trace, is what you re-drive after a failure; the Kafka DLQ topic holds it. The trace is what tells you what happened.
 
 ## Drain the dead-letter queue
 

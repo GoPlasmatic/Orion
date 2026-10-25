@@ -196,7 +196,7 @@ Since Orion 1.2, every path names its root:
   "data.order.flagged": true,
   "metadata.progress.status_code": 200,
   "temp_data.user_id": "u-1",
-  "calls.mongo_write[0].input.collection": "sessions",
+  "calls.data_write[0].input.write.target": "sessions",
   "audit_trail[1].task_id": "persist"
 }
 ```
@@ -209,7 +209,7 @@ Since Orion 1.2, every path names its root:
 | `calls.` | The connector calls the run made, grouped by function |
 | `audit_trail.` | One entry per executed task: `task_id`, `status`, `changes`. A case with a path here records each write's changes; one without runs without that capture, as a node does |
 
-Array positions work either way: `calls.mongo_write[0]` and `calls.mongo_write.0` are the same path. An expected `null` matches an absent path as well as an explicit one. JSONLogic resolves a missing `var` to null, and that is already what the workflow sees.
+Array positions work either way: `calls.data_write[0]` and `calls.data_write.0` are the same path. An expected `null` matches an absent path as well as an explicit one. JSONLogic resolves a missing `var` to null, and that is already what the workflow sees.
 
 A leading `data.` used to be optional, so `metadata.foo` silently read the data document's own `metadata` key, came back absent, and could *pass*. A path that names no root now fails the case before the workflow runs, and the error suggests the `data.` form. To migrate a suite:
 
@@ -226,18 +226,18 @@ A stub answers a connector call, so nothing downstream sees what the task *tried
 
 ```json
 "expect_calls": {
-  "mongo_write": [
-    { "collection": "sessions",
-      "update": { "$set": { "generation": 2, "revokedAt": null } } }
+  "data_write": [
+    { "write": { "op": "update", "target": "sessions",
+                 "set": { "generation": 2, "revoked_at": null } } }
   ],
-  "publish_kafka": []
+  "http_call": []
 }
 ```
 
 - Entries match positionally, in execution order, as a deep subset. Name the fields you care about and ignore the rest.
-- The number of entries must equal the number of recorded calls for that function, so an unexpected extra write fails. `"publish_kafka": []` asserts nothing was published.
+- The number of entries must equal the number of recorded calls for that function, so an unexpected extra write fails. `"http_call": []` asserts no HTTP call was made.
 - Only the functions named are constrained.
-- Presence is strict here, unlike `expect`. `"revokedAt": null` asserts the field was *written as null*, not that it is absent. A recorded payload is a literal document, so whether a field was written is the assertion.
+- Presence is strict here, unlike `expect`. `"revoked_at": null` asserts the field was *written as null*, not that it is absent. A recorded payload is a literal document, so whether a field was written is the assertion.
 
 `crypto`, `jwt_sign` and `jwt_verify` are not recorded. They execute for real offline rather than through a stub, and their inputs can carry key material.
 
@@ -257,7 +257,7 @@ A stub answers a connector call, so nothing downstream sees what the task *tried
 ```
 
 > [!TIP]
-> This is what catches JSONLogic in a write payload. A connector field folds `{"var": …}` nodes and nothing else, so `{"if": […]}` in a `document` is stored as a literal BSON object. The recorded call shows the object, so `expect_calls` fails where a stubbed run used to pass. `orion-server lint` warns about the same thing statically.
+> This is what catches JSONLogic in a write payload. A connector field folds `{"var": …}` nodes and nothing else, so `{"if": […]}` in a `cache_write` `value` is stored as a literal object. The recorded call shows the object, so `expect_calls` fails where a stubbed run used to pass. `orion-server lint` warns about the same thing statically.
 
 ## Supply request metadata
 
@@ -314,7 +314,7 @@ Two more gates are worth running before a deploy, and both need config rather th
 
 ```bash
 orion-server validate-config -c config.toml    # unknown keys, invalid values, the effective config
-orion-server test-connectivity -c config.toml  # the database, and Kafka when enabled
+orion-server test-connectivity -c config.toml  # the database
 orion-server preflight -c config.toml          # stored channels and workflows the current rules refuse
 ```
 

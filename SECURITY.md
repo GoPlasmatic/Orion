@@ -41,7 +41,7 @@ Reports are especially welcome for Orion's security-relevant surfaces:
 - Admin API authentication and authorization
 - SSRF protections on `http_call` and HTTP connectors
 - Injection resistance of the portable data dialect (`data_query` /
-  `data_write`) and the SQL/Mongo/ES renderers
+  `data_write`) and its SQL renderer
 - Connector secret storage, masking, and `env://` / `${VAR}` resolution
 - Input validation, payload limits, and deserialization of untrusted JSON
 - Rate limiting, backpressure, and other abuse-prevention mechanisms

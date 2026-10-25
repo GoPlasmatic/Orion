@@ -104,13 +104,14 @@ it is not JSONLogic.
 ## Connector documents
 
 Modern connector function parameters are expression-capable according to their
-runtime schemas. This includes nested HTTP headers and Kafka topics. Literals
-still fold to themselves.
+runtime schemas. This includes nested HTTP headers, cache keys and storage
+keys. Literals still fold to themselves.
 
-MongoDB query and pipeline documents often contain one-key objects such as
-`{"$oid":"..."}` or database operators. These are data documents, not
-automatically JSONLogic. Follow the function schema's document/expression
-boundary; do not rewrite native database syntax into JSONLogic.
+Document-shaped fields (`cache_write`'s `value`, `jwt_sign`'s `claims`, the
+`params` of the SQL and dialect functions) are data documents, not JSONLogic:
+they fold `{"var": ...}` nodes and keep every other node literally. Follow the
+function schema's document/expression boundary; compute anything else in a
+`map` task first and reference the result.
 
 ## Defensive authoring
 

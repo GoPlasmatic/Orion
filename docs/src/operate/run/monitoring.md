@@ -4,7 +4,7 @@
 
 # Monitor and alert
 
-Orion emits structured logs, Prometheus metrics, OpenTelemetry spans, and three health endpoints from the single binary. There are no sidecars or agents to deploy. This guide turns each one on, points it somewhere, and names the seven signals that fail silently.
+Orion emits structured logs, Prometheus metrics, OpenTelemetry spans, and three health endpoints from the single binary. There are no sidecars or agents to deploy. This guide turns each one on, points it somewhere, and names the six signals that fail silently.
 
 ## Before you start
 
@@ -65,13 +65,12 @@ A workflow skipped by its condition or [rollout](../../reference/workflows.md#ro
 
 ## What to alert on
 
-Seven signals get missed because nothing fails loudly when they fire:
+Six signals get missed because nothing fails loudly when they fire:
 
 - **Background jobs stall silently.** Trace cleanup and DLQ retry swallow per-tick errors by design. Alert on `time() - orion_job_last_success_timestamp_seconds{job="…"}` exceeding a few tick intervals, not on an error rate, which stays at zero.
 - **DLQ depth goes stale when retry is off.** `orion_trace_dlq_depth` is refreshed by the retry loop. With `trace_queue.dlq_retry_enabled = false` it stops updating, so a flat line is not an empty queue.
 - **Any dropped audit event is a hole in the trail.** Alert on `orion_audit_events_dropped_total` existing at all, not on a threshold.
 - **Lost trace writes have exactly one signal.** `orion_trace_persistence_failures_total` counts writes that never happen. Those rows are gone; nothing retries them later.
-- **Kafka throttling is not loss.** A sustained `kafka_guard_deferred` rate in `orion_errors_total` means channel guards are throttling the topic. Offsets stay uncommitted and records retry, so this shows up as lag rather than errors.
 - **A schedule falling behind fails no liveness check.** Every component is working; occurrences are produced faster than they are run. Alert on the high quantiles of `orion_cron_schedule_lag_seconds`, and on `orion_cron_pending_occurrences` growing monotonically. `orion_cron_lease_renewal_failures_total` is worth alerting on at any value: work was cancelled mid-run, and whether its side effects landed is unknowable from the metric.
 - **A deprecated trace-token form is invisible until you look.** `orion_trace_token_query_reads_total` counts trace reads authorized by the `?token=` query parameter, which leaks into logs, history and `Referer` headers. A sustained zero is what makes the parameter safe to remove, so alert on it being non-zero once you have migrated your callers.
 
@@ -89,7 +88,7 @@ service_name = "orion"
 sample_rate = 1.0    # 0.0 (none) to 1.0 (all)
 ```
 
-Spans export over OTLP gRPC to Jaeger, Tempo or any compatible collector, with channel, workflow and task attributes. Incoming `traceparent` headers are honoured and propagated into outbound `http_call` requests, so an Orion hop does not break a distributed trace, including through Kafka headers.
+Spans export over OTLP gRPC to Jaeger, Tempo or any compatible collector, with channel, workflow and task attributes. Incoming `traceparent` headers are honoured and propagated into outbound `http_call` requests, so an Orion hop does not break a distributed trace.
 
 > [!NOTE]
 > Two sampling knobs, different jobs. `tracing.sample_rate` governs OTLP span export. Trace *persistence* sampling ([`trace_storage.sample_rate`](../../reference/configuration/trace-storage.md)) applies to sync traces only. An async submission's trace row is how its result reaches the caller, so async traces always persist; bound them with `errors_only` or `trace_queue.retention_hours` instead. See [Traces and async processing](./traces.md).
@@ -101,7 +100,7 @@ Three endpoints answer three different questions:
 | Endpoint | Question | Behaviour |
 |----------|----------|-----------|
 | `GET /healthz` | Is the process alive? | Always `200` while the process runs. Liveness probe. |
-| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, no required background task has died, and, when enabled, Kafka ingestion is not degraded. In a cluster the database check also covers the shared dedup, cache and rate-limit store, which lives in the same database. With `[packages] apply`, also once every configured package serves. Readiness probe. |
+| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, and no required background task has died. In a cluster the database check also covers the shared dedup, cache and rate-limit store, which lives in the same database. With `[packages] apply`, also once every configured package serves. Readiness probe. |
 | `GET /health` | What is the state of each part? | Component-level status with degradation detail. |
 
 Wire the first two into your orchestrator:
@@ -118,7 +117,7 @@ readinessProbe:
 ```
 
 > [!WARNING]
-> Point monitors at `/health`'s `status` field, not only at its HTTP code. A failing database answers `503` with `"status": "degraded"`. But a failed connector load, a quarantined channel, or a dead Kafka consumer also report `"status": "degraded"` at HTTP 200. The instance still serves traffic, and a `503` would eject a healthy node from its load balancer over a component nothing in flight may even use.
+> Point monitors at `/health`'s `status` field, not only at its HTTP code. A failing database answers `503` with `"status": "degraded"`. But a failed connector load or a quarantined channel also reports `"status": "degraded"` at HTTP 200. The instance still serves traffic, and a `503` would eject a healthy node from its load balancer over a component nothing in flight may even use.
 
 `/health` is deliberately two-tier. Anonymous callers get the coarse component states. Detail fields are served only when admin auth is disabled or the caller presents a valid admin key. Those are `workflows_loaded`, the per-connector circuit-breaker map, failed connector loads and quarantined channel names. A monitor can see *that* something is degraded without learning *what*. Each quarantined channel also carries its `channel_id` and `workflow_id`. Tooling that needs the lists should read [`GET /engine/status`](../../reference/admin-api/engine.md#what-a-generation-could-not-load), which carries the same four under `load_issues` on the admin plane.
 
@@ -126,7 +125,7 @@ readinessProbe:
 
 `components.cron` appears only when this node has something to say about schedules. That is when the scheduler is on, or when it is off while an active cron channel is quarantined. It is `degraded` when the reconciler has not completed a pass for long enough that occurrences are being missed. It is also `degraded` when the scheduler is off while cron channels are stored active. Both are states in which every liveness signal is green and the declared schedules are not running. Like `config_propagation` it does not fail `/readyz`. The node still serves every request correctly, and removing it from the load balancer would not make a single occurrence run. See [Cron occurrences](../../reference/admin-api/cron-occurrences.md).
 
-`components.kafka` appears only when `kafka.enabled` is true. `components.engine` is a constant `"ok"`, kept for response-shape stability: the engine snapshot cannot be unavailable once the process serves.
+`components.engine` is a constant `"ok"`, kept for response-shape stability: the engine snapshot cannot be unavailable once the process serves.
 
 `components.plugins` and `components.models` each carry a third state, `disabled`, which is a configuration choice rather than a fault. The node has `plugins.enabled` or `models.enabled` off and serves everything else normally. Either reads `degraded` when an active row exists that this node could not carry. The causes: a missing artifact, a component that does not compile, a failed self-test, or a model whose admission never passed. The capability being off while active rows are stored counts too. `components.models` is also `degraded` while the admission worker is down, which is the state in which a new registration would wait for a verdict forever. Both are per node: the entity stays stored and active, and it is this node that cannot serve it.
 

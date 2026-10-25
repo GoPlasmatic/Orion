@@ -1,10 +1,10 @@
-<!-- description: Run Orion as a container: one image with all three database backends, Kafka, OTLP and TLS compiled in, plus compose files for single-node and HA topologies. -->
+<!-- description: Run Orion as a container: one image with all three database backends, OTLP export and TLS compiled in, plus compose files for single-node and HA topologies. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-14 -->
 
 # Deploy with Docker
 
-Orion ships as a container image with everything compiled in: all three database backends, Kafka, OTLP export, TLS. There is nothing to install alongside it. This guide is what to change before the container holds anything you care about.
+Orion ships as a container image with everything compiled in: all three database backends, OTLP export, TLS. There is nothing to install alongside it. This guide is what to change before the container holds anything you care about.
 
 ## Before you start
 

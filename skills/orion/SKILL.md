@@ -9,8 +9,8 @@ Orion is a declarative services runtime. A service is described by JSON rather
 than application code:
 
 - a **workflow** is ordered business logic;
-- a **channel** exposes a REST/HTTP route, a Kafka consumer, or a cron
-  schedule, and binds it to a workflow;
+- a **channel** exposes a REST/HTTP route or a cron schedule, and binds it
+  to a workflow;
 - a **connector** names an external dependency and its policy;
 - a **plugin** adds a custom task function as a sandboxed WebAssembly
   component;
@@ -186,13 +186,13 @@ Use `orion-cli <group> <command> --help` before relying on a flag not shown here
   literal object rather than an error; lint and inspect unexpected object
   results before deployment.
 - Channel guards differ by ingress. Do not assume HTTP authentication, caching,
-  or origin checks apply to Kafka or `channel_call`.
+  or origin checks apply to `channel_call` or cron.
 
 ## Cron: a workflow started by a clock
 
 A `cron` channel has no caller. It declares a schedule and a fixed payload in
 `transport_config` — ordinary definition content, versioned and promoted like
-everything else — and registers no route and no topic. It must be
+everything else — and registers no route. It must be
 `channel_type: "async"`.
 
 ```json

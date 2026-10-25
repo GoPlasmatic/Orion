@@ -145,7 +145,7 @@ One request did a parameterized insert and then a relation-hydrated read.
 
 ## Switching backends
 
-Nothing in that workflow is PostgreSQL-specific. Point `orders-db` at MySQL or SQLite and it renders different SQL. Point it at MongoDB or Elasticsearch and the same envelope renders a `find` filter or a Query DSL search. [Portable data dialect](../../reference/data-dialect.md) has the vocabulary and the per-backend notes.
+Nothing in that workflow is PostgreSQL-specific. Point `orders-db` at MySQL or SQLite and the same envelope renders that backend's SQL. [Portable data dialect](../../reference/data-dialect.md) has the vocabulary and the per-backend notes.
 
 ## Clean up or run it again
 
@@ -162,7 +162,7 @@ If Orion was running outside that Compose project, delete `record-order` as a ch
 - A connector is configured once and referenced by name. Four things came with it, and none of them are in the workflow: a connection pool capped at `max_connections`, a circuit breaker, a delete gate enforced below the logic, and credentials that never entered the database.
 - Request data enters a query only through `params`, as bound values.
 - The inline schema both permits the query and declares the relations an `include` can hydrate.
-- The same envelope renders SQL, a MongoDB filter or an Elasticsearch query, depending only on the connector it names.
+- The same envelope renders PostgreSQL, MySQL or SQLite SQL, depending only on the connector it names.
 
 ## Next steps
 

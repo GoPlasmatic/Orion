@@ -168,7 +168,7 @@
     - [Request layering](./reference/connectors/request-layering.md)
     - [Operation gates](./reference/connectors/operation-gates.md)
     - [Retries and circuit breakers](./reference/connectors/reliability.md)
-  - [The seven types](./reference/connectors/types.md)
+  - [The four types](./reference/connectors/types.md)
     - [`http` connectors](./reference/connectors/http.md)
     - [`db` connectors](./reference/connectors/db.md)
     - [`cache` connectors](./reference/connectors/cache.md)

@@ -1,4 +1,4 @@
-<!-- description: Reusable workflow patterns and the integrations around them: Kafka ingress, scheduled work, CI/CD with packages and the Orion Console. -->
+<!-- description: Reusable workflow patterns and the integrations around them: scheduled work, CI/CD with packages, and the Orion Console over the admin API. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 

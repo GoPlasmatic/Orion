@@ -83,7 +83,7 @@ cleanup instructions, follow the
 
 ```mermaid
 flowchart LR
-    Request["HTTP request, Kafka record, or schedule"] --> Channel
+    Request["HTTP request or schedule"] --> Channel
     Channel["Channel<br/>route + ingress policy"] --> Workflow
     Workflow["Workflow<br/>ordered business logic"] --> Connector
     Connector["Connector<br/>external system"]
@@ -92,9 +92,9 @@ flowchart LR
 
 | Primitive | Purpose | Example |
 |---|---|---|
-| **Channel** | Receives traffic and applies ingress policy | `POST /orders`, Kafka topic, `0 15 2 * * *` `order.placed` |
+| **Channel** | Receives traffic and applies ingress policy | `POST /orders`, `GET /users/{id}`, `0 15 2 * * *` |
 | **Workflow** | Runs the business logic as an ordered task pipeline | Parse → validate → enrich → respond |
-| **Connector** | Provides a reusable connection to an external system | PostgreSQL, Kafka, REST API |
+| **Connector** | Provides a reusable connection to an external system | PostgreSQL, a REST API, an S3 bucket |
 
 The definitions belonging to one service can be shipped together as a
 **package**. One Orion instance can run many packages side by side, each with
@@ -110,8 +110,6 @@ boundaries in one page.
   pricing, eligibility, and routing decisions over HTTP.
 - **Webhook and data-ingestion services:** normalize incoming payloads and
   read or write external systems through governed connectors.
-- **Kafka consumers:** process records, publish results, and route failed
-  messages to a dead-letter topic.
 - **AI-agent tools:** expose governed HTTP operations that an assistant can
   draft, dry-run, activate, and roll back using the Orion CLI and agent skill.
 - **Scheduled jobs:** run a workflow on a cron expression instead of on a
@@ -127,12 +125,12 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 
 | Area | Included capability |
 |---|---|
-| **Traffic** | REST, plain HTTP, synchronous and asynchronous channels, Kafka ingress, cron schedules |
+| **Traffic** | REST, plain HTTP, synchronous and asynchronous channels, cron schedules |
 | **Safety** | Payload validation, API-key/HMAC/JWT channel auth, rate limiting, backpressure, CORS controls |
 | **Resilience** | Timeouts, retries, circuit breakers, idempotency, response caching, dead-letter handling |
 | **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins, ONNX models admitted before they serve |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
-| **Data** | PostgreSQL, MySQL, SQLite, MongoDB, Elasticsearch, Kafka, HTTP, SMTP, S3-compatible storage |
+| **Data** | PostgreSQL, MySQL, SQLite, HTTP, S3-compatible storage, an in-process cache |
 | **Operations** | Embedded SQLite for one node; one shared PostgreSQL/MySQL for clustered replicas |
 
 Configuration is explicit, and several production controls are permissive or
@@ -163,7 +161,7 @@ through a complete assisted workflow.
 
 ## When Orion fits
 
-Orion fits services whose work starts with an HTTP request or Kafka record,
+Orion fits services whose work starts with an HTTP request or a schedule,
 completes as a bounded pipeline, and can be expressed with Orion's task
 functions and JSONLogic. It is especially useful when many small services need
 the same operational and governance foundation.

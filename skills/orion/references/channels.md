@@ -20,10 +20,9 @@ A channel names one workflow and one ingress shape:
 }
 ```
 
-`channel_type` is `sync` or `async`. Protocol is `rest`, `http`, `kafka`, or
-`cron`; it is immutable across versions. HTTP channels require methods and a
-route pattern. Kafka channels use a topic and optional consumer group. Route
-parameters arrive in `metadata.params`. A `cron` channel declares none of those
+`channel_type` is `sync` or `async`. Protocol is `rest`, `http`, or `cron`; it
+is immutable across versions. HTTP channels require methods and a route
+pattern. Route parameters arrive in `metadata.params`. A `cron` channel declares none of those
 routing fields and must be `async` — see [Cron channels](#cron-channels).
 
 The workflow must be active before its channel can activate. Use channel
@@ -50,14 +49,14 @@ Unknown channel config keys are rejected. Important blocks are:
 
 Guard applicability differs by ingress:
 
-| Guard | Sync HTTP | Async HTTP | Kafka | `channel_call` | Cron |
-|---|:---:|:---:|:---:|:---:|:---:|
-| rate limit | yes | yes | yes | yes | no |
-| auth / origin | yes | yes | no | no | no |
-| validation | yes | yes | yes | yes | yes |
-| deduplication | yes | yes | yes | no | no |
-| response cache | yes | no | no | no | no |
-| backpressure / timeout | yes | yes | yes | yes | yes |
+| Guard | Sync HTTP | Async HTTP | `channel_call` | Cron |
+|---|:---:|:---:|:---:|:---:|
+| rate limit | yes | yes | yes | no |
+| auth / origin | yes | yes | no | no |
+| validation | yes | yes | yes | yes |
+| deduplication | yes | yes | no | no |
+| response cache | yes | no | no | no |
+| backpressure / timeout | yes | yes | yes | yes |
 | `oauth2_login` | yes | no | no | no | no |
 
 The order is rate limit, authentication, origin, validation, deduplication,
@@ -204,8 +203,9 @@ behavior.
 ## Connectors
 
 Connectors update in place; follow the mutation command's current reload
-behavior and verify engine status afterward. Common types are HTTP, Kafka,
-database, cache, Elasticsearch, SMTP, and object storage.
+behavior and verify engine status afterward. The types are `http`, `db`
+(PostgreSQL, MySQL, SQLite), `cache` (per-node memory), and `storage`
+(S3-compatible object storage).
 
 ```json
 {
@@ -227,9 +227,8 @@ caching, refresh, and rotation; workflows should not implement that lifecycle.
 
 Operation gates restrict what a workflow may do:
 
-- database/Elasticsearch: read, insert, update, delete, upsert, raw write;
+- database: read, insert, update, delete, upsert, raw write;
 - cache: read and write;
-- Kafka: publish;
 - HTTP: method allowlist;
 - storage: presign-get, presign-put, and head.
 

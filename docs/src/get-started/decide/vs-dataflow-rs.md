@@ -23,7 +23,7 @@ This is the one page here that is not a competitive comparison. It is a build de
 |  | dataflow-rs | Orion |
 |---|---|---|
 | What it is | A Rust crate you add to your own binary | A server you deploy |
-| Unit of work | A message processed by an engine you construct | A [channel](../../concepts/channels.md) answering a request or a record |
+| Unit of work | A message processed by an engine you construct | A [channel](../../concepts/channels.md) answering a request or a scheduled occurrence |
 | How you write the logic | Rust, plus workflow definitions you load yourself | JSON, posted to a running server |
 | Where state lives | Wherever your program puts it | The embedded database, or PostgreSQL or MySQL |
 | How a change ships | Recompile and redeploy your binary | One API call, hot-reloaded |
@@ -41,7 +41,7 @@ This is the one page here that is not a competitive comparison. It is a build de
 
 Everything between "the engine can run a pipeline" and "this is a service you can operate":
 
-- [Channels](../../concepts/channels.md): REST routes, plain HTTP, Kafka topics and cron schedules, each with the ingress guards its transport can carry.
+- [Channels](../../concepts/channels.md): REST routes, plain HTTP and cron schedules, each with the ingress guards its transport can carry.
 - [Connectors](../../concepts/connectors.md): pooled, credential-holding connections with circuit breakers, referenced by name.
 - Storage and [lifecycle](../../concepts/lifecycle.md): draft, active, archived, immutable versions, and an atomic engine swap on activation.
 - The [admin API](../../reference/admin-api/index.md), the CLI, and the agent skill that lets an assistant drive all of it.

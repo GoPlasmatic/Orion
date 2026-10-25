@@ -1,4 +1,4 @@
-<!-- description: Configure an Orion channel: pick the REST, HTTP, Kafka or cron ingress, then enable only the guards it needs — auth, rate limits, dedup, caching, validation. -->
+<!-- description: Configure an Orion channel: pick the REST, plain HTTP or cron ingress, then enable only the guards it needs — auth, rate limits, dedup, caching and validation. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -92,10 +92,10 @@ Name the idempotency header and the window:
 { "config": { "deduplication": { "header": "Idempotency-Key", "window_secs": 300 } } }
 ```
 
-A repeat of a settled key inside the window answers `409` instead of running twice. On Kafka the record key or a header serves the same purpose.
+A repeat of a claimed key inside the window answers `409` instead of running twice.
 
 > [!NOTE]
-> Deduplication narrows at-least-once; it does not make Kafka exactly once. A duplicate delivery of an *unfinished* attempt re-runs it, because only a settled key suppresses. If double execution would be harmful, make the downstream write idempotent too. The mechanism is in [Design notes](../../concepts/design-notes.md#deduplication-claim-then-settle).
+> The claim stands for the whole window, whatever the first request's outcome. A caller retrying a failed request with the same key gets `409`, so it sends a new key or waits out the window. If double execution would be harmful, make the downstream write idempotent too. The mechanism is in [Design notes](../../concepts/design-notes.md#deduplication-the-claim-stands-for-the-window).
 
 ## Cache responses
 

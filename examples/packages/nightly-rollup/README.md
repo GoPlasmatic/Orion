@@ -3,7 +3,7 @@
 A workflow that runs on a schedule instead of on a request.
 
 The channel is `protocol: "cron"`: it declares a six-field expression, a time
-zone and a fixed payload, and registers no route and no topic. Every scheduled
+zone and a fixed payload, and registers no route. Every scheduled
 instant becomes a durable occurrence, so "did last night's job run?" is a
 question the ledger answers.
 

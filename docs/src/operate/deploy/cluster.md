@@ -57,7 +57,6 @@ auto_migrate = false               # run `orion-server migrate` as a deploy step
 | **Response caching** | In the shared database, so a second node serves a warm cache instead of warming its own. |
 | **Per-channel rate limits** | A one-second fixed window counted in the shared database; the configured rate holds across all replicas combined. Each limited request costs a short write transaction, so a busy rate-limited channel is database load to size for. |
 | **Background jobs** | Trace cleanup and DLQ retry take a per-tick lease, so one node runs each job. DLQ rows are row-leased too, so each entry is retried once. |
-| **Kafka consumers** | Static group membership keyed by `instance_id`; rolling restarts rejoin without a full rebalance. |
 | **Circuit-breaker resets** | `POST /circuit-breakers/{key}` fans out over the epoch bus; one call resets the key everywhere. |
 
 Every node also runs a sweeper that deletes expired dedup, cache and rate-limit rows from the shared tables every 30 seconds. Concurrent sweeps are harmless. An expired row already reads as absent, so a sweeper that stops leaves every answer correct and only lets the tables grow.
@@ -69,7 +68,7 @@ The bump carries a *scope*, and the replicas resync to it:
 | What you changed | What every other node does |
 |---|---|
 | A workflow or a channel | Republishes its runtime generation (engine plus channel estate, one store). Connector pools are untouched. |
-| A connector (create, update, delete, reload) | The above, plus reloads its connector registry and drops its cached SQL, MongoDB and cache pools, because the endpoint or the credentials behind a live connection may now be wrong. |
+| A connector (create, update, delete, reload) | The above, plus reloads its connector registry and drops its cached SQL pools, because the endpoint or the credentials behind a live connection may now be wrong. |
 
 Only the second row costs reconnections, and that is the point. Before the scope existed the epoch was a bare counter, so every node answered every bump with the widest resync there is. One workflow activation dropped every pooled connection across the whole fleet.
 

@@ -27,9 +27,9 @@ Every Orion service has a channel and a workflow. Add connectors when its logic 
 
 | Primitive | What it is | Examples |
 |-----------|------------|----------|
-| **[Channel](./channels.md)** | The service's entry point: a REST route, a plain HTTP name, a Kafka topic, or a cron schedule | `POST /orders`, `GET /users/{id}`, topic `order.placed`, `0 15 2 * * *` |
+| **[Channel](./channels.md)** | The service's entry point: a REST route, a plain HTTP name, or a cron schedule | `POST /orders`, `GET /users/{id}`, `0 15 2 * * *` |
 | **[Workflow](./workflows.md)** | The ordered task pipeline that is the business logic | Parse input → validate → enrich → transform → respond |
-| **[Connector](./connectors.md)** | A reusable client connection to an external system | PostgreSQL, MongoDB, Elasticsearch, a Kafka cluster, a REST API |
+| **[Connector](./connectors.md)** | A reusable client connection to an external system | PostgreSQL, MySQL, a REST API, an S3 bucket |
 
 Channels receive traffic. Workflows process it. Connectors reach outside. Rate limiting, metrics, retries and versioning are the runtime's job, not yours.
 
@@ -68,16 +68,12 @@ The primitives of one service group into a [package](./packages.md): the named, 
 Sync     POST /api/v2/data/{channel}         → immediate JSON response
 Async    POST /api/v2/data/{channel}/async   → returns a trace id for polling
 REST     GET  /api/v2/data/orders/{id}       → matched by route pattern
-Kafka    topic: order.placed                 → consumed automatically
 Cron     schedule: 0 15 2 * * *              → runs on its own, with no caller
 ```
 
 - **Use a sync channel** for a request/response API where the caller waits for the answer.
 - **Use an async channel** for a submission the caller should not block on. The caller gets a trace id at once and polls `GET /api/v2/admin/traces/{id}` for the result.
-- **Use a Kafka channel** for an event stream, where the topic is the ingress.
 - **Use a [cron channel](../guides/patterns/scheduled-workflows.md)** for work with no caller at all. There is nothing to route to and nothing to authenticate, and every scheduled instant becomes a durable occurrence you can read back.
-
-Bridging between them is a pattern, not a feature. A sync workflow can `publish_kafka` and return at once, and a Kafka channel picks the message up from there.
 
 ## Deployment topology
 
@@ -86,7 +82,7 @@ The same binary serves both planes. Only the configuration and the backends chan
 | Dimension | Development | Production |
 |---|---|---|
 | **Control plane** | Admin API, driven by the CLI or the Console | Admin API, driven by a CI/CD pipeline |
-| **Data plane** | Local HTTP test traffic | Load-balanced HTTP and Kafka traffic |
+| **Data plane** | Local HTTP test traffic | Load-balanced HTTP traffic and cron schedules |
 | **Datastore** | Embedded SQLite, no external dependency | PostgreSQL or MySQL, highly available |
 | **Clustering** | One process, no coordination | Replicas coordinated through the shared database |
 | **Schema migrations** | Applied at startup | A deploy step; replicas never migrate at boot |
@@ -100,7 +96,7 @@ Nothing about the artifacts changes between the two. A workflow authored against
 Orion is configurable in five places, and closed everywhere else. Being plain about that is more useful than a feature list:
 
 - **Expressions.** Conditions and mappings are [JSONLogic](../reference/expressions.md), evaluated by the engine.
-- **Connectors.** A new external system is reached by configuring a connector of a supported type: HTTP, SQL, cache, MongoDB, Elasticsearch, Kafka, SMTP or object storage.
+- **Connectors.** A new external system is reached by configuring a connector of a supported type: HTTP, SQL, an in-memory cache, or object storage.
 - **Composition.** `channel_call` runs another channel's workflow in-process, so services compose without a network hop.
 - **Plugins.** A pure JSON-to-JSON transformation you already have as code ships as a [plugin](./plugins.md): a WebAssembly component that runs in a sandbox importing nothing. It is versioned and promoted like any other definition, and a task calls it like any built-in function.
 - **Models.** A trained ONNX graph is registered as a [model](./models.md), held in object storage, admitted before it serves, and called from a task with `model_infer`. Its manifest declares the JSONLogic that shapes a message into tensors and reads the outputs back, so the workflow stays declarative.

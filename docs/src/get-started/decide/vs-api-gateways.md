@@ -40,7 +40,7 @@ A gateway polices traffic on its way to a service that handles it. Orion *is* th
 
 - Terminates the request: [route resolution](../../reference/data-api.md#route-resolution), guards, workflow, response, with no upstream behind it.
 - Polices its own ingress per channel: [rate limit, auth, origin, validation, dedup, cache and backpressure](../../reference/channel-config/index.md), applied before any logic runs.
-- Applies the same contract on every ingress, minus what the transport cannot carry. A Kafka channel gets the guards a Kafka record can support.
+- Applies the same contract on every ingress, minus what the transport cannot carry. A cron channel has no caller, so it gets no auth or rate limit.
 
 ## Where they overlap
 
@@ -76,7 +76,7 @@ The normal production shape is a gateway at the edge with Orion behind it:
 - **No load balancing or health-based ejection across upstreams.** Orion is an upstream; something else spreads traffic across its replicas.
 - **No WAF, bot management or DDoS controls.**
 - **No plugin ecosystem.** Orion's [plugins](../../concepts/plugins.md) are WebAssembly task functions that transform a message and nothing else: no request filters, no Lua, no hooks into the transport. It extends [by configuration, and by pure code in a sandbox](../../concepts/how-orion-works.md#what-you-can-extend).
-- **No ingress beyond REST, plain HTTP, Kafka and a cron schedule.** No gRPC, no WebSockets, no streaming responses.
+- **No ingress beyond REST, plain HTTP and a cron schedule.** No gRPC, no WebSockets, no streaming responses.
 
 ## Related
 

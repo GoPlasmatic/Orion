@@ -1,4 +1,4 @@
-<!-- description: Every Orion connector type and its config — http, kafka, db, cache, es, smtp and storage — with secret references, auth schemes and per-operation gates. -->
+<!-- description: Every Orion connector type and its config — http, db, cache and storage — with secret references, auth schemes and per-operation gates. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -12,9 +12,9 @@ while an open circuit returns `503 CIRCUIT_OPEN`. Correct the connector definiti
 test it through `POST /connectors/{id}/test`, and use [Errors & Response
 Envelopes](../errors.md) for the complete contract.
 
-A **connector** is a named connection to an external system — an API, a database, a cache, a Kafka cluster, or a search cluster. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.
+A **connector** is a named connection to an external system — an API, a database, a cache, or an object store. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.
 
-There are exactly seven connector types:
+There are exactly four connector types:
 
 | Type | Backs | Task functions |
 |------|-------|----------------|
@@ -30,7 +30,7 @@ The task functions and their inputs are specified in the [Function Reference](..
 | Page | Holds |
 |---|---|
 | [Shared connector blocks](./common.md) | identity, secret references, masking, authentication, request layering, gates and retries. |
-| [The seven types](./types.md) | the seven types, what each backs, and the `config` each takes. |
+| [The four types](./types.md) | the four types, what each backs, and the `config` each takes. |
 
 ## Related
 

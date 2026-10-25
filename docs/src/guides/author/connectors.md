@@ -1,4 +1,4 @@
-<!-- description: Create Orion connectors for HTTP APIs, SQL, MongoDB, Kafka, SMTP, object storage and in-memory caches, with secrets by reference and per-operation gates. -->
+<!-- description: Create Orion connectors for HTTP APIs, SQL databases, object storage and in-memory caches, with secrets held by reference and per-operation gates. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -101,7 +101,7 @@ Two things are doing real work there. `params` is the only door request data com
 | | `data_query` / `data_write` | `db_read` / `db_write` |
 |---|---|---|
 | **You write** | A backend-neutral envelope | Raw SQL |
-| **Runs against** | SQL, MongoDB, Elasticsearch | SQL only |
+| **Portable across** | PostgreSQL, MySQL and SQLite, unchanged | The SQL dialect you wrote |
 | **Injection safety** | By construction; no query text exists | Parameterized, but the text is yours |
 | **Bounded by** | The task's `schema`, plus connector gates | Connector gates and the database user |
 
@@ -115,7 +115,7 @@ Test the connector from the API:
 curl -s -X POST http://localhost:8080/api/v2/admin/connectors/orders-db/test
 ```
 
-For a `db` connector this opens a real connection, and for `cache` it reads its in-memory store. For `http` it issues a real GET with real credentials, which is the point: a wrong bearer token is invisible until traffic hits it. A `401` or `403` is reported as *not* reachable. Before the server is running at all, `orion-server test-connectivity` probes the configured database and, when enabled, Kafka.
+For a `db` connector this opens a real connection, and for `cache` it reads its in-memory store. For `storage` it sends a signed `HEAD` of the bucket. For `http` it issues a real GET with real credentials, which is the point: a wrong bearer token is invisible until traffic hits it. A `401` or `403` is reported as *not* reachable. Before the server is running at all, `orion-server test-connectivity` probes the configured database.
 
 ## Keep it healthy
 

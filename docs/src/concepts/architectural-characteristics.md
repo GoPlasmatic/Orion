@@ -38,7 +38,7 @@ Click a node in the capability map to expand it, and click a capability to open 
         { "name": "Circuit breakers", "link": "operate/run/failure-handling.html#stop-calling-a-failing-backend",
           "children": ["Per connector", "Cooldown before probing", "Off by default", "Inspect & reset via API"] },
         { "name": "Dead letter queue", "link": "operate/run/traces.html#drain-the-dead-letter-queue",
-          "children": ["Failed async traces", "Automatic retry", "Kafka DLQ topic"] },
+          "children": ["Failed async traces", "Automatic retry", "Requeue through the API"] },
         { "name": "Graceful shutdown", "link": "operate/run/failure-handling.html#shut-down-without-dropping-requests",
           "children": ["SIGTERM / SIGINT", "Bounded drain window", "Force timeout"] },
         { "name": "Panic recovery", "link": "operate/run/failure-handling.html#what-survives-a-panic",
@@ -72,7 +72,7 @@ Click a node in the capability map to expand it, and click a capability to open 
         { "name": "Backpressure", "link": "reference/channel-config/backpressure.html",
           "children": ["Per-channel semaphore", "503 load shedding", "Shared across ingresses"] },
         { "name": "Deduplication", "link": "reference/channel-config/deduplication.html",
-          "children": ["Idempotency key window", "HTTP and Kafka", "Shared store when clustered"] },
+          "children": ["Idempotency key window", "Sync and async HTTP", "Shared store when clustered"] },
         { "name": "Async processing", "link": "operate/run/traces.html#run-an-async-channel",
           "children": ["Trace id returned at once", "Bounded worker queue", "DLQ behind it"] },
         { "name": "Cluster mode", "link": "operate/deploy/cluster.html#what-the-cluster-shares",
@@ -100,13 +100,13 @@ Click a node in the capability map to expand it, and click a capability to open 
       "name": "Extensibility", "type": "connector",
       "children": [
         { "name": "Connector types", "link": "reference/connectors/index.html",
-          "children": ["http", "kafka", "db — PG / MySQL / SQLite / Mongo", "cache — per-node memory", "es", "smtp — transactional email", "storage — S3-compatible"] },
+          "children": ["http", "db — PG / MySQL / SQLite", "cache — per-node memory", "storage — S3-compatible"] },
         { "name": "Task functions", "link": "reference/functions/index.html",
-          "children": ["Parse, map, filter, validate", "HTTP calls", "Portable dialect & raw SQL", "Cache read and write", "Kafka publish"] },
+          "children": ["Parse, map, filter, validate", "HTTP calls", "Portable dialect & raw SQL", "Cache read and write", "Object-storage presigning"] },
         { "name": "Portable data dialect", "link": "reference/data-dialect.html",
-          "children": ["One filter syntax", "Lowered to SQL", "Lowered to MongoDB", "Lowered to Query DSL"] },
+          "children": ["One filter syntax", "Lowered to PostgreSQL", "Lowered to MySQL", "Lowered to SQLite"] },
         { "name": "Channel protocols", "link": "reference/channel-config/routing.html",
-          "children": ["REST with route patterns", "Plain HTTP by name", "Kafka topics", "Cron schedules", "Sync or async"] },
+          "children": ["REST with route patterns", "Plain HTTP by name", "Cron schedules", "Sync or async"] },
         { "name": "In-process composition", "link": "reference/functions/channel_call.html",
           "children": ["No network hop", "No serialization", "Callee guards still apply"] }
       ]
@@ -165,10 +165,10 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Timeouts](../operate/run/failure-handling.md#bound-how-long-anything-may-take) | Four levels, outside in: channel, connector, HTTP client, health check. The channel timeout applies on every ingress — sync, `/async`, Kafka and `channel_call` — with per-ingress ceilings that clamp it. |
+| [Timeouts](../operate/run/failure-handling.md#bound-how-long-anything-may-take) | Four levels, outside in: channel, connector, HTTP client, health check. The channel timeout applies on every ingress — sync, `/async`, `channel_call` and cron — with per-ingress ceilings that clamp it. |
 | [Retries](../operate/run/failure-handling.md#retry-only-what-is-safe-to-retry) | HTTP connectors only: exponential backoff capped at 60 s, on retryable failures of idempotent methods. Nothing else is re-driven, because a timed-out `INSERT` may already have applied. |
 | [Circuit breakers](../operate/run/failure-handling.md#stop-calling-a-failing-backend) | Per connector, isolated from each other, with a cooldown before probing again. Off by default; inspectable and resettable through the admin API. |
-| [Dead letter queue](../operate/run/traces.md#drain-the-dead-letter-queue) | Async traces that fail land in the DLQ and are retried from there. Kafka gets its own DLQ topic so one poison record cannot stall a partition. |
+| [Dead letter queue](../operate/run/traces.md#drain-the-dead-letter-queue) | Async traces that fail land in the DLQ and are retried from there, automatically or by a requeue through the admin API. |
 | [Graceful shutdown](../operate/run/failure-handling.md#shut-down-without-dropping-requests) | `SIGTERM`/`SIGINT` stop new admissions and drain in-flight work within a bounded window before the process exits. |
 | [Panic recovery](../operate/run/failure-handling.md#what-survives-a-panic) | A panicking task fails its own request. The process keeps serving. |
 
@@ -190,7 +190,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 |---|---|
 | [Rate limiting](../reference/channel-config/rate_limit.md) | Token bucket with burst, per channel, keyed by a JSONLogic expression over the request — so a limit can be per API key, per tenant, or per IP. A platform-wide limit sits above it. |
 | [Backpressure](../reference/channel-config/backpressure.md) | A per-channel semaphore bounds in-flight work. When permits run out the channel sheds load with `503` immediately rather than queueing. |
-| [Deduplication](../reference/channel-config/deduplication.md) | Idempotency keys refused within a window, on HTTP and on Kafka, backed by a shared store when clustered. |
+| [Deduplication](../reference/channel-config/deduplication.md) | Idempotency keys refused within a window on sync and `/async` HTTP, backed by the cluster's shared database when clustered. |
 | [Async processing](../operate/run/traces.md#run-an-async-channel) | `/async` returns a trace id at once and a bounded worker queue drains the work, with the DLQ behind it. |
 | [Cluster mode](../operate/deploy/cluster.md#what-the-cluster-shares) | N replicas as one logical system: rate limits, deduplication and caches shared through the database, config changes propagated by epoch, scheduled jobs leased to one node. |
 | [Database backends](../reference/configuration/storage.md) | SQLite embedded for a single node; PostgreSQL or MySQL when replicas share state. The scheme in `storage.url` picks one — nothing else changes. |
@@ -209,10 +209,10 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Connector types](../reference/connectors/index.md) | `http`, `kafka`, `db` (PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme), `cache` (per-node memory), `es`, `smtp` (transactional email), and `storage` (S3-compatible object stores). |
-| [Task functions](../reference/functions/index.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect, raw SQL and MongoDB; cache read and write; Kafka publish; transactional email; object-storage presigning; hashing, HMAC and JWT sign/verify; model inference. |
-| [Portable data dialect](../reference/data-dialect.md) | One filter-and-envelope syntax lowered to SQL, MongoDB, or an Elasticsearch Query DSL body, so the same task reads from any of them. |
-| [Channel protocols](../reference/channel-config/routing.md) | REST with route patterns and path parameters, plain HTTP by channel name, Kafka topics, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |
+| [Connector types](../reference/connectors/index.md) | `http`, `db` (PostgreSQL, MySQL or SQLite — chosen by connection-string scheme), `cache` (per-node memory), and `storage` (S3-compatible object stores). |
+| [Task functions](../reference/functions/index.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect and raw SQL; cache read and write; object-storage presigning; hashing, HMAC and JWT sign/verify; model inference. |
+| [Portable data dialect](../reference/data-dialect.md) | One filter-and-envelope syntax lowered to PostgreSQL, MySQL or SQLite, so the same task reads from any of them. |
+| [Channel protocols](../reference/channel-config/routing.md) | REST with route patterns and path parameters, plain HTTP by channel name, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |
 | [In-process composition](../reference/functions/channel_call.md) | `channel_call` runs another channel's workflow in the same process: no network hop, no serialization, and the callee's guards still apply. |
 | [Plugins](../reference/plugin-manifest.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and activated like any other definition, promoted in packages, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
 | [Models](./models.md) | ONNX models held in object storage and admitted — fetched, digest-checked, parsed and probed — before a version may serve. A manifest's JSONLogic adapters shape the message into tensors and read the outputs back, so calling one stays a declarative task. Off by default. |

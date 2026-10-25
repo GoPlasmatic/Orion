@@ -98,8 +98,8 @@
       '<path d="M13.5 3.5v5h5"/><path d="M9 13h6"/><path d="M9 16.5h4"/>',
 
     // ── Connector types ──
-    // The five values the `type` field takes. Used in the types table on
-    // concepts/connectors.md; `kafka` doubles as the stream ingress below.
+    // The four values the `type` field takes. Used in the types table on
+    // concepts/connectors.md.
     "type-http":
       '<circle cx="12" cy="12" r="8.4"/><path d="M3.6 12h16.8"/>' +
       '<path d="M12 3.6c2.2 2.3 3.4 5.3 3.4 8.4s-1.2 6.1-3.4 8.4c-2.2-2.3-3.4-5.3-3.4-8.4S9.8 5.9 12 3.6Z"/>',
@@ -108,22 +108,21 @@
       '<path d="M4.6 6.4v11.2c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9V6.4"/>' +
       '<path d="M4.6 12c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9"/>',
     "type-cache": '<path d="M13.2 3.2 5.6 13.6h5.9L10.8 20.8l7.6-10.4h-5.9z"/>',
-    "type-es":
-      '<path d="M13.4 3.4H7A1.5 1.5 0 0 0 5.5 4.9v14.2A1.5 1.5 0 0 0 7 20.6h5"/>' +
-      '<path d="M13.4 3.4v5h5"/><circle cx="16.6" cy="15.6" r="3.1"/>' +
-      '<path d="m18.9 17.9 2.1 2.1"/>',
-    "type-kafka":
-      '<path d="M3.6 8.6c3-2.6 6-2.6 9 0s6 2.6 9 0"/>' +
-      '<path d="M3.6 15.4c3-2.6 6-2.6 9 0s6 2.6 9 0"/>',
+    "type-storage":
+      '<path d="M4 7.5 12 3.6l8 3.9v9L12 20.4l-8-3.9z"/>' +
+      '<path d="m4 7.5 8 3.9 8-3.9"/><path d="M12 11.4v9"/>',
 
     // ── Ingress kinds ──
     // The four ways a request reaches a channel, for the guards matrix
-    // headers. `ingress-kafka` is type-kafka reused — one topic, one glyph.
+    // headers.
     "ingress-sync": '<circle cx="12" cy="12" r="8.4"/><path d="M8 12h7"/><path d="m12.4 9 3 3-3 3"/>',
     "ingress-async": '<circle cx="12" cy="12" r="8.4"/><path d="M12 7.2V12l3.2 1.9"/>',
     "ingress-call":
       '<path d="M10.2 13.8a3.6 3.6 0 0 0 5.1 0l2.8-2.8a3.6 3.6 0 0 0-5.1-5.1l-1.3 1.3"/>' +
       '<path d="M13.8 10.2a3.6 3.6 0 0 0-5.1 0l-2.8 2.8a3.6 3.6 0 0 0 5.1 5.1l1.3-1.3"/>',
+    "ingress-cron":
+      '<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/>' +
+      '<path d="M4 10h16"/><path d="M8.5 3.5v4"/><path d="M15.5 3.5v4"/>',
 
     // Chain link — the per-row permalink on a reference table.
     anchor:
@@ -856,7 +855,7 @@
     }
   }
 
-  // Two families of categorical value that repeat across the book: the five
+  // Two families of categorical value that repeat across the book: the four
   // connector types, and the four ingresses a channel can be reached on.
   // Both are matched narrowly — the type family only inside a table whose
   // first header is "Type", the ingress family only in the header row of the
@@ -866,15 +865,14 @@
     http: "type-http",
     db: "type-db",
     cache: "type-cache",
-    es: "type-es",
-    kafka: "type-kafka",
+    storage: "type-storage",
   };
 
   var INGRESSES = {
     "http sync": "ingress-sync",
     "http /async": "ingress-async",
-    kafka: "type-kafka",
     channel_call: "ingress-call",
+    cron: "ingress-cron",
   };
 
   function prefixGlyph(cell, name, extraClass) {

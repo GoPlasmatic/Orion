@@ -17,7 +17,7 @@ Orion is the service itself. It is not a proxy in front of one and not a coordin
 | [API gateways](./vs-api-gateways.md) | Kong, Envoy, APISIX, KrakenD | Policing and routing traffic to the services behind them | **Pairs with**. The services behind it run inside Orion's runtime |
 | MCP tool servers | Hand-written MCP servers, FastMCP, LangChain tools | Exposing your systems to an LLM as callable tools | **Replaces**, and adds drafts, rollout and rollback |
 | [Automation platforms](./vs-automation-platforms.md) | n8n, Zapier, Make, Node-RED | Wiring SaaS apps together in minutes, at low volume | **Different job**. Orion carries production request traffic |
-| Stream and integration tools | Camel, NiFi, Redpanda Connect, Flink | Moving and reshaping data between systems continuously | **Overlaps**. Orion handles each record on its own; windowing and engine-managed state are theirs |
+| Stream and integration tools | Camel, NiFi, Redpanda Connect, Flink | Moving and reshaping data between systems continuously | **Overlaps**. Orion handles each request on its own and consumes no stream; windowing and engine-managed state are theirs |
 | [Rule engines](./vs-rule-engines.md) | Drools, OPA, GoRules | Evaluating many rules over an accumulating fact base | **Overlaps**. In Orion each step feeds the next in the order you wrote; re-firing rules until they settle is theirs |
 | [Embedding dataflow-rs](./vs-dataflow-rs.md) | dataflow-rs | Running workflow tasks inside your own Rust program | **Sits under**. It is the engine Orion wraps |
 
@@ -34,17 +34,17 @@ Four words carry the last column:
 - You want the endpoint live without a build, a deploy or a restart.
 - You would otherwise write the same rate limiting, retries, metrics and versioning for the fifth time.
 - An LLM is writing or changing the logic, and you need drafts, dry runs and one-command rollback around it.
-- Traffic is request/response, per-record events, or scheduled runs, answered in milliseconds.
+- Traffic is request/response, webhook events, or scheduled runs, answered in milliseconds.
 - The logic changes more often than the infrastructure around it does.
 
 ## Orion is the wrong tool when
 
 - **The work spans hours or days, or waits for a human.** Orion runs inside a request and forgets. A cron channel can *start* a workflow on a schedule, but nothing can pause one mid-run. See [durable execution engines](./vs-durable-execution.md).
-- **You need gRPC, WebSockets or a streaming response.** REST, plain HTTP, Kafka and a cron schedule are the whole ingress surface.
+- **You need gRPC, WebSockets or a streaming response.** REST, plain HTTP and a cron schedule are the whole ingress surface.
 - **The logic needs a real programming language with I/O.** A pure transformation ships as a [plugin](../../concepts/plugins.md): a WebAssembly component in a sandbox with no filesystem, clock, network or secrets. Anything that talks to another system stays an `http_call` to a service you write. [What you can extend](../../concepts/how-orion-works.md#what-you-can-extend) states the boundary exactly.
 - **You need full OIDC flows or mTLS at the data plane** with nothing in front. JWT verification is built in; the login redirect dance and client certificates are not.
 - **The request needs heavy computation.** Task functions parse, map, validate, talk to other systems, and run an admitted [model](../../concepts/models.md) small enough to pass its probe ceiling. Image processing, training and large in-memory joins are not what Orion is for.
-- **You need an app catalogue.** There are seven connector types. Reaching a SaaS API means an `http_call` you write.
+- **You need an app catalogue.** There are four connector types. Reaching a SaaS API means an `http_call` you write.
 
 > [!WARNING]
 > Plan for authentication before you expose a channel. The admin plane authenticates by configuration; a data channel authenticates only if it declares an `auth` block (API key, HMAC signature or JWT). Without one, anything that can reach the port can call the service. [Secure an instance](../../operate/run/security.md) says what to configure.
