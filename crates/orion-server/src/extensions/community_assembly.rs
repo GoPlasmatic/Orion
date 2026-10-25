@@ -1,7 +1,7 @@
-//! Community Edition proof assembly and boundary verifier (`V2-11.3`, `DEC-005`).
+//! Community Edition boundary verifier (`V2-11.3`, `DEC-005`), compiled for tests only.
 //!
-//! Provides deterministic boundary assertions verifying that the public
-//! Community Edition assembly ([`CompositionRoot::community`]):
+//! The tests below assert that the public Community Edition assembly
+//! ([`CompositionRoot::community`]):
 //!
 //! 1. Registers **only** the 4 foundational native Rust channel drivers
 //!    (`cron`, `http`, `rest`, `source`) and zero Enterprise-only channel
@@ -13,8 +13,8 @@
 //! 3. Uses [`CommunityAdmissionPolicy`](super::admission::CommunityAdmissionPolicy)
 //!    (`orion.community.admission/1`) which rejects `tier: "enterprise"` packages
 //!    with `ENTERPRISE_TIER_NOT_ENABLED`.
-//! 4. Supports registering and executing custom `workflow` and `wasm` connector
-//!    packages on top of the Community foundation without modifying core enums.
+//! 4. Supports registering and executing a custom `workflow` connector package
+//!    on top of the Community foundation without modifying core enums.
 
 use serde::Serialize;
 
@@ -41,7 +41,6 @@ pub struct CommunityAssemblyReport {
     pub registered_channels: Vec<String>,
     pub registered_rust_providers: Vec<String>,
     pub registered_workflow_providers: Vec<String>,
-    pub registered_wasm_providers: Vec<String>,
     pub resource_pool_count: usize,
     pub violations: Vec<BoundaryViolation>,
 }
@@ -61,7 +60,7 @@ impl CommunityAssemblyReport {
 ///   `org.orion.memory-cache`, `org.orion.mysql`, `org.orion.postgresql`,
 ///   `org.orion.sqlite`) are present and no Enterprise Direct Rust providers are
 ///   registered.
-/// - Allows any number of user-installed `workflow` and `wasm` providers.
+/// - Allows any number of user-installed `workflow` providers.
 /// - Checks that `orion.community.admission/1` is active.
 pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyReport {
     let mut violations = Vec::new();
@@ -105,13 +104,14 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
 
     let mut registered_rust_providers = Vec::new();
     let mut registered_workflow_providers = Vec::new();
-    let mut registered_wasm_providers = Vec::new();
 
     for (kind, id) in root.providers.registered_drivers() {
         match kind {
             ImplementationKind::Rust => registered_rust_providers.push(id),
             ImplementationKind::Workflow => registered_workflow_providers.push(id),
-            ImplementationKind::Wasm => registered_wasm_providers.push(id),
+            // Community ships no Wasm backend; one registered by an extension
+            // is outside this audit.
+            ImplementationKind::Wasm => {}
         }
     }
 
@@ -147,7 +147,6 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
         registered_channels,
         registered_rust_providers,
         registered_workflow_providers,
-        registered_wasm_providers,
         resource_pool_count: root.pools.len(),
         violations,
     }
@@ -162,9 +161,6 @@ mod tests {
         ConnectionReference, ConnectorResult, EffectiveConnectionIdentity, ProviderReference,
     };
     use crate::extensions::foundation::DRIVER_MEMORY_CACHE;
-    use crate::extensions::wasm_provider::{
-        WasmComponentCache, WasmImportProfile, WasmProviderBackend, WasmStoreLimits,
-    };
     use crate::extensions::workflow_provider::{
         BindingSlotSpec, CompiledWorkflowProviderGraph, WorkflowGroupManifest,
         WorkflowGroupProviderBackend, WorkflowGroupStep, WorkflowNodeDef,
@@ -239,7 +235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn community_assembly_admits_and_runs_workflow_and_wasm_packages() {
+    async fn community_assembly_admits_and_runs_a_workflow_package() {
         let root = CompositionRoot::community();
 
         // 1. Compile and register a custom Workflow-Group connector on the Community root
@@ -293,60 +289,21 @@ mod tests {
             root.admission.clone(),
         ));
 
-        // 2. Verify and register a custom Wasm connector on the Community root.
-        let wasm_bytes = b"\0asm\x01\x00\x00\x00";
-        let digest = WasmComponentCache::sha256_digest(wasm_bytes);
-        let wasm_provider_ref = ProviderReference {
-            provider_id: "community.wasm-enricher".to_string(),
-            version: "2.0.0".to_string(),
-            package_digest: digest.clone(),
-        };
-        let wasm_cache = WasmComponentCache::new("wasmtime-49.0.4:profile-v1", 1024 * 1024);
-        let verified_wasm = wasm_cache
-            .verify_and_insert(
-                wasm_provider_ref.clone(),
-                WasmImportProfile::CoreV1,
-                wasm_bytes,
-                &["types", "context"],
-                &[],
-                BTreeSet::from(["enrich".to_string()]),
-                false,
-            )
-            .expect("wasm verified");
-        let wasm_backend = Arc::new(WasmProviderBackend::new(
-            verified_wasm,
-            WasmStoreLimits::default(),
-            Arc::new(|store, _op, input_json| {
-                store.consume_fuel(250)?;
-                Ok(json!({
-                    "wasm_component": "community.wasm-enricher",
-                    "echo": serde_json::from_str::<serde_json::Value>(input_json).unwrap_or_default()
-                })
-                .to_string())
-            }),
-        ));
+        let root = root.with_provider_backend(wf_backend);
 
-        let root = root
-            .with_provider_backend(wf_backend)
-            .with_provider_backend(wasm_backend);
-
-        // Verify the assembly remains 100% Community-compliant with custom workflow + wasm providers!
+        // The assembly stays Community-compliant with a custom workflow provider.
         let report = verify_community_assembly(&root);
         assert!(
             report.is_compliant(),
-            "custom workflow and wasm providers must be allowed in Community assembly: {:?}",
+            "custom workflow providers must be allowed in Community assembly: {:?}",
             report.violations
         );
         assert_eq!(
             report.registered_workflow_providers,
             vec!["community.composite-cache"]
         );
-        assert_eq!(
-            report.registered_wasm_providers,
-            vec!["community.wasm-enricher"]
-        );
 
-        // Execute both custom providers through the unified ProviderRegistry.
+        // Execute the custom provider through the unified ProviderRegistry.
         let wf_conn = ConnectionReference {
             connection_id: "composite-conn".to_string(),
             revision: 1,
@@ -363,23 +320,11 @@ mod tests {
                         .to_string(),
             },
         };
-        let wasm_conn = ConnectionReference {
-            connection_id: "wasm-conn".to_string(),
-            revision: 1,
-            provider: wasm_provider_ref.clone(),
-        };
-
         let authority = AuthorityGrant {
-            allowed_operations: BTreeMap::from([
-                (
-                    "composite-conn".to_string(),
-                    BTreeSet::from(["cache_write".to_string()]),
-                ),
-                (
-                    "wasm-conn".to_string(),
-                    BTreeSet::from(["enrich".to_string()]),
-                ),
-            ]),
+            allowed_operations: BTreeMap::from([(
+                "composite-conn".to_string(),
+                BTreeSet::from(["cache_write".to_string()]),
+            )]),
             declared_dependencies: BTreeMap::from([(
                 "cache_slot".to_string(),
                 (cache_conn, BTreeSet::from(["set".to_string()])),
@@ -424,35 +369,5 @@ mod tests {
             panic!("expected workflow success, got {res1:?}");
         };
         assert_eq!(data1["cache_result"]["stored"], json!(true));
-
-        let inv2 = run
-            .context()
-            .start_invocation(
-                wasm_conn,
-                EffectiveConnectionIdentity {
-                    provider_digest: digest,
-                    connection_id: "wasm-conn".to_string(),
-                    revision: 1,
-                    secret_hash: "sha256:0000".to_string(),
-                },
-                "enrich",
-                None,
-                1,
-            )
-            .expect("wasm invocation");
-        let res2 = root
-            .providers
-            .dispatch_attempt(
-                root.admission.as_ref(),
-                &inv2,
-                ImplementationKind::Wasm,
-                "community.wasm-enricher",
-                json!({"hello": "world"}),
-            )
-            .await;
-        let ConnectorResult::Success { data: data2, .. } = res2 else {
-            panic!("expected wasm success, got {res2:?}");
-        };
-        assert_eq!(data2["wasm_component"], json!("community.wasm-enricher"));
     }
 }

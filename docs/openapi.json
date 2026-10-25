@@ -2686,7 +2686,7 @@
           "Deployments"
         ],
         "summary": "Discover runtime capabilities and edition boundaries",
-        "description": "Returns the server's active v2 edition (`community` or `enterprise`), registered channel drivers, provider backends, Wasm worlds/profiles, deployment head revision, and reconciler status.",
+        "description": "Returns the server's active v2 edition (`community` or `enterprise`), registered channel drivers, provider backends, the plugin Wasm world, deployment head revision, and reconciler status.",
         "operationId": "get_runtime_capabilities",
         "responses": {
           "200": {
@@ -6514,7 +6514,7 @@
       },
       "RuntimeCapabilitiesResponse": {
         "type": "object",
-        "description": "Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`).",
+        "description": "Runtime capabilities: edition, registered drivers and providers, deployment head (`GET /api/v2/admin/runtime-capabilities`).",
         "properties": {
           "active_deployment_revision": {
             "type": "integer",
@@ -6526,9 +6526,6 @@
           },
           "api_version": {
             "type": "string"
-          },
-          "community_boundary_compliant": {
-            "type": "boolean"
           },
           "deployment_head": {},
           "edition": {
@@ -6553,12 +6550,6 @@
               "type": "string"
             }
           },
-          "registered_wasm_providers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
           "registered_workflow_providers": {
             "type": "array",
             "items": {
@@ -6566,12 +6557,6 @@
             }
           },
           "schema_profiles": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "supported_wasm_profiles": {
             "type": "array",
             "items": {
               "type": "string"

@@ -830,7 +830,6 @@ mod tests {
             ("GET", "/api/v2/admin/runtime-capabilities") => Ok(json!({
                 "api_version": "v2",
                 "edition": "community",
-                "community_boundary_compliant": true,
             })),
             ("POST", "/api/v2/admin/authoring/scaffold") => {
                 let req: ScaffoldRequest = serde_json::from_value(body_val)?;

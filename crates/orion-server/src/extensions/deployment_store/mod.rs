@@ -1240,6 +1240,9 @@ impl ImmutableDeploymentStore {
 
     /// V2-04.3: Build a `CandidatePlan` outside any write transaction, checking
     /// base revision, manifest closure, and computing added/removed diffs.
+    ///
+    /// The in-memory form, for tests; a node plans through `plan_candidate_in_db`.
+    #[cfg(test)]
     pub fn plan_candidate(
         &self,
         base_revision: u64,
@@ -1298,6 +1301,9 @@ impl ImmutableDeploymentStore {
 
     /// V2-04.4: Commit an idempotent CAS deployment apply under canonical lock
     /// order (`deployment_head -> deployment_operations -> provider_admissions -> artifact_objects`).
+    ///
+    /// The in-memory form, for tests; a node applies through `apply_candidate_in_db`.
+    #[cfg(test)]
     pub fn apply_candidate(
         &self,
         principal: &str,

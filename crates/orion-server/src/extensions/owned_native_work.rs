@@ -1,15 +1,13 @@
-//! V2-08 Owned native work scheduler, permits, single-flight loader, live
-//! capacity ceiling updates across revisions, and bounded graceful shutdown.
+//! V2-08 Owned native work scheduler, permits, live capacity ceiling updates
+//! across revisions, and bounded graceful shutdown.
 
 use std::collections::BTreeMap;
-use std::future::Future;
-use std::hash::Hash;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Notify, watch};
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeJobState {
@@ -302,118 +300,6 @@ impl NativeWorkScheduler {
     }
 }
 
-type InFlightLoadReceiver<V> = watch::Receiver<Option<Result<V, NativeWorkError>>>;
-
-/// V2-08.3: Single-flight loader where the load job is independently owned on a
-/// background task and holds its [`OwnedPermit`] until completion. Waiter
-/// cancellation removes only that waiter without aborting the running load.
-pub struct SingleFlightLoader<K, V> {
-    scheduler: NativeWorkScheduler,
-    cache: Arc<Mutex<BTreeMap<K, V>>>,
-    in_flight_loads: Arc<Mutex<BTreeMap<K, InFlightLoadReceiver<V>>>>,
-}
-
-impl<K, V> Clone for SingleFlightLoader<K, V> {
-    fn clone(&self) -> Self {
-        Self {
-            scheduler: self.scheduler.clone(),
-            cache: Arc::clone(&self.cache),
-            in_flight_loads: Arc::clone(&self.in_flight_loads),
-        }
-    }
-}
-
-impl<K, V> SingleFlightLoader<K, V>
-where
-    K: Ord + Clone + Hash + Send + Sync + 'static,
-    V: Clone + Send + Sync + 'static,
-{
-    pub fn new(scheduler: NativeWorkScheduler) -> Self {
-        Self {
-            scheduler,
-            cache: Arc::new(Mutex::new(BTreeMap::new())),
-            in_flight_loads: Arc::new(Mutex::new(BTreeMap::new())),
-        }
-    }
-
-    pub fn get_cached(&self, key: &K) -> Option<V> {
-        self.cache.lock().expect("cache lock").get(key).cloned()
-    }
-
-    pub async fn get_or_load<F, Fut>(
-        &self,
-        key: K,
-        waiter_deadline: Instant,
-        loader: F,
-    ) -> Result<V, NativeWorkError>
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = Result<V, NativeWorkError>> + Send + 'static,
-    {
-        if let Some(cached) = self.get_cached(&key) {
-            return Ok(cached);
-        }
-
-        let existing_rx = self
-            .in_flight_loads
-            .lock()
-            .expect("in_flight_loads lock")
-            .get(&key)
-            .cloned();
-
-        let mut rx = if let Some(existing_rx) = existing_rx {
-            existing_rx
-        } else {
-            let permit = self
-                .scheduler
-                .acquire_until("single-flight-load", waiter_deadline)
-                .await?;
-            let mut g = self.in_flight_loads.lock().expect("in_flight_loads lock");
-            if let Some(existing_rx) = g.get(&key) {
-                existing_rx.clone()
-            } else {
-                let (tx, rx) = watch::channel(None);
-                g.insert(key.clone(), rx.clone());
-
-                let cache = Arc::clone(&self.cache);
-                let in_flight = Arc::clone(&self.in_flight_loads);
-                let key_clone = key.clone();
-                tokio::spawn(async move {
-                    let _owned_permit = permit;
-                    _owned_permit.mark_running();
-                    let res = loader().await;
-                    if let Ok(ref val) = res {
-                        cache
-                            .lock()
-                            .expect("cache lock")
-                            .insert(key_clone.clone(), val.clone());
-                    }
-                    in_flight
-                        .lock()
-                        .expect("in_flight_loads lock")
-                        .remove(&key_clone);
-                    let _ = tx.send(Some(res));
-                });
-                rx
-            }
-        };
-
-        loop {
-            if let Some(res) = rx.borrow().clone() {
-                return res;
-            }
-            let rem = waiter_deadline.saturating_duration_since(Instant::now());
-            if rem.is_zero() || tokio::time::timeout(rem, rx.changed()).await.is_err() {
-                return Err(NativeWorkError {
-                    code: "SINGLE_FLIGHT_WAITER_TIMEOUT",
-                    message: "waiter timed out while owned single-flight load continues"
-                        .to_string(),
-                });
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -449,37 +335,5 @@ mod tests {
         assert!(report.drained_cleanly);
         assert_eq!(scheduler.in_flight(), 0);
         assert_eq!(report.abandoned_waiters_total, 1);
-    }
-
-    #[tokio::test]
-    async fn single_flight_load_continues_and_populates_cache_when_creator_times_out() {
-        let scheduler = NativeWorkScheduler::new(2);
-        let loader = SingleFlightLoader::<String, String>::new(scheduler.clone());
-
-        // First caller (creator) has a 10ms deadline while load takes 50ms
-        let loader1 = loader.clone();
-        let err = loader1
-            .get_or_load(
-                "model-v1".to_string(),
-                Instant::now() + Duration::from_millis(10),
-                || async {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    Ok("compiled-weights".to_string())
-                },
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, "SINGLE_FLIGHT_WAITER_TIMEOUT");
-
-        // Underlying load is still running and holding its permit
-        assert_eq!(scheduler.in_flight(), 1);
-
-        // Wait for the background load to finish and verify cache is populated
-        tokio::time::sleep(Duration::from_millis(70)).await;
-        assert_eq!(scheduler.in_flight(), 0);
-        assert_eq!(
-            loader.get_cached(&"model-v1".to_string()),
-            Some("compiled-weights".to_string())
-        );
     }
 }

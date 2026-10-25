@@ -156,7 +156,7 @@ pub(super) fn decode_files_map(
     path = "/api/v2/admin/runtime-capabilities",
     tag = "Deployments",
     summary = "Discover runtime capabilities and edition boundaries",
-    description = "Returns the server's active v2 edition (`community` or `enterprise`), registered channel drivers, provider backends, Wasm worlds/profiles, deployment head revision, and reconciler status.",
+    description = "Returns the server's active v2 edition (`community` or `enterprise`), registered channel drivers, provider backends, the plugin Wasm world, deployment head revision, and reconciler status.",
     responses(
         (status = 200, description = "Runtime capabilities report", body = RuntimeCapabilitiesResponse),
     )
@@ -167,31 +167,15 @@ pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> i
     let local_status = comp.reconciler.local_status();
     let policy_id = comp.admission.policy_id().to_string();
     let edition = comp.admission.edition().as_str();
-    let boundary_report = crate::extensions::verify_community_assembly(comp);
-    let wasm_profiles = vec![
-        crate::extensions::WasmImportProfile::CoreV1
-            .id()
-            .to_string(),
-        crate::extensions::WasmImportProfile::HttpV1
-            .id()
-            .to_string(),
-        crate::extensions::WasmImportProfile::HttpCompositionV1
-            .id()
-            .to_string(),
-        crate::extensions::WasmImportProfile::SessionsV1
-            .id()
-            .to_string(),
-    ];
     let drivers = comp.providers.registered_drivers();
     let mut rust_providers = Vec::new();
     let mut workflow_providers = Vec::new();
-    let mut wasm_providers = Vec::new();
     let mut providers = Vec::new();
     for (kind, id) in drivers {
         match kind {
             crate::extensions::ImplementationKind::Rust => rust_providers.push(id.clone()),
             crate::extensions::ImplementationKind::Workflow => workflow_providers.push(id.clone()),
-            crate::extensions::ImplementationKind::Wasm => wasm_providers.push(id.clone()),
+            crate::extensions::ImplementationKind::Wasm => {}
         }
         // A built-in driver's digest is what a connection revision names
         // as its provider, so it is reported where a client looks for it.
@@ -209,18 +193,12 @@ pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> i
         api_version: "v2".to_string(),
         edition: edition.to_string(),
         admission_policy_id: policy_id,
-        community_boundary_compliant: boundary_report.is_compliant(),
         registered_channel_drivers: comp.channels.protocol_ids(),
         schema_profiles: vec![crate::extensions::PROFILE_ID.to_string()],
-        wasm_worlds: vec![
-            crate::extensions::CONNECTOR_WIT_CONTRACT.to_string(),
-            "orion:plugin@1.0.0".to_string(),
-        ],
-        supported_wasm_profiles: wasm_profiles,
+        wasm_worlds: vec![crate::plugin::manifest::ABI.to_string()],
         provider_backends: providers,
         registered_rust_providers: rust_providers,
         registered_workflow_providers: workflow_providers,
-        registered_wasm_providers: wasm_providers,
         deployment_head: json!({
             "revision": head_rev,
             "epoch": epoch,
@@ -250,20 +228,11 @@ mod tests {
         let (head_rev, epoch) = comp.deployments.current_head();
         let local_status = comp.reconciler.local_status();
         let policy_id = comp.admission.policy_id();
-        let boundary_report = crate::extensions::verify_community_assembly(&comp);
-        let wasm_profiles = [
-            crate::extensions::WasmImportProfile::CoreV1.id(),
-            crate::extensions::WasmImportProfile::HttpV1.id(),
-            crate::extensions::WasmImportProfile::HttpCompositionV1.id(),
-            crate::extensions::WasmImportProfile::SessionsV1.id(),
-        ];
         let payload = json!({
             "api_version": "v2",
             "edition": "community",
             "schema_profiles": [crate::extensions::PROFILE_ID],
-            "wasm_worlds": [crate::extensions::CONNECTOR_WIT_CONTRACT, "orion:plugin@1.0.0"],
-            "wasm_import_profiles": wasm_profiles,
-            "community_boundary_compliant": boundary_report.is_compliant(),
+            "wasm_worlds": [crate::plugin::manifest::ABI],
             "channel_drivers": comp.channels.protocol_ids(),
             "provider_backends": [],
             "admission_policy_id": policy_id,
@@ -283,15 +252,7 @@ mod tests {
             serde_json::from_value(payload).expect("deserialize RuntimeCapabilitiesResponse");
         assert_eq!(dto.api_version, "v2");
         assert_eq!(dto.edition, "community");
-        assert!(dto.community_boundary_compliant);
-        assert_eq!(
-            dto.wasm_worlds,
-            vec!["orion:connector@1.0.0", "orion:plugin@1.0.0"]
-        );
-        assert_eq!(
-            dto.supported_wasm_profiles,
-            vec!["core-v1", "http-v1", "http-composition-v1", "sessions-v1"]
-        );
+        assert_eq!(dto.wasm_worlds, vec!["orion:plugin@1.0.0"]);
         assert_eq!(
             dto.registered_channel_drivers,
             vec!["cron", "http", "rest", "source"]

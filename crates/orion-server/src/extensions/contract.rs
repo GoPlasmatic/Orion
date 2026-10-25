@@ -96,13 +96,6 @@ impl EffectiveConnectionIdentity {
     }
 }
 
-/// Deployment revision identity (`V2-10.1`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct DeploymentIdentity {
-    pub revision: u64,
-    pub manifest_hash: String,
-}
-
 /// Normalized error class vocabulary (`V2-10.1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -405,51 +398,6 @@ impl From<Result<ConnectorOutput, ConnectorError>> for ConnectorResult {
                 metadata: out.metadata,
             },
             Err(error) => Self::Error { error },
-        }
-    }
-}
-
-/// Declared operation side-effect classification (`V2-10.1`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OperationEffect {
-    Read,
-    Write,
-    Mixed,
-}
-
-/// Declared operation retry policy (`V2-10.1`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationRetryPolicy {
-    Safe,
-    RequiresKey,
-    Never,
-}
-
-impl OperationRetryPolicy {
-    /// Evaluate whether the host retry scheduler may start another attempt after `error`
-    /// under the retry ownership table in `connector-invocation.md`.
-    pub fn can_retry(
-        self,
-        effect: OperationEffect,
-        error: &ConnectorError,
-        has_idempotency_key: bool,
-        has_downstream_idempotency_support: bool,
-    ) -> bool {
-        if error.retry_advice != RetryAdvice::Transient {
-            return false;
-        }
-        match (effect, self) {
-            (_, Self::Never) => false,
-            (OperationEffect::Read, Self::Safe) => true,
-            (OperationEffect::Read, Self::RequiresKey) => has_idempotency_key,
-            (OperationEffect::Write | OperationEffect::Mixed, Self::RequiresKey | Self::Safe) => {
-                if !has_idempotency_key || !has_downstream_idempotency_support {
-                    return false;
-                }
-                true
-            }
         }
     }
 }

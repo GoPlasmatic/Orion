@@ -23,10 +23,7 @@ use super::contract::{
     ConnectorError, ConnectorOutput, EffectStatus, EffectiveConnectionIdentity, ImplementationKind,
     codes,
 };
-use super::provider_backend::{
-    BoxProviderFuture, ProviderBackend, ProviderRegistry, SourceBatchItem, SourceConnectorFacet,
-    SourcePollBatch, SourceSettlement,
-};
+use super::provider_backend::{BoxProviderFuture, ProviderBackend, ProviderRegistry};
 use super::resource_pool::{
     BoxPoolFuture, ConnectionPoolCache, ResourcePoolRegistry, VersionedSessionPool,
 };
@@ -1008,69 +1005,6 @@ impl ProviderBackend for PostgresProviderBackend {
             self.sessions.invalidate(identity, None);
         })
     }
-
-    fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
-        Some(self)
-    }
-}
-
-impl SourceConnectorFacet for PostgresProviderBackend {
-    fn open<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        checkpoint: Option<Value>,
-    ) -> BoxProviderFuture<'a, Result<Value, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(json!({
-                "driver": DRIVER_POSTGRESQL,
-                "connection_id": ctx.invocation().connection().connection_id,
-                "checkpoint": checkpoint.unwrap_or_else(|| json!({"lsn": 0})),
-            }))
-        })
-    }
-
-    fn poll<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        cursor: &'a Value,
-        _max_items: u32,
-    ) -> BoxProviderFuture<'a, Result<SourcePollBatch, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(SourcePollBatch {
-                items: Vec::new(),
-                next_checkpoint: cursor.get("checkpoint").cloned(),
-            })
-        })
-    }
-
-    fn settle<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        _delivery_id: &'a str,
-        _settlement: SourceSettlement,
-    ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(())
-        })
-    }
-
-    fn close<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        _cursor: Value,
-    ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(())
-        })
-    }
 }
 
 // ============================================================================
@@ -1379,69 +1313,6 @@ impl ProviderBackend for SqliteProviderBackend {
     ) -> BoxProviderFuture<'a, ()> {
         Box::pin(async move {
             self.sessions.invalidate(identity, None);
-        })
-    }
-
-    fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
-        Some(self)
-    }
-}
-
-impl SourceConnectorFacet for SqliteProviderBackend {
-    fn open<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        checkpoint: Option<Value>,
-    ) -> BoxProviderFuture<'a, Result<Value, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(json!({
-                "driver": DRIVER_SQLITE,
-                "connection_id": ctx.invocation().connection().connection_id,
-                "checkpoint": checkpoint.unwrap_or_else(|| json!({"rowid": 0})),
-            }))
-        })
-    }
-
-    fn poll<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        cursor: &'a Value,
-        _max_items: u32,
-    ) -> BoxProviderFuture<'a, Result<SourcePollBatch, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(SourcePollBatch {
-                items: Vec::<SourceBatchItem>::new(),
-                next_checkpoint: cursor.get("checkpoint").cloned(),
-            })
-        })
-    }
-
-    fn settle<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        _delivery_id: &'a str,
-        _settlement: SourceSettlement,
-    ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(())
-        })
-    }
-
-    fn close<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        _cursor: Value,
-    ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            Ok(())
         })
     }
 }

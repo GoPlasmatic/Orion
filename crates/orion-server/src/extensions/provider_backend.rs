@@ -1,15 +1,16 @@
 //! Unified connector provider backend trait, source facet and registry (`V2-11.1`, `V2-10.1`, `V2-15`).
 //!
-//! All three connector implementation kinds (`rust`, `workflow`, `wasm`) implement
-//! [`ProviderBackend`] and register into [`ProviderRegistry`]:
+//! Connector implementations implement [`ProviderBackend`] and register into
+//! [`ProviderRegistry`]:
 //! - **Direct Rust (`ImplementationKind::Rust`)**: Native Rust drivers (`orion.http`,
 //!   `orion.postgresql`, `orion.sqlite`, `orion.memory-cache` in Community;
 //!   `orion.mysql`, `orion.mongodb`, `orion.redis`, `orion.elasticsearch`,
 //!   `orion.kafka`, `orion.smtp`, `orion.s3` in Enterprise).
 //! - **Workflow-Group (`ImplementationKind::Workflow`)**: Composite packages combining
 //!   private workflows, internal sub-channels, and declared connector `binding_slot`s.
-//! - **Wasm (`ImplementationKind::Wasm`)**: Sandboxed Wasmtime components speaking
-//!   `orion:connector@2.0.0`.
+//!
+//! `ImplementationKind::Wasm` is still a package kind a manifest may declare,
+//! but no Wasm backend is registered, so a call to one finds no provider.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -99,7 +100,7 @@ pub trait ProviderBackend: Send + Sync {
     fn kind(&self) -> ImplementationKind;
 
     /// Driver or adapter identifier (e.g. `"orion.http"`, `"orion.postgresql"`,
-    /// `"orion.workflow-host"`, `"orion.wasm-host"`).
+    /// `"orion.workflow-host"`).
     fn driver_id(&self) -> &str;
 
     /// Validate resolved connection configuration against provider-specific invariants.

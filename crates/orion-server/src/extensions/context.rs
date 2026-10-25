@@ -1,26 +1,17 @@
-//! Owned run context, atomic budget coordinator, capability handles and host jobs (`V2-05.1`).
+//! Owned run context and atomic budget coordinator (`V2-05.1`).
 //!
-//! Implements the host-owned run context and capability contract (`V2-05.1`):
+//! Implements the host-owned run context (`V2-05.1`):
 //! - [`AdmittedRun`] and [`RunContext`]: generation-pinned execution scope with
 //!   monotonic deadline clamping (`min(parent, child)`), cooperative cancellation
 //!   tree, and authority intersection (`CTX-01`, `CTX-06`).
 //! - [`BudgetScope`], [`ChargeVector`], [`Reservation`], and [`WorkLease`]:
 //!   atomic multi-scope reservation coordinator under a single root critical
 //!   section (`CTX-02`, `CTX-03`, `CTX-04`, `CTX-10`).
-//! - [`CapabilityTable`] and [`CapabilityHandle`]: unforgeable capability tokens
-//!   validated against owner invocation, generation, resource kind, and effective
-//!   connection identity before external activity (`CTX-05`).
-//! - [`OwnedHostJob`] and [`HostJobRegistry`]: separates caller await/cancellation
-//!   from actual job completion so running work retains occupancy leases until
-//!   the worker finishes (`CTX-04`, `CTX-07`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-
-use tokio::sync::oneshot;
 
 use super::contract::{
     ConnectionReference, ConnectorError, EffectStatus, EffectiveConnectionIdentity, codes,
@@ -386,209 +377,6 @@ impl Drop for WorkLease {
     }
 }
 
-/// Resource kind for scoped capability handles (`V2-05.1`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ResourceKind {
-    Http,
-    Credential,
-    Dependency,
-    Session,
-    Sqlite,
-    SourceCheckpoint,
-}
-
-/// Authority grant associated with a capability table entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilityGrant {
-    pub kind: ResourceKind,
-    pub connection: EffectiveConnectionIdentity,
-    pub allowed_operations: BTreeSet<String>,
-    pub allowed_endpoints: BTreeSet<String>,
-}
-
-/// Opaque capability handle passed to a workflow host operation or Wasm guest (`CTX-05`).
-///
-/// Carries an unforgeable secret token minted by the owning [`CapabilityTable`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapabilityHandle {
-    entry_id: u64,
-    secret_token: u64,
-    owner_invocation_id: u64,
-    generation_id: u64,
-    kind: ResourceKind,
-}
-
-impl CapabilityHandle {
-    pub fn kind(&self) -> ResourceKind {
-        self.kind
-    }
-
-    pub fn owner_invocation_id(&self) -> u64 {
-        self.owner_invocation_id
-    }
-
-    pub fn generation_id(&self) -> u64 {
-        self.generation_id
-    }
-
-    /// Construct a forged handle for negative security testing (`CTX-05`).
-    #[cfg(test)]
-    pub fn forged_for_test(
-        entry_id: u64,
-        owner_invocation_id: u64,
-        generation_id: u64,
-        kind: ResourceKind,
-    ) -> Self {
-        Self {
-            entry_id,
-            secret_token: 0xDEAD_BEEF_CAFE_BABE,
-            owner_invocation_id,
-            generation_id,
-            kind,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct CapabilityEntry {
-    secret_token: u64,
-    owner_invocation_id: u64,
-    generation_id: u64,
-    grant: CapabilityGrant,
-    retired: bool,
-}
-
-/// Invocation-scoped capability table (`V2-05.1`, `CTX-05`).
-#[derive(Debug, Clone)]
-pub struct CapabilityTable {
-    owner_invocation_id: u64,
-    generation_id: u64,
-    entries: Arc<Mutex<BTreeMap<u64, CapabilityEntry>>>,
-}
-
-impl CapabilityTable {
-    pub fn new(owner_invocation_id: u64, generation_id: u64) -> Self {
-        Self {
-            owner_invocation_id,
-            generation_id,
-            entries: Arc::new(Mutex::new(BTreeMap::new())),
-        }
-    }
-
-    /// Mint a new scoped capability handle bound to this invocation and generation.
-    pub fn mint(&self, grant: CapabilityGrant) -> CapabilityHandle {
-        let entry_id = next_unique_id();
-        // Mix two monotonic counters with a golden-ratio constant so sequential
-        // entry IDs never have predictable tokens.
-        let secret_token = next_unique_id().wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let kind = grant.kind;
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        guard.insert(
-            entry_id,
-            CapabilityEntry {
-                secret_token,
-                owner_invocation_id: self.owner_invocation_id,
-                generation_id: self.generation_id,
-                grant,
-                retired: false,
-            },
-        );
-        CapabilityHandle {
-            entry_id,
-            secret_token,
-            owner_invocation_id: self.owner_invocation_id,
-            generation_id: self.generation_id,
-            kind,
-        }
-    }
-
-    /// Retire a handle so any subsequent borrow is rejected (`CTX-05`).
-    pub fn retire(&self, handle: &CapabilityHandle) {
-        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = guard.get_mut(&handle.entry_id)
-            && entry.secret_token == handle.secret_token
-        {
-            entry.retired = true;
-        }
-    }
-
-    /// Validate a capability handle before any external operation (`CTX-05`).
-    ///
-    /// Checks owner invocation, generation, secret token, resource kind,
-    /// retirement state, and optional operation/endpoint grants. Preserves
-    /// `prior_effect` on rejection.
-    pub fn validate_borrow(
-        &self,
-        handle: &CapabilityHandle,
-        expected_kind: ResourceKind,
-        required_operation: Option<&str>,
-        required_endpoint: Option<&str>,
-        prior_effect: EffectStatus,
-    ) -> Result<CapabilityGrant, ConnectorError> {
-        if handle.owner_invocation_id != self.owner_invocation_id
-            || handle.generation_id != self.generation_id
-        {
-            return Err(ConnectorError::capability_invalid(
-                "Capability handle belongs to a different invocation or generation",
-                prior_effect,
-            ));
-        }
-        if handle.kind != expected_kind {
-            return Err(ConnectorError::capability_invalid(
-                "Capability handle kind mismatch",
-                prior_effect,
-            ));
-        }
-
-        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(entry) = guard.get(&handle.entry_id) else {
-            return Err(ConnectorError::capability_invalid(
-                "Capability handle not found in invocation table",
-                prior_effect,
-            ));
-        };
-        if entry.secret_token != handle.secret_token
-            || entry.owner_invocation_id != self.owner_invocation_id
-            || entry.generation_id != self.generation_id
-        {
-            return Err(ConnectorError::capability_invalid(
-                "Capability handle authentication failed",
-                prior_effect,
-            ));
-        }
-        if entry.retired {
-            return Err(ConnectorError::capability_invalid(
-                "Capability handle has been retired",
-                prior_effect,
-            ));
-        }
-        if let Some(op) = required_operation
-            && !entry.grant.allowed_operations.is_empty()
-            && !entry.grant.allowed_operations.contains(op)
-        {
-            return Err(ConnectorError::forbidden(
-                codes::OPERATION_FORBIDDEN,
-                "dispatch",
-                format!("Operation '{op}' is not granted on this capability handle"),
-                prior_effect,
-            ));
-        }
-        if let Some(endpoint) = required_endpoint
-            && !entry.grant.allowed_endpoints.is_empty()
-            && !entry.grant.allowed_endpoints.contains(endpoint)
-        {
-            return Err(ConnectorError::forbidden(
-                codes::EGRESS_DENIED,
-                "transport",
-                "Target endpoint is outside capability grant",
-                prior_effect,
-            ));
-        }
-
-        Ok(entry.grant.clone())
-    }
-}
-
 /// Hierarchical cooperative cancellation token (`V2-05.1`).
 ///
 /// Root cancellation propagates to all children; cancelling a child does not
@@ -891,7 +679,6 @@ impl RunContext {
         }
 
         let invocation_id = next_unique_id();
-        let capabilities = CapabilityTable::new(invocation_id, self.generation_id);
         Ok(Invocation {
             invocation_id,
             parent_invocation_id: None,
@@ -903,7 +690,6 @@ impl RunContext {
             max_attempts: max_invocation_attempts.max(1),
             attempt_counter: Arc::new(AtomicU64::new(0)),
             effect_ledger: Arc::new(Mutex::new(EffectStatus::NotStarted)),
-            capabilities,
         })
     }
 
@@ -922,7 +708,6 @@ impl RunContext {
         self.check_live(EffectStatus::NotStarted)?;
         let operation = format!("orion.internal.source.{facet_step}");
         let invocation_id = next_unique_id();
-        let capabilities = CapabilityTable::new(invocation_id, self.generation_id);
         Ok(Invocation {
             invocation_id,
             parent_invocation_id: None,
@@ -934,7 +719,6 @@ impl RunContext {
             max_attempts: max_invocation_attempts.max(1),
             attempt_counter: Arc::new(AtomicU64::new(0)),
             effect_ledger: Arc::new(Mutex::new(EffectStatus::NotStarted)),
-            capabilities,
         })
     }
 }
@@ -952,7 +736,6 @@ pub struct Invocation {
     max_attempts: u32,
     attempt_counter: Arc<AtomicU64>,
     effect_ledger: Arc<Mutex<EffectStatus>>,
-    capabilities: CapabilityTable,
 }
 
 impl Invocation {
@@ -982,10 +765,6 @@ impl Invocation {
 
     pub fn idempotency_key(&self) -> Option<&str> {
         self.idempotency_key.as_deref()
-    }
-
-    pub fn capabilities(&self) -> &CapabilityTable {
-        &self.capabilities
     }
 
     pub fn effect_status(&self) -> EffectStatus {
@@ -1104,7 +883,6 @@ impl Invocation {
         };
 
         let child_invocation_id = next_unique_id();
-        let capabilities = CapabilityTable::new(child_invocation_id, child_ctx.generation_id);
         Ok(Invocation {
             invocation_id: child_invocation_id,
             parent_invocation_id: Some(self.invocation_id),
@@ -1116,7 +894,6 @@ impl Invocation {
             max_attempts: max_invocation_attempts.max(1),
             attempt_counter: Arc::new(AtomicU64::new(0)),
             effect_ledger: self.effect_ledger.clone(),
-            capabilities,
         })
     }
 }
@@ -1139,116 +916,6 @@ impl AttemptContext {
 
     pub fn run_context(&self) -> &RunContext {
         self.invocation.context()
-    }
-}
-
-/// Registry that owns background host jobs until actual completion (`V2-05.1`, `CTX-04`).
-///
-/// Moving `WorkLease` into the worker task guarantees that even if the caller's
-/// `OwnedHostJob` future is dropped, cancelled, or times out, the occupancy lease
-/// remains held until the underlying operation actually finishes.
-#[derive(Debug, Default, Clone)]
-pub struct HostJobRegistry {
-    active_count: Arc<AtomicU64>,
-}
-
-impl HostJobRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn active_jobs(&self) -> u64 {
-        self.active_count.load(Ordering::SeqCst)
-    }
-
-    /// Schedule a host job after committing `reservation` into a `WorkLease`
-    /// owned by the spawned worker task (`CTX-04`).
-    pub fn spawn_owned<T, F>(&self, reservation: Reservation, fut: F) -> OwnedHostJob<T>
-    where
-        T: Send + 'static,
-        F: Future<Output = T> + Send + 'static,
-    {
-        let lease = reservation.commit_started();
-        let active_count = self.active_count.clone();
-        active_count.fetch_add(1, Ordering::SeqCst);
-
-        let (tx, rx) = oneshot::channel();
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let worker_cancelled = cancelled.clone();
-
-        tokio::spawn(async move {
-            let _owned_lease = lease;
-            struct ActiveGuard(Arc<AtomicU64>);
-            impl Drop for ActiveGuard {
-                fn drop(&mut self) {
-                    self.0.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-            let _guard = ActiveGuard(active_count);
-
-            let output = fut.await;
-            if !worker_cancelled.load(Ordering::SeqCst) {
-                let _ = tx.send(output);
-            }
-        });
-
-        OwnedHostJob {
-            rx: Some(rx),
-            cancelled,
-        }
-    }
-}
-
-/// Handle to a host-owned job (`V2-05.1`, `CTX-04`).
-///
-/// Dropping `OwnedHostJob` or timing out in [`Self::await_with_context`] marks
-/// the caller as terminated once without releasing the worker's `WorkLease`
-/// until the worker task actually completes.
-pub struct OwnedHostJob<T> {
-    rx: Option<oneshot::Receiver<T>>,
-    cancelled: Arc<AtomicBool>,
-}
-
-impl<T> OwnedHostJob<T> {
-    /// Await the job result within `ctx`'s deadline and cancellation scope.
-    pub async fn await_with_context(
-        mut self,
-        ctx: &RunContext,
-        effect_on_depart: EffectStatus,
-    ) -> Result<T, ConnectorError> {
-        ctx.check_live(effect_on_depart)?;
-        let Some(mut rx) = self.rx.take() else {
-            return Err(ConnectorError::cancelled(effect_on_depart));
-        };
-
-        let now = Instant::now();
-        let remaining = ctx.deadline().saturating_duration_since(now);
-        if remaining.is_zero() {
-            self.cancelled.store(true, Ordering::SeqCst);
-            return Err(ConnectorError::deadline_exceeded(effect_on_depart));
-        }
-
-        tokio::select! {
-            res = &mut rx => {
-                if ctx.cancellation().is_cancelled() {
-                    self.cancelled.store(true, Ordering::SeqCst);
-                    return Err(ConnectorError::cancelled(effect_on_depart));
-                }
-                res.map_err(|_| ConnectorError::cancelled(effect_on_depart))
-            }
-            () = tokio::time::sleep(remaining) => {
-                self.cancelled.store(true, Ordering::SeqCst);
-                Err(ConnectorError::deadline_exceeded(effect_on_depart))
-            }
-        }
-    }
-}
-
-impl<T> Drop for OwnedHostJob<T> {
-    fn drop(&mut self) {
-        if self.rx.is_some() {
-            self.cancelled.store(true, Ordering::SeqCst);
-        }
     }
 }
 

@@ -894,12 +894,89 @@ impl SourceChannelRunner {
 mod tests {
     use super::*;
     use crate::extensions::CompositionRoot;
+    use crate::extensions::context::AttemptContext;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::ProviderReference;
-    use crate::extensions::foundation::DRIVER_POSTGRESQL;
+    use crate::extensions::contract::{ConnectorOutput, ProviderReference};
+    use crate::extensions::provider_backend::{
+        BoxProviderFuture, ProviderBackend, SourceConnectorFacet,
+    };
     use serde_json::json;
     use std::collections::BTreeSet;
     use std::time::{Duration, Instant};
+
+    const TEST_SOURCE: &str = "test.source";
+
+    /// A source-capable provider that echoes its checkpoint and never yields
+    /// an item: enough to drive the runner's privileged facet calls.
+    struct EchoSource;
+
+    impl ProviderBackend for EchoSource {
+        fn kind(&self) -> ImplementationKind {
+            ImplementationKind::Rust
+        }
+
+        fn driver_id(&self) -> &str {
+            TEST_SOURCE
+        }
+
+        fn validate_config(&self, _config: &Value) -> Result<(), ConnectorError> {
+            Ok(())
+        }
+
+        fn invoke<'a>(
+            &'a self,
+            _ctx: &'a AttemptContext,
+            _operation: &'a str,
+            _input: Value,
+        ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
+            Box::pin(async { Ok(ConnectorOutput::new(json!({}))) })
+        }
+
+        fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
+            Some(self)
+        }
+    }
+
+    impl SourceConnectorFacet for EchoSource {
+        fn open<'a>(
+            &'a self,
+            _ctx: &'a AttemptContext,
+            checkpoint: Option<Value>,
+        ) -> BoxProviderFuture<'a, Result<Value, ConnectorError>> {
+            Box::pin(async move { Ok(json!({ "checkpoint": checkpoint })) })
+        }
+
+        fn poll<'a>(
+            &'a self,
+            _ctx: &'a AttemptContext,
+            cursor: &'a Value,
+            _max_items: u32,
+        ) -> BoxProviderFuture<'a, Result<SourcePollBatch, ConnectorError>> {
+            Box::pin(async move {
+                Ok(SourcePollBatch {
+                    items: Vec::new(),
+                    next_checkpoint: cursor.get("checkpoint").cloned(),
+                })
+            })
+        }
+
+        fn settle<'a>(
+            &'a self,
+            _ctx: &'a AttemptContext,
+            _delivery_id: &'a str,
+            _settlement: SourceSettlement,
+        ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close<'a>(
+            &'a self,
+            _ctx: &'a AttemptContext,
+            _cursor: Value,
+        ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     #[test]
     fn fenced_leases_contiguous_checkpoints_dlq_guard_and_revision_handoff() {
@@ -996,7 +1073,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_runner_executes_privileged_facet_while_app_boundary_blocks_it() {
-        let root = CompositionRoot::community();
+        let root = CompositionRoot::community().with_provider_backend(Arc::new(EchoSource));
         let runner = SourceChannelRunner::new(
             root.providers.clone(),
             root.admission.clone(),
@@ -1004,7 +1081,7 @@ mod tests {
         );
 
         let provider = ProviderReference {
-            provider_id: DRIVER_POSTGRESQL.to_string(),
+            provider_id: TEST_SOURCE.to_string(),
             version: "2.0.0".to_string(),
             package_digest:
                 "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
@@ -1050,14 +1127,14 @@ mod tests {
             .expect_err("app boundary must block reserved source operation");
         assert_eq!(app_err.code, codes::OPERATION_FORBIDDEN);
 
-        // Privileged SourceChannelRunner succeeds in opening and polling the PostgreSQL source facet!
+        // Privileged SourceChannelRunner succeeds in opening and polling the source facet.
         let cursor = runner
             .open_cursor(
                 &run.context(),
                 conn.clone(),
                 eff_id.clone(),
                 ImplementationKind::Rust,
-                DRIVER_POSTGRESQL,
+                TEST_SOURCE,
                 Some(json!({"lsn": 42})),
             )
             .await
@@ -1070,7 +1147,7 @@ mod tests {
                 conn,
                 eff_id,
                 ImplementationKind::Rust,
-                DRIVER_POSTGRESQL,
+                TEST_SOURCE,
                 &cursor,
                 25,
             )

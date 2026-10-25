@@ -1,7 +1,7 @@
 //! Orion v2 Admin API wire contract.
 //!
 //! Versioned request and response DTOs shared by `orion-server` and `orion-cli` for `/api/v2/admin/*` endpoints:
-//! - Runtime capabilities & edition boundary discovery (`/runtime-capabilities`)
+//! - Runtime capabilities & edition discovery (`/runtime-capabilities`)
 //! - Connector package inventory, upload, admission & revocation (`/connector-packages`)
 //! - Connection revisions & health probes (`/connections`)
 //! - Candidate deployment planning, CAS apply, convergence & rollback (`/deployments`)
@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Runtime capabilities and Community/Enterprise assembly boundary report (`GET /api/v2/admin/runtime-capabilities`).
+/// Runtime capabilities: edition, registered drivers and providers, deployment head (`GET /api/v2/admin/runtime-capabilities`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct RuntimeCapabilitiesResponse {
@@ -23,24 +23,18 @@ pub struct RuntimeCapabilitiesResponse {
     pub edition: String,
     #[serde(default)]
     pub admission_policy_id: String,
-    #[serde(default)]
-    pub community_boundary_compliant: bool,
     #[serde(default, alias = "channel_drivers")]
     pub registered_channel_drivers: Vec<String>,
     #[serde(default)]
     pub schema_profiles: Vec<String>,
     #[serde(default)]
     pub wasm_worlds: Vec<String>,
-    #[serde(default, alias = "wasm_import_profiles")]
-    pub supported_wasm_profiles: Vec<String>,
     #[serde(default)]
     pub provider_backends: Vec<Value>,
     #[serde(default)]
     pub registered_rust_providers: Vec<String>,
     #[serde(default)]
     pub registered_workflow_providers: Vec<String>,
-    #[serde(default)]
-    pub registered_wasm_providers: Vec<String>,
     #[serde(default)]
     pub deployment_head: Value,
     #[serde(default)]
@@ -806,7 +800,7 @@ mod tests {
     fn v2_dtos_tolerate_empty_json_objects() {
         let cap: RuntimeCapabilitiesResponse = serde_json::from_str("{}").expect("default decode");
         assert!(cap.api_version.is_empty());
-        assert!(!cap.community_boundary_compliant);
+        assert!(cap.wasm_worlds.is_empty());
 
         let receipt: DeploymentReceiptResponse =
             serde_json::from_str(r#"{"committed_revision": 3}"#).expect("partial decode");

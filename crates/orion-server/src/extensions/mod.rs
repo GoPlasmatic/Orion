@@ -12,10 +12,9 @@
 //!   additional native Rust drivers (`graphql`, `kafka`, `sse`) via
 //!   [`CompositionRoot::with_channel_driver`] without adding variants to a closed
 //!   `ChannelProtocol` enum.
-//! - **Connectors (Unified 3-Backend Architecture via [`ProviderBackend`])**:
-//!   Supports Direct Rust (`ImplementationKind::Rust`), Workflow-Group composite
-//!   packages (`ImplementationKind::Workflow`), and sandboxed Wasm components
-//!   (`ImplementationKind::Wasm`) under one invocation contract ([`ConnectorResult`]),
+//! - **Connectors (Unified Backend Architecture via [`ProviderBackend`])**:
+//!   Supports Direct Rust (`ImplementationKind::Rust`) and Workflow-Group composite
+//!   packages (`ImplementationKind::Workflow`) under one invocation contract ([`ConnectorResult`]),
 //!   owned context ([`RunContext`], [`Invocation`], [`AttemptContext`]), and
 //!   optional [`SourceConnectorFacet`] (`open` / `poll` / `settle` / `close`).
 //! - **Resource Pooling (Dynamic via [`ResourcePoolRegistry`] & [`VersionedSessionPool`])**:
@@ -33,8 +32,8 @@
 pub mod admission;
 pub mod authoring;
 pub mod channel_driver;
-pub mod community_assembly;
-pub mod conformance_harness;
+#[cfg(test)]
+mod community_assembly;
 pub mod context;
 pub mod contract;
 pub mod deployment_store;
@@ -46,7 +45,6 @@ pub mod reconciler;
 pub mod resource_pool;
 pub mod schema_profile;
 pub mod source_runner;
-pub mod wasm_provider;
 pub mod workflow_provider;
 
 use std::sync::Arc;
@@ -59,20 +57,14 @@ pub use channel_driver::{
     ChannelDriver, ChannelDriverCapabilities, ChannelDriverRegistry, ChannelProtocolFields,
     CronChannelDriver, HttpChannelDriver, RestChannelDriver, SourceChannelDriver,
 };
-pub use community_assembly::{
-    BoundaryViolation, COMMUNITY_CHANNEL_PROTOCOLS, CommunityAssemblyReport,
-    verify_community_assembly,
-};
-pub use conformance_harness::{ConformanceObservation, execute_conformance_case};
 pub use context::{
     AdmittedRun, AttemptContext, AuthorityGrant, BudgetCounters, BudgetLimits, BudgetScope,
-    CancellationScope, CapabilityGrant, CapabilityHandle, CapabilityTable, ChargeVector,
-    HostJobRegistry, Invocation, OwnedHostJob, Reservation, ResourceKind, RunContext, WorkLease,
+    CancellationScope, ChargeVector, Invocation, Reservation, RunContext, WorkLease,
 };
 pub use contract::{
     ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, ConnectorResult,
-    DeploymentIdentity, EffectStatus, EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind,
-    OperationEffect, OperationRetryPolicy, OriginKind, ProviderReference, RetryAdvice, codes,
+    EffectStatus, EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, OriginKind,
+    ProviderReference, RetryAdvice, codes,
 };
 pub use deployment_store::{
     ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
@@ -88,7 +80,7 @@ pub use foundation::{
 };
 pub use owned_native_work::{
     NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,
-    ShutdownDrainReport, SingleFlightLoader,
+    ShutdownDrainReport,
 };
 pub use package_identity::{
     DeclaredLockDependency, MAX_PACKAGE_FILE_BYTES, MAX_PACKAGE_FILES, MAX_PACKAGE_TOTAL_BYTES,
@@ -116,10 +108,6 @@ pub use schema_profile::{
 pub use source_runner::{
     ContiguousCheckpointLedger, ItemSettlementState, SourceChannelRunner, SourceCoordinationError,
     SourceLeaseCoordinator, SourcePartitionClaim, SourcePartitionKey, SourceRunnerLimits,
-};
-pub use wasm_provider::{
-    CONNECTOR_WIT_CONTRACT, VerifiedWasmComponent, WasmComponentCache, WasmGuestExecutor,
-    WasmImportProfile, WasmInvocationStore, WasmProviderBackend, WasmStoreLimits, WasmVerifyError,
 };
 pub use workflow_provider::{
     BindingSlotSpec, CompiledWorkflowProviderGraph, SubChannelDef, TransitiveCapabilityReport,
@@ -211,7 +199,7 @@ impl CompositionRoot {
         self
     }
 
-    /// Register a connector [`ProviderBackend`] (`rust`, `workflow`, or `wasm`).
+    /// Register a connector [`ProviderBackend`] (`rust` or `workflow`).
     pub fn with_provider_backend(self, backend: Arc<dyn ProviderBackend>) -> Self {
         self.providers.register(backend);
         self

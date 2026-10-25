@@ -154,8 +154,8 @@ fn ctx_02_and_03_atomic_reservation_prevents_overspend_and_partial_debits() {
     assert_eq!(err_b.code, codes::BUDGET_EXHAUSTED);
 }
 
-#[tokio::test]
-async fn ctx_04_unstarted_reservation_rolls_back_and_running_job_retains_occupancy() {
+#[test]
+fn ctx_04_unstarted_reservation_rolls_back() {
     let scope = BudgetScope::new_root(BudgetLimits {
         max_attempts: 4,
         max_tasks: 4,
@@ -174,131 +174,6 @@ async fn ctx_04_unstarted_reservation_rolls_back_and_running_job_retains_occupan
     unstarted.abort_before_start();
     assert_eq!(scope.snapshot().active_jobs, 0);
     assert_eq!(scope.snapshot().spent_network_sends, 0);
-
-    // Started job retains occupancy after caller timeout until actual worker completion.
-    let registry = HostJobRegistry::new();
-    let started_res = scope
-        .reserve(ChargeVector::network_job(200), EffectStatus::NotStarted)
-        .expect("reserves");
-    let (release_tx, release_rx) = oneshot::channel::<()>();
-    let job = registry.spawn_owned(started_res, async move {
-        let _ = release_rx.await;
-        42usize
-    });
-
-    // Caller awaits with an already-expired deadline.
-    let expired_run = AdmittedRun::admit(
-        "run-timeout",
-        1,
-        Instant::now()
-            .checked_sub(Duration::from_millis(10))
-            .unwrap_or_else(Instant::now),
-        BudgetLimits::default(),
-        sample_authority(),
-    );
-    let err = job
-        .await_with_context(&expired_run.context(), EffectStatus::Unknown)
-        .await
-        .expect_err("caller times out");
-    assert_eq!(err.code, codes::DEADLINE_EXCEEDED);
-    assert_eq!(err.effect_status, EffectStatus::Unknown);
-
-    // Worker is still blocked -> occupancy is still 1!
-    assert_eq!(scope.snapshot().active_jobs, 1);
-    assert_eq!(registry.active_jobs(), 1);
-
-    // Unblock worker and allow completion.
-    let _ = release_tx.send(());
-    for _ in 0..20 {
-        if scope.snapshot().active_jobs == 0 && registry.active_jobs() == 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert_eq!(
-        scope.snapshot().active_jobs,
-        0,
-        "occupancy released on actual completion"
-    );
-    assert_eq!(
-        scope.snapshot().spent_network_sends,
-        1,
-        "cumulative network_sends remains spent"
-    );
-}
-
-#[test]
-fn ctx_05_forged_cross_invocation_wrong_kind_and_retired_handles_rejected() {
-    let run = AdmittedRun::admit(
-        "run-cap",
-        7,
-        Instant::now() + Duration::from_secs(30),
-        BudgetLimits::default(),
-        sample_authority(),
-    );
-    let (conn, eff_id) = sample_connection();
-    let inv = run
-        .context()
-        .start_invocation(conn, eff_id.clone(), "get", None, 3)
-        .expect("invocation starts");
-
-    // Record an earlier uncertain effect and verify capability failure preserves it.
-    inv.record_effect(EffectStatus::Unknown);
-
-    let handle = inv.capabilities().mint(CapabilityGrant {
-        kind: ResourceKind::Http,
-        connection: eff_id.clone(),
-        allowed_operations: BTreeSet::from(["get".to_string()]),
-        allowed_endpoints: BTreeSet::from(["https://api.example.com".to_string()]),
-    });
-
-    // Valid borrow succeeds.
-    assert!(
-        inv.capabilities()
-            .validate_borrow(
-                &handle,
-                ResourceKind::Http,
-                Some("get"),
-                Some("https://api.example.com"),
-                inv.effect_status(),
-            )
-            .is_ok()
-    );
-
-    // Wrong kind rejected with CONNECTOR_CAPABILITY_INVALID and preserves Unknown effect.
-    let err = inv
-        .capabilities()
-        .validate_borrow(
-            &handle,
-            ResourceKind::Sqlite,
-            None,
-            None,
-            inv.effect_status(),
-        )
-        .expect_err("wrong kind must fail");
-    assert_eq!(err.code, codes::CAPABILITY_INVALID);
-    assert_eq!(err.effect_status, EffectStatus::Unknown);
-
-    // Forged handle rejected.
-    let forged = CapabilityHandle::forged_for_test(
-        handle.entry_id,
-        inv.invocation_id(),
-        7,
-        ResourceKind::Http,
-    );
-    let err = inv
-        .capabilities()
-        .validate_borrow(&forged, ResourceKind::Http, None, None, inv.effect_status())
-        .expect_err("forged token must fail");
-    assert_eq!(err.code, codes::CAPABILITY_INVALID);
-
-    // Retired handle rejected.
-    inv.capabilities().retire(&handle);
-    let err = inv
-        .capabilities()
-        .validate_borrow(&handle, ResourceKind::Http, None, None, inv.effect_status())
-        .expect_err("retired handle must fail");
-    assert_eq!(err.code, codes::CAPABILITY_INVALID);
 }
 
 #[test]
