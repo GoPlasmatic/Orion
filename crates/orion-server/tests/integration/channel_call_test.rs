@@ -450,9 +450,9 @@ async fn self_call_is_refused_as_a_cycle() {
     // Refused — not a 200 silent success, not a hang. The child's refusal is
     // passed on with its own code, so this answers as the entry-level refusal
     // in injected_call_chain_surfaces_cycle_refusal_message does.
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::LOOP_DETECTED);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(body["error"]["code"], "LOOP_DETECTED");
 }
 
 /// A -> B -> A must be refused by cycle detection. The chain records call
@@ -483,9 +483,9 @@ async fn mutual_recursion_is_refused_as_a_cycle() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::LOOP_DETECTED);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(body["error"]["code"], "LOOP_DETECTED");
 }
 
 /// A linear chain of distinct channels deeper than `max_channel_call_depth`
@@ -541,9 +541,9 @@ async fn call_depth_beyond_configured_max_is_refused() {
     // chain-3's call runs at depth 2 and must be refused; the refusal is
     // passed up the chain with its code. If the guard regressed, the chain
     // completes and this returns 200 ok.
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::LOOP_DETECTED);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(body["error"]["code"], "LOOP_DETECTED");
 }
 
 /// Entry-level cycle refusal: caller-supplied `metadata` is merged into the
@@ -579,9 +579,9 @@ async fn injected_call_chain_surfaces_cycle_refusal_message() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::LOOP_DETECTED);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(body["error"]["code"], "LOOP_DETECTED");
     let message = body["error"]["message"].as_str().unwrap_or("");
     assert!(
         message.contains("cycle detected") && message.contains("probe-target -> probe-target"),
@@ -621,9 +621,9 @@ async fn injected_call_depth_surfaces_depth_refusal_message() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::LOOP_DETECTED);
     let body = common::body_json(resp).await;
-    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    assert_eq!(body["error"]["code"], "LOOP_DETECTED");
     let message = body["error"]["message"].as_str().unwrap_or("");
     assert!(
         message.contains("max call depth 10 exceeded"),

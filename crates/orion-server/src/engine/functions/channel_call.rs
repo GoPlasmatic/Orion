@@ -437,30 +437,26 @@ fn call_position(metadata: &OwnedDataValue) -> (u64, Vec<String>) {
 
 /// The recursion guards: a call one past `max_depth` deep, or to a channel
 /// already on the chain, is refused before anything about the target is
-/// looked up.
+/// looked up. Both are loops in the deployed channels, so they answer
+/// `508 LOOP_DETECTED`, and a refusal one hop down keeps that kind as it is
+/// passed up the chain.
 fn check_position(
     max_depth: u32,
     depth: u64,
     chain: &[String],
     target: &str,
-) -> Result<(), HandlerError> {
+) -> dataflow_rs::Result<()> {
     if depth >= u64::from(max_depth) {
-        return Err(HandlerError::new(
-            ErrorClass::CallerInput,
-            format!(
-                "channel_call: max call depth {max_depth} exceeded (chain: {})",
-                format_chain(chain, target),
-            ),
-        ));
+        return Err(crate::errors::service::channel_loop(format!(
+            "channel_call: max call depth {max_depth} exceeded (chain: {})",
+            format_chain(chain, target),
+        )));
     }
     if chain.iter().any(|called| called == target) {
-        return Err(HandlerError::new(
-            ErrorClass::CallerInput,
-            format!(
-                "channel_call: cycle detected: {}",
-                format_chain(chain, target)
-            ),
-        ));
+        return Err(crate::errors::service::channel_loop(format!(
+            "channel_call: cycle detected: {}",
+            format_chain(chain, target)
+        )));
     }
     Ok(())
 }
@@ -1319,11 +1315,11 @@ mod tests {
     }
 
     /// The recursion guards refuse at the call they fire in, in 1.12's
-    /// words: a self-call, a chain that comes back, and a depth past the
-    /// maximum, each on the first hop (an injected position, as
-    /// `channel_call_test` injects one).
+    /// words but as a loop: a self-call, a chain that comes back, and a
+    /// depth past the maximum, each on the first hop (an injected position,
+    /// as `channel_call_test` injects one).
     #[tokio::test]
-    async fn the_recursion_guards_refuse_as_1_12s_did() {
+    async fn the_recursion_guards_refuse_as_a_loop() {
         let chans = [
             chan("self", call(json!({"channel": "self"}))),
             chan("caller", call(json!({"channel": "target"}))),
@@ -1339,14 +1335,16 @@ mod tests {
         ] {
             let v4 = answer(&chans, channel, json!({}), metadata.clone()).await;
             twin::pinned(&v4, format!("recursion/{channel}/{metadata}"));
-            assert_eq!(v4.expect_err("refused").code, "VALIDATION_ERROR");
+            let refused = v4.expect_err("refused");
+            assert_eq!(refused.code, crate::errors::kind::CHANNEL_LOOP);
+            assert!(!refused.retryable);
         }
     }
 
     /// A refusal one hop down is a stopped child, so it is passed on with
     /// its own code and retryability (I184): a self-call is refused in the
-    /// child as a cycle, `VALIDATION_ERROR`, which the caller now records
-    /// under 1.12's prefix, where 1.12 rewrapped it as `FUNCTION_ERROR`.
+    /// child as a loop, which the caller records under 1.12's prefix, where
+    /// 1.12 rewrapped it as `FUNCTION_ERROR`.
     #[tokio::test]
     async fn a_cycle_found_in_the_child_is_passed_on_with_its_code() {
         let chans = [chan("self", call(json!({"channel": "self"})))];
@@ -1364,7 +1362,7 @@ mod tests {
             )
             .await
             .expect_err("the child refuses the cycle");
-        assert_eq!(inner.code, "VALIDATION_ERROR");
+        assert_eq!(inner.code, crate::errors::kind::CHANNEL_LOOP);
         assert_eq!(
             v4,
             Failure {

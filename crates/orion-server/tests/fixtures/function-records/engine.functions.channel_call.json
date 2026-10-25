@@ -363,24 +363,24 @@
   },
   "recursion/caller/{\"_orion_call_chain\":[\"edge\",\"target\"]}": {
     "err": {
-      "code": "VALIDATION_ERROR",
-      "message": "Validation error: channel_call: cycle detected: edge -> target -> target",
+      "code": "channel_loop",
+      "message": "channel_call: cycle detected: edge -> target -> target",
       "retryable": false,
       "detail": null
     }
   },
   "recursion/caller/{\"_orion_call_depth\":10}": {
     "err": {
-      "code": "VALIDATION_ERROR",
-      "message": "Validation error: channel_call: max call depth 10 exceeded (chain: target)",
+      "code": "channel_loop",
+      "message": "channel_call: max call depth 10 exceeded (chain: target)",
       "retryable": false,
       "detail": null
     }
   },
   "recursion/caller/{\"_orion_call_depth\":15,\"_orion_call_chain\":[\"a\"]}": {
     "err": {
-      "code": "VALIDATION_ERROR",
-      "message": "Validation error: channel_call: max call depth 10 exceeded (chain: a -> target)",
+      "code": "channel_loop",
+      "message": "channel_call: max call depth 10 exceeded (chain: a -> target)",
       "retryable": false,
       "detail": null
     }

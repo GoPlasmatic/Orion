@@ -567,6 +567,10 @@ pub mod kind {
     pub const CHANNEL_FORBIDDEN: &str = "channel_forbidden";
     pub const CHANNEL_CONFLICT: &str = "channel_conflict";
     pub const CHANNEL_UNAVAILABLE: &str = "channel_unavailable";
+    /// A `channel_call` refused by the recursion guards: a cycle, or a chain
+    /// past the maximum depth. A configuration loop, so neither the caller's
+    /// fault nor retryable.
+    pub const CHANNEL_LOOP: &str = "channel_loop";
     /// The backend was reached and refused a statement against a rule its own
     /// schema declares. One kind per rule, so a workflow can answer a
     /// duplicate differently from a dangling reference — a single
@@ -688,6 +692,12 @@ pub mod service {
         Error::service(kind, message).with_retryable(retryable)
     }
 
+    /// The `channel_call` recursion guards refused a call: a cycle or a chain
+    /// past the maximum depth. Never retryable: the same channels loop again.
+    pub fn channel_loop(message: String) -> Error {
+        Error::service(kind::CHANNEL_LOOP, message).with_retryable(false)
+    }
+
     /// An open breaker shed the request. Retryable: a shed dependency is
     /// transient, and the DLQ retry loop must re-attempt it. The connector
     /// and channel names stay in the caller-facing message, the shipped
@@ -746,6 +756,9 @@ fn engine_error_response(e: &dataflow_rs::Error) -> (StatusCode, &'static str, S
                 kind::CHANNEL_UNAVAILABLE => {
                     (StatusCode::SERVICE_UNAVAILABLE, codes::SERVICE_UNAVAILABLE)
                 }
+                // Verbatim, like a validation refusal: the chain it names is
+                // what makes the loop findable from the response.
+                kind::CHANNEL_LOOP => (StatusCode::LOOP_DETECTED, codes::LOOP_DETECTED),
                 // A duplicate or a dangling reference is a conflict of state:
                 // the request was well-formed and the caller retries it
                 // differently.

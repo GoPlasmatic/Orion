@@ -37,6 +37,10 @@ pub mod codes {
     pub const SERIALIZATION_ERROR: &str = "SERIALIZATION_ERROR";
     /// An open circuit breaker shed the request before it reached a connector.
     pub const CIRCUIT_OPEN: &str = "CIRCUIT_OPEN";
+    /// A `channel_call` chain came back to a channel already on it, or went
+    /// deeper than the configured maximum (`508 Loop Detected`). The loop is
+    /// in the deployed channels, not in the request.
+    pub const LOOP_DETECTED: &str = "LOOP_DETECTED";
     /// V2 deferred-write incompatibility (`426 Upgrade Required`).
     pub const UPGRADE_REQUIRED: &str = "UPGRADE_REQUIRED";
     /// Enterprise tier package or feature rejected on Community Edition.

@@ -42,6 +42,14 @@ depth prevent runaway recursion.
 `channel` and `data` are each one field, not the `channel`/`channel_logic` and
 `data`/`data_logic` pairs they were before 1.5. A literal is JSONLogic for itself, so the static spelling is unchanged and still folds once when the engine is built. An expression in the same field is what makes the target or the payload depend on the message. The old names are no longer read: each is an unknown key, refused at create.
 
+## Recursion
+
+A call to a channel already on the current call chain is a cycle, and a call
+deeper than [`engine.max_channel_call_depth`](../configuration/engine.md) is refused too. Both answer
+`508 LOOP_DETECTED` with the chain in the message, wherever along the chain
+the guard fires: the loop is in the deployed channels, not in the request, so
+the refusal is never retryable.
+
 ## Examples
 
 ```json

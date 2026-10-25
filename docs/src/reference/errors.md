@@ -115,6 +115,7 @@ Every `error.code` the server emits, on both the admin and data planes:
 | `RESPONSE_TOO_LARGE` | 500 | The workflow's result exceeded `trace_queue.max_result_size_bytes` — the request cannot succeed until that cap or the result changes |
 | `SERVICE_UNAVAILABLE` | 503 | Backpressure shed the request, a guard's backend failed closed, a quarantined channel was addressed by name, or the service is shutting down |
 | `CIRCUIT_OPEN` | 503 | The target connector's circuit breaker is open; retry after it recovers |
+| `LOOP_DETECTED` | 508 | A `channel_call` chain came back to a channel already on it, or went deeper than the maximum call depth. A configuration loop: not retryable |
 | `TIMEOUT` | 504 | Workflow execution exceeded the channel's timeout |
 
 These codes are stable contract: clients branch on them, and renaming one is a breaking API change.
