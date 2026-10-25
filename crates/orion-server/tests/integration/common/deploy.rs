@@ -418,3 +418,23 @@ pub async fn create_connection(app: &Router, connector: &Value) -> (String, u64,
         .to_string();
     (id, revision, digest)
 }
+
+/// Run a workflow once through `POST /definitions/test`, without deploying
+/// it, answering the status and body as they are. `workflow` is a v1-shaped
+/// body, as [`workflow_definition`] takes it; `metadata` is sent only when
+/// given.
+pub async fn test_run(
+    app: &Router,
+    workflow: &Value,
+    data: Value,
+    metadata: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut body = json!({
+        "definition": workflow_definition(workflow)["definition"].clone(),
+        "data": data,
+    });
+    if let Some(metadata) = metadata {
+        body["metadata"] = metadata;
+    }
+    send(app, "POST", "/api/v2/admin/definitions/test", Some(body)).await
+}

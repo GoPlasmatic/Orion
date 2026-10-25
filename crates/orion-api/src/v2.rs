@@ -789,6 +789,21 @@ pub struct DefinitionResponse {
     pub size_bytes: u64,
 }
 
+/// `POST /api/v2/admin/definitions/test`: run a workflow definition once on
+/// the node's engine, against live connectors, without deploying it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TestDefinitionRequest {
+    /// The workflow to run, as `POST /definitions` would take it.
+    pub definition: WorkflowDefinition,
+    /// The message's `data`.
+    pub data: Value,
+    /// The message's metadata, normalised the way an ingress builds it.
+    #[serde(default)]
+    pub metadata: Value,
+}
+
 // ============================================================
 // Compiled deployments: what `orion-server compile --format deployment`
 // writes and `orion-cli deployments apply -d` reads

@@ -10,7 +10,10 @@ use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Json, Router};
-use orion_api::v2::{ChannelDefinition, Definition, DefinitionResponse, WorkflowDefinition};
+use orion_api::v2::{
+    ChannelDefinition, Definition, DefinitionResponse, TestDefinitionRequest, WorkflowDefinition,
+};
+use serde_json::{Value, json};
 
 use super::deployment_err_response;
 use crate::errors::{FieldError, OrionError};
@@ -94,9 +97,119 @@ pub(crate) async fn get_definition(
     Ok(Json(definition))
 }
 
+/// The channel a tested workflow is compiled and run on.
+const TEST_CHANNEL: &str = "__test__";
+
+/// `POST /api/v2/admin/definitions/test`.
+#[utoipa::path(
+    post,
+    path = "/api/v2/admin/definitions/test",
+    tag = "Deployments",
+    summary = "Run a workflow definition once, without deploying it",
+    description = "Refuses a workflow definition `POST /definitions` would refuse, then runs it once on this node's engine — its functions, plugins and connectors, so tasks reach **live backends** — against the given `data` and `metadata`, normalised the way an ingress builds them with this node's `[vars]` stamped in. Nothing is stored and nothing is stubbed. The trace is kept on every outcome, so a run that stopped short still answers `200` with the steps that ran and the `error` that stopped it. Recorded in the audit log before the run.",
+    request_body = TestDefinitionRequest,
+    responses(
+        (status = 200, description = "The run, with its trace", body = crate::server::routes::openapi::schemas::WorkflowTestResult),
+        (status = 400, description = "The definition would not serve, or `metadata` is not an object; `details` names each problem by field"),
+    )
+)]
+pub(crate) async fn test_definition(
+    State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
+    Json(request): Json<TestDefinitionRequest>,
+) -> Result<Json<Value>, OrionError> {
+    let TestDefinitionRequest {
+        definition,
+        data,
+        metadata,
+    } = request;
+    let problems = workflow_problems(&state, &definition)?;
+    if !problems.is_empty() {
+        return Err(OrionError::Validation {
+            code: orion_api::error::codes::VALIDATION_ERROR,
+            message: "workflow definition would not serve".to_string(),
+            details: problems.into_iter().map(under_definition).collect(),
+        });
+    }
+    let metadata = crate::engine::utils::prepare_offline_metadata(metadata).map_err(|e| {
+        OrionError::Validation {
+            code: orion_api::error::codes::VALIDATION_ERROR,
+            message: e.clone(),
+            details: vec![FieldError::new("metadata", "INVALID", e)],
+        }
+    })?;
+
+    // The run reaches live connectors — it will POST to real webhooks and
+    // write to real databases — so it is on the record before it starts,
+    // even if the run fails or the process dies mid-task.
+    let digest = crate::crypto::sha256_digest(&definitions::canonical_bytes(
+        &Definition::Workflow(definition.clone()),
+    )?);
+    crate::server::routes::admin::audit_log(
+        &state.audit_queue,
+        &principal,
+        "v2_definition_test",
+        "definition",
+        &digest,
+    );
+
+    // An isolated engine over just this workflow, compiled on the serving
+    // generation's own registry — its functions, plugins and connectors — as
+    // a deployment compiles a member.
+    let generation = state.runtime.load();
+    let row = definitions::workflow_row(&definition, TEST_CHANNEL, 1)?;
+    let workflow_json = crate::storage::repositories::workflows::workflow_json(
+        &row,
+        TEST_CHANNEL,
+        TEST_CHANNEL,
+        "active",
+        None,
+    )?;
+    let engine =
+        crate::engine::offline::single_engine(&generation.engine.compiler(), &workflow_json)?;
+
+    // Through the same normalisation the offline surfaces use, so a run here
+    // and a real request agree; `vars` is the one key stamped rather than
+    // accepted, because this node has real values for it.
+    let mut metadata = metadata;
+    crate::engine::stamp_vars(&mut metadata, state.vars.as_deref());
+
+    // Bounded as a node bounds a `task_details` trace: past the budget a step
+    // keeps its id, result and timing and drops its snapshot.
+    let result = crate::engine::offline::run_single(
+        &engine,
+        &data,
+        &metadata,
+        crate::engine::offline::OfflineRun {
+            trace: Some(crate::engine::offline::OfflineTrace::Changes),
+            max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
+            capture_changes: true,
+            layers: &[],
+            observer: None,
+        },
+    )
+    .await;
+
+    let message = &result.message;
+    let mut body = json!({
+        "matched": result.matched,
+        "trace": serde_json::to_value(&result.trace)?,
+        "output": Value::from(message.context().data()),
+        "errors": serde_json::to_value(message.errors())?,
+    });
+    if let Some(e) = result.error {
+        // Through the same redaction as every other engine-error surface:
+        // the raw text can carry driver detail, so it goes to the log.
+        tracing::warn!(error = %e, "definition test run failed");
+        body["error"] = json!(OrionError::Engine(e).client_message());
+    }
+    Ok(Json(body))
+}
+
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/definitions", axum::routing::post(upload_definition))
+        .route("/definitions/test", axum::routing::post(test_definition))
         .route("/definitions/{digest}", axum::routing::get(get_definition))
 }
 

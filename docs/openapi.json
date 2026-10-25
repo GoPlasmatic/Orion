@@ -3645,6 +3645,86 @@
         ]
       }
     },
+    "/api/v2/admin/definitions/test": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Run a workflow definition once, without deploying it",
+        "description": "Refuses a workflow definition `POST /definitions` would refuse, then runs it once on this node's engine — its functions, plugins and connectors, so tasks reach **live backends** — against the given `data` and `metadata`, normalised the way an ingress builds them with this node's `[vars]` stamped in. Nothing is stored and nothing is stubbed. The trace is kept on every outcome, so a run that stopped short still answers `200` with the steps that ran and the `error` that stopped it. Recorded in the audit log before the run.",
+        "operationId": "test_definition",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestDefinitionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The run, with its trace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The definition would not serve, or `metadata` is not an object; `details` names each problem by field",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v2/admin/definitions/{digest}": {
       "get": {
         "tags": [
@@ -11187,7 +11267,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "`POST /api/v2/admin/workflows/{id}/test` — a dry run against sample input.",
+            "description": "`POST /api/v2/admin/definitions/test` — one run of a workflow definition.",
             "required": [
               "matched",
               "trace",
@@ -11195,6 +11275,13 @@
               "errors"
             ],
             "properties": {
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Why the run stopped short, when it did."
+              },
               "errors": {
                 "type": "array",
                 "items": {}
@@ -11207,7 +11294,7 @@
                 "description": "The message data after the pipeline ran."
               },
               "trace": {
-                "description": "Per-step execution trace: `task_id` and `result`\n(`executed` | `skipped` | `failed`) for each step."
+                "description": "The run's trace: the context it started from (`initial`), then each\nstep with its `task_id`, `result` (`executed` | `skipped` | `failed`)\nand the changes it made."
               }
             }
           }
@@ -13646,6 +13733,27 @@
           }
         }
       },
+      "TestDefinitionRequest": {
+        "type": "object",
+        "description": "`POST /api/v2/admin/definitions/test`: run a workflow definition once on\nthe node's engine, against live connectors, without deploying it.",
+        "required": [
+          "definition",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "description": "The message's `data`."
+          },
+          "definition": {
+            "$ref": "#/components/schemas/WorkflowDefinition",
+            "description": "The workflow to run, as `POST /definitions` would take it."
+          },
+          "metadata": {
+            "description": "The message's metadata, normalised the way an ingress builds it."
+          }
+        },
+        "additionalProperties": false
+      },
       "TestWorkflowRequest": {
         "type": "object",
         "required": [
@@ -14382,7 +14490,7 @@
       },
       "WorkflowTestResult": {
         "type": "object",
-        "description": "`POST /api/v2/admin/workflows/{id}/test` — a dry run against sample input.",
+        "description": "`POST /api/v2/admin/definitions/test` — one run of a workflow definition.",
         "required": [
           "matched",
           "trace",
@@ -14390,6 +14498,13 @@
           "errors"
         ],
         "properties": {
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the run stopped short, when it did."
+          },
           "errors": {
             "type": "array",
             "items": {}
@@ -14402,7 +14517,7 @@
             "description": "The message data after the pipeline ran."
           },
           "trace": {
-            "description": "Per-step execution trace: `task_id` and `result`\n(`executed` | `skipped` | `failed`) for each step."
+            "description": "The run's trace: the context it started from (`initial`), then each\nstep with its `task_id`, `result` (`executed` | `skipped` | `failed`)\nand the changes it made."
           }
         }
       }

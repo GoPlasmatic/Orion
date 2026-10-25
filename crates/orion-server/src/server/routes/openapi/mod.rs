@@ -1,4 +1,4 @@
-mod schemas;
+pub(crate) mod schemas;
 
 use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
@@ -263,6 +263,7 @@ validation failures.",
         super::v2_admin::connections::probe_connection,
         super::v2_admin::definitions::upload_definition,
         super::v2_admin::definitions::get_definition,
+        super::v2_admin::definitions::test_definition,
         super::v2_admin::deployments::create_deployment_plan,
         super::v2_admin::deployments::get_deployments_summary,
         super::v2_admin::deployments::apply_deployment,
@@ -416,6 +417,7 @@ validation failures.",
             orion_api::v2::ChannelDefinition,
             orion_api::v2::PluginDefinition,
             orion_api::v2::DefinitionResponse,
+            orion_api::v2::TestDefinitionRequest,
             orion_api::v2::UploadPackageResponse,
             orion_api::v2::AdmitPackageRequest,
             orion_api::v2::AdmitPackageResponse,

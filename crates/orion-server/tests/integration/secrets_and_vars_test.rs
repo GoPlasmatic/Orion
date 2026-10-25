@@ -1837,10 +1837,10 @@ async fn a_secret_node_cannot_stand_in_for_the_keys_array() {
 #[tokio::test]
 async fn an_absent_audience_element_is_dropped_rather_than_failing_the_task() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let wf_id = common::v1::create_and_activate_workflow(
+    let (status, body) = common::deploy::test_run(
         &app,
-        json!({
-            "id": "aud-partial", "name": "aud partial", "priority": 0, "condition": true,
+        &json!({
+            "name": "aud partial", "priority": 0, "condition": true,
             "tasks": [{
                 "id": "verify", "name": "Verify",
                 "function": {"name": "jwt_verify", "input": {
@@ -1853,21 +1853,11 @@ async fn an_absent_audience_element_is_dropped_rather_than_failing_the_task() {
                 }}
             }]
         }),
+        json!({ "token": "not-a-jwt", "aud1": "orders-api" }),
+        None,
     )
-    .await
-    .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{wf_id}/test"),
-            Some(json!({ "data": { "token": "not-a-jwt", "aud1": "orders-api" } })),
-        ))
-        .await
-        .expect("test endpoint");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let rendered = body.to_string();
     // The token is junk, so the task fails — but on the token, not on the
     // shape of `audience`. The old code dropped the null; the intervening

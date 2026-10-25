@@ -159,18 +159,22 @@ pub(crate) struct DlqPurgeResult {
     older_than_hours: i64,
 }
 
-/// `POST /api/v2/admin/workflows/{id}/test` — a dry run against sample input.
+/// `POST /api/v2/admin/definitions/test` — one run of a workflow definition.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct WorkflowTestResult {
     /// Whether the workflow's condition matched the supplied input.
     matched: bool,
-    /// Per-step execution trace: `task_id` and `result`
-    /// (`executed` | `skipped` | `failed`) for each step.
+    /// The run's trace: the context it started from (`initial`), then each
+    /// step with its `task_id`, `result` (`executed` | `skipped` | `failed`)
+    /// and the changes it made.
     trace: Value,
     /// The message data after the pipeline ran.
     output: Value,
     errors: Vec<Value>,
+    /// Why the run stopped short, when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 /// The backup `POST /api/v2/admin/backups` just wrote.

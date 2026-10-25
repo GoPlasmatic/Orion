@@ -10,6 +10,7 @@ A deployment states everything a node serves in one manifest. You store the defi
 |--------|------|-------------|
 | POST | `/api/v2/admin/definitions` | Validate and store a workflow, channel or plugin definition; answers its digest |
 | GET | `/api/v2/admin/definitions/{digest}` | Read a stored definition back |
+| POST | `/api/v2/admin/definitions/test` | Run a workflow definition once on this node, without deploying it |
 | GET | `/api/v2/admin/connections` | List every stored connection revision |
 | POST | `/api/v2/admin/connections` | Create an immutable connection revision |
 | POST | `/api/v2/admin/deployment-plans` | Check a candidate manifest against a base revision; answers the diff and the reviewed digest |
@@ -43,6 +44,29 @@ curl -s http://localhost:8080/api/v2/admin/definitions/sha256:3f9c… | jq '.def
 ```
 
 A definition that would not serve is refused with a `400`, each problem at its field under `definition`.
+
+### Test a workflow definition
+
+`POST /api/v2/admin/definitions/test` runs a workflow definition once on this node's engine and answers the run. The body is `{"definition": {…}, "data": {…}, "metadata": {…}}`. `definition` is the bare workflow document, without `kind`. `metadata` is optional.
+
+- The definition is checked as an upload checks it. One that would not serve is refused with a `400` and never runs.
+- The run uses this node's functions, plugins and connections. Nothing is stubbed, so a task reaches live backends: an `http_call` sends its request and a `db_write` writes. The run is recorded in the audit log (`v2_definition_test`) before it starts.
+- `metadata` is normalised the way an ingress builds it, and this node's `[vars]` are stamped in.
+- Nothing is stored or deployed.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/admin/definitions/test \
+  -H 'Content-Type: application/json' \
+  -d '{"definition": {"name": "Greet", "tasks": [
+        {"id": "greet", "function": {"name": "map", "input": {"mappings": [
+          {"path": "data.greeting", "logic": {"cat": ["Hello, ", {"var": "data.name"}]}}]}}}]},
+       "data": {"name": "Ada"}}'
+# {"matched": true, "output": {"name": "Ada", "greeting": "Hello, Ada"},
+#  "trace": {"initial": {…}, "steps": [{"task_id": "greet", "result": "executed", "changes": […]}], …},
+#  "errors": []}
+```
+
+The answer always carries the trace, so a run that stopped short still answers `200`, with the steps that ran and an `error` naming what stopped it. `trace.initial` is the context the run started from, and replaying each step's `changes` over it gives the context after that step.
 
 ## Connections
 

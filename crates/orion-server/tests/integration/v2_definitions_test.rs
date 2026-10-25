@@ -315,3 +315,86 @@ async fn two_channels_claiming_one_route_fail_the_revision() {
         "{applied}"
     );
 }
+
+const TEST: &str = "/api/v2/admin/definitions/test";
+
+/// `POST /definitions/test` runs a definition once, deploying nothing, and
+/// answers the run with a trace that replays: the context it started from,
+/// then each step with the changes it made.
+#[tokio::test]
+async fn a_definition_test_runs_once_and_answers_a_replayable_trace() {
+    let app = test_app().await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        TEST,
+        Some(json!({
+            "definition": greeting_workflow()["definition"],
+            "data": {"name": "Ada"},
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["matched"], true, "{body}");
+    assert_eq!(body["output"]["greeting"], "Hello, Ada", "{body}");
+    let trace = &body["trace"];
+    assert_eq!(trace["initial"]["data"], json!({"name": "Ada"}), "{trace}");
+    let executed = trace["steps"]
+        .as_array()
+        .and_then(|steps| steps.iter().find(|s| s["result"] == "executed"))
+        .unwrap_or_else(|| panic!("an executed step: {body}"));
+    assert_eq!(executed["task_id"], "greet");
+    assert!(executed["changes"].is_array(), "{executed}");
+    assert!(body.get("error").is_none(), "{body}");
+
+    // Nothing was deployed or stored.
+    let (_, summary) = send(&app, "GET", DEPLOYMENTS, None).await;
+    assert_eq!(
+        summary["head_revision"].as_u64().unwrap_or(0),
+        0,
+        "{summary}"
+    );
+}
+
+/// A definition the upload would refuse is refused here too, by field, and
+/// never runs; so is metadata no ingress could produce.
+#[tokio::test]
+async fn a_definition_test_refuses_what_would_not_serve() {
+    let app = test_app().await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        TEST,
+        Some(json!({
+            "definition": {"name": "Broken", "tasks": [
+                {"id": "t", "function": {"name": "no_such_function", "input": {}}}
+            ]},
+            "data": {},
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let paths: Vec<&str> = body["error"]["details"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d["path"].as_str())
+        .collect();
+    assert!(
+        paths.iter().any(|p| p.starts_with("definition.tasks")),
+        "{body}"
+    );
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        TEST,
+        Some(json!({
+            "definition": greeting_workflow()["definition"],
+            "data": {},
+            "metadata": "not an object",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
