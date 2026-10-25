@@ -11,10 +11,11 @@ use serde_json::Value;
 
 use super::CompositionRoot;
 use super::contract::ImplementationKind;
-use super::foundation::{DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE};
+use super::foundation::{
+    DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_MYSQL, DRIVER_POSTGRESQL, DRIVER_SQLITE,
+};
 
 /// Enterprise connector provider IDs defined in `DEC-005`.
-pub const ENTERPRISE_DRIVER_MYSQL: &str = "com.orion.enterprise.mysql";
 pub const ENTERPRISE_DRIVER_MONGODB: &str = "com.orion.enterprise.mongodb";
 pub const ENTERPRISE_DRIVER_REDIS: &str = "com.orion.enterprise.redis";
 pub const ENTERPRISE_DRIVER_ELASTICSEARCH: &str = "com.orion.enterprise.elasticsearch";
@@ -89,11 +90,11 @@ pub fn map_legacy_connector(
                     implementation: ImplementationKind::Rust,
                     tier: EditionTier::Community,
                 })
-            } else if lower.starts_with("mysql://") {
+            } else if lower.starts_with("mysql://") || lower.starts_with("mariadb://") {
                 Ok(ResolvedLegacyConnector {
-                    provider_id: ENTERPRISE_DRIVER_MYSQL,
+                    provider_id: DRIVER_MYSQL,
                     implementation: ImplementationKind::Rust,
-                    tier: EditionTier::Enterprise,
+                    tier: EditionTier::Community,
                 })
             } else if lower.starts_with("mongodb://") || lower.starts_with("mongodb+srv://") {
                 Ok(ResolvedLegacyConnector {
@@ -179,13 +180,13 @@ pub fn map_legacy_function(
 ) -> Result<ResolvedLegacyFunction, MigrationFinding> {
     let operation = match (function_name, connector.provider_id) {
         ("http_call", DRIVER_HTTP) => "request",
-        ("db_read", DRIVER_POSTGRESQL | DRIVER_SQLITE | ENTERPRISE_DRIVER_MYSQL) => "query",
-        ("db_write", DRIVER_POSTGRESQL | DRIVER_SQLITE | ENTERPRISE_DRIVER_MYSQL) => "execute",
+        ("db_read", DRIVER_POSTGRESQL | DRIVER_SQLITE | DRIVER_MYSQL) => "query",
+        ("db_write", DRIVER_POSTGRESQL | DRIVER_SQLITE | DRIVER_MYSQL) => "execute",
         (
             "data_query",
             DRIVER_POSTGRESQL
             | DRIVER_SQLITE
-            | ENTERPRISE_DRIVER_MYSQL
+            | DRIVER_MYSQL
             | ENTERPRISE_DRIVER_MONGODB
             | ENTERPRISE_DRIVER_ELASTICSEARCH,
         ) => "data_query",
@@ -193,7 +194,7 @@ pub fn map_legacy_function(
             "data_write",
             DRIVER_POSTGRESQL
             | DRIVER_SQLITE
-            | ENTERPRISE_DRIVER_MYSQL
+            | DRIVER_MYSQL
             | ENTERPRISE_DRIVER_MONGODB
             | ENTERPRISE_DRIVER_ELASTICSEARCH,
         ) => "data_write",
@@ -328,18 +329,15 @@ mod tests {
         assert_eq!(mem.provider_id, DRIVER_MEMORY_CACHE);
         assert!(check_connector_availability(&root, "local-cache", &mem).is_ok());
 
-        // 4. MySQL -> Enterprise com.orion.enterprise.mysql (flagged on Community root)
-        let mysql = map_legacy_connector(
-            "legacy-mysql",
-            "db",
-            &json!({"connection_string": "mysql://localhost/orders"}),
-        )
-        .expect("maps mysql");
-        assert_eq!(mysql.provider_id, ENTERPRISE_DRIVER_MYSQL);
-        assert_eq!(mysql.tier, EditionTier::Enterprise);
-        let finding = check_connector_availability(&root, "legacy-mysql", &mysql)
-            .expect_err("mysql must require enterprise on community root");
-        assert_eq!(finding.code, "ENTERPRISE_PROVIDER_REQUIRED");
+        // 4. MySQL and MariaDB -> Community org.orion.mysql (available)
+        for url in ["mysql://localhost/orders", "mariadb://localhost/orders"] {
+            let mysql =
+                map_legacy_connector("legacy-mysql", "db", &json!({"connection_string": url}))
+                    .expect("maps mysql");
+            assert_eq!(mysql.provider_id, DRIVER_MYSQL);
+            assert_eq!(mysql.tier, EditionTier::Community);
+            assert!(check_connector_availability(&root, "legacy-mysql", &mysql).is_ok());
+        }
 
         // 5. Redis Cache -> Enterprise com.orion.enterprise.redis (flagged on Community root)
         let redis = map_legacy_connector("shared-redis", "cache", &json!({"backend": "redis"}))

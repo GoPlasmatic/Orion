@@ -812,3 +812,187 @@ async fn mysql_cron_cancel_frees_a_dead_holders_slots() {
         AttemptStart::Started { held: Some(_) }
     ));
 }
+
+/// Run `operation` once through the built-in `org.orion.mysql` provider, as
+/// a served run would: inside a run admitted for exactly that operation on
+/// the connection.
+async fn mysql_provider_call(
+    provider: &orion::extensions::MysqlProviderBackend,
+    operation: &str,
+    input: serde_json::Value,
+) -> Result<orion::extensions::ConnectorOutput, Box<orion::extensions::ConnectorError>> {
+    use orion::extensions::{
+        AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionReference, DRIVER_MYSQL,
+        EffectiveConnectionIdentity, ProviderBackend, ProviderReference,
+        foundation::builtin_provider_digest,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::time::{Duration, Instant};
+
+    let digest = builtin_provider_digest(DRIVER_MYSQL).expect("a built-in driver");
+    let connection = ConnectionReference {
+        connection_id: "orders-mysql".to_string(),
+        revision: 1,
+        provider: ProviderReference {
+            provider_id: DRIVER_MYSQL.to_string(),
+            version: "2.0.0".to_string(),
+            package_digest: digest.clone(),
+        },
+    };
+    let identity = EffectiveConnectionIdentity {
+        provider_digest: digest,
+        connection_id: "orders-mysql".to_string(),
+        revision: 1,
+        secret_hash: "sha256:none".to_string(),
+    };
+    let run = AdmittedRun::admit(
+        "run-mysql-provider",
+        1,
+        Instant::now() + Duration::from_secs(60),
+        BudgetLimits::default(),
+        AuthorityGrant {
+            allowed_operations: BTreeMap::from([(
+                "orders-mysql".to_string(),
+                BTreeSet::from([operation.to_string()]),
+            )]),
+            declared_dependencies: BTreeMap::new(),
+            allowed_channels: BTreeSet::new(),
+        },
+    );
+    let invocation = run
+        .context()
+        .start_invocation(connection, identity, operation, None, 1)
+        .expect("invocation starts");
+    let attempt = invocation.next_attempt().expect("an attempt");
+    provider
+        .invoke(&attempt, operation, input)
+        .await
+        .map_err(Box::new)
+}
+
+/// The built-in MySQL provider against a real server: a write and a read
+/// with the values bound to `?`, a result held to the row cap while it
+/// streams, a duplicate key reported as the statement's fault (not
+/// retryable), and a lock wait timeout reported as the database asking for
+/// the retry.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_foundation_provider_runs_bound_statements() {
+    use orion::extensions::{
+        DRIVER_MYSQL, ImmutableDeploymentStore, MysqlProviderBackend, RetryAdvice, SqlLimits,
+        codes, foundation::builtin_provider_digest,
+    };
+    use serde_json::json;
+    use sqlx::Connection;
+
+    let container = Mysql::default()
+        .start()
+        .await
+        .expect("start mysql container");
+    let port = container
+        .get_host_port_ipv4(3306)
+        .await
+        .expect("mysql port");
+    let url = format!("mysql://127.0.0.1:{port}/test");
+
+    // Sessions the provider opens wait one second for a row lock, not fifty.
+    let mut admin = sqlx::MySqlConnection::connect(&format!("mysql://root@127.0.0.1:{port}/test"))
+        .await
+        .expect("admin connection");
+    sqlx::query("SET GLOBAL innodb_lock_wait_timeout = 1")
+        .execute(&mut admin)
+        .await
+        .expect("set lock wait timeout");
+
+    // The revision names the server with no userinfo (sqlx connects as
+    // `root`), so the public-config credential screen admits it.
+    let store = ImmutableDeploymentStore::default();
+    store
+        .store_connection_revision(
+            "orders-mysql",
+            1,
+            &builtin_provider_digest(DRIVER_MYSQL).expect("a built-in driver"),
+            json!({"connection_string": url}),
+            Default::default(),
+        )
+        .expect("connection revision stored");
+    let provider = MysqlProviderBackend::with_deployment_store(4, store).with_limits(SqlLimits {
+        max_rows: 2,
+        max_result_bytes: 0,
+    });
+
+    mysql_provider_call(
+        &provider,
+        "execute",
+        json!({"sql": "CREATE TABLE items (id INT PRIMARY KEY, label VARCHAR(64) NOT NULL)"}),
+    )
+    .await
+    .expect("create table");
+    for (id, label) in [(1, "one"), (2, "x'; DROP TABLE items; --"), (3, "three")] {
+        let out = mysql_provider_call(
+            &provider,
+            "execute",
+            json!({
+                "sql": "INSERT INTO items (id, label) VALUES (?, ?)",
+                "params": [id, label],
+            }),
+        )
+        .await
+        .expect("insert");
+        assert_eq!(out.data["rows_affected"], 1);
+    }
+
+    let out = mysql_provider_call(
+        &provider,
+        "query",
+        json!({"sql": "SELECT id, label FROM items WHERE id = ?", "params": [2]}),
+    )
+    .await
+    .expect("query");
+    assert_eq!(out.data["count"], 1);
+    assert_eq!(out.data["rows"][0]["id"], 2);
+    assert_eq!(out.data["rows"][0]["label"], "x'; DROP TABLE items; --");
+    assert_eq!(out.metadata["driver"], DRIVER_MYSQL);
+
+    // Three rows against a cap of two.
+    let err = mysql_provider_call(
+        &provider,
+        "query",
+        json!({"sql": "SELECT id FROM items ORDER BY id"}),
+    )
+    .await
+    .expect_err("the row cap holds");
+    assert_eq!(err.code, codes::INVALID_INPUT);
+    assert!(err.message.contains("2 rows"), "{}", err.message);
+
+    // A duplicate key is the statement's fault: retrying will not change it.
+    let err = mysql_provider_call(
+        &provider,
+        "execute",
+        json!({"sql": "INSERT INTO items (id, label) VALUES (?, ?)", "params": [1, "again"]}),
+    )
+    .await
+    .expect_err("duplicate key");
+    assert_eq!(err.code, codes::INVALID_INPUT, "{}", err.message);
+    assert_eq!(err.retry_advice, RetryAdvice::Never);
+    assert!(err.message.contains("Duplicate"), "{}", err.message);
+
+    // A row held by another transaction times the write out (error 1205):
+    // the database asking for the retry.
+    let mut tx = admin.begin().await.expect("begin");
+    sqlx::query("SELECT id FROM items WHERE id = 1 FOR UPDATE")
+        .fetch_all(&mut *tx)
+        .await
+        .expect("lock row");
+    let err = mysql_provider_call(
+        &provider,
+        "execute",
+        json!({"sql": "UPDATE items SET label = ? WHERE id = ?", "params": ["locked", 1]}),
+    )
+    .await
+    .expect_err("lock wait timeout");
+    assert_eq!(err.code, codes::UNAVAILABLE, "{}", err.message);
+    assert_eq!(err.retry_advice, RetryAdvice::Transient);
+    assert!(err.message.contains("Lock wait timeout"), "{}", err.message);
+    tx.rollback().await.expect("rollback");
+}

@@ -6,9 +6,10 @@
 //! 1. Registers **only** the 4 foundational native Rust channel drivers
 //!    (`cron`, `http`, `rest`, `source`) and zero Enterprise-only channel
 //!    drivers (`graphql`, `kafka`, `sse`).
-//! 2. Registers **only** the 4 foundational Direct Rust connector providers
-//!    (`org.orion.http`, `org.orion.memory-cache`, `org.orion.postgresql`,
-//!    `org.orion.sqlite`) and zero Enterprise-only Direct Rust providers.
+//! 2. Registers **only** the 5 foundational Direct Rust connector providers
+//!    (`org.orion.http`, `org.orion.memory-cache`, `org.orion.mysql`,
+//!    `org.orion.postgresql`, `org.orion.sqlite`) and zero Enterprise-only
+//!    Direct Rust providers.
 //! 3. Uses [`CommunityAdmissionPolicy`](super::admission::CommunityAdmissionPolicy)
 //!    (`orion.community.admission/1`) which rejects `tier: "enterprise"` packages
 //!    with `ENTERPRISE_TIER_NOT_ENABLED`.
@@ -19,9 +20,7 @@ use serde::Serialize;
 
 use super::CompositionRoot;
 use super::contract::ImplementationKind;
-use super::foundation::{
-    COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
-};
+use super::foundation::COMMUNITY_RUST_DRIVERS;
 
 /// Canonical Community Edition native Rust channel driver protocol IDs (`DEC-003`).
 pub const COMMUNITY_CHANNEL_PROTOCOLS: [&str; 4] = ["cron", "http", "rest", "source"];
@@ -58,9 +57,10 @@ impl CommunityAssemblyReport {
 ///
 /// - Checks that all 4 Community channel protocols (`cron`, `http`, `rest`, `source`) are
 ///   present and no Enterprise channel protocols (`graphql`, `kafka`, `sse`) are registered.
-/// - Checks that all 4 Community Direct Rust providers (`org.orion.http`,
-///   `org.orion.memory-cache`, `org.orion.postgresql`, `org.orion.sqlite`) are present
-///   and no Enterprise Direct Rust providers are registered.
+/// - Checks that all 5 Community Direct Rust providers (`org.orion.http`,
+///   `org.orion.memory-cache`, `org.orion.mysql`, `org.orion.postgresql`,
+///   `org.orion.sqlite`) are present and no Enterprise Direct Rust providers are
+///   registered.
 /// - Allows any number of user-installed `workflow` and `wasm` providers.
 /// - Checks that `orion.community.admission/1` is active.
 pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyReport {
@@ -115,12 +115,7 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
         }
     }
 
-    for expected_driver in [
-        DRIVER_HTTP,
-        DRIVER_MEMORY_CACHE,
-        DRIVER_POSTGRESQL,
-        DRIVER_SQLITE,
-    ] {
+    for &expected_driver in COMMUNITY_RUST_DRIVERS {
         if !registered_rust_providers
             .iter()
             .any(|d| d == expected_driver)
@@ -166,6 +161,7 @@ mod tests {
     use crate::extensions::contract::{
         ConnectionReference, ConnectorResult, EffectiveConnectionIdentity, ProviderReference,
     };
+    use crate::extensions::foundation::DRIVER_MEMORY_CACHE;
     use crate::extensions::wasm_provider::{
         WasmComponentCache, WasmImportProfile, WasmProviderBackend, WasmStoreLimits,
     };
@@ -196,12 +192,13 @@ mod tests {
             vec![
                 "org.orion.http",
                 "org.orion.memory-cache",
+                "org.orion.mysql",
                 "org.orion.postgresql",
                 "org.orion.sqlite"
             ]
         );
-        // 3 stateful foundation pools (postgresql, sqlite, memory-cache)
-        assert_eq!(report.resource_pool_count, 3);
+        // 4 stateful foundation pools (postgresql, mysql, sqlite, memory-cache)
+        assert_eq!(report.resource_pool_count, 4);
     }
 
     /// An Enterprise-only protocol, standing in for the native driver the

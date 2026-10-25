@@ -628,34 +628,40 @@ mod tests {
     #[tokio::test]
     async fn a_statement_built_from_the_message_is_refused_at_load() {
         let root = CompositionRoot::community();
-        let func = ConnectorCallFunction {
-            providers: root.providers.clone(),
-            registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
-                Default::default(),
-            )),
-        };
-        let called = testing::call(
-            func,
-            json!({
-                "connection": "local-db",
-                "target_id": "org.orion.sqlite",
-                "operation": "query",
-                "input": { "sql": {"var": "data.q"} },
-                "output": "data.rows"
-            }),
-        )
-        .exprs(crate::engine::kit::test_exprs())
-        .name(NAME)
-        .await;
-        assert!(called.outcome.is_err(), "{:?}", called.outcome);
-        assert!(
-            called
-                .issues
-                .iter()
-                .any(|i| i.code == IssueCode::InputParse && i.message.contains("input.sql")),
-            "{:?}",
-            called.issues
-        );
+        for target in [
+            "org.orion.sqlite",
+            "org.orion.postgresql",
+            "org.orion.mysql",
+        ] {
+            let func = ConnectorCallFunction {
+                providers: root.providers.clone(),
+                registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                    Default::default(),
+                )),
+            };
+            let called = testing::call(
+                func,
+                json!({
+                    "connection": "local-db",
+                    "target_id": target,
+                    "operation": "query",
+                    "input": { "sql": {"var": "data.q"} },
+                    "output": "data.rows"
+                }),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME)
+            .await;
+            assert!(called.outcome.is_err(), "{target}: {:?}", called.outcome);
+            assert!(
+                called
+                    .issues
+                    .iter()
+                    .any(|i| i.code == IssueCode::InputParse && i.message.contains("input.sql")),
+                "{target}: {:?}",
+                called.issues
+            );
+        }
     }
 
     /// A literal statement runs, with the message's values bound to its

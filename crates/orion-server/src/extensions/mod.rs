@@ -82,17 +82,17 @@ pub use deployment_store::{
     ProviderRef, RolloutInterval, validate_rollout_partition,
 };
 pub use foundation::{
-    COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE,
-    FoundationOptions, HttpProviderBackend, MemoryCacheProviderBackend, PartitionedMemoryCache,
-    PostgresProviderBackend, SqlLimits, SqliteProviderBackend,
-    register_community_foundation_providers,
+    COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_MYSQL, DRIVER_POSTGRESQL,
+    DRIVER_SQLITE, FoundationOptions, HttpProviderBackend, MemoryCacheProviderBackend,
+    MysqlProviderBackend, PartitionedMemoryCache, PostgresProviderBackend, SqlLimits,
+    SqliteProviderBackend, register_community_foundation_providers,
 };
 pub use migration::{
     ENTERPRISE_DRIVER_ELASTICSEARCH, ENTERPRISE_DRIVER_KAFKA, ENTERPRISE_DRIVER_MONGODB,
-    ENTERPRISE_DRIVER_MYSQL, ENTERPRISE_DRIVER_REDIS, ENTERPRISE_DRIVER_SMTP,
-    ENTERPRISE_DRIVER_STORAGE, EditionTier, MigrationFinding, ResolvedLegacyConnector,
-    ResolvedLegacyFunction, check_channel_protocol_availability, check_connector_availability,
-    map_legacy_connector, map_legacy_function,
+    ENTERPRISE_DRIVER_REDIS, ENTERPRISE_DRIVER_SMTP, ENTERPRISE_DRIVER_STORAGE, EditionTier,
+    MigrationFinding, ResolvedLegacyConnector, ResolvedLegacyFunction,
+    check_channel_protocol_availability, check_connector_availability, map_legacy_connector,
+    map_legacy_function,
 };
 pub use owned_native_work::{
     NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,
@@ -172,7 +172,8 @@ impl CompositionRoot {
     /// Registers:
     /// - Foundational native Rust channel drivers (`rest`, `http`, `cron`, `source`)
     /// - Foundational Direct Rust connector providers (`org.orion.http`,
-    ///   `org.orion.postgresql`, `org.orion.sqlite`, `org.orion.memory-cache`) and
+    ///   `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`,
+    ///   `org.orion.memory-cache`) and
     ///   their version-fenced session/cache pools
     /// - [`CommunityAdmissionPolicy`]
     pub fn community() -> Self {
@@ -262,14 +263,15 @@ mod tests {
             root.channels.protocol_ids(),
             vec!["cron", "http", "rest", "source"]
         );
-        // 3 foundation stateful pools (postgresql, sqlite, memory-cache) + 1 custom pool registered above = 4.
-        assert_eq!(root.pools.len(), 4);
+        // 4 foundation stateful pools (postgresql, mysql, sqlite, memory-cache) + 1 custom pool registered above = 5.
+        assert_eq!(root.pools.len(), 5);
         assert!(root.pools.get::<VersionedSessionPool<String>>().is_some());
         assert_eq!(
             root.providers.registered_drivers(),
             vec![
                 (ImplementationKind::Rust, DRIVER_HTTP.to_string()),
                 (ImplementationKind::Rust, DRIVER_MEMORY_CACHE.to_string()),
+                (ImplementationKind::Rust, DRIVER_MYSQL.to_string()),
                 (ImplementationKind::Rust, DRIVER_POSTGRESQL.to_string()),
                 (ImplementationKind::Rust, DRIVER_SQLITE.to_string()),
             ]

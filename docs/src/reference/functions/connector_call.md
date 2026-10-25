@@ -30,15 +30,15 @@ Invokes a v2 connector provider operation (`rust`, `workflow`, or `wasm`) under 
 
 ### Which calls a workflow may make
 
-A call runs only in a generation built from a deployment manifest, and only when the workflow's manifest member `requires` the connection. The operations granted are the ones the workflow's own `connector_call` tasks name for it. The connection must have a revision in the deployment store: the one the active manifest names, or the latest. Every call of one run shares that run's deadline and budget. Anything else is refused with `CONNECTOR_CONNECTION_FORBIDDEN`: a call outside a served run, a connection the member does not require, a connection with no revision, or a provider package that is not uploaded.
+A call runs only in a generation built from a deployment manifest, and only when the workflow's manifest member `requires` the connection. The operations granted are the ones the workflow's own `connector_call` tasks name for it. The connection must be a member of the deployed manifest, and the call uses exactly the revision that member names, never one stored since. Every call of one run shares that run's deadline and budget. Anything else is refused with `CONNECTOR_CONNECTION_FORBIDDEN`: a call outside a served run, a connection the member does not require, a connection the manifest does not deploy, or a provider package that is not uploaded.
 
-A connection revision names its provider by package digest. The built-in drivers (`org.orion.http`, `org.orion.postgresql`, `org.orion.sqlite`, `org.orion.memory-cache`) have no uploaded package; each answers to a fixed digest instead, listed as `package_digest` under `provider_backends` in `GET /api/v2/admin/runtime-capabilities`. A connection naming one needs no entry in the manifest's `providers`, and can be called only as that driver: a call whose `target_id` is another driver is refused with `CONNECTOR_CONNECTION_FORBIDDEN`.
+A connection revision names its provider by package digest. The built-in drivers (`org.orion.http`, `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`, `org.orion.memory-cache`) have no uploaded package; each answers to a fixed digest instead, listed as `package_digest` under `provider_backends` in `GET /api/v2/admin/runtime-capabilities`. A connection naming one needs no entry in the manifest's `providers`, and can be called only as that driver: a call whose `target_id` is another driver is refused with `CONNECTOR_CONNECTION_FORBIDDEN`.
 
 `kind` must be `rust`, `workflow` or `wasm`. Any other value is refused when the task loads.
 
 ### The foundation SQL and HTTP providers
 
-The Community providers `org.orion.postgresql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP) and never holds a credential: a credential-shaped key or value there is refused when the revision is created.
+The Community providers `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP) and never holds a credential: a credential-shaped key or value there is refused when the revision is created. `org.orion.mysql` serves MySQL and MariaDB and takes a `mysql://` or `mariadb://` connection string; any other scheme is refused with `CONNECTOR_INVALID_INPUT`.
 
 A credential comes from the revision's `secret_locators`: a map from a config path to a secret reference such as `env://ORDERS_DB_URL` or `vault://secret/orders#password`. Each reference is resolved where it is used and placed at its path, so `{"connection_string": "env://ORDERS_DB_URL"}` supplies a SQL connection's whole connection string. A locator must be a reference, never the secret itself, and may not name a path `public_config` already sets.
 
@@ -50,7 +50,7 @@ For HTTP, `public_config.auth` says how the credential is sent, and its secret f
 
 An `auth` with no locator for its credential is refused with `CONNECTOR_INVALID_INPUT` before any request is made, as is an `auth` with an unknown `type` or a field its type does not take.
 
-A SQL statement (`input.sql`, or `source` for a query and `target` for a write) must be a literal string. A task that builds one from the message, such as `{"sql": {"var": "data.q"}}`, is refused when it loads. The message reaches the database only through `input.params`, an array bound to the statement's placeholders (`$1` on PostgreSQL, `?` on SQLite):
+A SQL statement (`input.sql`, or `source` for a query and `target` for a write) must be a literal string. A task that builds one from the message, such as `{"sql": {"var": "data.q"}}`, is refused when it loads. The message reaches the database only through `input.params`, an array bound to the statement's placeholders (`$1` on PostgreSQL, `?` on MySQL and SQLite):
 
 ```json
 {
@@ -65,7 +65,7 @@ A SQL statement (`input.sql`, or `source` for a query and `target` for a write) 
 }
 ```
 
-A query's result is held to `query.max_limit` rows and `query.max_result_bytes`, counted as rows stream, the same caps [`db_read`](./db_read.md) has. A transport failure, a serialization failure or a deadlock is `CONNECTOR_UNAVAILABLE` and retryable; any other error the database raises is `CONNECTOR_INVALID_INPUT` and is not. An HTTP response body is capped at 10 MiB.
+A query's result is held to `query.max_limit` rows and `query.max_result_bytes`, counted as rows stream, the same caps [`db_read`](./db_read.md) has. A transport failure, a serialization failure, a deadlock or a MySQL lock wait timeout is `CONNECTOR_UNAVAILABLE` and retryable; any other error the database raises is `CONNECTOR_INVALID_INPUT` and is not. An HTTP response body is capped at 10 MiB.
 
 **Retry safety:** `depends_on` `operation`. See [Retry safety](./retry-safety.md) for what the answer costs.
 

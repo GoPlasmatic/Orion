@@ -183,6 +183,110 @@ fn postgres_provider_accepts_only_postgres_schemes() {
     );
 }
 
+#[test]
+fn mysql_provider_accepts_only_mysql_and_mariadb_schemes() {
+    let mysql = MysqlProviderBackend::default();
+    for ok in [
+        "mysql://user:pass@db/app",
+        "mariadb://user:pass@db/app",
+        "  MySQL://db/app",
+    ] {
+        assert!(
+            mysql
+                .validate_config(&json!({"connection_string": ok}))
+                .is_ok(),
+            "{ok}"
+        );
+    }
+    for bad in [
+        json!({"connection_string": "postgres://user:pass@db/app"}),
+        json!({"connection_string": "sqlite::memory:"}),
+        json!({"connection_string": "db/app"}),
+        json!({}),
+    ] {
+        let err = mysql.validate_config(&bad).expect_err("refused");
+        assert_eq!(err.code, codes::INVALID_INPUT, "{bad}");
+    }
+}
+
+/// MySQL refuses a target in the input, an unknown operation, and a
+/// statement that is not a string, and names its statement keys as the
+/// literals `connector_call` checks at load.
+#[tokio::test]
+async fn mysql_provider_refuses_input_targets_and_non_literal_statements() {
+    let mysql = MysqlProviderBackend::default();
+    assert_eq!(mysql.literal_input_keys("query"), SQL_STATEMENT_KEYS);
+    assert_eq!(mysql.literal_input_keys("execute"), SQL_STATEMENT_KEYS);
+
+    let inv = make_invocation(DRIVER_MYSQL, "mysql-conn", 1, "query");
+    let attempt = inv.next_attempt().unwrap();
+    let err = mysql
+        .invoke(
+            &attempt,
+            "query",
+            json!({"connection_string": "mysql://evil.example/db", "sql": "SELECT 1"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::CONNECTION_FORBIDDEN);
+
+    let err = mysql
+        .invoke(&attempt, "query", json!({"sql": {"var": "data.q"}}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_INPUT);
+
+    let err = mysql
+        .invoke(&attempt, "drop", json!({"sql": "SELECT 1"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::OPERATION_FORBIDDEN);
+
+    // Without a governed connection string the call is refused, never
+    // answered with synthetic rows.
+    let err = mysql
+        .invoke(&attempt, "query", json!({"sql": "SELECT 1"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_INPUT);
+
+    // A revision naming another backend's scheme is refused before connecting.
+    let mysql = MysqlProviderBackend::with_deployment_store(
+        4,
+        with_connection(
+            "mysql-conn",
+            json!({"connection_string": "postgres://127.0.0.1:1/app"}),
+            &[],
+        ),
+    );
+    let err = mysql
+        .invoke(&attempt, "query", json!({"sql": "SELECT 1"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::INVALID_INPUT);
+
+    // An unreachable server is a transport failure, which is retryable.
+    let mysql = MysqlProviderBackend::with_deployment_store(
+        4,
+        with_connection(
+            "mysql-conn",
+            json!({"connection_string": "mysql://127.0.0.1:1/app"}),
+            &[],
+        ),
+    );
+    let inv = make_invocation(DRIVER_MYSQL, "mysql-conn", 1, "execute");
+    let attempt = inv.next_attempt().unwrap();
+    let err = mysql
+        .invoke(
+            &attempt,
+            "execute",
+            json!({"sql": "INSERT INTO items VALUES (?)", "params": [1]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, codes::UNAVAILABLE);
+}
+
 #[tokio::test]
 async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts() {
     let providers = ProviderRegistry::new();
