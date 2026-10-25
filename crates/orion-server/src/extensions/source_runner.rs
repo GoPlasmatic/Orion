@@ -6,20 +6,26 @@
 //!   `close`), enforcing batch-size and cursor-byte ceilings across all three
 //!   connector backend kinds (`rust`, `workflow`, `wasm`).
 //! - **Fenced Partition Ownership (`V2-15.2`)**: [`SourceLeaseCoordinator`]
-//!   assigns monotonically increasing fence tokens per `(channel_id, partition_id)`.
-//!   Stale owners after lease expiry or revision takeover cannot renew, acknowledge,
-//!   or commit checkpoints.
+//!   assigns monotonically increasing fence tokens per `(channel_id, partition_id)`
+//!   in the `source_claims` table, with leases judged on the database clock on
+//!   every backend. Stale owners after lease expiry or revision takeover cannot
+//!   renew, acknowledge, or commit checkpoints.
 //! - **Settlement Intent & Contiguous Checkpoints (`V2-15.3`)**:
 //!   [`ContiguousCheckpointLedger`] records durable settlement intent before
 //!   external ack/DLQ persistence, blocks checkpoint advancement across gaps or
 //!   unpersisted DLQ items, and commits only contiguous settled offsets under
-//!   the active fence token.
+//!   the active fence token, to `source_checkpoints`.
+//!
+//! No channel protocol drives this yet: Community has no source provider (the
+//! Kafka one moved to Orion Enterprise), so a `source` protocol would accept
+//! channels nothing runs. An edition with a source provider registers the
+//! channel driver.
 //! - **Revision Handoff (`V2-15.4`)**: Transfers partition ownership to a new
 //!   deployment revision with a higher fence token while enforcing checkpoint
 //!   namespace compatibility.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,6 +55,9 @@ impl SourcePartitionKey {
 }
 
 /// Active fenced ownership claim for a source partition (`V2-15.2`).
+///
+/// Carries no expiry: the lease's end is a `source_claims.lease_until`
+/// timestamp on the database clock, and every check against it is made there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourcePartitionClaim {
     pub key: SourcePartitionKey,
@@ -56,7 +65,6 @@ pub struct SourcePartitionClaim {
     pub revision: u64,
     pub checkpoint_namespace: String,
     pub fence_token: u64,
-    pub expires_at_ms: u64,
 }
 
 /// Error returned when a source lease, fence, or checkpoint invariant is violated (`V2-15`).
@@ -74,312 +82,566 @@ impl std::fmt::Display for SourceCoordinationError {
 
 impl std::error::Error for SourceCoordinationError {}
 
-#[derive(Debug)]
-struct PartitionSlot {
-    claim: SourcePartitionClaim,
-    highest_fence: u64,
+/// The code of a database refusal the transaction can simply be run again
+/// after: a deadlock or a serialization failure between two claimants of one
+/// partition (MySQL's `INSERT IGNORE` takes a shared lock on the duplicate,
+/// and two claimants upgrading it deadlock).
+const DB_RETRY: &str = "DB_RETRY";
+
+fn db_error(context: &str, e: sqlx::Error) -> SourceCoordinationError {
+    let retryable = e
+        .as_database_error()
+        .and_then(|d| d.code())
+        .is_some_and(|code| matches!(code.as_ref(), "40001" | "40P01" | "1213"));
+    SourceCoordinationError {
+        code: if retryable { DB_RETRY } else { "DB_ERROR" },
+        message: format!("{context}: {e}"),
+    }
 }
 
-/// Coordinator managing DB-time lease claims and monotonic fence tokens (`V2-15.2`, `V2-15.4`).
-#[derive(Debug, Default, Clone)]
+fn not_found(message: &str) -> SourceCoordinationError {
+    SourceCoordinationError {
+        code: "SOURCE_LEASE_NOT_FOUND",
+        message: message.to_string(),
+    }
+}
+
+/// What the row says about a claim, read back after a write.
+type ClaimRow = (String, i64, String, i64);
+
+/// Fenced partition leases and their checkpoints, held in the `source_claims`
+/// and `source_checkpoints` tables and judged on the **database clock**
+/// (`V2-15.2`, `V2-15.4`).
+///
+/// Every node sharing the state database contends on the same rows, so
+/// ownership is a property of the database, not of a process: a claim is an
+/// atomic conditional write, a lease is live while `lease_until` is ahead of
+/// the database's `now`, and the fence token only ever increases — a takeover
+/// or a revision handoff moves it, so a stale owner's renewals, settlements
+/// and checkpoints are refused by the row they would have to match. No node's
+/// clock enters any of it.
+#[derive(Clone)]
 pub struct SourceLeaseCoordinator {
-    slots: Arc<Mutex<BTreeMap<SourcePartitionKey, PartitionSlot>>>,
+    pool: crate::storage::DbPool,
+}
+
+impl std::fmt::Debug for SourceLeaseCoordinator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceLeaseCoordinator")
+            .field("backend", &self.pool.backend())
+            .finish()
+    }
 }
 
 impl SourceLeaseCoordinator {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(pool: crate::storage::DbPool) -> Self {
+        Self { pool }
     }
 
-    /// Acquire an unclaimed partition or take over an expired lease, issuing a
-    /// strictly increasing `fence_token` (`V2-15.2`).
-    pub fn acquire_or_takeover(
+    fn now(&self) -> sea_query::SimpleExpr {
+        sea_query::Expr::cust(crate::storage::repositories::helpers::sql_now(
+            self.pool.backend(),
+        ))
+    }
+
+    fn until(&self, ttl_secs: u64) -> sea_query::SimpleExpr {
+        sea_query::Expr::cust(crate::storage::repositories::helpers::sql_now_plus_secs(
+            self.pool.backend(),
+            ttl_secs.max(1),
+        ))
+    }
+
+    fn key_cond(key: &SourcePartitionKey) -> sea_query::Condition {
+        use crate::storage::schema::SourceClaims as C;
+        use sea_query::{Expr, ExprTrait};
+        sea_query::Condition::all()
+            .add(Expr::col(C::ChannelId).eq(key.channel_id.as_str()))
+            .add(Expr::col(C::PartitionId).eq(key.partition_id.as_str()))
+    }
+
+    async fn begin(&self) -> Result<crate::storage::DbTransaction, SourceCoordinationError> {
+        self.pool
+            .begin_write_tx()
+            .await
+            .map_err(|e| db_error("begin source_claims transaction", e))
+    }
+
+    /// The claim row for `key`, read inside `tx`.
+    async fn read_claim(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        key: &SourcePartitionKey,
+    ) -> Result<Option<SourcePartitionClaim>, SourceCoordinationError> {
+        use crate::storage::schema::SourceClaims as C;
+        let (sql, values) = crate::storage::build_sqlx(
+            self.pool.backend(),
+            sea_query::Query::select()
+                .columns([
+                    C::OwnerId,
+                    C::Revision,
+                    C::CheckpointNamespace,
+                    C::FenceToken,
+                ])
+                .from(C::Table)
+                .cond_where(Self::key_cond(key))
+                .lock(sea_query::LockType::Update),
+        );
+        let row: Option<ClaimRow> = tx
+            .fetch_optional_as(&sql, values)
+            .await
+            .map_err(|e| db_error("read source_claims", e))?;
+        Ok(row.map(
+            |(owner_id, revision, checkpoint_namespace, fence)| SourcePartitionClaim {
+                key: key.clone(),
+                owner_id,
+                revision: revision.max(0) as u64,
+                checkpoint_namespace,
+                fence_token: fence.max(0) as u64,
+            },
+        ))
+    }
+
+    async fn commit(tx: crate::storage::DbTransaction) -> Result<(), SourceCoordinationError> {
+        tx.commit()
+            .await
+            .map_err(|e| db_error("commit source_claims transaction", e))
+    }
+
+    /// Acquire an unclaimed partition, renew this owner's own claim, or take
+    /// over one whose lease has expired on the database clock — each issuing
+    /// a strictly greater `fence_token` (`V2-15.2`).
+    pub async fn acquire_or_takeover(
         &self,
         key: SourcePartitionKey,
         owner_id: impl Into<String>,
         revision: u64,
         checkpoint_namespace: impl Into<String>,
-        now_ms: u64,
-        lease_ttl_ms: u64,
+        lease_ttl_secs: u64,
     ) -> Result<SourcePartitionClaim, SourceCoordinationError> {
         let owner_id = owner_id.into();
         let checkpoint_namespace = checkpoint_namespace.into();
-        let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-
-        if let Some(slot) = guard.get_mut(&key) {
-            let expired = now_ms >= slot.claim.expires_at_ms;
-            let same_owner = slot.claim.owner_id == owner_id && slot.claim.revision == revision;
-            if !expired && !same_owner {
-                return Err(SourceCoordinationError {
-                    code: "SOURCE_PARTITION_LEASE_HELD",
-                    message: format!(
-                        "Partition '{}:{}' is currently leased by '{}' (rev {}) until {}ms",
-                        key.channel_id,
-                        key.partition_id,
-                        slot.claim.owner_id,
-                        slot.claim.revision,
-                        slot.claim.expires_at_ms
-                    ),
-                });
+        // Claimants of one partition contend by design; a deadlock between
+        // two of them is a lost round, not a failure.
+        let mut attempt = 0;
+        loop {
+            match self
+                .acquire_once(
+                    &key,
+                    &owner_id,
+                    revision,
+                    &checkpoint_namespace,
+                    lease_ttl_secs,
+                )
+                .await
+            {
+                Err(e) if e.code == DB_RETRY && attempt < 8 => attempt += 1,
+                outcome => return outcome,
             }
-            if slot.claim.checkpoint_namespace != checkpoint_namespace {
-                return Err(SourceCoordinationError {
-                    code: "SOURCE_CHECKPOINT_NAMESPACE_MISMATCH",
-                    message: format!(
-                        "Checkpoint namespace '{}' is incompatible with active namespace '{}'; use explicit revision handoff",
-                        checkpoint_namespace, slot.claim.checkpoint_namespace
-                    ),
-                });
-            }
-
-            let next_fence = slot.highest_fence.saturating_add(1);
-            slot.highest_fence = next_fence;
-            slot.claim = SourcePartitionClaim {
-                key,
-                owner_id,
-                revision,
-                checkpoint_namespace,
-                fence_token: next_fence,
-                expires_at_ms: now_ms.saturating_add(lease_ttl_ms.max(1)),
-            };
-            return Ok(slot.claim.clone());
         }
+    }
 
-        let claim = SourcePartitionClaim {
-            key: key.clone(),
-            owner_id,
-            revision,
-            checkpoint_namespace,
-            fence_token: 1,
-            expires_at_ms: now_ms.saturating_add(lease_ttl_ms.max(1)),
-        };
-        guard.insert(
-            key,
-            PartitionSlot {
-                claim: claim.clone(),
-                highest_fence: 1,
-            },
-        );
+    async fn acquire_once(
+        &self,
+        key: &SourcePartitionKey,
+        owner_id: &str,
+        revision: u64,
+        checkpoint_namespace: &str,
+        lease_ttl_secs: u64,
+    ) -> Result<SourcePartitionClaim, SourceCoordinationError> {
+        use crate::storage::schema::SourceClaims as C;
+        use sea_query::{Expr, ExprTrait};
+        let key = key.clone();
+        let owner_id = owner_id.to_string();
+        let checkpoint_namespace = checkpoint_namespace.to_string();
+        let backend = self.pool.backend();
+        let mut tx = self.begin().await?;
+
+        // First claim of the partition: fence 1. A concurrent first claimant
+        // that got there first makes this insert a no-op.
+        let mut insert = sea_query::Query::insert()
+            .into_table(C::Table)
+            .columns([
+                C::ChannelId,
+                C::PartitionId,
+                C::OwnerId,
+                C::Revision,
+                C::CheckpointNamespace,
+                C::FenceToken,
+                C::LeaseUntil,
+            ])
+            .values_panic([
+                key.channel_id.as_str().into(),
+                key.partition_id.as_str().into(),
+                owner_id.as_str().into(),
+                (revision as i64).into(),
+                checkpoint_namespace.as_str().into(),
+                1i64.into(),
+                self.until(lease_ttl_secs),
+            ])
+            .to_owned();
+        let inserted = match backend {
+            crate::storage::DbBackend::Mysql => {
+                let (sql, values) = crate::storage::build_sqlx(backend, &mut insert);
+                let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
+                tx.execute_query(&sql, values).await
+            }
+            _ => {
+                insert.on_conflict(
+                    sea_query::OnConflict::columns([C::ChannelId, C::PartitionId])
+                        .do_nothing()
+                        .to_owned(),
+                );
+                let (sql, values) = crate::storage::build_sqlx(backend, &mut insert);
+                tx.execute_query(&sql, values).await
+            }
+        }
+        .map_err(|e| db_error("insert source_claims", e))?;
+
+        if inserted == 0 {
+            // Held already. Take it when the lease is over, or when the
+            // claimant is the holder itself (same owner, same revision); a
+            // namespace change is a handoff, never a takeover.
+            let (sql, values) = crate::storage::build_sqlx(
+                backend,
+                sea_query::Query::update()
+                    .table(C::Table)
+                    .value(C::OwnerId, owner_id.as_str())
+                    .value(C::Revision, revision as i64)
+                    .value(C::FenceToken, Expr::col(C::FenceToken).add(1))
+                    .value(C::LeaseUntil, self.until(lease_ttl_secs))
+                    .value(C::UpdatedAt, self.now())
+                    .cond_where(
+                        Self::key_cond(&key)
+                            .add(
+                                Expr::col(C::CheckpointNamespace).eq(checkpoint_namespace.as_str()),
+                            )
+                            .add(
+                                sea_query::Condition::any()
+                                    .add(Expr::col(C::LeaseUntil).lte(self.now()))
+                                    .add(
+                                        Expr::col(C::OwnerId)
+                                            .eq(owner_id.as_str())
+                                            .and(Expr::col(C::Revision).eq(revision as i64)),
+                                    ),
+                            ),
+                    ),
+            );
+            let updated = tx
+                .execute_query(&sql, values)
+                .await
+                .map_err(|e| db_error("take over source_claims", e))?;
+            if updated == 0 {
+                let current = self
+                    .read_claim(&mut tx, &key)
+                    .await?
+                    .ok_or_else(|| not_found("source partition claim vanished during takeover"))?;
+                return Err(if current.checkpoint_namespace != checkpoint_namespace {
+                    SourceCoordinationError {
+                        code: "SOURCE_CHECKPOINT_NAMESPACE_MISMATCH",
+                        message: format!(
+                            "Checkpoint namespace '{checkpoint_namespace}' is incompatible with active \
+                             namespace '{}'; use explicit revision handoff",
+                            current.checkpoint_namespace
+                        ),
+                    }
+                } else {
+                    SourceCoordinationError {
+                        code: "SOURCE_PARTITION_LEASE_HELD",
+                        message: format!(
+                            "Partition '{}:{}' is leased by '{}' (rev {}), and the lease has not \
+                             expired on the database clock",
+                            key.channel_id, key.partition_id, current.owner_id, current.revision
+                        ),
+                    }
+                });
+            }
+        }
+        let claim = self
+            .read_claim(&mut tx, &key)
+            .await?
+            .ok_or_else(|| not_found("source partition claim missing after write"))?;
+        Self::commit(tx).await?;
         Ok(claim)
     }
 
-    /// Renew an active lease only if `owner_id` and `fence_token` match and the
-    /// lease has not been taken over (`V2-15.2`).
-    pub fn renew(
+    /// Extend a live lease, only for the owner holding the current fence; a
+    /// lease already over on the database clock is not renewed — the owner
+    /// must claim again, and gets a new fence (`V2-15.2`).
+    pub async fn renew(
         &self,
         key: &SourcePartitionKey,
         owner_id: &str,
         fence_token: u64,
-        now_ms: u64,
-        lease_ttl_ms: u64,
+        lease_ttl_secs: u64,
     ) -> Result<SourcePartitionClaim, SourceCoordinationError> {
-        let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(slot) = guard.get_mut(key) else {
-            return Err(SourceCoordinationError {
-                code: "SOURCE_LEASE_NOT_FOUND",
-                message: "No lease exists for source partition".to_string(),
-            });
-        };
-        if slot.claim.fence_token != fence_token || slot.claim.owner_id != owner_id {
-            return Err(SourceCoordinationError {
-                code: "SOURCE_FENCE_STALE",
-                message: format!(
-                    "Stale fence token {fence_token} (current fence is {})",
-                    slot.claim.fence_token
+        use crate::storage::schema::SourceClaims as C;
+        use sea_query::{Expr, ExprTrait};
+        let mut tx = self.begin().await?;
+        let (sql, values) = crate::storage::build_sqlx(
+            self.pool.backend(),
+            sea_query::Query::update()
+                .table(C::Table)
+                .value(C::LeaseUntil, self.until(lease_ttl_secs))
+                .value(C::UpdatedAt, self.now())
+                .cond_where(
+                    Self::key_cond(key)
+                        .add(Expr::col(C::OwnerId).eq(owner_id))
+                        .add(Expr::col(C::FenceToken).eq(fence_token as i64))
+                        .add(Expr::col(C::LeaseUntil).gt(self.now())),
                 ),
-            });
+        );
+        let updated = tx
+            .execute_query(&sql, values)
+            .await
+            .map_err(|e| db_error("renew source_claims", e))?;
+        let current = self
+            .read_claim(&mut tx, key)
+            .await?
+            .ok_or_else(|| not_found("No lease exists for source partition"))?;
+        if updated == 0 {
+            return Err(
+                if current.fence_token != fence_token || current.owner_id != owner_id {
+                    SourceCoordinationError {
+                        code: "SOURCE_FENCE_STALE",
+                        message: format!(
+                            "Stale fence token {fence_token} (current fence is {})",
+                            current.fence_token
+                        ),
+                    }
+                } else {
+                    SourceCoordinationError {
+                        code: "SOURCE_LEASE_EXPIRED",
+                        message: "Source partition lease expired before renewal".to_string(),
+                    }
+                },
+            );
         }
-        if now_ms >= slot.claim.expires_at_ms {
-            return Err(SourceCoordinationError {
-                code: "SOURCE_LEASE_EXPIRED",
-                message: "Source partition lease expired before renewal".to_string(),
-            });
-        }
-        slot.claim.expires_at_ms = now_ms.saturating_add(lease_ttl_ms.max(1));
-        Ok(slot.claim.clone())
+        Self::commit(tx).await?;
+        Ok(current)
     }
 
     /// Hand off a source partition to a new revision (`V2-15.4`).
     ///
-    /// Increments the monotonic fence token so the old revision runner cannot
-    /// settle in-flight items or overwrite checkpoints after handoff. Rejects
-    /// checkpoint namespace changes unless `allow_incompatible_migration` is true.
-    #[allow(clippy::too_many_arguments)]
-    pub fn handoff_revision(
+    /// Increments the fence token so the old revision's runner cannot settle
+    /// in-flight items or overwrite checkpoints after the handoff. Rejects a
+    /// checkpoint namespace change unless `allow_incompatible_migration`.
+    pub async fn handoff_revision(
         &self,
         key: &SourcePartitionKey,
         new_owner_id: impl Into<String>,
         new_revision: u64,
         new_checkpoint_namespace: impl Into<String>,
         allow_incompatible_migration: bool,
-        now_ms: u64,
-        lease_ttl_ms: u64,
+        lease_ttl_secs: u64,
     ) -> Result<SourcePartitionClaim, SourceCoordinationError> {
+        use crate::storage::schema::SourceClaims as C;
+        use sea_query::{Expr, ExprTrait};
         let new_owner_id = new_owner_id.into();
         let new_checkpoint_namespace = new_checkpoint_namespace.into();
-        let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(slot) = guard.get_mut(key) else {
-            return Err(SourceCoordinationError {
-                code: "SOURCE_LEASE_NOT_FOUND",
-                message: "Cannot hand off an unclaimed source partition".to_string(),
-            });
+        let mut tx = self.begin().await?;
+        let Some(current) = self.read_claim(&mut tx, key).await? else {
+            return Err(not_found("Cannot hand off an unclaimed source partition"));
         };
-
-        if slot.claim.checkpoint_namespace != new_checkpoint_namespace
-            && !allow_incompatible_migration
+        if current.checkpoint_namespace != new_checkpoint_namespace && !allow_incompatible_migration
         {
             return Err(SourceCoordinationError {
                 code: "SOURCE_CHECKPOINT_NAMESPACE_MISMATCH",
                 message: format!(
-                    "Incompatible checkpoint namespace handoff ('{}' -> '{}') requires explicit migration policy",
-                    slot.claim.checkpoint_namespace, new_checkpoint_namespace
+                    "Incompatible checkpoint namespace handoff ('{}' -> '{}') requires explicit \
+                     migration policy",
+                    current.checkpoint_namespace, new_checkpoint_namespace
                 ),
             });
         }
-
-        let next_fence = slot.highest_fence.saturating_add(1);
-        slot.highest_fence = next_fence;
-        slot.claim = SourcePartitionClaim {
-            key: key.clone(),
-            owner_id: new_owner_id,
-            revision: new_revision,
-            checkpoint_namespace: new_checkpoint_namespace,
-            fence_token: next_fence,
-            expires_at_ms: now_ms.saturating_add(lease_ttl_ms.max(1)),
-        };
-        Ok(slot.claim.clone())
+        let (sql, values) = crate::storage::build_sqlx(
+            self.pool.backend(),
+            sea_query::Query::update()
+                .table(C::Table)
+                .value(C::OwnerId, new_owner_id.as_str())
+                .value(C::Revision, new_revision as i64)
+                .value(C::CheckpointNamespace, new_checkpoint_namespace.as_str())
+                .value(C::FenceToken, Expr::col(C::FenceToken).add(1))
+                .value(C::LeaseUntil, self.until(lease_ttl_secs))
+                .value(C::UpdatedAt, self.now())
+                .cond_where(
+                    Self::key_cond(key)
+                        .add(Expr::col(C::FenceToken).eq(current.fence_token as i64)),
+                ),
+        );
+        let updated = tx
+            .execute_query(&sql, values)
+            .await
+            .map_err(|e| db_error("hand off source_claims", e))?;
+        if updated == 0 {
+            return Err(SourceCoordinationError {
+                code: "SOURCE_FENCE_STALE",
+                message: "The partition changed hands during the handoff".to_string(),
+            });
+        }
+        let claim = self
+            .read_claim(&mut tx, key)
+            .await?
+            .ok_or_else(|| not_found("source partition claim missing after handoff"))?;
+        Self::commit(tx).await?;
+        Ok(claim)
     }
 
-    /// Verify that `fence_token` is the active, unexpired fence for `key` (`V2-15.2`).
-    pub fn validate_fence(
+    /// Verify that `fence_token` is the active fence for `key` and its lease
+    /// is live on the database clock (`V2-15.2`).
+    pub async fn validate_fence(
         &self,
         key: &SourcePartitionKey,
         fence_token: u64,
-        now_ms: u64,
     ) -> Result<(), SourceCoordinationError> {
-        let guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(slot) = guard.get(key) else {
-            return Err(SourceCoordinationError {
-                code: "SOURCE_LEASE_NOT_FOUND",
-                message: "No active lease for source partition".to_string(),
-            });
+        let mut tx = self.begin().await?;
+        let result = self.validate_fence_in(&mut tx, key, fence_token).await;
+        Self::commit(tx).await?;
+        result.map(|_| ())
+    }
+
+    /// [`Self::validate_fence`] inside `tx`, holding the claim row (on the
+    /// backends with row locks) until `tx` ends.
+    async fn validate_fence_in(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        key: &SourcePartitionKey,
+        fence_token: u64,
+    ) -> Result<SourcePartitionClaim, SourceCoordinationError> {
+        use crate::storage::schema::SourceClaims as C;
+        use sea_query::{Expr, ExprTrait};
+        let Some(current) = self.read_claim(tx, key).await? else {
+            return Err(not_found("No active lease for source partition"));
         };
-        if slot.claim.fence_token != fence_token {
+        if current.fence_token != fence_token {
             return Err(SourceCoordinationError {
                 code: "SOURCE_FENCE_STALE",
                 message: format!(
                     "Operation rejected: stale fence token {fence_token} (active is {})",
-                    slot.claim.fence_token
+                    current.fence_token
                 ),
             });
         }
-        if now_ms >= slot.claim.expires_at_ms {
+        let (sql, values) = crate::storage::build_sqlx(
+            self.pool.backend(),
+            sea_query::Query::select()
+                .expr(sea_query::Func::count(Expr::col(C::FenceToken)))
+                .from(C::Table)
+                .cond_where(
+                    Self::key_cond(key)
+                        .add(Expr::col(C::FenceToken).eq(fence_token as i64))
+                        .add(Expr::col(C::LeaseUntil).gt(self.now())),
+                ),
+        );
+        let (live,): (i64,) = tx
+            .fetch_optional_as(&sql, values)
+            .await
+            .map_err(|e| db_error("read source_claims", e))?
+            .unwrap_or((0,));
+        if live == 0 {
             return Err(SourceCoordinationError {
                 code: "SOURCE_LEASE_EXPIRED",
                 message: "Operation rejected: source partition lease has expired".to_string(),
             });
         }
-        Ok(())
+        Ok(current)
     }
 
-    /// Persist all active partition claims and fence tokens to the `source_claims` SQLite table (`TD-27`).
-    pub async fn persist_to_sqlite(
+    /// Commit a contiguous checkpoint for `key` under `fence_token`, in one
+    /// transaction with the fence check: a checkpoint lands only while its
+    /// writer holds the current fence on a live lease (`V2-15.3`).
+    pub async fn commit_checkpoint(
         &self,
-        pool: &sqlx::SqlitePool,
+        key: &SourcePartitionKey,
+        fence_token: u64,
+        contiguous_offset: u64,
+        cursor: &Value,
     ) -> Result<(), SourceCoordinationError> {
-        let claims: Vec<SourcePartitionClaim> = {
-            let guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-            guard.values().map(|s| s.claim.clone()).collect()
-        };
-        let mut tx = pool.begin().await.map_err(|e| SourceCoordinationError {
-            code: "DB_ERROR",
-            message: format!("Failed to begin SQLite transaction for source_claims: {e}"),
+        use crate::storage::schema::SourceCheckpoints as P;
+        let mut tx = self.begin().await?;
+        let claim = self.validate_fence_in(&mut tx, key, fence_token).await?;
+        let cursor_json = serde_json::to_string(cursor).map_err(|e| SourceCoordinationError {
+            code: "SERIALIZE_ERROR",
+            message: format!("serialize source checkpoint: {e}"),
         })?;
-        for c in claims {
-            sqlx::query(
-                "INSERT INTO source_claims \
-                 (channel_id, partition_id, owner_id, revision, checkpoint_namespace, fence_token, lease_until) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(channel_id, partition_id) DO UPDATE SET \
-                 owner_id = excluded.owner_id, \
-                 revision = excluded.revision, \
-                 checkpoint_namespace = excluded.checkpoint_namespace, \
-                 fence_token = excluded.fence_token, \
-                 lease_until = excluded.lease_until, \
-                 updated_at = CURRENT_TIMESTAMP",
-            )
-            .bind(&c.key.channel_id)
-            .bind(&c.key.partition_id)
-            .bind(&c.owner_id)
-            .bind(c.revision as i64)
-            .bind(&c.checkpoint_namespace)
-            .bind(c.fence_token as i64)
-            .bind(c.expires_at_ms.to_string())
-            .execute(&mut *tx)
+        let (sql, values) = crate::storage::build_sqlx(
+            self.pool.backend(),
+            sea_query::Query::insert()
+                .into_table(P::Table)
+                .columns([
+                    P::ChannelId,
+                    P::PartitionId,
+                    P::CheckpointNamespace,
+                    P::FenceToken,
+                    P::ContiguousOffset,
+                    P::CursorJson,
+                    P::UpdatedAt,
+                ])
+                .values_panic([
+                    key.channel_id.as_str().into(),
+                    key.partition_id.as_str().into(),
+                    claim.checkpoint_namespace.as_str().into(),
+                    (fence_token as i64).into(),
+                    (contiguous_offset as i64).into(),
+                    cursor_json.into(),
+                    self.now(),
+                ])
+                .on_conflict(
+                    sea_query::OnConflict::columns([
+                        P::ChannelId,
+                        P::PartitionId,
+                        P::CheckpointNamespace,
+                    ])
+                    .update_columns([
+                        P::FenceToken,
+                        P::ContiguousOffset,
+                        P::CursorJson,
+                        P::UpdatedAt,
+                    ])
+                    .to_owned(),
+                ),
+        );
+        tx.execute_query(&sql, values)
             .await
-            .map_err(|e| SourceCoordinationError {
-                code: "DB_ERROR",
-                message: format!("Failed to upsert source_claims row: {e}"),
-            })?;
-        }
-        tx.commit().await.map_err(|e| SourceCoordinationError {
-            code: "DB_ERROR",
-            message: format!("Failed to commit source_claims transaction: {e}"),
-        })?;
-        Ok(())
+            .map_err(|e| db_error("upsert source_checkpoints", e))?;
+        Self::commit(tx).await
     }
 
-    /// Hydrate partition claims and fence tokens from the `source_claims` SQLite table (`TD-27`).
-    pub async fn load_from_sqlite(
+    /// The committed checkpoint for `key` in `checkpoint_namespace`: its
+    /// contiguous offset, cursor, and the fence it was committed under.
+    pub async fn load_checkpoint(
         &self,
-        pool: &sqlx::SqlitePool,
-    ) -> Result<usize, SourceCoordinationError> {
-        use sqlx::Row;
-        let rows = sqlx::query(
-            "SELECT channel_id, partition_id, owner_id, revision, checkpoint_namespace, fence_token, lease_until \
-             FROM source_claims",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| SourceCoordinationError {
-            code: "DB_ERROR",
-            message: format!("Failed to query source_claims: {e}"),
-        })?;
-
-        let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        let mut count = 0usize;
-        for r in rows {
-            let channel_id: String = r.get("channel_id");
-            let partition_id: String = r.get("partition_id");
-            let owner_id: String = r.get("owner_id");
-            let revision = r.get::<i64, _>("revision") as u64;
-            let checkpoint_namespace: String = r.get("checkpoint_namespace");
-            let fence_token = r.get::<i64, _>("fence_token") as u64;
-            let lease_until_str: String = r.try_get("lease_until").unwrap_or_default();
-            let expires_at_ms = lease_until_str.parse::<u64>().unwrap_or(0);
-            let key = SourcePartitionKey::new(channel_id, partition_id);
-            let claim = SourcePartitionClaim {
-                key: key.clone(),
-                owner_id,
-                revision,
-                checkpoint_namespace,
-                fence_token,
-                expires_at_ms,
-            };
-            let highest_fence = guard
-                .get(&key)
-                .map(|s| s.highest_fence.max(fence_token))
-                .unwrap_or(fence_token);
-            guard.insert(
-                key,
-                PartitionSlot {
-                    claim,
-                    highest_fence,
-                },
-            );
-            count += 1;
-        }
-        Ok(count)
+        key: &SourcePartitionKey,
+        checkpoint_namespace: &str,
+    ) -> Result<Option<(u64, Value, u64)>, SourceCoordinationError> {
+        use crate::storage::schema::SourceCheckpoints as P;
+        use sea_query::{Expr, ExprTrait};
+        let (sql, values) = crate::storage::build_sqlx(
+            self.pool.backend(),
+            sea_query::Query::select()
+                .columns([P::ContiguousOffset, P::CursorJson, P::FenceToken])
+                .from(P::Table)
+                .and_where(Expr::col(P::ChannelId).eq(key.channel_id.as_str()))
+                .and_where(Expr::col(P::PartitionId).eq(key.partition_id.as_str()))
+                .and_where(Expr::col(P::CheckpointNamespace).eq(checkpoint_namespace)),
+        );
+        let row: Option<(i64, String, i64)> = self
+            .pool
+            .fetch_optional_as(&sql, values)
+            .await
+            .map_err(|e| db_error("read source_checkpoints", e))?;
+        row.map(|(offset, cursor_json, fence)| {
+            let cursor =
+                serde_json::from_str(&cursor_json).map_err(|e| SourceCoordinationError {
+                    code: "CORRUPT_PERSISTED_STATE",
+                    message: format!("Corrupt cursor_json in source_checkpoints: {e}"),
+                })?;
+            Ok((
+                Ord::max(offset, 0) as u64,
+                cursor,
+                Ord::max(fence, 0) as u64,
+            ))
+        })
+        .transpose()
     }
 }
 
@@ -412,37 +674,65 @@ struct PartitionLedger {
 
 /// Crash-sensitive settlement and contiguous checkpoint ledger (`V2-15.3`).
 ///
+/// The in-flight items are the owning runner's own (they belong to the
+/// process that polled them); the fence they are settled under and the
+/// checkpoint they advance are the database's, through
+/// [`SourceLeaseCoordinator`].
+///
 /// Guarantees:
 /// 1. Settlement intent is recorded under a valid fence before external ack/DLQ I/O.
 /// 2. `DeadLetter` items require `dlq_persisted == true` before they can settle;
 ///    a failed DLQ write preserves the item in `IntentRecorded` and blocks offset advancement.
 /// 3. `NackRetryable` or out-of-order completions leave a gap that prevents
 ///    `committed_checkpoint` from advancing past the first unsettled sequence number.
+/// 4. An advanced checkpoint is committed to `source_checkpoints` under the
+///    active fence before the ledger treats it as committed.
 #[derive(Debug, Clone)]
 pub struct ContiguousCheckpointLedger {
     coordinator: SourceLeaseCoordinator,
-    ledgers: Arc<Mutex<BTreeMap<SourcePartitionKey, PartitionLedger>>>,
+    ledgers: Arc<tokio::sync::Mutex<BTreeMap<SourcePartitionKey, PartitionLedger>>>,
 }
 
 impl ContiguousCheckpointLedger {
     pub fn new(coordinator: SourceLeaseCoordinator) -> Self {
         Self {
             coordinator,
-            ledgers: Arc::new(Mutex::new(BTreeMap::new())),
+            ledgers: Arc::default(),
         }
     }
 
+    /// Resume `key` from its committed checkpoint in `checkpoint_namespace`,
+    /// if one is stored: sequence numbers continue after it. Answers it.
+    pub async fn resume(
+        &self,
+        key: &SourcePartitionKey,
+        checkpoint_namespace: &str,
+    ) -> Result<Option<(u64, Value, u64)>, SourceCoordinationError> {
+        let stored = self
+            .coordinator
+            .load_checkpoint(key, checkpoint_namespace)
+            .await?;
+        if let Some((offset, ref cursor, fence)) = stored {
+            let mut guard = self.ledgers.lock().await;
+            let ledger = guard.entry(key.clone()).or_default();
+            ledger.committed_seq = offset;
+            ledger.next_seq = ledger.next_seq.max(offset);
+            ledger.committed_checkpoint = Some(cursor.clone());
+            ledger.committed_fence = fence;
+        }
+        Ok(stored)
+    }
+
     /// Register a polled item into the partition ledger under `fence_token`, returning its sequence number.
-    pub fn enqueue_polled_item(
+    pub async fn enqueue_polled_item(
         &self,
         key: &SourcePartitionKey,
         fence_token: u64,
-        now_ms: u64,
         delivery_id: impl Into<String>,
         candidate_checkpoint: Value,
     ) -> Result<u64, SourceCoordinationError> {
-        self.coordinator.validate_fence(key, fence_token, now_ms)?;
-        let mut guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
+        self.coordinator.validate_fence(key, fence_token).await?;
+        let mut guard = self.ledgers.lock().await;
         let ledger = guard.entry(key.clone()).or_default();
         let seq = ledger.next_seq.saturating_add(1);
         ledger.next_seq = seq;
@@ -457,18 +747,17 @@ impl ContiguousCheckpointLedger {
         Ok(seq)
     }
 
-    /// Step 1 of settlement (`V2-15.3`): persist durable settlement intent under active fence
-    /// before sending external `settle` or writing to DLQ.
-    pub fn record_settlement_intent(
+    /// Step 1 of settlement (`V2-15.3`): record settlement intent under the
+    /// active fence before sending external `settle` or writing to DLQ.
+    pub async fn record_settlement_intent(
         &self,
         key: &SourcePartitionKey,
         fence_token: u64,
-        now_ms: u64,
         seq: u64,
         settlement: SourceSettlement,
     ) -> Result<String, SourceCoordinationError> {
-        self.coordinator.validate_fence(key, fence_token, now_ms)?;
-        let mut guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
+        self.coordinator.validate_fence(key, fence_token).await?;
+        let mut guard = self.ledgers.lock().await;
         let Some(ledger) = guard.get_mut(key) else {
             return Err(SourceCoordinationError {
                 code: "SOURCE_LEDGER_NOT_FOUND",
@@ -485,18 +774,20 @@ impl ContiguousCheckpointLedger {
         Ok(item.delivery_id.clone())
     }
 
-    /// Step 2 of settlement (`V2-15.3`): confirm external settlement/DLQ completion and
-    /// advance the committed checkpoint only across contiguous settled sequence numbers.
-    pub fn confirm_settled_and_advance(
+    /// Step 2 of settlement (`V2-15.3`): confirm external settlement/DLQ
+    /// completion and advance the committed checkpoint only across contiguous
+    /// settled sequence numbers, committing it under the fence first.
+    pub async fn confirm_settled_and_advance(
         &self,
         key: &SourcePartitionKey,
         fence_token: u64,
-        now_ms: u64,
         seq: u64,
         dlq_persisted: bool,
     ) -> Result<Option<Value>, SourceCoordinationError> {
-        self.coordinator.validate_fence(key, fence_token, now_ms)?;
-        let mut guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
+        self.coordinator.validate_fence(key, fence_token).await?;
+        // Held across the checkpoint write, so two confirmations on one
+        // partition cannot commit out of order.
+        let mut guard = self.ledgers.lock().await;
         let Some(ledger) = guard.get_mut(key) else {
             return Err(SourceCoordinationError {
                 code: "SOURCE_LEDGER_NOT_FOUND",
@@ -538,145 +829,43 @@ impl ContiguousCheckpointLedger {
             }
         }
 
-        // Advance committed_seq and committed_checkpoint only while the next sequence
-        // is contiguously Settled (`V2-15.3`).
-        loop {
-            let candidate_seq = ledger.committed_seq.saturating_add(1);
-            let Some(next_item) = ledger.items.get(&candidate_seq) else {
-                break;
-            };
-            if matches!(next_item.state, ItemSettlementState::Settled(_)) {
-                ledger.committed_seq = candidate_seq;
-                ledger.committed_checkpoint = Some(next_item.candidate_checkpoint.clone());
-                ledger.committed_fence = fence_token;
-                ledger.items.remove(&candidate_seq);
-            } else {
-                break;
-            }
+        // How far the contiguous settled run reaches past the committed
+        // sequence (`V2-15.3`).
+        let mut reach = ledger.committed_seq;
+        while ledger
+            .items
+            .get(&reach.saturating_add(1))
+            .is_some_and(|next| matches!(next.state, ItemSettlementState::Settled(_)))
+        {
+            reach = reach.saturating_add(1);
         }
-
+        if reach == ledger.committed_seq {
+            return Ok(ledger.committed_checkpoint.clone());
+        }
+        let checkpoint = ledger.items[&reach].candidate_checkpoint.clone();
+        self.coordinator
+            .commit_checkpoint(key, fence_token, reach, &checkpoint)
+            .await?;
+        for settled in ledger.committed_seq.saturating_add(1)..=reach {
+            ledger.items.remove(&settled);
+        }
+        ledger.committed_seq = reach;
+        ledger.committed_checkpoint = Some(checkpoint);
+        ledger.committed_fence = fence_token;
         Ok(ledger.committed_checkpoint.clone())
     }
 
-    pub fn committed_checkpoint(&self, key: &SourcePartitionKey) -> Option<(u64, Value, u64)> {
-        let guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
+    pub async fn committed_checkpoint(
+        &self,
+        key: &SourcePartitionKey,
+    ) -> Option<(u64, Value, u64)> {
+        let guard = self.ledgers.lock().await;
         let ledger = guard.get(key)?;
         Some((
             ledger.committed_seq,
             ledger.committed_checkpoint.clone()?,
             ledger.committed_fence,
         ))
-    }
-
-    /// Persist all committed contiguous checkpoints to the `source_checkpoints` SQLite table (`TD-27`).
-    pub async fn persist_to_sqlite(
-        &self,
-        pool: &sqlx::SqlitePool,
-        default_namespace: &str,
-    ) -> Result<(), SourceCoordinationError> {
-        let entries: Vec<(SourcePartitionKey, String, u64, u64, String)> = {
-            let slots = self
-                .coordinator
-                .slots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
-            let mut out = Vec::new();
-            for (k, l) in guard.iter() {
-                if let Some(ref cp) = l.committed_checkpoint {
-                    let ns = slots
-                        .get(k)
-                        .map(|s| s.claim.checkpoint_namespace.clone())
-                        .unwrap_or_else(|| default_namespace.to_string());
-                    let cursor_json =
-                        serde_json::to_string(cp).unwrap_or_else(|_| "{}".to_string());
-                    out.push((
-                        k.clone(),
-                        ns,
-                        l.committed_fence,
-                        l.committed_seq,
-                        cursor_json,
-                    ));
-                }
-            }
-            out
-        };
-
-        let mut tx = pool.begin().await.map_err(|e| SourceCoordinationError {
-            code: "DB_ERROR",
-            message: format!("Failed to begin SQLite transaction for source_checkpoints: {e}"),
-        })?;
-        for (key, ns, fence, seq, cursor_json) in entries {
-            sqlx::query(
-                "INSERT INTO source_checkpoints \
-                 (channel_id, partition_id, checkpoint_namespace, fence_token, contiguous_offset, cursor_json) \
-                 VALUES (?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(channel_id, partition_id, checkpoint_namespace) DO UPDATE SET \
-                 fence_token = excluded.fence_token, \
-                 contiguous_offset = excluded.contiguous_offset, \
-                 cursor_json = excluded.cursor_json, \
-                 updated_at = CURRENT_TIMESTAMP \
-                 WHERE excluded.fence_token >= source_checkpoints.fence_token",
-            )
-            .bind(&key.channel_id)
-            .bind(&key.partition_id)
-            .bind(&ns)
-            .bind(fence as i64)
-            .bind(seq as i64)
-            .bind(&cursor_json)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| SourceCoordinationError {
-                code: "DB_ERROR",
-                message: format!("Failed to upsert source_checkpoints row: {e}"),
-            })?;
-        }
-        tx.commit().await.map_err(|e| SourceCoordinationError {
-            code: "DB_ERROR",
-            message: format!("Failed to commit source_checkpoints transaction: {e}"),
-        })?;
-        Ok(())
-    }
-
-    /// Hydrate committed contiguous checkpoints from the `source_checkpoints` SQLite table (`TD-27`).
-    pub async fn load_from_sqlite(
-        &self,
-        pool: &sqlx::SqlitePool,
-    ) -> Result<usize, SourceCoordinationError> {
-        use sqlx::Row;
-        let rows = sqlx::query(
-            "SELECT channel_id, partition_id, fence_token, contiguous_offset, cursor_json \
-             FROM source_checkpoints",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| SourceCoordinationError {
-            code: "DB_ERROR",
-            message: format!("Failed to query source_checkpoints: {e}"),
-        })?;
-
-        let mut guard = self.ledgers.lock().unwrap_or_else(|e| e.into_inner());
-        let mut count = 0usize;
-        for r in rows {
-            let channel_id: String = r.get("channel_id");
-            let partition_id: String = r.get("partition_id");
-            let fence_token = r.get::<i64, _>("fence_token") as u64;
-            let contiguous_offset = r.get::<i64, _>("contiguous_offset") as u64;
-            let cursor_json: String = r.get("cursor_json");
-            let cp: Value =
-                serde_json::from_str(&cursor_json).map_err(|e| SourceCoordinationError {
-                    code: "CORRUPT_PERSISTED_STATE",
-                    message: format!("Corrupt cursor_json in source_checkpoints: {e}"),
-                })?;
-            let key = SourcePartitionKey::new(channel_id, partition_id);
-            let ledger = guard.entry(key).or_default();
-            ledger.committed_seq = contiguous_offset;
-            ledger.next_seq = ledger.next_seq.max(contiguous_offset);
-            ledger.committed_checkpoint = Some(cp);
-            ledger.committed_fence = fence_token;
-            count += 1;
-        }
-        Ok(count)
     }
 }
 
@@ -891,6 +1080,7 @@ impl SourceChannelRunner {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::extensions::CompositionRoot;
@@ -978,97 +1168,215 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fenced_leases_contiguous_checkpoints_dlq_guard_and_revision_handoff() {
-        let coord = SourceLeaseCoordinator::new();
+    async fn coordinator() -> (SourceLeaseCoordinator, crate::storage::DbPool) {
+        let pool = crate::storage::test_sqlite_pool().await;
+        (SourceLeaseCoordinator::new(pool.clone()), pool)
+    }
+
+    /// Move a partition's lease into the database's past, as time would.
+    async fn expire(pool: &crate::storage::DbPool, key: &SourcePartitionKey) {
+        let crate::storage::DbPool::Sqlite(p) = pool else {
+            panic!("sqlite expected");
+        };
+        sqlx::query(
+            "UPDATE source_claims SET lease_until = datetime('now', '-1 seconds') \
+             WHERE channel_id = ?1 AND partition_id = ?2",
+        )
+        .bind(&key.channel_id)
+        .bind(&key.partition_id)
+        .execute(p)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fenced_leases_contiguous_checkpoints_dlq_guard_and_revision_handoff() {
+        let (coord, pool) = coordinator().await;
         let ledger = ContiguousCheckpointLedger::new(coord.clone());
         let key = SourcePartitionKey::new("orders-source", "part-0");
 
         // 1. Acquire initial lease on revision 1 (fence_token = 1).
         let claim_r1 = coord
-            .acquire_or_takeover(key.clone(), "node-a", 1, "pg-lsn-v1", 1_000, 5_000)
+            .acquire_or_takeover(key.clone(), "node-a", 1, "pg-lsn-v1", 60)
+            .await
             .expect("acquired rev 1");
         assert_eq!(claim_r1.fence_token, 1);
+        // Another owner cannot take a live lease.
+        let held = coord
+            .acquire_or_takeover(key.clone(), "node-b", 1, "pg-lsn-v1", 60)
+            .await
+            .expect_err("live lease");
+        assert_eq!(held.code, "SOURCE_PARTITION_LEASE_HELD");
 
         // Enqueue 3 polled items (seq 1, 2, 3).
-        let seq1 = ledger
-            .enqueue_polled_item(&key, 1, 1_100, "deliv-1", json!({"lsn": 101}))
-            .expect("seq1");
-        let seq2 = ledger
-            .enqueue_polled_item(&key, 1, 1_100, "deliv-2", json!({"lsn": 102}))
-            .expect("seq2");
-        let seq3 = ledger
-            .enqueue_polled_item(&key, 1, 1_100, "deliv-3", json!({"lsn": 103}))
-            .expect("seq3");
-        assert_eq!((seq1, seq2, seq3), (1, 2, 3));
+        let mut seqs = Vec::new();
+        for (i, lsn) in [101, 102, 103].into_iter().enumerate() {
+            seqs.push(
+                ledger
+                    .enqueue_polled_item(&key, 1, format!("deliv-{i}"), json!({"lsn": lsn}))
+                    .await
+                    .expect("enqueue"),
+            );
+        }
+        assert_eq!(seqs, vec![1, 2, 3]);
+        let (seq1, seq2, seq3) = (1, 2, 3);
 
-        // 2. Out-of-order completion: seq 2 settles first while seq 1 is still Pending.
-        // Gap at seq 1 must block checkpoint advancement!
+        // 2. Out-of-order completion: seq 2 settles first while seq 1 is
+        // still Pending. The gap at seq 1 blocks checkpoint advancement.
         ledger
-            .record_settlement_intent(&key, 1, 1_200, seq2, SourceSettlement::Ack)
+            .record_settlement_intent(&key, 1, seq2, SourceSettlement::Ack)
+            .await
             .expect("intent seq2");
         let cp = ledger
-            .confirm_settled_and_advance(&key, 1, 1_200, seq2, false)
+            .confirm_settled_and_advance(&key, 1, seq2, false)
+            .await
             .expect("confirm seq2");
         assert!(
             cp.is_none(),
             "gap at seq 1 must block checkpoint advancement"
         );
 
-        // 3. Seq 1 settles -> contiguous advancement jumps through both seq 1 and seq 2 to lsn 102!
+        // 3. Seq 1 settles: contiguous advancement runs through 1 and 2, and
+        // the checkpoint is in the database under fence 1.
         ledger
-            .record_settlement_intent(&key, 1, 1_300, seq1, SourceSettlement::Ack)
+            .record_settlement_intent(&key, 1, seq1, SourceSettlement::Ack)
+            .await
             .expect("intent seq1");
         let cp = ledger
-            .confirm_settled_and_advance(&key, 1, 1_300, seq1, false)
+            .confirm_settled_and_advance(&key, 1, seq1, false)
+            .await
             .expect("confirm seq1");
         assert_eq!(cp, Some(json!({"lsn": 102})));
-
-        // 4. Seq 3 is marked DeadLetter, but DLQ persistence fails (`dlq_persisted = false`).
-        // Must reject confirmation and keep checkpoint at 102!
-        ledger
-            .record_settlement_intent(&key, 1, 1_400, seq3, SourceSettlement::DeadLetter)
-            .expect("intent seq3 dlq");
-        let dlq_err = ledger
-            .confirm_settled_and_advance(&key, 1, 1_400, seq3, false)
-            .expect_err("unpersisted DLQ must not advance checkpoint");
-        assert_eq!(dlq_err.code, "SOURCE_DLQ_PERSISTENCE_REQUIRED");
         assert_eq!(
-            ledger.committed_checkpoint(&key),
+            coord.load_checkpoint(&key, "pg-lsn-v1").await.unwrap(),
             Some((2, json!({"lsn": 102}), 1))
         );
 
-        // 5. Revision handoff (`V2-15.4`): incompatible namespace rejected without migration flag;
-        // compatible namespace advances fence to 2 and fences old runner (fence 1).
+        // 4. Seq 3 is DeadLetter but DLQ persistence failed: no advancement.
+        ledger
+            .record_settlement_intent(&key, 1, seq3, SourceSettlement::DeadLetter)
+            .await
+            .expect("intent seq3 dlq");
+        let dlq_err = ledger
+            .confirm_settled_and_advance(&key, 1, seq3, false)
+            .await
+            .expect_err("unpersisted DLQ must not advance checkpoint");
+        assert_eq!(dlq_err.code, "SOURCE_DLQ_PERSISTENCE_REQUIRED");
+        assert_eq!(
+            ledger.committed_checkpoint(&key).await,
+            Some((2, json!({"lsn": 102}), 1))
+        );
+
+        // 5. Revision handoff (`V2-15.4`): an incompatible namespace is
+        // refused without the migration flag; a compatible one moves the
+        // fence to 2 and fences out the old runner.
         let incompat = coord
-            .handoff_revision(
-                &key,
-                "node-b",
-                2,
-                "pg-lsn-v2-incompatible",
-                false,
-                1_500,
-                5_000,
-            )
+            .handoff_revision(&key, "node-b", 2, "pg-lsn-v2-incompatible", false, 60)
+            .await
             .expect_err("incompatible namespace must fail");
         assert_eq!(incompat.code, "SOURCE_CHECKPOINT_NAMESPACE_MISMATCH");
-
         let claim_r2 = coord
-            .handoff_revision(&key, "node-b", 2, "pg-lsn-v1", false, 1_500, 5_000)
+            .handoff_revision(&key, "node-b", 2, "pg-lsn-v1", false, 60)
+            .await
             .expect("handoff to rev 2 succeeds");
         assert_eq!(claim_r2.fence_token, 2);
 
-        // Old runner with fence 1 can no longer confirm seq 3!
         let stale_err = ledger
-            .confirm_settled_and_advance(&key, 1, 1_600, seq3, true)
+            .confirm_settled_and_advance(&key, 1, seq3, true)
+            .await
             .expect_err("stale fence 1 must be rejected after handoff");
         assert_eq!(stale_err.code, "SOURCE_FENCE_STALE");
+        let stale_commit = coord
+            .commit_checkpoint(&key, 1, 9, &json!({"lsn": 999}))
+            .await
+            .expect_err("a stale fence cannot write a checkpoint");
+        assert_eq!(stale_commit.code, "SOURCE_FENCE_STALE");
 
-        // New runner with fence 2 confirms seq 3 after DLQ persistence succeeds -> checkpoint advances to 103.
+        // Fence 2 settles seq 3 once the DLQ write succeeded.
         let cp_final = ledger
-            .confirm_settled_and_advance(&key, 2, 1_600, seq3, true)
+            .confirm_settled_and_advance(&key, 2, seq3, true)
+            .await
             .expect("fence 2 settles seq 3");
         assert_eq!(cp_final, Some(json!({"lsn": 103})));
+        assert_eq!(
+            coord.load_checkpoint(&key, "pg-lsn-v1").await.unwrap(),
+            Some((3, json!({"lsn": 103}), 2))
+        );
+
+        // A fresh ledger (a restarted runner) resumes from the database.
+        let resumed = ContiguousCheckpointLedger::new(coord.clone());
+        resumed.resume(&key, "pg-lsn-v1").await.unwrap();
+        assert_eq!(
+            resumed.committed_checkpoint(&key).await,
+            Some((3, json!({"lsn": 103}), 2))
+        );
+        let next = resumed
+            .enqueue_polled_item(&key, 2, "deliv-4", json!({"lsn": 104}))
+            .await
+            .unwrap();
+        assert_eq!(next, 4, "sequence numbers continue after the checkpoint");
+        drop(pool);
+    }
+
+    /// The lease is judged on the database clock: renewal works while the
+    /// row's `lease_until` is ahead of the database's `now`, and once it is
+    /// behind, the holder can neither renew nor act, and another node takes
+    /// the partition over with a greater fence.
+    #[tokio::test]
+    async fn leases_expire_on_the_database_clock() {
+        let (coord, pool) = coordinator().await;
+        let key = SourcePartitionKey::new("orders-source", "part-1");
+        let claim = coord
+            .acquire_or_takeover(key.clone(), "node-a", 1, "ns", 60)
+            .await
+            .unwrap();
+        coord
+            .renew(&key, "node-a", claim.fence_token, 60)
+            .await
+            .unwrap();
+        let stale = coord.renew(&key, "node-a", 99, 60).await.unwrap_err();
+        assert_eq!(stale.code, "SOURCE_FENCE_STALE");
+        // The holder re-acquiring its own live lease takes a new fence.
+        let again = coord
+            .acquire_or_takeover(key.clone(), "node-a", 1, "ns", 60)
+            .await
+            .unwrap();
+        assert_eq!(again.fence_token, 2);
+
+        expire(&pool, &key).await;
+        assert_eq!(
+            coord.renew(&key, "node-a", 2, 60).await.unwrap_err().code,
+            "SOURCE_LEASE_EXPIRED"
+        );
+        assert_eq!(
+            coord.validate_fence(&key, 2).await.unwrap_err().code,
+            "SOURCE_LEASE_EXPIRED"
+        );
+        let takeover = coord
+            .acquire_or_takeover(key.clone(), "node-b", 1, "ns", 60)
+            .await
+            .expect("an expired lease is taken over");
+        assert_eq!(takeover.fence_token, 3);
+        assert_eq!(takeover.owner_id, "node-b");
+        // A takeover cannot change the checkpoint namespace.
+        expire(&pool, &key).await;
+        assert_eq!(
+            coord
+                .acquire_or_takeover(key.clone(), "node-c", 1, "other-ns", 60)
+                .await
+                .unwrap_err()
+                .code,
+            "SOURCE_CHECKPOINT_NAMESPACE_MISMATCH"
+        );
+        // Fences survive the process: a second coordinator over the same
+        // database continues them.
+        expire(&pool, &key).await;
+        let other_process = SourceLeaseCoordinator::new(pool.clone());
+        let next = other_process
+            .acquire_or_takeover(key, "node-c", 1, "ns", 60)
+            .await
+            .unwrap();
+        assert_eq!(next.fence_token, 4);
     }
 
     #[tokio::test]
@@ -1155,71 +1463,5 @@ mod tests {
             .expect("source poll succeeds");
         assert!(batch.items.is_empty());
         assert_eq!(batch.next_checkpoint, Some(json!({"lsn": 42})));
-    }
-
-    #[tokio::test]
-    async fn source_claims_and_checkpoints_persist_to_sqlite() {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("sqlite memory pool");
-        sqlx::raw_sql(include_str!("../../migrations/sqlite/001_v2_baseline.sql"))
-            .execute(&pool)
-            .await
-            .expect("v2 baseline");
-
-        let coord = SourceLeaseCoordinator::new();
-        let ledger = ContiguousCheckpointLedger::new(coord.clone());
-        let key = SourcePartitionKey::new("orders-source", "part-0");
-
-        let claim = coord
-            .acquire_or_takeover(key.clone(), "node-a", 1, "pg-lsn-v1", 1_000, 5_000)
-            .expect("acquire claim");
-        assert_eq!(claim.fence_token, 1);
-
-        let seq1 = ledger
-            .enqueue_polled_item(&key, 1, 1_100, "deliv-1", json!({"lsn": 777}))
-            .expect("enqueue");
-        ledger
-            .record_settlement_intent(&key, 1, 1_200, seq1, SourceSettlement::Ack)
-            .expect("intent");
-        ledger
-            .confirm_settled_and_advance(&key, 1, 1_200, seq1, false)
-            .expect("confirm");
-
-        coord
-            .persist_to_sqlite(&pool)
-            .await
-            .expect("persist claims");
-        ledger
-            .persist_to_sqlite(&pool, "pg-lsn-v1")
-            .await
-            .expect("persist checkpoints");
-
-        // Hydrate into a fresh coordinator and ledger
-        let coord2 = SourceLeaseCoordinator::new();
-        let ledger2 = ContiguousCheckpointLedger::new(coord2.clone());
-        assert_eq!(
-            coord2.load_from_sqlite(&pool).await.expect("load claims"),
-            1
-        );
-        assert_eq!(
-            ledger2
-                .load_from_sqlite(&pool)
-                .await
-                .expect("load checkpoints"),
-            1
-        );
-
-        // Next takeover on coord2 must issue fence_token = 2 (preserving monotonic fence across restarts!)
-        let takeover = coord2
-            .acquire_or_takeover(key.clone(), "node-b", 1, "pg-lsn-v1", 10_000, 5_000)
-            .expect("takeover after expiry");
-        assert_eq!(takeover.fence_token, 2);
-        assert_eq!(
-            ledger2.committed_checkpoint(&key),
-            Some((1, json!({"lsn": 777}), 1))
-        );
     }
 }

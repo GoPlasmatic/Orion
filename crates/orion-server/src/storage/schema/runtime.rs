@@ -140,6 +140,35 @@ pub enum JobLeases {
     ExpiresAt,
 }
 
+/// A source partition's fenced lease (`source_claims`), judged on the
+/// database clock.
+#[derive(Iden, Clone, Copy)]
+pub enum SourceClaims {
+    Table,
+    ChannelId,
+    PartitionId,
+    OwnerId,
+    Revision,
+    CheckpointNamespace,
+    FenceToken,
+    LeaseUntil,
+    UpdatedAt,
+}
+
+/// A source partition's committed contiguous checkpoint
+/// (`source_checkpoints`).
+#[derive(Iden, Clone, Copy)]
+pub enum SourceCheckpoints {
+    Table,
+    ChannelId,
+    PartitionId,
+    CheckpointNamespace,
+    FenceToken,
+    ContiguousOffset,
+    CursorJson,
+    UpdatedAt,
+}
+
 /// Cluster state shared through the database (`cluster_shared_state`): the
 /// default dedup store, response cache and namespace counters.
 #[derive(Iden)]

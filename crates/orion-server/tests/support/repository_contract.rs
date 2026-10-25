@@ -39,6 +39,7 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     a_shared_rate_window_holds_and_spills_at_most_2x(backend, pool).await;
     a_deployment_audit_row_commits_with_the_head(backend, pool).await;
     the_artifact_collector_judges_its_grace_on_the_database_clock(backend, pool).await;
+    source_leases_are_won_once_and_judged_on_the_database_clock(backend, pool).await;
 }
 
 /// A deployment store manifest of one workflow member over `digest`.
@@ -497,4 +498,112 @@ async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
     // ... with a fresh grace window.
     let pass = gc(&node_a).await;
     assert!(!pass.draining.contains(&orphan), "{backend}: {pass:?}");
+}
+
+/// Move a source partition's lease into the database's past.
+async fn expire_source_lease(pool: &DbPool, channel: &str, partition: &str) {
+    let done = match pool {
+        DbPool::Sqlite(p) => sqlx::query(
+            "UPDATE source_claims SET lease_until = datetime('now', '-1 seconds') \
+             WHERE channel_id = ?1 AND partition_id = ?2",
+        )
+        .bind(channel)
+        .bind(partition)
+        .execute(p)
+        .await
+        .map(|r| r.rows_affected()),
+        DbPool::Postgres(p) => sqlx::query(
+            "UPDATE source_claims SET lease_until = LOCALTIMESTAMP - interval '1 second' \
+             WHERE channel_id = $1 AND partition_id = $2",
+        )
+        .bind(channel)
+        .bind(partition)
+        .execute(p)
+        .await
+        .map(|r| r.rows_affected()),
+        DbPool::Mysql(p) => sqlx::query(
+            "UPDATE source_claims SET lease_until = UTC_TIMESTAMP() - INTERVAL 1 SECOND \
+             WHERE channel_id = ? AND partition_id = ?",
+        )
+        .bind(channel)
+        .bind(partition)
+        .execute(p)
+        .await
+        .map(|r| r.rows_affected()),
+    };
+    assert_eq!(done.expect("expire"), 1);
+}
+
+/// Source partition leases on this backend: of many concurrent first
+/// claimants exactly one wins fence 1; a live lease is not taken; an expired
+/// one — expired on the database's clock — is, with a greater fence; and a
+/// checkpoint commits only under the current fence.
+async fn source_leases_are_won_once_and_judged_on_the_database_clock(backend: &str, pool: &DbPool) {
+    use orion::extensions::{SourceLeaseCoordinator, SourcePartitionKey};
+    let key = SourcePartitionKey::new("contract-source", "p0");
+
+    let claims = futures::future::join_all((0..6).map(|i| {
+        let coord = SourceLeaseCoordinator::new(pool.clone());
+        let key = key.clone();
+        async move {
+            coord
+                .acquire_or_takeover(key, format!("node-{i}"), 1, "ns", 60)
+                .await
+        }
+    }))
+    .await;
+    let won: Vec<_> = claims.iter().filter_map(|c| c.as_ref().ok()).collect();
+    assert_eq!(
+        won.len(),
+        1,
+        "{backend}: exactly one claimant wins: {claims:?}"
+    );
+    assert_eq!(won[0].fence_token, 1, "{backend}");
+    for lost in claims.iter().filter_map(|c| c.as_ref().err()) {
+        assert_eq!(
+            lost.code, "SOURCE_PARTITION_LEASE_HELD",
+            "{backend}: {lost}"
+        );
+    }
+    let holder = won[0].owner_id.clone();
+
+    let coord = SourceLeaseCoordinator::new(pool.clone());
+    coord
+        .renew(&key, &holder, 1, 60)
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: renew a live lease: {e}"));
+    coord
+        .commit_checkpoint(&key, 1, 5, &serde_json::json!({"lsn": 5}))
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: commit under the live fence: {e}"));
+
+    expire_source_lease(pool, "contract-source", "p0").await;
+    assert_eq!(
+        coord.renew(&key, &holder, 1, 60).await.unwrap_err().code,
+        "SOURCE_LEASE_EXPIRED",
+        "{backend}"
+    );
+    let takeover = coord
+        .acquire_or_takeover(key.clone(), "node-late", 1, "ns", 60)
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: take over an expired lease: {e}"));
+    assert_eq!(takeover.fence_token, 2, "{backend}");
+    assert_eq!(
+        coord
+            .commit_checkpoint(&key, 1, 9, &serde_json::json!({"lsn": 9}))
+            .await
+            .unwrap_err()
+            .code,
+        "SOURCE_FENCE_STALE",
+        "{backend}: the old owner's checkpoint is refused"
+    );
+    coord
+        .commit_checkpoint(&key, 2, 7, &serde_json::json!({"lsn": 7}))
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: {e}"));
+    assert_eq!(
+        coord.load_checkpoint(&key, "ns").await.expect("load"),
+        Some((7, serde_json::json!({"lsn": 7}), 2)),
+        "{backend}"
+    );
 }
