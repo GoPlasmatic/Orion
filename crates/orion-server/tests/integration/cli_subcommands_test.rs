@@ -915,131 +915,6 @@ fn dump_openapi_writes_the_spec_to_stdout() {
     );
 }
 
-/// T38: `preflight`'s documented contract is "exits non-zero when it finds
-/// anything, so it can gate a deploy" — and nothing invoked it as a binary,
-/// so that exit-code promise (the entire point of the subcommand) was
-/// unverified. `preflight_test.rs` drives the library; this drives the
-/// process a deploy pipeline actually runs.
-#[tokio::test]
-async fn preflight_binary_exit_code_gates_a_deploy() {
-    // A migrated SQLite file with nothing stored: preflight must exit 0.
-    let dir = crate::common::ScratchDir::new("preflight_cli");
-    let url = dir.url();
-    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
-        url: url.clone(),
-        max_connections: 1,
-        ..Default::default()
-    })
-    .await
-    .expect("migrate scratch db");
-
-    let clean = Command::new(orion_bin())
-        .env("ORION_STORAGE__URL", &url)
-        .arg("preflight")
-        .output()
-        .expect("invoke orion-server preflight");
-    assert!(
-        clean.status.success(),
-        "a clean store must pass preflight: {}",
-        String::from_utf8_lossy(&clean.stderr)
-    );
-
-    // Store a channel whose config carries the retired pre-1.0 `cors` key —
-    // the exact class of break preflight exists to find.
-    let orion::storage::DbPool::Sqlite(sq) = &pool else {
-        panic!("sqlite expected");
-    };
-    sqlx::query(
-        "INSERT INTO channels \
-           (channel_id, version, name, channel_type, protocol, methods_json, route_pattern, status, config_json) \
-         VALUES ('legacy', 1, 'legacy', 'sync', 'http', '[\"POST\"]', '/legacy', 'active', '{\"cors\": {}}')",
-    )
-    .execute(sq)
-    .await
-    .expect("seed broken channel");
-    drop(pool);
-
-    let dirty = Command::new(orion_bin())
-        .env("ORION_STORAGE__URL", &url)
-        .arg("preflight")
-        .output()
-        .expect("invoke orion-server preflight");
-    let stdout = String::from_utf8_lossy(&dirty.stdout);
-    let stderr = String::from_utf8_lossy(&dirty.stderr);
-    assert!(
-        !dirty.status.success(),
-        "a store with a 1.0 break must fail the gate: stdout={stdout} stderr={stderr}"
-    );
-    assert!(
-        format!("{stdout}{stderr}").contains("legacy"),
-        "the finding must name the channel: stdout={stdout} stderr={stderr}"
-    );
-}
-
-/// An advisory must not fail the gate.
-///
-/// dataflow-rs 3.10 made two informational findings reachable from a scan of
-/// stored rows, and preflight reports them so an operator mid-upgrade can act
-/// on one. Neither is a break: the workflow below loads, activates and serves —
-/// a `validation` that collects failures and carries on is what the built-in is
-/// documented to do. Counted with the breaks it would fail
-/// `orion-server preflight || exit 1` over a workflow that is fine, which is
-/// the opposite of what the serving screen's severity check exists to
-/// prevent.
-#[tokio::test]
-async fn preflight_advisories_do_not_gate_a_deploy() {
-    let dir = crate::common::ScratchDir::new("preflight_advisory");
-    let url = dir.url();
-    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
-        url: url.clone(),
-        max_connections: 1,
-        ..Default::default()
-    })
-    .await
-    .expect("migrate scratch db");
-
-    let orion::storage::DbPool::Sqlite(sq) = &pool else {
-        panic!("sqlite expected");
-    };
-    sqlx::query(
-        "INSERT INTO workflows \
-           (workflow_id, version, name, status, condition_json, tasks_json) \
-         VALUES ('collect', 1, 'Collect errors', 'active', 'true', ?)",
-    )
-    .bind(
-        r#"[{"id":"check","name":"Check","function":{"name":"validation","input":{
-              "rules":[{"logic":{"==":[{"var":"data.a"},1]},"message":"a must be 1"}]}}},
-            {"id":"after","name":"After","function":{"name":"map","input":{
-              "mappings":[{"path":"data.x","logic":true}]}}}]"#,
-    )
-    .execute(sq)
-    .await
-    .expect("seed advisory workflow");
-    drop(pool);
-
-    let run = Command::new(orion_bin())
-        .env("ORION_STORAGE__URL", &url)
-        .arg("preflight")
-        .output()
-        .expect("invoke orion-server preflight");
-    let stdout = String::from_utf8_lossy(&run.stdout);
-    let stderr = String::from_utf8_lossy(&run.stderr);
-    assert!(
-        run.status.success(),
-        "an advisory-only store must pass the gate: stdout={stdout} stderr={stderr}"
-    );
-    // Reported, not swallowed — and under its own id rather than the checklist
-    // row `[14]`, which is the data dialect and has nothing to do with this.
-    assert!(
-        stdout.contains("engine.unguarded_validation"),
-        "the advisory must still be reported: stdout={stdout}"
-    );
-    assert!(
-        stdout.contains("advisory finding(s)"),
-        "the advisory section must say what it is: stdout={stdout}"
-    );
-}
-
 // ============================================================
 // #283: case metadata, the recorded call log, and the expect roots
 // ============================================================
@@ -2651,14 +2526,7 @@ fn a_set_this_binary_is_too_old_for_stops_with_one_line() {
     for args in [
         vec!["lint", dir.as_str()],
         vec!["clippy", dir.as_str()],
-        vec![
-            "compile",
-            dir.as_str(),
-            "--version",
-            "1.0.0",
-            "-o",
-            out.as_str(),
-        ],
+        vec!["compile", dir.as_str(), "-o", out.as_str()],
         vec!["lint", wf.as_str(), "--definitions", dir.as_str()],
         vec![
             "dry-run",

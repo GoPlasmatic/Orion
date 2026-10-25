@@ -6,14 +6,14 @@
 //! - `connections`: Immutable connection revisions & health probes (`/connections`)
 //! - `deployments`: Candidate deployment planning, idempotent CAS apply (`202 Accepted`),
 //!   convergence polling (`?target=this-node|observed`), and rollback by new revision (`/deployments`)
-//! - `migration`: Legacy v1 -> v2 migration report & edition transition preflight (`/migration-report`)
+//! - `edition`: Enterprise-to-Community edition transition preflight (`/edition-transition-preflight`)
 //! - `authoring`: Provider package authoring scaffold, pack & lint (`/authoring/*`)
 
 pub(crate) mod authoring;
 pub(crate) mod connections;
 pub(crate) mod definitions;
 pub(crate) mod deployments;
-pub(crate) mod migration;
+pub(crate) mod edition;
 pub(crate) mod packages;
 
 use std::collections::BTreeMap;
@@ -34,8 +34,7 @@ use crate::server::state::AppState;
 pub use deployments::ConvergenceQuery;
 pub use orion_api::v2::{
     AdmitPackageRequest, ApplyDeploymentRequest, CreateConnectionRevisionRequest,
-    CreateDeploymentPlanRequest, EditionTransitionPreflightRequest, LegacyChannelItem,
-    LegacyConnectorItem, LegacyWorkflowItem, MigrationReportRequest, ProbeConnectionRequest,
+    CreateDeploymentPlanRequest, EditionTransitionPreflightRequest, ProbeConnectionRequest,
     RollbackDeploymentRequest, ScaffoldRequest, UploadPackageRequest,
 };
 
@@ -83,12 +82,8 @@ pub fn v2_admin_routes(max_admin_body_size: usize) -> Router<AppState> {
             post(deployments::rollback_deployment),
         )
         .route(
-            "/migration-report",
-            post(migration::create_migration_report),
-        )
-        .route(
             "/edition-transition-preflight",
-            post(migration::edition_transition_preflight),
+            post(edition::edition_transition_preflight),
         )
         .route("/authoring/scaffold", post(authoring::authoring_scaffold))
         .route("/authoring/lint", post(authoring::authoring_lint))
@@ -110,10 +105,9 @@ pub(super) fn deployment_err_response(err: DeploymentError) -> (StatusCode, Json
         | "IDEMPOTENCY_KEY_CONFLICT"
         | "DEPLOYMENT_HEAD_CONFLICT"
         | "REVIEWED_DIGEST_MISMATCH" => StatusCode::CONFLICT,
-        "PROVIDER_NOT_ADMITTED"
-        | "PROVIDER_REVOKED"
-        | "ADMISSION_INVALIDATED"
-        | "BACKFILL_ENTERPRISE_PROVIDER_REQUIRED" => StatusCode::FORBIDDEN,
+        "PROVIDER_NOT_ADMITTED" | "PROVIDER_REVOKED" | "ADMISSION_INVALIDATED" => {
+            StatusCode::FORBIDDEN
+        }
         "DB_TRANSACTION_ERROR" | "DB_WRITE_ERROR" | "DB_COMMIT_ERROR" | "DB_READ_ERROR" => {
             StatusCode::SERVICE_UNAVAILABLE
         }

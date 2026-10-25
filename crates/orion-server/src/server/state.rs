@@ -180,10 +180,6 @@ pub struct AppStateInner {
     /// The plugin sandbox, when `plugins.enabled`. `None` makes every stored
     /// plugin a load issue on this node rather than a running function.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
-    /// What `[packages] apply` has done so far on this node: written by the
-    /// startup apply, read by `/readyz` (which answers `503` until every
-    /// package is serving) and `/health`. Empty when none is configured.
-    pub packages: Arc<crate::runtime::boot_packages::BootPackages>,
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::auth::FailedAuthTracker>,

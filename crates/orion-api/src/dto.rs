@@ -293,90 +293,6 @@ pub struct ConnectorResponse {
     pub updated_at: NaiveDateTime,
 }
 
-/// A package receipt as the admin API shows it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct PackageReceiptResponse {
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub name: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub version: String,
-    /// Canonical content hash of the artifact this receipt records, e.g.
-    /// `sha256:…`. Opaque to the server — compared for equality, never parsed.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub content_hash: String,
-    /// `staged` or `applied`.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required, example = "applied"))]
-    pub state: String,
-    /// Who recorded this receipt (admin key id, or `anonymous`).
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub principal: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
-    pub created_at: NaiveDateTime,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
-    pub updated_at: NaiveDateTime,
-    /// What this version carried. Absent from a receipt written before
-    /// receipts recorded it, and from `GET /packages` without
-    /// `?current=true`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inventory: Option<PackageInventory>,
-}
-
-/// The entities one package version carried, by the key each kind is
-/// matched on: `plugin_id`, the connector's `name`,
-/// `workflow_id`, `channel_id`. Each list is sorted and free of
-/// duplicates, so two applies of one artifact record identical JSON.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct PackageInventory {
-    #[serde(default)]
-    pub plugins: Vec<String>,
-    #[serde(default)]
-    pub connectors: Vec<String>,
-    #[serde(default)]
-    pub workflows: Vec<String>,
-    #[serde(default)]
-    pub channels: Vec<String>,
-}
-
-impl PackageInventory {
-    /// `(kind, ids)` for every kind, in the order a package stages them:
-    /// plugins, connectors, workflows, channels.
-    pub fn kinds(&self) -> [(&'static str, &Vec<String>); 4] {
-        [
-            ("plugins", &self.plugins),
-            ("connectors", &self.connectors),
-            ("workflows", &self.workflows),
-            ("channels", &self.channels),
-        ]
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.kinds().iter().all(|(_, ids)| ids.is_empty())
-    }
-
-    /// Every list sorted and free of duplicates — the stored form.
-    pub fn normalized(mut self) -> Self {
-        for ids in [
-            &mut self.plugins,
-            &mut self.connectors,
-            &mut self.workflows,
-            &mut self.channels,
-        ] {
-            ids.sort();
-            ids.dedup();
-        }
-        self
-    }
-}
-
 /// One DLQ entry with its failed payload — `GET`/`requeue` on a single id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -758,8 +674,6 @@ mod tests {
             WorkflowResponse,
             ChannelResponse,
             ConnectorResponse,
-            PackageReceiptResponse,
-            PackageInventory,
             TraceDlqEntryResponse,
             TraceDlqSummaryResponse,
             TraceListItemResponse,
@@ -778,11 +692,6 @@ mod tests {
             serde_json::from_str(r#"{"workflow_id": "wf-1", "status": "quarantined"}"#)
                 .expect("an unrecognised status must not fail the whole response");
         assert_eq!(wf.status, "quarantined");
-
-        let receipt: PackageReceiptResponse =
-            serde_json::from_str(r#"{"name": "p", "state": "rolling_back"}"#)
-                .expect("an unrecognised package state must not fail the response");
-        assert_eq!(receipt.state, "rolling_back");
     }
 
     /// A client parses what the server serves — including fields this crate

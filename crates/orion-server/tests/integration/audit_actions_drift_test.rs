@@ -53,7 +53,7 @@ const WRITERS: [&str; 4] = [
 /// Actions built with `format!`, and the values the interpolation can actually
 /// take.
 ///
-/// Only two call sites compute their action, and neither can be resolved by
+/// Only one call site computes its action, and it cannot be resolved by
 /// reading the `format!` alone — the reachable set is decided by a gate
 /// upstream of the call:
 ///
@@ -61,12 +61,7 @@ const WRITERS: [&str; 4] = [
 ///   and returns a `400` for `draft`, so a draft transition never reaches the
 ///   audit write. Expanding this over all three `EntityStatus` values would
 ///   invent `status_draft`, the ghost this module exists to catch.
-/// * `package_{}` — `PUT /packages/{name}` accepts either `PackageState`, and
-///   both are written.
-const COMPUTED_ACTIONS: [(&str, &[&str]); 2] = [
-    ("status_", &["active", "archived"]),
-    ("package_", &["staged", "applied"]),
-];
+const COMPUTED_ACTIONS: [(&str, &[&str]); 1] = [("status_", &["active", "archived"])];
 
 /// One audit row the server can write.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -322,12 +317,7 @@ fn the_extractor_finds_the_audit_call_sites() {
          stopped recognising a writer in WRITERS",
         emitted.len()
     );
-    for expected in [
-        "reload",
-        "update_rollout",
-        "status_active",
-        "package_applied",
-    ] {
+    for expected in ["reload", "update_rollout", "status_active"] {
         assert!(
             emitted.iter().any(|e| e.action == expected),
             "the extractor missed the `{expected}` call site"

@@ -14,7 +14,6 @@ Resolution, the environment, vars and secrets, the server, storage, clusters and
 | [Server settings](./server.md) | bind address and port, shutdown timeouts, the admin body limit, data mounts, verbose errors, TLS, compression and the API docs. |
 | [Storage settings](./storage.md) | the storage.url that selects SQLite, PostgreSQL or MySQL, pool sizing, encryption at rest, backups and auto_migrate. |
 | [Cluster settings](./cluster.md) | enabling multi-replica mode, the epoch poll interval and the per-replica instance_id, with their defaults. |
-| [Package settings](./packages.md) | the artifacts a node applies to itself at startup. |
 
 ## Related
 

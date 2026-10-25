@@ -53,7 +53,6 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `reset` | `circuit_breaker` | `POST /connectors/circuit-breakers/{key}` |
 | `invalidate` | `cache_namespace` | `POST /cache/namespaces/{namespace}/invalidate`. A workflow's `cache_invalidate` is not an admin action and writes no row |
 | `purge`, `requeue` | `trace_dlq` | The [trace DLQ](../../reference/admin-api/trace-dlq.md) endpoints |
-| `package_staged`, `package_applied` | `package` | `PUT /packages/{name}`, named for the receipt state |
 | `reload` | `engine` | `POST /engine/reload` |
 | `retry` | `cron_occurrence` | `POST /cron/occurrences/{id}/retry` |
 | `cancel` | `cron_occurrence` | `POST /cron/occurrences/{id}/cancel` |

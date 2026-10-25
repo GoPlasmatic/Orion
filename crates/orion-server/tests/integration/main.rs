@@ -9,7 +9,6 @@
 // lints against both are for production code.
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-mod boot_packages_test;
 mod clippy_fix_test;
 mod common;
 
@@ -95,9 +94,6 @@ mod openapi_test;
 mod output_field_test;
 mod p1_promotion_test;
 mod p2_api_test;
-mod package_cli_e2e_test;
-mod package_in_process_test;
-mod packages_test;
 mod pagination_contract_test;
 mod pipeline_test;
 mod plugin_abi_cases_test;
@@ -105,7 +101,6 @@ mod plugin_runtime_test;
 mod plugin_sdk_test;
 mod pool_exhaustion_test;
 mod postgres_test;
-mod preflight_test;
 mod profile_test;
 mod protocol_required_fields_test;
 mod queue_durability_test;

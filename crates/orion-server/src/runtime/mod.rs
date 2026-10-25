@@ -21,7 +21,6 @@
 //! depends downward on all of them.
 
 pub mod authority;
-pub mod boot_packages;
 pub mod definitions;
 pub mod generation;
 pub mod limiter_prune;

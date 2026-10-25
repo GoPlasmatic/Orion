@@ -67,7 +67,6 @@ async fn test_openapi_spec_all_endpoints() {
         "/api/v2/admin/authoring/scaffold",
         "/api/v2/admin/authoring/pack",
         "/api/v2/admin/authoring/lint",
-        "/api/v2/admin/migration-report",
         "/api/v2/admin/edition-transition-preflight",
     ];
 

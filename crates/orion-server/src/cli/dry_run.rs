@@ -508,8 +508,8 @@ pub(crate) async fn run_test(
     if failed.is_empty() {
         Ok(())
     } else {
-        // Non-zero so a suite gates a deploy, the same way `lint`,
-        // `validate-config` and `preflight` already do.
+        // Non-zero so a suite gates a deploy, the same way `lint` and
+        // `validate-config` already do.
         Err(format!("{} test case(s) failed", failed.len()).into())
     }
 }

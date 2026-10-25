@@ -118,13 +118,6 @@ pub fn circuit_breaker(id: &str) -> String {
     format!("{CIRCUIT_BREAKERS}/{}", seg(id))
 }
 
-// -- Admin: packages (promotion receipts) --
-pub const PACKAGES: &str = "/api/v2/admin/packages";
-
-pub fn package(name: &str) -> String {
-    format!("{PACKAGES}/{}", seg(name))
-}
-
 // -- Admin: traces & DLQ --
 pub const TRACES: &str = "/api/v2/admin/traces";
 pub const TRACE_DLQ: &str = "/api/v2/admin/trace-dlq";
@@ -178,7 +171,7 @@ pub fn cache_namespace_invalidate(namespace: &str) -> String {
     )
 }
 
-// -- Admin V2: capabilities, packages, connections, deployments, migration --
+// -- Admin V2: capabilities, packages, connections, deployments, edition --
 pub const V2_RUNTIME_CAPABILITIES: &str = "/api/v2/admin/runtime-capabilities";
 pub const V2_CONNECTOR_PACKAGES: &str = "/api/v2/admin/connector-packages";
 pub const V2_CONNECTIONS: &str = "/api/v2/admin/connections";
@@ -186,7 +179,6 @@ pub const V2_DEPLOYMENT_PLANS: &str = "/api/v2/admin/deployment-plans";
 pub const V2_DEFINITIONS: &str = "/api/v2/admin/definitions";
 pub const V2_DEPLOYMENTS: &str = "/api/v2/admin/deployments";
 pub const V2_DEPLOYMENTS_ROLLBACK: &str = "/api/v2/admin/deployments/rollback";
-pub const V2_MIGRATION_REPORT: &str = "/api/v2/admin/migration-report";
 pub const V2_EDITION_TRANSITION_PREFLIGHT: &str = "/api/v2/admin/edition-transition-preflight";
 pub const V2_AUTHORING_SCAFFOLD: &str = "/api/v2/admin/authoring/scaffold";
 pub const V2_AUTHORING_LINT: &str = "/api/v2/admin/authoring/lint";
@@ -268,7 +260,6 @@ mod tests {
             "/api/v2/admin/connectors/circuit-breakers/db"
         );
         assert_eq!(data_async("orders"), "/api/v2/data/orders/async");
-        assert_eq!(package("billing"), "/api/v2/admin/packages/billing");
     }
 
     /// The defect this encoding exists for. `execute` concatenates the path
@@ -308,7 +299,6 @@ mod tests {
             assert_eq!(connector(id), format!("/api/v2/admin/connectors/{id}"));
             assert_eq!(plugin(id), format!("/api/v2/admin/plugins/{id}"));
             assert_eq!(trace(id), format!("/api/v2/admin/traces/{id}"));
-            assert_eq!(package(id), format!("/api/v2/admin/packages/{id}"));
         }
     }
 

@@ -226,32 +226,6 @@ fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     assert!(deleted2.contains(&pkg.package_digest));
 }
 
-#[test]
-fn legacy_backfill_converts_community_estate_and_blocks_enterprise_connectors() {
-    let http_cfg = json!({ "type": "http", "base_url": "https://api.example.com" });
-    let wf_json = json!({ "id": "wf1", "tasks": [] });
-    let manifest = ImmutableDeploymentStore::build_legacy_bootstrap_manifest(
-        EditionTier::Community,
-        &[("ext-api", &http_cfg)],
-        &[("wf1", 1, &wf_json)],
-        &[("orders", 1, "wf1", 1)],
-    )
-    .expect("community estate converts");
-    assert_eq!(manifest.providers.len(), 1);
-    assert_eq!(manifest.providers[0].provider_id, "org.orion.http");
-
-    // Enterprise connector (kafka) blocks Community backfill with actionable code
-    let kafka_cfg = json!({ "type": "kafka", "brokers": ["localhost:9092"] });
-    let err = ImmutableDeploymentStore::build_legacy_bootstrap_manifest(
-        EditionTier::Community,
-        &[("events-bus", &kafka_cfg)],
-        &[],
-        &[],
-    )
-    .unwrap_err();
-    assert_eq!(err.code, "BACKFILL_ENTERPRISE_PROVIDER_REQUIRED");
-}
-
 #[tokio::test]
 async fn sqlite_migration_and_persistence_roundtrip() {
     use std::str::FromStr;

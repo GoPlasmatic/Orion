@@ -1083,9 +1083,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     // limit, which applies with the platform limiter off (S15) and keys on
     // the same client identity. See `AppStateInner::trusted_proxies`.
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
-    let packages = Arc::new(crate::runtime::boot_packages::BootPackages::new(
-        &config.packages.apply,
-    ));
     let provider_pools = composition.pools.clone();
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         runtime,
@@ -1119,7 +1116,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         tasks,
         cron_status,
         plugins,
-        packages,
         admin_auth_failures: Arc::new(Default::default()),
         channel_auth_failures: Arc::new(Default::default()),
         trusted_proxies,

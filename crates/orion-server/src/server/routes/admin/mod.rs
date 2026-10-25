@@ -6,7 +6,6 @@ pub(crate) mod connectors;
 pub(crate) mod cron;
 pub(crate) mod engine;
 pub(crate) mod functions;
-pub(crate) mod packages;
 pub(crate) mod plugins;
 pub(crate) mod services;
 pub(crate) mod trace_dlq;
@@ -1042,15 +1041,6 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
     let backup_routes =
         Router::new().route("/", post(backups::create_backup).get(backups::list_backups));
 
-    // K14: package receipts — read receipts, and the PUT the packaging CLI
-    // claims/flips around an apply.
-    let package_routes = Router::new()
-        .route("/", get(packages::list_packages))
-        .route(
-            "/{name}",
-            get(packages::get_package).put(packages::put_package),
-        );
-
     Router::new()
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
@@ -1064,6 +1054,5 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .nest("/traces", trace_routes)
         .nest("/trace-dlq", trace_dlq_routes)
         .nest("/backups", backup_routes)
-        .nest("/packages", package_routes)
         .layer(axum::extract::DefaultBodyLimit::max(max_body_size))
 }

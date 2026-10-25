@@ -1,7 +1,7 @@
 //! Orion v2 CLI commands.
 //!
 //! Exposes first-class CLI subcommands for:
-//! - `deployments`: `capabilities`, `plan`, `apply`, `get`, `wait`, `rollback`, `migration-report`, `edition-preflight`
+//! - `deployments`: `capabilities`, `plan`, `apply`, `get`, `wait`, `rollback`, `edition-preflight`
 //! - `provider`: `list`, `upload`, `admit`, `revoke`, `scaffold`, `lint`, `pack`
 //! - `connections`: `list`, `create`, `probe`
 
@@ -15,11 +15,10 @@ use orion_api::v2::{
     ConnectionsListResponse, ConnectorPackagesListResponse, ConvergenceStatusResponse,
     CreateConnectionRevisionRequest, CreateConnectionRevisionResponse, CreateDeploymentPlanRequest,
     DeploymentPlanResponse, DeploymentRevisionResponse, EditionTransitionPreflightRequest,
-    EditionTransitionPreflightResponse, LintResponse, MigrationReportRequest,
-    MigrationReportResponse, PackResponse, ProbeConnectionRequest, RevokePackageRequest,
-    RevokePackageResponse, RollbackDeploymentRequest, RollbackDeploymentResponse,
-    RuntimeCapabilitiesResponse, ScaffoldRequest, ScaffoldResponse, UploadPackageRequest,
-    UploadPackageResponse,
+    EditionTransitionPreflightResponse, LintResponse, PackResponse, ProbeConnectionRequest,
+    RevokePackageRequest, RevokePackageResponse, RollbackDeploymentRequest,
+    RollbackDeploymentResponse, RuntimeCapabilitiesResponse, ScaffoldRequest, ScaffoldResponse,
+    UploadPackageRequest, UploadPackageResponse,
 };
 use orion_client::paths;
 use tabled::Tabled;
@@ -41,7 +40,7 @@ fn load_file_or_stdin(file: &str) -> Result<serde_json::Value> {
 
 #[derive(Args)]
 #[command(
-    long_about = "Manage immutable v2 deployments, candidate plans, CAS apply, convergence polling, rollback, and migration/edition preflight."
+    long_about = "Manage immutable v2 deployments, candidate plans, CAS apply, convergence polling, rollback, and edition preflight."
 )]
 pub struct DeploymentsCmd {
     #[command(subcommand)]
@@ -136,12 +135,6 @@ pub enum DeploymentsSubcommand {
         /// Optional rollback reason
         #[arg(long)]
         reason: Option<String>,
-    },
-    /// Run a legacy v1 -> v2 conversion & migration report
-    MigrationReport {
-        /// Path to JSON file containing legacy connectors/channels snapshot (or '-' for stdin)
-        #[arg(short, long)]
-        file: String,
     },
     /// Run Enterprise-to-Community edition transition preflight check
     EditionPreflight {
@@ -353,17 +346,6 @@ impl DeploymentsCmd {
                 let val = serde_json::to_value(&resp)?;
                 output::print_value(format, &val)?;
                 Ok(0)
-            }
-            DeploymentsSubcommand::MigrationReport { file } => {
-                let payload = load_file_or_stdin(file)?;
-                let req: MigrationReportRequest = serde_json::from_value(payload)
-                    .with_context(|| format!("invalid migration report input in '{file}'"))?;
-                let resp: MigrationReportResponse =
-                    client.post_dto(paths::V2_MIGRATION_REPORT, &req).await?;
-                let can_cutover = resp.can_cutover || resp.compatible;
-                let val = serde_json::to_value(&resp)?;
-                output::print_value(format, &val)?;
-                Ok(if can_cutover { 0 } else { 2 })
             }
             DeploymentsSubcommand::EditionPreflight { revision } => {
                 let body = EditionTransitionPreflightRequest {

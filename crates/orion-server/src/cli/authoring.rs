@@ -483,9 +483,9 @@ fn run_lint_set(
 /// Load a definition set, compile it, and run every gate `lint <dir>` runs.
 ///
 /// Shared with `compile <dir>`, which is `lint` plus an emitter: a compile
-/// that wrote out a set its own linter would reject is how an artifact comes
-/// to fail at `package apply` having passed CI. The two differ in one
-/// argument — `require_ids` — and in nothing else, on purpose.
+/// that wrote out a set its own linter would reject is how a deployment comes
+/// to fail at apply having passed CI. The two differ in their boundary and in
+/// `require_ids`, and in nothing else, on purpose.
 fn load_and_gate(
     dir: &str,
     boundary: orion::definitions::Boundary,
@@ -576,160 +576,45 @@ fn load_and_gate(
 /// What `compile` writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum CompileFormat {
-    /// One promotion artifact, the shape `package plan|apply|diff` consume.
-    Artifact,
-    /// The input tree mirrored, compiled, one file per entity.
-    Dir,
-    /// `connectors.json`, `workflows.json`, `channels.json` — arrays in the
-    /// bulk-import body shape.
-    Bulk,
     /// A revision-free v2 deployment directory: `deployment.json`,
     /// `definitions/<hex>.json` and `connections/<id>.json`, the shape
     /// `orion-cli deployments apply -d` deploys.
     Deployment,
 }
 
-/// `compile <dir>`: gate a definition set, then write it out in a form the
-/// admin API accepts.
+/// `compile <dir>`: gate a definition set, then write it out in a form a
+/// node deploys.
 ///
 /// The authoring conveniences a set may use — `$from`, `use` — resolve when
-/// the set is *loaded*, and the admin API loads no set. Until this command
-/// existed the only path from `definitions/` to a running instance was a
-/// deploy tool that reimplemented the expander, and #295 is what that costs
-/// when the reimplementation is missing a case: the reference arrives as
-/// literal JSON and is refused for the fields it would have supplied.
+/// the set is *loaded*, and the admin API loads no set, so this is the step
+/// between the two.
 ///
 /// Gate first, emit second, and the gate is `lint <dir>`'s own
-/// ([`load_and_gate`]) rather than a second one written beside it — a compile
-/// that emitted a set its own linter rejects is how an artifact comes to fail
-/// at `package apply` having passed CI.
+/// ([`load_and_gate`]) rather than a second one written beside it: a compile
+/// that emitted a set its own linter rejects is how a deployment comes to
+/// fail at apply having passed CI.
 pub(crate) struct CompileRequest<'a> {
     pub(crate) dir: &'a str,
     pub(crate) output: Option<&'a str>,
     pub(crate) format: CompileFormat,
-    /// Package name and version. Required for the artifact form, meaningless
-    /// for the other two, which emit no package envelope.
-    pub(crate) name: Option<&'a str>,
-    pub(crate) version: Option<&'a str>,
-    /// With `--version content`, what stands before the hex.
-    pub(crate) version_prefix: Option<&'a str>,
-    /// A directory of detached signatures to write into the entries.
-    pub(crate) signatures: Option<&'a str>,
-    /// `--requires-orion`: the range the artifact declares, over the set's.
-    pub(crate) requires_orion: Option<&'a str>,
-    /// Names the set may reference without containing — the linter's boundary,
-    /// and the artifact's `requires`.
-    pub(crate) boundary: orion::definitions::Boundary,
     pub(crate) deny_warnings: bool,
-    pub(crate) no_activate: bool,
     /// Directories of plugin manifests beyond the set's own tree.
     pub(crate) plugin_dirs: &'a [String],
 }
 
 pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::error::Error>> {
-    // Only the artifact form. Its entries are addressed by id across the file —
-    // `apply` activates a channel by `channel_id`, and reads activation intent
-    // off it — so an id-less entity in an artifact is one `apply` would stage
-    // and never activate.
-    //
-    // The other two forms are request bodies, and the API assigns an id from
-    // the name exactly as it does for a hand-written POST. Demanding one there
-    // would refuse a set that deploys correctly today: leaving `channel_id` out
-    // and letting the server derive it is an ordinary way to author a set, and
-    // it is what the sets that motivated this command do.
-    // A deployment's members are addressed by id too: a member is its kind
-    // and id, and the target matches a recompiled one to what it deploys by
-    // them.
-    let requires_ids = matches!(
-        req.format,
-        CompileFormat::Artifact | CompileFormat::Deployment
-    );
-    if req.format == CompileFormat::Deployment
-        && !(req.boundary.channels.is_empty() && req.boundary.connectors.is_empty())
-    {
-        // A deployment is the whole of what the target serves, so nothing it
-        // references can live outside it.
-        return Err(
-            "--requires-channel and --requires-connector do not apply to \
-                    --format deployment: a deployment carries everything it references"
-                .into(),
-        );
-    }
-    let version = match req.format {
-        CompileFormat::Artifact => match req.version {
-            Some(v) => crate::package_cli::VersionSpec::parse(v, req.version_prefix)?,
-            None => {
-                return Err("--version is required for --format artifact (and --name, \
-                            unless the set declares package.name)"
-                    .into());
-            }
-        },
-        _ => crate::package_cli::VersionSpec::Literal(""),
-    };
-    if let Some(name) = req.name {
-        // Refused here rather than by the target at `apply`.
-        orion::validation::package_key("--name", name, orion::validation::MAX_PACKAGE_NAME_LEN)?;
-    }
-    let requires_orion = req
-        .requires_orion
-        .map(|range| {
-            orion::version::OrionRequirement::parse(range)
-                .map(|r| r.as_str().to_string())
-                .map_err(|e| format!("--requires-orion {e}"))
-        })
-        .transpose()?;
-
-    let requires = req.boundary.clone();
-    let (set, package) = load_and_gate(
+    // A deployment's members are addressed by id: a member is its kind and
+    // id, and the target matches a recompiled one to what it deploys by them.
+    // A deployment is the whole of what the target serves, so nothing it
+    // references may live outside it: the boundary is empty.
+    let (set, _) = load_and_gate(
         req.dir,
-        req.boundary,
-        requires_ids,
+        orion::definitions::Boundary::default(),
+        true,
         req.deny_warnings,
         req.plugin_dirs,
     )?;
-
-    // The name: the flag, else what the set declares. The range: the flag,
-    // else the set's — carried into `requires.orion`, where `plan` and
-    // `apply` hold the target to it.
-    let declared_name = package.as_ref().and_then(|p| p.name.clone());
-    let name = match (req.name, &declared_name) {
-        (Some(flag), Some(declared)) if flag != declared => {
-            eprintln!(
-                "note: --name '{flag}' overrides package.name '{declared}' ({})",
-                package
-                    .as_ref()
-                    .map(|p| p.origin.as_str())
-                    .unwrap_or_default()
-            );
-            flag.to_string()
-        }
-        (Some(flag), _) => flag.to_string(),
-        (None, Some(declared)) => declared.clone(),
-        (None, None) if req.format == CompileFormat::Artifact => {
-            return Err(
-                "--name is required for --format artifact (or declare package.name in the set)"
-                    .into(),
-            );
-        }
-        (None, None) => String::new(),
-    };
-    let requires_orion =
-        requires_orion.or_else(|| package.as_ref().and_then(|p| p.requires_orion.clone()));
-
     match req.format {
-        CompileFormat::Artifact => emit_artifact(
-            &set,
-            req.dir,
-            &name,
-            version,
-            requires,
-            requires_orion,
-            req.no_activate,
-            req.signatures,
-            req.output,
-        ),
-        CompileFormat::Dir => emit_dir(&set, req.dir, require_output(req.output, "--format dir")?),
-        CompileFormat::Bulk => emit_bulk(&set, require_output(req.output, "--format bulk")?),
         CompileFormat::Deployment => {
             emit_deployment(&set, require_output(req.output, "--format deployment")?)
         }
@@ -796,263 +681,13 @@ fn emit_deployment(
     Ok(())
 }
 
-/// Both directory formats write several files, so there is nowhere for a
-/// stdout default to put them.
+/// A deployment is several files, so there is nowhere for a stdout default
+/// to put them.
 fn require_output<'a>(
     output: Option<&'a str>,
     what: &str,
 ) -> Result<&'a str, Box<dyn std::error::Error>> {
     output.ok_or_else(|| format!("-o <DIR> is required for {what}").into())
-}
-
-/// Emit the compiled set as a promotion artifact.
-///
-/// Built through `package_cli`'s own shapes and hashed with its own
-/// `artifact_content_hash`, so an artifact this command writes and one
-/// `package export` writes are the same kind of document — including the
-/// hash, which `plan`, `apply` and `diff` all verify before doing anything.
-#[allow(clippy::too_many_arguments)]
-fn emit_artifact(
-    set: &orion::definitions::DefinitionSet,
-    dir: &str,
-    name: &str,
-    version: crate::package_cli::VersionSpec<'_>,
-    requires: orion::definitions::Boundary,
-    requires_orion: Option<String>,
-    no_activate: bool,
-    signatures: Option<&str>,
-    output: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use orion::definitions::Entity;
-
-    let collect = |kind: Entity| -> Vec<serde_json::Value> {
-        set.iter(kind).map(|d| d.doc.clone()).collect()
-    };
-    let mut workflows = collect(Entity::Workflow);
-    let mut channels = collect(Entity::Channel);
-
-    // Carry activation intent. `package export` reads it from the stored
-    // `status`; a directory has no status, so the default is that a compiled
-    // definition is meant to run — a package whose entities never activate
-    // applies cleanly and serves nothing. An author who wants otherwise says
-    // so per entity with `"activate": false`, or for the whole set with
-    // --no-activate.
-    if !no_activate {
-        for entity in workflows.iter_mut().chain(channels.iter_mut()) {
-            if let Some(obj) = entity.as_object_mut() {
-                obj.entry("activate")
-                    .or_insert_with(|| serde_json::Value::Bool(true));
-            }
-        }
-    }
-
-    let plugins = plugin_import_entries(set, no_activate)?;
-    let connectors = collect(Entity::Connector);
-
-    let mut artifact = crate::package_cli::PackageArtifact {
-        package: crate::package_cli::PackageMeta {
-            name: name.to_string(),
-            version: String::new(),
-            orion: env!("CARGO_PKG_VERSION").to_string(),
-            content_hash: String::new(),
-            exported_from: dir.to_string(),
-            exported_at: chrono::Utc::now().to_rfc3339(),
-        },
-        requires: crate::package_cli::Requires {
-            orion: requires_orion,
-            channels: requires.channels,
-            connectors: requires.connectors,
-            plugins: Vec::new(),
-        },
-        plugins,
-        connectors,
-        workflows,
-        channels,
-    };
-    // A build-time signer's signatures, before anything is written — an
-    // orphan or malformed `.sig` stops the compile.
-    if let Some(dir) = signatures {
-        let dir = std::path::Path::new(dir);
-        let report = orion::package::sign::attach_signatures(
-            &mut artifact,
-            dir,
-            &|_| Vec::new(),
-            &orion::package::Console,
-        )?;
-        for (subject, outcome) in &report {
-            if let orion::signatures::Outcome::Unsigned { looked_for } = outcome {
-                eprintln!(
-                    "note: {} '{}' is unsigned (no {} in {})",
-                    subject.kind.noun(),
-                    subject.id,
-                    looked_for.join(" or "),
-                    dir.display()
-                );
-            }
-        }
-    }
-
-    // The version is outside the hash, so it can be derived from it: hash
-    // first, name second.
-    artifact.package.content_hash = crate::package_cli::artifact_content_hash(&artifact)?;
-    artifact.package.version = version.resolve(&artifact.package.content_hash)?;
-    version.note_what_the_hash_excludes(&artifact);
-
-    let rendered = serde_json::to_string_pretty(&artifact)?;
-    match output {
-        Some(path) => {
-            if let Some(parent) = std::path::Path::new(path).parent()
-                && !parent.as_os_str().is_empty()
-            {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("create '{}': {e}", parent.display()))?;
-            }
-            std::fs::write(path, rendered).map_err(|e| format!("write '{path}': {e}"))?;
-            println!(
-                "wrote {}@{} ({}) to {path}",
-                artifact.package.name,
-                artifact.package.version,
-                crate::package_cli::member_counts(&artifact),
-            );
-        }
-        None => println!("{rendered}"),
-    }
-    Ok(())
-}
-
-/// The set's plugins as `/plugins/import` items, each with its component
-/// inlined: an artifact is what installs a plugin on a target that has never
-/// seen it, so a manifest with no component beside it cannot be compiled into
-/// one — that is a refusal here, not a digest-only entry the target will fail
-/// to import.
-fn plugin_import_entries(
-    set: &orion::definitions::DefinitionSet,
-    no_activate: bool,
-) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
-    use base64::Engine as _;
-    let mut plugins = Vec::with_capacity(set.plugins.len());
-    for plugin in &set.plugins {
-        let Some(path) = &plugin.component_path else {
-            return Err(format!(
-                "plugin '{}' ({}): no component beside the manifest, and an artifact must \
-                 carry the bytes — build it, or name it with `component = …`",
-                plugin.manifest.name, plugin.origin
-            )
-            .into());
-        };
-        let bytes =
-            std::fs::read(path).map_err(|e| format!("reading '{}': {e}", path.display()))?;
-        let mut entry = serde_json::json!({
-            "plugin_id": plugin.manifest.name,
-            "manifest": serde_json::to_value(&plugin.manifest)?,
-            "component": base64::engine::general_purpose::STANDARD.encode(&bytes),
-            "digest": orion::plugin::WasmRuntime::digest(&bytes),
-            "tags": [],
-        });
-        if !no_activate {
-            entry["activate"] = serde_json::Value::Bool(true);
-        }
-        plugins.push(entry);
-    }
-    Ok(plugins)
-}
-
-/// Mirror the input tree into `out`, compiled.
-///
-/// One file in, one file out, at the same relative path — so a diff of the two
-/// trees is exactly what the compiler did, and nothing else. Shared documents
-/// are consumed rather than copied: they are the compiler's input, and an
-/// admin API sent one would refuse it as no entity at all. Plugin manifests
-/// and their components are copied as they are: they are already what
-/// `orion-cli plugins create -f` reads.
-fn emit_dir(
-    set: &orion::definitions::DefinitionSet,
-    dir: &str,
-    out: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::path::Path::new(dir);
-    let out_root = std::path::Path::new(out);
-    for def in &set.definitions {
-        let origin = std::path::Path::new(&def.origin);
-        let relative = origin.strip_prefix(root).unwrap_or(origin);
-        let target = out_root.join(relative);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create '{}': {e}", parent.display()))?;
-        }
-        std::fs::write(&target, serde_json::to_string_pretty(&def.doc)?)
-            .map_err(|e| format!("write '{}': {e}", target.display()))?;
-    }
-    for plugin in &set.plugins {
-        let origin = std::path::Path::new(&plugin.origin);
-        let Ok(relative) = origin.strip_prefix(root) else {
-            // A manifest from `--plugin-dir` has no place in the mirrored
-            // tree; it is deployed from where it is.
-            continue;
-        };
-        let target = out_root.join(relative);
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("create '{}': {e}", parent.display()))?;
-        }
-        std::fs::copy(origin, &target).map_err(|e| format!("copy '{}': {e}", target.display()))?;
-        if let (Some(component), Some(rel)) =
-            (&plugin.component_path, plugin.manifest.component.as_deref())
-            && let Some(parent) = target.parent()
-        {
-            std::fs::copy(component, parent.join(rel))
-                .map_err(|e| format!("copy '{}': {e}", component.display()))?;
-        }
-    }
-    println!(
-        "wrote {} compiled definition(s){} to {out}",
-        set.definitions.len(),
-        if set.plugins.is_empty() {
-            String::new()
-        } else {
-            format!(" and {} plugin manifest(s)", set.plugins.len())
-        },
-    );
-    Ok(())
-}
-
-/// Emit three bulk-import bodies.
-///
-/// Named in the order they must be sent — connectors, then the workflows that
-/// reference them, then the channels that reference those — because that is
-/// the only ordering in which each import's references already exist.
-fn emit_bulk(
-    set: &orion::definitions::DefinitionSet,
-    out: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use orion::definitions::Entity;
-    std::fs::create_dir_all(out).map_err(|e| format!("create '{out}': {e}"))?;
-    for (kind, file) in [
-        (Entity::Connector, "connectors.json"),
-        (Entity::Workflow, "workflows.json"),
-        (Entity::Channel, "channels.json"),
-    ] {
-        let entries: Vec<&serde_json::Value> = set.iter(kind).map(|d| &d.doc).collect();
-        let path = std::path::Path::new(out).join(file);
-        std::fs::write(&path, serde_json::to_string_pretty(&entries)?)
-            .map_err(|e| format!("write '{}': {e}", path.display()))?;
-        println!(
-            "wrote {} {}(s) to {}",
-            entries.len(),
-            kind.as_str(),
-            path.display()
-        );
-    }
-    // The fourth body, only when there is one to send: `POST /plugins/import`
-    // takes the same items an artifact carries, component inlined.
-    if !set.plugins.is_empty() {
-        let entries = plugin_import_entries(set, true)?;
-        let path = std::path::Path::new(out).join("plugins.json");
-        std::fs::write(&path, serde_json::to_string_pretty(&entries)?)
-            .map_err(|e| format!("write '{}': {e}", path.display()))?;
-        println!("wrote {} plugin(s) to {}", entries.len(), path.display());
-    }
-    Ok(())
 }
 
 // ============================================================

@@ -14,7 +14,6 @@ pub mod engine;
 pub mod functions;
 pub mod health;
 pub mod metrics;
-pub mod packages;
 pub mod plugins;
 pub mod traces;
 pub mod v2;
@@ -81,17 +80,13 @@ pub enum Commands {
     /// Invalidate channel response-cache namespaces
     Cache(cache::CacheCmd),
 
-    /// Inspect package promotion receipts (staged/applied versions)
-    #[command(alias = "pkg")]
-    Packages(packages::PackagesCmd),
-
     /// Inspect and drain the trace dead-letter queue
     Dlq(dlq::DlqCmd),
 
     /// Inspect scheduled runs of cron channels
     Cron(cron::CronCmd),
 
-    /// Manage immutable v2 deployments, convergence, rollback, and migration preflight
+    /// Manage immutable v2 deployments, convergence, rollback, and edition preflight
     #[command(alias = "deploy")]
     Deployments(v2::DeploymentsCmd),
 

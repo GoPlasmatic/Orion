@@ -5,7 +5,7 @@
 //! - Connector package inventory, upload, admission & revocation (`/connector-packages`)
 //! - Connection revisions & health probes (`/connections`)
 //! - Candidate deployment planning, CAS apply, convergence & rollback (`/deployments`)
-//! - Legacy v1 -> v2 migration report & Enterprise-to-Community preflight (`/migration-report`, `/edition-transition-preflight`)
+//! - Enterprise-to-Community edition transition preflight (`/edition-transition-preflight`)
 //! - Provider package authoring scaffold, lint & pack (`/authoring/*`)
 
 use std::collections::BTreeMap;
@@ -545,81 +545,6 @@ pub struct PackResponse {
     pub inventory: Value,
     #[serde(default)]
     pub files: BTreeMap<String, String>,
-}
-
-/// Snapshot of a legacy v1 connector for migration reporting (`POST /api/v2/admin/migration-report`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct LegacyConnectorItem {
-    #[serde(alias = "id")]
-    pub name: String,
-    pub connector_type: String,
-    #[serde(default)]
-    pub config: Value,
-}
-
-fn default_one() -> u64 {
-    1
-}
-
-/// Snapshot of a legacy v1 workflow for migration reporting (`POST /api/v2/admin/migration-report`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct LegacyWorkflowItem {
-    pub id: String,
-    #[serde(default = "default_one")]
-    pub version: u64,
-    #[serde(default)]
-    pub definition: Value,
-}
-
-/// Snapshot of a legacy v1 channel for migration reporting (`POST /api/v2/admin/migration-report`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct LegacyChannelItem {
-    pub id: String,
-    #[serde(default = "default_one")]
-    pub version: u64,
-    #[serde(default)]
-    pub workflow_id: String,
-    #[serde(default = "default_one")]
-    pub workflow_version: u64,
-}
-
-/// Request body for generating a legacy v1 -> v2 migration report (`POST /api/v2/admin/migration-report`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct MigrationReportRequest {
-    #[serde(default)]
-    pub connectors: Vec<LegacyConnectorItem>,
-    #[serde(default)]
-    pub workflows: Vec<LegacyWorkflowItem>,
-    #[serde(default)]
-    pub channels: Vec<LegacyChannelItem>,
-}
-
-/// Legacy v1 -> v2 migration conversion report (`POST /api/v2/admin/migration-report`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct MigrationReportResponse {
-    #[serde(default)]
-    pub edition: String,
-    #[serde(default)]
-    pub compatible: bool,
-    #[serde(default)]
-    pub can_cutover: bool,
-    #[serde(default)]
-    pub converted_connections: usize,
-    #[serde(default)]
-    pub resolved_connectors: Vec<Value>,
-    #[serde(default)]
-    pub findings: Vec<Value>,
-    #[serde(default)]
-    pub blocking_findings: Vec<Value>,
-    #[serde(default)]
-    pub bootstrap_manifest: Option<Value>,
-    #[serde(default)]
-    pub bootstrap_manifest_digest: Option<String>,
 }
 
 /// Request body for Enterprise-to-Community edition transition preflight (`POST /api/v2/admin/edition-transition-preflight`).

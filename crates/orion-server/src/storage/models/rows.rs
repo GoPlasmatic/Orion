@@ -292,29 +292,6 @@ pub struct TraceDlqSummary {
 }
 
 // ============================================================
-// Package receipt (K14)
-// ============================================================
-
-/// One package version's receipt: what was applied (or staged) here, with
-/// what content hash, by whom. The applied-immutability rule is enforced
-/// against these rows — see `repositories::packages`.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct PackageReceipt {
-    pub name: String,
-    pub version: String,
-    pub content_hash: String,
-    /// `staged` (drafts landed, mutable in place) or `applied` (activated,
-    /// immutable — content changes require a version bump).
-    pub state: String,
-    pub principal: String,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
-    /// What this version carried, as a `PackageInventory` in JSON. `None`
-    /// for a receipt written before receipts recorded it.
-    pub inventory_json: Option<String>,
-}
-
-// ============================================================
 // Audit log
 // ============================================================
 

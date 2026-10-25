@@ -39,7 +39,6 @@ pub mod context;
 pub mod contract;
 pub mod deployment_store;
 pub mod foundation;
-pub mod migration;
 pub mod owned_native_work;
 pub mod package_identity;
 pub mod provider_backend;
@@ -53,7 +52,7 @@ pub mod workflow_provider;
 use std::sync::Arc;
 
 pub use admission::{
-    AdmissionPolicy, AdmissionRejection, AdmissionVerdict, CommunityAdmissionPolicy,
+    AdmissionPolicy, AdmissionRejection, AdmissionVerdict, CommunityAdmissionPolicy, EditionTier,
     PackageAdmissionRequest,
 };
 pub use channel_driver::{
@@ -86,13 +85,6 @@ pub use foundation::{
     DRIVER_SQLITE, FoundationOptions, HttpProviderBackend, MemoryCacheProviderBackend,
     MysqlProviderBackend, PartitionedMemoryCache, PostgresProviderBackend, SqlLimits,
     SqliteProviderBackend, register_community_foundation_providers,
-};
-pub use migration::{
-    ENTERPRISE_DRIVER_ELASTICSEARCH, ENTERPRISE_DRIVER_KAFKA, ENTERPRISE_DRIVER_MONGODB,
-    ENTERPRISE_DRIVER_REDIS, ENTERPRISE_DRIVER_SMTP, ENTERPRISE_DRIVER_STORAGE, EditionTier,
-    MigrationFinding, ResolvedLegacyConnector, ResolvedLegacyFunction,
-    check_channel_protocol_availability, check_connector_availability, map_legacy_connector,
-    map_legacy_function,
 };
 pub use owned_native_work::{
     NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,

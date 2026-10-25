@@ -28,7 +28,6 @@ use orion::storage::DbPool;
 use orion::storage::models::EntityStatus;
 use orion::storage::repositories::Repositories;
 use orion::storage::repositories::channels::CreateChannelRequest;
-use orion::storage::repositories::packages::PutPackageReceiptRequest;
 
 /// Run every contract case against `pool`. `backend` names the backend in
 /// failure messages, so a red CI log says which one diverged without needing
@@ -39,7 +38,6 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
 
     archive_takes_every_active_version(backend, &repos).await;
     delete_removes_every_version(backend, &repos).await;
-    applied_receipts_are_immutable(backend, &repos).await;
     an_audited_write_commits_both_rows(backend, &repos).await;
     a_dropped_audited_write_rolls_back(backend, &repos).await;
     the_current_version_read_returns_the_newest(backend, &repos).await;
@@ -400,97 +398,6 @@ async fn delete_removes_every_version(backend: &str, repos: &Repositories) {
         repos.channels.delete("contract-delete").await.is_err(),
         "{backend}: deleting an absent id must be NotFound, not a silent success"
     );
-}
-
-/// The receipt immutability rule is enforced by a predicate carried on the
-/// write, so it is a concurrency contract as much as a logical one — worth
-/// asserting against each backend's own comparison semantics.
-async fn applied_receipts_are_immutable(backend: &str, repos: &Repositories) {
-    let put = |version: &str, hash: &str, state| PutPackageReceiptRequest {
-        version: version.to_string(),
-        content_hash: hash.to_string(),
-        state,
-        inventory: None,
-    };
-    use orion::storage::models::PackageState;
-
-    repos
-        .packages
-        .put(
-            "contract-pkg",
-            &put("1.0.0", "sha256:aaa", PackageState::Applied),
-            "contract",
-        )
-        .await
-        .unwrap_or_else(|e| panic!("{backend}: apply failed: {e}"));
-
-    repos
-        .packages
-        .put(
-            "contract-pkg",
-            &put("1.0.0", "sha256:aaa", PackageState::Applied),
-            "contract",
-        )
-        .await
-        .unwrap_or_else(|e| panic!("{backend}: re-applying identical content must succeed: {e}"));
-
-    assert!(
-        repos
-            .packages
-            .put(
-                "contract-pkg",
-                &put("1.0.0", "sha256:zzz", PackageState::Applied),
-                "contract",
-            )
-            .await
-            .is_err(),
-        "{backend}: an applied version's content must be immutable"
-    );
-
-    // The inventory column: written with the staged claim, kept by the flip
-    // that carries none, and read back through `list_current`.
-    let inventory = orion::storage::models::PackageInventory {
-        channels: vec!["contract-ch".to_string()],
-        ..Default::default()
-    };
-    repos
-        .packages
-        .put(
-            "contract-inv",
-            &PutPackageReceiptRequest {
-                inventory: Some(inventory.clone()),
-                ..put("1.0.0", "sha256:inv", PackageState::Staged)
-            },
-            "contract",
-        )
-        .await
-        .unwrap_or_else(|e| panic!("{backend}: staging with an inventory failed: {e}"));
-    repos
-        .packages
-        .put(
-            "contract-inv",
-            &put("1.0.0", "sha256:inv", PackageState::Applied),
-            "contract",
-        )
-        .await
-        .unwrap_or_else(|e| panic!("{backend}: applying failed: {e}"));
-    let current = repos
-        .packages
-        .list_current(100, 0)
-        .await
-        .unwrap_or_else(|e| panic!("{backend}: list_current failed: {e}"));
-    let row = current
-        .data
-        .iter()
-        .find(|r| r.name == "contract-inv")
-        .unwrap_or_else(|| panic!("{backend}: the applied receipt is current"));
-    let stored: orion::storage::models::PackageInventory = serde_json::from_str(
-        row.inventory_json
-            .as_deref()
-            .unwrap_or_else(|| panic!("{backend}: the inventory was dropped")),
-    )
-    .expect("stored inventory parses");
-    assert_eq!(stored, inventory, "{backend}");
 }
 
 fn audit_event(action: &str, resource_id: &str) -> orion::queue::audit_queue::AuditEvent {

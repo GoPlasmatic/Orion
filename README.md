@@ -231,7 +231,7 @@ Orion v2 moves all HTTP endpoints from `/api/v1/*` to `/api/v2/*` and introduces
 - **Route prefixes:** Update callers from `/api/v1/data/*`, `/api/v1/admin/*`, and `/api/v1/openapi.json` to `/api/v2/data/*`, `/api/v2/admin/*`, and `/api/v2/openapi.json`. The `/api/v1/*` prefix is no longer mounted.
 - **Provider packages & `connector_call`:** External integrations are packaged as verified provider bundles (`/api/v2/admin/connector-packages`), bound to versioned connections (`/api/v2/admin/connections`), and invoked via `connector_call`.
 - **Immutable deployments:** Candidate manifests are planned via `POST /api/v2/admin/deployment-plans`, applied atomically under compare-and-swap via `POST /api/v2/admin/deployments`, and tracked to convergence via `GET /api/v2/admin/deployments/{revision}/convergence`.
-- **Automated migration report:** Run `orion-cli deployments migration-report -f <legacy-export.json>` (or `POST /api/v2/admin/migration-report`) and `orion-cli deployments edition-preflight` to translate v1 connectors and workflows into a v2 deployment bundle. See the [Upgrade Guide](docs/src/operate/maintain/upgrades.md) for the complete procedure.
+- **No migration of v1 definitions:** v2 deployments are the only way definitions reach a node. Recompile a definition set with `orion-server compile ./definitions -o dist/deployment` and deploy it with `orion-cli deployments apply -d dist/deployment`; v1 rows in an existing database are not served. `orion-cli deployments edition-preflight` checks a revision against the Community edition. See the [Upgrade Guide](docs/src/operate/maintain/upgrades.md).
 
 ## Performance
 

@@ -70,7 +70,6 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.vars.validate()?;
     config.secrets.validate()?;
     config.plugins.validate()?;
-    config.packages.validate()?;
     // Cross-section: cluster mode is meaningless on SQLite (single-host by
     // construction) — refuse at startup rather than corrupt silently.
     // `storage.validate()` above has already established that the URL names a

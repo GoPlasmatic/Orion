@@ -11,16 +11,15 @@ use serde_json::Value;
 
 use super::enums::parse_json_field;
 use super::rows::{
-    AuditLogEntry, Channel, Connector, CronOccurrence, PackageReceipt, Plugin, TraceDlqEntry,
-    TraceDlqSummary, TraceListRow, Workflow,
+    AuditLogEntry, Channel, Connector, CronOccurrence, Plugin, TraceDlqEntry, TraceDlqSummary,
+    TraceListRow, Workflow,
 };
 use crate::errors::OrionError;
 
 pub use orion_api::dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
-    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageInventory,
-    PackageReceiptResponse, PluginHealth, PluginResponse, TraceDlqEntryResponse,
-    TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PluginHealth, PluginResponse,
+    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
 };
 
 impl From<&CronOccurrence> for CronOccurrenceSummaryResponse {
@@ -236,35 +235,6 @@ impl From<&Connector> for ConnectorResponse {
                 .unwrap_or_default(),
             created_at: connector.created_at,
             updated_at: connector.updated_at,
-        }
-    }
-}
-
-impl From<&PackageReceipt> for PackageReceiptResponse {
-    fn from(receipt: &PackageReceipt) -> Self {
-        Self {
-            name: receipt.name.clone(),
-            version: receipt.version.clone(),
-            content_hash: receipt.content_hash.clone(),
-            state: receipt.state.clone(),
-            principal: receipt.principal.clone(),
-            created_at: receipt.created_at,
-            updated_at: receipt.updated_at,
-            // Tolerant: a column this binary cannot read is a receipt with
-            // no inventory — `--prune` then prunes nothing and says so —
-            // not a failed read of every receipt of the package.
-            inventory: receipt.inventory_json.as_deref().and_then(|json| {
-                serde_json::from_str(json)
-                    .inspect_err(|e| {
-                        tracing::warn!(
-                            package = %receipt.name,
-                            version = %receipt.version,
-                            error = %e,
-                            "unreadable package receipt inventory — treated as absent"
-                        )
-                    })
-                    .ok()
-            }),
         }
     }
 }

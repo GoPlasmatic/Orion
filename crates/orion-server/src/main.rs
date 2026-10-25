@@ -5,7 +5,6 @@ use clap::Parser;
 use orion::config;
 
 mod cli;
-mod package_cli;
 mod signing_cli;
 mod sql_cli;
 
@@ -39,11 +38,8 @@ EXAMPLES:\n    \
     orion-server dry-run -w wf.json -i x.json --stubs s.json   ... with canned connector replies\n    \
     orion-server test examples/workflow-tests Run a directory of workflow test cases\n    \
     orion-server test-connectivity            Probe the database\n    \
-    orion-server preflight                    Scan stored channels/workflows before upgrading\n    \
     orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n    \
-    orion-server package export -s <url> --tag payments --name payments --version 1.0.0 -o pkg.json\n                                              \
-Export a promotion package from an instance\n    \
-    orion-server package apply -s <url> -f pkg.json  Stage, activate and reload the package on a target\n    \
+    orion-server compile ./definitions -o dist/deployment  Compile a definition set into a deployment directory\n    \
     orion-server plugin sign plugins/ --key signer.pem  Sign every plugin component for [plugins.trust]\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
@@ -127,69 +123,28 @@ enum Command {
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
     },
-    /// Compile a definition set into files the admin API accepts.
+    /// Compile a definition set into a deployment directory.
     ///
     /// The authoring conveniences a set may use — `$from` for a shared value,
     /// `use` for a task fragment — resolve when the set is loaded, and the
     /// admin API loads no set. This is the step between the two: it runs
-    /// every gate `lint <dir>` runs, then writes the compiled entities out.
-    ///
-    /// Default output is a promotion artifact, so `package plan|apply|diff`
-    /// consume it directly.
+    /// every gate `lint <dir>` runs, then writes `deployment.json`,
+    /// `definitions/<hex>.json` and `connections/<id>.json`, which
+    /// `orion-cli deployments apply -d` deploys.
     Compile {
         /// Directory of definitions to compile.
         dir: String,
-        /// Where to write. A file for --format artifact (default: stdout),
-        /// a directory for --format dir, bulk and deployment (required).
+        /// The directory to write.
         #[arg(short, long)]
         output: Option<String>,
         /// What to write.
-        #[arg(long, value_enum, default_value = "artifact")]
+        #[arg(long, value_enum, default_value = "deployment")]
         format: cli::CompileFormat,
-        /// Package name, e.g. payments. Required for --format artifact
-        /// unless the set declares `package.name`; the flag wins when both
-        /// are given.
-        #[arg(long)]
-        name: Option<String>,
-        /// Package version, e.g. 1.4.0 — or `content` to derive it from the
-        /// artifact's content hash (`content-<12 hex>`), so it moves exactly
-        /// when `plan`, `apply` and `diff` would see a change. Required for
-        /// --format artifact. Applied versions are immutable — any content
-        /// change needs a bump.
-        #[arg(long)]
-        version: Option<String>,
-        /// With `--version content`: `<PREFIX>-<12 hex>` instead of
-        /// `content-<12 hex>`.
-        #[arg(long, value_name = "PREFIX")]
-        version_prefix: Option<String>,
-        /// Directory of detached signatures to write into the artifact's
-        /// `plugins[]` entries, for a build-time signer:
-        /// `<id>.sig` or `<artifact file>.sig`. Signatures are not content,
-        /// so the hash and a content version do not move.
-        #[arg(long, value_name = "DIR")]
-        signatures: Option<String>,
-        /// The Orion version range the artifact requires of a target
-        /// (`requires.orion`) over the set's own `package.requires.orion`, e.g. ">=1.8.2, <2". `plan` and `apply` refuse
-        /// a target outside it.
-        #[arg(long, value_name = "RANGE")]
-        requires_orion: Option<String>,
-        /// Channel name that may be referenced without being in the set —
-        /// recorded in the artifact's `requires`. Repeatable.
-        #[arg(long = "requires-channel", value_name = "NAME")]
-        requires_channels: Vec<String>,
-        /// Connector name that may be referenced without being in the set.
-        /// Repeatable.
-        #[arg(long = "requires-connector", value_name = "NAME")]
-        requires_connectors: Vec<String>,
         /// Exit non-zero on advisory findings too, not just errors.
         #[arg(long)]
         deny_warnings: bool,
-        /// Do not mark workflows and channels for activation. The artifact
-        /// applies as drafts, for a promotion that activates separately.
-        #[arg(long)]
-        no_activate: bool,
         /// Directory of plugin manifests (`plugin.toml`) beyond the set's
-        /// own tree. A manifest in the set compiles into the artifact with
+        /// own tree. A manifest in the set compiles into the deployment with
         /// its component inlined. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
@@ -260,7 +215,7 @@ enum Command {
     ///
     /// Paths inside a case are resolved relative to the case file. Prints a
     /// per-case diff and exits non-zero on any failure, so it gates CI the way
-    /// `lint`, `validate-config` and `preflight` already do.
+    /// `lint` and `validate-config` already do.
     Test {
         /// Directory of case files, or a single case file.
         path: String,
@@ -380,35 +335,6 @@ enum Command {
     /// Needs no config, database, or running server. Redirect it to refresh
     /// the checked-in copy: `orion-server dump-openapi > docs/openapi.json`.
     DumpOpenapi,
-    /// Package a set of channels + their workflows and connectors, and
-    /// promote the artifact through environments (the K-stream design).
-    ///
-    /// The artifact is one JSON document; git is the registry. `export`
-    /// computes the dependency closure from a running instance; `lint` checks
-    /// an artifact offline; `plan` pre-flights it against a target with zero
-    /// writes; `apply` stages, activates in dependency order, reloads once
-    /// and records the package receipt; `diff` reports drift between the
-    /// artifact and a running instance. Server calls authenticate with the
-    /// ORION_ADMIN_TOKEN environment variable and are stamped with an
-    /// `X-Orion-Change-Context: package=<name>@<version>` audit context.
-    Package {
-        #[command(subcommand)]
-        command: PackageCommand,
-    },
-    /// Scan the stored channels and workflows for anything the 1.0 rules will
-    /// refuse, before the upgrade rather than during it.
-    ///
-    /// Answers the database-backed rows of the 0.3.0 -> 1.0.0 upgrade
-    /// checklist: channel configs that no longer parse (the pre-1.0 `cors` and
-    /// `backpressure.max_concurrent` spellings, and typos that were always
-    /// silently ignored), workflows whose tasks the create validator would
-    /// reject, and `data_query`/`data_write` tasks with no `schema` — the one
-    /// change that surfaces on live traffic rather than at startup.
-    ///
-    /// Read-only, and exits non-zero when it finds anything, so it can gate a
-    /// deploy. Config-file and ORION_* problems are reported by
-    /// `validate-config`; this reads what only the database knows.
-    Preflight,
 }
 
 #[derive(clap::Subcommand)]
@@ -455,136 +381,6 @@ enum SqlCommand {
         /// Directory of plugin manifests beyond the set's own tree.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
-    },
-}
-
-#[derive(clap::Subcommand)]
-enum PackageCommand {
-    /// Export a package artifact from a running instance: the selected
-    /// channels, their workflows, and every connector those workflows
-    /// reference (closure computed via GET /workflows/{id}/dependencies).
-    /// channel_call targets outside the selection land in `requires`.
-    Export {
-        /// Base URL of the source instance, e.g. https://dev.orion.internal
-        #[arg(short, long)]
-        server: String,
-        /// Select every channel carrying this tag.
-        #[arg(long)]
-        tag: Option<String>,
-        /// Select channels by id (comma-separated or repeated).
-        #[arg(long, value_delimiter = ',')]
-        channels: Vec<String>,
-        /// Package name, e.g. payments.
-        #[arg(long)]
-        name: String,
-        /// Package version, e.g. 1.4.0 — or `content` to derive it from the
-        /// artifact's content hash (`content-<12 hex>`). Applied versions are
-        /// immutable — any content change needs a bump.
-        #[arg(long)]
-        version: String,
-        /// With `--version content`: `<PREFIX>-<12 hex>` instead of
-        /// `content-<12 hex>`.
-        #[arg(long, value_name = "PREFIX")]
-        version_prefix: Option<String>,
-        /// The Orion version range the artifact requires of a target
-        /// (`requires.orion`), e.g. ">=1.8.2, <2". `plan` and `apply` refuse
-        /// a target outside it.
-        #[arg(long, value_name = "RANGE")]
-        requires_orion: Option<String>,
-        /// Write the artifact here instead of stdout.
-        #[arg(short, long)]
-        output: Option<String>,
-        /// Inline each plugin's component as base64, so the artifact can
-        /// install plugins on a target that has never seen them. Without it
-        /// a plugin travels as manifest and digest, and the target must
-        /// already hold the component.
-        #[arg(long)]
-        include_artifacts: bool,
-    },
-    /// Validate an artifact offline: entity shapes (the same validators the
-    /// POST endpoints run), closure completeness against `requires`, and the
-    /// content hash. Exits non-zero on findings — the CI gate that needs no
-    /// server and no secrets.
-    Lint {
-        /// Path to the artifact file.
-        #[arg(short, long)]
-        file: String,
-    },
-    /// Pre-flight an artifact against a target with zero writes: the receipt
-    /// immutability check, per-entity would-be import actions, `requires`
-    /// verification, and every activation gate.
-    Plan {
-        /// Base URL of the target instance.
-        #[arg(short, long)]
-        server: String,
-        /// Path to the artifact file.
-        #[arg(short, long)]
-        file: String,
-        /// Directory of detached signatures to attach before anything is
-        /// sent: `<plugin id>.sig` or `<artifact file>.sig` per plugin —
-        /// base64 Ed25519 over the digest string, as
-        /// `orion-server plugin sign -o <dir>` writes them. The artifact
-        /// file, its version and its hash are untouched.
-        #[arg(long, value_name = "DIR")]
-        signatures: Option<String>,
-        /// Show what `apply --prune` would remove — what the package's
-        /// current applied version carried and this artifact does not —
-        /// and any removal that would be refused.
-        #[arg(
-            long,
-            value_enum,
-            value_name = "MODE",
-            num_args = 0..=1,
-            require_equals = true,
-            default_missing_value = "archive"
-        )]
-        prune: Option<package_cli::PruneArg>,
-    },
-    /// Apply an artifact: claim the receipt as staged, stage all entities
-    /// (connectors → workflows → channels), activate in dependency order
-    /// with one engine reload at the end, then flip the receipt to applied.
-    /// Idempotent — re-running an identical artifact is a no-op. With
-    /// `--prune`, also remove what the previous applied version carried and
-    /// this one does not, inside the same reload.
-    Apply {
-        /// Base URL of the target instance.
-        #[arg(short, long)]
-        server: String,
-        /// Path to the artifact file.
-        #[arg(short, long)]
-        file: String,
-        /// Directory of detached signatures to attach before anything is
-        /// sent: `<plugin id>.sig` or `<artifact file>.sig` per plugin —
-        /// base64 Ed25519 over the digest string, as
-        /// `orion-server plugin sign -o <dir>` writes them. The artifact
-        /// file, its version and its hash are untouched.
-        #[arg(long, value_name = "DIR")]
-        signatures: Option<String>,
-        /// Remove what the package's current applied version carried and
-        /// this artifact does not. `--prune` archives (reversible, and it
-        /// frees the route or schedule; a connector is disabled);
-        /// `--prune=delete` deletes. Nothing another package's current
-        /// version carries is touched.
-        #[arg(
-            long,
-            value_enum,
-            value_name = "MODE",
-            num_args = 0..=1,
-            require_equals = true,
-            default_missing_value = "archive"
-        )]
-        prune: Option<package_cli::PruneArg>,
-    },
-    /// Report drift between an artifact and a running instance, comparing
-    /// the server's content hashes against the artifact's. Exits non-zero
-    /// when anything differs.
-    Diff {
-        /// Base URL of the instance to compare against.
-        #[arg(short, long)]
-        server: String,
-        /// Path to the artifact file.
-        #[arg(short, long)]
-        file: String,
     },
 }
 
@@ -680,33 +476,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             dir,
             output,
             format,
-            name,
-            version,
-            version_prefix,
-            signatures,
-            requires_orion,
-            requires_channels,
-            requires_connectors,
             deny_warnings,
-            no_activate,
             plugin_dirs,
         }) => {
-            let boundary = orion::definitions::Boundary {
-                channels: requires_channels,
-                connectors: requires_connectors,
-            };
             return cli::run_compile(cli::CompileRequest {
                 dir: &dir,
                 output: output.as_deref(),
                 format,
-                name: name.as_deref(),
-                version: version.as_deref(),
-                version_prefix: version_prefix.as_deref(),
-                signatures: signatures.as_deref(),
-                requires_orion: requires_orion.as_deref(),
-                boundary,
                 deny_warnings,
-                no_activate,
                 plugin_dirs: &plugin_dirs,
             });
         }
@@ -793,7 +570,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Plugin { .. }) => {
             unreachable!("the signing verbs return before config is loaded")
         }
-        Some(Command::Preflight) => return cli::run_preflight(&config).await,
         Some(Command::Sql { command }) => {
             let SqlCommand::Check {
                 path,
@@ -827,66 +603,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(code);
             }
             return Ok(());
-        }
-        Some(Command::Package { command }) => {
-            return match command {
-                PackageCommand::Export {
-                    server,
-                    tag,
-                    channels,
-                    name,
-                    version,
-                    version_prefix,
-                    requires_orion,
-                    output,
-                    include_artifacts,
-                } => {
-                    package_cli::run_export(
-                        &server,
-                        tag.as_deref(),
-                        &channels,
-                        &name,
-                        &version,
-                        version_prefix.as_deref(),
-                        requires_orion.as_deref(),
-                        output.as_deref(),
-                        include_artifacts,
-                    )
-                    .await
-                }
-                PackageCommand::Lint { file } => package_cli::run_lint(&file),
-                PackageCommand::Plan {
-                    server,
-                    file,
-                    signatures,
-                    prune,
-                } => {
-                    package_cli::run_plan(
-                        &server,
-                        &file,
-                        signatures.as_deref(),
-                        prune.map(Into::into),
-                    )
-                    .await
-                }
-                PackageCommand::Apply {
-                    server,
-                    file,
-                    signatures,
-                    prune,
-                } => {
-                    package_cli::run_apply(
-                        &server,
-                        &file,
-                        signatures.as_deref(),
-                        prune.map(Into::into),
-                    )
-                    .await
-                }
-                PackageCommand::Diff { server, file } => {
-                    package_cli::run_diff(&server, &file).await
-                }
-            };
         }
         None => {} // Continue to start the server
     }
@@ -957,13 +673,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // pruning still serves correctly.
     orion::runtime::limiter_prune::start(&tasks, state.clone());
 
-    // `[packages] apply`: applied now that everything an apply needs is
-    // running — the audit writer, the epoch watcher — and concurrently with
-    // serving, so `/healthz` answers during a long apply while `/readyz`
-    // holds at 503 until they serve.
-    let packages = state.packages.clone();
-    tokio::spawn(orion::package::boot::run(state.clone()));
-
     let router = orion::server::build_router(state.clone());
 
     // Optional dedicated metrics listener (O12), bound before the main server
@@ -994,15 +703,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .await
         }
     };
-    tokio::select! {
-        served = serve => served?,
-        // A package that failed to apply: the node was never ready, so no
-        // load balancer routes here and the drain grace would only delay the
-        // restart. Stop serving at once and shut the rest down cleanly.
-        () = packages.failed() => {
-            ready.store(false, std::sync::atomic::Ordering::Release);
-        }
-    }
+    serve.await?;
 
     bootstrap::join_metrics_listener(metrics_server).await;
 
@@ -1029,11 +730,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = provider.shutdown() {
             tracing::warn!(error = %e, "Error shutting down OTel tracer provider");
         }
-    }
-
-    // The exit status an orchestrator restarts on.
-    if let Some(failure) = packages.failure() {
-        return Err(failure.into());
     }
 
     tracing::info!("Orion shut down cleanly");

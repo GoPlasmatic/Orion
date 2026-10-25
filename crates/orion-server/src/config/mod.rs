@@ -8,7 +8,6 @@ mod jwt;
 mod logging;
 mod oauth2_login;
 mod observability;
-mod packages;
 mod plugins;
 mod query;
 mod rate_limit;
@@ -34,7 +33,6 @@ pub use oauth2_login::{InstanceProviderConfig, OAuth2LoginConfig};
 pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageConfig, TraceStorageMode, TracingConfig,
 };
-pub use packages::PackagesConfig;
 pub use plugins::{PluginOverride, PluginTrustConfig, PluginsConfig};
 pub use query::QueryConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
@@ -101,9 +99,6 @@ pub struct AppConfig {
     pub secrets: SecretsConfig,
     /// The WebAssembly plugin sandbox and its ceilings. Off by default.
     pub plugins: PluginsConfig,
-    /// Package artifacts this node applies at startup, before `/readyz`
-    /// turns green. None by default.
-    pub packages: PackagesConfig,
 }
 
 fn default_environment() -> String {
@@ -137,7 +132,6 @@ impl Default for AppConfig {
             vars: VarsConfig::default(),
             secrets: SecretsConfig::default(),
             plugins: PluginsConfig::default(),
-            packages: PackagesConfig::default(),
         }
     }
 }

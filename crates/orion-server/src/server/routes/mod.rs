@@ -163,8 +163,7 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
 Detailed health report. Always reachable, but when `admin_auth.enabled` is \
 true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, \
 the circuit-breaker map, connector load failures and quarantined channels — \
-names and failure reasons, and each `[packages] apply` entry by name, version \
-and state) is included only for requests presenting a valid admin credential; \
+names and failure reasons) is included only for requests presenting a valid admin credential; \
 anonymous callers get status, version, uptime and coarse per-component states. \
 Probes should use `/healthz` and `/readyz`.",
     responses(
@@ -227,13 +226,9 @@ pub(crate) async fn health_check(
         .reload_degraded
         .load(std::sync::atomic::Ordering::Acquire);
 
-    // `[packages] apply`: absent when none is configured.
-    let packages_state = state.packages.component();
-
     let overall_healthy = db_healthy;
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
-        && packages_state.is_none_or(|p| p == "ok")
         && cron_state != Some("degraded")
         && tasks_state == "ok"
         && !reload_degraded
@@ -290,9 +285,6 @@ pub(crate) async fn health_check(
     if let Some(cron) = cron_state {
         body["components"]["cron"] = json!(cron);
     }
-    if let Some(packages) = packages_state {
-        body["components"]["packages"] = json!(packages);
-    }
     // Cluster mode only: outside it there are no peers to propagate to.
     // `degraded`, not `error`, and absent from `/readyz` on purpose — this
     // node is serving the change correctly; it is the peers that have not
@@ -317,11 +309,6 @@ pub(crate) async fn health_check(
         body["channels"] = json!({
             "quarantined": quarantined_channels,
         });
-        // Each configured package by name, version and state — the files
-        // and versions are topology like the rest of this block.
-        if packages_state.is_some() {
-            body["packages"] = json!(state.packages.snapshot());
-        }
         body["plugins"] = json!({
             "loaded": generation.plugins.plugins.iter().map(|p| json!({
                 "plugin": p.id,
@@ -531,9 +518,6 @@ dispatcher, the persistence workers, the audit writer, the DLQ retry \
 consumer, the cluster epoch watcher — has stopped for good; each of those \
 fails silently otherwise, dropping traces or audit rows while the data plane \
 keeps answering 200s. \
-`components.packages` is present only when `[packages] apply` names artifacts: \
-`applying` (not ready) until every one is applied and serving, then `ok`; \
-`failed` while a node whose package failed to apply shuts down. \
 Unauthenticated, so probes work without provisioning an admin key.",
     responses(
         (status = 200, description = "All components ready", body = crate::server::routes::openapi::HealthStatus),
@@ -547,31 +531,20 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     let db_ping = state.ping_db().await;
     let db_healthy = db_ping.is_ok();
     let (tasks_state, _) = tasks_component(&state);
-    // A startup condition: a node is not capacity until the packages it was
-    // told to apply are serving.
-    let packages_state = state.packages.component();
-
-    let all_ready = db_healthy
-        && initialized
-        && tasks_state != "error"
-        && packages_state.is_none_or(|p| p == "ok");
+    let all_ready = db_healthy && initialized && tasks_state != "error";
     let http_status = if all_ready {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    let mut components = json!({
+    let components = json!({
         "database": if db_healthy { "ok" } else { "error" },
         // Constant by construction — see `workflows_loaded` (O16).
         "engine": "ok",
         "initialized": initialized,
         "background_tasks": tasks_state,
     });
-    if let Some(packages) = packages_state {
-        components["packages"] = json!(packages);
-    }
-
     let body = json!({
         "status": if all_ready { "ready" } else { "not_ready" },
         "components": components,

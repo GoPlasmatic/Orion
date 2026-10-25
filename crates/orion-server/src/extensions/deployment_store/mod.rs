@@ -17,9 +17,8 @@ pub use manifest::{
     validate_rollout_partition,
 };
 
-use super::admission::{AdmissionPolicy, PackageAdmissionRequest};
+use super::admission::{AdmissionPolicy, EditionTier, PackageAdmissionRequest};
 use super::contract::{ImplementationKind, ProviderReference};
-use super::migration::{EditionTier, map_legacy_connector};
 use super::package_identity::{
     VerifiedArtifactMetadata, canonical_bytes, check_dependency_lock, sha256_digest,
     verify_inventory,
@@ -1620,117 +1619,6 @@ impl ImmutableDeploymentStore {
         }
 
         (newly_draining, newly_deleted, compacted_revisions)
-    }
-
-    /// V2-03.5: Convert a consistent legacy v1 snapshot into an explicit
-    /// bootstrap `CanonicalManifest`, blocking if any connector maps to an
-    /// unavailable tier or has ambiguous ownership.
-    pub fn build_legacy_bootstrap_manifest(
-        edition: EditionTier,
-        legacy_connectors: &[(&str, &Value)],
-        legacy_workflows: &[(&str, u64, &Value)],
-        legacy_channels: &[(&str, u64, &str, u64)],
-    ) -> Result<CanonicalManifest, DeploymentError> {
-        let mut providers_map: BTreeMap<String, ProviderRef> = BTreeMap::new();
-        let mut members: Vec<ManifestMember> = Vec::new();
-
-        for (conn_id, cfg) in legacy_connectors {
-            let conn_type = cfg
-                .get("connector_type")
-                .or_else(|| cfg.get("type"))
-                .and_then(Value::as_str)
-                .unwrap_or("db");
-            let resolved = map_legacy_connector(conn_id, conn_type, cfg).map_err(|f| {
-                DeploymentError::new(f.code, format!("{}: {}", f.entity_name, f.message))
-            })?;
-            if edition == EditionTier::Community && resolved.tier == EditionTier::Enterprise {
-                return Err(DeploymentError::new(
-                    "BACKFILL_ENTERPRISE_PROVIDER_REQUIRED",
-                    format!(
-                        "connector '{conn_id}' requires Enterprise provider '{}'",
-                        resolved.provider_id
-                    ),
-                ));
-            }
-            let p_digest = sha256_digest(resolved.provider_id.as_bytes());
-            providers_map.insert(
-                resolved.provider_id.to_string(),
-                ProviderRef {
-                    publisher: "org.orion".to_string(),
-                    provider_id: resolved.provider_id.to_string(),
-                    version: "2.0.0".to_string(),
-                    digest: p_digest,
-                },
-            );
-            let cfg_bytes = canonical_bytes(cfg).map_err(|e| {
-                DeploymentError::new(
-                    "CONNECTION_CONFIG_INVALID",
-                    format!("{conn_id}: {}", e.code),
-                )
-            })?;
-            members.push(ManifestMember {
-                entity: EntityRef {
-                    kind: EntityKind::Connection,
-                    id: (*conn_id).to_string(),
-                    revision: 1,
-                },
-                definition_digest: sha256_digest(&cfg_bytes),
-                owning_package: None,
-                requires: Vec::new(),
-                rollouts: Vec::new(),
-            });
-        }
-
-        for (wf_id, rev, wf_json) in legacy_workflows {
-            let wf_bytes = canonical_bytes(wf_json).map_err(|e| {
-                DeploymentError::new("WORKFLOW_CONFIG_INVALID", format!("{wf_id}: {}", e.code))
-            })?;
-            members.push(ManifestMember {
-                entity: EntityRef {
-                    kind: EntityKind::Workflow,
-                    id: (*wf_id).to_string(),
-                    revision: *rev,
-                },
-                definition_digest: sha256_digest(&wf_bytes),
-                owning_package: None,
-                requires: Vec::new(),
-                rollouts: Vec::new(),
-            });
-        }
-
-        for (ch_id, ch_rev, wf_id, wf_rev) in legacy_channels {
-            let wf_ref = EntityRef {
-                kind: EntityKind::Workflow,
-                id: (*wf_id).to_string(),
-                revision: *wf_rev,
-            };
-            members.push(ManifestMember {
-                entity: EntityRef {
-                    kind: EntityKind::Channel,
-                    id: (*ch_id).to_string(),
-                    revision: *ch_rev,
-                },
-                definition_digest: sha256_digest(
-                    format!("{ch_id}:{ch_rev}:{wf_id}:{wf_rev}").as_bytes(),
-                ),
-                owning_package: None,
-                requires: vec![wf_ref],
-                rollouts: vec![RolloutInterval {
-                    workflow_revision: *wf_rev,
-                    start_bucket: 0,
-                    end_bucket: 100,
-                }],
-            });
-        }
-
-        let manifest = CanonicalManifest {
-            schema_version: 2,
-            providers: providers_map.into_values().collect(),
-            provider_lock_digest: None,
-            members,
-        };
-        manifest.canonicalize_and_verify()?;
-        Ok(manifest)
     }
 }
 
