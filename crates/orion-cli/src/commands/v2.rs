@@ -527,8 +527,14 @@ pub enum ProviderSubcommand {
         /// Semantic version (e.g. `1.0.0`)
         #[arg(long, default_value = "1.0.0")]
         version: String,
-        /// Implementation kind (`rust`, `workflow`, or `wasm`)
-        #[arg(long, default_value = "wasm")]
+        /// Implementation kind: `rust` (the default), `workflow` or `wasm`.
+        ///
+        /// Only a `rust` package runs: it names a native provider compiled into
+        /// the node, and runs on a node that registers a backend under its
+        /// provider id (`orion-cli deployments capabilities` lists them). A
+        /// `workflow` or `wasm` package is accepted and can be admitted, but no
+        /// Community node executes either kind yet.
+        #[arg(long, default_value = "rust")]
         kind: String,
     },
     /// Lint a provider package manifest and schema bundle
