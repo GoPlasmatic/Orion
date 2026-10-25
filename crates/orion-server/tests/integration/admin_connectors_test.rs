@@ -1791,3 +1791,57 @@ async fn an_http_connector_may_reference_its_url_and_its_private_opt_out() {
         "{body}"
     );
 }
+
+/// The single-entity door does not require a db connector's `driver` — a
+/// v1 client that never sent one is unaffected — but holds one it is given
+/// to the three names and to a visible scheme.
+#[tokio::test]
+async fn a_db_driver_is_optional_here_and_checked_when_given() {
+    let app = common::test_app().await;
+    let create = |name: &'static str, config: serde_json::Value| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(json_request(
+                    "POST",
+                    "/api/v2/admin/connectors",
+                    Some(json!({"name": name, "connector_type": "db", "config": config})),
+                ))
+                .await
+                .unwrap();
+            let status = resp.status();
+            (status, body_json(resp).await)
+        }
+    };
+    let (status, body) = create("no-driver", json!({"connection_string": "sqlite::memory:"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = create(
+        "agrees",
+        json!({"driver": "sqlite", "connection_string": "sqlite::memory:"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = create(
+        "hidden",
+        json!({"driver": "mysql", "connection_string": "env://ORDERS_DB_URL"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = create(
+        "disagrees",
+        json!({"driver": "postgresql", "connection_string": "sqlite::memory:"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string()
+            .contains("disagrees with the connection string"),
+        "{body}"
+    );
+    let (status, body) = create(
+        "unknown",
+        json!({"driver": "postgres", "connection_string": "postgres://h/db"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}

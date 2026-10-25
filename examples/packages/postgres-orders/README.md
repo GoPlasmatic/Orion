@@ -61,11 +61,15 @@ each request still inserts a new order, so the history grows.
 
 **`connector.json`** — the two governance features worth copying:
 
-- The connection string is an environment reference:
-  `${ORDERS_DB_URL:-postgres://orion:orion@postgres:5432/orion_orders}`.
-  Orion substitutes it from the server's environment when the connector
-  loads, so the saved config carries no credentials and the same JSON works
-  in compose (`postgres` host) and on a laptop (`localhost`).
+- The connection string is a secret reference, `env://ORDERS_DB_URL`. The
+  server resolves it from its own environment when the connector loads, so
+  the saved config carries no credentials and the same JSON works in compose
+  (`postgres` host, set in `docker-compose.yml`) and on a laptop
+  (`localhost`).
+- `"driver": "postgresql"` names the backend the reference hides. A
+  definition set must name it on every `db` connector: it is how
+  `orion-server compile --format deployment` picks the connection's
+  provider.
 - `"operations": { "delete": false }` makes the connector **delete-proof**:
   any workflow that tries a `data_write` delete through it is rejected at
   the connector, no matter what its tasks say.

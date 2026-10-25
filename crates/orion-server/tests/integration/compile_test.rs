@@ -61,7 +61,7 @@ fn sugared_set(label: &str) -> ScratchDir {
     std::fs::write(
         dir.join("conn.json"),
         r#"{ "name": "pg", "connector_type": "db",
-             "config": { "connection_string": "postgres://host/app" } }"#,
+             "config": { "driver": "postgresql", "connection_string": "postgres://host/app" } }"#,
     )
     .unwrap();
     std::fs::write(
@@ -666,7 +666,7 @@ fn sql_set(label: &str) -> ScratchDir {
     std::fs::write(
         dir.join("conn.json"),
         r#"{"name": "orders-db", "connector_type": "db",
-            "config": {"connection_string": "sqlite::memory:"}}"#,
+            "config": {"driver": "sqlite", "connection_string": "sqlite::memory:"}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -1583,6 +1583,80 @@ fn a_literal_credential_is_refused() {
         "the credential is never echoed: {report}"
     );
     assert!(!out.join("deployment.json").exists());
+}
+
+/// A db connector's driver comes from its `driver` field, so a connection
+/// string behind a secret reference compiles: the reference becomes a
+/// locator and the field becomes the provider, leaving `public_config`.
+#[test]
+fn a_db_connection_behind_a_reference_takes_its_driver_from_the_field() {
+    let scratch = deployment_set("compile-deployment-db-driver");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn-db.json"),
+        r#"{ "name": "orders-db", "connector_type": "db",
+             "config": { "type": "db", "driver": "postgresql",
+                         "connection_string": "env://ORDERS_DB_URL", "max_connections": 5 } }"#,
+    )
+    .unwrap();
+    let out = dir.join("dist");
+    let (ok, report) = compile_deployment(dir, &out);
+    assert!(ok, "{report}");
+    let db = read_json(&out.join("connections/orders-db.json"));
+    assert_eq!(db["driver"], "org.orion.postgresql");
+    assert_eq!(
+        db["secret_locators"],
+        serde_json::json!({"connection_string": "env://ORDERS_DB_URL"})
+    );
+    assert_eq!(
+        db["public_config"],
+        serde_json::json!({"max_connections": 5})
+    );
+}
+
+/// In a definition set every db connector names its driver — the lint gate
+/// refuses one without, with a stable check id, and so does every compile —
+/// and a stated driver the visible scheme contradicts is refused too.
+#[test]
+fn a_set_db_connector_names_a_driver_its_scheme_agrees_with() {
+    let scratch = deployment_set("lint-db-driver");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn-db.json"),
+        r#"{ "name": "orders-db", "connector_type": "db",
+             "config": { "connection_string": "env://ORDERS_DB_URL" } }"#,
+    )
+    .unwrap();
+    let (ok, report) = run(&["lint", dir.to_str().unwrap()]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("[connector.db_driver]") && report.contains("connector 'orders-db'"),
+        "{report}"
+    );
+    let (ok, report) = compile_deployment(dir, &dir.join("dist"));
+    assert!(!ok && report.contains("[connector.db_driver]"), "{report}");
+
+    std::fs::write(
+        dir.join("conn-db.json"),
+        r#"{ "name": "orders-db", "connector_type": "db",
+             "config": { "driver": "mysql", "connection_string": "postgres://db/app" } }"#,
+    )
+    .unwrap();
+    let (ok, report) = run(&["lint", dir.to_str().unwrap()]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("disagrees with the connection string") && !report.contains("db_driver]"),
+        "{report}"
+    );
+
+    std::fs::write(
+        dir.join("conn-db.json"),
+        r#"{ "name": "orders-db", "connector_type": "db",
+             "config": { "driver": "postgresql", "connection_string": "postgres://db/app" } }"#,
+    )
+    .unwrap();
+    let (ok, report) = run(&["lint", dir.to_str().unwrap()]);
+    assert!(ok, "{report}");
 }
 
 /// A key no definition defines names the entity and the key.

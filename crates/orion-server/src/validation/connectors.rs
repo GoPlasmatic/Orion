@@ -84,12 +84,49 @@ pub fn validate_connector_config(
     match &parsed {
         ConnectorConfig::Http(c) => validate_http(c)?,
         ConnectorConfig::Cache(c) => validate_cache(c, config)?,
+        ConnectorConfig::Db(_) => validate_db(config)?,
         // Nothing beyond the shared gate/retry/query checks and the endpoint
-        // scheme allow-list above. A db connector is its connection string,
-        // and a storage connector's endpoint is scheme-checked.
-        ConnectorConfig::Db(_) | ConnectorConfig::Storage(_) => {}
+        // scheme allow-list above: a storage connector's endpoint is
+        // scheme-checked.
+        ConnectorConfig::Storage(_) => {}
     }
 
+    Ok(())
+}
+
+/// Db: a `driver`, when one is given, is one of the three names and agrees
+/// with the connection string's scheme wherever the scheme is visible.
+///
+/// Read from the raw `config`, not the parsed one: the typed field reads an
+/// unknown value as absent so a pre-1.0 row still loads, and the door is
+/// where an unknown value is refused. Not required here — a definition set
+/// requires it (`lint`'s `connector.db_driver`), the single-entity API does
+/// not.
+fn validate_db(config: &serde_json::Value) -> Result<(), OrionError> {
+    use crate::connector::DbDriver;
+    let Some(raw) = config.get("driver") else {
+        return Ok(());
+    };
+    let driver = raw.as_str().and_then(DbDriver::from_name).ok_or_else(|| {
+        OrionError::validation(format!(
+            "Invalid db driver {raw}. Must be one of: {}",
+            DbDriver::NAMES.join(", ")
+        ))
+    })?;
+    let connection_string = config
+        .get("connection_string")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if let Some(Some(scheme_driver)) = DbDriver::for_connection_string(connection_string)
+        && scheme_driver != driver
+    {
+        return Err(OrionError::validation(format!(
+            "db driver '{}' disagrees with the connection string, whose scheme selects '{}' — \
+             the scheme is what connects, so name the driver it selects",
+            driver.as_str(),
+            scheme_driver.as_str()
+        )));
+    }
     Ok(())
 }
 
@@ -881,6 +918,52 @@ mod tests {
     // R4: config-without-type passes `validate_update_connector` (the stored
     // type is not available here) — the update handler validates it against
     // the stored connector's type via `validate_connector_config`.
+
+    #[test]
+    fn a_db_driver_is_one_of_three_and_agrees_with_a_visible_scheme() {
+        for (driver, url) in [
+            ("postgresql", "postgres://h/db"),
+            ("postgresql", "postgresql://h/db"),
+            ("mysql", "mariadb://h/db"),
+            ("sqlite", "sqlite::memory:"),
+            // The scheme is not visible, so there is nothing to disagree with.
+            ("mysql", "env://ORDERS_DB_URL"),
+            ("sqlite", "${DB_URL:-postgres://h/db}"),
+        ] {
+            let config = json!({"connection_string": url, "driver": driver});
+            assert!(
+                validate_connector_config(ConnectorType::Db, &config).is_ok(),
+                "{driver} over {url}"
+            );
+        }
+        let message = validate_connector_config(
+            ConnectorType::Db,
+            &json!({"connection_string": "postgres://h/db", "driver": "mysql"}),
+        )
+        .expect_err("a disagreeing driver is refused")
+        .to_string();
+        assert!(
+            message.contains("'mysql'") && message.contains("'postgresql'"),
+            "{message}"
+        );
+        for driver in [json!("postgres"), json!("mongodb"), json!(1)] {
+            let message = validate_connector_config(
+                ConnectorType::Db,
+                &json!({"connection_string": "postgres://h/db", "driver": driver}),
+            )
+            .expect_err("an unknown driver is refused")
+            .to_string();
+            assert!(message.contains("postgresql, mysql, sqlite"), "{message}");
+        }
+        // Absent is fine at the single-entity door.
+        assert!(
+            validate_connector_config(
+                ConnectorType::Db,
+                &json!({"connection_string": "postgres://h/db"})
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn test_connector_config_db_missing_connection_string() {

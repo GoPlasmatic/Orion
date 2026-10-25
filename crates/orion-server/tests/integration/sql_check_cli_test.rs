@@ -23,7 +23,7 @@ fn set(label: &str, tasks: serde_json::Value) -> ScratchDir {
     std::fs::write(
         defs.join("connector.json"),
         serde_json::json!({"name": "orders-db", "connector_type": "db",
-            "config": {"type": "db", "connection_string": format!("sqlite:{}", db.display())}})
+            "config": {"type": "db", "driver": "sqlite", "connection_string": format!("sqlite:{}", db.display())}})
         .to_string(),
     )
     .unwrap();

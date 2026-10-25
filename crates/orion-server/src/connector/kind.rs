@@ -197,6 +197,7 @@ mod tests {
     fn the_data_backend_target_accepts_db_and_nothing_else() {
         let db = ConnectorConfig::Db(DbConnectorConfig {
             connection_string: "sqlite::memory:".to_string(),
+            driver: None,
             max_connections: None,
             connect_timeout_ms: None,
             query_timeout_ms: None,

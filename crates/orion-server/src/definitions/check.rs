@@ -298,6 +298,54 @@ fn model_references(
     (literal, dynamic)
 }
 
+/// Every `db` connector of a definition set names its `driver`.
+///
+/// A directory's rule, not an artifact's: [`super::gate_directory`] runs it,
+/// and `package lint` does not, because an artifact exported from an
+/// instance carries its connectors as they were stored and the admin API
+/// never required the field. A set is what `compile --format deployment`
+/// reads, and a connection's provider is its driver: a connection string
+/// that is a secret reference or a `${VAR}` placeholder does not show its
+/// scheme until the serving node resolves it, so only the field can say.
+/// Requiring it of every `db` connector, reference or not, keeps one rule
+/// instead of one that depends on how the URL happens to be spelled. Whether
+/// a stated driver agrees with a visible scheme is the admin validator's
+/// check, which the set pass already runs (`schema.connector`).
+pub(super) fn check_db_drivers(set: &DefinitionSet, findings: &mut Vec<Diagnostic>) {
+    for def in set.iter(Entity::Connector) {
+        if def.doc.get("connector_type").and_then(Value::as_str) != Some("db") {
+            continue;
+        }
+        if def
+            .doc
+            .get("config")
+            .is_some_and(|config| config.get("driver").is_some())
+        {
+            continue;
+        }
+        let name = def
+            .doc
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&def.origin);
+        let line = def.locate("connector.config");
+        findings.push(
+            Diagnostic::error(
+                "connector.db_driver",
+                format!("connector '{name}'"),
+                format!(
+                    "a db connector in a definition set names its `driver` ({}): the \
+                     connection string's scheme is not always visible before it is resolved, \
+                     and a deployment's connection needs the driver to name its provider",
+                    crate::connector::DbDriver::NAMES.join(", ")
+                ),
+            )
+            .with_location(&def.origin, Some("connector.config"), line)
+            .with_remedy("add `\"driver\": \"postgresql\"` (or mysql, sqlite) to `config`"),
+        );
+    }
+}
+
 /// What the workflow pass learned.
 struct Workflows {
     ids: Vec<String>,

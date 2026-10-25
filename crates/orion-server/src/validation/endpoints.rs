@@ -340,6 +340,7 @@ mod tests {
     fn db(conn: &str) -> ConnectorConfig {
         ConnectorConfig::Db(DbConnectorConfig {
             connection_string: conn.to_string(),
+            driver: None,
             max_connections: None,
             connect_timeout_ms: None,
             query_timeout_ms: None,
@@ -440,6 +441,7 @@ mod tests {
     async fn allow_private_urls_short_circuits_every_check() {
         let mut cfg = DbConnectorConfig {
             connection_string: "postgres://u:p@127.0.0.1:5432/orion".to_string(),
+            driver: None,
             max_connections: None,
             connect_timeout_ms: None,
             query_timeout_ms: None,
@@ -457,6 +459,7 @@ mod tests {
     async fn link_local_metadata_endpoint_is_refused_on_every_backend() {
         let cfg = DbConnectorConfig {
             connection_string: "postgres://u:p@169.254.169.254:5432/orion".to_string(),
+            driver: None,
             max_connections: None,
             connect_timeout_ms: None,
             query_timeout_ms: None,
@@ -475,6 +478,7 @@ mod tests {
     async fn sqlite_connection_strings_bypass_the_address_check() {
         let cfg = DbConnectorConfig {
             connection_string: "sqlite:/app/data/orion.db".to_string(),
+            driver: None,
             max_connections: None,
             connect_timeout_ms: None,
             query_timeout_ms: None,

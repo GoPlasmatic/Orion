@@ -4,6 +4,7 @@
   "connector_type": "db",
   "config": {
     "type": "db",
+    "driver": "postgresql",
     "connection_string": "postgres://orion:orion@db.internal:5432/app",
     "max_connections": 2
   }

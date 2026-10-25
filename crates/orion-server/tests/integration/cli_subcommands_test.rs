@@ -1584,7 +1584,7 @@ fn a_connector_of_the_wrong_type_is_an_error() {
     std::fs::write(
         dir.join("conn.json"),
         r#"{"name":"pg","connector_type":"db",
-            "config":{"connection_string":"postgres://h/d"}}"#,
+            "config":{"driver":"postgresql","connection_string":"postgres://h/d"}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -1859,7 +1859,7 @@ fn set_mode_resolves_the_catalog_without_a_flag() {
     std::fs::write(
         dir.join("conn.json"),
         r#"{"name":"pg","connector_type":"db",
-            "config":{"connection_string":"postgres://h/app"}}"#,
+            "config":{"driver":"postgresql","connection_string":"postgres://h/app"}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -2150,7 +2150,7 @@ fn the_secret_inventory_covers_every_resolvable_scheme() {
     let dir = scratch.path();
     std::fs::write(
         dir.join("conn.json"),
-        r#"{"name":"db","connector_type":"db","config":{
+        r#"{"name":"db","connector_type":"db","config":{"driver":"postgresql",
              "connection_string":"postgres://user:password@host/db",
              "options":{"ca":"vault://secret/db#ca"}}}"#,
     )
@@ -3394,7 +3394,7 @@ fn a_statement_finding_names_its_sql_file() {
     .unwrap();
     std::fs::write(
         dir.join("conn.json"),
-        r#"{"name":"db","connector_type":"db","config":{"connection_string":"sqlite::memory:"}}"#,
+        r#"{"name":"db","connector_type":"db","config":{"driver":"sqlite","connection_string":"sqlite::memory:"}}"#,
     )
     .unwrap();
     std::fs::write(

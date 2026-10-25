@@ -5,7 +5,8 @@
   "tags": ["pkg:postgres-orders"],
   "config": {
     "type": "db",
-    "connection_string": "${ORDERS_DB_URL:-postgres://orion:orion@postgres:5432/orion_orders}",
+    "driver": "postgresql",
+    "connection_string": "env://ORDERS_DB_URL",
     "max_connections": 5,
     "operations": { "delete": false },
     "allow_private_urls": true

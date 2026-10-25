@@ -95,12 +95,12 @@ dist/
 | Connector | Driver |
 |---|---|
 | `http` | `org.orion.http` |
-| `db`, `connection_string` scheme `postgres` or `postgresql` | `org.orion.postgresql` |
-| `db`, scheme `mysql` or `mariadb` | `org.orion.mysql` |
-| `db`, scheme `sqlite` | `org.orion.sqlite` |
+| `db`, `"driver": "postgresql"` | `org.orion.postgresql` |
+| `db`, `"driver": "mysql"` | `org.orion.mysql` |
+| `db`, `"driver": "sqlite"` | `org.orion.sqlite` |
 | `cache`, backend `memory` | `org.orion.memory-cache` |
 
-Any other connector is an error. So is a `db` connector whose `connection_string` is a secret reference, because its scheme cannot name the driver. `provider_digest` is the driver's built-in digest, the one `GET /api/v2/admin/runtime-capabilities` reports.
+Any other connector is an error. A `db` connector's driver comes from its [`driver`](../../connectors/db.md#the-driver-field) field, not its connection string, so a `connection_string` that is a secret reference compiles. Every `db` connector in a set names one (`[connector.db_driver]`). The field becomes the provider and does not appear in `public_config`. `provider_digest` is the driver's built-in digest, the one `GET /api/v2/admin/runtime-capabilities` reports.
 
 Every string in the config that is a secret reference (`env://`, `vault://`) moves to `secret_locators` at its dotted path, such as `auth.token`. The rest is `public_config`, without the `type` key. A deployment carries references only. A literal credential, such as a secret-shaped key with a literal value or a password in a URL, is an error.
 

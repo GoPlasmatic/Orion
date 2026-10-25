@@ -138,6 +138,7 @@ pub fn gate_directory(
         }
     };
     findings.extend(super::check(&set, boundary, opts.require_ids, &registry));
+    super::check::check_db_drivers(&set, &mut findings);
 
     Ok(GateReport {
         set,

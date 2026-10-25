@@ -1,12 +1,12 @@
 <!-- description: The `db` connector config: the connection string, pool bounds, per-operation gates and the dialect guards that bound which tables it reaches. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # `db` connectors
 
 The `config` fields of a `db` connector, which backs PostgreSQL, MySQL and SQLite.
 
-Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_string` scheme selects the backend: `postgres://`, `mysql://` or `sqlite:`. Any other scheme, `mongodb://` included, is refused at create and update. There is no `driver` field.
+Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_string` scheme selects the backend: `postgres://` or `postgresql://`, `mysql://` or `mariadb://`, `sqlite:`. Any other scheme, `mongodb://` included, is refused at create and update.
 
 ```json
 {
@@ -14,6 +14,7 @@ Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_
   "connector_type": "db",
   "config": {
     "type": "db",
+    "driver": "postgresql",
     "connection_string": "env://ORDERS_DB_URL",
     "max_connections": 10,
     "connect_timeout_ms": 5000,
@@ -25,6 +26,7 @@ Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connection_string` | string | yes | — | Database URL; the scheme selects the backend. Carries credentials, and is always masked in API reads |
+| `driver` | string | in a definition set | — | `postgresql`, `mysql` or `sqlite`: the backend, stated. See [The `driver` field](#the-driver-field) |
 | `max_connections` | integer | no | — | Connection pool maximum size |
 | `connect_timeout_ms` | integer | no | — | Connection establishment timeout |
 | `query_timeout_ms` | integer | no | — | Per-query timeout |
@@ -35,6 +37,12 @@ Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_
 There are two ways to talk to it. The portable [`data_query` / `data_write`](../data-dialect.md) dialect runs unchanged against every SQL backend. The other is raw SQL through [`db_read` / `db_write`](../functions/db_read.md).
 
 There is no `retry` field: a statement that timed out may already have been applied, so database calls are never re-driven. See [Retries](./reliability.md#retries). Bound the call with `connect_timeout_ms` and `query_timeout_ms` instead.
+
+## The `driver` field
+
+`driver` names the backend the connection string selects. It does not select it: the scheme still does. Where the scheme is visible, the two must agree. `"driver": "mysql"` with a `postgres://` URL is refused at create and update, and by `lint`. A connection string that is a secret reference (`env://…`) or a `${VAR}` placeholder shows no scheme until the serving node resolves it, so there is nothing to compare, and the field is the only statement of the backend. Any value other than the three names is refused.
+
+The single-entity admin API (`POST /api/v2/admin/connectors`) does not require it. A [definition set](../cli/orion-server/lint.md) does: `lint <dir>` and `compile` refuse a `db` connector without one with `[connector.db_driver]`, whether its connection string is a reference or not. A set is what `orion-server compile --format deployment` reads, and a deployed connection's provider is its driver (`org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`), which a hidden scheme cannot name. The field becomes the provider and is not carried in the connection's `public_config`.
 
 ## Dialect guards
 

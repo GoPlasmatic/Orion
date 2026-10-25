@@ -32,6 +32,9 @@ services:
     image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.4.0}
     ports:
       - "8080:8080"
+    environment:
+      # The connector's `env://ORDERS_DB_URL`, resolved by the server.
+      ORDERS_DB_URL: postgres://orion:orion@postgres:5432/orion_orders
     depends_on:
       postgres:
         condition: service_healthy

@@ -521,6 +521,12 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
         .and_then(Value::as_str)
         .unwrap_or_default();
     let driver = driver_for(connector_type, &config).map_err(|e| format!("{what}: {e}"))?;
+    if connector_type == "db" {
+        // It became the provider; the provider's settings have no such key.
+        if let Some(settings) = config.as_object_mut() {
+            settings.remove("driver");
+        }
+    }
     let provider_digest = foundation::builtin_provider_digest(driver)
         .ok_or_else(|| format!("{what}: '{driver}' is not a built-in driver"))?;
 
@@ -555,43 +561,31 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
 }
 
 /// The built-in driver a v1 connector of `connector_type` with `config`
-/// runs on.
+/// runs on: `http`'s, a `db` connector's by its `driver` field, a memory
+/// cache's.
 fn driver_for(connector_type: &str, config: &Value) -> Result<&'static str, String> {
     match connector_type {
         "http" => Ok(foundation::DRIVER_HTTP),
-        "db" => {
-            let Some(connection_string) = config.get("connection_string").and_then(Value::as_str)
-            else {
-                return Err("a db connector needs a `connection_string`".to_string());
-            };
-            if crate::connector::secrets::is_secret_reference(connection_string) {
-                return Err(
-                    "`connection_string` is a secret reference, so its scheme cannot name the \
-                     driver (postgresql, mysql or sqlite)"
-                        .to_string(),
-                );
-            }
-            if connection_string.trim_start().starts_with("${") {
-                return Err(
-                    "`connection_string` is a `${VAR}` placeholder, so its scheme cannot name \
-                     the driver (postgresql, mysql or sqlite)"
-                        .to_string(),
-                );
-            }
-            let scheme = connection_string
-                .split_once(':')
-                .map(|(scheme, _)| scheme.to_ascii_lowercase())
-                .unwrap_or_default();
-            match scheme.as_str() {
-                "postgres" | "postgresql" => Ok(foundation::DRIVER_POSTGRESQL),
-                "mysql" | "mariadb" => Ok(foundation::DRIVER_MYSQL),
-                "sqlite" => Ok(foundation::DRIVER_SQLITE),
-                _ => Err(format!(
-                    "the connection string's scheme '{scheme}' names no built-in driver \
-                     (postgres, postgresql, mysql, mariadb or sqlite)"
+        // The driver is the field's to name: a connection string that is a
+        // secret reference or a `${VAR}` placeholder shows no scheme until
+        // it is resolved, which is why a set must state it
+        // (`connector.db_driver`), and the admin validator has already held
+        // it to any scheme that is visible.
+        "db" => match config.get("driver") {
+            None => Err(format!(
+                "a db connector names its `driver` ({}) for a deployment to name its provider",
+                crate::connector::DbDriver::NAMES.join(", ")
+            )),
+            Some(raw) => match raw.as_str().and_then(crate::connector::DbDriver::from_name) {
+                Some(crate::connector::DbDriver::Postgresql) => Ok(foundation::DRIVER_POSTGRESQL),
+                Some(crate::connector::DbDriver::Mysql) => Ok(foundation::DRIVER_MYSQL),
+                Some(crate::connector::DbDriver::Sqlite) => Ok(foundation::DRIVER_SQLITE),
+                None => Err(format!(
+                    "db driver {raw} is not one of {}",
+                    crate::connector::DbDriver::NAMES.join(", ")
                 )),
-            }
-        }
+            },
+        },
         "cache" => match config.get("backend").and_then(Value::as_str) {
             Some("memory") | None => Ok(foundation::DRIVER_MEMORY_CACHE),
             Some(other) => Err(format!(
@@ -746,19 +740,42 @@ mod tests {
     }
 
     #[test]
-    fn the_driver_follows_the_connection_string() {
-        for (url, driver) in [
-            ("postgres://db/app", foundation::DRIVER_POSTGRESQL),
-            ("mariadb://db/app", foundation::DRIVER_MYSQL),
-            ("sqlite::memory:", foundation::DRIVER_SQLITE),
+    fn the_driver_follows_the_field_and_leaves_the_settings() {
+        for (field, url, driver) in [
+            (
+                "postgresql",
+                "postgres://db/app",
+                foundation::DRIVER_POSTGRESQL,
+            ),
+            ("mysql", "mariadb://db/app", foundation::DRIVER_MYSQL),
+            ("sqlite", "sqlite::memory:", foundation::DRIVER_SQLITE),
+            // A reference shows no scheme; the field still names the driver.
+            (
+                "postgresql",
+                "env://ORDERS_DB_URL",
+                foundation::DRIVER_POSTGRESQL,
+            ),
+            (
+                "sqlite",
+                "${LEADERBOARD_URL:-sqlite::memory:}",
+                foundation::DRIVER_SQLITE,
+            ),
         ] {
             let (conn, _) = connection(
                 &json!({"name": "db", "connector_type": "db",
-                        "config": {"connection_string": url}}),
+                        "config": {"connection_string": url, "driver": field}}),
                 "db.json",
             )
             .expect("converts");
             assert_eq!(conn.driver, driver, "{url}");
+            assert!(conn.public_config.get("driver").is_none(), "{url}");
         }
+        let err = connection(
+            &json!({"name": "db", "connector_type": "db",
+                    "config": {"connection_string": "env://DB"}}),
+            "db.json",
+        )
+        .expect_err("no driver, no provider");
+        assert!(err.contains("`driver`"), "{err}");
     }
 }
