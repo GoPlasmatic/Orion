@@ -400,8 +400,8 @@ async fn test_cache_overwrite_key() {
 async fn test_cache_missing_connector_error() {
     let app = common::test_app().await;
 
-    // R5 blocks activating against a missing connector, so create it first
-    // and delete it afterwards — the one way this state is still reachable.
+    // Deploy the connection with the channel, then a deployment without it —
+    // a workflow naming a connection its node does not serve.
     let conn_id =
         common::create_connector(&app, common::cache_connector_memory("nonexistent-cache")).await;
     common::create_and_activate_channel(
@@ -426,16 +426,7 @@ async fn test_cache_missing_connector_error() {
         ),
     )
     .await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "DELETE",
-            &format!("/api/v2/admin/connectors/{conn_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    common::remove_member(&app, "connection", &conn_id).await;
 
     let resp = app
         .clone()

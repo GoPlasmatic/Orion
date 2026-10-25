@@ -6,11 +6,15 @@
 
 /// Testcontainers-backed harness for the portable data_query/data_write dialects.
 pub mod backends;
+/// Deploying fixtures through v2: definitions, connections, manifests.
+pub mod deploy;
 /// Shared task-builder DSL for the data-plane (data_query/data_write) tests.
 pub mod dsl;
 /// The model fixture, the bucket standing in for its object storage, and the
 /// registration helpers the model tests share.
 pub mod models;
+/// The v1 entity routes, for the tests whose subject is v1 lifecycle.
+pub mod v1;
 
 use std::sync::Arc;
 
@@ -318,20 +322,23 @@ pub fn cache_connector_memory(name: &str) -> serde_json::Value {
     })
 }
 
-/// Create a connector via admin API and return the connector ID.
+/// Deploy a v1-shaped connector body (`{name, connector_type, config}`) as a
+/// connection over its built-in driver, answering the connection id — the
+/// name tasks reference it by.
 pub async fn create_connector(app: &axum::Router, connector_json: serde_json::Value) -> String {
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(connector_json),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    let body = body_json(resp).await;
-    body["data"]["id"].as_str().unwrap().to_string()
+    let (id, revision, digest) = deploy::create_connection(app, &connector_json).await;
+    deploy::deploy(
+        app,
+        vec![deploy::Upsert {
+            kind: "connection",
+            id: id.clone(),
+            digest,
+            revision: Some(revision),
+            requires: Vec::new(),
+        }],
+    )
+    .await;
+    id
 }
 
 /// A generic workflow builder that wraps a tasks array with `condition: true`.
@@ -389,75 +396,48 @@ pub async fn create_and_activate_channel_with_config(
 }
 
 /// Like [`create_and_activate_channel_with_config`] but returns
-/// `(channel_id, workflow_id)` — for tests that drive status changes or
-/// deletes against the channel id (e.g. the cluster propagation tests).
+/// `(channel_id, workflow_id)`. A channel's id is its name.
 pub async fn create_and_activate_channel_full(
     app: &axum::Router,
     channel_name: &str,
     workflow_json: serde_json::Value,
     channel_config: serde_json::Value,
 ) -> (String, String) {
-    // Create workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow_json),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", workflow_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::OK);
-
-    // Create channel with config
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": channel_name,
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": format!("/{}", channel_name),
-                "workflow_id": workflow_id,
-                "config": channel_config,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let channel_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", channel_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::OK);
-
-    (channel_id, workflow_id)
+    let workflow_id = deploy::workflow_id_of(&workflow_json);
+    let workflow = deploy::upload(app, deploy::workflow_definition(&workflow_json)).await;
+    let channel = deploy::upload(
+        app,
+        serde_json::json!({"kind": "channel", "definition": {
+            "name": channel_name,
+            "channel_type": "sync",
+            "protocol": "http",
+            "methods": ["POST"],
+            "route_pattern": format!("/{}", channel_name),
+            "config": channel_config,
+        }}),
+    )
+    .await;
+    deploy::deploy(
+        app,
+        vec![
+            deploy::Upsert {
+                kind: "workflow",
+                id: workflow_id.clone(),
+                digest: workflow,
+                revision: None,
+                requires: Vec::new(),
+            },
+            deploy::Upsert {
+                kind: "channel",
+                id: channel_name.to_string(),
+                digest: channel,
+                revision: None,
+                requires: vec![("workflow", workflow_id.clone())],
+            },
+        ],
+    )
+    .await;
+    (channel_name.to_string(), workflow_id)
 }
 
 // ============================================================
@@ -560,40 +540,30 @@ pub fn post_with_idempotency_key(uri: &str, key: &str, body: serde_json::Value) 
         .unwrap()
 }
 
-/// Create a workflow from JSON, activate it, and return the workflow_id.
+/// Deploy a workflow from a v1-shaped body, answering its id. Bound to no
+/// channel until one requires it.
 pub async fn create_and_activate_workflow(
     app: &axum::Router,
     workflow_json: serde_json::Value,
 ) -> String {
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow_json),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::OK);
-
-    wf_id
+    let workflow_id = deploy::workflow_id_of(&workflow_json);
+    let digest = deploy::upload(app, deploy::workflow_definition(&workflow_json)).await;
+    deploy::deploy(
+        app,
+        vec![deploy::Upsert {
+            kind: "workflow",
+            id: workflow_id.clone(),
+            digest,
+            revision: None,
+            requires: Vec::new(),
+        }],
+    )
+    .await;
+    workflow_id
 }
 
-/// Create a REST channel with a specific route pattern and methods, activate it,
-/// and return the channel_id.
+/// Deploy a REST channel with a route pattern and methods, bound to
+/// `workflow_id`, answering its id (its name).
 pub async fn create_rest_channel(
     app: &axum::Router,
     name: &str,
@@ -601,38 +571,110 @@ pub async fn create_rest_channel(
     methods: Vec<&str>,
     workflow_id: &str,
 ) -> String {
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": name,
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": methods,
-                "route_pattern": route_pattern,
-                "workflow_id": workflow_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
+    let digest = deploy::upload(
+        app,
+        serde_json::json!({"kind": "channel", "definition": {
+            "name": name,
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": methods,
+            "route_pattern": route_pattern,
+        }}),
+    )
+    .await;
+    deploy::deploy(
+        app,
+        vec![deploy::Upsert {
+            kind: "channel",
+            id: name.to_string(),
+            digest,
+            revision: None,
+            requires: vec![("workflow", workflow_id.to_string())],
+        }],
+    )
+    .await;
+    name.to_string()
+}
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+/// Deploy a channel from a v1-shaped body (`{name, channel_type, protocol,
+/// …, workflow_id}`), bound to the workflow its `workflow_id` names,
+/// answering its id (its name). For a channel the other helpers do not
+/// shape: a route of its own, a `transport_config`, an async type.
+pub async fn deploy_channel(app: &axum::Router, channel: serde_json::Value) -> String {
+    let name = channel["name"]
+        .as_str()
+        .expect("a channel name")
+        .to_string();
+    let (definition, workflow) = deploy::channel_definition(&channel);
+    let digest = deploy::upload(app, definition).await;
+    deploy::deploy(
+        app,
+        vec![deploy::Upsert {
+            kind: "channel",
+            id: name.clone(),
+            digest,
+            revision: None,
+            requires: workflow.into_iter().map(|id| ("workflow", id)).collect(),
+        }],
+    )
+    .await;
+    name
+}
 
-    ch_id
+/// Deploy an async cron channel bound to `workflow_id`, its schedule and
+/// payload in `transport_config`, answering its id (its name).
+pub async fn create_cron_channel(
+    app: &axum::Router,
+    name: &str,
+    workflow_id: &str,
+    transport_config: serde_json::Value,
+) -> String {
+    deploy_channel(
+        app,
+        serde_json::json!({
+            "name": name,
+            "channel_type": "async",
+            "protocol": "cron",
+            "workflow_id": workflow_id,
+            "transport_config": transport_config,
+        }),
+    )
+    .await
+}
+
+/// Deploy a plugin from its `plugin.toml` text and component bytes,
+/// answering its id (the manifest's). The node must have `plugins.enabled`.
+pub async fn deploy_plugin(app: &axum::Router, manifest_toml: &str, component: &[u8]) -> String {
+    use base64::Engine as _;
+    let manifest = orion::plugin::manifest::Manifest::parse(manifest_toml)
+        .unwrap_or_else(|e| panic!("the fixture manifest parses: {e:?}"));
+    let id = manifest.name.clone();
+    let digest = deploy::upload(
+        app,
+        serde_json::json!({"kind": "plugin", "definition": {
+            "manifest": serde_json::to_value(&manifest).expect("a manifest serializes"),
+            "component": base64::engine::general_purpose::STANDARD.encode(component),
+        }}),
+    )
+    .await;
+    deploy::deploy(
+        app,
+        vec![deploy::Upsert {
+            kind: "plugin",
+            id: id.clone(),
+            digest,
+            revision: None,
+            requires: Vec::new(),
+        }],
+    )
+    .await;
+    id
+}
+
+/// Deploy the head without member `(kind, id)` — the v2 statement of
+/// archiving or deleting it.
+pub async fn remove_member(app: &axum::Router, kind: &str, id: &str) {
+    deploy::remove(app, &[(kind, id)]).await;
 }
 
 /// Submit to an async endpoint and return `(trace_id, trace_token)` from the

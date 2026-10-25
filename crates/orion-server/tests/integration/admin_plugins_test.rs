@@ -10,9 +10,7 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::common::{
-    body_json, create_and_activate_channel_with_config, json_request, test_state_with_config,
-};
+use crate::common::{self, body_json, json_request, test_state_with_config, v1};
 use orion::config::AppConfig;
 use orion::server::state::AppState;
 
@@ -242,13 +240,9 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
     assert_eq!(health["components"]["plugins"], "ok", "{health}");
 
     // A workflow may name the function now, and a channel serves it.
-    let (channel, workflow_id) = create_and_activate_channel_with_config(
-        &app,
-        "plugin-wrap",
-        wrap_workflow("Wrap via plugin"),
-        json!({}),
-    )
-    .await;
+    let (channel, workflow_id) =
+        v1::create_and_activate_channel(&app, "plugin-wrap", wrap_workflow("Wrap via plugin"))
+            .await;
     let (status, body) = post(
         &app,
         &format!("/api/v2/data/{channel}"),
@@ -336,6 +330,29 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
     );
 }
 
+/// A deployed plugin publishes its functions, and a deployed workflow serves
+/// through one — the data-plane half of the test above, deployed through v2.
+#[tokio::test]
+async fn a_deployed_plugin_serves_a_deployed_workflow() {
+    let (state, app) = app(true).await;
+    let id = common::deploy_plugin(&app, MANIFEST, COMPONENT).await;
+    assert_eq!(id, "test.fixture");
+    let generation = state.runtime.load();
+    assert!(generation.functions.contains("test.fixture.wrap"));
+    assert!(generation.plugins.issues.is_empty());
+
+    let (channel, _) =
+        common::create_and_activate_channel(&app, "plugin-wrap", wrap_workflow("Wrap")).await;
+    let (status, body) = post(
+        &app,
+        &format!("/api/v2/data/{channel}"),
+        json!({"data": {"msg": "hi"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["result"]["wrapped"]["message"], "hi", "{body}");
+}
+
 /// A workflow calling the fixture's `upper` with an expression in its
 /// template field.
 fn upper_workflow(name: &str, text: Value) -> Value {
@@ -375,14 +392,13 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     assert_eq!(text["template_at"], json!([""]), "{entry}");
     assert_eq!(text["resolvable"], json!(false));
 
-    let (channel, workflow_id) = create_and_activate_channel_with_config(
+    let (channel, workflow_id) = v1::create_and_activate_channel(
         &app,
         "plugin-upper",
         upper_workflow(
             "Upper via plugin",
             json!({"cat": ["hello ", {"var": "data.input.who"}]}),
         ),
-        json!({}),
     )
     .await;
     let (status, body) = post(
@@ -614,13 +630,8 @@ async fn dry_run_reports_every_gate_without_writing() {
 
     let (status, _) = set_status(&app, "test.fixture", "active").await;
     assert_eq!(status, StatusCode::OK);
-    let (_channel, workflow_id) = create_and_activate_channel_with_config(
-        &app,
-        "plugin-dry",
-        wrap_workflow("Wrap dry"),
-        json!({}),
-    )
-    .await;
+    let (_channel, workflow_id) =
+        v1::create_and_activate_channel(&app, "plugin-dry", wrap_workflow("Wrap dry")).await;
     let (status, body) = patch(
         &app,
         "/api/v2/admin/plugins/test.fixture/status?dry_run=true",

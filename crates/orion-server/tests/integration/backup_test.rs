@@ -292,7 +292,8 @@ async fn test_backup_contains_data() {
 
     // Insert some connectors
     for i in 0..2 {
-        common::create_connector(&app, common::db_connector(&format!("backup-conn-{}", i))).await;
+        common::v1::create_connector(&app, common::db_connector(&format!("backup-conn-{}", i)))
+            .await;
     }
 
     // Create a backup

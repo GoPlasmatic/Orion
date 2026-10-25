@@ -27,26 +27,21 @@ async fn app_with_mock_origin() -> axum::Router {
     });
 
     let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "mock-origin",
-                "name": "mock-origin",
-                "connector_type": "http",
-                "config": {
-                    "type": "http",
-                    "url": format!("http://{}", addr),
-                    "retry": {"max_retries": 0, "retry_delay_ms": 10},
-                    "allow_private_urls": true
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    common::create_connector(
+        &app,
+        json!({
+            "id": "mock-origin",
+            "name": "mock-origin",
+            "connector_type": "http",
+            "config": {
+                "type": "http",
+                "url": format!("http://{}", addr),
+                "retry": {"max_retries": 0, "retry_delay_ms": 10},
+                "allow_private_urls": true
+            }
+        }),
+    )
+    .await;
     app
 }
 

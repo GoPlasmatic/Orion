@@ -30,26 +30,21 @@ async fn test_order_processing_pipeline() {
     let app = common::test_app().await;
 
     // Create HTTP connector for the mock payment API
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "payment-api",
-                "name": "payment-api",
-                "connector_type": "http",
-                "config": {
-                    "type": "http",
-                    "url": format!("http://{}", mock_addr),
-                    "retry": { "max_retries": 0, "retry_delay_ms": 10 },
-                    "allow_private_urls": true
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    common::create_connector(
+        &app,
+        json!({
+            "id": "payment-api",
+            "name": "payment-api",
+            "connector_type": "http",
+            "config": {
+                "type": "http",
+                "url": format!("http://{}", mock_addr),
+                "retry": { "max_retries": 0, "retry_delay_ms": 10 },
+                "allow_private_urls": true
+            }
+        }),
+    )
+    .await;
 
     // Create SQLite DB connector for order storage
     common::create_connector(

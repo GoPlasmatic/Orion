@@ -87,7 +87,7 @@ async fn assert_pagination_contract(app: &axum::Router, base: &str, total: i64) 
 async fn workflows_and_channels_lists_page_the_same_way() {
     let app = common::test_app().await;
     for i in 0..3 {
-        common::create_and_activate_channel(
+        common::v1::create_and_activate_channel(
             &app,
             &format!("page-ch-{i}"),
             common::simple_log_workflow(&format!("page-wf-{i}")),
@@ -106,9 +106,11 @@ async fn workflows_and_channels_lists_page_the_same_way() {
 #[tokio::test]
 async fn version_history_pages_the_same_way() {
     let app = common::test_app().await;
-    let workflow_id =
-        common::create_and_activate_workflow(&app, common::simple_log_workflow("page-versions"))
-            .await;
+    let workflow_id = common::v1::create_and_activate_workflow(
+        &app,
+        common::simple_log_workflow("page-versions"),
+    )
+    .await;
 
     // v1 is active; add and activate two more so the history has three rows.
     for _ in 0..2 {
@@ -150,7 +152,7 @@ async fn version_history_pages_the_same_way() {
 async fn connectors_list_pages_the_same_way() {
     let app = common::test_app().await;
     for i in 0..3 {
-        common::create_connector(&app, common::db_connector(&format!("page-conn-{i}"))).await;
+        common::v1::create_connector(&app, common::db_connector(&format!("page-conn-{i}"))).await;
     }
 
     assert_pagination_contract(&app, "/api/v2/admin/connectors", 3).await;
@@ -166,7 +168,7 @@ async fn audit_log_list_pages_the_same_way() {
     // One audit row per connector create — through the async audit queue, so
     // wait for all three to land before asserting the contract.
     for i in 0..3 {
-        common::create_connector(&app, common::db_connector(&format!("page-audit-{i}"))).await;
+        common::v1::create_connector(&app, common::db_connector(&format!("page-audit-{i}"))).await;
     }
     common::wait_for_body(&app, "/api/v2/admin/audit-logs", |b| b["total"] == 3).await;
 

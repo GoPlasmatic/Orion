@@ -69,7 +69,7 @@ async fn a_single_node_recovers_a_committed_change_after_a_failed_reload() {
     config.cluster.epoch_poll_interval_ms = 10;
     let (state, pool) = common::test_state_and_pool(config).await;
     let app = orion::server::build_router(state.clone());
-    let (channel, _) = common::create_and_activate_channel_full(
+    let (channel, _) = common::v1::create_and_activate_channel_full(
         &app,
         "recover-after-commit",
         common::echo_workflow("recover"),
@@ -159,7 +159,7 @@ async fn a_definition_read_snapshot_holds_across_a_concurrent_commit() {
     config.storage.url = format!("{}?mode=rwc", db.url());
     let (state, pool) = common::test_state_and_pool(config).await;
     let app = orion::server::build_router(state.clone());
-    let (channel, workflow) = common::create_and_activate_channel_full(
+    let (channel, workflow) = common::v1::create_and_activate_channel_full(
         &app,
         "consistent-definitions",
         common::echo_workflow("snapshot"),

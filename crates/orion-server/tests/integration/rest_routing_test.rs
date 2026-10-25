@@ -237,37 +237,18 @@ async fn an_async_rest_channel_is_reachable_at_its_route_pattern() {
     let app = common::test_app().await;
     let wf_id = create_echo_workflow(&app, "Async Route Workflow").await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "async.orders",
-                "channel_type": "async",
-                "protocol": "rest",
-                "methods": ["POST"],
-                "route_pattern": "/async-orders/{id}",
-                "workflow_id": wf_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{id}/status"),
-            Some(json!({ "status": "active" })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::deploy_channel(
+        &app,
+        json!({
+            "name": "async.orders",
+            "channel_type": "async",
+            "protocol": "rest",
+            "methods": ["POST"],
+            "route_pattern": "/async-orders/{id}",
+            "workflow_id": wf_id,
+        }),
+    )
+    .await;
 
     // The declared route, submitted asynchronously.
     let resp = app
@@ -495,8 +476,11 @@ async fn every_route_problem_is_reported_at_once() {
 #[tokio::test]
 async fn a_second_channel_cannot_claim_a_route_another_already_serves() {
     let app = common::test_app().await;
-    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
-    create_rest_channel(&app, "orders.first", "/orders/{id}", vec!["GET"], &wf_id).await;
+    let wf_id =
+        common::v1::create_and_activate_workflow(&app, common::echo_workflow("Orders Workflow"))
+            .await;
+    common::v1::create_rest_channel(&app, "orders.first", "/orders/{id}", vec!["GET"], &wf_id)
+        .await;
 
     // Same shape, different parameter name — the name is a workflow-facing
     // label, not part of the match, so these collide.
@@ -588,8 +572,12 @@ async fn disjoint_methods_on_one_path_are_not_a_conflict() {
 #[tokio::test]
 async fn a_new_version_of_the_same_channel_does_not_collide() {
     let app = common::test_app().await;
-    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
-    let ch_id = create_rest_channel(&app, "orders.v", "/orders/{id}", vec!["GET"], &wf_id).await;
+    let wf_id =
+        common::v1::create_and_activate_workflow(&app, common::echo_workflow("Orders Workflow"))
+            .await;
+    let ch_id =
+        common::v1::create_rest_channel(&app, "orders.v", "/orders/{id}", vec!["GET"], &wf_id)
+            .await;
 
     let resp = app
         .clone()

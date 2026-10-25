@@ -292,7 +292,7 @@ async fn test_audit_connector_crud() {
     let app = common::test_app().await;
 
     // Create connector
-    let connector_id = common::create_connector(&app, common::db_connector("audit-conn")).await;
+    let connector_id = common::v1::create_connector(&app, common::db_connector("audit-conn")).await;
 
     // Update connector
     let resp = app
@@ -631,7 +631,7 @@ async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    common::create_connector(&app, common::db_connector("filter-conn")).await;
+    common::v1::create_connector(&app, common::db_connector("filter-conn")).await;
 
     wait_for_audit_entries(
         &app,

@@ -270,7 +270,7 @@ async fn channel_activation_refuses_a_missing_or_unset_workflow() {
 #[tokio::test]
 async fn channel_dry_run_sees_a_route_collision() {
     let app = test_app().await;
-    common::create_and_activate_channel(
+    common::v1::create_and_activate_channel(
         &app,
         "collision-incumbent",
         common::simple_log_workflow("Collision Incumbent"),
@@ -280,9 +280,10 @@ async fn channel_dry_run_sees_a_route_collision() {
     // The incumbent claimed no REST route; give the dry-run subject a real
     // collision by racing two REST channels for one pattern.
     let workflow_id =
-        common::create_and_activate_workflow(&app, common::simple_log_workflow("Collision WF"))
+        common::v1::create_and_activate_workflow(&app, common::simple_log_workflow("Collision WF"))
             .await;
-    common::create_rest_channel(&app, "route-owner", "/collide", vec!["POST"], &workflow_id).await;
+    common::v1::create_rest_channel(&app, "route-owner", "/collide", vec!["POST"], &workflow_id)
+        .await;
 
     let resp = app
         .clone()

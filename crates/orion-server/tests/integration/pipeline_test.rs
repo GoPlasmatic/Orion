@@ -430,20 +430,11 @@ async fn test_continue_on_error() {
         ]
     });
 
-    // R5 blocks activating against a missing connector — create then delete
-    // it so the mid-pipeline failure is still exercised.
+    // Deploy the connection with the channel, then a deployment without it,
+    // so the mid-pipeline failure is still exercised.
     let conn_id = common::create_connector(&app, common::db_connector("ghost-db")).await;
     common::create_and_activate_channel(&app, "continue-err", workflow).await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/connectors/{conn_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    common::remove_member(&app, "connection", &conn_id).await;
 
     let resp = app
         .clone()
@@ -528,16 +519,7 @@ async fn a_later_task_can_branch_on_the_failure_code() {
 
     let conn_id = common::create_connector(&app, common::db_connector("ghost-db")).await;
     common::create_and_activate_channel(&app, "branch-err", workflow).await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/connectors/{conn_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    common::remove_member(&app, "connection", &conn_id).await;
 
     let resp = app
         .clone()
@@ -614,14 +596,7 @@ async fn the_error_record_carries_no_message_and_cannot_be_round_tripped() {
 
     let conn_id = common::create_connector(&app, common::db_connector("ghost-db")).await;
     common::create_and_activate_channel(&app, "leak-err", workflow).await;
-    app.clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/connectors/{conn_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
+    common::remove_member(&app, "connection", &conn_id).await;
 
     let resp = app
         .clone()
@@ -717,26 +692,21 @@ async fn test_http_call_then_map_pipeline() {
     let app = common::test_app().await;
 
     // Create HTTP connector pointing to the mock server
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "mock-api",
-                "name": "mock-api",
-                "connector_type": "http",
-                "config": {
-                    "type": "http",
-                    "url": format!("http://{}", mock_addr),
-                    "retry": { "max_retries": 0, "retry_delay_ms": 10 },
-                    "allow_private_urls": true
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    common::create_connector(
+        &app,
+        json!({
+            "id": "mock-api",
+            "name": "mock-api",
+            "connector_type": "http",
+            "config": {
+                "type": "http",
+                "url": format!("http://{}", mock_addr),
+                "retry": { "max_retries": 0, "retry_delay_ms": 10 },
+                "allow_private_urls": true
+            }
+        }),
+    )
+    .await;
 
     let workflow = common::workflow_with_tasks(
         "HTTP Call Then Map",

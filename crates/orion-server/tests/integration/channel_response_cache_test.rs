@@ -326,8 +326,8 @@ async fn test_cache_with_named_connector() {
 async fn test_error_response_is_not_cached() {
     let app = common::test_app().await;
 
-    // Create the connector so activation passes (R5), then delete it so the
-    // task fails at runtime — the transient-failure shape N2 is about.
+    // Deploy the connection with the channel, then a deployment without it,
+    // so the task fails at runtime — the transient-failure shape N2 is about.
     let conn_id = create_connector(&app, common::db_connector("n2-flaky-db")).await;
     create_and_activate_channel_with_config(
         &app,
@@ -348,16 +348,7 @@ async fn test_error_response_is_not_cached() {
         json!({ "cache": { "enabled": true, "ttl_secs": 300 } }),
     )
     .await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/connectors/{conn_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    common::remove_member(&app, "connection", &conn_id).await;
 
     let payload = json!({"data": {"k": "v"}});
 

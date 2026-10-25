@@ -50,7 +50,7 @@ async fn get(app: &axum::Router, uri: &str) -> Value {
 async fn an_estate_survives_an_export_import_round_trip() {
     let source = common::test_app().await;
 
-    common::create_and_activate_channel(
+    common::v1::create_and_activate_channel(
         &source,
         "orders",
         common::echo_workflow("orders-workflow"),

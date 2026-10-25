@@ -49,7 +49,7 @@ async fn get(app: &axum::Router, uri: &str) -> Value {
 #[tokio::test]
 async fn connector_response_keeps_every_field_the_row_published() {
     let app = common::test_app().await;
-    let id = common::create_connector(&app, common::db_connector("wire-shape-conn")).await;
+    let id = common::v1::create_connector(&app, common::db_connector("wire-shape-conn")).await;
 
     let body = get(&app, &format!("/api/v2/admin/connectors/{id}")).await;
     assert_eq!(
@@ -350,7 +350,7 @@ async fn wire_names_survive_the_column_rename() {
         .expect("activate workflow");
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let channel_id = common::create_rest_channel(
+    let channel_id = common::v1::create_rest_channel(
         &app,
         "d26-wire-shape",
         "/d26-wire-shape",

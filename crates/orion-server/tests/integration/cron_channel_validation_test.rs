@@ -424,20 +424,7 @@ async fn a_cron_channel_is_not_reachable_over_http() {
     let wf =
         common::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
 
-    let (status, body) = post_channel(&app, cron_channel("unreachable", &wf)).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let id = body["data"]["channel_id"].as_str().expect("id").to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::OK, "{:?}", resp.status());
+    common::deploy_channel(&app, cron_channel("unreachable", &wf)).await;
 
     // Both the synchronous path and the submission path.
     for path in ["/api/v2/data/unreachable", "/api/v2/data/unreachable/async"] {
@@ -469,7 +456,7 @@ async fn activation_is_refused_when_the_scheduler_is_off() {
     config.cron.enabled = false;
     let app = common::test_app_with_config(config).await;
     let wf =
-        common::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
+        common::v1::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
 
     // Authoring still works with the scheduler off: an instance that cannot run
     // schedules is still a place to write and promote them.

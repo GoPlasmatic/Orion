@@ -10,9 +10,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::common::models::{harness, register_fixture};
-use crate::common::{
-    create_and_activate_channel_full, echo_workflow, json_request, test_state_with_config,
-};
+use crate::common::v1::create_and_activate_channel_full;
+use crate::common::{echo_workflow, json_request, test_state_with_config};
 use orion::server::state::AppState;
 
 async fn send(app: &axum::Router, method: &str, path: &str, body: Option<Value>) -> StatusCode {

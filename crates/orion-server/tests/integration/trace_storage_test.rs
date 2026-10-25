@@ -306,38 +306,19 @@ async fn channel_override_persists_when_global_is_off() {
     let wf = common::create_and_activate_workflow(&app, common::simple_log_workflow("Log")).await;
 
     // Create channel with explicit `tracing.mode = "sync"` override.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "ch_override",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/ch_override",
-                "workflow_id": wf,
-                "config": { "tracing": { "mode": "sync" } },
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let ch_id = body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status":"active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::deploy_channel(
+        &app,
+        json!({
+            "name": "ch_override",
+            "channel_type": "sync",
+            "protocol": "http",
+            "methods": ["POST"],
+            "route_pattern": "/ch_override",
+            "workflow_id": wf,
+            "config": { "tracing": { "mode": "sync" } },
+        }),
+    )
+    .await;
 
     let before = list_total(&app).await;
     assert_eq!(submit_sync(&app, "ch_override").await, StatusCode::OK);
@@ -352,31 +333,17 @@ async fn channel_override_persists_when_global_is_off() {
 // traces.channel_id is populated (multi-instance-ha 0.5)
 // -----------------------------------------------------------------------
 
-/// Look up a channel's stable ID by name via the admin API.
-async fn admin_channel_id(app: &axum::Router, name: &str) -> String {
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/channels", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    body["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["name"] == name)
-        .and_then(|c| c["channel_id"].as_str())
-        .unwrap_or_else(|| panic!("channel '{name}' not found in admin list"))
-        .to_string()
-}
-
 #[tokio::test]
 async fn sync_trace_records_channel_id() {
     let app = common::test_app().await;
-    common::create_and_activate_channel(&app, "ch_cid_sync", common::simple_log_workflow("Log"))
-        .await;
-    let expected = admin_channel_id(&app, "ch_cid_sync").await;
+    // A channel's stable id is the one its deployment gives it.
+    let (expected, _) = common::create_and_activate_channel_full(
+        &app,
+        "ch_cid_sync",
+        common::simple_log_workflow("Log"),
+        json!({}),
+    )
+    .await;
 
     assert_eq!(submit_sync(&app, "ch_cid_sync").await, StatusCode::OK);
 
@@ -400,9 +367,14 @@ async fn sync_trace_records_channel_id() {
 #[tokio::test]
 async fn async_trace_records_channel_id() {
     let app = common::test_app().await;
-    common::create_and_activate_channel(&app, "ch_cid_async", common::simple_log_workflow("Log"))
-        .await;
-    let expected = admin_channel_id(&app, "ch_cid_async").await;
+    // A channel's stable id is the one its deployment gives it.
+    let (expected, _) = common::create_and_activate_channel_full(
+        &app,
+        "ch_cid_async",
+        common::simple_log_workflow("Log"),
+        json!({}),
+    )
+    .await;
 
     let resp = app
         .clone()

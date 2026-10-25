@@ -385,7 +385,7 @@ async fn a_channel_whose_auth_cannot_be_built_is_quarantined() {
 #[tokio::test]
 async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
     let app = common::test_app().await;
-    let (channel_id, _wf) = common::create_and_activate_channel_full(
+    let (channel_id, _wf) = common::v1::create_and_activate_channel_full(
         &app,
         "masked-rt",
         common::echo_workflow("masked-rt-wf"),

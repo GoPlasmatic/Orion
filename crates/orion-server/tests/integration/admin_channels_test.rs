@@ -175,16 +175,8 @@ async fn archived_channel_is_not_served() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "active channel must serve");
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(serde_json::json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "archive must succeed");
+    // Archiving is a deployment without it.
+    common::remove_member(&app, "channel", &channel_id).await;
 
     let resp = app
         .clone()

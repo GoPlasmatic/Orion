@@ -14,6 +14,26 @@ use tower::ServiceExt;
 
 use crate::common;
 
+/// The client secrets the deployed connectors reference through `env://` —
+/// a connection holds references only — set before `main()` while the
+/// process is single-threaded, in the reserved `ORION_SECRET_*` namespace.
+#[ctor::ctor(unsafe)]
+#[allow(unsafe_code)]
+fn install_oauth2_connector_env() {
+    // SAFETY: runs pre-main on the sole thread of the process.
+    unsafe {
+        std::env::set_var("ORION_SECRET_TEST_OAUTH2_CLIENT", "cs-secret");
+        std::env::set_var("ORION_SECRET_TEST_ZOOM_CLIENT", "zoom-secret");
+    }
+}
+
+/// `connector` with its client secret moved to the `env://` reference a
+/// deployed connection carries instead of the value.
+fn by_reference(mut connector: serde_json::Value, var: &str) -> serde_json::Value {
+    connector["config"]["auth"]["client_secret"] = json!(format!("env://{var}"));
+    connector
+}
+
 /// The fake IdP: counts token requests, requires the expected client Basic
 /// auth, and issues `tok-<n>`.
 struct Idp {
@@ -156,7 +176,14 @@ async fn an_account_credentials_connector_acquires_and_applies_its_token() {
     let token_url = start_idp(Arc::clone(&idp)).await;
     let api_url = start_api().await;
 
-    common::create_connector(&app, zoom_connector("zoom", &api_url, &token_url)).await;
+    common::create_connector(
+        &app,
+        by_reference(
+            zoom_connector("zoom", &api_url, &token_url),
+            "ORION_SECRET_TEST_ZOOM_CLIENT",
+        ),
+    )
+    .await;
     common::create_and_activate_channel(
         &app,
         "zoom-ch",
@@ -209,7 +236,14 @@ async fn http_call_acquires_applies_and_caches_the_token() {
     let token_url = start_idp(Arc::clone(&idp)).await;
     let api_url = start_api().await;
 
-    common::create_connector(&app, oauth2_connector("partner", &api_url, &token_url)).await;
+    common::create_connector(
+        &app,
+        by_reference(
+            oauth2_connector("partner", &api_url, &token_url),
+            "ORION_SECRET_TEST_OAUTH2_CLIENT",
+        ),
+    )
+    .await;
     common::create_and_activate_channel(
         &app,
         "orders-ch",
@@ -262,8 +296,8 @@ async fn the_probe_exercises_the_whole_oauth_setup() {
     let token_url = start_idp(Arc::clone(&idp)).await;
     let api_url = start_api().await;
 
-    let id =
-        common::create_connector(&app, oauth2_connector("probe-ok", &api_url, &token_url)).await;
+    let id = common::v1::create_connector(&app, oauth2_connector("probe-ok", &api_url, &token_url))
+        .await;
     let resp = app
         .clone()
         .oneshot(common::json_request(
@@ -285,7 +319,7 @@ async fn the_probe_exercises_the_whole_oauth_setup() {
     // of reporting a half-validated setup as healthy.
     let mut bad = oauth2_connector("probe-bad", &api_url, &token_url);
     bad["config"]["auth"]["client_auth"] = json!("body"); // fake IdP requires Basic
-    let id = common::create_connector(&app, bad).await;
+    let id = common::v1::create_connector(&app, bad).await;
     let resp = app
         .clone()
         .oneshot(common::json_request(
@@ -305,7 +339,7 @@ async fn the_probe_exercises_the_whole_oauth_setup() {
 #[tokio::test]
 async fn the_admin_read_masks_oauth2_credentials() {
     let app = common::test_app().await;
-    let id = common::create_connector(
+    let id = common::v1::create_connector(
         &app,
         oauth2_connector(
             "masked",

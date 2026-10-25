@@ -32,26 +32,21 @@ async fn test_gateway_path_param_forwarding() {
     let app = common::test_app().await;
 
     // Create HTTP connector pointing at the mock upstream
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "upstream-api",
-                "name": "upstream-api",
-                "connector_type": "http",
-                "config": {
-                    "type": "http",
-                    "url": format!("http://{}", addr),
-                    "retry": {"max_retries": 0, "retry_delay_ms": 10},
-                    "allow_private_urls": true
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    common::create_connector(
+        &app,
+        json!({
+            "id": "upstream-api",
+            "name": "upstream-api",
+            "connector_type": "http",
+            "config": {
+                "type": "http",
+                "url": format!("http://{}", addr),
+                "retry": {"max_retries": 0, "retry_delay_ms": 10},
+                "allow_private_urls": true
+            }
+        }),
+    )
+    .await;
 
     // Workflow:
     //   1. map: extract user_id from metadata.params into data.user_id

@@ -357,7 +357,7 @@ async fn test_update_connector_name_only() {
 #[tokio::test]
 async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
     let app = common::test_app().await;
-    let conn_id = common::create_connector(&app, common::db_connector("orders-db")).await;
+    let conn_id = common::v1::create_connector(&app, common::db_connector("orders-db")).await;
 
     // A workflow referencing it, activated.
     let resp = app
@@ -1326,7 +1326,7 @@ async fn s6_private_db_target_is_refused_when_the_pool_is_opened() {
             "connector_type": "db",
             "config": {
                 "type": "db",
-                "connection_string": "postgres://u:p@169.254.169.254:5432/orion",
+                "connection_string": "postgres://169.254.169.254:5432/orion",
                 "connect_timeout_ms": 1000
             }
         }),
@@ -1440,7 +1440,7 @@ async fn s6_allow_private_urls_lets_a_loopback_db_through() {
 #[tokio::test]
 async fn probing_a_working_db_connector_reports_reachable() {
     let app = common::test_app().await;
-    let id = common::create_connector(&app, common::db_connector("probe-ok")).await;
+    let id = common::v1::create_connector(&app, common::db_connector("probe-ok")).await;
 
     let resp = app
         .clone()
@@ -1469,7 +1469,7 @@ async fn probing_a_working_db_connector_reports_reachable() {
 #[tokio::test]
 async fn probing_an_unreachable_db_connector_reports_the_failure() {
     let app = common::test_app().await;
-    let id = common::create_connector(
+    let id = common::v1::create_connector(
         &app,
         json!({
             "name": "probe-broken",
@@ -1509,7 +1509,7 @@ async fn probing_an_unreachable_db_connector_reports_the_failure() {
 #[tokio::test]
 async fn probing_reports_an_unresolvable_secret() {
     let app = common::test_app().await;
-    let id = common::create_connector(
+    let id = common::v1::create_connector(
         &app,
         json!({
             "name": "probe-secret",

@@ -16,8 +16,12 @@ async fn admin_mutations_advance_config_epoch() {
     assert_eq!(start_epoch, 0);
 
     // Workflow activate + channel activate → two audit_and_reload calls.
-    common::create_and_activate_channel(&app, "epoch-ch", common::simple_log_workflow("Epoch WF"))
-        .await;
+    common::v1::create_and_activate_channel(
+        &app,
+        "epoch-ch",
+        common::simple_log_workflow("Epoch WF"),
+    )
+    .await;
 
     let row = state.cluster.repo.get_epoch().await.expect("epoch");
     assert!(
@@ -45,8 +49,12 @@ async fn a_bump_records_what_changed() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
 
-    common::create_and_activate_channel(&app, "scope-ch", common::simple_log_workflow("Scope WF"))
-        .await;
+    common::v1::create_and_activate_channel(
+        &app,
+        "scope-ch",
+        common::simple_log_workflow("Scope WF"),
+    )
+    .await;
     let row = state.cluster.repo.get_epoch().await.expect("epoch");
     assert_eq!(
         orion::cluster::EpochScope::parse(&row.epoch_scope),
@@ -54,7 +62,7 @@ async fn a_bump_records_what_changed() {
         "a channel activation touches no connector"
     );
 
-    common::create_connector(&app, common::cache_connector_memory("scope-conn")).await;
+    common::v1::create_connector(&app, common::cache_connector_memory("scope-conn")).await;
     let row = state.cluster.repo.get_epoch().await.expect("epoch");
     assert_eq!(
         orion::cluster::EpochScope::parse(&row.epoch_scope),

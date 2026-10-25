@@ -2316,7 +2316,7 @@ async fn a_loops_setup_steps_are_validated_and_referenced() {
         "activation must refuse a missing connector used in setup"
     );
 
-    let conn_id = common::create_connector(&app, common::db_connector("setup-db")).await;
+    let conn_id = common::v1::create_connector(&app, common::db_connector("setup-db")).await;
     let resp = app.clone().oneshot(activate()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 

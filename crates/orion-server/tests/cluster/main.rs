@@ -232,7 +232,7 @@ async fn plugin_activation_propagates_across_nodes() {
     assert!(h.state_b.runtime.load().plugins.issues.is_empty());
 
     // And a workflow activated on A that calls it serves on B.
-    common::create_and_activate_channel(
+    common::v1::create_and_activate_channel(
         &h.node_a,
         "plugin-prop",
         json!({
@@ -589,14 +589,14 @@ async fn rate_limit_holds_across_nodes_combined() {
 async fn archive_and_delete_propagate_across_nodes() {
     let h = two_nodes().await;
 
-    let (arch_id, _) = common::create_and_activate_channel_full(
+    let (arch_id, _) = common::v1::create_and_activate_channel_full(
         &h.node_a,
         "arch-ch",
         common::simple_log_workflow("Archive WF"),
         json!({}),
     )
     .await;
-    let (del_id, _) = common::create_and_activate_channel_full(
+    let (del_id, _) = common::v1::create_and_activate_channel_full(
         &h.node_a,
         "del-ch",
         common::simple_log_workflow("Delete WF"),
@@ -714,8 +714,9 @@ async fn connector_update_propagates_to_other_node() {
             .expect("seed");
     }
 
-    common::create_connector(&h.node_a, common::db_connector_sqlite("prop-conn", old_url)).await;
-    common::create_and_activate_channel(
+    common::v1::create_connector(&h.node_a, common::db_connector_sqlite("prop-conn", old_url))
+        .await;
+    common::v1::create_and_activate_channel(
         &h.node_a,
         "conn-prop-ch",
         common::workflow_with_tasks(
@@ -822,12 +823,12 @@ async fn concurrent_admin_writes_converge() {
         .epoch;
 
     tokio::join!(
-        common::create_and_activate_channel(
+        common::v1::create_and_activate_channel(
             &h.node_a,
             "conc-a",
             common::simple_log_workflow("Conc A WF"),
         ),
-        common::create_and_activate_channel(
+        common::v1::create_and_activate_channel(
             &h.node_b,
             "conc-b",
             common::simple_log_workflow("Conc B WF"),
@@ -1129,7 +1130,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     let node_b = h.nodes[1].router.clone();
     let state_b = h.nodes[1].state.clone();
 
-    let (ch_id, _) = common::create_and_activate_channel_full(
+    let (ch_id, _) = common::v1::create_and_activate_channel_full(
         &node_a,
         "stale-ch",
         common::simple_log_workflow("Stale WF"),
@@ -1292,7 +1293,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     }
     assert_eq!(ready, StatusCode::OK, "node A readiness must return");
 
-    common::create_and_activate_channel(
+    common::v1::create_and_activate_channel(
         &node_a,
         "post-outage-ch",
         common::simple_log_workflow("Post Outage WF"),
@@ -1605,7 +1606,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
     // v1 at 100% on an active channel; then v2 as a new draft, edited to
     // mark itself, activated at 50% — all via node A (same flow as the
     // single-process rollout_percentages_split_traffic_across_versions).
-    common::create_and_activate_channel(&h.node_a, "canary-ch", marker_workflow("v1")).await;
+    common::v1::create_and_activate_channel(&h.node_a, "canary-ch", marker_workflow("v1")).await;
     let resp = h
         .node_a
         .clone()
@@ -1745,7 +1746,8 @@ async fn backups_refused_in_cluster_mode() {
 // Cron: the multi-node contracts
 // ============================================================
 
-/// Activate a cron channel on node A and return its `channel_id`.
+/// Deploy a workflow and a cron channel through `node`, returning the
+/// channel's id.
 async fn activate_cluster_cron_channel(
     node: &axum::Router,
     name: &str,
@@ -1753,38 +1755,7 @@ async fn activate_cluster_cron_channel(
     transport_config: serde_json::Value,
 ) -> String {
     let workflow_id = common::create_and_activate_workflow(node, workflow).await;
-    let resp = node
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": name,
-                "channel_type": "async",
-                "protocol": "cron",
-                "workflow_id": workflow_id,
-                "transport_config": transport_config,
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel id")
-        .to_string();
-
-    let resp = node
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate");
-    assert_eq!(resp.status(), StatusCode::OK);
-    channel_id
+    common::create_cron_channel(node, name, &workflow_id, transport_config).await
 }
 
 /// Every occurrence in the shared ledger, read through either node.
@@ -2007,9 +1978,9 @@ async fn cron_slots_bound_holds_across_nodes() {
     );
 }
 
-/// A schedule change on one node reaches the other through the config epoch,
-/// like every other definition change — the reconciler has no watcher of its
-/// own and needs none.
+/// A schedule change deployed through one node reaches the other the way
+/// every other deployment does — the reconciler has no watcher of its own
+/// and needs none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn cron_schedule_changes_propagate_across_nodes() {
@@ -2026,7 +1997,7 @@ async fn cron_schedule_changes_propagate_across_nodes() {
     )
     .await;
 
-    // Node B learns about the schedule through the epoch, not through a
+    // Node B learns about the schedule from the deployment, not through a
     // cron-specific mechanism.
     let seen = eventually(h.poll, async || {
         h.state_b
@@ -2042,18 +2013,9 @@ async fn cron_schedule_changes_propagate_across_nodes() {
         "node B must load the cron channel within a few epochs"
     );
 
-    // Archiving it on A stops both: the cursor is paused once, in shared state.
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .expect("archive");
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Deploying without it on A stops both: the cursor is paused once, in
+    // shared state.
+    common::remove_member(&h.node_a, "channel", &channel_id).await;
 
     let stopped = eventually(h.poll, async || {
         h.state_b
@@ -2185,7 +2147,7 @@ async fn model_activation_propagates_across_nodes() {
     // A workflow activated on A, called on B: B's own cold load fetches the
     // artifact through the connector and verifies the digest before the graph
     // runs.
-    common::create_and_activate_channel(
+    common::v1::create_and_activate_channel(
         &node_a,
         "model-prop",
         json!({

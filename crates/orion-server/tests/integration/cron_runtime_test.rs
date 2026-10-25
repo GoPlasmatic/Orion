@@ -88,7 +88,8 @@ fn slow_workflow(name: &str) -> Value {
     )
 }
 
-/// Create and activate a cron channel, returning its `channel_id`.
+/// Deploy a workflow and a cron channel bound to it, returning the
+/// channel's id.
 async fn activate_cron_channel(
     app: &axum::Router,
     name: &str,
@@ -96,38 +97,7 @@ async fn activate_cron_channel(
     transport_config: Value,
 ) -> String {
     let workflow_id = common::create_and_activate_workflow(app, workflow).await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": name,
-                "channel_type": "async",
-                "protocol": "cron",
-                "workflow_id": workflow_id,
-                "transport_config": transport_config,
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel id")
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate");
-    assert_eq!(resp.status(), StatusCode::OK);
-    channel_id
+    common::create_cron_channel(app, name, &workflow_id, transport_config).await
 }
 
 /// Poll the occurrence listing until `pred` holds on the rows.
@@ -334,16 +304,7 @@ async fn archiving_stops_materialisation_and_keeps_history() {
 
     wait_for_occurrences(&app, "limit=50", |rows| !rows.is_empty()).await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .expect("archive");
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::remove_member(&app, "channel", &channel_id).await;
 
     // Let the reconciler notice and pause the cursor, then confirm the count
     // has stopped moving.
@@ -982,41 +943,22 @@ async fn a_payload_that_fails_validation_fails_the_occurrence_visibly() {
     let workflow_id =
         common::create_and_activate_workflow(&app, common::simple_log_workflow("Validated")).await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "validated-cron",
-                "channel_type": "async",
-                "protocol": "cron",
-                "workflow_id": workflow_id,
-                "transport_config": {
-                    "schedule": "* * * * * *",
-                    "payload": {"window": "previous_day"},
-                },
-                // The payload has no `order_id`, so every occurrence is refused.
-                "config": {"validation_logic": {"!!": {"var": "data.order_id"}}},
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("id")
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate");
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::deploy_channel(
+        &app,
+        json!({
+            "name": "validated-cron",
+            "channel_type": "async",
+            "protocol": "cron",
+            "workflow_id": workflow_id,
+            "transport_config": {
+                "schedule": "* * * * * *",
+                "payload": {"window": "previous_day"},
+            },
+            // The payload has no `order_id`, so every occurrence is refused.
+            "config": {"validation_logic": {"!!": {"var": "data.order_id"}}},
+        }),
+    )
+    .await;
 
     let rows = wait_for_occurrences(&app, "status=failed&limit=10", |rows| !rows.is_empty()).await;
     let body = common::wait_for_body(
@@ -1055,40 +997,21 @@ async fn a_channel_timeout_bounds_a_scheduled_run() {
     common::create_http_connector(&app, "slow-endpoint", addr).await;
 
     let workflow_id = common::create_and_activate_workflow(&app, slow_workflow("Times Out")).await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "timeout-cron",
-                "channel_type": "async",
-                "protocol": "cron",
-                "workflow_id": workflow_id,
-                "transport_config": {"schedule": "* * * * * *"},
-                // Far shorter than the work, and far shorter than
-                // `cron.default_timeout_ms` — so a pass proves the *channel's*
-                // value is what applied.
-                "config": {"timeout_ms": 300},
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("id")
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate");
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::deploy_channel(
+        &app,
+        json!({
+            "name": "timeout-cron",
+            "channel_type": "async",
+            "protocol": "cron",
+            "workflow_id": workflow_id,
+            "transport_config": {"schedule": "* * * * * *"},
+            // Far shorter than the work, and far shorter than
+            // `cron.default_timeout_ms` — so a pass proves the *channel's*
+            // value is what applied.
+            "config": {"timeout_ms": 300},
+        }),
+    )
+    .await;
 
     let rows = wait_for_occurrences(&app, "status=failed&limit=10", |rows| !rows.is_empty()).await;
     let body = common::wait_for_body(

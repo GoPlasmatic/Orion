@@ -804,7 +804,7 @@ async fn rollout_percentages_split_traffic_across_versions() {
     };
 
     // v1 at 100%, on an active channel.
-    common::create_and_activate_channel(&app, "split", marker_workflow("v1")).await;
+    common::v1::create_and_activate_channel(&app, "split", marker_workflow("v1")).await;
 
     // v2 as a new draft, edited to mark itself differently.
     let resp = app

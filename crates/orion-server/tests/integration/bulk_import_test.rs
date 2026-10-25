@@ -283,7 +283,7 @@ async fn workflows_import_dry_run_does_not_persist() {
 #[tokio::test]
 async fn dry_run_reports_a_conflict_with_an_already_stored_connector() {
     let app = test_app().await;
-    common::create_connector(&app, common::db_connector("taken")).await;
+    common::v1::create_connector(&app, common::db_connector("taken")).await;
 
     let resp = app
         .clone()
