@@ -180,6 +180,31 @@ fn insert_statement(
         .to_owned()
 }
 
+/// Write `event` inside `tx`, so it commits with the mutation it describes —
+/// [`AuditLogRepository::insert_tx`] without a repository, for a writer that
+/// owns its transaction outside the repository layer (the v2 deployment
+/// store's head move).
+pub async fn insert_in_tx(
+    tx: &mut crate::storage::DbTransaction,
+    event: &AuditEvent,
+) -> Result<(), OrionError> {
+    crate::metrics::timed_db_op("audit_logs.insert_tx", async {
+        let (sql, values) = build_sqlx(
+            tx.backend(),
+            &mut insert_statement(
+                &event.principal,
+                &event.action,
+                &event.resource_type,
+                &event.resource_id,
+                event.details.as_deref(),
+            ),
+        );
+        tx.execute_query(&sql, values).await?;
+        Ok(())
+    })
+    .await
+}
+
 #[async_trait]
 impl AuditLogRepository for SqlAuditLogRepository {
     async fn insert(
@@ -206,21 +231,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
         tx: &mut crate::storage::DbTransaction,
         event: &AuditEvent,
     ) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("audit_logs.insert_tx", async {
-            let (sql, values) = build_sqlx(
-                tx.backend(),
-                &mut insert_statement(
-                    &event.principal,
-                    &event.action,
-                    &event.resource_type,
-                    &event.resource_id,
-                    event.details.as_deref(),
-                ),
-            );
-            tx.execute_query(&sql, values).await?;
-            Ok(())
-        })
-        .await
+        insert_in_tx(tx, event).await
     }
 
     async fn list_paginated(

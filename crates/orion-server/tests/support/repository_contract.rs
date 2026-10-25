@@ -37,6 +37,182 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     a_read_snapshot_is_repeatable(backend, pool).await;
     the_shared_store_claims_once_and_counts_every_increment(backend, pool).await;
     a_shared_rate_window_holds_and_spills_at_most_2x(backend, pool).await;
+    a_deployment_audit_row_commits_with_the_head(backend, pool).await;
+}
+
+/// A deployment store manifest of one workflow member over `digest`.
+fn one_workflow_manifest(id: &str, digest: &str) -> orion::extensions::CanonicalManifest {
+    use orion::extensions::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
+    CanonicalManifest {
+        schema_version: 2,
+        providers: Vec::new(),
+        provider_lock_digest: None,
+        members: vec![ManifestMember {
+            entity: EntityRef {
+                kind: EntityKind::Workflow,
+                id: id.to_string(),
+                revision: 1,
+            },
+            definition_digest: digest.to_string(),
+            owning_package: None,
+            requires: Vec::new(),
+            rollouts: Vec::new(),
+        }],
+    }
+}
+
+/// The audit row of a deployment apply or rollback is written in the
+/// transaction that moves the head: present the moment the commit returns,
+/// absent when nothing was committed (an idempotent replay, a lost race).
+async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPool) {
+    use orion::extensions::deployment_store::Rollback;
+    use orion::extensions::{
+        CommunityAdmissionPolicy, DeploymentReceipt, ImmutableDeploymentStore,
+    };
+    use orion::storage::repositories::audit_logs::{
+        AuditEvent, AuditLogFilter, AuditLogRepository, SqlAuditLogRepository,
+    };
+
+    let audit = SqlAuditLogRepository::new(pool.clone());
+    let rows = |action: &'static str| {
+        let audit = &audit;
+        async move {
+            audit
+                .list_paginated(&AuditLogFilter {
+                    action: Some(action.to_string()),
+                    resource_type: Some("deployment".to_string()),
+                    ..Default::default()
+                })
+                .await
+                .expect("list audit rows")
+                .total
+        }
+    };
+    let event = |action: &'static str| {
+        move |r: &DeploymentReceipt| AuditEvent {
+            principal: "contract".to_string(),
+            action: action.to_string(),
+            resource_type: "deployment".to_string(),
+            resource_id: r.committed_revision.to_string(),
+            details: None,
+        }
+    };
+    let policy = CommunityAdmissionPolicy::new();
+    let node_a = ImmutableDeploymentStore::new("contract-a");
+    let node_b = ImmutableDeploymentStore::new("contract-b");
+    let base = node_a.current_head().0;
+
+    let def = node_a
+        .store_definition_artifact_in_db(pool, b"contract-audit-wf-1".to_vec())
+        .await
+        .expect("store definition");
+    let manifest = one_workflow_manifest("contract-audit", &def.digest);
+    let plan_a = node_a
+        .plan_candidate_in_db(pool, base, manifest.clone())
+        .await
+        .expect("plan a");
+    // A second node planned on the same base before the first committed.
+    let plan_b = node_b
+        .plan_candidate_in_db(pool, base, manifest)
+        .await
+        .expect("plan b");
+
+    let (receipt, recorded) = node_a
+        .apply_candidate_audited_in_db(
+            pool,
+            "contract",
+            "audit-1",
+            &plan_a,
+            "r",
+            &policy,
+            event("v2_deployment_apply"),
+        )
+        .await
+        .expect("apply");
+    assert!(recorded.is_some(), "{backend}: the apply moved the head");
+    assert_eq!(
+        rows("v2_deployment_apply").await,
+        1,
+        "{backend}: the row is there when the commit returns, not when a queue drains"
+    );
+
+    let (replayed, recorded) = node_a
+        .apply_candidate_audited_in_db(
+            pool,
+            "contract",
+            "audit-1",
+            &plan_a,
+            "r",
+            &policy,
+            event("v2_deployment_apply"),
+        )
+        .await
+        .expect("replay");
+    assert_eq!(replayed.committed_revision, receipt.committed_revision);
+    assert!(recorded.is_none(), "{backend}: a replay commits nothing");
+
+    let lost = node_b
+        .apply_candidate_audited_in_db(
+            pool,
+            "contract",
+            "audit-2",
+            &plan_b,
+            "r",
+            &policy,
+            event("v2_deployment_apply"),
+        )
+        .await
+        .expect_err("a stale base loses");
+    assert_eq!(lost.code, "DEPLOYMENT_HEAD_CONFLICT", "{backend}");
+    assert_eq!(
+        rows("v2_deployment_apply").await,
+        1,
+        "{backend}: neither the replay nor the lost race wrote a row"
+    );
+
+    // A rollback's row commits with its head move too.
+    let def2 = node_a
+        .store_definition_artifact_in_db(pool, b"contract-audit-wf-2".to_vec())
+        .await
+        .expect("store definition");
+    let plan2 = node_a
+        .plan_candidate_in_db(
+            pool,
+            receipt.committed_revision,
+            one_workflow_manifest("contract-audit", &def2.digest),
+        )
+        .await
+        .expect("plan 2");
+    let (second, _) = node_a
+        .apply_candidate_audited_in_db(
+            pool,
+            "contract",
+            "audit-3",
+            &plan2,
+            "r",
+            &policy,
+            event("v2_deployment_apply"),
+        )
+        .await
+        .expect("apply 2");
+    let ((rolled, _), recorded) = node_a
+        .rollback_to_revision_audited_in_db(
+            pool,
+            &Rollback {
+                principal: "contract",
+                idempotency_key: "audit-4",
+                expected_head_revision: second.committed_revision,
+                target_revision: receipt.committed_revision,
+                reason: "r",
+            },
+            &policy,
+            event("v2_deployment_rollback"),
+        )
+        .await
+        .expect("rollback");
+    assert_eq!(rolled.committed_revision, second.committed_revision + 1);
+    assert!(recorded.is_some(), "{backend}");
+    assert_eq!(rows("v2_deployment_rollback").await, 1, "{backend}");
 }
 
 /// The cluster's shared store on this backend: values expire on the

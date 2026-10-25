@@ -55,10 +55,12 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `v2_definition_test` | `definition` | `POST /definitions/test`, before the run; `resource_id` is the digest the workflow definition would have |
 | `v2_connection_create` | `connection` | `POST /connections` — one row per connection revision; `resource_id` is `{connection_id}@{revision}` |
 | `v2_connection_probe` | `connection` | `POST /connections/{id}/probe` — written before the probe connects, since it reaches a real backend with the connection's credentials; `resource_id` is `{connection_id}@{revision}` |
-| `v2_deployment_apply` | `deployment` | `POST /deployments`; `resource_id` is the committed revision |
-| `v2_deployment_rollback` | `deployment` | `POST /deployments/rollback`; `resource_id` is `{target_revision}->{committed_revision}` |
+| `v2_deployment_apply` | `deployment` | `POST /deployments`; `resource_id` is the committed revision. Written in the transaction that moves the deployment head, so it is there the moment the apply returns, and an apply that commits nothing (an idempotent replay, a lost race on the base revision) writes none |
+| `v2_deployment_rollback` | `deployment` | `POST /deployments/rollback`; `resource_id` is `{target_revision}->{committed_revision}`. In the head move's transaction, like an apply's |
 
 Reads are not recorded: only mutations, and `POST /definitions/test`, which reaches live backends and so behaves like one.
+
+Every row but the two deployment rows goes through a bounded writer queue after its mutation commits; a queue that stays full drops rows and counts them on `orion_audit_events_dropped_total`. A deployment apply or rollback cannot lose its row that way: the row commits with the head move or not at all.
 
 ## Group a multi-step operation
 

@@ -78,29 +78,47 @@ fn audit_event(
     resource_type: &str,
     resource_id: &str,
 ) -> crate::queue::audit_queue::AuditEvent {
+    let event = audit_record(principal, action, resource_type, resource_id);
+    emit_audit_trail(&event);
+    event
+}
+
+/// One audit event and nothing else: the row a mutation that owns its
+/// transaction writes inside it (the v2 deployment head move). Its log line
+/// and counter wait for the commit — [`emit_audit_trail`] — so a mutation
+/// that rolls back leaves no trace claiming it happened.
+pub(crate) fn audit_record(
+    principal: &Option<Extension<AdminPrincipal>>,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+) -> crate::queue::audit_queue::AuditEvent {
     let who = principal
         .as_ref()
         .map(|e| e.0.key_id.as_str())
         .unwrap_or(ANONYMOUS_PRINCIPAL);
-    let details = request_details();
-    tracing::info!(
-        target: "audit",
-        principal = %who,
-        action = %action,
-        resource_type = %resource_type,
-        resource_id = %resource_id,
-        details = details.as_deref().unwrap_or("{}"),
-        "admin_audit_event"
-    );
-    crate::metrics::record_admin_audit(action, resource_type);
-
     crate::queue::audit_queue::AuditEvent {
         principal: who.to_string(),
         action: action.to_string(),
         resource_type: resource_type.to_string(),
         resource_id: resource_id.to_string(),
-        details,
+        details: request_details(),
     }
+}
+
+/// The parts of the audit trail that are not the database row: the
+/// `audit`-target log line and the Prometheus counter.
+pub(crate) fn emit_audit_trail(event: &crate::queue::audit_queue::AuditEvent) {
+    tracing::info!(
+        target: "audit",
+        principal = %event.principal,
+        action = %event.action,
+        resource_type = %event.resource_type,
+        resource_id = %event.resource_id,
+        details = event.details.as_deref().unwrap_or("{}"),
+        "admin_audit_event"
+    );
+    crate::metrics::record_admin_audit(&event.action, &event.resource_type);
 }
 
 /// The admin API, with its own body limit.

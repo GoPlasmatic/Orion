@@ -36,9 +36,11 @@ const AUDIT_LOGS_MD: &str = concat!(
     "/../../docs/src/operate/run/audit-logs.md"
 );
 
-/// The helper that writes an audit row. It takes the action as its third
-/// argument and the resource type as its fourth.
-const WRITERS: [&str; 1] = ["audit_log("];
+/// The helpers that write an audit row, each with the index of its action
+/// argument (the resource type follows it): `audit_log` queues a row and
+/// takes the queue first; `audit_record` builds the row a deployment head
+/// move writes in its own transaction.
+const WRITERS: [(&str, usize); 2] = [("audit_log(", 2), ("audit_record(", 1)];
 
 /// Actions built with `format!`, and the values the interpolation can actually
 /// take. No call site computes its action today; one that does must declare
@@ -76,14 +78,13 @@ fn emitted_pairs() -> BTreeSet<Emitted> {
     }
 
     fn collect(source: &str, out: &mut BTreeSet<Emitted>) {
-        for writer in WRITERS {
+        for (writer, at) in WRITERS {
             for (index, _) in source.match_indices(writer) {
                 let args = arguments(&source[index + writer.len()..]);
-                // Every writer takes the action third and the resource type
-                // fourth. A non-call — the helper definitions in
+                // A non-call — the helper definitions in
                 // `routes/admin/mod.rs`, whose parameters are identifiers
                 // rather than literals — resolves to neither and is skipped.
-                let (Some(action), Some(resource_type)) = (args.get(2), args.get(3)) else {
+                let (Some(action), Some(resource_type)) = (args.get(at), args.get(at + 1)) else {
                     continue;
                 };
                 let Some(resource_type) = literal(resource_type) else {

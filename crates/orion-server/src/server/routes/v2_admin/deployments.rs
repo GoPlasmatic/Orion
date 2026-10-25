@@ -222,30 +222,38 @@ pub(crate) async fn apply_deployment(
         ));
     }
 
+    // The audit row is written in the commit's transaction: it lands with
+    // the head move or not at all, and a replay that commits nothing writes
+    // none.
     let receipt = match state
         .composition
         .deployments
-        .apply_candidate_in_db(
+        .apply_candidate_audited_in_db(
             &state.db_pool,
             &actor,
             &req.idempotency_key,
             &plan,
             &req.reason,
             state.composition.admission.as_ref(),
+            |receipt| {
+                crate::server::routes::admin::audit_record(
+                    &principal,
+                    "v2_deployment_apply",
+                    "deployment",
+                    &receipt.committed_revision.to_string(),
+                )
+            },
         )
         .await
     {
-        Ok(r) => r,
+        Ok((r, recorded)) => {
+            if let Some(event) = recorded {
+                crate::server::routes::admin::emit_audit_trail(&event);
+            }
+            r
+        }
         Err(e) => return deployment_err_response(e),
     };
-
-    crate::server::routes::admin::audit_log(
-        &state.audit_queue,
-        &principal,
-        "v2_deployment_apply",
-        "deployment",
-        &receipt.committed_revision.to_string(),
-    );
 
     let (evaluation, local_error) = reconcile_locally(&state, receipt.committed_revision).await;
     let resp = ApplyDeploymentResponse {
@@ -417,7 +425,7 @@ pub(crate) async fn rollback_deployment(
     match state
         .composition
         .deployments
-        .rollback_to_revision_in_db(
+        .rollback_to_revision_audited_in_db(
             &state.db_pool,
             &crate::extensions::deployment_store::Rollback {
                 principal: &actor,
@@ -427,17 +435,22 @@ pub(crate) async fn rollback_deployment(
                 reason: &req.reason,
             },
             state.composition.admission.as_ref(),
+            // In the commit's transaction, as an apply's is.
+            |receipt| {
+                crate::server::routes::admin::audit_record(
+                    &principal,
+                    "v2_deployment_rollback",
+                    "deployment",
+                    &format!("{}->{}", req.target_revision, receipt.committed_revision),
+                )
+            },
         )
         .await
     {
-        Ok((receipt, warnings)) => {
-            crate::server::routes::admin::audit_log(
-                &state.audit_queue,
-                &principal,
-                "v2_deployment_rollback",
-                "deployment",
-                &format!("{}->{}", req.target_revision, receipt.committed_revision),
-            );
+        Ok(((receipt, warnings), recorded)) => {
+            if let Some(event) = recorded {
+                crate::server::routes::admin::emit_audit_trail(&event);
+            }
             let (evaluation, local_error) =
                 reconcile_locally(&state, receipt.committed_revision).await;
             let resp = RollbackDeploymentResponse {

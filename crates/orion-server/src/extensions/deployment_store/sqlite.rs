@@ -11,6 +11,7 @@ use super::{
 use crate::extensions::AdmissionPolicy;
 use crate::extensions::contract::ImplementationKind;
 use crate::extensions::package_identity::sha256_digest;
+use crate::storage::repositories::audit_logs::AuditEvent;
 
 type PersistedArtifactTuple = (String, i64, String, Option<i64>, Option<Vec<u8>>);
 type PersistedRevisionTuple = (i64, Option<i64>, String, String, String, String, bool);
@@ -1632,82 +1633,98 @@ impl ImmutableDeploymentStore {
     where
         F: FnOnce(&mut DeploymentState) -> Result<T, DeploymentError>,
     {
+        self.transactional_mutate_audited(pool, mutate, None::<fn(&T) -> AuditEvent>)
+            .await
+            .map(|(out, _)| out)
+    }
+
+    /// One mutation of the store, in one database transaction: sync the
+    /// staged state from the database, `mutate` it, write what it dirtied,
+    /// commit, publish.
+    ///
+    /// `audit`, when given, is the audit row of a mutation that **moves the
+    /// head** (an apply or a rollback), written inside the same transaction
+    /// so the row lands with the head move or not at all. A mutation that
+    /// writes no head (an idempotent replay answering the stored receipt, a
+    /// refusal) writes no row; the event written is handed back so the caller
+    /// can emit the rest of the trail (log line, counter) after the commit.
+    async fn transactional_mutate_audited<T, F, A>(
+        &self,
+        pool: &crate::storage::DbPool,
+        mutate: F,
+        audit: Option<A>,
+    ) -> Result<(T, Option<AuditEvent>), DeploymentError>
+    where
+        F: FnOnce(&mut DeploymentState) -> Result<T, DeploymentError>,
+        A: FnOnce(&T) -> AuditEvent,
+    {
         let _write_guard = self.write_lock.lock().await;
-        match pool {
+        let begin_err = |e: sqlx::Error| {
+            DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
+        };
+        let mut staged = {
+            let g = self.inner.lock().expect("store lock");
+            let mut cloned = g.clone();
+            cloned.dirty = DeploymentDirtySet::default();
+            cloned
+        };
+        let (tx, out, batch) = match pool {
             crate::storage::DbPool::Sqlite(p) => {
                 // IMMEDIATE: the mutation reads the store before it writes,
                 // and a deferred transaction that does so on SQLite fails
                 // with SQLITE_BUSY when another writer gets in between —
                 // the case `DbPool::begin_write_tx` exists to prevent.
-                let mut tx = p.begin_with("BEGIN IMMEDIATE").await.map_err(|e| {
-                    DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
-                })?;
-                let mut staged = {
-                    let g = self.inner.lock().expect("store lock");
-                    let mut cloned = g.clone();
-                    cloned.dirty = DeploymentDirtySet::default();
-                    cloned
-                };
+                let mut tx = p.begin_with("BEGIN IMMEDIATE").await.map_err(begin_err)?;
                 Self::sync_staged_from_sqlite_tx(&mut staged, &mut tx).await?;
                 let out = mutate(&mut staged)?;
                 let batch = staged.extract_dirty_batch();
                 if !batch.is_empty() {
                     Self::write_batch_to_sqlite_tx(&mut tx, &batch, Some(&staged.admissions))
                         .await?;
-                    tx.commit().await.map_err(|e| {
-                        DeploymentError::new("DB_COMMIT_ERROR", format!("failed to commit tx: {e}"))
-                    })?;
                 }
-                self.publish_committed_batch(&staged, &batch);
-                Ok(out)
+                (crate::storage::DbTransaction::Sqlite(tx), out, batch)
             }
             crate::storage::DbPool::Postgres(p) => {
-                let mut tx = p.begin().await.map_err(|e| {
-                    DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
-                })?;
-                let mut staged = {
-                    let g = self.inner.lock().expect("store lock");
-                    let mut cloned = g.clone();
-                    cloned.dirty = DeploymentDirtySet::default();
-                    cloned
-                };
+                let mut tx = p.begin().await.map_err(begin_err)?;
                 Self::sync_staged_from_postgres_tx(&mut staged, &mut tx).await?;
                 let out = mutate(&mut staged)?;
                 let batch = staged.extract_dirty_batch();
                 if !batch.is_empty() {
                     Self::write_batch_to_postgres_tx(&mut tx, &batch, Some(&staged.admissions))
                         .await?;
-                    tx.commit().await.map_err(|e| {
-                        DeploymentError::new("DB_COMMIT_ERROR", format!("failed to commit tx: {e}"))
-                    })?;
                 }
-                self.publish_committed_batch(&staged, &batch);
-                Ok(out)
+                (crate::storage::DbTransaction::Postgres(tx), out, batch)
             }
             crate::storage::DbPool::Mysql(p) => {
-                let mut tx = p.begin().await.map_err(|e| {
-                    DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
-                })?;
-                let mut staged = {
-                    let g = self.inner.lock().expect("store lock");
-                    let mut cloned = g.clone();
-                    cloned.dirty = DeploymentDirtySet::default();
-                    cloned
-                };
+                let mut tx = p.begin().await.map_err(begin_err)?;
                 Self::sync_staged_from_mysql_tx(&mut staged, &mut tx).await?;
                 let out = mutate(&mut staged)?;
                 let batch = staged.extract_dirty_batch();
                 if !batch.is_empty() {
                     Self::write_batch_to_mysql_tx(&mut tx, &batch, Some(&staged.admissions))
                         .await?;
-                    tx.commit().await.map_err(|e| {
-                        DeploymentError::new("DB_COMMIT_ERROR", format!("failed to commit tx: {e}"))
-                    })?;
                 }
-                self.publish_committed_batch(&staged, &batch);
-                Ok(out)
+                (crate::storage::DbTransaction::Mysql(tx), out, batch)
             }
+        };
+        let mut recorded = None;
+        if !batch.is_empty() {
+            let mut tx = tx;
+            if batch.write_head
+                && let Some(audit) = audit
+            {
+                let event = audit(&out);
+                crate::storage::repositories::audit_logs::insert_in_tx(&mut tx, &event)
+                    .await
+                    .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                recorded = Some(event);
+            }
+            tx.commit().await.map_err(|e| {
+                DeploymentError::new("DB_COMMIT_ERROR", format!("failed to commit tx: {e}"))
+            })?;
         }
+        self.publish_committed_batch(&staged, &batch);
+        Ok((out, recorded))
     }
 
     pub async fn ingest_verified_archive_in_db(
@@ -1818,6 +1835,55 @@ impl ImmutableDeploymentStore {
                 policy,
             )
         })
+        .await
+    }
+
+    /// [`Self::apply_candidate_in_db`], with the audit row `audit` builds
+    /// from the receipt written in the commit's transaction: it lands with
+    /// the head move or not at all. `None` beside the receipt when nothing
+    /// was committed (an idempotent replay of a committed apply).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_candidate_audited_in_db(
+        &self,
+        pool: &crate::storage::DbPool,
+        principal: &str,
+        idempotency_key: &str,
+        plan: &CandidatePlan,
+        reason: &str,
+        policy: &dyn AdmissionPolicy,
+        audit: impl FnOnce(&DeploymentReceipt) -> AuditEvent,
+    ) -> Result<(DeploymentReceipt, Option<AuditEvent>), DeploymentError> {
+        self.transactional_mutate_audited(
+            pool,
+            |staged| {
+                Self::apply_candidate_into_state(
+                    staged,
+                    principal,
+                    idempotency_key,
+                    plan,
+                    reason,
+                    policy,
+                )
+            },
+            Some(audit),
+        )
+        .await
+    }
+
+    /// [`Self::rollback_to_revision_in_db`], with its audit row written in
+    /// the commit's transaction (see [`Self::apply_candidate_audited_in_db`]).
+    pub async fn rollback_to_revision_audited_in_db(
+        &self,
+        pool: &crate::storage::DbPool,
+        rollback: &Rollback<'_>,
+        policy: &dyn AdmissionPolicy,
+        audit: impl FnOnce(&DeploymentReceipt) -> AuditEvent,
+    ) -> Result<((DeploymentReceipt, Vec<String>), Option<AuditEvent>), DeploymentError> {
+        self.transactional_mutate_audited(
+            pool,
+            |staged| Self::rollback_to_revision_into_state(staged, rollback, policy),
+            Some(|(receipt, _): &(DeploymentReceipt, Vec<String>)| audit(receipt)),
+        )
         .await
     }
 
