@@ -908,6 +908,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     }
     ready.store(true, std::sync::atomic::Ordering::Release);
     crate::cluster::start_v2_reconciler(&state);
+    crate::runtime::deployment_gc::start(&state);
 
     Ok(Assembled {
         state,

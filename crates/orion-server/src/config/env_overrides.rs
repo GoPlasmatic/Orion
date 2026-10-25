@@ -203,6 +203,9 @@ where
     ov!(storage.idle_timeout_secs: u64);
     ov!(storage.auto_migrate: bool);
     ov!(storage.connect_retry_secs: u64);
+    ov!(storage.artifact_gc_interval_secs: u64);
+    ov!(storage.artifact_gc_grace_secs: u64);
+    ov!(storage.deployment_retain_revisions: u32);
 
     // Cluster
     ov!(cron.enabled: bool);

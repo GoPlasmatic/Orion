@@ -1092,7 +1092,8 @@ impl ImmutableDeploymentStore {
     }
 
     /// [`Self::store_definition_artifact`] on staged state. Storing bytes the
-    /// store already holds is a no-op that answers the stored row.
+    /// store already holds is a no-op that answers the stored row; storing
+    /// bytes the collector has drained or deleted revives them.
     pub(super) fn store_definition_artifact_into_state(
         g: &mut DeploymentState,
         bytes: Vec<u8>,
@@ -1106,16 +1107,14 @@ impl ImmutableDeploymentStore {
             drain_epoch: None,
             bytes: Some(bytes),
         };
-        if let Some(existing) = g.artifacts.get(&digest) {
-            if existing.state != ArtifactState::Active {
-                return Err(DeploymentError::new(
-                    "ARTIFACT_NOT_ACTIVE",
-                    format!("definition artifact '{digest}' is not ACTIVE"),
-                ));
-            }
-            if existing.bytes.is_some() {
-                return Ok(existing.clone());
-            }
+        // An artifact the collector has marked or tombstoned is revived by
+        // uploading it again: the bytes hash to the digest, so they are the
+        // same artifact, and the upload restarts its grace window.
+        if let Some(existing) = g.artifacts.get(&digest)
+            && existing.state == ArtifactState::Active
+            && existing.bytes.is_some()
+        {
+            return Ok(existing.clone());
         }
         g.dirty.artifacts.insert(digest.clone());
         g.artifacts.insert(digest, row.clone());
@@ -1598,151 +1597,181 @@ impl ImmutableDeploymentStore {
             .insert(node_id.to_string(), revisions);
     }
 
-    /// V2-04.6: Two-phase epoch-fenced garbage collection (`ACTIVE -> DRAINING -> DELETED`)
-    /// and intermediate `deployment_members` compaction (`TD-22`, `TD-23`).
-    ///
-    /// Protects:
-    /// - Current `deployment_head`
-    /// - Recent rollback window (`retain_recent_revisions`)
-    /// - Any revision held in `active_node_revisions`
-    /// - Newly staged (never yet deployed) non-revoked packages, connections, and payload files
-    /// - All constituent payload file digests of protected packages
+    /// [`Self::collect_garbage_on_state`] on the in-memory store, with no
+    /// grace window: for tests. A node collects through
+    /// `mark_and_collect_garbage_in_db`, under its scheduled job.
+    #[cfg(test)]
     pub fn mark_and_collect_garbage(
         &self,
         retain_recent_revisions: usize,
     ) -> (Vec<String>, Vec<String>, Vec<u64>) {
         let mut g = self.inner.lock().expect("store lock");
+        let out = Self::collect_garbage_on_state(&mut g, retain_recent_revisions, &HashSet::new());
+        (out.draining, out.deleted, out.compacted)
+    }
+
+    /// V2-04.6: one pass of two-phase, epoch-fenced artifact collection
+    /// (`ACTIVE -> DRAINING -> DELETED`) and `deployment_members` compaction
+    /// (`TD-22`, `TD-23`).
+    ///
+    /// **Never collected** — an artifact that is any of:
+    /// - referenced by a *retained* revision: the head, the
+    ///   `retain_recent_revisions` newest, and every revision a node reports
+    ///   holding. That is the provider lock, each provider package and its
+    ///   files, each member's definition, and each owning package and its
+    ///   files;
+    /// - a connection revision's configuration (connection revisions are
+    ///   never deleted, so neither is what they name);
+    /// - a package that is not revoked — admitted, or uploaded and awaiting
+    ///   admission — and its files;
+    /// - in `recent`: written or revived within the grace window, judged by
+    ///   the caller on the database clock — a definition uploaded for an
+    ///   apply that has not happened yet — and, for a recent package, its
+    ///   files.
+    ///
+    /// Everything else moves one phase per pass: `ACTIVE` to `DRAINING` (bytes
+    /// kept), then, on a later pass once the epoch has moved past its drain,
+    /// `DRAINING` to `DELETED` (bytes dropped; the row stays as a tombstone a
+    /// re-upload revives). A protected artifact found `DRAINING` — one a peer
+    /// re-referenced after it was marked — is put back to `ACTIVE`. Revisions
+    /// outside the retained set are compacted, which is what makes rollback
+    /// to them refuse rather than half-work.
+    ///
+    /// Nothing runs before the first deployment: without a head row there is
+    /// nothing for the pass to serialise against.
+    pub(super) fn collect_garbage_on_state(
+        g: &mut DeploymentState,
+        retain_recent_revisions: usize,
+        recent: &HashSet<String>,
+    ) -> GcOutcome {
+        let mut out = GcOutcome::default();
         let head = g.head_revision;
+        if head == 0 {
+            return out;
+        }
         let current_epoch = g.epoch;
 
-        let mut protected_revisions: BTreeSet<u64> = BTreeSet::new();
-        if head > 0 {
-            protected_revisions.insert(head);
-        }
-        for rev in g.revisions.keys().rev().take(retain_recent_revisions) {
-            protected_revisions.insert(*rev);
-        }
+        let mut retained: BTreeSet<u64> = BTreeSet::from([head]);
+        retained.extend(
+            g.revisions
+                .keys()
+                .rev()
+                .take(retain_recent_revisions.max(1))
+                .copied(),
+        );
         for held in g.active_node_revisions.values() {
-            for r in held {
-                protected_revisions.insert(*r);
-            }
+            retained.extend(held.iter().copied());
         }
 
-        // Track all digests ever referenced by any committed revision so newly
-        // staged packages/connections (never yet deployed) are not prematurely collected.
-        let mut ever_deployed_digests: HashSet<String> = HashSet::new();
-        for rev in g.revisions.values() {
+        let mut protected: HashSet<String> = recent.clone();
+        let protect_package = |digest: &str, protected: &mut HashSet<String>| {
+            protected.insert(digest.to_string());
+            if let Some(pkg) = g.packages.get(digest) {
+                protected.extend(extract_inventory_file_digests(&pkg.inventory_json));
+            }
+        };
+        for rev in retained.iter().filter_map(|r| g.revisions.get(r)) {
             if let Some(ref lock_digest) = rev.manifest.provider_lock_digest {
-                ever_deployed_digests.insert(lock_digest.clone());
+                protected.insert(lock_digest.clone());
             }
             for p in &rev.manifest.providers {
-                ever_deployed_digests.insert(p.digest.clone());
-                if let Some(pkg) = g.packages.get(&p.digest) {
-                    for fd in extract_inventory_file_digests(&pkg.inventory_json) {
-                        ever_deployed_digests.insert(fd);
-                    }
-                }
+                protect_package(&p.digest, &mut protected);
             }
             for m in &rev.manifest.members {
-                ever_deployed_digests.insert(m.definition_digest.clone());
-            }
-        }
-
-        let mut protected_digests: HashSet<String> = HashSet::new();
-        for rev_id in &protected_revisions {
-            if let Some(rev) = g.revisions.get(rev_id) {
-                if let Some(ref lock_digest) = rev.manifest.provider_lock_digest {
-                    protected_digests.insert(lock_digest.clone());
-                }
-                for p in &rev.manifest.providers {
-                    protected_digests.insert(p.digest.clone());
-                    if let Some(pkg) = g.packages.get(&p.digest) {
-                        for fd in extract_inventory_file_digests(&pkg.inventory_json) {
-                            protected_digests.insert(fd);
-                        }
-                    }
-                }
-                for m in &rev.manifest.members {
-                    protected_digests.insert(m.definition_digest.clone());
-                    if let Some(ref owning_pkg) = m.owning_package {
-                        protected_digests.insert(owning_pkg.clone());
-                        if let Some(pkg) = g.packages.get(owning_pkg) {
-                            for fd in extract_inventory_file_digests(&pkg.inventory_json) {
-                                protected_digests.insert(fd);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Protect newly staged packages (uploaded/admitted and never yet deployed nor revoked)
-        // along with their payload file digests, and newly staged connection revisions.
-        for (pkg_digest, pkg) in &g.packages {
-            let is_revoked = g.admissions.get(pkg_digest).is_some_and(|a| a.revoked);
-            if !ever_deployed_digests.contains(pkg_digest) && !is_revoked {
-                protected_digests.insert(pkg_digest.clone());
-                for fd in extract_inventory_file_digests(&pkg.inventory_json) {
-                    protected_digests.insert(fd);
+                protected.insert(m.definition_digest.clone());
+                if let Some(ref owning_pkg) = m.owning_package {
+                    protect_package(owning_pkg, &mut protected);
                 }
             }
         }
         for conn in g.connections.values() {
-            if !ever_deployed_digests.contains(&conn.configuration_digest) {
-                protected_digests.insert(conn.configuration_digest.clone());
+            protected.insert(conn.configuration_digest.clone());
+        }
+        for digest in g.packages.keys() {
+            let revoked = g.admissions.get(digest).is_some_and(|a| a.revoked);
+            if !revoked || recent.contains(digest) {
+                protect_package(digest, &mut protected);
             }
         }
 
-        let mut compacted_revisions = Vec::new();
         let rev_keys: Vec<u64> = g.revisions.keys().copied().collect();
         for rev_id in rev_keys {
-            if !protected_revisions.contains(&rev_id)
+            if !retained.contains(&rev_id)
                 && let Some(rev) = g.revisions.get_mut(&rev_id)
                 && !rev.members_compacted
             {
                 rev.members_compacted = true;
-                compacted_revisions.push(rev_id);
+                out.compacted.push(rev_id);
             }
         }
-        for rev_id in &compacted_revisions {
+        for rev_id in &out.compacted {
             g.dirty.revisions.insert(*rev_id);
             g.dirty.compacted_member_revisions.insert(*rev_id);
         }
 
-        let mut newly_draining = Vec::new();
-        let mut newly_deleted = Vec::new();
         for (digest, art) in g.artifacts.iter_mut() {
-            if protected_digests.contains(digest) {
+            if protected.contains(digest) {
+                if art.state == ArtifactState::Draining {
+                    art.state = ArtifactState::Active;
+                    art.drain_epoch = None;
+                    out.revived.push(digest.clone());
+                }
                 continue;
             }
             match art.state {
                 ArtifactState::Active => {
                     art.state = ArtifactState::Draining;
                     art.drain_epoch = Some(current_epoch);
-                    newly_draining.push(digest.clone());
+                    out.draining.push(digest.clone());
                 }
                 ArtifactState::Draining => {
                     if art.drain_epoch.is_none_or(|de| current_epoch > de) {
                         art.state = ArtifactState::Deleted;
-                        art.bytes = None;
-                        newly_deleted.push(digest.clone());
+                        out.deleted_bytes += art.bytes.take().map_or(0, |b| b.len() as u64);
+                        out.deleted.push(digest.clone());
                     }
                 }
                 ArtifactState::Deleted => {}
             }
         }
-        for d in newly_draining.iter().chain(newly_deleted.iter()) {
+        for d in out
+            .draining
+            .iter()
+            .chain(out.deleted.iter())
+            .chain(out.revived.iter())
+        {
             g.dirty.artifacts.insert(d.clone());
         }
-        if !newly_draining.is_empty()
-            || !newly_deleted.is_empty()
-            || !compacted_revisions.is_empty()
-        {
+        if !out.is_empty() {
             g.epoch += 1;
             g.dirty.head = true;
         }
+        out
+    }
+}
 
-        (newly_draining, newly_deleted, compacted_revisions)
+/// What one garbage-collection pass changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GcOutcome {
+    /// Marked `DRAINING` this pass: unreferenced, bytes still held.
+    pub draining: Vec<String>,
+    /// Moved to `DELETED` this pass: their bytes are gone.
+    pub deleted: Vec<String>,
+    /// The bytes the deleted artifacts held.
+    pub deleted_bytes: u64,
+    /// `DRAINING` artifacts something references again, put back to `ACTIVE`.
+    pub revived: Vec<String>,
+    /// Revisions whose member rows were compacted.
+    pub compacted: Vec<u64>,
+}
+
+impl GcOutcome {
+    /// Whether the pass changed nothing (and so moved no epoch).
+    pub fn is_empty(&self) -> bool {
+        self.draining.is_empty()
+            && self.deleted.is_empty()
+            && self.revived.is_empty()
+            && self.compacted.is_empty()
     }
 }
 

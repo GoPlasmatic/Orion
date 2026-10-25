@@ -12,6 +12,7 @@ use crate::extensions::AdmissionPolicy;
 use crate::extensions::contract::ImplementationKind;
 use crate::extensions::package_identity::sha256_digest;
 use crate::storage::repositories::audit_logs::AuditEvent;
+use std::collections::HashSet;
 
 type PersistedArtifactTuple = (String, i64, String, Option<i64>, Option<Vec<u8>>);
 type PersistedRevisionTuple = (i64, Option<i64>, String, String, String, String, bool);
@@ -273,7 +274,8 @@ impl ImmutableDeploymentStore {
         for (rev_id, rev_row) in &staged.revisions {
             g.revisions
                 .entry(*rev_id)
-                .or_insert_with(|| rev_row.clone());
+                .or_insert_with(|| rev_row.clone())
+                .members_compacted |= rev_row.members_compacted;
         }
         for (op_key, receipt) in &staged.receipts {
             g.receipts
@@ -293,10 +295,11 @@ impl ImmutableDeploymentStore {
                 .entry(conn_key.clone())
                 .or_insert_with(|| conn.clone());
         }
+        // Artifacts as the transaction saw them: database state wins (see
+        // `merge_catalog_rows`), so a peer's drain or delete reaches this
+        // node's copy here too.
         for (art_digest, art) in &staged.artifacts {
-            g.artifacts
-                .entry(art_digest.clone())
-                .or_insert_with(|| art.clone());
+            g.artifacts.insert(art_digest.clone(), art.clone());
         }
     }
 
@@ -317,16 +320,21 @@ impl ImmutableDeploymentStore {
                     )));
                 }
             };
-            staged
-                .artifacts
-                .entry(digest.clone())
-                .or_insert_with(|| ArtifactObjectRow {
+            // The database row wins over this node's copy: inside the
+            // transaction it is the truth, and a peer's collector may have
+            // drained or deleted an artifact this node still holds as active.
+            // Keeping the local copy would let a mutation here verify against
+            // bytes the database no longer has.
+            staged.artifacts.insert(
+                digest.clone(),
+                ArtifactObjectRow {
                     digest,
                     size_bytes: size_bytes.max(0) as usize,
                     state,
                     drain_epoch: drain_epoch.map(|e| e.max(0) as u64),
                     bytes: payload_bytes,
-                });
+                },
+            );
         }
         for (
             digest,
@@ -485,7 +493,13 @@ impl ImmutableDeploymentStore {
         ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
-            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64) {
+            if let Some(existing) = staged.revisions.get_mut(&rev_u64) {
+                // A peer's collector may have compacted it since this node
+                // read it; compaction is one-way.
+                existing.members_compacted |= members_compacted;
+            } else if let std::collections::btree_map::Entry::Vacant(e) =
+                staged.revisions.entry(rev_u64)
+            {
                 let manifest =
                     serde_json::from_str::<CanonicalManifest>(&manifest_str).map_err(|err| {
                         corrupt(format!("corrupt manifest for revision {rev_u64}: {err}"))
@@ -592,7 +606,13 @@ impl ImmutableDeploymentStore {
         ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
-            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64) {
+            if let Some(existing) = staged.revisions.get_mut(&rev_u64) {
+                // A peer's collector may have compacted it since this node
+                // read it; compaction is one-way.
+                existing.members_compacted |= members_compacted;
+            } else if let std::collections::btree_map::Entry::Vacant(e) =
+                staged.revisions.entry(rev_u64)
+            {
                 let manifest =
                     serde_json::from_str::<CanonicalManifest>(&manifest_str).map_err(|err| {
                         corrupt(format!("corrupt manifest for revision {rev_u64}: {err}"))
@@ -699,7 +719,13 @@ impl ImmutableDeploymentStore {
         ) in rev_rows
         {
             let rev_u64 = rev.max(0) as u64;
-            if let std::collections::btree_map::Entry::Vacant(e) = staged.revisions.entry(rev_u64) {
+            if let Some(existing) = staged.revisions.get_mut(&rev_u64) {
+                // A peer's collector may have compacted it since this node
+                // read it; compaction is one-way.
+                existing.members_compacted |= members_compacted;
+            } else if let std::collections::btree_map::Entry::Vacant(e) =
+                staged.revisions.entry(rev_u64)
+            {
                 let manifest =
                     serde_json::from_str::<CanonicalManifest>(&manifest_str).map_err(|err| {
                         corrupt(format!("corrupt manifest for revision {rev_u64}: {err}"))
@@ -757,7 +783,8 @@ impl ImmutableDeploymentStore {
             sqlx::query(
                 "INSERT INTO artifact_objects (digest, size_bytes, state, drain_epoch, payload_bytes) \
                  VALUES ($1, $2, $3, $4, $5) \
-                 ON CONFLICT(digest) DO UPDATE SET state = EXCLUDED.state, drain_epoch = EXCLUDED.drain_epoch, payload_bytes = EXCLUDED.payload_bytes",
+                 ON CONFLICT(digest) DO UPDATE SET state = EXCLUDED.state, drain_epoch = EXCLUDED.drain_epoch, payload_bytes = EXCLUDED.payload_bytes, \
+                 created_at = CASE WHEN artifact_objects.state <> 'active' AND EXCLUDED.state = 'active' THEN CURRENT_TIMESTAMP ELSE artifact_objects.created_at END",
             )
             .bind(&art.digest)
             .bind(art.size_bytes as i64)
@@ -1052,7 +1079,8 @@ impl ImmutableDeploymentStore {
             sqlx::query(
                 "INSERT INTO artifact_objects (digest, size_bytes, state, drain_epoch, payload_bytes) \
                  VALUES (?, ?, ?, ?, ?) \
-                 ON DUPLICATE KEY UPDATE state = VALUES(state), drain_epoch = VALUES(drain_epoch), payload_bytes = VALUES(payload_bytes)",
+                 ON DUPLICATE KEY UPDATE created_at = IF(state <> 'active' AND VALUES(state) = 'active', CURRENT_TIMESTAMP, created_at), \
+                 state = VALUES(state), drain_epoch = VALUES(drain_epoch), payload_bytes = VALUES(payload_bytes)",
             )
             .bind(&art.digest)
             .bind(art.size_bytes as i64)
@@ -1344,7 +1372,8 @@ impl ImmutableDeploymentStore {
             sqlx::query(
                 "INSERT INTO artifact_objects (digest, size_bytes, state, drain_epoch, payload_bytes) \
                  VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(digest) DO UPDATE SET state = excluded.state, drain_epoch = excluded.drain_epoch, payload_bytes = excluded.payload_bytes",
+                 ON CONFLICT(digest) DO UPDATE SET state = excluded.state, drain_epoch = excluded.drain_epoch, payload_bytes = excluded.payload_bytes, \
+                 created_at = CASE WHEN artifact_objects.state <> 'active' AND excluded.state = 'active' THEN CURRENT_TIMESTAMP ELSE artifact_objects.created_at END",
             )
             .bind(&art.digest)
             .bind(art.size_bytes as i64)
@@ -1633,9 +1662,14 @@ impl ImmutableDeploymentStore {
     where
         F: FnOnce(&mut DeploymentState) -> Result<T, DeploymentError>,
     {
-        self.transactional_mutate_audited(pool, mutate, None::<fn(&T) -> AuditEvent>)
-            .await
-            .map(|(out, _)| out)
+        self.transactional_core(
+            pool,
+            None,
+            |staged, _| mutate(staged),
+            None::<fn(&T) -> AuditEvent>,
+        )
+        .await
+        .map(|(out, _)| out)
     }
 
     /// One mutation of the store, in one database transaction: sync the
@@ -1658,6 +1692,29 @@ impl ImmutableDeploymentStore {
         F: FnOnce(&mut DeploymentState) -> Result<T, DeploymentError>,
         A: FnOnce(&T) -> AuditEvent,
     {
+        self.transactional_core(pool, None, |staged, _| mutate(staged), audit)
+            .await
+    }
+
+    /// The transaction every mutation runs in (see
+    /// [`Self::transactional_mutate_audited`]). With `recent_grace_secs`,
+    /// `mutate` is also handed the digests of the artifacts written or
+    /// revived within that many seconds, read in the same transaction and
+    /// judged on the database's clock — the collector's grace window, so no
+    /// node's clock decides what is old enough to collect.
+    async fn transactional_core<T, F, A>(
+        &self,
+        pool: &crate::storage::DbPool,
+        recent_grace_secs: Option<u64>,
+        mutate: F,
+        audit: Option<A>,
+    ) -> Result<(T, Option<AuditEvent>), DeploymentError>
+    where
+        F: FnOnce(&mut DeploymentState, &HashSet<String>) -> Result<T, DeploymentError>,
+        A: FnOnce(&T) -> AuditEvent,
+    {
+        let read_err = |e: sqlx::Error| DeploymentError::new("DB_READ_ERROR", e.to_string());
+        let grace = |secs: u64| i64::try_from(secs).unwrap_or(i64::MAX);
         let _write_guard = self.write_lock.lock().await;
         let begin_err = |e: sqlx::Error| {
             DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
@@ -1676,7 +1733,19 @@ impl ImmutableDeploymentStore {
                 // the case `DbPool::begin_write_tx` exists to prevent.
                 let mut tx = p.begin_with("BEGIN IMMEDIATE").await.map_err(begin_err)?;
                 Self::sync_staged_from_sqlite_tx(&mut staged, &mut tx).await?;
-                let out = mutate(&mut staged)?;
+                let recent: HashSet<String> = match recent_grace_secs {
+                    Some(secs) => sqlx::query_scalar(
+                        "SELECT digest FROM artifact_objects WHERE created_at > datetime('now', ?1)",
+                    )
+                    .bind(format!("-{} seconds", grace(secs)))
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(read_err)?
+                    .into_iter()
+                    .collect(),
+                    None => HashSet::new(),
+                };
+                let out = mutate(&mut staged, &recent)?;
                 let batch = staged.extract_dirty_batch();
                 if !batch.is_empty() {
                     Self::write_batch_to_sqlite_tx(&mut tx, &batch, Some(&staged.admissions))
@@ -1687,7 +1756,20 @@ impl ImmutableDeploymentStore {
             crate::storage::DbPool::Postgres(p) => {
                 let mut tx = p.begin().await.map_err(begin_err)?;
                 Self::sync_staged_from_postgres_tx(&mut staged, &mut tx).await?;
-                let out = mutate(&mut staged)?;
+                let recent: HashSet<String> = match recent_grace_secs {
+                    Some(secs) => sqlx::query_scalar(
+                        "SELECT digest FROM artifact_objects \
+                         WHERE created_at > LOCALTIMESTAMP - ($1::bigint * interval '1 second')",
+                    )
+                    .bind(grace(secs))
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(read_err)?
+                    .into_iter()
+                    .collect(),
+                    None => HashSet::new(),
+                };
+                let out = mutate(&mut staged, &recent)?;
                 let batch = staged.extract_dirty_batch();
                 if !batch.is_empty() {
                     Self::write_batch_to_postgres_tx(&mut tx, &batch, Some(&staged.admissions))
@@ -1698,7 +1780,20 @@ impl ImmutableDeploymentStore {
             crate::storage::DbPool::Mysql(p) => {
                 let mut tx = p.begin().await.map_err(begin_err)?;
                 Self::sync_staged_from_mysql_tx(&mut staged, &mut tx).await?;
-                let out = mutate(&mut staged)?;
+                let recent: HashSet<String> = match recent_grace_secs {
+                    Some(secs) => sqlx::query_scalar(
+                        "SELECT digest FROM artifact_objects \
+                         WHERE created_at > CURRENT_TIMESTAMP - INTERVAL ? SECOND",
+                    )
+                    .bind(grace(secs))
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(read_err)?
+                    .into_iter()
+                    .collect(),
+                    None => HashSet::new(),
+                };
+                let out = mutate(&mut staged, &recent)?;
                 let batch = staged.extract_dirty_batch();
                 if !batch.is_empty() {
                     Self::write_batch_to_mysql_tx(&mut tx, &batch, Some(&staged.admissions))
@@ -1725,6 +1820,32 @@ impl ImmutableDeploymentStore {
         }
         self.publish_committed_batch(&staged, &batch);
         Ok((out, recorded))
+    }
+
+    /// One collection pass (`collect_garbage_on_state`) in one transaction:
+    /// the grace window is read on the database clock in that transaction,
+    /// and the pass writes its epoch move through the same head CAS an apply
+    /// does, so it serialises against every other mutation of the store.
+    pub async fn mark_and_collect_garbage_in_db(
+        &self,
+        pool: &crate::storage::DbPool,
+        retain_recent_revisions: usize,
+        grace_secs: u64,
+    ) -> Result<super::GcOutcome, DeploymentError> {
+        self.transactional_core(
+            pool,
+            Some(grace_secs),
+            |staged, recent| {
+                Ok(Self::collect_garbage_on_state(
+                    staged,
+                    retain_recent_revisions,
+                    recent,
+                ))
+            },
+            None::<fn(&super::GcOutcome) -> AuditEvent>,
+        )
+        .await
+        .map(|(out, _)| out)
     }
 
     pub async fn ingest_verified_archive_in_db(

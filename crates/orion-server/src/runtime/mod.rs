@@ -20,6 +20,7 @@
 
 pub mod authority;
 pub mod definitions;
+pub mod deployment_gc;
 pub mod generation;
 pub mod limiter_prune;
 pub mod load_issues;

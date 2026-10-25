@@ -130,6 +130,16 @@
                                # window every replica exits and the restart backoff outlives
                                # the outage. Ignored for SQLite; the migration check above
                                # stays fail-fast either way.
+# artifact_gc_interval_secs = 3600  # How often the deployment store's artifact collector runs
+                                    # (0 = never). An unreferenced artifact is marked draining
+                                    # on one pass and its bytes deleted on the next. In a
+                                    # cluster one node holds the `deployment_gc` lease.
+# artifact_gc_grace_secs = 86400    # Never collect an artifact written or revived this recently
+                                    # (database clock): upload-then-apply stays safe.
+# deployment_retain_revisions = 20  # Newest deployment revisions kept whole for rollback, besides
+                                    # the head and any a node holds. Older ones are compacted:
+                                    # their artifacts become collectable and rollback to them
+                                    # is refused. Must be >= 1.
 
 [cluster]
 # Multi-instance (HA) coordination. With enabled = false (the default) Orion is

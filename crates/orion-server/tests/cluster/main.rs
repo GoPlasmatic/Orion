@@ -1754,6 +1754,91 @@ async fn backups_refused_in_cluster_mode() {
     }
 }
 
+/// The deployment store's artifact collector in a cluster: both nodes run
+/// the scheduled job, one holds the `deployment_gc` lease and collects, and
+/// what it collects is an abandoned upload — never what the deployment both
+/// nodes serve names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn one_node_collects_unreferenced_artifacts_for_the_cluster() {
+    let h = two_nodes_with(|config| {
+        config.storage.artifact_gc_interval_secs = 1;
+        config.storage.artifact_gc_grace_secs = 3600;
+    })
+    .await;
+    common::create_and_activate_channel(&h.node_a, "gc-ch", common::simple_log_workflow("GC"))
+        .await;
+    let orphan = common::deploy::upload(
+        &h.node_a,
+        json!({"kind": "workflow", "definition": common::simple_log_workflow("Abandoned")}),
+    )
+    .await;
+    let orion::storage::DbPool::Postgres(pg) = &h.state_a.db_pool else {
+        panic!("postgres expected");
+    };
+    sqlx::query(
+        "UPDATE artifact_objects SET created_at = LOCALTIMESTAMP - interval '2 hours' WHERE digest = $1",
+    )
+    .bind(&orphan)
+    .execute(pg)
+    .await
+    .expect("backdate");
+
+    // Two passes, about a second apart, on whichever node holds the lease.
+    let state_of = async |digest: &str| -> String {
+        sqlx::query_scalar("SELECT state FROM artifact_objects WHERE digest = $1")
+            .bind(digest)
+            .fetch_one(pg)
+            .await
+            .expect("artifact row")
+    };
+    assert!(
+        eventually_n(h.poll, 75, async || state_of(&orphan).await == "deleted").await,
+        "the abandoned upload must be collected within a few passes, is '{}'",
+        state_of(&orphan).await
+    );
+
+    // Exactly one node holds the job; the other's ticks are lease-skips.
+    let holders: Vec<String> =
+        sqlx::query_scalar("SELECT holder FROM job_leases WHERE job_name = 'deployment_gc'")
+            .fetch_all(pg)
+            .await
+            .expect("leases");
+    assert_eq!(holders.len(), 1, "{holders:?}");
+    let (holder, other) = if holders[0] == h.state_a.cluster.instance_id {
+        (&h.state_a, &h.state_b)
+    } else {
+        (&h.state_b, &h.state_a)
+    };
+    let gate = |state: &AppState| {
+        orion::cluster::JobLeaseGate::new(
+            state.cluster.repo.clone(),
+            state.cluster.instance_id.clone(),
+        )
+    };
+    assert!(!gate(other).try_acquire("deployment_gc", 61).await);
+    assert!(gate(holder).try_acquire("deployment_gc", 61).await);
+
+    // Every artifact the head names is still active, and both nodes serve.
+    let referenced: Vec<String> = sqlx::query_scalar(
+        "SELECT definition_digest FROM deployment_members m \
+         JOIN deployment_head h ON m.deployment_revision = h.head_revision",
+    )
+    .fetch_all(pg)
+    .await
+    .expect("members");
+    assert!(!referenced.is_empty());
+    for digest in &referenced {
+        assert_eq!(state_of(digest).await, "active", "{digest}");
+    }
+    assert!(
+        eventually(h.poll, async || post_status(&h.node_b, "gc-ch").await
+            == StatusCode::OK)
+        .await
+    );
+    assert_eq!(post_status(&h.node_a, "gc-ch").await, StatusCode::OK);
+}
+
 // ============================================================
 // Cron: the multi-node contracts
 // ============================================================

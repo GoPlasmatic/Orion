@@ -38,6 +38,7 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     the_shared_store_claims_once_and_counts_every_increment(backend, pool).await;
     a_shared_rate_window_holds_and_spills_at_most_2x(backend, pool).await;
     a_deployment_audit_row_commits_with_the_head(backend, pool).await;
+    the_artifact_collector_judges_its_grace_on_the_database_clock(backend, pool).await;
 }
 
 /// A deployment store manifest of one workflow member over `digest`.
@@ -373,4 +374,127 @@ async fn a_read_snapshot_is_repeatable(backend: &str, pool: &DbPool) {
         first[0].0 + 1,
         "{backend}: the writer actually committed"
     );
+}
+
+/// Move an artifact's `created_at` two hours into the database's past.
+async fn backdate_artifact(pool: &DbPool, digest: &str) {
+    let done = match pool {
+        DbPool::Sqlite(p) => sqlx::query(
+            "UPDATE artifact_objects SET created_at = datetime('now', '-2 hours') WHERE digest = ?1",
+        )
+        .bind(digest)
+        .execute(p)
+        .await
+        .map(|r| r.rows_affected()),
+        DbPool::Postgres(p) => sqlx::query(
+            "UPDATE artifact_objects SET created_at = LOCALTIMESTAMP - interval '2 hours' WHERE digest = $1",
+        )
+        .bind(digest)
+        .execute(p)
+        .await
+        .map(|r| r.rows_affected()),
+        DbPool::Mysql(p) => sqlx::query(
+            "UPDATE artifact_objects SET created_at = CURRENT_TIMESTAMP - INTERVAL 2 HOUR WHERE digest = ?",
+        )
+        .bind(digest)
+        .execute(p)
+        .await
+        .map(|r| r.rows_affected()),
+    };
+    assert_eq!(done.expect("backdate"), 1);
+}
+
+/// The deployment store's collector on this backend: an unreferenced
+/// artifact inside the grace window — measured on the database clock — is
+/// left alone; outside it, it drains on one pass and its bytes are deleted on
+/// the next; what the head names is never touched; and a node whose own copy
+/// still says active revives a deleted artifact when it uploads it again,
+/// because inside the transaction the database row wins.
+async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
+    backend: &str,
+    pool: &DbPool,
+) {
+    use orion::extensions::{ArtifactState, CommunityAdmissionPolicy, ImmutableDeploymentStore};
+
+    let policy = CommunityAdmissionPolicy::new();
+    let node_a = ImmutableDeploymentStore::new("contract-gc-a");
+    let node_b = ImmutableDeploymentStore::new("contract-gc-b");
+    let deployed = node_a
+        .store_definition_artifact_in_db(pool, b"contract-gc-wf".to_vec())
+        .await
+        .expect("store");
+    let base = node_a.current_head().0;
+    let plan = node_a
+        .plan_candidate_in_db(
+            pool,
+            base,
+            one_workflow_manifest("contract-gc", &deployed.digest),
+        )
+        .await
+        .expect("plan");
+    node_a
+        .apply_candidate_in_db(pool, "contract", "gc-1", &plan, "r", &policy)
+        .await
+        .expect("apply");
+    let orphan = node_a
+        .store_definition_artifact_in_db(pool, b"contract-gc-orphan".to_vec())
+        .await
+        .expect("store")
+        .digest;
+    // Node B reads the store (and so holds the orphan as active) before
+    // node A collects it.
+    node_b
+        .store_definition_artifact_in_db(pool, b"contract-gc-b".to_vec())
+        .await
+        .expect("store");
+    assert_eq!(
+        node_b.get_artifact(&orphan).map(|a| a.state),
+        Some(ArtifactState::Active),
+        "{backend}"
+    );
+
+    let gc = |node: &ImmutableDeploymentStore| {
+        let node = node.clone();
+        async move {
+            node.mark_and_collect_garbage_in_db(pool, 20, 3600)
+                .await
+                .expect("collect")
+        }
+    };
+    let pass = gc(&node_a).await;
+    assert!(
+        !pass.draining.contains(&orphan),
+        "{backend}: written seconds ago on the database clock, it is inside the grace window"
+    );
+    backdate_artifact(pool, &orphan).await;
+    let pass = gc(&node_a).await;
+    assert!(pass.draining.contains(&orphan), "{backend}: {pass:?}");
+    assert!(!pass.draining.contains(&deployed.digest), "{backend}");
+    let pass = gc(&node_a).await;
+    assert!(pass.deleted.contains(&orphan), "{backend}: {pass:?}");
+    assert!(!pass.deleted.contains(&deployed.digest), "{backend}");
+
+    let fresh = ImmutableDeploymentStore::new("contract-gc-reader");
+    fresh.load_from_db_pool(pool).await.expect("load");
+    let row = fresh.get_artifact(&orphan).expect("tombstone kept");
+    assert_eq!(row.state, ArtifactState::Deleted, "{backend}");
+    assert!(row.bytes.is_none(), "{backend}: the bytes are gone");
+    let head_def = fresh.get_artifact(&deployed.digest).expect("deployed");
+    assert_eq!(head_def.state, ArtifactState::Active, "{backend}");
+    assert!(head_def.bytes.is_some(), "{backend}");
+
+    // Node B's copy still says active; uploading the bytes again must revive
+    // the database row, not answer from the stale copy.
+    node_b
+        .store_definition_artifact_in_db(pool, b"contract-gc-orphan".to_vec())
+        .await
+        .expect("re-upload");
+    let fresh = ImmutableDeploymentStore::new("contract-gc-reader-2");
+    fresh.load_from_db_pool(pool).await.expect("load");
+    let row = fresh.get_artifact(&orphan).expect("revived");
+    assert_eq!(row.state, ArtifactState::Active, "{backend}");
+    assert!(row.bytes.is_some(), "{backend}");
+    // ... with a fresh grace window.
+    let pass = gc(&node_a).await;
+    assert!(!pass.draining.contains(&orphan), "{backend}: {pass:?}");
 }

@@ -51,6 +51,21 @@ pub struct StorageConfig {
     /// whose connect failures (bad path, permissions, corrupt file) are not
     /// transient.
     pub connect_retry_secs: u64,
+    /// How often, in seconds, the deployment store's artifact collector runs
+    /// (`0` = never). Each pass marks unreferenced artifacts draining and
+    /// deletes the bytes of those a previous pass marked, so an artifact
+    /// leaves the database two passes after its last reference does. In a
+    /// cluster one node holds the `deployment_gc` lease and collects.
+    pub artifact_gc_interval_secs: u64,
+    /// An artifact written or revived within this many seconds is never
+    /// collected, judged on the database clock — the window between
+    /// uploading a definition and applying the deployment that names it.
+    pub artifact_gc_grace_secs: u64,
+    /// How many of the newest deployment revisions the collector keeps whole,
+    /// besides the head and any revision a node reports holding. An older
+    /// revision is compacted: its artifacts become collectable and rolling
+    /// back to it is refused. Must be >= 1.
+    pub deployment_retain_revisions: u32,
 }
 
 impl Default for StorageConfig {
@@ -67,6 +82,9 @@ impl Default for StorageConfig {
             backup_retention_count: None,
             auto_migrate: true,
             connect_retry_secs: 60,
+            artifact_gc_interval_secs: 3600,
+            artifact_gc_grace_secs: 86_400,
+            deployment_retain_revisions: 20,
         }
     }
 }
@@ -83,6 +101,12 @@ impl StorageConfig {
         crate::storage::detect_backend(&self.url)?;
         require_nonzero(self.busy_timeout_ms, "storage.busy_timeout_ms")?;
         require_nonzero(self.acquire_timeout_secs, "storage.acquire_timeout_secs")?;
+        // 0 would compact the head's own predecessors away the moment they
+        // stop being the head, leaving no revision to roll back to.
+        require_nonzero(
+            u64::from(self.deployment_retain_revisions),
+            "storage.deployment_retain_revisions",
+        )?;
         // 0 would delete the backup just written; "keep none" is not a
         // retention policy — leave the field unset to disable pruning.
         // H3: fail at startup, not at the first connector read/write.

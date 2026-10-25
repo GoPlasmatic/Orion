@@ -637,6 +637,18 @@ pub fn record_cache_invalidations(source: &'static str, namespaces: u64) {
     counter!("orion_response_cache_invalidations_total", "source" => source).increment(namespaces);
 }
 
+/// Count one deployment-store collection pass: artifacts marked draining,
+/// artifacts deleted, and the bytes the deleted ones held.
+pub fn record_deployment_artifacts_collected(draining: u64, deleted: u64, deleted_bytes: u64) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_deployment_artifacts_collected_total", "phase" => "draining")
+        .increment(draining);
+    counter!("orion_deployment_artifacts_collected_total", "phase" => "deleted").increment(deleted);
+    counter!("orion_deployment_artifact_bytes_collected_total").increment(deleted_bytes);
+}
+
 /// Record a coalesced miss: a request that waited for another's run and was
 /// served the entry it stored.
 pub fn record_cache_coalesced(channel: &str) {
@@ -670,7 +682,7 @@ pub fn record_cache_miss(channel: &str) {
 /// `time() - orion_job_last_success_timestamp_seconds{job="…"} > threshold`.
 ///
 /// `job` is one of `trace_cleanup`, `audit_cleanup`, `dlq_retry`,
-/// `epoch_watcher`, `cron_reconcile`, `cron_cleanup`. Called once per fully successful tick;
+/// `epoch_watcher`, `cron_reconcile`, `cron_cleanup`, `deployment_gc`. Called once per fully successful tick;
 /// a tick skipped because another node holds the job lease does not count —
 /// on that node the gauge honestly goes stale, and the holder keeps it fresh.
 pub fn record_job_success(job: &'static str) {

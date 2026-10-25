@@ -42,7 +42,9 @@ Every Prometheus series Orion exports, one row per metric, asserted against the 
 | `orion_response_cache_misses_total` | Counter | `channel` | Response-cache misses. |
 | `orion_response_cache_coalesced_total` | Counter | `channel` | Requests that waited for a concurrent miss's run (`cache.coalesce_misses`) and were served the entry it stored. |
 | `orion_response_cache_invalidations_total` | Counter | `source` | Response-cache namespaces invalidated, by `cache_invalidate` (`workflow`) or the admin route (`admin`). |
-| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `cron_reconcile`, `cron_cleanup`. |
+| `orion_deployment_artifacts_collected_total` | Counter | `phase` | Deployment-store artifacts the [collector](./configuration/storage.md#artifact-collection) moved: `draining` (unreferenced, bytes kept until the next pass) or `deleted` (bytes gone). Counted on the node that ran the pass. |
+| `orion_deployment_artifact_bytes_collected_total` | Counter | — | Bytes the deleted artifacts held. |
+| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `cron_reconcile`, `cron_cleanup`, `deployment_gc`. |
 
 > [!NOTE]
 > `orion_errors_total{reason="channel_quarantined"}` fires only on the async-queue delivery path. A synchronous call to a quarantined channel returns an error but increments no counter.

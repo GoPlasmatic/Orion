@@ -204,12 +204,21 @@ fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     store
         .apply_candidate("alice", "idem-4", &plan_v4, "clear estate", &policy)
         .unwrap();
+    // An admitted package is never collected, referenced or not.
     let (draining, deleted, compacted) = store.mark_and_collect_garbage(1);
-    assert!(!draining.is_empty());
+    assert!(!draining.contains(&pkg.package_digest));
+    assert!(
+        !draining.is_empty(),
+        "the dropped workflow definitions drain"
+    );
     assert!(deleted.is_empty());
     assert!(!compacted.is_empty());
+    // Revoked and referenced by no retained revision, it is.
+    store.revoke_package(&pkg.package_digest).unwrap();
+    let (draining, _, _) = store.mark_and_collect_garbage(1);
+    assert!(draining.contains(&pkg.package_digest));
 
-    // Attempting to plan with a DRAINING artifact is rejected
+    // Attempting to plan with the revoked, DRAINING package is rejected
     empty_manifest.providers.push(ProviderRef {
         publisher: pkg.publisher,
         provider_id: pkg.provider_id,
@@ -218,7 +227,7 @@ fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     });
     assert_eq!(
         store.plan_candidate(4, empty_manifest).unwrap_err().code,
-        "ARTIFACT_NOT_ACTIVE"
+        "PROVIDER_REVOKED"
     );
 
     // Second GC sweep transitions DRAINING -> DELETED while receipts remain intact
@@ -752,4 +761,193 @@ fn an_endpoint_key_is_public_and_a_token_key_is_not() {
     )
     .expect_err("a token key is refused");
     assert_eq!(err.code, "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
+}
+
+/// What one collection pass may never take, each case on its own: the
+/// retained revisions' references, every connection's configuration, a
+/// package that is not revoked and its files, and what the caller's grace
+/// window names. And the two phases in order, the revival of a re-referenced
+/// draining artifact, and a re-upload reviving a deleted one.
+#[test]
+fn collection_never_takes_what_is_referenced_retained_admitted_or_recent() {
+    let store = ImmutableDeploymentStore::new("node-gc");
+    let policy = CommunityAdmissionPolicy::new();
+    let manifest = |id: &str, digest: &str| CanonicalManifest {
+        schema_version: 2,
+        providers: Vec::new(),
+        provider_lock_digest: None,
+        members: vec![ManifestMember {
+            entity: EntityRef {
+                kind: EntityKind::Workflow,
+                id: id.to_string(),
+                revision: 1,
+            },
+            definition_digest: digest.to_string(),
+            owning_package: None,
+            requires: Vec::new(),
+            rollouts: Vec::new(),
+        }],
+    };
+    let def = |bytes: &[u8]| {
+        store
+            .store_definition_artifact(bytes.to_vec())
+            .unwrap()
+            .digest
+    };
+    let pass = |recent: &[&str]| {
+        let recent: HashSet<String> = recent.iter().map(|d| d.to_string()).collect();
+        let mut g = store.inner.lock().unwrap();
+        ImmutableDeploymentStore::collect_garbage_on_state(&mut g, 2, &recent)
+    };
+    let state_of = |digest: &str| store.get_artifact(digest).unwrap().state;
+
+    // Nothing deployed yet: no pass runs, whatever is stored.
+    let orphan = def(b"orphan");
+    assert!(pass(&[]).is_empty());
+
+    // Revisions 1..=3, each naming a different definition; retain 2 keeps
+    // the head (3) and 2.
+    let mut head = 0;
+    let mut digests = Vec::new();
+    for (i, bytes) in [&b"wf-1"[..], b"wf-2", b"wf-3"].into_iter().enumerate() {
+        let d = def(bytes);
+        let plan = store.plan_candidate(head, manifest("wf", &d)).unwrap();
+        head = store
+            .apply_candidate("ops", &format!("gc-{i}"), &plan, "r", &policy)
+            .unwrap()
+            .committed_revision;
+        digests.push(d);
+    }
+    // A connection revision and a package awaiting admission, neither in any
+    // manifest; a recent upload no revision names yet.
+    let conn = store
+        .store_connection_revision(
+            "gc-conn",
+            1,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            json!({"url": "https://api.example.com"}),
+            Default::default(),
+        )
+        .unwrap();
+    let pkg = store
+        .ingest_verified_archive(&sample_archive_entries())
+        .unwrap();
+    let pkg_files = extract_inventory_file_digests(&pkg.inventory_json);
+    let pending = def(b"uploaded-for-the-next-apply");
+
+    let first = pass(&[&pending]);
+    assert_eq!(
+        first.draining.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&orphan, &digests[0]]),
+        "only the orphan and the definition of the compacted revision 1 drain"
+    );
+    assert_eq!(first.compacted, vec![1]);
+    for kept in [
+        &digests[1],
+        &digests[2],
+        &conn.configuration_digest,
+        &pending,
+    ] {
+        assert_eq!(state_of(kept), ArtifactState::Active, "{kept}");
+    }
+    assert_eq!(state_of(&pkg.package_digest), ArtifactState::Active);
+    for file in &pkg_files {
+        assert_eq!(state_of(file), ArtifactState::Active, "package file {file}");
+    }
+    // A compacted revision is no longer a rollback target.
+    let err = store
+        .rollback_to_revision(
+            &Rollback {
+                principal: "ops",
+                idempotency_key: "gc-rb",
+                expected_head_revision: head,
+                target_revision: 1,
+                reason: "r",
+            },
+            &policy,
+        )
+        .unwrap_err();
+    assert_eq!(err.code, "ROLLBACK_TARGET_COMPACTED");
+
+    // Revision 1's definition is named again by a new head before the next
+    // pass: it is put back, not deleted. The orphan goes.
+    let plan = store.plan_candidate(head, manifest("wf", &digests[0]));
+    assert_eq!(
+        plan.unwrap_err().code,
+        "ARTIFACT_NOT_ACTIVE",
+        "a draining artifact cannot be deployed until it is uploaded again"
+    );
+    def(b"wf-1");
+    assert_eq!(
+        state_of(&digests[0]),
+        ArtifactState::Active,
+        "re-upload revives"
+    );
+    let plan = store
+        .plan_candidate(head, manifest("wf", &digests[0]))
+        .unwrap();
+    store
+        .apply_candidate("ops", "gc-4", &plan, "r", &policy)
+        .unwrap();
+    let second = pass(&[]);
+    assert_eq!(second.deleted, vec![orphan.clone()]);
+    assert!(second.deleted_bytes > 0);
+    assert!(store.get_artifact(&orphan).unwrap().bytes.is_none());
+    assert_eq!(state_of(&digests[0]), ArtifactState::Active);
+    for kept in [&conn.configuration_digest, &pkg.package_digest] {
+        assert_eq!(state_of(kept), ArtifactState::Active, "{kept}");
+    }
+
+    // A deleted artifact uploaded again is served again.
+    assert_eq!(def(b"orphan"), orphan);
+    assert_eq!(state_of(&orphan), ArtifactState::Active);
+    assert_eq!(
+        store.get_artifact(&orphan).unwrap().bytes.as_deref(),
+        Some(&b"orphan"[..])
+    );
+}
+
+/// A draining artifact that a pass finds referenced again — a peer applied a
+/// revision naming it between two passes — is revived, never deleted.
+#[test]
+fn a_draining_artifact_a_retained_revision_names_is_revived() {
+    let store = ImmutableDeploymentStore::new("node-gc-revive");
+    let policy = CommunityAdmissionPolicy::new();
+    let d = store
+        .store_definition_artifact(b"wf".to_vec())
+        .unwrap()
+        .digest;
+    let plan = store
+        .plan_candidate(
+            0,
+            CanonicalManifest {
+                schema_version: 2,
+                providers: Vec::new(),
+                provider_lock_digest: None,
+                members: vec![ManifestMember {
+                    entity: EntityRef {
+                        kind: EntityKind::Workflow,
+                        id: "wf".to_string(),
+                        revision: 1,
+                    },
+                    definition_digest: d.clone(),
+                    owning_package: None,
+                    requires: Vec::new(),
+                    rollouts: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .apply_candidate("ops", "rv-1", &plan, "r", &policy)
+        .unwrap();
+    {
+        let mut g = store.inner.lock().unwrap();
+        let art = g.artifacts.get_mut(&d).unwrap();
+        art.state = ArtifactState::Draining;
+        art.drain_epoch = Some(0);
+    }
+    let out = store.mark_and_collect_garbage(1);
+    assert!(out.1.is_empty(), "deleted nothing");
+    assert_eq!(store.get_artifact(&d).unwrap().state, ArtifactState::Active);
 }

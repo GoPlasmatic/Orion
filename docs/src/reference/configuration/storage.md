@@ -4,7 +4,7 @@
 
 # Storage settings
 
-The `[storage]` section: the database URL, which selects the backend at runtime, the connection pool, encryption at rest, backups and migration at boot.
+The `[storage]` section: the database URL, which selects the backend at runtime, the connection pool, encryption at rest, backups, migration at boot, and how long the deployment store keeps what nothing references.
 
 ## Synopsis
 
@@ -21,6 +21,9 @@ backup_dir = "./backups"
 # backup_retention_count = …   # no default
 auto_migrate = true
 connect_retry_secs = 60
+artifact_gc_interval_secs = 3600
+artifact_gc_grace_secs = 86400
+deployment_retain_revisions = 20
 ```
 
 ## Description
@@ -58,6 +61,9 @@ Migrations for all backends are embedded in the binary and the correct set is se
 | `storage.backup_retention_count` | — | `ORION_STORAGE__BACKUP_RETENTION_COUNT` | Keep only the newest N backups, pruning older ones after each successful backup. Unset keeps every backup — they accumulate on the same disk as the live database. Set the variable to an empty string to clear it. |
 | `storage.auto_migrate` | `true` | `ORION_STORAGE__AUTO_MIGRATE` | **Set `false` for multi-replica deployments** and run `orion-server migrate` as a deploy step — required in a production cluster. |
 | `storage.connect_retry_secs` | `60` | `ORION_STORAGE__CONNECT_RETRY_SECS` | How long startup keeps retrying an unreachable database before giving up (`0` = fail fast). Sized so a pod rides out a Postgres/MySQL failover instead of crash-looping through it. Ignored for SQLite, whose connect failures are not transient; the `auto_migrate = false` pending-migration check stays fail-fast regardless. [`migrate --wait`](../cli/orion-server/migrate.md) overrides it for one run. |
+| `storage.artifact_gc_interval_secs` | `3600` | `ORION_STORAGE__ARTIFACT_GC_INTERVAL_SECS` | How often the [artifact collector](#artifact-collection) runs; `0` never collects. An unreferenced artifact is marked draining on one pass and its bytes deleted on the next, so it leaves the database between one and two intervals after its last reference does. |
+| `storage.artifact_gc_grace_secs` | `86400` | `ORION_STORAGE__ARTIFACT_GC_GRACE_SECS` | An artifact written or revived within this many seconds, on the database clock, is never collected. Raise it above the longest gap you expect between `POST /definitions` and the `POST /deployments` that names what it uploaded. |
+| `storage.deployment_retain_revisions` | `20` | `ORION_STORAGE__DEPLOYMENT_RETAIN_REVISIONS` | Newest deployment revisions the collector keeps whole, besides the head and any revision a node reports holding. An older revision is compacted: its artifacts become collectable and `POST /deployments/rollback` to it answers `ROLLBACK_TARGET_COMPACTED`. Must be `>= 1`. |
 
 **Use SQLite for:** a single instance — a development or design-time node, an appliance install, anything where one process owns the database file. It is the default, provisions nothing, and creates the file on first boot. It is also the only backend with an [in-product backup](../../operate/maintain/backup-restore.md#before-you-start).
 
@@ -74,6 +80,19 @@ With `auto_migrate = true`, every replica tries to migrate at boot and they race
 `cluster.enabled = true` with `auto_migrate = true` is **a startup error in production**: a guardrail that fires after the race is no guardrail. Outside production it stays a warning. That is what lets a throwaway cluster boot without a migrate step. The Helm chart's `devStack` is one: its database is created by the same release, so a pre-install hook cannot migrate it. A single-node install is unaffected either way. `cluster.enabled` is `false` by default, and migrating at boot is what makes `orion-server` a single-binary install.
 
 The migrate step already exists in both reference deployments. The Helm chart runs a pre-install/pre-upgrade `orion-server migrate` Job, and `docker-compose.ha.yml` a one-shot `migrate` service the replicas depend on.
+
+### Artifact collection
+
+Every definition, connection configuration and connector-package file a deployment can name is stored once, by digest, in the state database. A background job collects the ones nothing can still serve from. It runs every `artifact_gc_interval_secs`; in a cluster the node holding the `deployment_gc` job lease runs it, and the pass is one transaction behind the same head lock an apply takes, so it never interleaves with a deployment.
+
+It never collects an artifact that is:
+
+- named by a retained revision: the head, the `deployment_retain_revisions` newest, and any revision a node reports holding. That covers each member's definition, each provider package and its files, and the provider lock;
+- a connection revision's configuration;
+- a connector package that is not revoked, admitted or still awaiting admission, or one of its files;
+- written or revived within `artifact_gc_grace_secs`, on the database clock.
+
+Anything else is marked draining on one pass, keeping its bytes, and deleted on the next. A draining artifact that something references again is put back. Uploading a deleted artifact again revives it with a fresh grace window. `orion_deployment_artifacts_collected_total` counts both phases, and `orion_job_last_success_timestamp_seconds{job="deployment_gc"}` goes stale when passes stop succeeding.
 
 ## Related
 
