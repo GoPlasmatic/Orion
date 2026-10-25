@@ -1,6 +1,6 @@
-<!-- description: orion-server compile resolves $from and use in a definition set and writes a package artifact, a directory of request bodies, or bulk-import files. -->
+<!-- description: orion-server compile resolves $from and use in a definition set and writes a package artifact, a directory of request bodies, bulk-import files, or a v2 deployment directory. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-10-25 -->
 
 # `orion-server compile`
 
@@ -9,7 +9,7 @@ Compiles a definition set into files the admin API accepts, resolving its author
 ## Synopsis
 
 ```bash
-orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk]
+orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk|deployment]
                            [--name NAME] [--version VERSION|content [--version-prefix PREFIX]]
                            [--requires-channel NAME]... [--requires-connector NAME]...
                            [--deny-warnings] [--no-activate]
@@ -27,14 +27,14 @@ orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk]
 
 `artifact` marks workflows and channels `activate: true`, because a directory carries no stored status and a package whose entities never activate applies cleanly and serves nothing. Set `"activate": false` on an entity, or pass `--no-activate`, to override. `dir` and `bulk` emit no activation intent — that is a package concept, and their files are request bodies.
 
-Entities must carry explicit ids for `artifact` only. `apply` activates a channel by `channel_id` and reads activation intent off it. An id-less entity in an artifact is one `apply` would stage and never activate. `dir` and `bulk` emit request bodies, where the server derives an id from the name exactly as it does for a hand-written POST. Leaving `channel_id` out of a definition is an ordinary way to author a set. Committing a server-generated UUID would tie the set to one instance.
+Entities must carry explicit ids for `artifact` and `deployment` only. `apply` activates a channel by `channel_id` and reads activation intent off it. An id-less entity in an artifact is one `apply` would stage and never activate. `dir` and `bulk` emit request bodies, where the server derives an id from the name exactly as it does for a hand-written POST. Leaving `channel_id` out of a definition is an ordinary way to author a set. Committing a server-generated UUID would tie the set to one instance.
 
 ## Options
 
 | Flag | Description |
 |------|-------------|
-| `-o, --output` | A file for `--format artifact` (default: stdout); a directory for `dir` and `bulk`, where it is required. |
-| `--format` | `artifact` (default), `dir`, or `bulk`; each is described under [Output formats](#output-formats). |
+| `-o, --output` | A file for `--format artifact` (default: stdout); a directory for `dir`, `bulk` and `deployment`, where it is required. |
+| `--format` | `artifact` (default), `dir`, `bulk`, or `deployment`; each is described under [Output formats](#output-formats). |
 | `--name` | Package name. Required for `--format artifact` unless the set declares `package.name`; the flag wins, with a note, when both are given. |
 | `--version` | Package version. Required for `--format artifact`. Applied versions are immutable — any content change needs a bump. `content` derives the version from the content hash instead; see [Content versions](#content-versions). A version the target would refuse (outside letters, digits, `.`, `_` and `-`, or over 64 characters) is refused here. |
 | `--version-prefix` | With `--version content`, writes `<PREFIX>-<12 hex>` instead of `content-<12 hex>`. At most 51 characters. |
@@ -54,6 +54,59 @@ Entities must carry explicit ids for `artifact` only. `apply` activates a channe
 | `artifact` | One promotion artifact, hashed exactly as `package export` hashes one | `orion-server package plan\|apply\|diff` |
 | `dir` | The input tree mirrored, one file per entity, shared documents consumed | a POST per file — `orion-cli workflows import -f …` |
 | `bulk` | `connectors.json`, `workflows.json`, `channels.json` — plus `plugins.json` and `models.json` when the set carries any | the bulk import endpoints, in that order (plugins first, models after connectors) |
+| `deployment` | A revision-free v2 deployment directory; see [Deployment directories](#deployment-directories) | `orion-cli deployments plan\|apply -d` |
+
+### Deployment directories
+
+`--format deployment` writes the set as a v2 deployment with no revisions in it. Only the target knows which revision a changed definition gets, so the deployer assigns them: `orion-cli deployments apply -d` does.
+
+```text
+dist/
+├── deployment.json
+├── definitions/
+│   ├── 87bf52da…a3f0.json
+│   └── e627767c…be874.json
+└── connections/
+    └── orders-db.json
+```
+
+`deployment.json` lists the members, sorted by kind and then id:
+
+```json
+{
+  "schema_version": 1,
+  "members": [
+    {
+      "kind": "channel",
+      "id": "order-tiers",
+      "definition": "sha256:e627767c…",
+      "requires": [{ "kind": "workflow", "id": "order-classification" }]
+    },
+    { "kind": "connection", "id": "orders-db", "connection": "orders-db", "requires": [] },
+    { "kind": "workflow", "id": "order-classification", "definition": "sha256:87bf52da…", "requires": [] }
+  ]
+}
+```
+
+**A workflow, channel or plugin is a definition file.** Each holds one `{kind, definition}` document in the canonical bytes `POST /api/v2/admin/definitions` stores, named by the hex of its digest. Uploading it answers that digest. A workflow loses `workflow_id`, `version` and `status`, which the member supplies, and `continue_on_error: true` becomes `on_failure: "continue"`. A channel loses `channel_id`, `version`, `status` and `workflow_id`. Its workflow becomes the member's `requires`. A plugin is its manifest and its component, inlined as base64. A key a definition does not define is an error naming the entity and the key, never dropped. That includes a channel's `topic` and `"activate": false`, because every member of a deployment serves.
+
+**A connector is a connection file.** `connections/<name>.json` holds `{connection_id, driver, provider_digest, public_config, secret_locators}`. The connector's `name` is the connection id, so tasks name it as before. The driver comes from the connector's type:
+
+| Connector | Driver |
+|---|---|
+| `http` | `org.orion.http` |
+| `db`, `connection_string` scheme `postgres` or `postgresql` | `org.orion.postgresql` |
+| `db`, scheme `mysql` or `mariadb` | `org.orion.mysql` |
+| `db`, scheme `sqlite` | `org.orion.sqlite` |
+| `cache`, backend `memory` | `org.orion.memory-cache` |
+
+Any other connector is an error. So is a `db` connector whose `connection_string` is a secret reference, because its scheme cannot name the driver. `provider_digest` is the driver's built-in digest, the one `GET /api/v2/admin/runtime-capabilities` reports.
+
+Every string in the config that is a secret reference (`env://`, `vault://`) moves to `secret_locators` at its dotted path, such as `auth.token`. The rest is `public_config`, without the `type` key. A deployment carries references only. A literal credential, such as a secret-shaped key with a literal value or a password in a URL, is an error.
+
+A connector's tags are not carried, and compile prints a note saying so. A workflow `requires` the connections its `connector_call` tasks name. Each must be a connector in the set.
+
+The same set compiles to the same bytes. A recompile into the same directory removes the files under `definitions/` and `connections/` that the set no longer produces. `--requires-channel` and `--requires-connector` do not apply: a deployment carries everything it references. A model manifest in the set is an error, because a deployment cannot carry one yet.
 
 ### Content versions
 
@@ -83,6 +136,10 @@ wrote payments@1.4.0 (4 connectors, 62 workflows, 62 channels) to dist/package.j
 
 ```bash
 orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json && orion-server package apply -s https://prod.orion.internal -f dist/package.json
+```
+
+```bash
+orion-server compile ./definitions --format deployment -o dist/deployment && orion-cli --server https://prod.orion.internal deployments apply -d dist/deployment
 ```
 
 ## Related

@@ -789,6 +789,74 @@ pub struct DefinitionResponse {
     pub size_bytes: u64,
 }
 
+// ============================================================
+// Compiled deployments: what `orion-server compile --format deployment`
+// writes and `orion-cli deployments apply -d` reads
+// ============================================================
+
+/// The `schema_version` a compiled deployment directory's
+/// `deployment.json` carries.
+pub const COMPILED_DEPLOYMENT_SCHEMA_VERSION: u64 = 1;
+
+/// `deployment.json` of a compiled deployment directory: the members a
+/// deployment deploys, with no revisions. Only the target knows which
+/// revision a changed definition must get, so the deployer assigns them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledDeployment {
+    #[serde(default)]
+    pub schema_version: u64,
+    #[serde(default)]
+    pub members: Vec<CompiledMember>,
+}
+
+/// One member of a compiled deployment. A workflow, channel or plugin names
+/// its `definition` by digest (the file `definitions/<hex>.json`); a
+/// connection names its `connection` file (`connections/<id>.json`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledMember {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(default)]
+    pub requires: Vec<CompiledRequirement>,
+}
+
+/// A member another member depends on, by kind and id. The deployer
+/// resolves it to the revision it assigns that member.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct CompiledRequirement {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub id: String,
+}
+
+/// `connections/<id>.json` of a compiled deployment directory: a connection
+/// over a built-in driver, without a revision. Its fields are those of a
+/// [`CreateConnectionRevisionRequest`], plus the driver the provider digest
+/// names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledConnection {
+    #[serde(default)]
+    pub connection_id: String,
+    /// The built-in driver, such as `org.orion.postgresql`.
+    #[serde(default)]
+    pub driver: String,
+    /// The driver's provider digest, as `GET /runtime-capabilities` reports
+    /// it under `provider_backends[].package_digest`.
+    #[serde(default)]
+    pub provider_digest: String,
+    #[serde(default)]
+    pub public_config: Value,
+    #[serde(default)]
+    pub secret_locators: BTreeMap<String, String>,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {

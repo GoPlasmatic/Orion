@@ -146,7 +146,7 @@ enum Command {
         /// Directory of definitions to compile.
         dir: String,
         /// Where to write. A file for --format artifact (default: stdout),
-        /// a directory for --format dir and --format bulk (required).
+        /// a directory for --format dir, bulk and deployment (required).
         #[arg(short, long)]
         output: Option<String>,
         /// What to write.

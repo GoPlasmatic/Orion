@@ -41,6 +41,7 @@ pub mod analysis;
 mod check;
 pub mod clippy;
 pub mod compile;
+pub mod deployment;
 mod diagnostic;
 mod expand;
 pub mod fix;

@@ -798,6 +798,10 @@ pub(crate) enum CompileFormat {
     /// `connectors.json`, `workflows.json`, `channels.json` — arrays in the
     /// bulk-import body shape.
     Bulk,
+    /// A revision-free v2 deployment directory: `deployment.json`,
+    /// `definitions/<hex>.json` and `connections/<id>.json`, the shape
+    /// `orion-cli deployments apply -d` deploys.
+    Deployment,
 }
 
 /// `compile <dir>`: gate a definition set, then write it out in a form the
@@ -850,7 +854,24 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
     // would refuse a set that deploys correctly today: leaving `channel_id` out
     // and letting the server derive it is an ordinary way to author a set, and
     // it is what the sets that motivated this command do.
-    let requires_ids = req.format == CompileFormat::Artifact;
+    // A deployment's members are addressed by id too: a member is its kind
+    // and id, and the target matches a recompiled one to what it deploys by
+    // them.
+    let requires_ids = matches!(
+        req.format,
+        CompileFormat::Artifact | CompileFormat::Deployment
+    );
+    if req.format == CompileFormat::Deployment
+        && !(req.boundary.channels.is_empty() && req.boundary.connectors.is_empty())
+    {
+        // A deployment is the whole of what the target serves, so nothing it
+        // references can live outside it.
+        return Err(
+            "--requires-channel and --requires-connector do not apply to \
+                    --format deployment: a deployment carries everything it references"
+                .into(),
+        );
+    }
     let version = match req.format {
         CompileFormat::Artifact => match req.version {
             Some(v) => crate::package_cli::VersionSpec::parse(v, req.version_prefix)?,
@@ -927,7 +948,70 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
         ),
         CompileFormat::Dir => emit_dir(&set, req.dir, require_output(req.output, "--format dir")?),
         CompileFormat::Bulk => emit_bulk(&set, require_output(req.output, "--format bulk")?),
+        CompileFormat::Deployment => {
+            emit_deployment(&set, require_output(req.output, "--format deployment")?)
+        }
     }
+}
+
+/// Write the set as a revision-free deployment directory
+/// ([`orion::definitions::deployment`]).
+///
+/// The files a previous compile left in `definitions/` and `connections/`
+/// that this one does not write are removed: they are named by digest and
+/// id, so a stale one is a definition the set no longer has, and a deployer
+/// that read the directory would upload it for nothing.
+fn emit_deployment(
+    set: &orion::definitions::DefinitionSet,
+    out: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let deployment = match orion::definitions::deployment::build(set) {
+        Ok(deployment) => deployment,
+        Err(errors) => {
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            return Err(format!(
+                "{} error(s) compiling the deployment; nothing was written",
+                errors.len()
+            )
+            .into());
+        }
+    };
+    for note in &deployment.notes {
+        eprintln!("{note}");
+    }
+    let root = std::path::Path::new(out);
+    for sub in ["definitions", "connections"] {
+        let dir = root.join(sub);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create '{}': {e}", dir.display()))?;
+        for entry in
+            std::fs::read_dir(&dir).map_err(|e| format!("read '{}': {e}", dir.display()))?
+        {
+            let path = entry?.path();
+            let relative = format!(
+                "{sub}/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            if path.extension().is_some_and(|ext| ext == "json")
+                && !deployment.files.contains_key(&relative)
+            {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("remove stale '{}': {e}", path.display()))?;
+            }
+        }
+    }
+    for (relative, bytes) in &deployment.files {
+        let path = root.join(relative);
+        std::fs::write(&path, bytes).map_err(|e| format!("write '{}': {e}", path.display()))?;
+    }
+    let counts = deployment.counts;
+    println!(
+        "wrote a deployment of {} workflow(s), {} channel(s), {} plugin(s) and {} \
+         connection(s) to {out}",
+        counts.workflows, counts.channels, counts.plugins, counts.connections
+    );
+    Ok(())
 }
 
 /// Both directory formats write several files, so there is nowhere for a

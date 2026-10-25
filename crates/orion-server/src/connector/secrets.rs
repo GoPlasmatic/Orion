@@ -130,6 +130,18 @@ pub fn is_resolvable_reference(s: &str) -> bool {
     })
 }
 
+/// Whether `s` is, as a whole, a reference to a secret: a `scheme://…`
+/// whose scheme a [`default_resolvers`] entry serves. What a connection
+/// revision's `secret_locators` values must be, and what
+/// `compile --format deployment` moves out of a connector's settings.
+pub fn is_secret_reference(s: &str) -> bool {
+    parse_reference(s).is_some_and(|(scheme, _)| {
+        default_resolvers()
+            .iter()
+            .any(|resolver| resolver.scheme() == scheme)
+    })
+}
+
 /// The default resolver registry: a working `env://` resolver, a `vault://`
 /// resolver that reads the standard `VAULT_ADDR`/`VAULT_TOKEN` environment
 /// (H3c), and a rejecting entry for every remaining scheme in

@@ -1325,3 +1325,358 @@ fn the_unrolled_example_compiles_to_one_step_per_seat_and_runs() {
         "{report}"
     );
 }
+
+// ============================================================
+// --format deployment
+// ============================================================
+
+/// A set with one of each thing a deployment carries: a workflow on v1's
+/// `continue_on_error` calling a connection through `connector_call`, the
+/// channel serving it, an HTTP connector whose token is a secret reference,
+/// and a cache connector the workflow calls.
+fn deployment_set(label: &str) -> ScratchDir {
+    let scratch = ScratchDir::new(label);
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn-api.json"),
+        r#"{ "name": "partner-api", "connector_type": "http", "tags": ["team:payments"],
+             "config": { "type": "http", "url": "https://api.example.com",
+                         "auth": { "type": "bearer", "token": "env://PARTNER_TOKEN" } } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("conn-cache.json"),
+        r#"{ "name": "local-cache", "connector_type": "cache",
+             "config": { "type": "cache", "backend": "memory" } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "remember", "name": "Remember", "continue_on_error": true,
+             "tasks": [
+               { "id": "set", "name": "Set", "function": { "name": "connector_call", "input": {
+                   "connection": "local-cache", "target_id": "org.orion.memory-cache",
+                   "operation": "cache.set", "input": { "key": "k", "value": "v" },
+                   "output": "data.set" } } },
+               { "id": "done", "name": "Done", "function": { "name": "map", "input": {
+                   "mappings": [ { "path": "data.done", "logic": true } ] } } } ] }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ch.json"),
+        r#"{ "channel_id": "remember-api", "name": "remember-api", "channel_type": "sync",
+             "protocol": "rest", "methods": ["POST"], "route_pattern": "/remember",
+             "workflow_id": "remember" }"#,
+    )
+    .unwrap();
+    scratch
+}
+
+fn compile_deployment(dir: &std::path::Path, out: &std::path::Path) -> (bool, String) {
+    run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--format",
+        "deployment",
+        "-o",
+        out.to_str().unwrap(),
+    ])
+}
+
+fn read_json(path: &std::path::Path) -> serde_json::Value {
+    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Every file of a deployment directory, by relative path.
+fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    for sub in ["", "definitions", "connections"] {
+        let Ok(entries) = std::fs::read_dir(root.join(sub)) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                let name = path.strip_prefix(root).unwrap().display().to_string();
+                files.insert(name, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn a_deployment_is_written_without_revisions() {
+    let scratch = deployment_set("compile-deployment");
+    let out = scratch.path().join("dist");
+    let (ok, report) = compile_deployment(scratch.path(), &out);
+    assert!(ok, "{report}");
+    // A connection has no tags, and the compiler says it left them behind.
+    assert!(report.contains("a connection has no tags"), "{report}");
+
+    let deployment = read_json(&out.join("deployment.json"));
+    assert_eq!(deployment["schema_version"], 1);
+    let raw = std::fs::read_to_string(out.join("deployment.json")).unwrap();
+    assert!(!raw.contains("revision"), "no revisions anywhere:\n{raw}");
+
+    // Members sorted by kind, then id.
+    let members = deployment["members"].as_array().unwrap();
+    let order: Vec<(&str, &str)> = members
+        .iter()
+        .map(|m| (m["kind"].as_str().unwrap(), m["id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("channel", "remember-api"),
+            ("connection", "local-cache"),
+            ("connection", "partner-api"),
+            ("workflow", "remember"),
+        ]
+    );
+    // A channel requires its workflow; a workflow the connections its
+    // connector_call tasks name, and no other.
+    assert_eq!(
+        members[0]["requires"],
+        serde_json::json!([{"kind": "workflow", "id": "remember"}])
+    );
+    assert_eq!(
+        members[3]["requires"],
+        serde_json::json!([{"kind": "connection", "id": "local-cache"}])
+    );
+    assert_eq!(members[1]["connection"], "local-cache");
+
+    // Each definition is a file named by the digest of its bytes.
+    for member in members.iter().filter(|m| m["kind"] != "connection") {
+        let digest = member["definition"].as_str().unwrap();
+        let hex = digest.strip_prefix("sha256:").unwrap();
+        let bytes = std::fs::read(out.join("definitions").join(format!("{hex}.json"))).unwrap();
+        assert_eq!(orion::crypto::sha256_digest(&bytes), digest);
+        let definition: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(definition["kind"], member["kind"]);
+    }
+    assert_eq!(
+        std::fs::read_dir(out.join("definitions")).unwrap().count(),
+        2
+    );
+
+    // The workflow: identity gone, v1's failure flag in the engine's words.
+    let workflow_digest = members[3]["definition"].as_str().unwrap();
+    let workflow = read_json(&out.join("definitions").join(format!(
+        "{}.json",
+        workflow_digest.trim_start_matches("sha256:")
+    )));
+    assert_eq!(workflow["definition"]["on_failure"], "continue");
+    assert!(workflow["definition"].get("continue_on_error").is_none());
+    assert!(workflow["definition"].get("workflow_id").is_none());
+    let channel_digest = members[0]["definition"].as_str().unwrap();
+    let channel = read_json(&out.join("definitions").join(format!(
+        "{}.json",
+        channel_digest.trim_start_matches("sha256:")
+    )));
+    assert!(channel["definition"].get("workflow_id").is_none());
+    assert_eq!(channel["definition"]["route_pattern"], "/remember");
+}
+
+#[test]
+fn a_connections_secret_references_become_its_locators() {
+    let scratch = deployment_set("compile-deployment-secrets");
+    let out = scratch.path().join("dist");
+    let (ok, report) = compile_deployment(scratch.path(), &out);
+    assert!(ok, "{report}");
+
+    let api = read_json(&out.join("connections/partner-api.json"));
+    assert_eq!(api["connection_id"], "partner-api");
+    assert_eq!(api["driver"], "org.orion.http");
+    assert_eq!(
+        api["provider_digest"].as_str(),
+        orion::extensions::foundation::builtin_provider_digest("org.orion.http").as_deref()
+    );
+    assert_eq!(
+        api["secret_locators"],
+        serde_json::json!({"auth.token": "env://PARTNER_TOKEN"})
+    );
+    // What stays is public, and the type is the driver's to say.
+    assert_eq!(
+        api["public_config"],
+        serde_json::json!({"url": "https://api.example.com", "auth": {"type": "bearer"}})
+    );
+
+    let cache = read_json(&out.join("connections/local-cache.json"));
+    assert_eq!(cache["driver"], "org.orion.memory-cache");
+    assert_eq!(cache["secret_locators"], serde_json::json!({}));
+}
+
+/// Compiling the same set twice writes the same bytes, and a recompile into
+/// the same directory leaves no file a definition the set no longer has.
+#[test]
+fn a_deployment_compiles_reproducibly() {
+    let scratch = deployment_set("compile-deployment-repro");
+    let dir = scratch.path();
+    let (ok, report) = compile_deployment(dir, &dir.join("a"));
+    assert!(ok, "{report}");
+    let (ok, report) = compile_deployment(dir, &dir.join("b"));
+    assert!(ok, "{report}");
+    assert_eq!(tree(&dir.join("a")), tree(&dir.join("b")));
+
+    // Change the workflow and recompile into `a`: one definition moves,
+    // and the old one's file goes.
+    let before = tree(&dir.join("a"));
+    let wf = std::fs::read_to_string(dir.join("wf.json"))
+        .unwrap()
+        .replace("\"Remember\"", "\"Remember it\"");
+    std::fs::write(dir.join("wf.json"), wf).unwrap();
+    let (ok, report) = compile_deployment(dir, &dir.join("a"));
+    assert!(ok, "{report}");
+    let after = tree(&dir.join("a"));
+    let gone: Vec<&String> = before.keys().filter(|k| !after.contains_key(*k)).collect();
+    let new: Vec<&String> = after.keys().filter(|k| !before.contains_key(*k)).collect();
+    assert_eq!((gone.len(), new.len()), (1, 1), "{gone:?} -> {new:?}");
+    assert!(gone[0].starts_with("definitions/"), "{gone:?}");
+}
+
+#[test]
+fn a_connector_with_no_built_in_driver_writes_nothing() {
+    let scratch = deployment_set("compile-deployment-storage");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn-bucket.json"),
+        r#"{ "name": "bucket", "connector_type": "storage",
+             "config": { "type": "storage", "endpoint": "https://s3.example.com",
+                         "region": "us-east-1", "bucket": "b",
+                         "access_key": "env://S3_KEY", "secret_key": "env://S3_SECRET" } }"#,
+    )
+    .unwrap();
+    let out = dir.join("dist");
+    let (ok, report) = compile_deployment(dir, &out);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("connector 'bucket'") && report.contains("connector type 'storage'"),
+        "{report}"
+    );
+    assert!(!out.join("deployment.json").exists());
+}
+
+#[test]
+fn a_literal_credential_is_refused() {
+    let scratch = deployment_set("compile-deployment-literal");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn-api.json"),
+        r#"{ "name": "partner-api", "connector_type": "http",
+             "config": { "type": "http", "url": "https://api.example.com",
+                         "auth": { "type": "bearer", "token": "s3cr3t-literal" } } }"#,
+    )
+    .unwrap();
+    let out = dir.join("dist");
+    let (ok, report) = compile_deployment(dir, &out);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("connector 'partner-api'")
+            && report.contains("'token'")
+            && report.contains("references only"),
+        "{report}"
+    );
+    assert!(
+        !report.contains("s3cr3t-literal"),
+        "the credential is never echoed: {report}"
+    );
+    assert!(!out.join("deployment.json").exists());
+}
+
+/// A key no definition defines names the entity and the key.
+#[test]
+fn a_key_a_definition_does_not_define_is_named() {
+    let scratch = deployment_set("compile-deployment-unknown-key");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("ch.json"),
+        r#"{ "channel_id": "remember-api", "name": "remember-api", "channel_type": "sync",
+             "protocol": "rest", "methods": ["POST"], "route_pattern": "/remember",
+             "workflow_id": "remember", "activate": false }"#,
+    )
+    .unwrap();
+    let (ok, report) = compile_deployment(dir, &dir.join("dist"));
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("channel 'remember-api'") && report.contains("`activate`"),
+        "{report}"
+    );
+}
+
+/// What compile writes is what a server stores: every definition uploads to
+/// the digest its file is named by, every connection creates as written,
+/// and a manifest over them, revisions assigned, plans.
+#[tokio::test]
+async fn a_compiled_deployment_uploads_to_its_own_digests_and_plans() {
+    use tower::ServiceExt as _;
+    let scratch = deployment_set("compile-deployment-upload");
+    let out = scratch.path().join("dist");
+    let (ok, report) = compile_deployment(scratch.path(), &out);
+    assert!(ok, "{report}");
+
+    let app = crate::common::test_app().await;
+    let send = |method: &'static str, uri: &'static str, body: serde_json::Value| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(crate::common::json_request(method, uri, Some(body)))
+                .await
+                .unwrap();
+            let status = resp.status();
+            (status, crate::common::body_json(resp).await)
+        }
+    };
+
+    let deployment = read_json(&out.join("deployment.json"));
+    let mut members = Vec::new();
+    for member in deployment["members"].as_array().unwrap() {
+        let id = member["id"].as_str().unwrap();
+        let requires: Vec<serde_json::Value> = member["requires"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::json!({"kind": r["kind"], "id": r["id"], "revision": 1}))
+            .collect();
+        let digest = if member["kind"] == "connection" {
+            let mut connection = read_json(&out.join(format!("connections/{id}.json")));
+            let obj = connection.as_object_mut().unwrap();
+            obj.remove("driver");
+            obj.insert("revision".into(), serde_json::json!(1));
+            let (status, body) = send("POST", "/api/v2/admin/connections", connection).await;
+            assert_eq!(status, 201, "{id}: {body}");
+            body["connection"]["configuration_digest"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        } else {
+            let named = member["definition"].as_str().unwrap();
+            let file = out.join(format!(
+                "definitions/{}.json",
+                named.trim_start_matches("sha256:")
+            ));
+            let (status, body) = send("POST", "/api/v2/admin/definitions", read_json(&file)).await;
+            assert_eq!(status, 201, "{id}: {body}");
+            assert_eq!(
+                body["digest"], named,
+                "{id}: the server's digest is the file's"
+            );
+            named.to_string()
+        };
+        members.push(serde_json::json!({
+            "entity": {"kind": member["kind"], "id": id, "revision": 1},
+            "definition_digest": digest,
+            "requires": requires,
+        }));
+    }
+    let (status, plan) = send(
+        "POST",
+        "/api/v2/admin/deployment-plans",
+        serde_json::json!({"base_revision": 0, "manifest": {
+            "schema_version": 2, "providers": [], "members": members}}),
+    )
+    .await;
+    assert_eq!(status, 200, "{plan}");
+    assert_eq!(plan["added_entities"].as_array().map(Vec::len), Some(4));
+}

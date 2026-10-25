@@ -267,6 +267,7 @@ orion-server dry-run -w wf.json -i in.json --stubs s.json --metadata m.json  # E
 orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests (--definitions <dir> to resolve $from/use; --plugin-dir <dir> for the components; --model-dir <dir> for the model artifacts)
 orion-server compile ./definitions --name p --version 1.0.0 -o dist/package.json  # Compile a definition set ($from/use resolved, plugin.toml + component inlined, model manifests written as reference + digest) into a package artifact (--format dir|bulk for POST-per-file / bulk-import shapes)
 orion-server compile ./definitions --name p --version content -o dist/package.json  # Version = content-<12 hex> of the content hash (--version-prefix 1.4.0 → 1.4.0-<hex>)
+orion-server compile ./definitions --format deployment -o dist/deployment  # A revision-free v2 deployment (deployment.json + definitions/<hex>.json + connections/<id>.json); `orion-cli deployments apply -d` deploys it
 orion-server test-connectivity            # Probe the state database
 orion-server sql check ./definitions      # Prepare every db_read/db_write statement as its connector's role (--connector NAME=URL, --skip-connector, --schema DIR [--database URL --role NAME=ROLE]); executes nothing
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks

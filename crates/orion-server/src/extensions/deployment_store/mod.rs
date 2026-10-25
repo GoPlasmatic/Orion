@@ -262,6 +262,19 @@ pub(super) fn locators_from_column(
     }
 }
 
+/// Refuse a connection's settings as a revision create refuses them: a
+/// secret-shaped key or a credential in `public_config`, or a locator that
+/// is not a config path to a secret reference. The check behind
+/// `POST /api/v2/admin/connections`, for a caller that builds a connection
+/// before sending it.
+pub fn check_connection_config(
+    public_config: &Value,
+    secret_locators: &std::collections::BTreeMap<String, String>,
+) -> Result<(), DeploymentError> {
+    validate_no_secrets_in_public_config(public_config)?;
+    validate_secret_locators(public_config, secret_locators)
+}
+
 /// Refuse a secret locator map whose paths are not config paths, whose
 /// values are not secret references, or whose paths `public_config` already
 /// sets.
@@ -280,13 +293,7 @@ fn validate_secret_locators(
                 format!("secret locator path '{path}' is not a dotted config path"),
             ));
         }
-        let is_reference =
-            crate::connector::secrets::parse_reference(reference).is_some_and(|(scheme, _)| {
-                crate::connector::secrets::default_resolvers()
-                    .iter()
-                    .any(|r| r.scheme() == scheme)
-            });
-        if !is_reference {
+        if !crate::connector::secrets::is_secret_reference(reference) {
             return Err(DeploymentError::new(
                 "CONNECTION_SECRET_LOCATOR_INVALID",
                 format!(
