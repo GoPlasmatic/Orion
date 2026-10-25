@@ -208,6 +208,13 @@
                                            # installs none.
 # max_run_in_flight = 0                    # Ceiling on tasks running at once within one run.
                                            # 0 installs none.
+# native_work_max_in_flight = 4            # Blocking native jobs (plugin component compiles,
+                                           # extension jobs) that may run at once on this node,
+                                           # each on its own thread. Beyond it a job waits for
+                                           # a slot.
+# native_work_timeout_ms = 300000          # How long a caller waits for a native job, the wait
+                                           # for a slot included. A caller past it fails; the
+                                           # job keeps its slot until its thread finishes.
 # fail_on_connector_load_error = false     # Refuse to start when an enabled connector cannot be
                                            # loaded (missing env://VAR, unparseable config,
                                            # unresolvable secret). Default false skips it with a

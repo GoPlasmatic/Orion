@@ -93,6 +93,15 @@ pub struct EngineConfig {
     /// Maximum concurrent in-flight task dispatches within one root run (`TD-03`).
     /// `0` (default) disables the ceiling.
     pub max_run_in_flight: u64,
+    /// Blocking native jobs that may run at once on this node, each on a
+    /// thread of its own: a plugin component compile, and any job an
+    /// extension schedules on the node's native work scheduler. Beyond it a
+    /// job waits for a slot.
+    pub native_work_max_in_flight: usize,
+    /// How long a caller waits for a native job, the wait for a slot
+    /// included. A caller past it fails; the job keeps its slot until its
+    /// thread finishes, so the bound counts the threads actually busy.
+    pub native_work_timeout_ms: u64,
 }
 
 impl Default for EngineConfig {
@@ -114,6 +123,8 @@ impl Default for EngineConfig {
             max_run_expr_ops: 0,
             max_run_custom_units: 0,
             max_run_in_flight: 0,
+            native_work_max_in_flight: 4,
+            native_work_timeout_ms: 300_000,
         }
     }
 }
@@ -142,6 +153,11 @@ impl EngineConfig {
             self.health_check_timeout_secs,
             "engine.health_check_timeout_secs",
         )?;
+        require_nonzero(
+            self.native_work_max_in_flight as u64,
+            "engine.native_work_max_in_flight",
+        )?;
+        require_nonzero(self.native_work_timeout_ms, "engine.native_work_timeout_ms")?;
         Ok(())
     }
 }

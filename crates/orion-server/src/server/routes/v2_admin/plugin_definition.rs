@@ -121,11 +121,16 @@ pub(crate) async fn check(
     };
     let loaded = match runtime.cached(&digest) {
         Some(loaded) => loaded,
-        None => runtime.load(bytes).await.map_err(|e| {
-            refused(
+        None => runtime.load(bytes).await.map_err(|e| match e {
+            // The node was busy, not the component wrong: a 503 to retry.
+            crate::plugin::LoadError::Capacity(_) => OrionError::ServiceUnavailable {
+                reason: crate::errors::Unavailable::AtCapacity,
+                message: e.to_string(),
+            },
+            _ => refused(
                 "component failed to load",
                 vec![FieldError::new("component", "INVALID", e.to_string())],
-            )
+            ),
         })?,
     };
     let limits = Limits::effective(config, &parsed.name);

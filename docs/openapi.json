@@ -6286,7 +6286,7 @@
           },
           "stage": {
             "type": "string",
-            "description": "`disabled`, `manifest`, `signature`, `artifact`, `compile`, `link`,\n`size` or `self_test`."
+            "description": "`disabled`, `manifest`, `signature`, `artifact`, `compile`, `link`,\n`size`, `self_test` or `capacity`."
           },
           "version": {
             "type": "integer",

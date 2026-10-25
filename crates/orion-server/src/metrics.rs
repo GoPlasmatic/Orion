@@ -490,6 +490,25 @@ pub fn set_plugin_live_instances(count: u64) {
     gauge!("orion_plugin_live_instances").set(count as f64);
 }
 
+/// Native jobs holding a slot on this node's scheduler right now
+/// (`engine.native_work_max_in_flight`).
+pub fn set_native_work_in_flight(count: usize) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_native_work_in_flight").set(count as f64);
+}
+
+/// A native job the scheduler did not complete for its caller: `queue_deadline`
+/// (no slot before the deadline), `caller_deadline` (the caller stopped
+/// waiting while the job ran on), `shutting_down`, or `panicked`.
+pub fn record_native_work_refusal(reason: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_native_work_refusals_total", "reason" => reason).increment(1);
+}
+
 /// Record engine reload event.
 pub fn record_engine_reload(status: &'static str) {
     if !is_enabled() {

@@ -49,7 +49,7 @@ pub struct PluginLoadIssueResponse {
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub digest: String,
     /// `disabled`, `manifest`, `signature`, `artifact`, `compile`, `link`,
-    /// `size` or `self_test`.
+    /// `size`, `self_test` or `capacity`.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub stage: String,

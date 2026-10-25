@@ -129,7 +129,10 @@ See [Metrics › Plugins](./metrics.md#plugins).
 component that is `ok`, `degraded` when a deployed plugin did not load, or
 `disabled`. The admin-only detail lists every loaded version and every
 failure. The stages a failure names are `manifest`, `signature`, `artifact`,
-`compile`, `link`, `size` and `self_test`.
+`compile`, `link`, `size`, `self_test` and `capacity`. `capacity` means the
+compile got no slot on the node's native work scheduler, or did not finish,
+within [`engine.native_work_timeout_ms`](./configuration/engine.md#native-work):
+the component may be fine and the node was busy.
 
 ## Trust
 

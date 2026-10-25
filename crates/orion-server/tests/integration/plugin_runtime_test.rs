@@ -647,3 +647,67 @@ async fn no_instance_outlives_its_call() {
         "a trapped store is dropped like any other"
     );
 }
+
+/// A compile is a job on the native work scheduler the runtime was given: it
+/// waits for a slot, a caller that gets none in time is refused as
+/// `Capacity` (the component was never compiled), and it compiles once one
+/// frees, releasing it when done.
+#[tokio::test]
+async fn a_compile_waits_for_a_native_work_slot() {
+    use orion::extensions::NativeWorkScheduler;
+
+    let native = NativeWorkScheduler::new(1);
+    let impatient =
+        WasmRuntime::with_native_work(&config(), native.clone(), Duration::from_millis(100))
+            .expect("engine");
+    let held = native.try_acquire("held").expect("the one slot");
+    match impatient.load(COMPONENT.to_vec()).await {
+        Err(LoadError::Capacity(reason)) => assert!(
+            reason.contains("NATIVE_QUEUE_DEADLINE_EXCEEDED"),
+            "{reason}"
+        ),
+        other => panic!("a compile with no slot must be refused as capacity: {other:?}"),
+    }
+    assert!(
+        impatient.cached(&WasmRuntime::digest(COMPONENT)).is_none(),
+        "nothing compiled while the slot was held"
+    );
+
+    let patient = WasmRuntime::with_native_work(&config(), native.clone(), Duration::from_secs(60))
+        .expect("engine");
+    let waiting = {
+        let patient = patient.clone();
+        tokio::spawn(async move { patient.load(COMPONENT.to_vec()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiting.is_finished(), "the compile waits for the slot");
+    drop(held);
+    let loaded = waiting
+        .await
+        .expect("the task joins")
+        .expect("it compiles once the slot frees");
+    assert_eq!(loaded.size, COMPONENT.len());
+    assert_eq!(native.in_flight(), 0, "the compile gave its slot back");
+}
+
+/// The node's scheduler is sized from `engine.native_work_max_in_flight` and
+/// reported under `native_scheduler` in the runtime capabilities.
+#[tokio::test]
+async fn the_native_work_bound_comes_from_config() {
+    use tower::ServiceExt;
+
+    let mut config = orion::config::AppConfig::default();
+    config.engine.native_work_max_in_flight = 3;
+    let app = crate::common::test_app_with_config(config).await;
+    let resp = app
+        .oneshot(crate::common::json_request(
+            "GET",
+            "/api/v2/admin/runtime-capabilities",
+            None,
+        ))
+        .await
+        .expect("responds");
+    let caps = crate::common::body_json(resp).await;
+    assert_eq!(caps["native_scheduler"]["max_in_flight"], 3, "{caps}");
+    assert_eq!(caps["native_scheduler"]["in_flight"], 0, "{caps}");
+}

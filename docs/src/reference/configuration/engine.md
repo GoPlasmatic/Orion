@@ -1,4 +1,4 @@
-<!-- description: The [engine] settings: channel_call depth and timeout, loop and cache bounds, sticky rollouts, connector load failures, the ops and run budgets and the circuit breaker. -->
+<!-- description: The [engine] settings: channel_call depth and timeout, loop and cache bounds, sticky rollouts, connector load failures, the ops and run budgets, native work and the circuit breaker. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-10-01 -->
 
@@ -25,6 +25,8 @@ max_run_tasks = 0
 max_run_expr_ops = 0
 max_run_custom_units = 0
 max_run_in_flight = 0
+native_work_max_in_flight = 4
+native_work_timeout_ms = 300000
 
 [engine.circuit_breaker]
 enabled = false
@@ -56,12 +58,22 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 | `engine.max_run_expr_ops` | `0` | `ORION_ENGINE__MAX_RUN_EXPR_OPS` | Ceiling on JSONLogic operations summed across one run; `0` installs none. `ops_budget` bounds one evaluation, this bounds their total. |
 | `engine.max_run_custom_units` | `0` | `ORION_ENGINE__MAX_RUN_CUSTOM_UNITS` | Ceiling on the host units functions charge across one run; `0` installs none. No built-in function charges units yet, so today it has no effect. |
 | `engine.max_run_in_flight` | `0` | `ORION_ENGINE__MAX_RUN_IN_FLIGHT` | Ceiling on tasks running at once within one run; `0` installs none. |
+| `engine.native_work_max_in_flight` | `4` | `ORION_ENGINE__NATIVE_WORK_MAX_IN_FLIGHT` | Blocking native jobs that may run at once on this node, such as plugin component compiles; see [Native work](#native-work). Raise it on a host with cores to spare for many concurrent plugin uploads. |
+| `engine.native_work_timeout_ms` | `300000` | `ORION_ENGINE__NATIVE_WORK_TIMEOUT_MS` | How long a caller waits for a native job, its wait for a slot included. |
 
 ### Run budgets
 
 The four `max_run_*` settings bound one *run*: everything a request or a cron occurrence starts, including the `channel_call` runs it makes, which share their caller's counters. A run that crosses a ceiling stops, and the caller gets `400` with code `VALIDATION_ERROR` and a message naming the budget, for example `run task budget exceeded (101 > 100 max tasks)`.
 
 They complement `ops_budget`, which bounds a single expression evaluation: a workflow can stay under `ops_budget` on every evaluation and still loop through millions of them.
+
+### Native work
+
+A native job holds an OS thread for its whole length. On this node that is a plugin component compile, which runs Cranelift over the whole component, and any job an extension schedules on the node's native work scheduler. `native_work_max_in_flight` bounds how many run at once; a further job waits for a slot.
+
+A caller waits at most `native_work_timeout_ms`, the wait for a slot included. When it gives up, the job does not give back its slot: the job keeps it until its thread finishes, so the bound counts the threads that are actually busy. A plugin upload that times out this way answers `503` with `Retry-After`, and a deployment build records the plugin as a `capacity` load issue. At shutdown the node waits up to `server.shutdown_force_timeout_secs` for running jobs and logs any still running.
+
+`GET /api/v2/admin/runtime-capabilities` reports `native_scheduler.in_flight` and `native_scheduler.max_in_flight`. The metrics are `orion_native_work_in_flight` and `orion_native_work_refusals_total`; see [Metrics](../metrics.md).
 
 ### Connector load failures
 

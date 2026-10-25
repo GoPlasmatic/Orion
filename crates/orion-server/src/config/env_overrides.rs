@@ -333,6 +333,8 @@ where
     ov!(engine.max_run_expr_ops: u64);
     ov!(engine.max_run_custom_units: u64);
     ov!(engine.max_run_in_flight: u64);
+    ov!(engine.native_work_max_in_flight: usize);
+    ov!(engine.native_work_timeout_ms: u64);
     ov!(engine.global_http_timeout_secs: u64);
     ov!(engine.max_pool_cache_entries: usize);
     ov!(engine.max_memory_cache_entries: usize);

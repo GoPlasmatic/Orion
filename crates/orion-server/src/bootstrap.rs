@@ -275,7 +275,10 @@ pub async fn build_engine_components(
             format!("boot-{}", uuid::Uuid::new_v4().simple()),
         ),
     )
-    .with_resource_pool(sql_pool_cache.clone());
+    .with_resource_pool(sql_pool_cache.clone())
+    .with_native_scheduler(crate::extensions::NativeWorkScheduler::new(
+        config.engine.native_work_max_in_flight,
+    ));
     let providers = composition.providers.clone();
 
     // The node's live components, as every function gets them.
@@ -297,10 +300,13 @@ pub async fn build_engine_components(
 
     let plugins = if config.plugins.enabled {
         Some(
-            crate::plugin::WasmRuntime::new(&config.plugins).map_err(|e| {
-                crate::errors::OrionError::Config {
-                    message: format!("plugins: the sandbox could not be created: {e}"),
-                }
+            crate::plugin::WasmRuntime::with_native_work(
+                &config.plugins,
+                composition.native_scheduler.clone(),
+                std::time::Duration::from_millis(config.engine.native_work_timeout_ms),
+            )
+            .map_err(|e| crate::errors::OrionError::Config {
+                message: format!("plugins: the sandbox could not be created: {e}"),
             })?,
         )
     } else {

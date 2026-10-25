@@ -719,6 +719,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await;
 
+    // Native jobs (a plugin compile in flight) own their threads; wait for
+    // them on the same bound, and name any still running rather than
+    // exiting as though the node drained.
+    let native = state
+        .composition
+        .native_scheduler
+        .graceful_shutdown(std::time::Duration::from_secs(
+            config.server.shutdown_force_timeout_secs,
+        ))
+        .await;
+    if !native.drained_cleanly {
+        let jobs: Vec<&str> = native
+            .residual_jobs
+            .iter()
+            .map(|job| job.label.as_str())
+            .collect();
+        tracing::warn!(
+            ?jobs,
+            "Native jobs still running at shutdown; exiting without them"
+        );
+    }
+
     // Release the state's trace-queue sender before draining the workers —
     // they exit when the last sender closes, and holding `state` here would
     // stall the drain until its timeout.

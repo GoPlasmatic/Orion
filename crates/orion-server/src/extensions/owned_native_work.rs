@@ -1,5 +1,17 @@
-//! V2-08 Owned native work scheduler, permits, live capacity ceiling updates
-//! across revisions, and bounded graceful shutdown.
+//! The node's owned native work scheduler: a bound on blocking native jobs,
+//! permits owned by the job rather than its caller, and a bounded drain at
+//! shutdown.
+//!
+//! A native job is work that occupies an OS thread for its whole length:
+//! compiling a plugin component with Cranelift on this node, and whatever an
+//! extension built on [`crate::extensions::CompositionRoot`] schedules here.
+//! `engine.native_work_max_in_flight` bounds how many run at once, and
+//! `engine.native_work_timeout_ms` how long a caller waits for one. A caller
+//! that gives up does not release the slot: the job holds its permit until
+//! its thread finishes or unwinds, so the bound counts the threads actually
+//! busy. `orion_native_work_in_flight` reports it, and
+//! `GET /api/v2/admin/runtime-capabilities` reports both numbers under
+//! `native_scheduler`.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -81,7 +93,8 @@ impl Drop for OwnedPermit {
             let mut g = self.scheduler.jobs.lock().expect("jobs lock");
             g.remove(&self.job_id);
         }
-        self.scheduler.in_flight.fetch_sub(1, Ordering::AcqRel);
+        let now = self.scheduler.in_flight.fetch_sub(1, Ordering::AcqRel) - 1;
+        crate::metrics::set_native_work_in_flight(now);
         self.scheduler
             .completed_total
             .fetch_add(1, Ordering::AcqRel);
@@ -89,7 +102,7 @@ impl Drop for OwnedPermit {
     }
 }
 
-/// Unified scheduler for native blocking/inference/probe/load work (`V2-08.1`..`V2-08.5`).
+/// The scheduler every blocking native job on this node runs under.
 #[derive(Clone)]
 pub struct NativeWorkScheduler {
     inner: Arc<SchedulerInner>,
@@ -120,16 +133,6 @@ impl NativeWorkScheduler {
         self.inner.max_in_flight.load(Ordering::Acquire)
     }
 
-    /// V2-08.4: Dynamically update the concurrency ceiling across revisions.
-    /// Reducing the ceiling never steals permits from running jobs; new work
-    /// simply waits until `in_flight < new_max_in_flight`.
-    pub fn update_max_in_flight(&self, new_max: usize) {
-        self.inner
-            .max_in_flight
-            .store(new_max.max(1), Ordering::Release);
-        self.inner.notify.notify_waiters();
-    }
-
     /// Try to acquire an [`OwnedPermit`] immediately without waiting.
     pub fn try_acquire(&self, label: impl Into<String>) -> Result<OwnedPermit, NativeWorkError> {
         if self.inner.shutting_down.load(Ordering::Acquire) {
@@ -153,6 +156,7 @@ impl NativeWorkScheduler {
                 .compare_exchange(cur, cur + 1, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
+                crate::metrics::set_native_work_in_flight(cur + 1);
                 let job_id = self.inner.next_job_id.fetch_add(1, Ordering::Relaxed);
                 let mut g = self.inner.jobs.lock().expect("jobs lock");
                 g.insert(
@@ -180,25 +184,28 @@ impl NativeWorkScheduler {
         deadline: Instant,
     ) -> Result<OwnedPermit, NativeWorkError> {
         let label_str = label.into();
+        let queue_deadline = || {
+            crate::metrics::record_native_work_refusal("queue_deadline");
+            NativeWorkError {
+                code: "NATIVE_QUEUE_DEADLINE_EXCEEDED",
+                message: "deadline expired while waiting in native work queue".to_string(),
+            }
+        };
         loop {
             if Instant::now() >= deadline {
-                return Err(NativeWorkError {
-                    code: "NATIVE_QUEUE_DEADLINE_EXCEEDED",
-                    message: "deadline expired while waiting in native work queue".to_string(),
-                });
+                return Err(queue_deadline());
             }
             let notified = self.inner.notify.notified();
             match self.try_acquire(label_str.clone()) {
                 Ok(permit) => return Ok(permit),
-                Err(e) if e.code == "SCHEDULER_SHUTTING_DOWN" => return Err(e),
+                Err(e) if e.code == "SCHEDULER_SHUTTING_DOWN" => {
+                    crate::metrics::record_native_work_refusal("shutting_down");
+                    return Err(e);
+                }
                 Err(_) => {
                     let rem = deadline.saturating_duration_since(Instant::now());
                     if rem.is_zero() || tokio::time::timeout(rem, notified).await.is_err() {
-                        return Err(NativeWorkError {
-                            code: "NATIVE_QUEUE_DEADLINE_EXCEEDED",
-                            message: "deadline expired while waiting in native work queue"
-                                .to_string(),
-                        });
+                        return Err(queue_deadline());
                     }
                 }
             }
@@ -234,6 +241,7 @@ impl NativeWorkScheduler {
                 }
                 Err(_) => {
                     sched.unwinds_total.fetch_add(1, Ordering::AcqRel);
+                    crate::metrics::record_native_work_refusal("panicked");
                     let _ = tx.send(Err(NativeWorkError {
                         code: "NATIVE_WORK_PANICKED",
                         message: "native job panicked and unwound".to_string(),
@@ -250,6 +258,7 @@ impl NativeWorkScheduler {
                 message: "native worker channel closed".to_string(),
             }),
             Err(_) => {
+                crate::metrics::record_native_work_refusal("caller_deadline");
                 self.inner
                     .abandoned_waiters_total
                     .fetch_add(1, Ordering::AcqRel);

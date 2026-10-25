@@ -3,8 +3,10 @@
 //!
 //! - **Compile once per digest.** `Component::new` runs Cranelift over the
 //!   whole component; it is the expensive step and it never runs on a request
-//!   task — [`WasmRuntime::load`] moves it to the blocking pool. The result is
-//!   an `InstancePre`: every linking decision made, nothing instantiated.
+//!   task — [`WasmRuntime::load`] runs it as a job on the node's native work
+//!   scheduler, so `engine.native_work_max_in_flight` bounds how many compile
+//!   at once. The result is an `InstancePre`: every linking decision made,
+//!   nothing instantiated.
 //! - **Fresh `Store` per invocation.** An instance lives inside its store and a
 //!   store cannot be reset, so each call instantiates from the `InstancePre`
 //!   into a new store carrying its own fuel, deadline and memory limiter. The
@@ -28,6 +30,7 @@ use wasmtime::{Config, Engine, InstanceAllocationStrategy, PoolingAllocationConf
 use super::error::{Category, Failure};
 use super::limits::{HostState, Limits};
 use crate::config::PluginsConfig;
+use crate::extensions::NativeWorkScheduler;
 
 wasmtime::component::bindgen!({
     world: "plugin",
@@ -78,6 +81,10 @@ pub enum LoadError {
     Link(String),
     /// A declared function did not answer a probe call.
     SelfTest { function: String, reason: String },
+    /// The compile got no native work slot, or did not finish, within
+    /// `engine.native_work_timeout_ms` (or the node is shutting down). The
+    /// component may be fine; the node was busy.
+    Capacity(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -96,6 +103,7 @@ impl std::fmt::Display for LoadError {
             Self::SelfTest { function, reason } => {
                 write!(f, "self-test of '{function}' failed: {reason}")
             }
+            Self::Capacity(reason) => write!(f, "component was not compiled: {reason}"),
         }
     }
 }
@@ -123,6 +131,9 @@ pub struct WasmRuntime {
     cache_seq: AtomicU64,
     /// Instances alive right now, across every function.
     live: AtomicU64,
+    /// Where a compile runs, and how long its caller waits for one.
+    native: NativeWorkScheduler,
+    native_timeout: Duration,
 }
 
 impl std::fmt::Debug for WasmRuntime {
@@ -137,7 +148,25 @@ impl std::fmt::Debug for WasmRuntime {
 impl WasmRuntime {
     /// Build the engine the design specifies: component model, async, fuel,
     /// epoch interruption, pooling allocator sized from the ceilings, no WASI.
+    ///
+    /// Compiles run on a scheduler of this runtime's own, sized as
+    /// `[engine]`'s defaults; a node passes its own with [`Self::with_native_work`].
     pub fn new(config: &PluginsConfig) -> Result<Arc<Self>, String> {
+        let engine = crate::config::EngineConfig::default();
+        Self::with_native_work(
+            config,
+            NativeWorkScheduler::new(engine.native_work_max_in_flight),
+            Duration::from_millis(engine.native_work_timeout_ms),
+        )
+    }
+
+    /// [`Self::new`], compiling on `native` and waiting up to `timeout` for
+    /// each compile, its wait for a slot included.
+    pub fn with_native_work(
+        config: &PluginsConfig,
+        native: NativeWorkScheduler,
+        timeout: Duration,
+    ) -> Result<Arc<Self>, String> {
         let mut c = Config::new();
         c.wasm_component_model(true);
         // Async is always on in Wasmtime 48; the `async` feature is what enables it.
@@ -169,6 +198,8 @@ impl WasmRuntime {
             cache: Mutex::new(HashMap::new()),
             cache_seq: AtomicU64::new(0),
             live: AtomicU64::new(0),
+            native,
+            native_timeout: timeout,
         }))
     }
 
@@ -282,12 +313,18 @@ impl WasmRuntime {
         Ok(component)
     }
 
-    /// [`Self::load_blocking`] on the blocking pool.
+    /// [`Self::load_blocking`] as a job on the node's native work scheduler.
+    /// A caller that times out gets [`LoadError::Capacity`]; the compile keeps
+    /// its slot until it finishes, and its result still enters the cache.
     pub async fn load(self: &Arc<Self>, bytes: Vec<u8>) -> Result<Arc<LoadedComponent>, LoadError> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || this.load_blocking(&bytes))
+        let deadline = Instant::now() + self.native_timeout;
+        self.native
+            .run_owned_blocking("plugin-compile", deadline, move || {
+                Ok(this.load_blocking(&bytes))
+            })
             .await
-            .map_err(|e| LoadError::Compile(format!("compile task failed: {e}")))?
+            .map_err(|e| LoadError::Capacity(e.to_string()))?
     }
 
     /// Prove every declared function answers: instantiate once and call each

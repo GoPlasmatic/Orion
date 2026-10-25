@@ -30,7 +30,7 @@ pub struct PluginLoadIssue {
     pub version: i64,
     pub digest: String,
     /// `disabled`, `manifest`, `signature`, `artifact`, `compile`, `link`,
-    /// `size`, `self_test`.
+    /// `size`, `self_test`, `capacity`.
     pub stage: &'static str,
     pub reason: String,
 }
@@ -322,6 +322,7 @@ fn load_stage(e: &super::runtime::LoadError) -> &'static str {
         LoadError::Compile(_) => "compile",
         LoadError::Link(_) => "link",
         LoadError::SelfTest { .. } => "self_test",
+        LoadError::Capacity(_) => "capacity",
     }
 }
 

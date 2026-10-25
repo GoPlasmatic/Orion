@@ -62,6 +62,8 @@ Emitted by the WebAssembly plugin sandbox (`[plugins]`). `plugin` is a registere
 | `orion_plugin_loads_total` | Counter | `plugin`, `outcome` | Components compiled for a plugin; `outcome` is `ok` or `error`. |
 | `orion_plugin_compile_duration_seconds` | Histogram | `plugin` | Cranelift compile time of one component. Paid once per digest per process. |
 | `orion_plugin_live_instances` | Gauge | — | Plugin instances alive right now, across every function. Bounded by `plugins.max_live_instances`. |
+| `orion_native_work_in_flight` | Gauge | — | Blocking native jobs holding a slot right now, such as plugin component compiles. Bounded by [`engine.native_work_max_in_flight`](./configuration/engine.md#native-work); a job whose caller gave up still counts until its thread finishes. |
+| `orion_native_work_refusals_total` | Counter | `reason` | Native jobs that did not complete for their caller: `queue_deadline` (no slot before `engine.native_work_timeout_ms`), `caller_deadline` (the caller stopped waiting while the job ran on), `shutting_down`, or `panicked`. A steady `queue_deadline` rate means the bound is too low for the load. |
 
 ## Scheduling
 

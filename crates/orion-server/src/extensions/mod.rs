@@ -189,8 +189,17 @@ impl CompositionRoot {
             pools,
             deployments,
             reconciler,
-            native_scheduler: NativeWorkScheduler::new(16),
+            native_scheduler: NativeWorkScheduler::new(
+                crate::config::EngineConfig::default().native_work_max_in_flight,
+            ),
         }
+    }
+
+    /// Replace the [`NativeWorkScheduler`]: a running node sizes it from
+    /// `engine.native_work_max_in_flight`.
+    pub fn with_native_scheduler(mut self, scheduler: NativeWorkScheduler) -> Self {
+        self.native_scheduler = scheduler;
+        self
     }
 
     /// Register an additional native Rust [`ChannelDriver`] (e.g. `graphql`, `sse`, `kafka`).
