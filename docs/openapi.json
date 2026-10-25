@@ -3565,6 +3565,156 @@
         ]
       }
     },
+    "/api/v2/admin/definitions": {
+      "post": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Upload a definition a deployment manifest can name",
+        "description": "Validates a workflow, channel or plugin definition as the node will load it — a workflow is parsed strictly and compiled, refusing anything that would quarantine it; a channel's routing and guards are checked; a plugin's manifest is read and its component compiled and self-tested — and stores its canonical form. The answered `digest` is what a manifest member's `definition_digest` names. Idempotent: the same definition is one digest however it is spelled.",
+        "operationId": "upload_definition",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Definition"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Definition stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DefinitionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The definition would not serve; `details` names each problem by field",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v2/admin/definitions/{digest}": {
+      "get": {
+        "tags": [
+          "Deployments"
+        ],
+        "summary": "Read a stored definition",
+        "operationId": "get_definition",
+        "parameters": [
+          {
+            "name": "digest",
+            "in": "path",
+            "description": "`sha256:…` the upload answered",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The definition as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Definition"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No definition is stored under that digest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v2/admin/deployment-plans": {
       "post": {
         "tags": [
@@ -9378,6 +9528,59 @@
           }
         }
       },
+      "ChannelDefinition": {
+        "type": "object",
+        "description": "A channel: everything but its identity and its workflow, which is the\nWorkflow its manifest member `requires`.",
+        "required": [
+          "name",
+          "protocol"
+        ],
+        "properties": {
+          "channel_type": {
+            "$ref": "#/components/schemas/ChannelType"
+          },
+          "config": {},
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ChannelProtocol"
+          },
+          "route_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "transport_config": {}
+        },
+        "additionalProperties": false
+      },
       "ChannelLoadIssueResponse": {
         "type": "object",
         "description": "A channel a generation refused to serve.",
@@ -12532,6 +12735,88 @@
           }
         }
       },
+      "Definition": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "definition",
+              "kind"
+            ],
+            "properties": {
+              "definition": {
+                "$ref": "#/components/schemas/WorkflowDefinition"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "workflow"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "definition",
+              "kind"
+            ],
+            "properties": {
+              "definition": {
+                "$ref": "#/components/schemas/ChannelDefinition"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "channel"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "definition",
+              "kind"
+            ],
+            "properties": {
+              "definition": {
+                "$ref": "#/components/schemas/PluginDefinition"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "plugin"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One deployable definition, as `POST /api/v2/admin/definitions` takes it\nand the artifact store holds it: its kind and the document of that kind.\nThe artifact's digest covers the whole value, so a manifest member's kind\nis bound to the definition it names. Identity is not part of it: a\nmember's `id` and `revision` say which entity this definition is."
+      },
+      "DefinitionResponse": {
+        "type": "object",
+        "description": "A stored definition (`POST`/`GET /api/v2/admin/definitions`).",
+        "required": [
+          "digest",
+          "kind",
+          "size_bytes"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "description": "`sha256:…` of the canonical definition: what a manifest member's\n`definition_digest` names."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "DeploymentPlanResponse": {
         "type": "object",
         "description": "Candidate deployment plan with reviewed digest and sanitized diff (`POST /api/v2/admin/deployment-plans`).",
@@ -14751,6 +15036,35 @@
           }
         }
       },
+      "PluginDefinition": {
+        "type": "object",
+        "description": "A WebAssembly plugin: its `plugin.toml` manifest as JSON and the\ncomponent itself, so one digest covers both.",
+        "required": [
+          "manifest",
+          "component"
+        ],
+        "properties": {
+          "component": {
+            "type": "string",
+            "description": "The component, base64."
+          },
+          "manifest": {},
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A detached Ed25519 signature over the component digest, base64."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "PluginDependencies": {
         "type": "object",
         "description": "What depends on a plugin: the active workflows calling its functions.",
@@ -16012,6 +16326,50 @@
           }
         }
       },
+      "WorkflowDefinition": {
+        "type": "object",
+        "description": "A workflow: the dataflow-rs workflow document without what the deployment\nsupplies (`id`, `version`, `channel`, `status` and `rollout`).",
+        "required": [
+          "name",
+          "tasks"
+        ],
+        "properties": {
+          "condition": {
+            "description": "JSONLogic deciding whether the workflow matches a message."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loop": {
+            "description": "The workflow loop, when the steps repeat."
+          },
+          "name": {
+            "type": "string"
+          },
+          "on_failure": {
+            "$ref": "#/components/schemas/WorkflowOnFailure",
+            "description": "What a failing task does to the run."
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Higher is evaluated first among the workflows of one channel."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tasks": {
+            "description": "The steps: tasks and task groups."
+          }
+        },
+        "additionalProperties": false
+      },
       "WorkflowDependencies": {
         "type": "object",
         "description": "`GET /api/v2/admin/workflows/{id}/dependencies`.",
@@ -16064,6 +16422,14 @@
             "type": "string"
           }
         }
+      },
+      "WorkflowOnFailure": {
+        "type": "string",
+        "description": "A workflow's failure policy, the engine's own vocabulary.",
+        "enum": [
+          "fail",
+          "continue"
+        ]
       },
       "WorkflowResponse": {
         "type": "object",

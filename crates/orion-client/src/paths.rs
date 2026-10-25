@@ -208,6 +208,7 @@ pub const V2_RUNTIME_CAPABILITIES: &str = "/api/v2/admin/runtime-capabilities";
 pub const V2_CONNECTOR_PACKAGES: &str = "/api/v2/admin/connector-packages";
 pub const V2_CONNECTIONS: &str = "/api/v2/admin/connections";
 pub const V2_DEPLOYMENT_PLANS: &str = "/api/v2/admin/deployment-plans";
+pub const V2_DEFINITIONS: &str = "/api/v2/admin/definitions";
 pub const V2_DEPLOYMENTS: &str = "/api/v2/admin/deployments";
 pub const V2_DEPLOYMENTS_ROLLBACK: &str = "/api/v2/admin/deployments/rollback";
 pub const V2_MIGRATION_REPORT: &str = "/api/v2/admin/migration-report";

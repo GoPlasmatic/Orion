@@ -780,3 +780,22 @@ impl Drop for ScratchDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+/// Store `definition` (`{"kind": …, "definition": {…}}`) in `state`'s
+/// deployment store as a deployment would upload it, answering the digest a
+/// manifest member names it by.
+pub async fn store_definition(
+    state: &orion::server::state::AppState,
+    definition: serde_json::Value,
+) -> String {
+    let definition: orion_api::v2::Definition =
+        serde_json::from_value(definition).expect("a definition");
+    let bytes = orion::runtime::definitions::canonical_bytes(&definition).expect("canonical");
+    state
+        .composition
+        .deployments
+        .store_definition_artifact_in_db(&state.db_pool, bytes)
+        .await
+        .expect("definition stored")
+        .digest
+}

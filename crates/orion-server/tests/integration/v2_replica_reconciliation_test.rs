@@ -6,7 +6,7 @@
 //! assembles whole nodes (`bootstrap::assemble`), which the store sits below.
 
 use orion::extensions::deployment_store::Rollback;
-use orion::extensions::package_identity::{canonical_bytes, sha256_digest};
+use orion::extensions::package_identity::canonical_bytes;
 use orion::extensions::{
     ArchiveEntryInput, CanonicalManifest, EntityKind, EntityRef, ManifestMember, ProviderRef,
 };
@@ -80,61 +80,32 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     .expect("assemble replica B");
     let state_b = assembled_b.state;
 
-    // Create workflow v1 and v2 and channel v1 in the shared DB (even as draft/inactive,
-    // manifest_definitions resolves the exact revision named in the manifest!)
-    let wf1 = state_a
-        .repos
-        .workflows
-        .create(
-            &orion::storage::repositories::workflows::CreateWorkflowRequest {
-                workflow_id: Some("orders-wf".to_string()),
-                name: "Orders V1".to_string(),
-                description: None,
-                priority: 0,
-                condition: json!(true),
-                tasks: json!([{
-                    "id": "t1",
-                    "name": "Set V1",
-                    "function": {
-                        "name": "map",
-                        "input": {
-                            "mappings": [{"path": "data.version", "logic": "v1"}]
-                        }
-                    }
-                }]),
-                tags: Vec::new(),
-                loop_config: None,
-                continue_on_error: false,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(wf1.version, 1);
-
-    let ch1 = state_a
-        .repos
-        .channels
-        .create(
-            &orion::storage::repositories::channels::CreateChannelRequest {
-                channel_id: Some("orders-ch".to_string()),
-                name: "orders-ch".to_string(),
-                description: None,
-                channel_type: orion::storage::models::ChannelType::Sync,
-                protocol: orion::storage::models::ChannelProtocol::Rest,
-                methods: Some(vec!["POST".to_string()]),
-                route_pattern: Some("/orders".to_string()),
-                topic: None,
-                consumer_group: None,
-                transport_config: json!({}),
-                workflow_id: Some("orders-wf".to_string()),
-                config: json!({}),
-                priority: 0,
-                tags: Vec::new(),
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(ch1.version, 1);
+    // The definitions revision 1 names, stored as a deployment uploads them.
+    let wf_v1 = crate::common::store_definition(
+        &state_a,
+        json!({"kind": "workflow", "definition": {
+            "name": "Orders V1",
+            "tasks": [{
+                "id": "t1",
+                "name": "Set V1",
+                "function": {
+                    "name": "map",
+                    "input": {"mappings": [{"path": "data.version", "logic": "v1"}]}
+                }
+            }]
+        }}),
+    )
+    .await;
+    let ch_v1 = crate::common::store_definition(
+        &state_a,
+        json!({"kind": "channel", "definition": {
+            "name": "orders-ch",
+            "protocol": "rest",
+            "methods": ["POST"],
+            "route_pattern": "/orders",
+        }}),
+    )
+    .await;
 
     // Ingest & admit provider package and create connection on Replica A
     let entries = sample_archive_entries();
@@ -186,7 +157,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                     id: "orders-ch".to_string(),
                     revision: 1,
                 },
-                definition_digest: sha256_digest(b"orders-ch-v1"),
+                definition_digest: ch_v1.clone(),
                 owning_package: None,
                 requires: vec![EntityRef {
                     kind: EntityKind::Workflow,
@@ -201,7 +172,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                     id: "orders-wf".to_string(),
                     revision: 1,
                 },
-                definition_digest: sha256_digest(b"orders-wf-v1"),
+                definition_digest: wf_v1.clone(),
                 owning_package: None,
                 requires: Vec::new(),
                 rollouts: Vec::new(),
@@ -437,8 +408,14 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
         .expect("boots on an empty store")
         .state;
 
-    // A workflow revision no table holds: the manifest commits, and no node
-    // can build it.
+    // A Workflow member naming a stored *channel* definition: the manifest
+    // commits (the plan checks the definition is stored, not what it is), and
+    // no node can build it.
+    let ghost = crate::common::store_definition(
+        &state_a,
+        json!({"kind": "channel", "definition": {"name": "ghost", "protocol": "rest"}}),
+    )
+    .await;
     let manifest = CanonicalManifest {
         schema_version: 2,
         providers: Vec::new(),
@@ -449,7 +426,7 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
                 id: "ghost-wf".to_string(),
                 revision: 1,
             },
-            definition_digest: sha256_digest(b"ghost-wf-v1"),
+            definition_digest: ghost,
             owning_package: None,
             requires: Vec::new(),
             rollouts: Vec::new(),

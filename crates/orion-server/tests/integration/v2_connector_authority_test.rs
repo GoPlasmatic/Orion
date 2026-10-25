@@ -1,18 +1,14 @@
 //! `connector_call` under a deployed generation: a workflow may call a
 //! connection its manifest member requires, and nothing else.
 
-use orion::extensions::package_identity::sha256_digest;
+use crate::common;
 use orion::extensions::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
 use serde_json::{Value, json};
 
-fn cache_workflow(id: &str) -> orion::storage::repositories::workflows::CreateWorkflowRequest {
-    orion::storage::repositories::workflows::CreateWorkflowRequest {
-        workflow_id: Some(id.to_string()),
-        name: id.to_string(),
-        description: None,
-        priority: 0,
-        condition: json!(true),
-        tasks: json!([
+fn cache_workflow(id: &str) -> Value {
+    json!({"kind": "workflow", "definition": {
+        "name": id,
+        "tasks": [
             {"id": "set", "function": {"name": "connector_call", "input": {
                 "connection": "local-cache",
                 "target_id": "org.orion.memory-cache",
@@ -27,33 +23,17 @@ fn cache_workflow(id: &str) -> orion::storage::repositories::workflows::CreateWo
                 "input": {"key": "k"},
                 "output": "data.got"
             }}}
-        ]),
-        tags: Vec::new(),
-        loop_config: None,
-        continue_on_error: false,
-    }
+        ]
+    }})
 }
 
-fn channel(
-    id: &str,
-    workflow: &str,
-) -> orion::storage::repositories::channels::CreateChannelRequest {
-    orion::storage::repositories::channels::CreateChannelRequest {
-        channel_id: Some(id.to_string()),
-        name: id.to_string(),
-        description: None,
-        channel_type: orion::storage::models::ChannelType::Sync,
-        protocol: orion::storage::models::ChannelProtocol::Rest,
-        methods: Some(vec!["POST".to_string()]),
-        route_pattern: Some(format!("/{id}")),
-        topic: None,
-        consumer_group: None,
-        transport_config: json!({}),
-        workflow_id: Some(workflow.to_string()),
-        config: json!({}),
-        priority: 0,
-        tags: Vec::new(),
-    }
+fn channel(id: &str) -> Value {
+    json!({"kind": "channel", "definition": {
+        "name": id,
+        "protocol": "rest",
+        "methods": ["POST"],
+        "route_pattern": format!("/{id}"),
+    }})
 }
 
 fn member(kind: EntityKind, id: &str, digest: String, requires: Vec<EntityRef>) -> ManifestMember {
@@ -103,16 +83,15 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
     .expect("boots")
     .state;
 
+    let mut digests = std::collections::HashMap::new();
     for wf in ["allowed-wf", "rogue-wf"] {
-        state
-            .repos
-            .workflows
-            .create(&cache_workflow(wf))
-            .await
-            .unwrap();
+        digests.insert(
+            wf,
+            common::store_definition(&state, cache_workflow(wf)).await,
+        );
     }
-    for (ch, wf) in [("allowed-ch", "allowed-wf"), ("rogue-ch", "rogue-wf")] {
-        state.repos.channels.create(&channel(ch, wf)).await.unwrap();
+    for ch in ["allowed-ch", "rogue-ch"] {
+        digests.insert(ch, common::store_definition(&state, channel(ch)).await);
     }
 
     // The connection names the built-in memory-cache driver by its built-in
@@ -142,25 +121,25 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
             member(
                 EntityKind::Channel,
                 "allowed-ch",
-                sha256_digest(b"allowed-ch"),
+                digests["allowed-ch"].clone(),
                 vec![entity(EntityKind::Workflow, "allowed-wf")],
             ),
             member(
                 EntityKind::Channel,
                 "rogue-ch",
-                sha256_digest(b"rogue-ch"),
+                digests["rogue-ch"].clone(),
                 vec![entity(EntityKind::Workflow, "rogue-wf")],
             ),
             member(
                 EntityKind::Workflow,
                 "allowed-wf",
-                sha256_digest(b"allowed-wf"),
+                digests["allowed-wf"].clone(),
                 vec![entity(EntityKind::Connection, "local-cache")],
             ),
             member(
                 EntityKind::Workflow,
                 "rogue-wf",
-                sha256_digest(b"rogue-wf"),
+                digests["rogue-wf"].clone(),
                 Vec::new(),
             ),
             member(

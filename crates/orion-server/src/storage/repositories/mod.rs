@@ -46,6 +46,9 @@ pub(crate) struct ActiveDefinitions {
     pub channels: Vec<crate::storage::models::Channel>,
     pub workflows: Vec<crate::storage::models::Workflow>,
     pub plugins: Vec<crate::storage::models::Plugin>,
+    /// Component bytes by digest, for plugins whose definition carries them.
+    /// Empty for rows read from the v1 tables, which name `plugin_artifacts`.
+    pub plugin_components: std::collections::HashMap<String, Vec<u8>>,
     pub models: Vec<crate::storage::models::Model>,
 }
 
@@ -59,6 +62,7 @@ impl Repositories {
             channels: versioned::list_active_tx(&mut tx, &channels::spec()).await?,
             workflows: versioned::list_active_tx(&mut tx, &workflows::spec()).await?,
             plugins: versioned::list_active_tx(&mut tx, &plugins::spec()).await?,
+            plugin_components: Default::default(),
             models: versioned::list_active_tx(&mut tx, &models::spec()).await?,
         };
         tx.commit().await?;

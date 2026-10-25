@@ -62,6 +62,7 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `v2_package_upload` | `connector_package` | `POST /connector-packages`; `resource_id` is the package digest |
 | `v2_package_admit` | `connector_package` | `POST /connector-packages/{digest}/admit` |
 | `v2_package_revoke` | `connector_package` | `POST /connector-packages/{digest}/revoke` |
+| `v2_definition_upload` | `definition` | `POST /definitions`; `resource_id` is the definition digest |
 | `v2_connection_create` | `connection` | `POST /connections` — one row per connection revision; `resource_id` is `{connection_id}@{revision}` |
 | `v2_deployment_apply` | `deployment` | `POST /deployments`; `resource_id` is the committed revision |
 | `v2_deployment_rollback` | `deployment` | `POST /deployments/rollback`; `resource_id` is `{target_revision}->{committed_revision}` |

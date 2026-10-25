@@ -34,6 +34,7 @@
 
 pub mod authority;
 pub mod boot_packages;
+pub mod definitions;
 pub mod generation;
 pub mod limiter_prune;
 pub mod load_issues;

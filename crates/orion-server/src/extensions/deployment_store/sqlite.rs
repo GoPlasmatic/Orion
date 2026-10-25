@@ -1733,6 +1733,17 @@ impl ImmutableDeploymentStore {
         .await
     }
 
+    pub async fn store_definition_artifact_in_db(
+        &self,
+        pool: &crate::storage::DbPool,
+        bytes: Vec<u8>,
+    ) -> Result<ArtifactObjectRow, DeploymentError> {
+        self.transactional_mutate(pool, move |staged| {
+            Self::store_definition_artifact_into_state(staged, bytes)
+        })
+        .await
+    }
+
     pub async fn store_connection_revision_in_db(
         &self,
         pool: &crate::storage::DbPool,

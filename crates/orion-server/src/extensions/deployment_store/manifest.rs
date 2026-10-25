@@ -149,8 +149,14 @@ pub fn validate_rollout_partition(intervals: &[RolloutInterval]) -> Result<(), D
 pub struct ManifestMember {
     pub entity: EntityRef,
     pub definition_digest: String,
+    /// Absent, none, empty: a member that needs nothing beyond its entity
+    /// and its definition writes only those. The canonical form spells them
+    /// out, so the digest is the same either way.
+    #[serde(default)]
     pub owning_package: Option<String>,
+    #[serde(default)]
     pub requires: Vec<EntityRef>,
+    #[serde(default)]
     pub rollouts: Vec<RolloutInterval>,
 }
 

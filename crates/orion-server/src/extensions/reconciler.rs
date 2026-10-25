@@ -494,7 +494,6 @@ mod tests {
     use super::*;
     use crate::extensions::CommunityAdmissionPolicy;
     use crate::extensions::deployment_store::{CanonicalManifest, EntityKind, ManifestMember};
-    use crate::extensions::package_identity::sha256_digest;
 
     #[test]
     fn reconciler_quarantines_per_entity_discards_superseded_and_enforces_lease() {
@@ -514,7 +513,10 @@ mod tests {
                         id: "orders".to_string(),
                         revision: rev,
                     },
-                    definition_digest: sha256_digest(format!("ch-{rev}").as_bytes()),
+                    definition_digest: store
+                        .store_definition_artifact(format!("ch-{rev}").into_bytes())
+                        .unwrap()
+                        .digest,
                     owning_package: None,
                     requires: Vec::new(),
                     rollouts: Vec::new(),

@@ -121,7 +121,10 @@ fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
                 id: "orders-wf".to_string(),
                 revision: 1,
             },
-            definition_digest: sha256_digest(b"wf-v1"),
+            definition_digest: store
+                .store_definition_artifact(b"wf-v1".to_vec())
+                .unwrap()
+                .digest,
             owning_package: None,
             requires: Vec::new(),
             rollouts: Vec::new(),
@@ -158,7 +161,10 @@ fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
                 id: "orders-wf".to_string(),
                 revision: 2,
             },
-            definition_digest: sha256_digest(b"wf-v2"),
+            definition_digest: store
+                .store_definition_artifact(b"wf-v2".to_vec())
+                .unwrap()
+                .digest,
             owning_package: None,
             requires: Vec::new(),
             rollouts: Vec::new(),
@@ -291,7 +297,10 @@ async fn sqlite_migration_and_persistence_roundtrip() {
                 id: "orders-wf".to_string(),
                 revision: 1,
             },
-            definition_digest: sha256_digest(b"wf-sql-v1"),
+            definition_digest: store
+                .store_definition_artifact(b"wf-sql-v1".to_vec())
+                .unwrap()
+                .digest,
             owning_package: None,
             requires: Vec::new(),
             rollouts: Vec::new(),
@@ -455,7 +464,10 @@ fn connection_secret_rejection_canonical_digests_and_staged_gc_protection() {
                 id: "conn-canon".to_string(),
                 revision: 1,
             },
-            definition_digest: sha256_digest(b"wrong-digest"),
+            definition_digest: store
+                .store_definition_artifact(b"wrong-digest".to_vec())
+                .unwrap()
+                .digest,
             owning_package: None,
             requires: Vec::new(),
             rollouts: Vec::new(),
@@ -510,7 +522,11 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
                 id: "wf-a".to_string(),
                 revision: 1,
             },
-            definition_digest: sha256_digest(b"wf-a-v1"),
+            definition_digest: store_a
+                .store_definition_artifact_in_db(&db_pool, b"wf-a-v1".to_vec())
+                .await
+                .unwrap()
+                .digest,
             owning_package: None,
             requires: Vec::new(),
             rollouts: Vec::new(),
@@ -531,7 +547,11 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
                 id: "wf-b".to_string(),
                 revision: 1,
             },
-            definition_digest: sha256_digest(b"wf-b-v1"),
+            definition_digest: store_a
+                .store_definition_artifact_in_db(&db_pool, b"wf-b-v1".to_vec())
+                .await
+                .unwrap()
+                .digest,
             owning_package: None,
             requires: Vec::new(),
             rollouts: Vec::new(),

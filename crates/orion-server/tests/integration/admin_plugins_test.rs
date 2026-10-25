@@ -852,6 +852,7 @@ async fn a_trusting_node_requires_a_signature_over_the_digest_at_upload_and_at_l
     other_policy.trust.public_keys = vec![stranger.public_key_base64()];
     let set = orion::plugin::load_active(
         rows,
+        &Default::default(),
         state.repos.plugins.as_ref(),
         state.plugins.as_ref(),
         &other_policy,

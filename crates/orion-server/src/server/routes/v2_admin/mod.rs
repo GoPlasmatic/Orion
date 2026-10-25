@@ -11,6 +11,7 @@
 
 pub(crate) mod authoring;
 pub(crate) mod connections;
+pub(crate) mod definitions;
 pub(crate) mod deployments;
 pub(crate) mod migration;
 pub(crate) mod packages;
@@ -92,6 +93,7 @@ pub fn v2_admin_routes(max_admin_body_size: usize) -> Router<AppState> {
         .route("/authoring/scaffold", post(authoring::authoring_scaffold))
         .route("/authoring/lint", post(authoring::authoring_lint))
         .route("/authoring/pack", post(authoring::authoring_pack))
+        .merge(definitions::routes())
         .layer(DefaultBodyLimit::max(max_admin_body_size))
 }
 

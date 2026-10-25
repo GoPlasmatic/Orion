@@ -532,6 +532,19 @@ fn shape_document(
     synthetic
 }
 
+/// The issues among `issues` that would quarantine a workflow at load
+/// (`engine::quarantines`), as field errors: what a deployment refuses so that
+/// an accepted definition always serves.
+pub fn quarantine_refusals(
+    issues: impl IntoIterator<Item = dataflow_rs::Issue>,
+) -> Vec<FieldError> {
+    issues
+        .into_iter()
+        .filter(crate::engine::quarantines)
+        .map(engine_issue_to_field_error)
+        .collect()
+}
+
 /// Render one engine [`dataflow_rs::Issue`] as an Orion `FieldError`.
 ///
 /// The code registry is closed (`orion_api::error::field_codes`), so this maps

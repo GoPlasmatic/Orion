@@ -195,6 +195,7 @@ impl PluginSet {
 /// quarantined with the reason.
 pub async fn load_active(
     rows: Vec<Plugin>,
+    components: &std::collections::HashMap<String, Vec<u8>>,
     repo: &dyn PluginRepository,
     runtime: Option<&Arc<WasmRuntime>>,
     config: &PluginsConfig,
@@ -205,7 +206,7 @@ pub async fn load_active(
         ..PluginSet::default()
     };
     for row in rows {
-        match load_one(&row, repo, runtime, config).await {
+        match load_one(&row, components, repo, runtime, config).await {
             Ok(loaded) => {
                 crate::metrics::record_plugin_load(
                     &row.plugin_id,
@@ -258,6 +259,7 @@ pub async fn load_active(
 
 async fn load_one(
     row: &Plugin,
+    components: &std::collections::HashMap<String, Vec<u8>>,
     repo: &dyn PluginRepository,
     runtime: Option<&Arc<WasmRuntime>>,
     config: &PluginsConfig,
@@ -284,16 +286,21 @@ async fn load_one(
     let loaded = match runtime.cached(&row.digest) {
         Some(loaded) => loaded,
         None => {
-            let bytes = repo
-                .get_artifact(&row.digest)
-                .await
-                .map_err(|e| ("artifact", e.to_string()))?
-                .ok_or_else(|| {
-                    (
-                        "artifact",
-                        format!("no component is stored under {}", row.digest),
-                    )
-                })?;
+            // A deployed plugin's component rides in its definition; a row
+            // from the v1 tables names one in `plugin_artifacts`.
+            let bytes = match components.get(&row.digest) {
+                Some(bytes) => bytes.clone(),
+                None => repo
+                    .get_artifact(&row.digest)
+                    .await
+                    .map_err(|e| ("artifact", e.to_string()))?
+                    .ok_or_else(|| {
+                        (
+                            "artifact",
+                            format!("no component is stored under {}", row.digest),
+                        )
+                    })?,
+            };
             let started = Instant::now();
             let loaded = runtime
                 .load(bytes)

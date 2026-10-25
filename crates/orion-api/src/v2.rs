@@ -645,6 +645,145 @@ pub struct EditionTransitionPreflightResponse {
     pub backup_retention_checklist: Vec<String>,
 }
 
+// ============================================================
+// Definitions: the deployable documents a manifest member names
+// ============================================================
+
+/// One deployable definition, as `POST /api/v2/admin/definitions` takes it
+/// and the artifact store holds it: its kind and the document of that kind.
+/// The artifact's digest covers the whole value, so a manifest member's kind
+/// is bound to the definition it names. Identity is not part of it: a
+/// member's `id` and `revision` say which entity this definition is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(
+    tag = "kind",
+    content = "definition",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum Definition {
+    Workflow(WorkflowDefinition),
+    Channel(ChannelDefinition),
+    Plugin(PluginDefinition),
+}
+
+impl Definition {
+    /// The kind, as a manifest member spells it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Workflow(_) => "workflow",
+            Self::Channel(_) => "channel",
+            Self::Plugin(_) => "plugin",
+        }
+    }
+}
+
+/// A workflow: the dataflow-rs workflow document without what the deployment
+/// supplies (`id`, `version`, `channel`, `status` and `rollout`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowDefinition {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Higher is evaluated first among the workflows of one channel.
+    #[serde(default)]
+    pub priority: i64,
+    /// JSONLogic deciding whether the workflow matches a message.
+    #[serde(default = "condition_true")]
+    pub condition: Value,
+    /// The steps: tasks and task groups.
+    pub tasks: Value,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// The workflow loop, when the steps repeat.
+    #[serde(default, rename = "loop")]
+    pub loop_config: Option<Value>,
+    /// What a failing task does to the run.
+    #[serde(default)]
+    pub on_failure: WorkflowOnFailure,
+}
+
+fn condition_true() -> Value {
+    Value::Bool(true)
+}
+
+/// A workflow's failure policy, the engine's own vocabulary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOnFailure {
+    /// The run stops at the failing task.
+    #[default]
+    Fail,
+    /// The failure is recorded and the next workflow, or the next sweep of a
+    /// loop, runs.
+    Continue,
+}
+
+/// A channel: everything but its identity and its workflow, which is the
+/// Workflow its manifest member `requires`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ChannelDefinition {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "channel_type_sync")]
+    pub channel_type: crate::enums::ChannelType,
+    pub protocol: crate::enums::ChannelProtocol,
+    #[serde(default)]
+    pub methods: Option<Vec<String>>,
+    #[serde(default)]
+    pub route_pattern: Option<String>,
+    #[serde(default = "empty_object")]
+    pub transport_config: Value,
+    #[serde(default = "empty_object")]
+    pub config: Value,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+fn channel_type_sync() -> crate::enums::ChannelType {
+    crate::enums::ChannelType::Sync
+}
+
+fn empty_object() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+/// A WebAssembly plugin: its `plugin.toml` manifest as JSON and the
+/// component itself, so one digest covers both.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct PluginDefinition {
+    pub manifest: Value,
+    /// The component, base64.
+    pub component: String,
+    /// A detached Ed25519 signature over the component digest, base64.
+    #[serde(default)]
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// A stored definition (`POST`/`GET /api/v2/admin/definitions`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct DefinitionResponse {
+    /// `sha256:…` of the canonical definition: what a manifest member's
+    /// `definition_digest` names.
+    pub digest: String,
+    pub kind: String,
+    pub size_bytes: u64,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {

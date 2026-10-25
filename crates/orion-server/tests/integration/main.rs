@@ -142,6 +142,7 @@ mod typed_enum_dtos_test;
 mod user_facing_ids_test;
 mod v2_admin_refusals_test;
 mod v2_connector_authority_test;
+mod v2_definitions_test;
 mod v2_replica_reconciliation_test;
 mod vault_test;
 mod workflow_lifecycle_test;

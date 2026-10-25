@@ -416,6 +416,7 @@ impl EngineComponents {
         let plugins = Arc::new(
             crate::plugin::load_active(
                 plugin_rows,
+                &std::collections::HashMap::new(),
                 repos.plugins.as_ref(),
                 serving.plugins.as_ref(),
                 &config.plugins,

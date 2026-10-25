@@ -834,6 +834,16 @@ impl ImmutableDeploymentStore {
         &self,
         bytes: Vec<u8>,
     ) -> Result<ArtifactObjectRow, DeploymentError> {
+        let mut g = self.inner.lock().expect("store lock");
+        Self::store_definition_artifact_into_state(&mut g, bytes)
+    }
+
+    /// [`Self::store_definition_artifact`] on staged state. Storing bytes the
+    /// store already holds is a no-op that answers the stored row.
+    pub(super) fn store_definition_artifact_into_state(
+        g: &mut DeploymentState,
+        bytes: Vec<u8>,
+    ) -> Result<ArtifactObjectRow, DeploymentError> {
         let digest = sha256_digest(&bytes);
         let size_bytes = bytes.len();
         let row = ArtifactObjectRow {
@@ -843,14 +853,16 @@ impl ImmutableDeploymentStore {
             drain_epoch: None,
             bytes: Some(bytes),
         };
-        let mut g = self.inner.lock().expect("store lock");
-        if let Some(existing) = g.artifacts.get(&digest)
-            && existing.state != ArtifactState::Active
-        {
-            return Err(DeploymentError::new(
-                "ARTIFACT_NOT_ACTIVE",
-                format!("definition artifact '{digest}' is not ACTIVE"),
-            ));
+        if let Some(existing) = g.artifacts.get(&digest) {
+            if existing.state != ArtifactState::Active {
+                return Err(DeploymentError::new(
+                    "ARTIFACT_NOT_ACTIVE",
+                    format!("definition artifact '{digest}' is not ACTIVE"),
+                ));
+            }
+            if existing.bytes.is_some() {
+                return Ok(existing.clone());
+            }
         }
         g.dirty.artifacts.insert(digest.clone());
         g.artifacts.insert(digest, row.clone());
@@ -1004,13 +1016,29 @@ impl ImmutableDeploymentStore {
             .collect();
 
         for m in &manifest.members {
-            if let Some(art) = g.artifacts.get(&m.definition_digest)
-                && art.state != ArtifactState::Active
-            {
-                return Err(DeploymentError::new(
-                    missing_artifact_code,
-                    format!("member artifact '{}' is not ACTIVE", m.definition_digest),
-                ));
+            // A member names a definition the store holds: what it deploys is
+            // read from there, never from anywhere else.
+            match g.artifacts.get(&m.definition_digest) {
+                None => {
+                    return Err(DeploymentError::new(
+                        "MEMBER_DEFINITION_NOT_FOUND",
+                        format!(
+                            "{} '{}' revision {} names definition '{}', which is not stored; \
+                             upload it with POST /api/v2/admin/definitions first",
+                            m.entity.kind.as_str(),
+                            m.entity.id,
+                            m.entity.revision,
+                            m.definition_digest
+                        ),
+                    ));
+                }
+                Some(art) if art.state != ArtifactState::Active => {
+                    return Err(DeploymentError::new(
+                        missing_artifact_code,
+                        format!("member artifact '{}' is not ACTIVE", m.definition_digest),
+                    ));
+                }
+                Some(_) => {}
             }
             if let Some(ref owning_pkg) = m.owning_package {
                 if !declared_provider_digests.contains(owning_pkg.as_str()) {
@@ -1212,24 +1240,6 @@ impl ImmutableDeploymentStore {
             &plan.candidate_manifest,
             "ARTIFACT_DRAINING_OR_DELETED",
         )?;
-
-        // Ensure all member definition digests are registered in `g.artifacts` so
-        // two-phase GC tracks their lifecycle (`TD-19`).
-        for m in &plan.candidate_manifest.members {
-            if !g.artifacts.contains_key(&m.definition_digest) {
-                g.dirty.artifacts.insert(m.definition_digest.clone());
-                g.artifacts.insert(
-                    m.definition_digest.clone(),
-                    ArtifactObjectRow {
-                        digest: m.definition_digest.clone(),
-                        size_bytes: 0,
-                        state: ArtifactState::Active,
-                        drain_epoch: None,
-                        bytes: None,
-                    },
-                );
-            }
-        }
 
         // 4. Advance head_revision and epoch atomically and persist receipt
         let prev_head = g.head_revision;
