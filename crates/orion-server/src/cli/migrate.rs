@@ -24,10 +24,9 @@ pub(crate) async fn handle_migrate(
         println!("Applying {} migration(s) on {backend}...", pending.len());
     }
 
-    // D13: name the backend. Version numbers are per-backend — `004` is
-    // `cluster_coordination` on SQLite, `bigint_columns` on Postgres and
-    // `active_immutability` on MySQL — so a bare number never says which
-    // change is pending. The description always did; printing the backend
+    // D13: name the backend. Version numbers are per-backend — each
+    // directory numbers its own changes after the shared `001` baseline — so
+    // a bare number never says which change is pending. The description always did; printing the backend
     // alongside makes the pair unambiguous without a shared version space,
     // and lets a runbook name migrations rather than number them.
     for (version, description) in &pending {

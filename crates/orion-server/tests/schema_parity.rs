@@ -38,16 +38,8 @@
 //!   index — exists everywhere with deliberately different key columns for the
 //!   same reason; it is allow-listed by name in `DIVERGENT_INDEX_COLUMNS`.
 //! - **Defaults, collation, storage parameters.** Not compared.
-//! - **Trigger bodies.** Not compared as text, and never will be: SQLite uses
-//!   `RAISE(ABORT)`, Postgres `plpgsql` functions with `IS DISTINCT FROM`, and
-//!   MySQL `SIGNAL` with `<=>`, so even the names diverge for good reason.
-//!   What *is* compared is the part that carries the rule — the set of columns
-//!   each active-immutability trigger guards, which is identical across the
-//!   three dialects and is read back out of the migration text by
-//!   `active_immutability_triggers_guard_the_same_columns_on_every_backend`.
-//!   The single-draft rule is matched by message text
-//!   (`single_draft_trigger_message_matches_the_code`), and both are also
-//!   covered behaviourally by `storage_postgres.rs` / `storage_mysql.rs`.
+//! - **Trigger bodies.** Not compared: the only triggers left keep
+//!   `updated_at` current, and each dialect spells that its own way.
 //!
 //! Nullability *is* compared. A column that is `NOT NULL` on two backends and
 //! nullable on the third is the same silent-until-fatal drift as a width
@@ -140,48 +132,14 @@ struct Schema {
     indexes: BTreeMap<(String, String), Vec<String>>,
     /// `view → {column names}`. Types are not compared for views: they are
     /// derived by each planner. The names are what matters — a view left
-    /// stale by an `ALTER TABLE` is the failure this catches (the scar is
-    /// `migrations/postgres/008_recreate_current_views.sql`).
+    /// stale by an `ALTER TABLE` is the failure this catches (Postgres and
+    /// MySQL do not rebuild a view's column list).
     views: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Objects that legitimately exist on some backends only, with the reason.
 /// Anything not listed here must exist everywhere.
-const BACKEND_SPECIFIC_INDEXES: &[(&str, &str)] = &[
-    (
-        "idx_workflows_single_draft",
-        "Postgres enforces one-draft-per-id with a partial unique index; \
-         SQLite and MySQL use BEFORE INSERT/UPDATE triggers",
-    ),
-    (
-        "idx_channels_single_draft",
-        "same as idx_workflows_single_draft",
-    ),
-    (
-        "idx_plugins_single_draft",
-        "same as idx_workflows_single_draft",
-    ),
-    (
-        "idx_models_single_draft",
-        "same as idx_workflows_single_draft",
-    ),
-    (
-        "idx_channels_route_partial",
-        "partial index — MySQL has no equivalent",
-    ),
-    (
-        "idx_channels_topic_partial",
-        "partial index — MySQL has no equivalent",
-    ),
-    (
-        "idx_channels_workflow_partial",
-        "partial index — MySQL has no equivalent",
-    ),
-    (
-        "idx_traces_channel_id_partial",
-        "partial index — MySQL has no equivalent",
-    ),
-];
+const BACKEND_SPECIFIC_INDEXES: &[(&str, &str)] = &[];
 
 /// Indexes that exist on all three backends but deliberately cover different
 /// columns, with the reason. Presence is still required; only the column list
@@ -639,8 +597,7 @@ fn differences(left_name: &str, left: &Schema, right_name: &str, right: &Schema)
                 problems.push(format!(
                     "view `{view}` differs: missing on {right_name} {missing:?}, \
                      extra on {right_name} {extra:?} (a view is not rebuilt by an \
-                     ALTER TABLE on Postgres or MySQL — see \
-                     migrations/postgres/008_recreate_current_views.sql)"
+                     ALTER TABLE on Postgres or MySQL)"
                 ));
             }
             Some(_) => {}
@@ -740,19 +697,19 @@ async fn a_difference_names_the_table_the_column_and_both_types() {
     let mut narrowed = sqlite_schema().await;
     narrowed
         .tables
-        .get_mut("workflows")
-        .expect("workflows")
-        .insert("version".to_string(), integer(32));
+        .get_mut("deployment_revisions")
+        .expect("deployment_revisions")
+        .insert("revision".to_string(), integer(32));
     let mut widened = sqlite_schema().await;
     widened
         .tables
-        .get_mut("workflows")
-        .expect("workflows")
-        .insert("version".to_string(), integer(64));
+        .get_mut("deployment_revisions")
+        .expect("deployment_revisions")
+        .insert("revision".to_string(), integer(64));
     let problems = differences("postgres", &narrowed, "mysql", &widened);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
-        problems[0].contains("workflows.version")
+        problems[0].contains("deployment_revisions.revision")
             && problems[0].contains("integer(32)")
             && problems[0].contains("integer(64)"),
         "message must name both types: {}",
@@ -837,21 +794,21 @@ async fn a_difference_names_the_table_the_column_and_both_types() {
 }
 
 /// Runs everywhere: proves the introspection actually works, and pins the
-/// tables, the sortable-column indexes (D8) and the views it must find.
+/// tables and the sortable-column indexes (D8) it must find.
 #[tokio::test]
 async fn sqlite_schema_is_introspectable() {
     let schema = sqlite_schema().await;
 
     for table in [
-        "workflows",
-        "channels",
-        "connectors",
         "traces",
         "trace_dlq",
         "audit_logs",
         "config_epoch",
         "job_leases",
-        "models",
+        "cron_occurrences",
+        "connection_revisions",
+        "deployment_revisions",
+        "deployment_head",
     ] {
         assert!(
             schema.tables.contains_key(table),
@@ -867,10 +824,19 @@ async fn sqlite_schema_is_introspectable() {
     assert!(traces["duration_ms"].nullable);
     assert_eq!(traces["created_at"].ty.kind, "timestamp");
     assert_eq!(
-        schema.tables["workflows"]["continue_on_error"].ty.kind,
+        schema.tables["deployment_revisions"]["members_compacted"]
+            .ty
+            .kind,
         "boolean"
     );
-    assert_eq!(schema.tables["workflows"]["version"].ty.kind, "integer");
+    assert_eq!(
+        schema.tables["deployment_revisions"]["revision"].ty.kind,
+        "integer"
+    );
+    assert!(
+        schema.tables["connection_revisions"].contains_key("secret_locators_json"),
+        "connection secrets are stored as a locator map"
+    );
 
     // Every whitelisted sort column needs an index, and the keyset index has
     // to carry the tie-break column (D8) — not just the name.
@@ -899,13 +865,20 @@ async fn sqlite_schema_is_introspectable() {
         schema.indexes
     );
 
-    assert!(schema.views.contains_key("current_workflows"));
-    assert!(schema.views.contains_key("current_channels"));
-    assert_eq!(
-        schema.views["current_workflows"],
-        schema.tables["workflows"].keys().cloned().collect(),
-        "current_workflows is SELECT w.* — it must expose exactly the table's columns"
-    );
+    for v1 in [
+        "workflows",
+        "channels",
+        "connectors",
+        "plugins",
+        "models",
+        "packages",
+    ] {
+        assert!(
+            !schema.tables.contains_key(v1),
+            "the 1.x `{v1}` table is not part of the v2 baseline"
+        );
+    }
+    assert!(schema.views.is_empty(), "found {:?}", schema.views);
 
     // A schema compared with itself is the identity case for the comparator.
     let again = sqlite_schema().await;
@@ -922,11 +895,11 @@ async fn sqlite_schema_is_introspectable() {
 /// which is how a parity test passes while comparing nothing.
 fn assert_non_trivial(name: &str, schema: &Schema) {
     for table in [
-        "workflows",
-        "channels",
-        "connectors",
         "traces",
         "audit_logs",
+        "cron_occurrences",
+        "connection_revisions",
+        "deployment_revisions",
     ] {
         assert!(
             schema.tables.contains_key(table),
@@ -937,8 +910,8 @@ fn assert_non_trivial(name: &str, schema: &Schema) {
     }
     assert!(
         schema.indexes.len() >= 20,
-        "{name}: introspection found only {} idx_* indexes; the migration sets \
-         create ~30",
+        "{name}: introspection found only {} idx_* indexes; the baseline \
+         creates 26",
         schema.indexes.len()
     );
     assert!(
@@ -946,11 +919,6 @@ fn assert_non_trivial(name: &str, schema: &Schema) {
         "{name}: an index came back with no columns, so the column comparison \
          is vacuous: {:?}",
         schema.indexes
-    );
-    assert_eq!(
-        schema.views.keys().collect::<Vec<_>>(),
-        vec!["current_channels", "current_workflows"],
-        "{name}: both `current_*` views must be introspected"
     );
 }
 
@@ -1013,301 +981,4 @@ async fn schema_is_identical_across_backends() {
         problems.len(),
         problems.join("\n  ")
     );
-}
-
-// ============================================================
-// The trigger message `map_duplicate` matches
-// ============================================================
-
-/// `helpers::map_duplicate` turns a single-draft trigger violation into a
-/// `409 Conflict`, and on SQLite and MySQL it can only recognise one by its
-/// **message text**: `RAISE(ABORT, …)` and `SIGNAL SQLSTATE '45000'` carry no
-/// constraint kind sqlx can classify. That makes a string literal in a
-/// migration file part of the crate's behaviour, and nothing checked the two
-/// agreed.
-///
-/// The stakes are quiet: a trigger written with different wording still
-/// enforces the rule, so no data is at risk — the API just answers `500`
-/// instead of `409` for a duplicate draft, on one backend, and the client that
-/// would have retried sensibly gives up instead.
-///
-/// The existing spellings cannot drift (migrations are checksum-frozen), so
-/// what this guards is the *next* one.
-#[test]
-fn single_draft_trigger_message_matches_the_code() {
-    use orion::storage::repositories::helpers::SINGLE_DRAFT_TRIGGER_MSG;
-
-    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut raising = Vec::new();
-
-    for backend in ["sqlite", "postgres", "mysql"] {
-        let dir = migrations.join(backend);
-        let mut files: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "sql"))
-            .collect();
-        files.sort();
-
-        for file in files {
-            let sql = std::fs::read_to_string(&file).expect("read migration");
-            for (n, line) in sql.lines().enumerate() {
-                // Every way the three backends raise from a trigger.
-                let raises = line.contains("RAISE(ABORT")
-                    || line.contains("RAISE EXCEPTION")
-                    || line.contains("MESSAGE_TEXT");
-                if !raises {
-                    continue;
-                }
-                // Only the single-draft rule is matched by text; the
-                // active-immutability triggers surface as plain 500s by design.
-                if !line.to_lowercase().contains("draft") {
-                    continue;
-                }
-                let where_ = format!(
-                    "{backend}/{}:{}",
-                    file.file_name().unwrap().display(),
-                    n + 1
-                );
-                raising.push((where_, line.trim().to_string()));
-            }
-        }
-    }
-
-    assert!(
-        !raising.is_empty(),
-        "found no single-draft trigger messages at all — this test has stopped \
-         looking at anything, which is worse than a mismatch"
-    );
-
-    let mismatched: Vec<&(String, String)> = raising
-        .iter()
-        .filter(|(_, line)| !line.contains(SINGLE_DRAFT_TRIGGER_MSG))
-        .collect();
-
-    assert!(
-        mismatched.is_empty(),
-        "these single-draft triggers do not say `{SINGLE_DRAFT_TRIGGER_MSG}`, so \
-         `map_duplicate` will not recognise them and a duplicate draft will \
-         answer 500 instead of 409:\n  {}",
-        mismatched
-            .iter()
-            .map(|(w, l)| format!("{w}: {l}"))
-            .collect::<Vec<_>>()
-            .join("\n  ")
-    );
-}
-
-// ============================================================
-// Active-immutability triggers guard the same columns everywhere
-// ============================================================
-
-/// Content columns an *active* row may legitimately be edited through, with
-/// the endpoint that does it.
-///
-/// The active-immutability rule exists so that a definition the engine is
-/// serving cannot change under it without a new version. A column listed here
-/// is an admitted exception: a value that is deliberately tuned in place, on a
-/// row that is already active, through a route built for exactly that.
-///
-/// Kept as a table rather than left implicit because the two failure modes are
-/// asymmetric. A column missing from the triggers by *accident* is a hole in
-/// the rule; one missing on purpose is a feature — and only a written-down
-/// list can tell the next person which they are looking at.
-const MUTABLE_WHILE_ACTIVE: &[(&str, &str, &str)] = &[
-    (
-        "workflows",
-        "rollout_percentage",
-        "PATCH /workflows/{id}/rollout shifts traffic between two active versions \
-         in place; a rollout that needed a new version could not be a rollout",
-    ),
-    (
-        "models",
-        "admission_json",
-        "a node's verdict on the artifact, written by `ModelRepository::set_admission`: \
-         derived from the content rather than part of it, and a node re-probing a \
-         version it already serves must be able to record what it found without a \
-         new version",
-    ),
-    (
-        "models",
-        "stats_json",
-        "what the admission probe read out of the model, written by \
-         `ModelRepository::set_stats` alongside the verdict — the same reasoning as \
-         admission_json",
-    ),
-];
-
-/// The set of columns an active-immutability trigger compares, read out of the
-/// migration that last defined it.
-///
-/// Trigger *bodies* are not comparable across the three backends and never
-/// will be — SQLite raises with `RAISE(ABORT)`, Postgres with a `plpgsql`
-/// function and `IS DISTINCT FROM`, MySQL with `SIGNAL` and `<=>`. What *is*
-/// comparable, and what the rule actually consists of, is the column list:
-/// every backend spells the same set of `OLD.<column>` comparisons in its own
-/// syntax. This reads that set back out of the text, so the three can be held
-/// to it.
-///
-/// `status` is dropped: it appears in every body as the guard on the rule
-/// itself (`OLD.status = 'active'`), not as a column the rule protects.
-fn guarded_columns(body: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut rest = body;
-    while let Some(at) = rest.find("OLD.") {
-        rest = &rest[at + 4..];
-        let end = rest
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .unwrap_or(rest.len());
-        let name = &rest[..end];
-        if !name.is_empty() && name != "status" {
-            out.insert(name.to_string());
-        }
-        rest = &rest[end..];
-    }
-    out
-}
-
-/// The last definition of each active-immutability rule per backend, as
-/// `(backend, entity) → guarded columns`.
-///
-/// "Last" matters: the rule is re-stated by every migration that adds a
-/// content column, precisely because the comparisons are explicit. Only the
-/// most recent definition is in force, so only it is compared.
-fn active_immutability_rules() -> BTreeMap<(&'static str, String), BTreeSet<String>> {
-    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    let mut rules: BTreeMap<(&'static str, String), BTreeSet<String>> = BTreeMap::new();
-
-    for backend in ["sqlite", "postgres", "mysql"] {
-        let dir = migrations.join(backend);
-        let mut files: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "sql"))
-            .collect();
-        files.sort();
-
-        for file in files {
-            let sql = std::fs::read_to_string(&file).expect("read migration");
-            // Postgres puts the comparisons in the function the trigger calls,
-            // the other two inline them in the trigger. Both are matched by
-            // the shared `<entity>_active_immutable` name.
-            for entity in ["workflows", "channels", "plugins", "models"] {
-                let marker = format!("{entity}_active_immutable");
-                let Some(start) = sql.rfind(&marker) else {
-                    continue;
-                };
-                let columns = guarded_columns(&sql[start..]);
-                if !columns.is_empty() {
-                    rules.insert((backend, entity.to_string()), columns);
-                }
-            }
-        }
-    }
-    rules
-}
-
-/// A content column added on all three backends but left out of one backend's
-/// active-immutability trigger is editable in place on that backend and not on
-/// the others — an active definition mutating under a running engine, with no
-/// new version and no audit trail of the change.
-///
-/// That is the same silent-until-fatal shape the column-type comparison exists
-/// for, and it is a live risk rather than a hypothetical one: the rule is
-/// re-stated by hand in each of the three migration sets every time a content
-/// column is added (`sqlite/012`, `postgres/016`, `mysql/015` are the loop
-/// column's three copies), and the three sequences are numbered independently,
-/// so nothing but this test notices a set that got two of them.
-#[test]
-fn active_immutability_triggers_guard_the_same_columns_on_every_backend() {
-    let rules = active_immutability_rules();
-    assert!(
-        !rules.is_empty(),
-        "found no active-immutability triggers at all — this test has stopped \
-         looking at anything, which is worse than a mismatch"
-    );
-
-    for entity in ["workflows", "channels", "plugins", "models"] {
-        let per_backend: Vec<(&str, &BTreeSet<String>)> = ["sqlite", "postgres", "mysql"]
-            .iter()
-            .map(|b| {
-                let columns = rules.get(&(*b, entity.to_string())).unwrap_or_else(|| {
-                    panic!("{b} has no active-immutability rule for `{entity}`")
-                });
-                (*b, columns)
-            })
-            .collect();
-
-        let (first_backend, first) = per_backend[0];
-        for (backend, columns) in &per_backend[1..] {
-            assert_eq!(
-                first,
-                *columns,
-                "the `{entity}` active-immutability trigger guards different columns on \
-                 {first_backend} and {backend}, so an active {entity} row is editable in \
-                 place on one backend and not the other.\n  \
-                 only on {first_backend}: {:?}\n  only on {backend}: {:?}",
-                first.difference(columns).collect::<Vec<_>>(),
-                columns.difference(first).collect::<Vec<_>>(),
-            );
-        }
-    }
-}
-
-/// The other half: the guarded set must cover every content column the table
-/// actually has. Parity alone is satisfied by a column that all three
-/// backends forgot.
-///
-/// "Content" is everything but the identity columns (`<entity>_id`,
-/// `version`), the lifecycle column the rule keys on (`status`), the two
-/// timestamps the rule must *not* guard — an activation legitimately stamps
-/// `updated_at` — and [`MUTABLE_WHILE_ACTIVE`]. The column list comes from the
-/// live SQLite schema, so adding a column is what makes this test speak up.
-#[tokio::test]
-async fn active_immutability_triggers_cover_every_content_column() {
-    let schema = sqlite_schema().await;
-    let rules = active_immutability_rules();
-
-    for (entity, id_column) in [
-        ("workflows", "workflow_id"),
-        ("channels", "channel_id"),
-        ("plugins", "plugin_id"),
-        ("models", "model_id"),
-    ] {
-        let mutable: BTreeSet<&str> = MUTABLE_WHILE_ACTIVE
-            .iter()
-            .filter(|(t, _, _)| *t == entity)
-            .map(|(_, c, _)| *c)
-            .collect();
-        let columns = schema
-            .tables
-            .get(entity)
-            .unwrap_or_else(|| panic!("`{entity}` must exist in the SQLite schema"));
-        let content: BTreeSet<String> = columns
-            .keys()
-            .filter(|c| {
-                !matches!(
-                    c.as_str(),
-                    "version" | "status" | "created_at" | "updated_at"
-                ) && c.as_str() != id_column
-                    && !mutable.contains(c.as_str())
-            })
-            .cloned()
-            .collect();
-
-        let guarded = rules
-            .get(&("sqlite", entity.to_string()))
-            .unwrap_or_else(|| panic!("sqlite has no active-immutability rule for `{entity}`"));
-
-        let unguarded: Vec<&String> = content.difference(guarded).collect();
-        assert!(
-            unguarded.is_empty(),
-            "these `{entity}` content columns are not covered by the \
-             active-immutability trigger, so an active {entity} can be edited in place \
-             through them — no new version, no audit row, and the running engine keeps \
-             serving the definition it loaded: {unguarded:?}"
-        );
-    }
 }

@@ -1087,12 +1087,10 @@ mod tests {
             .connect("sqlite::memory:")
             .await
             .expect("sqlite memory pool");
-        sqlx::raw_sql(include_str!(
-            "../../migrations/sqlite/023_v2_immutable_deployments.sql"
-        ))
-        .execute(&pool)
-        .await
-        .expect("023 migration");
+        sqlx::raw_sql(include_str!("../../migrations/sqlite/001_v2_baseline.sql"))
+            .execute(&pool)
+            .await
+            .expect("v2 baseline");
 
         let coord = SourceLeaseCoordinator::new();
         let ledger = ContiguousCheckpointLedger::new(coord.clone());

@@ -10,7 +10,7 @@ For a guided task, start from [Guides](../guides/index.md); for the idea behind 
 
 | I need to… | Reference |
 |---|---|
-| Manage workflows, channels, connectors or plugins over HTTP | [Admin API](./admin-api/index.md) and [OpenAPI specification](./openapi.md) |
+| Deploy workflows, channels, connections or plugins over HTTP | [Admin API](./admin-api/index.md) and [OpenAPI specification](./openapi.md) |
 | Invoke a channel or poll an asynchronous result | [Data API](./data-api.md) |
 | Write workflow JSON | [Workflow definition](./workflows.md) |
 | Choose or configure a task function | [Task functions](./functions/index.md) |

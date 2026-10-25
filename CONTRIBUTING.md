@@ -143,17 +143,16 @@ The shipped migration files are **checksum-frozen** once released (sqlx records
 a checksum per applied migration), so never edit an existing `NNN_*.sql` — add
 a new numbered file to **each** of
 `crates/orion-server/migrations/{sqlite,postgres,mysql}/`.
-To bootstrap the migration set for a new backend, copy the newest existing
-backend's `001_initial.sql` and adapt the dialect by hand (types, triggers,
-view syntax) — that is how the shipped sets were produced; there is no
-generator.
+Each set starts at `001_v2_baseline.sql`, the whole schema of an Orion 2 state
+database; Orion 1.x databases are refused at startup rather than upgraded. To
+bootstrap the set for a new backend, copy an existing backend's baseline and
+adapt the dialect by hand (types, triggers) — there is no generator.
 
-**The three sequences are independent.** Each backend has its own directory and
-its own numbering, and a change that applies to only two of them advances only
-those two — so the same number means different things per backend (`004` is
-`cluster_coordination` on SQLite, `bigint_columns` on PostgreSQL,
-`active_immutability` on MySQL). Never assume the numbers line up, and **name
-migrations rather than number them** in commit messages, runbooks and docs.
+**The three sequences are independent after the baseline.** Each backend has its
+own directory and its own numbering, and a change that applies to only two of
+them advances only those two — so past `001` the same number can mean different
+things per backend. Never assume the numbers line up, and **name migrations
+rather than number them** in commit messages, runbooks and docs.
 `orion-server migrate --dry-run` prints backend, number and name together for
 exactly this reason. `crates/orion-server/tests/schema_parity.rs` is what catches a change applied
 to two backends out of three.

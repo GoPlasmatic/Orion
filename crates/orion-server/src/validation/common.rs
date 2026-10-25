@@ -3,12 +3,9 @@ use crate::errors::OrionError;
 pub(crate) const MAX_ID_LEN: usize = 128;
 pub(crate) const MAX_NAME_LEN: usize = 255;
 pub(crate) const MAX_DESCRIPTION_LEN: usize = 2048;
-/// D29: MySQL stores `route_pattern`, `topic` and `consumer_group` as
-/// `varchar(255)` while SQLite and Postgres use unbounded `text`, and
-/// `schema_parity`'s normaliser folds declared widths — so without a cap at
-/// the validation boundary, a longer value stores on two backends and fails
-/// on the third, silently. The narrowest backend sets the limit (characters,
-/// not bytes: MySQL counts characters under utf8mb4).
+/// The bound on a channel's `route_pattern`, `topic` and `consumer_group`, in
+/// characters. Authored strings are bounded so a definition stays a
+/// reasonable size to store, diff and log.
 pub(crate) const MAX_VARCHAR_FIELD_LEN: usize = 255;
 
 /// Check if a string matches the identifier pattern:

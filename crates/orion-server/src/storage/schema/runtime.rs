@@ -127,9 +127,6 @@ pub enum CronSingletonSlots {
 pub enum ConfigEpoch {
     Table,
     Id,
-    // `epoch`, `epoch_scope` and `epoch_scope_at` carried the v1
-    // entity-change bus and are no longer read or written; the columns stay
-    // until the v2 baseline migration drops them.
     BreakerEpoch,
     BreakerKey,
     UpdatedAt,

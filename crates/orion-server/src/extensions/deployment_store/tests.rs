@@ -237,7 +237,7 @@ async fn sqlite_migration_and_persistence_roundtrip() {
     crate::storage::migrator_for(crate::storage::DbBackend::Sqlite)
         .run(&pool)
         .await
-        .expect("sqlite migrations including 023_v2_immutable_deployments must apply");
+        .expect("the sqlite v2 baseline must apply");
 
     let store = ImmutableDeploymentStore::new("node-sql-1");
     let policy = CommunityAdmissionPolicy::new();

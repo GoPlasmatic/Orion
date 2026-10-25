@@ -470,7 +470,7 @@ fn migrate_dry_run_names_the_backend_and_each_migration() {
     // The number alone is ambiguous across backends; the name is what
     // identifies the change, so both must be present and paired.
     assert!(
-        out.contains("sqlite 001 — initial"),
+        out.contains("sqlite 001 — v2 baseline"),
         "each row must carry backend, number and name: {out}"
     );
     assert!(
@@ -507,6 +507,39 @@ fn migrate_applies_then_reports_nothing_pending() {
         out.contains("No pending migrations (sqlite)"),
         "a settled database must say so, and name the backend: {out}"
     );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// An Orion 1.x state database carries migrations the v2 baseline replaced.
+/// `migrate` refuses it by name, both to apply and to plan, rather than leaving
+/// sqlx to report an unknown version number.
+#[tokio::test]
+async fn migrate_refuses_a_1x_database_by_name() {
+    let (url, path) = temp_db_url();
+    {
+        let pool = sqlx::SqlitePool::connect(&url).await.expect("sqlite");
+        sqlx::raw_sql(
+            "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, \
+             installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, success BOOLEAN NOT NULL, \
+             checksum BLOB NOT NULL, execution_time BIGINT NOT NULL);
+             INSERT INTO _sqlx_migrations VALUES (1, 'initial', CURRENT_TIMESTAMP, 1, x'00', 0);
+             INSERT INTO _sqlx_migrations VALUES (25, 'cluster shared state', CURRENT_TIMESTAMP, 1, x'00', 0);",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed a 1.x migration ledger");
+        pool.close().await;
+    }
+
+    for extra in [&[][..], &["--dry-run"][..]] {
+        let (ok, out) = run_migrate(&url, extra);
+        assert!(!ok, "a 1.x database must be refused ({extra:?}): {out}");
+        assert!(
+            out.contains("Orion 1.x database cannot be upgraded") && out.contains("[25]"),
+            "the refusal names what the database is and the stray version: {out}"
+        );
+    }
 
     let _ = std::fs::remove_file(&path);
 }

@@ -25,13 +25,14 @@ use output::OutputFormat;
     ),
     about = "CLI tool for the Orion services runtime",
     long_about = "CLI tool for the Orion services runtime.\n\n\
-        Manage workflows, channels, connectors, data processing, traces, and engine \
-        operations on an Orion server.\n\n\
+        Deploy definitions to an Orion server, send data through its channels, and \
+        inspect traces, the cron ledger and the engine.\n\n\
         Core concepts:\n  \
-        Workflows   Processing pipelines with condition + task sequences\n  \
-        Channels    Service endpoints that receive data and route it to a workflow\n  \
-        Connectors  External service connections (HTTP APIs, databases) used by tasks\n  \
-        Engine      Runs active workflows -- reload after changes to apply them\n\n\
+        Workflows    Processing pipelines with condition + task sequences\n  \
+        Channels     Service endpoints that receive data and route it to a workflow\n  \
+        Connections  External services (HTTP APIs, databases) a workflow calls\n  \
+        Deployments  The committed set of definitions a server serves; \
+        `deployments apply -d` sends one\n\n\
         Config precedence: CLI flags > environment variables > ~/.orion/config.toml",
     after_help = help::GETTING_STARTED,
 )]

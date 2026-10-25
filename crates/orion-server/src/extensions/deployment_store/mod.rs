@@ -256,7 +256,7 @@ pub(super) fn connection_config_bytes(
     .into_bytes()
 }
 
-/// A secret locator map as the `secret_locator` column holds it: canonical
+/// A secret locator map as the `secret_locators_json` column holds it: canonical
 /// JSON, or NULL when there is none.
 pub(super) fn locators_column(
     secret_locators: &std::collections::BTreeMap<String, String>,
@@ -265,14 +265,14 @@ pub(super) fn locators_column(
         .then(|| crate::canonical::canonical_json(&serde_json::json!(secret_locators)))
 }
 
-/// The map a `secret_locator` column holds, read strictly.
+/// The map a `secret_locators_json` column holds, read strictly.
 pub(super) fn locators_from_column(
     column: Option<String>,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
     match column {
         None => Ok(Default::default()),
         Some(text) => serde_json::from_str(&text)
-            .map_err(|e| format!("secret_locator is not a locator map: {e}")),
+            .map_err(|e| format!("secret_locators_json is not a locator map: {e}")),
     }
 }
 

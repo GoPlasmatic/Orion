@@ -40,60 +40,6 @@ pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
         .unwrap_or(sea_query::Value::String(None))
 }
 
-/// Map a driver-level "this row already exists" error from a `create` to
-/// `OrionError::Conflict` (409), leaving everything else a `Storage` error
-/// (500). Two shapes count as a duplicate:
-///
-/// - the structured `UniqueViolation` kind or specific SQLSTATE / vendor
-///   unique-violation codes (`23505`, `1062`, `1555`, `2067`) — Postgres
-///   always (its single-draft rule is a partial unique index), and
-///   SQLite/MySQL primary-key or unique-index collisions;
-/// - the *generic* error the single-draft triggers raise — SQLite
-///   `RAISE(ABORT, …)` (code `1819`) and MySQL `SIGNAL SQLSTATE '45000'` carry
-///   no constraint kind sqlx can classify, so those are matched via
-///   [`is_unique_or_single_draft_violation`] (`migrations/{sqlite,mysql}/…single_draft…`).
-pub fn map_duplicate(e: sqlx::Error, conflict_msg: impl FnOnce() -> String) -> OrionError {
-    match &e {
-        sqlx::Error::Database(db_err) if is_unique_or_single_draft_violation(db_err.as_ref()) => {
-            OrionError::Conflict(conflict_msg())
-        }
-        _ => OrionError::Storage(e),
-    }
-}
-
-/// Classify whether a database error represents a unique-constraint collision or
-/// a single-draft trigger rejection across PostgreSQL, MySQL, and SQLite (`QUAL-03`).
-///
-/// Note: Generic SQLSTATE `"23000"` (`integrity_constraint_violation`) is
-/// intentionally NOT matched by itself because MySQL uses SQLSTATE `23000` for
-/// `NOT NULL` (`1048`) and foreign-key (`1451`/`1452`) violations as well as
-/// unique violations (`1062`). sqlx maps MySQL `1062` to
-/// `ErrorKind::UniqueViolation`, and raw vendor code `"1062"` is matched
-/// explicitly below.
-pub fn is_unique_or_single_draft_violation(db_err: &dyn sqlx::error::DatabaseError) -> bool {
-    if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation {
-        return true;
-    }
-    if let Some(code) = db_err.code()
-        && matches!(code.as_ref(), "23505" | "1062" | "1555" | "2067")
-    {
-        return true;
-    }
-    db_err.message().contains(SINGLE_DRAFT_TRIGGER_MSG)
-}
-
-/// The text the single-draft triggers raise, as far as this matches it.
-///
-/// SQLite's `RAISE(ABORT, …)` and MySQL's `SIGNAL SQLSTATE '45000'` carry no
-/// constraint kind sqlx can classify, so the only thing left to recognise them
-/// by is what they say. That makes a message string in a migration file part
-/// of this crate's behaviour: change the wording in a new migration and the
-/// 409 silently becomes a 500. The migrations are checksum-frozen, so the
-/// existing spellings cannot drift — but a *new* trigger can be written with a
-/// different one, which is what `single_draft_trigger_message_matches_the_code`
-/// in `tests/schema_parity.rs` refuses.
-pub const SINGLE_DRAFT_TRIGGER_MSG: &str = "Only one draft version allowed";
-
 /// The database's own current time, per backend. Lease and claim comparisons
 /// use this (never node clocks) so every replica agrees with the DB.
 /// SQLite `datetime('now')` and MySQL `UTC_TIMESTAMP()` are UTC; Postgres
@@ -458,8 +404,7 @@ impl WriteStatement<'_> {
 /// paths, after `tx.commit()`.
 ///
 /// Error mapping stays per-site: driver errors from the write itself go
-/// through `map_write_err` (the create paths map duplicate-key errors to a
-/// 409 via [`map_duplicate`]), and a write that yields no row — an UPDATE
+/// through `map_write_err`, and a write that yields no row — an UPDATE
 /// whose predicate matched nothing, or a MySQL read-back miss — becomes
 /// `missing()`.
 pub async fn write_returning_row<T: DbRow>(
@@ -866,91 +811,5 @@ mod tests {
             !sql.contains(r#"WHERE "#) || sql.contains("WHERE TRUE"),
             "{sql}"
         );
-    }
-
-    #[derive(Debug)]
-    struct FakeDbError {
-        message: String,
-        code: Option<String>,
-        kind: sqlx::error::ErrorKind,
-    }
-
-    impl std::fmt::Display for FakeDbError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.message)
-        }
-    }
-
-    impl std::error::Error for FakeDbError {}
-
-    impl sqlx::error::DatabaseError for FakeDbError {
-        fn message(&self) -> &str {
-            &self.message
-        }
-
-        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
-            self.code.as_deref().map(std::borrow::Cow::Borrowed)
-        }
-
-        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-            self
-        }
-
-        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
-            self
-        }
-
-        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
-            self
-        }
-
-        fn kind(&self) -> sqlx::error::ErrorKind {
-            match self.kind {
-                sqlx::error::ErrorKind::UniqueViolation => sqlx::error::ErrorKind::UniqueViolation,
-                sqlx::error::ErrorKind::ForeignKeyViolation => {
-                    sqlx::error::ErrorKind::ForeignKeyViolation
-                }
-                sqlx::error::ErrorKind::NotNullViolation => {
-                    sqlx::error::ErrorKind::NotNullViolation
-                }
-                sqlx::error::ErrorKind::CheckViolation => sqlx::error::ErrorKind::CheckViolation,
-                _ => sqlx::error::ErrorKind::Other,
-            }
-        }
-    }
-
-    #[test]
-    fn unique_and_single_draft_classification_rejects_mysql_not_null_and_fk_23000() {
-        // MySQL duplicate entry (1062 / UniqueViolation) -> true
-        let mysql_dup = FakeDbError {
-            message: "Duplicate entry 'wf-1' for key 'PRIMARY'".to_string(),
-            code: Some("1062".to_string()),
-            kind: sqlx::error::ErrorKind::UniqueViolation,
-        };
-        assert!(is_unique_or_single_draft_violation(&mysql_dup));
-
-        // MySQL NOT NULL violation (1048 with generic SQLSTATE 23000) -> false (must remain 500 Storage)
-        let mysql_not_null = FakeDbError {
-            message: "Column 'name' cannot be null".to_string(),
-            code: Some("23000".to_string()),
-            kind: sqlx::error::ErrorKind::NotNullViolation,
-        };
-        assert!(!is_unique_or_single_draft_violation(&mysql_not_null));
-
-        // MySQL FK violation (1452 with generic SQLSTATE 23000) -> false (must remain 500 Storage)
-        let mysql_fk = FakeDbError {
-            message: "Cannot add or update a child row: a foreign key constraint fails".to_string(),
-            code: Some("23000".to_string()),
-            kind: sqlx::error::ErrorKind::ForeignKeyViolation,
-        };
-        assert!(!is_unique_or_single_draft_violation(&mysql_fk));
-
-        // Single-draft trigger message -> true
-        let single_draft = FakeDbError {
-            message: format!("{SINGLE_DRAFT_TRIGGER_MSG} per workflow"),
-            code: Some("45000".to_string()),
-            kind: sqlx::error::ErrorKind::Other,
-        };
-        assert!(is_unique_or_single_draft_violation(&single_draft));
     }
 }

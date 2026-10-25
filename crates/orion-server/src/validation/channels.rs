@@ -179,8 +179,7 @@ struct ProtocolFields<'a> {
     consumer_group: Option<&'a str>,
 }
 
-/// D29: cap the fields MySQL stores as `varchar(255)` at the validation
-/// boundary, so a value cannot store on SQLite/Postgres and fail on MySQL.
+/// Cap a channel's free-text routing fields at the validation boundary.
 fn check_varchar_len(path: &'static str, value: &str) -> Option<crate::errors::FieldError> {
     let len = value.chars().count();
     (len > super::common::MAX_VARCHAR_FIELD_LEN).then(|| {
@@ -188,9 +187,7 @@ fn check_varchar_len(path: &'static str, value: &str) -> Option<crate::errors::F
             path,
             "TOO_LONG",
             format!(
-                "{path} must be at most {} characters — MySQL stores this column as \
-                 varchar(255), so a longer value cannot load on every supported backend \
-                 (got {len})",
+                "{path} must be at most {} characters (got {len})",
                 super::common::MAX_VARCHAR_FIELD_LEN,
             ),
         )
@@ -371,11 +368,10 @@ fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionEr
         Some(driver) => driver.validate_fields(&driver_fields),
         None => Vec::new(),
     };
-    // D29: the varchar(255) caps are deliberately outside the protocol match —
-    // all three fields are optional on the request and persist whatever the
-    // protocol says, so an over-long `topic` on a REST channel (or
-    // `route_pattern` on a cron one) would still store on SQLite/Postgres
-    // and fail on MySQL if only the owning protocol's arm checked it.
+    // The caps are deliberately outside the protocol match: all three fields
+    // are optional and kept whatever the protocol says, so an over-long
+    // `topic` on a REST channel (or `route_pattern` on a cron one) must be
+    // refused too.
     for (path, value) in [
         ("channel.route_pattern", fields.route_pattern),
         ("channel.topic", fields.topic),
@@ -827,35 +823,6 @@ mod tests {
         assert!(validate_channel_id(&long_channel).is_err());
     }
 
-    /// D29: the varchar cap exists because MySQL stores these three channel
-    /// columns as `varchar(255)`, and `schema_parity` cannot see the link
-    /// (its normaliser folds declared widths). Pin the constant and the
-    /// checked-field trio to the migration, so widening a column without
-    /// moving the cap — or vice versa — fails here instead of silently
-    /// re-opening the stores-on-two-backends-fails-on-the-third gap.
-    #[test]
-    fn varchar_cap_matches_the_mysql_channels_schema() {
-        let sql = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/mysql/001_initial.sql"
-        ));
-        let channels = sql
-            .split("CREATE TABLE")
-            .find(|block| block.trim_start().starts_with("IF NOT EXISTS `channels`"))
-            .expect("channels table in the mysql migration");
-        let expected = format!("varchar({})", super::super::common::MAX_VARCHAR_FIELD_LEN);
-        for column in ["route_pattern", "topic", "consumer_group"] {
-            let line = channels
-                .lines()
-                .find(|l| l.trim_start().starts_with(&format!("`{column}`")));
-            assert!(
-                line.is_some_and(|l| l.contains(&expected)),
-                "mysql `{column}` is missing or no longer {expected}; move \
-                 MAX_VARCHAR_FIELD_LEN (and this cap) with it: {line:?}"
-            );
-        }
-    }
-
     // -- R6: route patterns and methods are structurally checked --
 
     /// Every one of these was created, activated and reloaded before R6, and
@@ -936,10 +903,8 @@ mod tests {
         }
     }
 
-    /// D29: MySQL stores these three columns as `varchar(255)`; the cap must
-    /// hold at the boundary or a value stores on SQLite/Postgres and fails
-    /// on MySQL. 255 exactly passes, 256 fails, and the count is characters
-    /// (a multi-byte char is one).
+    /// 255 exactly passes, 256 fails, and the count is characters (a
+    /// multi-byte char is one).
     #[test]
     fn varchar_backed_fields_are_capped_at_255_chars() {
         let at_limit = format!("/{}", "a".repeat(254));
@@ -986,10 +951,8 @@ mod tests {
             "at-limit consumer_group accepted"
         );
 
-        // The caps are protocol-independent: the columns persist whatever the
-        // protocol says, so the over-long value must be refused on a protocol
-        // that does not read it too — it would otherwise store on
-        // SQLite/Postgres and fail on MySQL, the exact break D29 closes.
+        // The caps are protocol-independent: the over-long value is refused
+        // on a protocol that does not read it too.
         assert!(
             validate_create_channel(&rest_req("/orders".to_string(), Some("t".repeat(256))))
                 .is_err(),

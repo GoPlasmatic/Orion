@@ -674,8 +674,51 @@ where
     }
 }
 
+/// The migration versions already applied to `pool`, empty on a database
+/// no migration has touched.
+async fn applied_migrations(pool: &DbPool) -> std::collections::BTreeSet<i64> {
+    let sql = "SELECT version FROM _sqlx_migrations ORDER BY version";
+    let result: Result<Vec<i64>, _> = match pool {
+        DbPool::Sqlite(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
+        DbPool::Postgres(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
+        DbPool::Mysql(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
+    };
+    result.map(|v| v.into_iter().collect()).unwrap_or_default()
+}
+
+/// Refuse a database that holds migrations this binary does not ship.
+///
+/// Orion 2 starts its schema over at a single baseline, so a 1.x state
+/// database carries versions (`002` and up) the v2 migrator has never heard
+/// of. sqlx would refuse it too, but by version number alone; this names
+/// what the database is and what to do instead.
+fn refuse_unknown_migrations(
+    pool: &DbPool,
+    applied: &std::collections::BTreeSet<i64>,
+) -> Result<(), OrionError> {
+    let known: std::collections::BTreeSet<i64> = migrator_for(pool.backend())
+        .iter()
+        .map(|m| m.version)
+        .collect();
+    let unknown: Vec<i64> = applied.difference(&known).copied().collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(OrionError::Config {
+        message: format!(
+            "the state database at storage.url holds {} migration(s) this binary does not \
+             ship (versions {unknown:?}). An Orion 1.x database cannot be upgraded in \
+             place: Orion 2 starts from a fresh state database. Point storage.url at a \
+             new database and deploy your definitions with `orion-server compile` and \
+             `orion-cli deployments apply -d`.",
+            unknown.len()
+        ),
+    })
+}
+
 /// Run pending database migrations.
 pub async fn run_migrations(pool: &DbPool) -> Result<(), OrionError> {
+    refuse_unknown_migrations(pool, &applied_migrations(pool).await)?;
     let m = migrator_for(pool.backend());
     match pool {
         DbPool::Sqlite(p) => m.run(p).await,
@@ -690,18 +733,8 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), OrionError> {
 
 /// List pending migrations that have not yet been applied.
 pub async fn pending_migrations(pool: &DbPool) -> Result<Vec<(i64, String)>, OrionError> {
-    let applied: std::collections::HashSet<i64> = {
-        let sql = "SELECT version FROM _sqlx_migrations ORDER BY version";
-        let result: Result<Vec<i64>, _> = match pool {
-            DbPool::Sqlite(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
-            DbPool::Postgres(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
-            DbPool::Mysql(p) => sqlx::query_scalar::<_, i64>(sql).fetch_all(p).await,
-        };
-        match result {
-            Ok(versions) => versions.into_iter().collect(),
-            Err(_) => std::collections::HashSet::new(),
-        }
-    };
+    let applied = applied_migrations(pool).await;
+    refuse_unknown_migrations(pool, &applied)?;
 
     let pending: Vec<(i64, String)> = migrator_for(pool.backend())
         .iter()

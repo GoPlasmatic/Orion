@@ -519,7 +519,7 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
         let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locator FROM connection_revisions",
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
         )
         .fetch_all(&mut **tx)
         .await
@@ -626,7 +626,7 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
         let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locator FROM connection_revisions",
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
         )
         .fetch_all(&mut **tx)
         .await
@@ -733,7 +733,7 @@ impl ImmutableDeploymentStore {
         .await
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
         let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locator FROM connection_revisions",
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
         )
         .fetch_all(&mut **tx)
         .await
@@ -815,7 +815,7 @@ impl ImmutableDeploymentStore {
             let cfg_str = serde_json::to_string(&conn.public_config)
                 .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
-                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
+                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json) \
                  VALUES ($1, $2, $3, $4, $5) \
                  ON CONFLICT(connection_id, revision) DO NOTHING",
             )
@@ -1109,7 +1109,7 @@ impl ImmutableDeploymentStore {
             let cfg_str = serde_json::to_string(&conn.public_config)
                 .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
-                "INSERT IGNORE INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
+                "INSERT IGNORE INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json) \
                  VALUES (?, ?, ?, ?, ?)",
             )
             .bind(&conn.connection_id)
@@ -1402,7 +1402,7 @@ impl ImmutableDeploymentStore {
             let cfg_str = serde_json::to_string(&conn.public_config)
                 .map_err(|e| DeploymentError::new("SERIALIZE_ERROR", e.to_string()))?;
             sqlx::query(
-                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locator) \
+                "INSERT INTO connection_revisions (connection_id, revision, provider_digest, public_config_json, secret_locators_json) \
                  VALUES (?1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(connection_id, revision) DO NOTHING",
             )
@@ -1846,7 +1846,7 @@ impl ImmutableDeploymentStore {
         }
     }
 
-    /// Persist dirty deployment store changes to a PostgreSQL pool (`027_v2_immutable_deployments.sql`).
+    /// Persist dirty deployment store changes to a PostgreSQL pool (`migrations/postgres/001_v2_baseline.sql`).
     pub async fn persist_to_postgres(&self, pool: &sqlx::PgPool) -> Result<(), DeploymentError> {
         let batch = self.extract_dirty_batch();
         if batch.is_empty() {
@@ -1864,7 +1864,7 @@ impl ImmutableDeploymentStore {
         Ok(())
     }
 
-    /// Persist dirty deployment store changes to a MySQL pool (`026_v2_immutable_deployments.sql`).
+    /// Persist dirty deployment store changes to a MySQL pool (`migrations/mysql/001_v2_baseline.sql`).
     pub async fn persist_to_mysql(&self, pool: &sqlx::MySqlPool) -> Result<(), DeploymentError> {
         let batch = self.extract_dirty_batch();
         if batch.is_empty() {
@@ -1885,7 +1885,7 @@ impl ImmutableDeploymentStore {
     /// Persist dirty deployment store changes (`deployment_head`, `deployment_revisions`,
     /// `deployment_members`, `deployment_operations`, `artifact_objects`, `provider_packages`,
     /// `provider_admissions`, and `connection_revisions`) to a SQLite pool migrated with
-    /// `023_v2_immutable_deployments.sql` (`V2-03.2`–`V2-03.4`, `TD-14`, `TD-23`).
+    /// `migrations/sqlite/001_v2_baseline.sql` (`V2-03.2`–`V2-03.4`, `TD-14`, `TD-23`).
     pub async fn persist_to_sqlite(&self, pool: &sqlx::SqlitePool) -> Result<(), DeploymentError> {
         let batch = self.extract_dirty_batch();
         if batch.is_empty() {
@@ -1990,7 +1990,7 @@ impl ImmutableDeploymentStore {
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
         let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locator FROM connection_revisions",
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
         )
         .fetch_all(pool)
         .await
@@ -2053,7 +2053,7 @@ impl ImmutableDeploymentStore {
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
         let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locator FROM connection_revisions",
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
         )
         .fetch_all(pool)
         .await
@@ -2120,7 +2120,7 @@ impl ImmutableDeploymentStore {
         .map_err(|e| DeploymentError::new("DB_READ_ERROR", e.to_string()))?;
 
         let conn_rows: Vec<(String, i64, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locator FROM connection_revisions",
+            "SELECT connection_id, revision, provider_digest, public_config_json, secret_locators_json FROM connection_revisions",
         )
         .fetch_all(pool)
         .await
