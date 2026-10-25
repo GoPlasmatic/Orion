@@ -156,6 +156,24 @@ impl DeploymentState {
     }
 }
 
+/// The first write of `deployment_head` failed. Two writers that both read
+/// no head both insert one, and the loser's unique violation is the same lost
+/// race the CAS `UPDATE` reports for every later write: a conflict on the
+/// base revision, not a storage failure.
+fn head_insert_error(e: sqlx::Error) -> DeploymentError {
+    let lost_race = e
+        .as_database_error()
+        .is_some_and(|db| db.is_unique_violation());
+    if lost_race {
+        DeploymentError::new(
+            "DEPLOYMENT_HEAD_CONFLICT",
+            "concurrent modification of deployment_head detected",
+        )
+    } else {
+        DeploymentError::new("DB_WRITE_ERROR", e.to_string())
+    }
+}
+
 impl ImmutableDeploymentStore {
     fn extract_dirty_batch(&self) -> PersistenceBatch {
         let g = self.inner.lock().expect("store lock");
@@ -921,7 +939,7 @@ impl ImmutableDeploymentStore {
                 .bind(batch.epoch as i64)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                .map_err(head_insert_error)?;
             } else {
                 let res = sqlx::query(
                     "UPDATE deployment_head SET head_revision = $1, epoch = $2 WHERE singleton_id = 1 AND head_revision = $3",
@@ -1214,7 +1232,7 @@ impl ImmutableDeploymentStore {
                 .bind(batch.epoch as i64)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                .map_err(head_insert_error)?;
             } else {
                 let res = sqlx::query(
                     "UPDATE deployment_head SET head_revision = ?, epoch = ? WHERE singleton_id = 1 AND head_revision = ?",
@@ -1508,7 +1526,7 @@ impl ImmutableDeploymentStore {
                 .bind(batch.epoch as i64)
                 .execute(&mut **tx)
                 .await
-                .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
+                .map_err(head_insert_error)?;
             } else {
                 let res = sqlx::query(
                     "UPDATE deployment_head SET head_revision = ?1, epoch = ?2 WHERE singleton_id = 1 AND head_revision = ?3",
@@ -1617,7 +1635,11 @@ impl ImmutableDeploymentStore {
         let _write_guard = self.write_lock.lock().await;
         match pool {
             crate::storage::DbPool::Sqlite(p) => {
-                let mut tx = p.begin().await.map_err(|e| {
+                // IMMEDIATE: the mutation reads the store before it writes,
+                // and a deferred transaction that does so on SQLite fails
+                // with SQLITE_BUSY when another writer gets in between —
+                // the case `DbPool::begin_write_tx` exists to prevent.
+                let mut tx = p.begin_with("BEGIN IMMEDIATE").await.map_err(|e| {
                     DeploymentError::new("DB_TRANSACTION_ERROR", format!("failed to begin tx: {e}"))
                 })?;
                 let mut staged = {
