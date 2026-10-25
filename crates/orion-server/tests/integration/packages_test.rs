@@ -223,7 +223,7 @@ async fn receipts_carry_the_inventory_and_current_lists_it() {
     assert_eq!(s, StatusCode::OK, "{body}");
     assert_eq!(
         body["data"]["inventory"],
-        json!({"plugins": [], "models": [], "connectors": [], "workflows": [], "channels": ["a", "b"]})
+        json!({"plugins": [], "connectors": [], "workflows": [], "channels": ["a", "b"]})
     );
     let (s, _) = put("billing", "2.0.0", json!({"connectors": ["crm"]})).await;
     assert_eq!(s, StatusCode::OK);

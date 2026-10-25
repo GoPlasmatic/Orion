@@ -11,6 +11,5 @@
 //! changed is that something else can too.
 
 pub(crate) mod channels;
-pub(crate) mod models;
 pub(crate) mod plugins;
 pub(crate) mod workflows;

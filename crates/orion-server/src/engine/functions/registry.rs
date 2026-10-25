@@ -1008,8 +1008,6 @@ mod registry_tests {
                 "db_read",
                 "db_write",
                 "http_call",
-                "storage_head",
-                "storage_presign",
             ]
         );
         for entry in registry.entries() {

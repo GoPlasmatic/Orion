@@ -82,16 +82,6 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
     let mut out = DeploymentFiles::default();
     let mut members: Vec<CompiledMember> = Vec::new();
 
-    if !set.models.is_empty() {
-        for model in &set.models {
-            errors.push(format!(
-                "model '{}' ({}): a deployment cannot carry a model yet; deploy it with \
-                 `--format artifact`",
-                model.manifest.name, model.origin
-            ));
-        }
-    }
-
     // Which functions take a connector, plugins of the set included. A set
     // whose plugins collide was refused by the gate already; the built-in
     // registry still answers for the built-ins.

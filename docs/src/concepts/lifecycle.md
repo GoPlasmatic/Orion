@@ -1,10 +1,10 @@
-<!-- description: Draft, active, archived — the one-way lifecycle every Orion channel, workflow, plugin and model follows, enforced by the database rather than by convention. -->
+<!-- description: Draft, active, archived — the one-way lifecycle every Orion channel, workflow and plugin follows, enforced by the database rather than by convention. -->
 <!-- type: concept -->
 <!-- last_verified: 2026-09-14 -->
 
 # The entity lifecycle
 
-Every channel, workflow, [plugin](./plugins.md) and [model](./models.md) moves through three states, in one direction. The rules are enforced by the database, not by convention. That is what makes AI-generated logic and urgent operator changes follow the same controlled path.
+Every channel, workflow and [plugin](./plugins.md) moves through three states, in one direction. The rules are enforced by the database, not by convention. That is what makes AI-generated logic and urgent operator changes follow the same controlled path.
 
 ```orion-diagram
 {
@@ -54,15 +54,14 @@ Two options control that timing. `?dry_run=true` reports whether a status change
 - **A channel cannot activate ahead of its workflow.** Activation requires the named workflow to be active, so an endpoint can never point at logic that is not serving.
 - **Connectors have no lifecycle.** They are live when saved and replaced when updated. There is no draft to activate.
 - **A workflow cannot be written ahead of its plugin.** A workflow naming a task function the engine does not serve is refused at create and update time, so a plugin is activated before the workflows that call its functions.
-- **A model is activated only once it is admitted.** Activation is refused until the node's admission run has fetched, verified and probed the artifact and recorded a `passed` verdict.
-- **Those rules give the promotion order.** Plugins, then connectors, then models, then workflows, then channels. That is the order [`package apply`](../operate/maintain/promotion.md) uses.
+- **Those rules give the promotion order.** Plugins, then connectors, then workflows, then channels. That is the order [`package apply`](../operate/maintain/promotion.md) uses.
 - **A rollout splits versions, not entities.** Activating a new version at less than 100% leaves the previous version serving the remainder, bucketed by a stable hash of the request.
 
 ## When a stored entity cannot be loaded
 
 A channel whose stored config no longer parses is *quarantined* at load: refused at every ingress rather than served with a guard silently missing. An unknown key or an unset `env://` reference in its `auth` block is enough. So is a channel whose workflow cannot be built. That happens when a task names a function the engine does not dispatch, or when an input cannot be parsed. It also happens when a rollout's percentages do not cover the traffic. A channel with nothing runnable behind it is refused rather than answering with a pipeline that fails every request.
 
-A plugin or model that this node could not load quarantines the channels whose workflows use it the same way. The causes are a node with `plugins.enabled` or `models.enabled` off, a missing artifact, or a model whose admission never passed. The entity stays stored and active; it is this node that cannot serve it, which is why the state is reported per node under `/health`.
+A plugin that this node could not load quarantines the channels whose workflows use it the same way. The causes are a node with `plugins.enabled` off or a missing artifact. The entity stays stored and active; it is this node that cannot serve it, which is why the state is reported per node under `/health`.
 
 Quarantine is a load-time failure state, not an authentication outcome. It clears only when a later reload builds the channel successfully. Run `orion-server preflight` before an upgrade to find affected channels in advance, and see [Troubleshooting](../operate/maintain/troubleshooting.md) for the full list of triggers and how to clear one.
 

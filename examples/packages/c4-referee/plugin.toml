@@ -42,8 +42,8 @@ kind = "object"
 required = true
 template_at = true
 
-# An integer, or a one-element list holding one — the shape `argmax` over a
-# [1, 7] policy yields, so a workflow can hand the model's answer straight in.
+# An integer, or a one-element list holding one, so a caller that already
+# holds its answer as a list can hand it straight in.
 [[functions.input_fields]]
 name = "column"
 description = "The column to play, 0–6, as a number or a one-element list"

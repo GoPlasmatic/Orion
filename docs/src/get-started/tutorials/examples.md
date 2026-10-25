@@ -10,7 +10,7 @@ The repository ships twelve ready-to-deploy services, each a *package*: one serv
 
 - What files a package directory holds, and which admin call each one is sent to.
 - What `deploy.sh` does, and how to do the same by hand.
-- Which examples need a plugin sandbox or a model, and which need nothing.
+- Which examples need a plugin sandbox, and which need nothing.
 - Where the offline regression suite for the examples lives.
 
 ## Before you start
@@ -43,7 +43,7 @@ With the server running:
 
 `deploy.sh` creates and activates every workflow the package ships, then every channel, creating a connector first if the package has one. It then posts `request.json` to the primary channel and prints the response. Re-running it is safe: objects that already exist are skipped.
 
-A package with no HTTP route deploys the same way, and the script prints what it now listens to instead of sending a request. `nightly-rollup` prints its schedule. `c4-tournament` deploys its plugin, connector, workflows and channels, then prints the commands that register its model entrant from a bucket. A model's bytes are fetched by the node rather than posted to it.
+A package with no HTTP route deploys the same way, and the script prints what it now listens to instead of sending a request. `nightly-rollup` prints its schedule.
 
 ## The packages
 
@@ -57,9 +57,9 @@ A package with no HTTP route deploys the same way, and the script prints what it
 | [`postgres-orders`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/postgres-orders) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
 | [`channel-composition`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/channel-composition) | `POST /order-enrichment` | **Two services:** one calls the other in-process with `channel_call` |
 | [`fixed-width-statement`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/fixed-width-statement) | `POST /statements` | **Plugin-backed:** a fixed-width codec compiled to WebAssembly decodes the line, a `map` summarizes it. Needs `plugins.enabled = true`; the codec's source is in [`examples/plugins/fixed-width/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/plugins/fixed-width) |
+| [`c4-referee`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/c4-referee) | `POST /c4/move` | **Plugin-backed:** a Connect Four referee compiled to WebAssembly applies one move to a board and returns the view of the new state. Needs `plugins.enabled = true`; the referee's source is in [`examples/plugins/c4-rules/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/plugins/c4-rules) |
 | [`order-summary`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/order-summary) | `POST /order-summary` | The dependency-free files behind [Build your first service](./first-service.md) |
 | [`nightly-rollup`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/nightly-rollup) | `0 15 2 * * *` (no route) | **Scheduled:** a `protocol: "cron"` channel runs the workflow on a six-field expression, and every instant becomes a durable occurrence. See [Run work on a schedule](../../guides/patterns/scheduled-workflows.md) |
-| [`c4-tournament`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/c4-tournament) | `POST /c4/register`, `/c4/turn`, `/c4/match`, `GET /c4/leaderboard`, an hourly round | **Model-backed:** a Connect Four tournament for tiny ONNX networks. `model_infer` routes each turn to the entrant to move, a WebAssembly plugin referees, a `loop` plays the match, a SQLite leaderboard keeps score. Needs `models.enabled = true` and `plugins.enabled = true`, and the entrant registered from a bucket. See [Serve a model](../../guides/extend/models.md) |
 
 ## What is in a package directory
 
@@ -72,7 +72,6 @@ A package with no HTTP route deploys the same way, and the script prints what it
 | `request.json` | `POST /api/v2/data/<route>` | A sample request to try it |
 | `connector.json` *(optional)* | `POST /api/v2/admin/connectors` | A named connection to an external system, when the package needs one |
 | `plugin.toml` + the component it names *(optional)* | `POST /api/v2/admin/plugins` | A WebAssembly plugin the workflows call, uploaded and activated before them. Needs `plugins.enabled = true` |
-| `entrant/model.json` + the artifact it names *(optional)* | `orion-cli models create` | A model the workflows call. Not deployed by `deploy.sh`: the bytes go in a bucket behind a `storage` connector and the model is registered from there. Needs `models.enabled = true`; the script prints the commands |
 
 Every entity carries a `tags: ["pkg:<name>"]` label. That label is what marks it as part of the package, and what package export selects on.
 
@@ -144,7 +143,7 @@ It exits non-zero on any failure, so it gates CI beside `orion-server lint`. [`e
 
 - A package directory is a set of admin-API request bodies plus a sample request, tagged `pkg:<name>`.
 - `deploy.sh` posts them in dependency order and activates each; doing it by hand is four calls.
-- The self-contained packages need nothing but a server. Plugin and model packages need the matching runtime setting turned on.
+- The self-contained packages need nothing but a server. Plugin packages need `plugins.enabled = true`.
 - `examples/workflow-tests/` proves the packages offline; `examples/use-cases/` proves them against a live server.
 
 ## Next steps

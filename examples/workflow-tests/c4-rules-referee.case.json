@@ -1,8 +1,7 @@
 {
-  "name": "c4-tournament: the referee plays the column the entrant answers",
-  "workflow": "../packages/c4-tournament/workflow-turn.json",
+  "name": "c4-referee: the referee plays the column the caller names",
+  "workflow": "../packages/c4-referee/workflow.json",
   "input": {
-    "mover_model": "example.c4-tiny",
     "state": {
       "board": [
         0,
@@ -50,16 +49,16 @@
       ],
       "to_move": 2,
       "moves": 4
-    }
+    },
+    "column": 1
   },
   "expect": {
-    "data.answer.column.0": 1,
     "data.state.board.36": 2,
     "data.state.moves": 5,
     "data.state.to_move": 1,
     "data.state.over": false,
     "data.state.illegal": false,
-    "data.inference.id": "example.c4-tiny"
+    "data.next.legal.1": 1
   },
-  "expect_tasks": ["parse", "view", "infer", "apply"]
+  "expect_tasks": ["parse", "apply", "view"]
 }

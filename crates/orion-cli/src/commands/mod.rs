@@ -14,7 +14,6 @@ pub mod engine;
 pub mod functions;
 pub mod health;
 pub mod metrics;
-pub mod models;
 pub mod packages;
 pub mod plugins;
 pub mod traces;
@@ -50,9 +49,6 @@ pub enum Commands {
     /// Manage plugins -- sandboxed WebAssembly task functions
     #[command(alias = "plug")]
     Plugins(plugins::PluginsCmd),
-
-    /// Manage models -- ONNX artifacts in object storage, admitted before they serve
-    Models(models::ModelsCmd),
 
     /// Send data to a channel for synchronous or asynchronous processing
     Send(data::SendCmd),

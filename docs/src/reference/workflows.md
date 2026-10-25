@@ -177,19 +177,24 @@ A task with `for_each` runs its function once per element of an array, and colle
 
 ```json
 {
-  "id": "infer",
-  "name": "One move per participant",
+  "id": "quote",
+  "name": "One quote per supplier",
   "on_failure": "continue",
   "for_each": {
-    "over": { "var": "data.participants" },
-    "as": "p",
+    "over": { "var": "data.suppliers" },
+    "as": "s",
     "max_concurrency": 8,
-    "collect": "temp_data.move",
-    "into": "temp_data.moves"
+    "collect": "temp_data.quote",
+    "into": "temp_data.quotes"
   },
   "function": {
-    "name": "model_infer",
-    "input": { "model": { "var": "temp_data.p.model" }, "output": "temp_data.move" }
+    "name": "http_call",
+    "input": {
+      "connector": "supplier-api",
+      "method": "GET",
+      "path": { "cat": ["/quotes/", { "var": "temp_data.s.id" }] },
+      "output": "temp_data.quote"
+    }
   }
 }
 ```

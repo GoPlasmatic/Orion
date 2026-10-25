@@ -1,10 +1,10 @@
-<!-- description: A package is one Orion service versioned as a unit — its channels, workflows, connectors, plugins and models — and the boundary along which a service ships. -->
+<!-- description: A package is one Orion service versioned as a unit — its channels, workflows, connectors and plugins — and the boundary along which a service ships. -->
 <!-- type: concept -->
 <!-- last_verified: 2026-09-19 -->
 
 # Packages
 
-A *package* is one service, named and versioned as a unit. It holds the channels the service exposes, the workflows behind them, and the connectors, plugins and models those workflows use. It is the boundary along which a service ships from one Orion instance to another.
+A *package* is one service, named and versioned as a unit. It holds the channels the service exposes, the workflows behind them, and the connectors and plugins those workflows use. It is the boundary along which a service ships from one Orion instance to another.
 
 ```orion-diagram
 {
@@ -47,18 +47,15 @@ Export selects channels, by tag or by id, and works outward from there. The *clo
 
 - each selected channel, and the workflow that channel names;
 - every connector those workflows reference;
-- every [plugin](./plugins.md) whose functions they call, at the exact version and component digest serving them on the source, with the component inlined when the export is asked to carry artifacts;
-- every [model](./models.md) they name by literal `model_infer` id, carried as its manifest and its artifact *reference* rather than its bytes.
-
-A model's bytes stay in the bucket. The target fetches the object through a storage connector of the same name when it admits the model. That connector is therefore a stated requirement (`requires.storage`) unless the package carries it.
+- every [plugin](./plugins.md) whose functions they call, at the exact version and component digest serving them on the source, with the component inlined when the export is asked to carry artifacts.
 
 The channel is the unit of selection because each channel names exactly one workflow. Selecting the endpoints selects the service.
 
-What the closure deliberately does not pull in is anything belonging to someone else. A `channel_call` target you did not select is not swept up. It is recorded as a *requirement*: a name the package uses but does not contain. So is a plugin or a model the source does not serve active, and the storage connector a carried model is fetched through. Requirements keep packages small and their boundaries stated, and the target instance is checked for each one before anything is written.
+What the closure deliberately does not pull in is anything belonging to someone else. A `channel_call` target you did not select is not swept up. It is recorded as a *requirement*: a name the package uses but does not contain. So is a plugin the source does not serve active. Requirements keep packages small and their boundaries stated, and the target instance is checked for each one before anything is written.
 
 ## Two forms of the same thing
 
-- **Source form**: a directory of entity JSON files, one per channel, workflow and connector, plus a `plugin.toml` per plugin and a model manifest per model, each with its artifact beside it. This is what you author, review and keep in git. The [shipped examples](../get-started/tutorials/examples.md) are packages in this form.
+- **Source form**: a directory of entity JSON files, one per channel, workflow and connector, plus a `plugin.toml` per plugin with its component beside it. This is what you author, review and keep in git. The [shipped examples](../get-started/tutorials/examples.md) are packages in this form.
 - **Artifact form**: one JSON document carrying the entities plus a name, a version, the Orion version it came from, and a content hash. This is what travels between instances.
 
 Two commands produce an artifact, and the downstream verbs cannot tell them apart. `package export` reads a live instance; [`compile`](../reference/cli/orion-server/compile.md) builds one from a directory with no instance to export from. `compile` is also the step that resolves the authoring conveniences source form may use: `$from` for a shared value, `use` for a task fragment. Artifact form never carries either. The hash, the receipt and the running engine only ever see resolved documents.

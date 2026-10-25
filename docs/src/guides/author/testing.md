@@ -122,23 +122,6 @@ Stubbing is all-or-nothing. A task with no matching stub fails, and the error na
 > [!NOTE]
 > This is the offline counterpart to `POST /workflows/{id}/test`, which runs the same workflow against *live* connectors: real webhooks, real databases, real topics. Reach for the endpoint when you mean to touch the real systems, and for `dry-run` when you do not.
 
-## Run a model offline
-
-A workflow that calls [`model_infer`](../../reference/functions/model_infer.md) can run the model for real, with no server and no bucket, when the model is on disk. Pass `--model-dir` pointing at a directory holding the manifest and the artifact its `artifact` field names beside it:
-
-```bash
-orion-server dry-run -w score.json -i board.json --model-dir ./models/c4-tiny
-orion-server test ./workflow-tests --model-dir ./models
-```
-
-The model runs through the same handler a node registers: the manifest's adapters, the runtime, the result expression, every limit and every refusal. What the run writes is what the deployed workflow would write for the same bytes. What does *not* happen offline is admission. No digest is claimed and no probe runs, because the bytes are your own and the run is the probe.
-
-A model the directory holds without its artifact, or a literal `model` id no manifest describes, is refused before anything runs. The error is `MODEL_ARTIFACT_UNAVAILABLE`, naming the model and what to add. A computed `model` resolves against the directory per message and fails the task as `unavailable` when it names one that is not there. Once a model directory is given, `model_infer` is never stubbed.
-
-Without the flag, `model_infer` is stubbed like a connector function, keyed by its name. `{"model_infer": {"*": {"policy": [[0.1, 0.2, 0.7, 0, 0, 0, 0]]}}}` is what the task writes to its `output`, or to `temp_data.inference` when it names none. A workflow that calls it with no stub either is refused with the same code rather than left to fail at the task.
-
-`orion-server lint` reads the same directory. A `model.json` in the set, or a `--model-dir`, is what a literal `model_infer` reference is checked against. With the artifact beside it, the graph's parameter count and tensor names are reported before anything is submitted.
-
 ## Build a regression suite
 
 A case is any `*.case.json` file; the suffix is what separates cases from the workflows and fixtures beside them:

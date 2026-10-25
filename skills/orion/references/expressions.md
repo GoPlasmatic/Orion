@@ -104,8 +104,8 @@ it is not JSONLogic.
 ## Connector documents
 
 Modern connector function parameters are expression-capable according to their
-runtime schemas. This includes nested HTTP headers, cache keys and storage
-keys. Literals still fold to themselves.
+runtime schemas. This includes nested HTTP headers and cache keys. Literals
+still fold to themselves.
 
 Document-shaped fields (`cache_write`'s `value`, `jwt_sign`'s `claims`, the
 `params` of the SQL and dialect functions) are data documents, not JSONLogic:

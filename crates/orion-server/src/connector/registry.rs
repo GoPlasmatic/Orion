@@ -587,12 +587,6 @@ pub async fn resolve_connector_config(
     // storing them in the database. Substitution failures (missing
     // required var, malformed syntax) skip the connector and log —
     // matching how an unparseable config_json is handled below.
-    // `storage` spent the 0.x line as an accepted type with no handler
-    // (F15) and was removed in 1.0; #265 reinstates the name *with* a
-    // handler and a real config shape. A stored 0.x row now parses
-    // against that shape like any other connector — and reports a
-    // config-parse load issue if it doesn't fit, which names exactly
-    // what to fix.
     let source_label = format!("connector '{}' config_json", name);
     // §3.7: `${VAR}` in a *stored* connector config is deprecated. It
     // predates `env://` and overlaps it, but resolves at a different

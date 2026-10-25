@@ -36,10 +36,8 @@ Three principles shape the setup:
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
 | Touched a **rider crate** (`orion-api`, `orion-client`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all five crates share `workspace.package.version` and a release moves it |
 | Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
-| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-tournament`; the latter's model entrant is registered separately, and `./tests/e2e/run.sh 18` is the run that does it against a real server) |
+| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-referee`) |
 | Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
-| Touched the model runtime, the manifest, the loader, the session cache or `model_infer` | `cargo test --lib -- model:: runtime::models` and `cargo test --test integration admin_models_test model_infer_test` — the fixture graph in `tests/fixtures/models/c4-tiny/` is served by an in-process bucket, so the load, the adapters and the quarantine run for real; `function_registry_test` and `functions_docs_drift_test` pin the function's table and its page. Then `./tests/e2e/run.sh 18` — the CLI's `models` verbs over HTTP against a Python static server standing in for the bucket: register with `--wait`, activate, the `c4-tournament` package served end to end, a wrong digest failing at the `digest` stage, the delete gate |
-| Touched what an inference costs | `crates/orion-server/tests/benchmark/bench.sh model` — scenario I registers the example entrant against a local fake bucket and drives `hey` at a `model_infer` workflow; needs `hey` and `python3` |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
 ## Layer 1 — unit tests (every crate)
@@ -142,7 +140,7 @@ just test-containers    # all of the below, in CI's exact invocations
 | `integration -- --ignored sql_check_test` | `sql check` against PostgreSQL 16 (grants proven), an older PostgreSQL (schema only), a rolled-back `--schema`, and MySQL |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |
-| `cluster` | Multi-node contracts: two AppStates over one shared Postgres, epoch watching, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes — and model propagation: one admission on node A, node B carrying the model on that verdict without re-probing, and B fetching the artifact for itself into its own cache (`--test-threads=1`) |
+| `cluster` | Multi-node contracts: two AppStates over one shared Postgres, epoch watching, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes (`--test-threads=1`) |
 
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.
@@ -178,10 +176,8 @@ The examples are executable and CI treats them as a gate (`examples` job):
 - **Offline:** every package workflow passes `orion-server lint`, and the
   [`examples/workflow-tests/`](examples/workflow-tests/) cases run each
   workflow through the real engine with stubbed connectors and the
-  `fixed-width-statement` and `c4-tournament` plugins running for real
-  (`just workflow-tests`, which passes `--plugin-dir` for each); the
-  three `c4-*` cases also run the tournament's reference entrant for real
-  through `--model-dir`.
+  `fixed-width-statement` and `c4-referee` plugins running for real
+  (`just workflow-tests`, which passes `--plugin-dir` for each).
 - **Live:** CI boots a real server with plugins enabled (plus Postgres for
   `postgres-orders`), runs `quickstart.sh` twice and `deploy.sh` for
   **every** package twice — deployability and idempotency are both asserted,
@@ -216,15 +212,13 @@ The examples are executable and CI treats them as a gate (`examples` job):
 | Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included). Gated by the `changes` job: it runs when a manifest moves or a file is added/renamed under `crates/`, the only two ways an `include` allowlist can drop a needed file, and on the weekly sweep |
 | Docker / Helm / Book | `docker-build`, `helm`, `book` jobs | Image builds; chart lints, renders, and rejects misspelled values; book builds |
 | CodeQL | `codeql.yml` | Static security analysis |
-| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx; then the plugin drill (`deploy/ha/plugin-drill.sh`): a plugin activated on one node converges on the other through the config epoch, and a new version activated under load through the LB produces zero non-2xx; then the cron drill (`deploy/ha/cron-drill.sh`): two reconcilers against one database produce one occurrence per scheduled instant, and a `forbid` singleton stays non-overlapping across a node restart — the lease-expiry takeover path the in-process cluster tests cannot reach; then the model drill (`deploy/ha/model-drill.sh`, over the bucket overlay `deploy/ha/docker-compose.bucket.yml`): a model admitted on one node is carried by every node on that one verdict, each node fetches and verifies the artifact for itself, and the data path keeps serving with the bucket stopped |
+| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx; then the plugin drill (`deploy/ha/plugin-drill.sh`): a plugin activated on one node converges on the other through the config epoch, and a new version activated under load through the LB produces zero non-2xx; then the cron drill (`deploy/ha/cron-drill.sh`): two reconcilers against one database produce one occurrence per scheduled instant, and a `forbid` singleton stays non-overlapping across a node restart — the lease-expiry takeover path the in-process cluster tests cannot reach |
 | Plugin SDK | `plugin-sdk` CI job (path-filtered) | The test fixture and the example codec rebuild from source on the shipped `orion-plugin-sdk`; the ABI case suite and the example's offline cases pass against the fresh components |
 
 ## Layer 8 — benchmarks (manual, recorded per release)
 
-`crates/orion-server/tests/benchmark/bench.sh` (eight `hey` scenarios — the
-last, `model`, registers the example entrant against a local fake bucket and
-loads a `model_infer` workflow — plus a `cluster` mode against the HA compose
-stack). Not in CI — numbers from
+`crates/orion-server/tests/benchmark/bench.sh` (seven `hey` scenarios, plus
+a `cluster` mode against the HA compose stack). Not in CI — numbers from
 shared runners are noise. Run on dedicated hardware at release checkpoints;
 each release's record is committed under `crates/orion-server/tests/benchmark/results/vX.Y.Z/`
 (procedure: `RELEASING.md`).
@@ -253,9 +247,9 @@ recompiled from cold.
   `commands/benchmark/stats.rs`); output formatting and error hints are
   exercised only indirectly, through the e2e suite's assertions on command
   output.
-- **The e2e suite invokes 18 of the CLI's 19 command groups.** The ten the
+- **The e2e suite invokes 17 of the CLI's 18 command groups.** The nine the
   lifecycle suites exercise in depth (`workflows`, `channels`, `connectors`,
-  `send`, `traces`, `engine`, `health`, `plugins`, `cron`, `models`) plus eight covered
+  `send`, `traces`, `engine`, `health`, `plugins`, `cron`) plus eight covered
   at smoke depth by `suites/14_read_only_commands.sh` (`functions`, `metrics`,
   `audit-logs`, `backups`, `packages`, `dlq`, `completions`, `config`) —
   enough to catch a broken output shape or envelope, not enough to call them

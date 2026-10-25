@@ -6,7 +6,7 @@
 
 This page is for operators upgrading an existing Orion deployment from
 **1.7.x** to **1.8.0**. It covers only what *changes behaviour*. The new
-capabilities — the [tensor operators](../reference/expressions.md#tensors-tensor) and the [evaluation budget](../reference/configuration/engine.md) — are described in full in the [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md).
+capabilities — the tensor operators and the [evaluation budget](../reference/configuration/engine.md) — are described in full in the [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md).
 
 **1.8.0 is a minor release and behaves like one.** No config key was renamed
 or removed, no API path moved, and no metric was renamed. Three things can reach you. One adds schema (§1). One can change what an existing deployment already does (§2). The third is off until you turn it on.
@@ -29,7 +29,7 @@ The version-independent procedure — back up, preflight, validate config, migra
 
 **What changed.** One new migration per backend, `models`. It adds the `models` table, which holds a registration: the manifest, the artifact reference and the node-written admission verdict. It also adds two indexes, and the single-draft and active-immutability triggers every versioned entity has. It adds schema and touches nothing that exists, so a 1.7.x binary keeps working against a migrated database and a rollback needs no schema work.
 
-The migration runs whether or not you intend to use models. It is applied at startup like every other one. [`models.enabled`](../reference/configuration/models.md) is off by default, and governs only whether the node serves models, never whether the table exists.
+The migration runs whether or not you intend to use models. It is applied at startup like every other one. `models.enabled` is off by default, and governs only whether the node serves models, never whether the table exists.
 
 **What to do.** Nothing, unless `storage.auto_migrate = false`: then
 `orion-server migrate` is the deploy step, as it always is in [cluster mode](../operate/deploy/cluster.md).
@@ -83,13 +83,13 @@ The counter behind the setting runs whether or not a ceiling is set. The cost is
 
 ## Related
 
-- [Expressions › Tensors](../reference/expressions.md#tensors-tensor): the twenty operators, and the `$` escape. — the
+- [Expressions](../reference/expressions.md) › Tensors: the twenty operators, and the `$` escape. — the
   operator table with an example per operator.
 - [CLI › `lint`](../reference/cli/orion-server/lint.md) and [CLI › `preflight`](../reference/cli/orion-server/preflight.md)
   — the advisory ids and what each command reports.
 - [Engine settings](../reference/configuration/engine.md): `ops_budget`, and what a ceiling does to a condition. —
   `engine.ops_budget`.
-- [Models](../concepts/models.md) — the release's headline capability, and the
+- Models — the release's headline capability, and the
   reason the tensor operators exist. It changes nothing about an existing
   deployment: `models.enabled` is off by default, and a node with it off
   behaves exactly as 1.7.x did.

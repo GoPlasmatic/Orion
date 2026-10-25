@@ -57,7 +57,6 @@ pub(crate) async fn engine_status(
         capabilities: Some(orion_api::EngineCapabilities {
             cron: state.config.cron.enabled,
             plugins: state.plugins.is_some(),
-            models: state.models.is_some(),
         }),
     }))
 }

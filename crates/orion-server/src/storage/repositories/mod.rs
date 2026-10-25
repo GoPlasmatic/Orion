@@ -4,7 +4,6 @@ pub mod cluster;
 pub mod connectors;
 pub mod cron;
 pub mod helpers;
-pub mod models;
 pub mod packages;
 pub mod plugins;
 pub mod shared_state;
@@ -36,8 +35,6 @@ pub struct Repositories {
     pub trace_dlq: Arc<dyn trace_dlq::TraceDlqRepository>,
     pub packages: Arc<dyn packages::PackageRepository>,
     pub plugins: Arc<dyn plugins::PluginRepository>,
-    /// ONNX model versions and the artifact references they carry.
-    pub models: Arc<dyn models::ModelRepository>,
     /// The cron ledger: cursors, occurrences and singletons.
     pub cron: Arc<dyn cron::CronRepository>,
 }
@@ -49,7 +46,6 @@ pub(crate) struct ActiveDefinitions {
     /// Component bytes by digest, for plugins whose definition carries them.
     /// Empty for rows read from the v1 tables, which name `plugin_artifacts`.
     pub plugin_components: std::collections::HashMap<String, Vec<u8>>,
-    pub models: Vec<crate::storage::models::Model>,
 }
 
 impl Repositories {
@@ -63,7 +59,6 @@ impl Repositories {
             workflows: versioned::list_active_tx(&mut tx, &workflows::spec()).await?,
             plugins: versioned::list_active_tx(&mut tx, &plugins::spec()).await?,
             plugin_components: Default::default(),
-            models: versioned::list_active_tx(&mut tx, &models::spec()).await?,
         };
         tx.commit().await?;
         Ok(definitions)
@@ -98,7 +93,6 @@ impl Repositories {
             trace_dlq: Arc::new(trace_dlq::SqlTraceDlqRepository::new(pool.clone())),
             packages: Arc::new(packages::SqlPackageRepository::new(pool.clone())),
             plugins: Arc::new(plugins::SqlPluginRepository::new(pool.clone())),
-            models: Arc::new(models::SqlModelRepository::new(pool.clone())),
             cron: Arc::new(cron::SqlCronRepository::new(pool.clone())),
         })
     }

@@ -6,7 +6,7 @@
 # this after changing guest/ or the SDK, and commit the result with the change.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-out="$here/../../packages/c4-tournament/c4-rules.wasm"
+out="$here/../../packages/c4-referee/c4-rules.wasm"
 cd "$here/guest"
 cargo build --release --target wasm32-unknown-unknown
 wasm-tools component new \

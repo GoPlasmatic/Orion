@@ -34,12 +34,9 @@ happens, what does it cost?**
 |---|---|---|
 | [`crypto`](./crypto.md) | `pure` | Local computation. |
 | [`jwt_sign`](./jwt_sign.md) | `pure` | Local signing. |
-| [`model_infer`](./model_infer.md) | `pure` | The graph is a function of its inputs and its weights; a retry re-runs it and lands the same tensors. |
-| [`storage_presign`](./storage_presign.md) | `pure` | SigV4 arithmetic over the connector's credentials; zero bytes move. |
 | [`cache_read`](./cache_read.md) | `read` | |
 | [`db_read`](./db_read.md) | `read` | |
 | [`data_query`](./data_query.md) | `read` | |
-| [`storage_head`](./storage_head.md) | `read` | Metadata only. |
 | [`jwt_verify`](./jwt_verify.md) | `read` | May fetch a JWKS document; the cache usually answers. |
 | [`cache_write`](./cache_write.md) | `idempotent_write` | The same key and value land the same entry. A `ttl` restarts from the retry. |
 | [`cache_invalidate`](./cache_invalidate.md) | `idempotent_write` | A second bump retires nothing more; each namespaced channel misses once more. |

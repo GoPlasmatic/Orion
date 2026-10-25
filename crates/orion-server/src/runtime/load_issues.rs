@@ -3,12 +3,11 @@
 //! `POST /engine/reload` answer and `GET /engine/status`, so the three
 //! cannot disagree about what is quarantined.
 //!
-//! Three of the four lists live on the generation; connectors do not — the
+//! Two of the three lists live on the generation; connectors do not — the
 //! registry loads them on its own schedule — so they are read from it.
 
 use orion_api::{
-    ChannelLoadIssueResponse, ConnectorLoadIssueResponse, EngineLoadIssues, ModelLoadIssueResponse,
-    PluginLoadIssueResponse,
+    ChannelLoadIssueResponse, ConnectorLoadIssueResponse, EngineLoadIssues, PluginLoadIssueResponse,
 };
 
 use super::RuntimeGeneration;
@@ -40,18 +39,6 @@ pub async fn collect(
                 digest: p.digest.clone(),
                 stage: p.stage.to_string(),
                 reason: p.reason.clone(),
-            })
-            .collect(),
-        models: generation
-            .models
-            .issues
-            .iter()
-            .map(|m| ModelLoadIssueResponse {
-                model: m.model.clone(),
-                version: m.version,
-                digest: m.digest.clone(),
-                stage: m.stage.to_string(),
-                reason: m.reason.clone(),
             })
             .collect(),
         connectors: connectors

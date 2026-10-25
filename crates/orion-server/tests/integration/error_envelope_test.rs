@@ -113,7 +113,7 @@ async fn invalid_connector_type_returns_field_pathed_error_with_allowed_values_i
     let msg = detail["message"].as_str().unwrap_or("");
     assert!(msg.contains("grpc"), "message should name the bad value");
     assert!(
-        msg.contains("http") && msg.contains("storage"),
+        msg.contains("http") && msg.contains("cache"),
         "message should list allowed variants, got {msg}"
     );
 }

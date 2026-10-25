@@ -178,10 +178,6 @@ pub fn validate_endpoint_schemes(
             }
             Ok(())
         }
-        ConnectorConfig::Storage(storage) => {
-            require_scheme("endpoint", &storage.endpoint, &["http", "https"], phase)?;
-            Ok(())
-        }
         ConnectorConfig::Db(db) => {
             require_scheme(
                 "connection_string",

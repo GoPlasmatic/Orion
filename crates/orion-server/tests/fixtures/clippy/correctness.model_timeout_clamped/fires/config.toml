@@ -1,4 +1,0 @@
-[models]
-enabled = true
-cache_dir = "/tmp/orion-clippy-fixture-models"
-max_timeout_ms = 1000

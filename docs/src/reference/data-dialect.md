@@ -395,7 +395,7 @@ A gated call fails with a validation error naming the operation and connector (`
 
 That pair is only sufficient because `db_read` refuses to run a write. Its statement must open with `SELECT`, `WITH`, `VALUES` or `TABLE`, and a `WITH` carrying a data-modifying CTE (`WITH gone AS (DELETE … RETURNING …) …`) is refused too. Without that check `db_read` was a second write path. `fetch` executes whatever statement it is handed, so `DELETE … RETURNING` ran under the `read` gate, and the bound in [Schema guards](#schema-guards) could not hold. `EXPLAIN` is not admitted either: `EXPLAIN ANALYZE DELETE …` executes the delete.
 
-These gates are the `db` set, the set the portable dialect runs through. Other connector types carry gates for their own operations: `read` and `write` on `cache`, `presign_get`, `presign_put` and `head` on `storage`, a method allowlist on `http`. [Connector types](./connectors/index.md) documents each.
+These gates are the `db` set, the set the portable dialect runs through. Other connector types carry gates for their own operations: `read` and `write` on `cache`, and a method allowlist on `http`. [Connector types](./connectors/index.md) documents each.
 
 ### Schema guards
 

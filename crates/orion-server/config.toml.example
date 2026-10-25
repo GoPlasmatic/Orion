@@ -485,8 +485,8 @@
 # stops the process with a non-zero exit. A restart with the same artifacts
 # is a no-op, and a version a later one superseded is left as it is.
 # apply = []                         # e.g. ["/pkg/orders/orders.json"]
-# signatures_dir = "/run/plugin-signatures"   # .sig files attached to plugins and models
-# apply_timeout_secs = 1800          # Whole startup apply, admission included; 0 = no limit
+# signatures_dir = "/run/plugin-signatures"   # .sig files attached to plugins
+# apply_timeout_secs = 1800          # Whole startup apply; 0 = no limit
 
 # ============================================================
 # Plugins — custom task functions as sandboxed WebAssembly
@@ -522,52 +522,6 @@
 # max_concurrency = 8
 # max_request_bytes = 262144
 # max_response_bytes = 262144
-
-# ============================================================
-# Models — ONNX models as governed entities
-# ============================================================
-
-# [models]
-# A model row names a storage connector, an object key and a digest; the node
-# fetches the bytes, verifies them, keeps them in cache_dir and runs them
-# through a runtime. Off by default; enabling it changes nothing until a
-# model is uploaded and activated. Every limit is the host's — a model
-# requests nothing — and an override block below may only lower one.
-# enabled = false
-# cache_dir = ""                     # Required when enabled: one verified file per digest
-# max_cache_bytes = 8589934592       # Cache directory ceiling (8 GiB), swept LRU after every fetch
-# max_loaded_bytes = 2147483648      # Models resident in memory at once (2 GiB), every runtime
-# preload = "referenced"             # none | referenced (what active workflows name) | all
-# preload_tags = []                  # Also warm every active model carrying one of these tags
-# max_artifact_bytes = 536870912     # Largest artifact an admission fetches (512 MiB)
-# max_parameters = 0                 # Parameter-count ceiling read at admission; 0 = unbounded
-# max_input_elements = 1048576       # Elements one inference may hand a model, over its inputs
-# max_output_elements = 1048576      # Elements one inference may take back, over its outputs
-# max_timeout_ms = 1000              # Wall-clock ceiling per inference
-# max_probe_ms = 250                 # Ceiling on the admission probe inference
-# fetch_timeout_secs = 300           # One artifact fetch, connection to last byte
-# admission_timeout_secs = 900       # One admission end to end; a row past it fails by stage
-# max_concurrency_per_model = 16     # Concurrent inferences of one model
-# max_concurrent_inferences = 0      # Across every model; 0 = available parallelism
-# max_concurrent_loads = 2           # Cold loads at once across every model; 0 = unbounded
-# overrides = []                     # Per-model ceilings; see [[models.overrides]] below
-
-# [models.trust]
-# public_keys = []                   # When set, rows must carry a signature over the digest
-
-# [models.default_runtime]           # One row per artifact format: the runtime it runs on
-# onnx = "tract"                     # Required — onnx is the one format a manifest declares today
-
-# [models.runtimes.tract]            # One table per runtime this build knows (only tract today)
-# enabled = true
-# device = "cpu"                     # cpu | metal | cuda; a device the build lacks fails the load
-
-# [[models.overrides]]               # Repeat per model; each field lowers the host ceiling
-# id = "ada.c4-tiny"
-# timeout_ms = 50
-# max_concurrency = 4
-# max_input_elements = 4096
-# max_output_elements = 64
 
 # ============================================================
 # Vars and secrets — the values that differ per environment

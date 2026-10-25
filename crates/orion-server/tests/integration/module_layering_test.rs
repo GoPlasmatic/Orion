@@ -42,13 +42,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // The plugin sandbox produces registry entries and handlers for a
     // generation to carry; it names nothing above `engine`.
     ("plugin", &["crate::server::", "crate::bootstrap::"]),
-    // The model subsystem sits beside `plugin` with the same ceiling. The
-    // two share their digest and signature primitives through `crypto` and
-    // name each other nowhere: a change to one must not be able to reach
-    // the other's sandbox.
-    ("model", &["crate::server::", "crate::bootstrap::"]),
-    ("model", &["crate::plugin::"]),
-    ("plugin", &["crate::model::"]),
     // The cron scheduler sits beside `queue`: it consumes the
     // engine, the channel estate and the storage layer, and nothing below it
     // may name it back. `engine` reaching up here is how `TRIGGER_KEY` briefly
@@ -107,7 +100,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
             "crate::engine::",
             "crate::channel::",
             "crate::plugin::",
-            "crate::model::",
             "crate::storage::",
         ],
     ),
@@ -155,10 +147,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "plugin",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
-    (
-        "model",
-        &["crate::runtime::reload", "crate::runtime::handler_deps"],
-    ),
     ("storage", &["crate::runtime::"]),
     // `package` is a top layer beside `bootstrap`: what an artifact carries
     // and whether a target serves it. Nothing that serves may name it.
@@ -168,7 +156,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("queue", &["crate::package::"]),
     ("jwt", &["crate::package::"]),
     ("plugin", &["crate::package::"]),
-    ("model", &["crate::package::"]),
     ("cron", &["crate::package::"]),
     ("storage", &["crate::package::"]),
     // V2 extension seams and composition root sit below the HTTP server,

@@ -34,20 +34,11 @@
 //! task's `connector`, or its `channel` for `channel_call`. `"*"` matches any
 //! target.
 //!
-//! ## What is never stubbed, and what is stubbed only by default
+//! ## What is never stubbed
 //!
 //! The self-contained functions (`SELF_CONTAINED` below) always run for real. A
 //! plugin function always runs for real too — its component is loaded from a
-//! `--plugin-dir` — and is refused by name when the component is absent. A
-//! model sits between the two: with a `--model-dir` holding its manifest and
-//! artifact, `model_infer` runs the model for real through the same function
-//! a node registers, and the layer passes it by; a workflow
-//! naming a model the directory does not hold is refused as
-//! `MODEL_ARTIFACT_UNAVAILABLE`; with no model directory at all it is stubbed
-//! here like a connector function, keyed by its name, so
-//! `{"model_infer": {"*": <result>}}` is what the task writes at its
-//! `output` — `temp_data.inference` when it names none, as the real
-//! function's config says.
+//! `--plugin-dir` — and is refused by name when the component is absent.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -306,8 +297,7 @@ pub fn stubbable_functions() -> impl Iterator<Item = &'static str> {
 /// against the real functions, so its configs are parsed and checked as a
 /// node checks them, and a call the layer answers writes where the real
 /// function would — through the call's own primary output. Every other call
-/// (the self-contained functions, a plugin's, and
-/// `model_infer` when the run executes models) passes through to the real
+/// (the self-contained functions and a plugin's) passes through to the real
 /// function.
 pub struct StubLayer {
     stubs: StubTable,
@@ -316,12 +306,10 @@ pub struct StubLayer {
 }
 
 impl StubLayer {
-    /// Stubs every connector-backed function, and `model_infer` too unless
-    /// `stub_models` is false: a run that executes models passes it by.
-    pub fn new(stubs: StubTable, log: Arc<CallLog>, stub_models: bool) -> Self {
+    /// Stubs every connector-backed function.
+    pub fn new(stubs: StubTable, log: Arc<CallLog>) -> Self {
         let stubbed = stubbable_functions()
             .filter(|name| !SELF_CONTAINED.contains(name))
-            .filter(|name| stub_models || *name != crate::model::handler::NAME)
             .collect();
         Self {
             stubs,
@@ -377,11 +365,11 @@ impl StubLayer {
 }
 
 /// Where a computed output that evaluates to `null` writes, as the real
-/// function decides it: nowhere for the three whose output is optional, the
+/// function decides it: nowhere for the two whose output is optional, the
 /// data root for the rest.
 fn on_null(function: &str) -> Option<&'static dataflow_rs::Path> {
     match function {
-        "http_call" | "channel_call" | "model_infer" => None,
+        "http_call" | "channel_call" => None,
         _ => Some(&kit::DATA),
     }
 }
@@ -452,7 +440,7 @@ mod tests {
     ) {
         use crate::engine::offline::{OfflineRun, offline_compiler, run_single, single_engine};
 
-        let compiler = offline_compiler(&crate::engine::ResolvedSecrets::empty(), Vec::new(), None)
+        let compiler = offline_compiler(&crate::engine::ResolvedSecrets::empty(), Vec::new())
             .expect("the offline registry builds");
         let workflow = json!({
             "id": "w", "name": "w", "channel": "c", "status": "active",
@@ -460,8 +448,7 @@ mod tests {
         });
         let engine = single_engine(&compiler, &workflow).expect("the workflow compiles");
         let log = Arc::new(CallLog::new());
-        let layers: Vec<Arc<dyn CallLayer>> =
-            vec![Arc::new(StubLayer::new(stubs, log.clone(), true))];
+        let layers: Vec<Arc<dyn CallLayer>> = vec![Arc::new(StubLayer::new(stubs, log.clone()))];
         let result = run_single(
             &engine,
             &data,
@@ -492,13 +479,12 @@ mod tests {
     }
 
     /// Every connector-backed function is answered by the layer; the
-    /// self-contained ones, and `model_infer` in a run that executes models,
-    /// are not.
+    /// self-contained ones are not.
     #[test]
     fn the_layer_stubs_every_connector_backed_function_and_only_those() {
-        let layer = StubLayer::new(StubTable::new(), Arc::new(CallLog::new()), true);
+        let layer = StubLayer::new(StubTable::new(), Arc::new(CallLog::new()));
         let stubbable: Vec<&str> = stubbable_functions().collect();
-        assert_eq!(stubbable.len(), 18, "every Orion function is stubbable");
+        assert_eq!(stubbable.len(), 15, "every Orion function is stubbable");
         for name in &stubbable {
             assert_eq!(
                 layer.stubbed.contains(name),
@@ -506,9 +492,6 @@ mod tests {
                 "{name}"
             );
         }
-        let real_models = StubLayer::new(StubTable::new(), Arc::new(CallLog::new()), false);
-        assert!(!real_models.stubbed.contains(&crate::model::handler::NAME));
-        assert!(layer.stubbed.contains(&crate::model::handler::NAME));
     }
 
     /// A stubbed answer lands where the real function writes: the task's

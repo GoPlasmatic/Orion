@@ -439,18 +439,12 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
     .expect("with fail-fast off the same state must boot (degraded)");
 }
 
-/// F15: `storage` was an accepted connector type for the whole 0.x line with
-/// no handler behind it — it validated, persisted, and appeared in
-/// `GET /connectors`, and every workflow referencing one failed at request
-/// time. It is removed in 1.0.
-///
-/// #265 reinstated the `storage` type *with* a handler and a real config
-/// shape. A 0.3.x row — the config-only surface F15 removed — lacks that
-/// shape (no endpoint, no credentials), so it now reports a config-parse
-/// load issue naming the missing fields: strictly more actionable than the
-/// old blanket removal notice, and a correctly-shaped row simply loads.
+/// A stored `storage` connector — a 0.x row, or one written while the type
+/// existed — names a type this build has no variant for. It does not load:
+/// it reports a load issue naming the type and the ones this build knows,
+/// rather than failing the boot or loading as a connector nothing can use.
 #[tokio::test]
-async fn a_stored_0x_storage_connector_reports_its_missing_fields() {
+async fn a_stored_storage_connector_reports_an_unknown_type() {
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,
@@ -468,7 +462,7 @@ async fn a_stored_0x_storage_connector_reports_its_missing_fields() {
         sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
     )
     .await
-    .expect("seed a 0.3.x storage connector");
+    .expect("seed a storage connector");
 
     let registry =
         std::sync::Arc::new(orion::connector::ConnectorRegistry::new(Default::default()));
@@ -479,8 +473,11 @@ async fn a_stored_0x_storage_connector_reports_its_missing_fields() {
     assert_eq!(issues.len(), 1, "expected one load issue: {issues:?}");
     assert_eq!(issues[0].connector, "legacy-uploads");
     assert!(
-        issues[0].reason.contains("endpoint"),
-        "the reason must name a missing #265 field: {}",
+        issues[0]
+            .reason
+            .contains("unknown connector type 'storage'")
+            && issues[0].reason.contains("http, db, cache"),
+        "the reason must name the type and the known ones: {}",
         issues[0].reason
     );
 }

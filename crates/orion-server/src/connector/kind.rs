@@ -22,7 +22,6 @@
 
 use super::config::{
     CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig, HttpConnectorConfig,
-    StorageConnectorConfig,
 };
 
 /// A connection-pool cache a connector's config can be cached in.
@@ -106,7 +105,6 @@ kinds! {
     Http    => Http,    HttpConnectorConfig,    "an HTTP connector";
     Db      => Db,      DbConnectorConfig,      "a database connector";
     Cache   => Cache,   CacheConnectorConfig,   "a cache connector";
-    Storage => Storage, StorageConnectorConfig, "a storage connector";
 }
 
 /// The portable data dialect's target: a `db` connector.
@@ -137,10 +135,10 @@ impl ConnectorType {
         match self {
             ConnectorType::Db => &[PoolSlot::Sql],
             // Stateless per call: HTTP goes through the shared reqwest client,
-            // storage presigns locally, and a cache connector is an in-memory
-            // namespace holding no connection — a delete drops it
+            // and a cache connector is an in-memory namespace holding no
+            // connection — a delete drops it
             // (`CachePool::evict_memory_namespaces`), an edit keeps it.
-            ConnectorType::Http | ConnectorType::Storage | ConnectorType::Cache => &[],
+            ConnectorType::Http | ConnectorType::Cache => &[],
         }
     }
 }

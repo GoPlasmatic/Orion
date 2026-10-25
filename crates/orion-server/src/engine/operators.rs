@@ -40,7 +40,7 @@ use std::sync::OnceLock;
 use dataflow_rs::datalogic_rs::operator::EvalContext;
 use dataflow_rs::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
 use dataflow_rs::datavalue::OwnedDataValue;
-use dataflow_rs::expr::{ExprEngine, Operator, OperatorFamily, Secrets};
+use dataflow_rs::expr::{ExprEngine, Operator, Secrets};
 
 /// Every JSONLogic operator this build evaluates — datalogic-rs's core and
 /// extension sets (selected by [`orion_exprs`]) plus
@@ -97,48 +97,6 @@ pub(crate) use crate::crypto::{Codec, decode_bytes, encode_bytes};
 /// Whether `name` is an operator this build evaluates, rather than a data key.
 pub fn is_operator(name: &str) -> bool {
     operator_names().contains(name)
-}
-
-/// The tensor family the `tensor` feature adds, by name.
-///
-/// Kept as a list rather than derived from [`operator_names`] because the
-/// list is what the *upgrade* surfaces need: `preflight` and `lint` report a
-/// stored template key that names one of these (`logic.tensor_operator_key`),
-/// and that report has to say which names changed meaning in 1.8, not which
-/// names are operators. The unit tests below pin the list to the
-/// [`OperatorFamily::Tensor`] rows of
-/// [`orion_exprs`]'s [`ExprEngine::operators`], so it can neither name an
-/// operator the build does not compile nor miss one the family adds.
-///
-/// A third of these are ordinary JSON keys — `shape`, `full`, `cast`, `pad`,
-/// `crop`, `concat`, `stack` — which is why the family is documented with the
-/// `$` escape beside it rather than as one more table.
-pub const TENSOR_OPERATORS: [&str; 20] = [
-    "tensor",
-    "zeros",
-    "full",
-    "scatter",
-    "rle_expand",
-    "one_hot",
-    "stack",
-    "concat",
-    "unstack",
-    "reshape",
-    "transpose",
-    "pad",
-    "crop",
-    "cast",
-    "normalize",
-    "argmax",
-    "gather",
-    "to_list",
-    "shape",
-    "dtype",
-];
-
-/// Whether `key` is a name the tensor family took in 1.8.
-pub fn is_tensor_operator(key: &str) -> bool {
-    TENSOR_OPERATORS.contains(&key)
 }
 
 /// Byte chunk size for custom-operator budget charging, matching
@@ -672,9 +630,7 @@ pub fn orion_exprs(
     secrets: &crate::engine::ResolvedSecrets,
     ops_budget: u64,
 ) -> dataflow_rs::Result<ExprEngine> {
-    let mut builder = ExprEngine::builder()
-        .all_operators()
-        .family(OperatorFamily::Tensor);
+    let mut builder = ExprEngine::builder().all_operators();
     for (name, op) in all() {
         builder = if op.deterministic() {
             builder.operator_with(Operator::custom(name).deterministic(true), op)
@@ -720,8 +676,7 @@ pub(crate) fn result_json(value: &OwnedDataValue) -> serde_json::Value {
 ///
 /// What is left for this function is the bare engines with no store to offer:
 /// the authoring-time compile checks, and the analysis paths that have not
-/// moved to [`orion_exprs`] yet. The model set has: its adapters compile on
-/// the process's engine (I188).
+/// moved to [`orion_exprs`] yet.
 pub fn add_to_datalogic(mut builder: datalogic::EngineBuilder) -> datalogic::EngineBuilder {
     for (name, op) in all() {
         builder = builder.add_operator(name, op);
@@ -1043,20 +998,6 @@ mod tests {
         assert!(v4.contains("secret") && v4.contains("var"));
     }
 
-    #[test]
-    fn tensor_operators_are_the_tensor_family() {
-        let exprs = exprs();
-        let family: BTreeSet<&str> = exprs
-            .operators()
-            .iter()
-            .filter(|op| op.family == OperatorFamily::Tensor)
-            .map(|op| &*op.name)
-            .collect();
-        let listed: BTreeSet<&str> = TENSOR_OPERATORS.into_iter().collect();
-        assert_eq!(listed.len(), TENSOR_OPERATORS.len(), "no name listed twice");
-        assert_eq!(listed, family);
-    }
-
     /// Each of the ten evaluates on the process's engine, answering or
     /// refusing by its arguments. `random` is held to its degenerate range
     /// and its refusals, the only answers that do not draw.
@@ -1328,34 +1269,5 @@ mod random_tests {
             let err = eval(logic.clone()).expect_err("test");
             assert!(err.contains(expected), "{logic}: {err}");
         }
-    }
-}
-
-#[cfg(test)]
-mod tensor_family_tests {
-    use super::*;
-
-    /// The list the upgrade surfaces report from names only operators the
-    /// build actually compiles — a name here that `operator_names()` lacks
-    /// would make `lint` warn about a key that is, in fact, still data.
-    #[test]
-    fn every_tensor_operator_is_live() {
-        for name in TENSOR_OPERATORS {
-            assert!(is_operator(name), "`{name}` is listed but not compiled in");
-        }
-    }
-
-    /// And the list is complete: the family is exactly what dataflow-rs's
-    /// changelog for 3.13 enumerates, so a later minor adding a 21st name
-    /// fails here rather than going unreported by `preflight`.
-    #[test]
-    fn the_list_is_the_documented_family() {
-        assert_eq!(TENSOR_OPERATORS.len(), 20);
-        assert!(is_tensor_operator("shape"));
-        assert!(!is_tensor_operator("map"));
-        assert!(
-            !is_tensor_operator("$shape"),
-            "the escape is the remedy, not a member"
-        );
     }
 }

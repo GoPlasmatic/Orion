@@ -65,7 +65,7 @@ pub use dto::{
 pub use engine::{
     CacheInvalidatedResponse, ChannelLoadIssueResponse, ConnectorLoadIssueResponse,
     EngineCapabilities, EngineLoadIssues, EngineReloadedResponse, EngineStatusResponse,
-    ModelLoadIssueResponse, PluginLoadIssueResponse,
+    PluginLoadIssueResponse,
 };
 pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelProtocol, ChannelType, EntityStatus,

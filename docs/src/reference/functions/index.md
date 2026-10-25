@@ -29,18 +29,15 @@ Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmat
 | [`cache_write`](./cache_write.md) | Connector | Cache | Write a value to cache with optional TTL |
 | [`cache_delete`](./cache_delete.md) | Connector | Cache | Delete exact keys, so a write can drop what it made stale |
 | [`cache_incr`](./cache_incr.md) | Connector | Cache | Atomically increment an integer — a generation counter |
-| [`storage_presign`](./storage_presign.md) | Connector | Storage | Compute a time-limited presigned object URL — no data path |
-| [`storage_head`](./storage_head.md) | Connector | Storage | Object metadata (exists/size/etag) |
 | [`connector_call`](./connector_call.md) | Connector | — | Invoke a v2 connector provider operation under an owned RunContext |
 | [`channel_call`](./channel_call.md) | Composition | — | Invoke another channel's workflow in-process |
-| [`model_infer`](./model_infer.md) | Compute | — | Run an admitted ONNX model: the manifest's adapters in, tensors through, the result out |
 | [`cache_invalidate`](./cache_invalidate.md) | Utility | — | Invalidate channel response-cache namespaces on every store |
 | [`crypto`](./crypto.md) | Utility | — | Digests, HMAC compute/verify, password hashing |
 | [`jwt_sign`](./jwt_sign.md) | Utility | — | Mint a signed JWT (login, refresh, client assertions) |
 | [`jwt_verify`](./jwt_verify.md) | Utility | — | Verify a JWT against static keys or a JWKS |
 
 > [!NOTE]
-> The **Category** column groups the table for reading. It is not the wire value: `GET /api/v2/admin/functions` serves a `category` of `connector`, `control`, `data`, `compute`, or `utility` for every function, so tooling should branch on those rather than on the labels here.
+> The **Category** column groups the table for reading. It is not the wire value: `GET /api/v2/admin/functions` serves a `category` of `connector`, `control`, `data` or `utility` for every function, so tooling should branch on those rather than on the labels here.
 
 When a function fails, the data-plane response follows [Errors and response envelopes](../errors.md). Use its stable error code and the trace's task ID to identify the failing step; do not parse the message text. Each function's page describes its own validation and runtime failures.
 

@@ -139,10 +139,6 @@ pub struct ServingComponents {
     /// sized from the ceilings before the first generation loads anything
     /// into it. `None` makes every stored plugin a load issue on this node.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
-    /// The model node — artifact cache and admission queue — when
-    /// `models.enabled`. `None` makes every model route answer that models
-    /// are disabled here, and every stored active model a load issue.
-    pub models: Option<Arc<crate::model::ModelsRuntime>>,
     pub composition: crate::extensions::CompositionRoot,
 }
 
@@ -290,23 +286,6 @@ pub async fn build_engine_components(
         config.engine.max_pool_cache_entries,
     ));
 
-    // The model node: the cache directory is created here so a misconfigured
-    // path fails the boot rather than the first admission. Before the
-    // handlers, because `model_infer` holds it.
-    let models = if config.models.enabled {
-        Some(Arc::new(
-            crate::model::ModelsRuntime::new(
-                &config.models,
-                crate::model::node_name(&config.cluster.instance_id),
-            )
-            .map_err(|e| crate::errors::OrionError::Config {
-                message: format!("models: {e}"),
-            })?,
-        ))
-    } else {
-        None
-    };
-
     let foundation = crate::extensions::FoundationOptions {
         http_client: http_client.clone(),
         sql: crate::extensions::SqlLimits {
@@ -338,8 +317,6 @@ pub async fn build_engine_components(
         cache_pool: cache_pool.clone(),
         channel_loader: channel_loader.clone(),
         sql_pool_cache: sql_pool_cache.clone(),
-        models: models.clone(),
-        models_config: &config.models,
         providers: providers.clone(),
     };
     let registry = crate::engine::serving_registry(handler_deps());
@@ -369,7 +346,6 @@ pub async fn build_engine_components(
             cache_pool,
             sql_pool_cache,
             plugins,
-            models,
             composition,
         },
         registry,
@@ -446,7 +422,7 @@ impl EngineComponents {
         // of aborting the whole build.
         let crate::engine::LoadedWorkflows {
             workflows,
-            issues: mut engine_issues,
+            issues: engine_issues,
         } = crate::engine::build_engine_workflows(
             &channels,
             &active_workflows,
@@ -463,26 +439,6 @@ impl EngineComponents {
             .map(|w| w.channel.as_str())
             .collect::<std::collections::HashSet<_>>()
             .len();
-
-        // The active models, their adapters compiled on the process's
-        // expression engine, which evaluates them and which every reload
-        // keeps (I188) — or every one a load issue on a node without the
-        // runtime, or whose admission has not passed. A workflow naming one
-        // the set does not serve is quarantined with the reason, as with a
-        // plugin. Built before the channel estate, because a model that did
-        // not load quarantines channels.
-        let model_rows = repos.models.list_active().await?;
-        let models = Arc::new(crate::model::ModelSet::load_active(
-            &model_rows,
-            &config.models,
-            serving.models.is_some(),
-            &serving.exprs,
-        ));
-        engine_issues.extend(crate::runtime::models::load_issues(
-            &channels,
-            &active_workflows,
-            &models,
-        ));
 
         let previous = serving.runtime.load();
         let channels_snapshot = channel_loader
@@ -545,22 +501,8 @@ impl EngineComponents {
                     Arc::new(channels_snapshot),
                     functions,
                     plugins,
-                    models,
                 )
             });
-
-        // Warm what `models.preload` selects, in the background — the same
-        // step the reload path takes after its publish.
-        crate::runtime::models::spawn_preload(
-            crate::runtime::models::PreloadDeps {
-                models: serving.models.clone(),
-                config: Arc::new(config.models.clone()),
-                registry: serving.connector_registry.clone(),
-                client: serving.http_client.clone(),
-            },
-            serving.runtime.load(),
-            &active_workflows,
-        );
 
         Ok((serving, active_workflows.len()))
     }
@@ -928,7 +870,7 @@ pub struct Assembled {
 /// step added to one ran untested in the other.
 ///
 /// It stops at `AppState`: the caller then builds the router, spawns the
-/// state-dependent serving tasks (model admission, cluster tasks, limiter
+/// state-dependent serving tasks (cluster tasks, limiter
 /// prune, `[packages] apply`) and runs the server, because those are where
 /// production and the harness diverge — the harness leaves them to the test
 /// that wants them.
@@ -939,7 +881,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         metrics_handle,
     } = params;
     // One identity for this node, resolved once: the cluster runtime, the
-    // node reconciler, the deployment store's receipts and the model node all
+    // node reconciler and the deployment store's receipts all
     // read it from here. `main` resolves it into the config already; a test
     // harness may leave it empty, which mints one.
     let config = if config.cluster.instance_id.is_empty() {
@@ -1133,7 +1075,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         cache_pool,
         sql_pool_cache,
         plugins,
-        models,
         composition,
     } = components;
     // Parsed once, unconditionally — not from `rate_limit_state`. Three
@@ -1178,7 +1119,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         tasks,
         cron_status,
         plugins,
-        models,
         packages,
         admin_auth_failures: Arc::new(Default::default()),
         channel_auth_failures: Arc::new(Default::default()),

@@ -23,9 +23,8 @@ pub(super) fn require_nonempty(value: &str, field: &str) -> Result<(), OrionErro
 }
 
 /// A per-entity override is a ceiling lowered, never raised, and never zero.
-/// Shared by the `[plugins.overrides]` and `[models.overrides]` blocks, which
-/// follow the same rule for the same reason: an author who needs more asks
-/// the operator, and the host ceiling is where that conversation ends.
+/// The rule the `[plugins.overrides]` block follows: an author who needs more
+/// asks the operator, and the host ceiling is where that conversation ends.
 pub(super) fn reduce_only(
     at: &str,
     field: &str,
@@ -71,7 +70,6 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.vars.validate()?;
     config.secrets.validate()?;
     config.plugins.validate()?;
-    config.models.validate()?;
     config.packages.validate()?;
     // Cross-section: cluster mode is meaningless on SQLite (single-host by
     // construction) — refuse at startup rather than corrupt silently.

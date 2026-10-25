@@ -1,6 +1,5 @@
 {
   "data": {
-    "mover_model": "example.c4-tiny",
     "state": {
       "board": [
         0,
@@ -47,10 +46,8 @@
         0
       ],
       "to_move": 2,
-      "moves": 4,
-      "over": false,
-      "winner": 0,
-      "illegal": false
-    }
+      "moves": 4
+    },
+    "column": 1
   }
 }

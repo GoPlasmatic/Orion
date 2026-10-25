@@ -94,7 +94,7 @@ flowchart LR
 |---|---|---|
 | **Channel** | Receives traffic and applies ingress policy | `POST /orders`, `GET /users/{id}`, `0 15 2 * * *` |
 | **Workflow** | Runs the business logic as an ordered task pipeline | Parse → validate → enrich → respond |
-| **Connector** | Provides a reusable connection to an external system | PostgreSQL, a REST API, an S3 bucket |
+| **Connector** | Provides a reusable connection to an external system | PostgreSQL, a REST API, a cache |
 
 The definitions belonging to one service can be shipped together as a
 **package**. One Orion instance can run many packages side by side, each with
@@ -128,9 +128,9 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 | **Traffic** | REST, plain HTTP, synchronous and asynchronous channels, cron schedules |
 | **Safety** | Payload validation, API-key/HMAC/JWT channel auth, rate limiting, backpressure, CORS controls |
 | **Resilience** | Timeouts, retries, circuit breakers, idempotency, response caching, dead-letter handling |
-| **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins, ONNX models admitted before they serve |
+| **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
-| **Data** | PostgreSQL, MySQL, SQLite, HTTP, S3-compatible storage, an in-process cache |
+| **Data** | PostgreSQL, MySQL, SQLite, HTTP, an in-process cache |
 | **Operations** | Embedded SQLite for one node; one shared PostgreSQL/MySQL for clustered replicas |
 
 Configuration is explicit, and several production controls are permissive or
@@ -173,9 +173,8 @@ Choose another runtime, or pair one with Orion, when:
 - business logic requires arbitrary code with I/O, or a scripting runtime — a
   pure transformation ships as a sandboxed WebAssembly plugin, anything that
   has to reach another system does not;
-- image processing, GPU-class inference, or large in-memory joins sit on the
-  hot path — a small ONNX graph runs in-process as a governed model, a large
-  one does not; or
+- image processing, model inference, or large in-memory joins sit on the
+  hot path; or
 - full OIDC flows or mutual TLS must terminate inside the data plane. JWT
   verification is built in; those flows require a gateway or service mesh.
 

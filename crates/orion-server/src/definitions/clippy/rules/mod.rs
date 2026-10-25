@@ -22,7 +22,6 @@ pub static ALL: &[&dyn Rule] = &[
     &correctness::UnknownInputKey,
     &correctness::UnorderedPage,
     &correctness::SqlBindCount,
-    &correctness::ModelTimeoutClamped,
     &perf::ParseResultOverwritten,
     &perf::RedundantStepCondition,
     &perf::GroupConditionRepeated,

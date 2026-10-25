@@ -1,10 +1,10 @@
-<!-- description: Every orion-server subcommand: validate-config, migrate, lint, compile, fmt, clippy, dry-run, test, preflight, package, and the plugin and model signing verbs. -->
+<!-- description: Every orion-server subcommand: validate-config, migrate, lint, compile, fmt, clippy, dry-run, test, preflight, package, and the plugin signing verbs. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-19 -->
 
 # orion-server
 
-`orion-server` is the runtime; run with no subcommand it starts the server. Its subcommands validate configuration, run migrations, check and format definition sets offline, execute workflows with no server, promote packages, and sign plugins and models. The global `-c, --config <path>` flag applies to every one of them.
+`orion-server` is the runtime; run with no subcommand it starts the server. Its subcommands validate configuration, run migrations, check and format definition sets offline, execute workflows with no server, promote packages, and sign plugins. The global `-c, --config <path>` flag applies to every one of them.
 
 | Command | Purpose |
 |---|---|
@@ -23,7 +23,6 @@
 | [`dump-openapi`](./dump-openapi.md) | Prints the public HTTP API's OpenAPI 3.1 spec as JSON to stdout |
 | [`package`](./package.md) | Exports a package — selected channels, their workflows, and every connector those workflows reference, and promotes it between instances |
 | [`plugin`](./plugin.md) | Digests, signs and verifies plugin components with the Ed25519 keys `[plugins.trust]` checks |
-| [`model`](./model.md) | Digests, signs and verifies model artifacts with the Ed25519 keys `[models.trust]` checks |
 
 ## Related
 

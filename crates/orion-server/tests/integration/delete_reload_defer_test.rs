@@ -1,4 +1,4 @@
-//! `DELETE …?reload=defer` on the four versioned kinds: the row goes, and
+//! `DELETE …?reload=defer` on the three versioned kinds: the row goes, and
 //! the published generation does not move until `POST /engine/reload` —
 //! what lets `package apply --prune=delete` remove any number of entities
 //! inside the apply's one reload. Without the parameter a delete still
@@ -9,7 +9,6 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::common::models::{harness, register_fixture};
 use crate::common::v1::create_and_activate_channel_full;
 use crate::common::{echo_workflow, json_request, test_state_with_config};
 use orion::server::state::AppState;
@@ -135,12 +134,4 @@ async fn a_plugin_delete_defers() {
         StatusCode::CREATED
     );
     delete_deferred(&state, &app, "/api/v2/admin/plugins/test.fixture").await;
-}
-
-#[tokio::test]
-async fn a_model_delete_defers() {
-    let h = harness().await;
-    let model = register_fixture(&h.app).await;
-    let id = model["model_id"].as_str().expect("model id");
-    delete_deferred(&h.state, &h.app, &format!("/api/v2/admin/models/{id}")).await;
 }

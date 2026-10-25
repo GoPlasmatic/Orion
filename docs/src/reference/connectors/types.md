@@ -1,17 +1,16 @@
-<!-- description: The four connector types Orion has — http, db, cache and storage — with what each one backs, the config it takes and the task functions it serves. -->
+<!-- description: The three connector types Orion has — http, db and cache — with what each one backs, the config it takes and the task functions it serves. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
-# The four types
+# The three types
 
-The four types a connector may be, and the `config` each one takes.
+The three types a connector may be, and the `config` each one takes.
 
 | Type | Backs | Task functions |
 |------|-------|----------------|
 | [`http`](./http.md) | REST APIs and webhooks | `http_call` |
 | [`db`](./db.md) | PostgreSQL, MySQL, SQLite | `data_query`, `data_write`, `db_read`, `db_write` |
 | [`cache`](./cache.md) | Per-node in-process memory | `cache_read`, `cache_write` |
-| [`storage`](./storage.md) | S3-compatible object storage (presign + metadata only) | `storage_presign`, `storage_head` |
 
 Type values match case-insensitively. Any other value is refused with the valid list. A stored connector whose config no longer parses fails to load and surfaces as a connector load issue.
 

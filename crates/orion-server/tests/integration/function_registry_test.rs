@@ -98,7 +98,7 @@ async fn the_registry_declares_exactly_the_handlers_orion_registers() {
         declared, registered,
         "the registry's Orion entries and the serving registry's host functions must be the same set"
     );
-    assert_eq!(declared.len(), 18);
+    assert_eq!(declared.len(), 15);
 }
 
 /// `GET /admin/functions` is the generation's registry, serialised — and a
@@ -149,7 +149,6 @@ async fn the_catalogue_route_serves_the_generations_registry() {
         generation.channels.clone(),
         Arc::new(extended),
         generation.plugins.clone(),
-        generation.models.clone(),
     );
     let resp = app
         .oneshot(json_request("GET", "/api/v2/admin/functions", None))
@@ -219,7 +218,6 @@ async fn create_time_validation_reads_the_generations_registry() {
         generation.channels.clone(),
         Arc::new(extended),
         generation.plugins.clone(),
-        generation.models.clone(),
     );
 
     let resp = app
@@ -313,7 +311,7 @@ fn the_builtin_registry_is_the_static_tables_and_nothing_else() {
         .entries()
         .filter(|e| e.source == Source::Engine)
         .count();
-    assert_eq!((orion, engine), (18, 8));
+    assert_eq!((orion, engine), (15, 8));
     assert!(orion::engine::functions::registry::interned("acme.never.registered").is_none());
 }
 

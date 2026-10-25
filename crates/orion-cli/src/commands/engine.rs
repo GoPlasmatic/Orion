@@ -110,12 +110,6 @@ fn print_load_issues(resp: &Value) {
         )
         .chain(
             issues
-                .models
-                .iter()
-                .map(|m| format!("models/{}: {}: {}", m.model, m.stage, m.reason)),
-        )
-        .chain(
-            issues
                 .connectors
                 .iter()
                 .map(|c| format!("connectors/{}: {}: {}", c.connector, c.stage, c.reason)),

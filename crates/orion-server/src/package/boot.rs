@@ -2,7 +2,7 @@
 //!
 //! Runs after the first generation is published and the background tasks
 //! are up, with the listener already bound, so `/healthz` answers while a
-//! long model admission is in flight and `/readyz` answers `503` until
+//! long apply is in flight and `/readyz` answers `503` until
 //! every package is serving. Each artifact goes through [`super::apply()`]
 //! over [`InProcessAdmin`] — the sequence `orion-server package apply` runs,
 //! with the same gates, receipts and audit rows — in list order, stopping

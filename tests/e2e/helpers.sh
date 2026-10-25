@@ -318,7 +318,6 @@ ORION_PID=""
 ORION_DB_PATH=""
 ORION_LOG_FILE=""
 ORION_CONFIG_FILE=""
-ORION_MODELS_CACHE=""
 
 # find_free_port — returns an available TCP port
 find_free_port() {
@@ -343,8 +342,6 @@ start_server() {
     ORION_DB_PATH=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-db.XXXXXX")
     ORION_LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-log.XXXXXX")
     ORION_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-config.XXXXXX")
-    # Suite 18 registers a model; `models.enabled` refuses an empty cache_dir.
-    ORION_MODELS_CACHE=$(mktemp -d "${TMPDIR:-/tmp}/orion-e2e-models-XXXXXX")
 
     # The instance declares one var and one secret, so suite 15 can drive the
     # whole config-file → boot → serve path: `${VAR}` substitution into
@@ -389,17 +386,6 @@ enabled = false
 
 [plugins]
 enabled = true
-
-# Suite 18 registers, admits and runs an ONNX model; everywhere else the
-# runtime is idle. tract is the one runtime this build knows, and the onnx
-# row is required whenever the table is declared. (No backticks in here:
-# the heredoc is unquoted, so they would run as a command substitution.)
-[models]
-enabled = true
-cache_dir = "$ORION_MODELS_CACHE"
-
-[models.default_runtime]
-onnx = "tract"
 
 [vars]
 topic_prefix = "\${E2E_VAR_TOPIC_PREFIX}"
@@ -473,7 +459,6 @@ stop_server() {
     [[ -n "${ORION_DB_PATH:-}" ]]     && rm -f "$ORION_DB_PATH" "${ORION_DB_PATH}-wal" "${ORION_DB_PATH}-shm"
     [[ -n "${ORION_LOG_FILE:-}" ]]    && rm -f "$ORION_LOG_FILE"
     [[ -n "${ORION_CONFIG_FILE:-}" ]] && rm -f "$ORION_CONFIG_FILE"
-    [[ -n "${ORION_MODELS_CACHE:-}" ]] && rm -rf "$ORION_MODELS_CACHE"
 }
 
 # show_server_log — print server log (useful for debugging)
@@ -560,24 +545,11 @@ clean_all_plugins() {
     done <<< "$ids"
 }
 
-# clean_all_models — delete every model. After the workflows: a model delete
-# is refused while an active workflow names it by literal id.
-clean_all_models() {
-    local ids
-    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color models list 2>/dev/null) || return 0
-
-    while IFS= read -r id; do
-        [[ -z "$id" ]] && continue
-        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color models delete "$id" 2>/dev/null || true
-    done <<< "$ids"
-}
-
 reset_server_state() {
     clean_all_workflows
     clean_all_channels
     clean_all_connectors
     clean_all_plugins
-    clean_all_models
     "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color engine reload 2>/dev/null || true
 }
 

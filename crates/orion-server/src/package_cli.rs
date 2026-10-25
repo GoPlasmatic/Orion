@@ -19,16 +19,15 @@ use serde_json::{Value, json};
 use orion_client::{OrionClient, paths, query_string};
 
 use orion::package::apply::{
-    ReceiptState, check_receipt, check_target_version, import_path_for, missing_storage,
-    print_prune_plan, prune_plan_for, prune_refusals, status_path_for,
-};
-use orion::package::artifact::{
-    ModelRequirement, PluginRequirement, activation_intents, literal_model_ids, members,
-    model_import_content, package_members, plugin_definition, plugin_import_content, read_artifact,
-    verify_hash,
+    ReceiptState, check_receipt, check_target_version, import_path_for, print_prune_plan,
+    prune_plan_for, prune_refusals, status_path_for,
 };
 pub(crate) use orion::package::artifact::{
     PackageArtifact, PackageMeta, Requires, artifact_content_hash, member_counts,
+};
+use orion::package::artifact::{
+    PluginRequirement, activation_intents, members, package_members, plugin_definition,
+    plugin_import_content, read_artifact, verify_hash,
 };
 use orion::package::{Console, PruneMode};
 use orion::storage::content;
@@ -366,80 +365,6 @@ pub(crate) async fn run_export(
         }
     }
 
-    // 4c. The models the workflows name by literal id, from one export
-    //     sweep of the active rows: each carried as its reference — the
-    //     target fetches the bytes through a storage connector of the same
-    //     name, which goes to `requires.storage` unless the package carries
-    //     it. A model the source does not serve active goes to
-    //     `requires.models`, at the version and digest the source holds when
-    //     it holds any, and `plan` checks the target does.
-    let mut models: Vec<Value> = Vec::new();
-    let mut required_models: Vec<ModelRequirement> = Vec::new();
-    let mut required_storage: Vec<String> = Vec::new();
-    let mut model_ids: Vec<String> = Vec::new();
-    for workflow in &workflows {
-        for id in literal_model_ids(workflow) {
-            if !model_ids.contains(&id) {
-                model_ids.push(id);
-            }
-        }
-    }
-    if !model_ids.is_empty() {
-        let active: Value = client
-            .get_data(&format!(
-                "{}{}",
-                paths::MODELS_EXPORT,
-                query_string(&[("status", Some(orion_api::STATUS_ACTIVE.to_string()))])
-            ))
-            .await?;
-        let carried_connectors: Vec<&str> = connectors
-            .iter()
-            .filter_map(|c| c["name"].as_str())
-            .collect();
-        for id in &model_ids {
-            match active
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|m| m["model_id"].as_str() == Some(id))
-            {
-                Some(row) => {
-                    let mut entry = row.clone();
-                    if let Some(obj) = entry.as_object_mut() {
-                        obj.insert("activate".to_string(), json!(true));
-                    }
-                    if let Some(name) = row["artifact"]["connector"].as_str()
-                        && !carried_connectors.contains(&name)
-                        && !required_storage.iter().any(|s| s == name)
-                    {
-                        required_storage.push(name.to_string());
-                    }
-                    models.push(entry);
-                }
-                None => {
-                    let stored: Option<Value> = client.get_data_opt(&paths::model(id)).await?;
-                    let requirement = match stored {
-                        Some(row) => ModelRequirement {
-                            id: id.clone(),
-                            version: row["version"].as_i64().unwrap_or(0),
-                            digest: row["digest"].as_str().unwrap_or("").to_string(),
-                        },
-                        None => ModelRequirement {
-                            id: id.clone(),
-                            version: 0,
-                            digest: String::new(),
-                        },
-                    };
-                    eprintln!(
-                        "warning: model '{id}' is named by a workflow but not active on the \
-                         source — recorded under requires.models"
-                    );
-                    required_models.push(requirement);
-                }
-            }
-        }
-    }
-
     // 5. Carry activation intent: DB-owned `status` does not survive import,
     //    so the artifact says what apply should activate.
     for entity in workflows.iter_mut().chain(channels.iter_mut()) {
@@ -464,11 +389,8 @@ pub(crate) async fn run_export(
             channels: required_channels,
             connectors: required_connectors,
             plugins: required_plugins,
-            models: required_models,
-            storage: required_storage,
         },
         plugins,
-        models,
         connectors,
         workflows,
         channels,
@@ -548,18 +470,6 @@ fn plan_capability_warnings(artifact: &PackageArtifact, status: &orion_api::Engi
                 "warning: target has plugins.enabled = false — the plugins this package \
                  carries or requires cannot load there, and the workflows calling them would \
                  be quarantined"
-            );
-        }
-        let names_models = artifact
-            .workflows
-            .iter()
-            .any(|w| !literal_model_ids(w).is_empty());
-        if !caps.models
-            && (!artifact.models.is_empty() || !artifact.requires.models.is_empty() || names_models)
-        {
-            eprintln!(
-                "warning: target has models.enabled = false — the models this package names \
-                 cannot load there, and the workflows naming them would be quarantined"
             );
         }
     }
@@ -730,34 +640,6 @@ pub(crate) async fn run_plan(
         }
     }
 
-    // Models by id: a required model must be active on the target, at the
-    // digest the source served when the requirement names one; and every
-    // storage connector the carried models fetch through must be there.
-    if !artifact.requires.models.is_empty() {
-        let stored: Value = client.get_data(paths::MODELS_EXPORT).await?;
-        for req in &artifact.requires.models {
-            let active = stored.as_array().into_iter().flatten().any(|m| {
-                m["model_id"].as_str() == Some(&req.id)
-                    && m["status"] == orion_api::STATUS_ACTIVE
-                    && (req.digest.is_empty() || m["digest"].as_str() == Some(&req.digest))
-            });
-            if !active {
-                eprintln!(
-                    "error: required model '{}' is not active in the target{} — register and \
-                     activate it first, or carry it in the package",
-                    req.id,
-                    if req.digest.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" at {}", req.digest)
-                    }
-                );
-                failures += 1;
-            }
-        }
-    }
-    failures += missing_storage(&client, &artifact, &Console).await?;
-
     // A workflow's create-time gate validates function names against the
     // target's *published* registry, so one calling a function of a plugin
     // this package carries is refused by the dry-run import until apply has
@@ -901,7 +783,6 @@ pub(crate) async fn run_plan(
                 message.starts_with(&format!("Workflow '{id}' not found"))
                     || message.starts_with(&format!("Channel '{id}' not found"))
                     || message.starts_with(&format!("Plugin '{id}' not found"))
-                    || message.starts_with(&format!("Model '{id}' not found"))
                     || message.contains("No draft version")
                     // A reference apply's ordering satisfies: quoted, and of
                     // the dependency kind activated before this entity.
@@ -1005,7 +886,6 @@ pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
             "plugin_id",
             paths::PLUGINS_EXPORT,
         ),
-        ("model", &artifact.models, "model_id", paths::MODELS_EXPORT),
         (
             "connector",
             &artifact.connectors,
@@ -1035,7 +915,6 @@ pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
             };
             let expected = match kind {
                 "plugin" => content::content_hash(&plugin_import_content(entry)?),
-                "model" => content::content_hash(&model_import_content(entry)?),
                 "connector" => {
                     let req: CreateConnectorRequest = serde_json::from_value(entry.clone())?;
                     content::content_hash(&content::connector_request_content(&req))

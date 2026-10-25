@@ -60,28 +60,25 @@ pub struct EngineConfig {
     /// every engine this node builds. `0` (the default) installs no ceiling.
     ///
     /// One operation is one dispatched node, one item an iterator examines,
-    /// or what an operator charges for the data it moves — the tensor family
-    /// charges per element. Constant-folded subtrees cost nothing. The
-    /// ceiling is per *evaluation*, not per task or message: a task that
-    /// evaluates ten expressions gets it ten times. It exists to bound
-    /// expressions an author does not control — a model adapter written by a
-    /// competitor, a rule a tenant uploads — deterministically, rather than
-    /// with a wall-clock timeout that depends on the host.
+    /// or what an operator charges for the data it moves. Constant-folded
+    /// subtrees cost nothing. The ceiling is per *evaluation*, not per task
+    /// or message: a task that evaluates ten expressions gets it ten times.
+    /// It exists to bound expressions an author does not control — a rule a
+    /// tenant uploads — deterministically, rather than with a wall-clock
+    /// timeout that depends on the host.
     ///
     /// How a refusal surfaces is not uniform, and that is upstream's design.
-    /// A custom function's template field (`http_call.path`, `crypto.data`,
-    /// a model adapter) fails the task with `BUDGET_EXCEEDED`, non-retryable
-    /// — `engine::error` keeps that variant through the handler's own error
-    /// path. A built-in `map` mapping fails the task with status `500` and
-    /// keeps the reason for the log, which is how the engine reports every
+    /// A custom function's template field (`http_call.path`, `crypto.data`)
+    /// fails the task with `BUDGET_EXCEEDED`, non-retryable — `engine::error`
+    /// keeps that variant through the handler's own error path. A built-in
+    /// `map` mapping fails the task with status `500` and keeps the reason
+    /// for the log, which is how the engine reports every
     /// mapping failure. A **condition** — workflow, task, group or `filter` —
     /// fails closed to `false` and is only logged, because condition
     /// evaluation has no error channel; a ceiling low enough to trip an
     /// ordinary condition therefore reads as "no workflow matched". Size it
     /// from the heaviest legitimate expression in the estate, not from the
-    /// smallest — a `model_infer` task's `stats_output` reports `peak_ops`,
-    /// which is what one call's heaviest evaluation charged and therefore
-    /// what this ceiling has to clear.
+    /// smallest.
     pub ops_budget: u64,
     /// Cumulative task-dispatch ceiling for one root run (including loops,
     /// fan-out branches, and nested `channel_call` invocations) (`TD-03`).

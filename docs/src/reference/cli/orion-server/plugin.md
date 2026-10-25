@@ -26,7 +26,7 @@ A signature is an Ed25519 signature over the ASCII digest string `sha256:<64 hex
 | A directory | The component of every `plugin.toml` under it |
 | Any other file | The file itself |
 
-A manifest whose component is not on disk is an error, and so is a directory with no manifest in it. Signing nothing never reports success. A model manifest is refused with a pointer to [`orion-server model`](./model.md), which takes the same verbs.
+A manifest whose component is not on disk is an error, and so is a directory with no manifest in it. Signing nothing never reports success.
 
 | Verb | What it does |
 |---|---|
@@ -90,5 +90,4 @@ The same message and encodings are what the OpenSSL pipeline on the [manifest pa
 
 - [Plugin manifest](../../plugin-manifest.md): the `component` field and the signature rules.
 - [Server configuration › Plugins](../../configuration/plugins.md): `[plugins.trust]` and `public_keys`.
-- [`orion-server model`](./model.md): the same verbs for model artifacts.
 - [`orion-cli plugins`](../orion-cli/plugins.md): uploading a component with its `.sig`.

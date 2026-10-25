@@ -926,7 +926,6 @@ mod tests {
                 channels,
                 crate::engine::FunctionRegistry::builtin().clone(),
                 Arc::new(crate::plugin::PluginSet::empty()),
-                Arc::new(crate::model::ModelSet::empty()),
             );
         }
         World {
@@ -1698,15 +1697,15 @@ mod tests {
     }
 
     /// O25: the payload, the metadata and the result cross as values, with
-    /// no JSON between them, so a tensor in the caller's payload or
-    /// metadata reaches the target, and comes back, as a tensor. 1.12's
-    /// JSON bridge turned each into an object.
+    /// no JSON between them, so a datetime in the caller's payload or
+    /// metadata reaches the target, and comes back, as a datetime. 1.12's
+    /// JSON bridge turned each into a string.
     #[tokio::test]
     async fn values_cross_the_call_with_no_json_round_trip() {
-        let tensor = || {
-            OwnedDataValue::tensor(
-                dataflow_rs::datavalue::OwnedDataTensor::from_slice::<f32>(vec![2], &[1.5, 2.5])
-                    .expect("a tensor"),
+        let datetime = || {
+            OwnedDataValue::DateTime(
+                dataflow_rs::datavalue::DataDateTime::parse("2024-01-15T12:30:45Z")
+                    .expect("a datetime"),
             )
         };
         let target = chan(
@@ -1727,8 +1726,8 @@ mod tests {
             ),
         ])
         .await;
-        let payload = tensor();
-        let metadata = OwnedDataValue::Object(vec![("t".to_string(), tensor())]);
+        let payload = datetime();
+        let metadata = OwnedDataValue::Object(vec![("t".to_string(), datetime())]);
         let mut message = Message::from_parts(payload, OwnedDataValue::Null, metadata);
         let run = world
             .v4
@@ -1739,9 +1738,9 @@ mod tests {
             .context()
             .get(&"data.r".parse().expect("a path"))
             .expect("the result is written");
-        assert_eq!(r.get("sent"), Some(&tensor()));
-        assert_eq!(r.get("meta"), Some(&tensor()));
-        assert!(r.get("sent").is_some_and(OwnedDataValue::is_tensor));
+        assert_eq!(r.get("sent"), Some(&datetime()));
+        assert_eq!(r.get("meta"), Some(&datetime()));
+        assert!(matches!(r.get("sent"), Some(OwnedDataValue::DateTime(_))));
     }
 
     // -- The run's limits, and the call's own --

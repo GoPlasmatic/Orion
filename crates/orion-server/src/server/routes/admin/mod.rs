@@ -6,7 +6,6 @@ pub(crate) mod connectors;
 pub(crate) mod cron;
 pub(crate) mod engine;
 pub(crate) mod functions;
-pub(crate) mod models;
 pub(crate) mod packages;
 pub(crate) mod plugins;
 pub(crate) mod services;
@@ -663,7 +662,7 @@ pub(crate) struct StatusChangeQuery {
 }
 
 /// Query parameter accepted by `PATCH /workflows/{id}/rollout` and by
-/// the channel, workflow, plugin and model `DELETE`s — the other active-set
+/// the channel, workflow and plugin `DELETE`s — the other active-set
 /// mutations a bundle apply performs per entity.
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -821,8 +820,8 @@ fn audit_log_draft_only(
 /// [`audit_log_draft_only`] in those code paths.
 ///
 /// `reload` is [`ReloadMode::Defer`] only where the caller opted in via
-/// query parameter (status changes, rollout, and the channel, workflow,
-/// plugin and model deletes `package apply --prune` batches); the row is
+/// query parameter (status changes, rollout, and the channel, workflow and
+/// plugin deletes `package apply --prune` batches); the row is
 /// committed and the audit event recorded, but the engine keeps serving the
 /// previous active set — on this node *and* every peer, since the epoch bump
 /// is deferred with the rebuild — until `POST /engine/reload` runs.
@@ -959,27 +958,6 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         )
         .layer(axum::extract::DefaultBodyLimit::max(plugin_body_size));
 
-    // A model registration is JSON only — a manifest and a reference, never
-    // the bytes — so the admin plane's own limit is the right one.
-    let model_routes = Router::new()
-        .route("/", get(models::list_models).post(models::create_model))
-        .route("/import", post(models::import_models))
-        .route("/export", get(models::export_models))
-        .route("/validate", post(models::validate_model))
-        .route(
-            "/{id}",
-            get(models::get_model)
-                .put(models::update_model)
-                .delete(models::delete_model),
-        )
-        .route("/{id}/status", patch(models::change_model_status))
-        .route("/{id}/admit", post(models::admit_model))
-        .route("/{id}/dependencies", get(models::model_dependencies))
-        .route(
-            "/{id}/versions",
-            get(models::list_model_versions).post(models::create_new_model_version),
-        );
-
     let workflow_routes = Router::new()
         .route(
             "/",
@@ -1077,7 +1055,6 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
         .nest("/plugins", plugin_routes)
-        .nest("/models", model_routes)
         .nest("/connectors", connector_routes)
         .nest("/engine", engine_routes)
         .nest("/functions", function_routes)

@@ -327,7 +327,6 @@ async fn manifest_definitions(
         workflows: active_workflows,
         plugins: active_plugins,
         plugin_components,
-        models: Vec::new(),
     })
 }
 
@@ -518,7 +517,6 @@ async fn reload_with_manifest(
             workflows: active_workflows,
             plugins: plugin_rows,
             plugin_components,
-            models: model_rows,
         } = match manifest_revision {
             Some(target_rev) => manifest_definitions(state, target_rev).await?,
             None => state.repos.active_definitions().await?,
@@ -623,26 +621,6 @@ async fn reload_with_manifest(
             )
         };
 
-        // The model half, over the outgoing generation's set (I188). Its
-        // adapters were compiled on the process's expression engine, which
-        // no reload replaces, so a model whose manifest is unchanged keeps
-        // its compiled adapters and only a new or changed manifest is
-        // compiled; `ModelSet::reload` carries them. A workflow naming a
-        // model the set does not serve is quarantined with the reason, the
-        // way a workflow naming an unavailable plugin function is.
-        let models = Arc::new(crate::model::ModelSet::reload(
-            &current.models,
-            &model_rows,
-            &state.config.models,
-            state.models.is_some(),
-            &state.exprs,
-        ));
-        let mut engine_issues = engine_issues;
-        engine_issues.extend(super::models::load_issues(
-            &channels,
-            &active_workflows,
-            &models,
-        ));
         if manifest_revision.is_some() && !engine_issues.is_empty() {
             let details: Vec<String> = engine_issues
                 .iter()
@@ -723,7 +701,6 @@ async fn reload_with_manifest(
                     Arc::new(new_channels),
                     functions,
                     plugins,
-                    models,
                 )
             });
         let published = state.runtime.load();
@@ -770,15 +747,6 @@ async fn reload_with_manifest(
             .connector_registry
             .prune_breakers(&live_channels)
             .await;
-
-        // Warm what `models.preload` selects, off the publish's critical
-        // path: the generation serves now, and a request that arrives before
-        // its model is resident shares the load in flight.
-        super::models::spawn_preload(
-            super::models::PreloadDeps::from_state(state),
-            state.runtime.load(),
-            &active_workflows,
-        );
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

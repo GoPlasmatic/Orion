@@ -1,10 +1,8 @@
-//! `orion-server plugin …` and `orion-server model …`: digest, sign and
-//! verify the artifacts `[plugins.trust]` and `[models.trust]` check.
+//! `orion-server plugin …`: digest, sign and verify the components
+//! `[plugins.trust]` checks.
 //!
-//! One set of verbs, two nouns. The noun decides how a manifest resolves to
-//! the file whose digest is signed — a plugin's `component`, a model's
-//! `artifact` — and which trust table `-c` reads; everything else is shared.
-//! The digest, the signature and the check are the server's own
+//! A manifest resolves to the file whose digest is signed — its
+//! `component` — and `-c` names the trust table. The digest, the signature and the check are the server's own
 //! (`crypto::sha256_digest`, `crypto::ed25519`), so what these verbs produce
 //! is exactly what an upload is verified against, and the file convention
 //! is `orion::signatures`.
@@ -65,7 +63,7 @@ pub(crate) enum SigningCommand {
         /// apply --signatures` reads.
         #[arg(short, long, value_name = "FILE|DIR")]
         output: Option<String>,
-        /// Name each file `<plugin or model id>.sig` rather than after the
+        /// Name each file `<plugin id>.sig` rather than after the
         /// artifact file, for ids whose artifact files share a name.
         #[arg(long)]
         by_id: bool,
@@ -75,7 +73,7 @@ pub(crate) enum SigningCommand {
         /// A manifest, a directory searched for manifests, or a bare file.
         path: String,
         /// A trusted public key, base64. Repeatable. Without one, the keys
-        /// under `[plugins.trust]` (or `[models.trust]`) of the `-c` config
+        /// under `[plugins.trust]` of the `-c` config
         /// are used.
         #[arg(long = "public-key", value_name = "BASE64")]
         public_keys: Vec<String>,
@@ -92,7 +90,7 @@ pub(crate) enum SigningCommand {
 
 /// One artifact a verb acts on.
 struct Target {
-    /// The plugin or model id, when a manifest named the artifact.
+    /// The plugin id, when a manifest named the artifact.
     id: Option<String>,
     file: PathBuf,
     digest: String,
@@ -164,10 +162,9 @@ pub(crate) fn run(
 
 /// What `path` names, as artifacts with their digests.
 ///
-/// A directory is searched for the noun's manifests, and finding none is an
-/// error — signing nothing must not look like success. A manifest names its
-/// artifact, which must be on disk. The other noun's manifest is refused
-/// with the noun that takes it. Any other file is a bare artifact.
+/// A directory is searched for manifests, and finding none is an error —
+/// signing nothing must not look like success. A manifest names its
+/// artifact, which must be on disk. Any other file is a bare artifact.
 fn resolve(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
     let p = Path::new(path);
     if !p.exists() {
@@ -176,42 +173,18 @@ fn resolve(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
     if p.is_dir() {
         let mut targets = from_manifests(kind, path)?;
         if targets.is_empty() {
-            let other = match kind {
-                Kind::Plugin => Kind::Model,
-                Kind::Model => Kind::Plugin,
-            };
-            let hint = if from_manifests(other, path).is_ok_and(|t| !t.is_empty()) {
-                format!(
-                    " — it holds {} manifests; use `orion-server {}`",
-                    other.noun(),
-                    other.noun()
-                )
-            } else {
-                String::new()
-            };
-            return Err(format!("no {} manifest under {path}{hint}", kind.noun()).into());
+            return Err(format!("no {} manifest under {path}", kind.noun()).into());
         }
         targets.sort_by(|a, b| a.file.cmp(&b.file));
         return Ok(targets);
     }
-    // A file: a manifest of this noun, the other noun's (refused), or bare.
-    let text = std::fs::read_to_string(p).ok();
-    let as_plugin = text
-        .as_deref()
-        .is_some_and(orion::definitions::is_plugin_manifest);
-    let as_model = text.as_deref().is_some_and(|t| {
-        serde_json::from_str::<serde_json::Value>(t)
-            .is_ok_and(|doc| orion::model::is_model_manifest(&doc))
-    });
-    match (kind, as_plugin, as_model) {
-        (Kind::Plugin, true, _) | (Kind::Model, _, true) => from_manifests(kind, path),
-        (Kind::Plugin, _, true) => {
-            Err(format!("{path} is a model manifest — use `orion-server model`").into())
-        }
-        (Kind::Model, true, _) => {
-            Err(format!("{path} is a plugin manifest — use `orion-server plugin`").into())
-        }
-        _ => {
+    // A file: a manifest, or a bare artifact.
+    let as_plugin = std::fs::read_to_string(p)
+        .ok()
+        .is_some_and(|text| orion::definitions::is_plugin_manifest(&text));
+    match as_plugin {
+        true => from_manifests(kind, path),
+        false => {
             let bytes = std::fs::read(p).map_err(|e| format!("{path}: {e}"))?;
             Ok(vec![Target {
                 id: None,
@@ -230,7 +203,6 @@ fn from_manifests(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
     let dirs = [path.to_string()];
     let findings = match kind {
         Kind::Plugin => set.add_plugin_dirs(&dirs)?,
-        Kind::Model => set.add_model_dirs(&dirs)?,
     };
     let errors: Vec<_> = findings.iter().filter(|f| f.is_error()).collect();
     if !errors.is_empty() {
@@ -254,22 +226,6 @@ fn from_manifests(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
                         &plugin.origin,
                         "component",
                         plugin.manifest.component.as_deref(),
-                    )),
-                }
-            }
-        }
-        Kind::Model => {
-            for model in &set.models {
-                match (&model.artifact_path, &model.digest) {
-                    (Some(file), Some(digest)) => targets.push(Target {
-                        id: Some(model.manifest.name.clone()),
-                        file: file.clone(),
-                        digest: digest.clone(),
-                    }),
-                    _ => missing.push(missing_artifact(
-                        &model.origin,
-                        "artifact",
-                        model.manifest.artifact.as_deref(),
                     )),
                 }
             }
@@ -526,7 +482,6 @@ fn verify(
 fn trusted_keys(kind: Kind, config_path: Option<&str>) -> Result<Vec<String>, CliError> {
     let section = match kind {
         Kind::Plugin => "[plugins.trust]",
-        Kind::Model => "[models.trust]",
     };
     let Some(config_path) = config_path else {
         return Err(format!(
@@ -538,7 +493,6 @@ fn trusted_keys(kind: Kind, config_path: Option<&str>) -> Result<Vec<String>, Cl
     let config = orion::config::load_config(Some(config_path))?;
     let keys = match kind {
         Kind::Plugin => config.plugins.trust.public_keys,
-        Kind::Model => config.models.trust.public_keys,
     };
     if keys.is_empty() {
         return Err(format!(

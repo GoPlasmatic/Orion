@@ -62,11 +62,6 @@ impl Entity {
 pub struct Boundary {
     pub channels: Vec<String>,
     pub connectors: Vec<String>,
-    /// Model ids a `model_infer` task may name without a manifest in the
-    /// set — an artifact's `requires.models`. A directory has no flag for
-    /// this: a manifest without its artifact is all a set needs to lint,
-    /// and costs nothing to carry.
-    pub models: Vec<String>,
 }
 
 impl Boundary {
@@ -76,10 +71,6 @@ impl Boundary {
 
     pub fn allows_connector(&self, name: &str) -> bool {
         self.connectors.iter().any(|n| n == name)
-    }
-
-    pub fn allows_model(&self, id: &str) -> bool {
-        self.models.iter().any(|n| n == id)
     }
 }
 
@@ -244,122 +235,12 @@ pub fn is_plugin_manifest(text: &str) -> bool {
     })
 }
 
-/// A model manifest that travels with a set — a `model.json` in the tree, a
-/// `--model-dir`, or a `models[]` entry of an artifact.
-///
-/// The fifth kind. Found by shape like an entity (`abi` under
-/// `orion:model@`), and what the set needs from it is the id a literal
-/// `model_infer` reference must resolve to, plus — when the file the
-/// manifest's `artifact` names sits beside it — the digest and the graph's
-/// stats, which are what `lint` reports, `compile` hashes and an offline run
-/// loads.
-#[derive(Debug, Clone)]
-pub struct ModelDefinition {
-    /// How to name the manifest in a finding — its path, or `models[2]`.
-    pub origin: String,
-    pub manifest: crate::model::Manifest,
-    /// The artifact file, when the manifest was read from disk and names one
-    /// that exists. What `dry-run` and `test` load.
-    pub artifact_path: Option<PathBuf>,
-    /// `sha256:…` of that file, read at load. `None` when there is no file:
-    /// the set still checks references against the manifest, and only
-    /// running the model or compiling it into an artifact needs the bytes.
-    pub digest: Option<String>,
-    /// The file's size, with the digest.
-    pub artifact_bytes: Option<u64>,
-    /// What the graph says about itself, read from the bytes the way
-    /// admission reads them — or why they do not read as a graph. `None`
-    /// without a file.
-    pub graph: Option<Result<crate::model::GraphStats, String>>,
-}
-
-/// Why a file whose `abi` says model is not a usable manifest.
-///
-/// Two cases rather than one string, because they report differently: a
-/// validation failure has a problem per field and a path for each, which is
-/// what an author fixes from, and an unreadable file has neither.
-pub enum ModelReadError {
-    /// The manifest file, or the artifact beside it, could not be read.
-    Unreadable(String),
-    /// It is JSON and it did not validate: every problem, each with its path
-    /// into the document.
-    Invalid(Vec<crate::errors::FieldError>),
-}
-
-impl ModelDefinition {
-    /// The manifest read from `path`, with the artifact beside it hashed
-    /// and read when it is there.
-    pub fn from_file(path: &Path) -> Result<Self, ModelReadError> {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| ModelReadError::Unreadable(e.to_string()))?;
-        let manifest = crate::model::Manifest::parse(&text).map_err(ModelReadError::Invalid)?;
-        let artifact_path = manifest
-            .artifact
-            .as_deref()
-            .map(|rel| path.parent().unwrap_or_else(|| Path::new(".")).join(rel))
-            .filter(|p| p.is_file());
-        let (digest, artifact_bytes, graph) = match &artifact_path {
-            Some(p) => {
-                let bytes = std::fs::read(p).map_err(|e| {
-                    ModelReadError::Unreadable(format!("reading '{}': {e}", p.display()))
-                })?;
-                (
-                    Some(crate::crypto::sha256_digest(&bytes)),
-                    Some(bytes.len() as u64),
-                    Some(crate::model::read_stats(&bytes)),
-                )
-            }
-            None => (None, None, None),
-        };
-        Ok(Self {
-            origin: path.display().to_string(),
-            manifest,
-            artifact_path,
-            digest,
-            artifact_bytes,
-            graph,
-        })
-    }
-
-    /// A manifest with no file behind it — an artifact's `models[]` entry,
-    /// whose bytes live in a bucket the target fetches from.
-    pub fn from_manifest(origin: String, manifest: crate::model::Manifest) -> Self {
-        Self {
-            origin,
-            manifest,
-            artifact_path: None,
-            digest: None,
-            artifact_bytes: None,
-            graph: None,
-        }
-    }
-
-    /// What an offline run loads, when the artifact is on disk and reads as
-    /// a graph.
-    pub fn manifest_entry(&self) -> Option<crate::model::ManifestEntry> {
-        let artifact_path = self.artifact_path.clone()?;
-        let digest = self.digest.clone()?;
-        let stats = match (&self.graph, self.artifact_bytes) {
-            (Some(Ok(graph)), Some(bytes)) => Some(crate::model::Stats::offline(graph, bytes)),
-            _ => None,
-        };
-        Some(crate::model::ManifestEntry {
-            manifest: self.manifest.clone(),
-            artifact_path,
-            digest,
-            stats,
-        })
-    }
-}
-
 /// Channels, workflows and connectors that must be consistent with each other.
 #[derive(Debug, Default, Clone)]
 pub struct DefinitionSet {
     pub definitions: Vec<Definition>,
     /// The plugin manifests the set carries, in origin order.
     pub plugins: Vec<PluginDefinition>,
-    /// The model manifests the set carries, in origin order.
-    pub models: Vec<ModelDefinition>,
 }
 
 /// What a directory load skipped, so the caller can say so.
@@ -422,95 +303,6 @@ impl DefinitionSet {
         self.plugins
             .iter()
             .find(|p| function.starts_with(&format!("{}.", p.manifest.name)))
-    }
-
-    /// The model manifest for `id`, when the set carries one.
-    pub fn model_of(&self, id: &str) -> Option<&ModelDefinition> {
-        self.models.iter().find(|m| m.manifest.name == id)
-    }
-
-    /// Add every model manifest under each of `dirs` — the `--model-dir`
-    /// flag. A JSON file whose `abi` is in the `orion:model@` family is a
-    /// manifest; every other file is left alone. Problems reading one are
-    /// findings rather than a refusal of the whole set, like an unreadable
-    /// entity file.
-    pub fn add_model_dirs(
-        &mut self,
-        dirs: &[String],
-    ) -> Result<Vec<super::diagnostic::Diagnostic>, String> {
-        let mut findings = Vec::new();
-        for dir in dirs {
-            let dir = Path::new(dir);
-            if dir.is_file() {
-                if let Ok(doc) = std::fs::read_to_string(dir)
-                    .map_err(|e| e.to_string())
-                    .and_then(|raw| serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string()))
-                    && crate::model::is_model_manifest(&doc)
-                {
-                    self.add_model_file(dir, &mut findings);
-                }
-                continue;
-            }
-            let mut paths = Vec::new();
-            walk_json_files(dir, &mut |path, parsed, _spans| {
-                if parsed.is_ok_and(|doc| crate::model::is_model_manifest(&doc)) {
-                    paths.push(path);
-                }
-            })?;
-            paths.sort();
-            for path in paths {
-                self.add_model_file(&path, &mut findings);
-            }
-        }
-        Ok(findings)
-    }
-
-    fn add_model_file(&mut self, path: &Path, findings: &mut Vec<super::diagnostic::Diagnostic>) {
-        match ModelDefinition::from_file(path) {
-            Ok(model) => {
-                if let Some(existing) = self.model_of(&model.manifest.name) {
-                    findings.push(super::diagnostic::Diagnostic::error(
-                        "duplicate.model",
-                        format!("model '{}'", model.manifest.name),
-                        format!("declared twice: {} and {}", existing.origin, path.display()),
-                    ));
-                    return;
-                }
-                self.models.push(model);
-            }
-            // A file the walk recognised as a manifest and the validator
-            // then refused is a definition with a problem, not a file that
-            // was never one: every field error is reported under its own
-            // path, the way a workflow's schema refusal is, so the author
-            // reads the same message here as `POST /admin/models` gives.
-            Err(ModelReadError::Invalid(problems)) => {
-                let origin = path.display().to_string();
-                let spans = std::fs::read_to_string(path)
-                    .ok()
-                    .and_then(|text| super::json::Document::parse(&text).ok());
-                findings.extend(problems.iter().map(|problem| {
-                    let d = super::diagnostic::Diagnostic::from_field_error(
-                        "parse.model",
-                        "model manifest",
-                        problem,
-                    );
-                    let line = d
-                        .path
-                        .as_deref()
-                        .and_then(|p| spans.as_ref()?.locate(p))
-                        .map(|span| spans.as_ref().expect("located in it").line_col(span.start));
-                    let path = d.path.clone();
-                    d.with_location(&origin, path.as_deref(), line)
-                }));
-            }
-            Err(ModelReadError::Unreadable(reason)) => {
-                findings.push(super::diagnostic::Diagnostic::error(
-                    "parse.model",
-                    "model manifest",
-                    format!("not a valid model manifest: {reason}"),
-                ))
-            }
-        }
     }
 
     /// Add every manifest under each of `dirs` — the `--plugin-dir` flag.
@@ -593,7 +385,6 @@ impl DefinitionSet {
                 })
                 .collect(),
             plugins: Vec::new(),
-            models: Vec::new(),
         }
     }
 
@@ -807,12 +598,6 @@ fn walk(
             None if super::SharedDefinitions::is_shared_document(&doc) => {
                 shared_docs.push((path.display().to_string(), doc));
             }
-            // A model manifest is JSON like an entity, found by its `abi`
-            // rather than a filename, so a set holds its models where it
-            // holds everything else.
-            None if crate::model::is_model_manifest(&doc) => {
-                set.add_model_file(&path, &mut report.findings);
-            }
             None => report.skipped.push(path),
         }
     })
@@ -895,108 +680,5 @@ mod tests {
         let b = Boundary::default();
         assert!(!b.allows_channel("anything"));
         assert!(!b.allows_connector("anything"));
-        assert!(!b.allows_model("anything"));
-    }
-
-    /// A model manifest in the tree is the fifth kind: found by its `abi`,
-    /// its artifact hashed and read when it sits beside it, and reported as
-    /// a manifest without one otherwise. A `--model-dir` finds the same
-    /// files by the same rule, and a second manifest for one id is a
-    /// duplicate.
-    #[test]
-    fn model_manifests_are_found_by_shape_and_their_artifacts_read() {
-        use crate::model::fixture;
-        let dir = std::env::temp_dir().join(format!("orion-defs-models-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("models/c4")).expect("test fixture");
-        std::fs::create_dir_all(dir.join("elsewhere")).expect("test fixture");
-        std::fs::write(dir.join("models/c4/model.json"), fixture::MANIFEST).expect("test fixture");
-        std::fs::write(dir.join("models/c4/c4-tiny.onnx"), fixture::ONNX).expect("test fixture");
-        // A manifest whose artifact is not there — deployable, not runnable.
-        std::fs::write(
-            dir.join("elsewhere/model.json"),
-            fixture::MANIFEST.replace("ada.c4-tiny", "ada.other"),
-        )
-        .expect("test fixture");
-        std::fs::write(
-            dir.join("wf.json"),
-            r#"{"name":"w","workflow_id":"w","tasks":[]}"#,
-        )
-        .expect("test fixture");
-
-        let (set, report) = DefinitionSet::from_directory(&dir).expect("loads");
-        assert!(report.findings.is_empty(), "{:?}", report.findings);
-        assert_eq!(set.count(Entity::Workflow), 1);
-        assert_eq!(set.models.len(), 2, "both manifests are models, not skips");
-        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
-
-        let c4 = set.model_of("ada.c4-tiny").expect("the fixture");
-        assert!(
-            c4.artifact_path
-                .as_ref()
-                .is_some_and(|p| p.ends_with("c4-tiny.onnx"))
-        );
-        assert_eq!(
-            c4.digest.as_deref(),
-            Some(crate::crypto::sha256_digest(fixture::ONNX).as_str())
-        );
-        assert_eq!(c4.artifact_bytes, Some(fixture::ONNX.len() as u64));
-        let graph = c4.graph.as_ref().expect("read").as_ref().expect("a graph");
-        assert_eq!(graph.parameters, 1479);
-        let entry = c4.manifest_entry().expect("runnable");
-        assert_eq!(entry.stats.as_ref().map(|s| s.parameters), Some(1479));
-        assert_eq!(entry.stats.as_ref().map(|s| s.artifact_bytes), Some(6171));
-
-        let other = set.model_of("ada.other").expect("the other");
-        assert!(other.artifact_path.is_none());
-        assert!(other.digest.is_none() && other.graph.is_none());
-        assert!(other.manifest_entry().is_none(), "nothing to run");
-
-        // `--model-dir` over the same tree finds the same two, and a second
-        // copy of one is a duplicate rather than a silent replacement.
-        let mut by_flag = DefinitionSet::default();
-        let findings = by_flag
-            .add_model_dirs(&[dir.display().to_string()])
-            .expect("walks");
-        assert!(findings.is_empty(), "{findings:?}");
-        assert_eq!(by_flag.models.len(), 2);
-        let findings = by_flag
-            .add_model_dirs(&[dir.join("models/c4/model.json").display().to_string()])
-            .expect("walks");
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].check, "duplicate.model");
-        assert_eq!(by_flag.models.len(), 2);
-
-        // A file that is a model by `abi` but not a valid manifest is a
-        // parse finding, not a skip — one per problem, each keeping the path
-        // and the file it is in, so the author reads what the admin API
-        // would have told them rather than a joined string.
-        std::fs::write(
-            dir.join("elsewhere/broken.json"),
-            "{\n  \"abi\": \"orion:model@1.0.0\",\n  \"name\": \"Bad.Name\",\n  \"version\": \"\"\n}",
-        )
-        .expect("test fixture");
-        let (_, report) = DefinitionSet::from_directory(&dir).expect("loads");
-        let parse: Vec<_> = report
-            .findings
-            .iter()
-            .filter(|f| f.check == "parse.model")
-            .collect();
-        let paths: Vec<_> = parse.iter().filter_map(|f| f.path.as_deref()).collect();
-        assert_eq!(paths, ["name", "version", "inputs"], "{parse:?}");
-        assert!(
-            parse.iter().all(|f| f
-                .file
-                .as_deref()
-                .is_some_and(|p| p.ends_with("broken.json"))),
-            "every problem names the file it is in: {parse:?}"
-        );
-        // A path the document has is located; `inputs` is missing rather than
-        // wrong, so there is no line to point at and none is invented.
-        assert_eq!(
-            parse.iter().map(|f| f.line.is_some()).collect::<Vec<_>>(),
-            [true, true, false],
-            "{parse:?}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

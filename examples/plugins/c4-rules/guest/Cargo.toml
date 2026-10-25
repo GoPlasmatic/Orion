@@ -1,9 +1,9 @@
 # The source of the `c4.rules` example plugin: the rules of Connect Four as
-# three pure functions — the referee of the c4-tournament example, where a
-# tiny ONNX model picks the column and this plugin says what the move did.
+# three pure functions — the referee of the c4-referee example, where the
+# caller picks the column and this plugin says what the move did.
 # Built on `orion-plugin-sdk` for wasm32-unknown-unknown and turned into a
 # component by `wasm-tools` (see ../build.sh); the built bytes are committed
-# beside the manifest in examples/packages/c4-tournament/ so the example
+# beside the manifest in examples/packages/c4-referee/ so the example
 # deploys without a wasm toolchain. `cargo test` here runs the rules on the
 # host, with no wasm target involved.
 [package]

@@ -43,8 +43,8 @@ Four words carry the last column:
 - **You need gRPC, WebSockets or a streaming response.** REST, plain HTTP and a cron schedule are the whole ingress surface.
 - **The logic needs a real programming language with I/O.** A pure transformation ships as a [plugin](../../concepts/plugins.md): a WebAssembly component in a sandbox with no filesystem, clock, network or secrets. Anything that talks to another system stays an `http_call` to a service you write. [What you can extend](../../concepts/how-orion-works.md#what-you-can-extend) states the boundary exactly.
 - **You need full OIDC flows or mTLS at the data plane** with nothing in front. JWT verification is built in; the login redirect dance and client certificates are not.
-- **The request needs heavy computation.** Task functions parse, map, validate, talk to other systems, and run an admitted [model](../../concepts/models.md) small enough to pass its probe ceiling. Image processing, training and large in-memory joins are not what Orion is for.
-- **You need an app catalogue.** There are four connector types. Reaching a SaaS API means an `http_call` you write.
+- **The request needs heavy computation.** Task functions parse, map, validate and talk to other systems. Image processing, model inference, training and large in-memory joins are not what Orion is for.
+- **You need an app catalogue.** There are three connector types. Reaching a SaaS API means an `http_call` you write.
 
 > [!WARNING]
 > Plan for authentication before you expose a channel. The admin plane authenticates by configuration; a data channel authenticates only if it declares an `auth` block (API key, HMAC signature or JWT). Without one, anything that can reach the port can call the service. [Secure an instance](../../operate/run/security.md) says what to configure.

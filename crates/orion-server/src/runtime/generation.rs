@@ -32,14 +32,13 @@ use arc_swap::ArcSwap;
 
 use crate::channel::ChannelSnapshot;
 use crate::engine::FunctionRegistry;
-use crate::model::ModelSet;
 use crate::plugin::PluginSet;
 
 tokio::task_local! {
     /// Pinned [`RuntimeGeneration`] for the current root run (`V2-05.2`, `V2-05.3`).
     ///
     /// When set via `PINNED_GENERATION.scope(Arc::clone(&generation), fut)`,
-    /// nested `channel_call`, guard stores, and model inference inside `fut`
+    /// nested `channel_call` and guard stores inside `fut`
     /// resolve against the parent's admitted generation rather than observing
     /// a newer generation published mid-run.
     pub static PINNED_GENERATION: Arc<RuntimeGeneration>;
@@ -72,13 +71,6 @@ pub struct RuntimeGeneration {
     /// `/health` and `GET /plugins/{id}` read it, and a reload compares its
     /// fingerprint to decide whether the engine must be rebuilt.
     pub plugins: Arc<PluginSet>,
-    /// The models this generation can run — each with its adapters compiled
-    /// on the process's expression engine, which the set holds and every
-    /// reload keeps, so a model whose manifest is unchanged carries its
-    /// compiled adapters into the next generation (I188) — and the reasons
-    /// any active row did not load. `model_infer` resolves through it;
-    /// `/health` and `GET /models/{id}` read it.
-    pub models: Arc<ModelSet>,
     /// Immutable snapshot of resolved connector configurations published with
     /// this generation (`TD-07`). When `Some`, connector tasks executing under
     /// [`PINNED_GENERATION`] resolve against this snapshot rather than reading
@@ -93,14 +85,13 @@ pub struct RuntimeGeneration {
 }
 
 /// Everything one generation is built from, published together by
-/// [`RuntimeHandle::publish_parts`]. The first five are what every
+/// [`RuntimeHandle::publish_parts`]. The first four are what every
 /// generation needs; the rest default.
 pub struct GenerationParts {
     pub engine: dataflow_rs::Engine,
     pub channels: Arc<ChannelSnapshot>,
     pub functions: Arc<FunctionRegistry>,
     pub plugins: Arc<PluginSet>,
-    pub models: Arc<ModelSet>,
     pub connectors:
         Option<Arc<std::collections::HashMap<String, Arc<crate::connector::ConnectorConfig>>>>,
     pub run_budget_limits: crate::engine::budget::RunBudgetLimits,
@@ -113,14 +104,12 @@ impl GenerationParts {
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
         plugins: Arc<PluginSet>,
-        models: Arc<ModelSet>,
     ) -> Self {
         Self {
             engine,
             channels,
             functions,
             plugins,
-            models,
             connectors: None,
             run_budget_limits: Default::default(),
             connector_authority: Default::default(),
@@ -186,7 +175,6 @@ impl RuntimeHandle {
                 channels,
                 functions,
                 plugins: Arc::new(PluginSet::empty()),
-                models: Arc::new(ModelSet::empty()),
                 connectors: None,
                 run_budget_limits: Default::default(),
                 connector_authority: Default::default(),
@@ -216,8 +204,8 @@ impl RuntimeHandle {
 
     /// Publish the next generation. Returns its id.
     ///
-    /// The engines, the channels, the function registry, the plugin set and
-    /// the model set must be built from the same rows; taking them together
+    /// The engines, the channels, the function registry and the plugin set
+    /// must be built from the same rows; taking them together
     /// is what makes that the only way to say it. Readers already holding a
     /// generation finish on it; every load after this returns the new one.
     pub fn publish(
@@ -226,11 +214,8 @@ impl RuntimeHandle {
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
         plugins: Arc<PluginSet>,
-        models: Arc<ModelSet>,
     ) -> u64 {
-        self.publish_parts(GenerationParts::new(
-            engine, channels, functions, plugins, models,
-        ))
+        self.publish_parts(GenerationParts::new(engine, channels, functions, plugins))
     }
 
     /// [`Self::publish`], with every part of the generation stated.
@@ -240,7 +225,6 @@ impl RuntimeHandle {
             channels,
             functions,
             plugins,
-            models,
             connectors,
             run_budget_limits,
             connector_authority,
@@ -252,7 +236,6 @@ impl RuntimeHandle {
             channels,
             functions,
             plugins,
-            models,
             connectors,
             run_budget_limits,
             connector_authority,
@@ -303,7 +286,6 @@ mod tests {
             Arc::new(ChannelSnapshot::empty()),
             FunctionRegistry::builtin().clone(),
             Arc::new(PluginSet::empty()),
-            Arc::new(ModelSet::empty()),
         )
     }
 

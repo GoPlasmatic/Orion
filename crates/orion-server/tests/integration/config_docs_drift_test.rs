@@ -81,13 +81,6 @@ const NO_DEFAULT: &[&str] = &[
     "plugins.overrides.max_concurrency",
     "plugins.overrides.max_request_bytes",
     "plugins.overrides.max_response_bytes",
-    // The fields of the `[[models.overrides]]` array of tables, the same
-    // shape: every one an `Option`, and `id` names the model.
-    "models.overrides.id",
-    "models.overrides.timeout_ms",
-    "models.overrides.max_concurrency",
-    "models.overrides.max_input_elements",
-    "models.overrides.max_output_elements",
 ];
 
 /// Settings where the derived `Default` and the `#[serde(default = "…")]`
@@ -139,8 +132,8 @@ fn documented_defaults() -> BTreeMap<String, toml::Value> {
 }
 
 /// [`documented_defaults`] plus the rows only the derived `Default` carries:
-/// the entries of a map keyed by a free-form name (`models.default_runtime`,
-/// format → runtime) have no serde default of their own — declaring the
+/// the entries of a map keyed by a free-form name have no serde default of
+/// their own — declaring the
 /// table in a file and writing nothing under it is an empty map, which is
 /// what the skeleton produces — so their documented value can only be the
 /// no-config-file one. Every other path is identical in both, which
@@ -983,51 +976,4 @@ fn config_example_parses_as_toml() {
 fn config_example_loads_through_the_real_entry_point() {
     orion::config::load_config(Some(EXAMPLE_TOML))
         .expect("config.toml.example must load with no environment variables set");
-}
-
-/// The device names the reference documents for `models.runtimes.tract.device`
-/// are the ones the code knows.
-///
-/// The rest of this file pins config *keys*; this pins one key's *values*,
-/// because they are the one place a build's capabilities leak into prose. A
-/// runtime gaining a device (or tract dropping one) changes what an operator
-/// may write, and the `Devices` section — which carries the measured cost and
-/// the determinism caveat for each — is where they find out. `devices_of` is
-/// the static table config validation reads, so this compares the two lists
-/// that must agree and says which way they drifted.
-#[test]
-fn the_documented_tract_devices_are_the_ones_the_code_knows() {
-    let known = orion::model::runtimes::devices_of("tract").expect("tract is a known runtime");
-    let reference = read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/src/reference/configuration/models.md"
-    ));
-
-    // The row and the section both enumerate them; the row is the normative
-    // one, so it is what is compared.
-    let row = reference
-        .lines()
-        .find(|line| line.contains("`models.runtimes.tract.device`"))
-        .expect("configuration/models.md must document models.runtimes.tract.device");
-
-    for device in known {
-        assert!(
-            row.contains(&format!("`{device}`")),
-            "device '{device}' is in devices_of(\"tract\") but not in the \
-             models.runtimes.tract.device row of configuration/models.md — document it, with what it \
-             costs and whether it reproduces the CPU path"
-        );
-    }
-    for quoted in row.split('`').skip(1).step_by(2) {
-        // The row also spells the setting's path, its `"cpu"` default and a
-        // section link; a device name is a bare lowercase word.
-        if !quoted.chars().all(|c| c.is_ascii_lowercase()) {
-            continue;
-        }
-        assert!(
-            known.contains(&quoted),
-            "configuration/models.md offers device '{quoted}' for tract, which devices_of(\"tract\") \
-             does not list"
-        );
-    }
 }

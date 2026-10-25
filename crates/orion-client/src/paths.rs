@@ -101,31 +101,6 @@ pub fn plugin_dependencies(id: &str) -> String {
     format!("{PLUGINS}/{}/dependencies", seg(id))
 }
 
-// -- Admin: models --
-pub const MODELS: &str = "/api/v2/admin/models";
-pub const MODELS_EXPORT: &str = "/api/v2/admin/models/export";
-pub const MODELS_IMPORT: &str = "/api/v2/admin/models/import";
-pub const MODELS_VALIDATE: &str = "/api/v2/admin/models/validate";
-
-pub fn model(id: &str) -> String {
-    format!("{MODELS}/{}", seg(id))
-}
-pub fn model_status(id: &str) -> String {
-    format!("{MODELS}/{}/status", seg(id))
-}
-/// Re-run a model version's admission — fetch, verify and probe the
-/// artifact again. A `POST` with no body; the server answers `202` with the
-/// row back at `admission.state = "pending"`.
-pub fn model_admit(id: &str) -> String {
-    format!("{MODELS}/{}/admit", seg(id))
-}
-pub fn model_versions(id: &str) -> String {
-    format!("{MODELS}/{}/versions", seg(id))
-}
-pub fn model_dependencies(id: &str) -> String {
-    format!("{MODELS}/{}/dependencies", seg(id))
-}
-
 // -- Admin: connectors --
 pub const CONNECTORS: &str = "/api/v2/admin/connectors";
 pub const CONNECTORS_EXPORT: &str = "/api/v2/admin/connectors/export";
@@ -294,14 +269,6 @@ mod tests {
         );
         assert_eq!(data_async("orders"), "/api/v2/data/orders/async");
         assert_eq!(package("billing"), "/api/v2/admin/packages/billing");
-        assert_eq!(
-            model_admit("acme.fraud"),
-            "/api/v2/admin/models/acme.fraud/admit"
-        );
-        assert_eq!(
-            model_dependencies("acme.fraud"),
-            "/api/v2/admin/models/acme.fraud/dependencies"
-        );
     }
 
     /// The defect this encoding exists for. `execute` concatenates the path
@@ -340,7 +307,6 @@ mod tests {
             assert_eq!(channel(id), format!("/api/v2/admin/channels/{id}"));
             assert_eq!(connector(id), format!("/api/v2/admin/connectors/{id}"));
             assert_eq!(plugin(id), format!("/api/v2/admin/plugins/{id}"));
-            assert_eq!(model(id), format!("/api/v2/admin/models/{id}"));
             assert_eq!(trace(id), format!("/api/v2/admin/traces/{id}"));
             assert_eq!(package(id), format!("/api/v2/admin/packages/{id}"));
         }
@@ -358,7 +324,6 @@ mod tests {
             trace_dlq_requeue("a b"),
             "/api/v2/admin/trace-dlq/a%20b/requeue"
         );
-        assert_eq!(model_admit("a/b"), "/api/v2/admin/models/a%2Fb/admit");
     }
 
     #[test]

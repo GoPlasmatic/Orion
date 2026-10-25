@@ -324,9 +324,6 @@ use super::db_write::DB_WRITE_FIELDS;
 use super::http_call::HTTP_CALL_FIELDS;
 use super::jwt_sign::JWT_SIGN_FIELDS;
 use super::jwt_verify::JWT_VERIFY_FIELDS;
-use super::model_infer::MODEL_INFER_FIELDS;
-use super::storage_head::STORAGE_HEAD_FIELDS;
-use super::storage_presign::STORAGE_PRESIGN_FIELDS;
 
 const REGISTRY: &[FunctionSchema] = &[
     FunctionSchema {
@@ -480,24 +477,6 @@ const REGISTRY: &[FunctionSchema] = &[
         validate_static: Some(super::jwt_verify::validate_static_input),
     },
     FunctionSchema {
-        name: "model_infer",
-        description: "Run an admitted ONNX model on the named runtime: the manifest's adapters turn `input` into tensors and the outputs back into JSON.",
-        category: "compute",
-        // Strict like crypto: a typoed `raw` or `stats_output` would silently
-        // mean "the default", and the default writes somewhere else.
-        input_fields: MODEL_INFER_FIELDS,
-        writes: WriteShape::OutputPath {
-            default_root: Some(crate::model::handler::DEFAULT_OUTPUT),
-        },
-        // A function of the input and the model's weights; nothing outside
-        // the message changes. A retry re-runs the graph and lands the same
-        // tensors.
-        retry_safety: RetrySafety::Pure,
-        connector: None,
-        deny_unknown: true,
-        validate_static: Some(super::model_infer::validate_static_input),
-    },
-    FunctionSchema {
         name: "http_call",
         description: "HTTP request to an HTTP connector with retry + circuit breaker.",
         category: "connector",
@@ -505,28 +484,6 @@ const REGISTRY: &[FunctionSchema] = &[
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::DependsOn { input: "method" },
         connector: ConnectorRule::of(&[ConnectorType::Http]),
-        deny_unknown: true,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "storage_presign",
-        description: "Compute a time-limited presigned URL for one object — no data path.",
-        category: "connector",
-        input_fields: STORAGE_PRESIGN_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Pure,
-        connector: ConnectorRule::of(&[ConnectorType::Storage]),
-        deny_unknown: true,
-        validate_static: Some(super::storage_presign::validate_static_input),
-    },
-    FunctionSchema {
-        name: "storage_head",
-        description: "Object metadata (exists/size/etag) from a storage connector.",
-        category: "connector",
-        input_fields: STORAGE_HEAD_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Read,
-        connector: ConnectorRule::of(&[ConnectorType::Storage]),
         deny_unknown: true,
         validate_static: None,
     },

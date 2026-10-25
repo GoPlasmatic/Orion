@@ -3,19 +3,18 @@
 //!
 //! These lived in `engine::operators`, which is where the JSONLogic
 //! `base64_encode` / `hex_decode` family is registered. That made the operator
-//! module the accidental home of shared crypto, and four modules that have
-//! nothing to do with JSONLogic reached *upward* into the engine to borrow it:
-//! `channel::auth` for HMAC webhook verification, `connector::sigv4` for AWS
-//! request signing, `jwt` for decoding key material, and the `crypto` task
-//! function. A primitive every layer needs belongs below all of them.
+//! module the accidental home of shared crypto, and modules that have nothing
+//! to do with JSONLogic reached *upward* into the engine to borrow it:
+//! `channel::auth` for HMAC webhook verification, `jwt` for decoding key
+//! material, and the `crypto` task function. A primitive every layer needs belongs below all of them.
 //!
 //! Nothing here is new — it is the same code, one level down — and that is
 //! deliberate: these are the spellings the security-sensitive paths already
 //! agreed on, and the value of having one of each is exactly that it is one.
 //! The same argument brought [`sha256_digest`] and [`ed25519`] down from the
-//! plugin sandbox when models arrived: a plugin component and a model
-//! artifact are identified by the same `sha256:<hex>` string and signed the
-//! same way, and neither `plugin` nor `model` may name the other.
+//! plugin sandbox: an artifact is identified by a `sha256:<hex>` string and
+//! signed the same way wherever it is checked, and the check belongs below
+//! every module that makes it.
 
 use base64::Engine as _;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -74,9 +73,8 @@ pub fn encode_bytes(codec: Codec, bytes: &[u8]) -> String {
 
 /// Percent-encode one string per RFC 3986: unreserved characters
 /// (`A–Z a–z 0–9 - _ . ~`) stay, everything else is `%XX` uppercase, and
-/// `/` too unless `keep_slash`. The one encoder in the tree: the
-/// `url_encode` operator and SigV4 signing both use it, so the two can never
-/// disagree about the unreserved set.
+/// `/` too unless `keep_slash`. The one encoder in the tree, behind the
+/// `url_encode` operator, so every caller agrees about the unreserved set.
 pub fn uri_encode(s: &str, keep_slash: bool) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.bytes() {

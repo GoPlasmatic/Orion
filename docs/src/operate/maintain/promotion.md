@@ -4,7 +4,7 @@
 
 # Promote between environments
 
-Promotion moves one service from one instance to another: dev to QA to production, or a template instance out to every region. The unit is a [package](../../concepts/packages.md): a service's channels, their workflows, and the connectors, plugins and models those workflows reference, as one versioned artifact. Five verbs, one artifact file, and no shared storage between instances; the file is the only thing that travels.
+Promotion moves one service from one instance to another: dev to QA to production, or a template instance out to every region. The unit is a [package](../../concepts/packages.md): a service's channels, their workflows, and the connectors and plugins those workflows reference, as one versioned artifact. Five verbs, one artifact file, and no shared storage between instances; the file is the only thing that travels.
 
 ## Before you start
 
@@ -74,7 +74,7 @@ A `channel_call` target outside the selection is not pulled in. It lands in the 
 Knowing the phases is what lets you interpret a failure:
 
 1. **Claim the receipt as `staged`.** This is the atomic immutability check. A reused applied version with different content is refused here, and it doubles as the guard against two applies running at once.
-2. **Stage every entity as a draft**, in dependency order: plugins, then connectors, then models, then workflows, then channels. A package that carries [plugins](../../concepts/plugins.md) activates them here, reload included, before anything else is staged. A workflow's create-time gate validates every function it names against the registry the engine is serving, so a workflow calling a plugin function cannot be staged until the plugin is active and loaded. Connector import reloads the connector registry server-side, so workflow activation later sees them.
+2. **Stage every entity as a draft**, in dependency order: plugins, then connectors, then workflows, then channels. A package that carries [plugins](../../concepts/plugins.md) activates them here, reload included, before anything else is staged. A workflow's create-time gate validates every function it names against the registry the engine is serving, so a workflow calling a plugin function cannot be staged until the plugin is active and loaded. Connector import reloads the connector registry server-side, so workflow activation later sees them.
 3. **Activate in dependency order, with the reload deferred.** Each activation is marked in the database but the engine is not rebuilt yet.
 4. **Reload the engine once**, which is also one config-epoch bump in a cluster.
 5. **Flip the receipt to `applied`.** The receipt records the version's inventory: the ids of every entity it carried.
@@ -82,8 +82,6 @@ Knowing the phases is what lets you interpret a failure:
 Two properties fall out of that ordering. However many entities the package carries, the running engine rebuilds once. A package that brings plugins rebuilds it twice: once to admit them and once for everything else. Every replica converges on the whole package, never on a half-applied one. And every call is stamped with `X-Orion-Change-Context: package=<name>@<version>`, so the [audit trail](../run/audit-logs.md) filters back into the promotion that caused it.
 
 A plugin travels with its component only when the export was run with `--include-artifacts`. Otherwise it travels as manifest and digest, and `plan` refuses a target that does not already hold that digest, naming the flag. A plugin the source itself no longer serves at the digest the workflows ran against is recorded under `requires.plugins`. `plan` checks the target has it active, the same boundary a `channel_call` outside the selection makes.
-
-A model never travels as bytes. It is carried as its manifest and its artifact reference: the storage connector, the key and the digest. The target fetches the object through *its own* connector of that name when it admits the model. Every such connector the package does not carry is recorded under `requires.storage` and checked by `plan` and `apply` before anything is written. A model a workflow names that the source does not serve active is recorded under `requires.models`, which `plan` checks the target serves. Activation is refused until a node has admitted the artifact, so `apply` waits for the target's verdict on each model it staged. It polls `GET /models/{id}` with progress on stderr and a 900 s ceiling, then activates the model ahead of the workflows that name it.
 
 ## When an apply fails midway
 
@@ -115,7 +113,7 @@ orion-server package plan  -s https://prod.orion.internal -f payments-1.5.0.json
 orion-server package apply -s https://prod.orion.internal -f payments-1.5.0.json --prune
 ```
 
-Removed channels are archived before activation, so a route can move to a new channel id in one apply. Workflows, plugins, models and connectors go after activation. Every removal lands in the same single reload. An entity another package now carries is kept. A workflow or connector something outside the package still uses stops the apply before anything is written. `--prune=delete` deletes instead of archiving. The rules are in [Prune what a version dropped](../../reference/cli/orion-server/package.md#prune-what-a-version-dropped).
+Removed channels are archived before activation, so a route can move to a new channel id in one apply. Workflows, plugins and connectors go after activation. Every removal lands in the same single reload. An entity another package now carries is kept. A workflow or connector something outside the package still uses stops the apply before anything is written. `--prune=delete` deletes instead of archiving. The rules are in [Prune what a version dropped](../../reference/cli/orion-server/package.md#prune-what-a-version-dropped).
 
 Pass `--prune` on every apply. It measures from the version being replaced, so an entity an apply without it left behind is not seen again.
 
@@ -143,7 +141,7 @@ orion-cli packages get payments    # current applied version + history
 
 ## Sign at deploy time
 
-A target whose `[plugins.trust]` or `[models.trust]` names keys refuses an unsigned plugin or model. The key belongs to the deployment, so sign where the key is and attach the signatures at apply:
+A target whose `[plugins.trust]` names keys refuses an unsigned plugin. The key belongs to the deployment, so sign where the key is and attach the signatures at apply:
 
 ```bash
 orion-server plugin sign definitions/ --key /run/secrets/signer.pem -o sigs/

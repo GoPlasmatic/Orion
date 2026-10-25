@@ -10,7 +10,7 @@
 
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{
-    CompileCx, ConfigField, FieldKind, Interpolated, Resolver, ValueKind, Visit, secret_refs,
+    CompileCx, ConfigField, FieldKind, Interpolated, Resolver, ValueKind, Visit,
 };
 use dataflow_rs::program::IssueCode;
 use dataflow_rs::{Ctx, Expr};
@@ -602,59 +602,6 @@ impl KeyRef {
     }
 }
 
-/// An expression the function evaluates over a root of its own, never the
-/// message: `model_infer.select`, whose `var` reads address the model's
-/// outputs by name.
-///
-/// Compiled on the engine's expressions, so it means what any expression
-/// means; walked by nothing, since its reads are not the message's; resolved
-/// to its raw JSON. Its result is written, so a secret read is refused.
-pub struct DetachedExpr(Expr<OwnedDataValue>);
-
-impl DetachedExpr {
-    /// The compiled expression, for `ctx.exprs().eval(expr, &root)`.
-    pub fn expr(&self) -> &Expr<OwnedDataValue> {
-        &self.0
-    }
-
-    /// The expression as authored.
-    pub fn raw(&self) -> &Value {
-        self.0.raw()
-    }
-}
-
-impl std::fmt::Debug for DetachedExpr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("DetachedExpr").field(self.raw()).finish()
-    }
-}
-
-impl ConfigField for DetachedExpr {
-    fn compile(raw: &Value, cx: &mut CompileCx<'_>) -> Option<Self> {
-        if secret_refs(raw).next().is_some() {
-            cx.issue(
-                IssueCode::SecretInMessageWrite,
-                "reads a secret, and this expression's result is written to the message; \
-                 compute a derived value in a host function instead",
-            );
-            return None;
-        }
-        Expr::<OwnedDataValue>::compile(raw, cx).map(Self)
-    }
-
-    // `visit` reports nothing: the engine's checks read an expression over
-    // the message, and this one reads the function's own root.
-
-    fn resolve(&self, _r: &mut dyn Resolver) -> dataflow_rs::Result<Option<OwnedDataValue>> {
-        Ok(Some(OwnedDataValue::from(self.raw())))
-    }
-
-    /// A literal to the engine, which never evaluates it: the function does.
-    fn kind() -> FieldKind {
-        FieldKind::Literal(ValueKind::Any)
-    }
-}
-
 /// An object field whose members are kept in the order the task wrote them,
 /// each value a `T`: `send_email.headers`, whose members 1.12 judged and
 /// rendered in that order (I183), where a `BTreeMap` sorts them. The input
@@ -1154,100 +1101,6 @@ mod tests {
         let issues =
             testing::config_with::<RefConfig>(&exprs(), json!({})).expect_err("a key is required");
         assert_eq!(issues[0].path.to_string(), "key", "{issues:?}");
-    }
-
-    // -- DetachedExpr -----------------------------------------------------
-
-    #[derive(Debug, FunctionConfig)]
-    struct SelectConfig {
-        select: Option<DetachedExpr>,
-    }
-
-    /// Evaluates `select` over the outputs it is given, not the message.
-    struct SelectV4;
-
-    impl Function for SelectV4 {
-        type Config = SelectConfig;
-
-        async fn call(
-            &self,
-            ctx: &mut Ctx<'_>,
-            cfg: &SelectConfig,
-        ) -> dataflow_rs::Result<Outcome> {
-            let Some(select) = &cfg.select else {
-                return write(ctx, &Value::Null);
-            };
-            let root = json!({"policy": [0.1, 0.7, 0.2], "input": {"n": 2}});
-            let value = ctx.exprs().eval(select.expr(), &root)?.value.into_owned();
-            write(ctx, &Value::from(&value))
-        }
-    }
-
-    #[test]
-    fn detached_expr_refuses_a_secret_read() {
-        for select in [
-            json!({"secret": "signing"}),
-            json!({"cat": ["x", {"secret": "signing"}]}),
-            json!({"secret": {"var": "policy"}}),
-        ] {
-            let issues = testing::config_with::<SelectConfig>(&exprs(), json!({"select": select}))
-                .expect_err("a secret read is refused");
-            let codes: Vec<(IssueCode, String)> = issues
-                .iter()
-                .map(|i| (i.code, i.path.to_string()))
-                .collect();
-            assert_eq!(
-                codes,
-                [(IssueCode::SecretInMessageWrite, "select".to_string())],
-                "{select}"
-            );
-        }
-    }
-
-    /// Nothing is visited — a `var` here reads the outputs, so the message
-    /// checks would misread it (a `payload` read is no `PAYLOAD_VAR`) — and
-    /// the expression is evaluated over the function's own root.
-    #[tokio::test]
-    async fn detached_expr_visits_nothing_and_evaluates_over_its_own_root() {
-        struct Count(usize);
-        impl ExprVisitor for Count {
-            fn expr(&mut self, _at: &AuthoredPath, _raw: &Value, _records: bool) {
-                self.0 += 1;
-            }
-            fn interpolated(&mut self, _at: &AuthoredPath, _doc: &Interpolated) {
-                self.0 += 1;
-            }
-        }
-        let cfg =
-            testing::config_with::<SelectConfig>(&exprs(), json!({"select": {"var": "payload.x"}}))
-                .expect("compiles, and no check runs over it");
-        let mut count = Count(0);
-        cfg.select
-            .expect("set")
-            .visit(&mut Visit::new(&mut count, AuthoredPath::root()));
-        assert_eq!(count.0, 0);
-
-        let select = json!({"var": "policy.1"});
-        let (out, input) = run_v4(SelectV4, Some(json!({"select": select}))).await;
-        assert_eq!(
-            out,
-            json!(0.7),
-            "read from the function's root, not the message"
-        );
-        assert_eq!(input["select"], select, "resolved to its raw JSON");
-
-        let (out, _) = run_v4(
-            SelectV4,
-            Some(json!({"select": {"*": [{"var": "input.n"}, 3]}})),
-        )
-        .await;
-        assert_eq!(out, json!(6));
-        let (out, _) = run_v4(SelectV4, Some(json!({"select": null}))).await;
-        assert_eq!(out, Value::Null, "a null select is unset");
-        assert!(matches!(
-            DetachedExpr::kind(),
-            FieldKind::Literal(ValueKind::Any)
-        ));
     }
 
     /// A config holding an ordered map of expressions.

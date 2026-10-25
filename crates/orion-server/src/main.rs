@@ -126,12 +126,6 @@ enum Command {
         /// reported as unverifiable, never as an error.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
-        /// Directory of model manifests (`orion:model@` JSON) beyond the
-        /// set's own tree, so a `model_infer` task naming a model by literal
-        /// id is checked against a manifest. With the artifact beside a
-        /// manifest, the graph's stats are reported too. Repeatable.
-        #[arg(long = "model-dir", value_name = "DIR")]
-        model_dirs: Vec<String>,
     },
     /// Compile a definition set into files the admin API accepts.
     ///
@@ -169,7 +163,7 @@ enum Command {
         #[arg(long, value_name = "PREFIX")]
         version_prefix: Option<String>,
         /// Directory of detached signatures to write into the artifact's
-        /// `plugins[]` and `models[]` entries, for a build-time signer:
+        /// `plugins[]` entries, for a build-time signer:
         /// `<id>.sig` or `<artifact file>.sig`. Signatures are not content,
         /// so the hash and a content version do not move.
         #[arg(long, value_name = "DIR")]
@@ -199,12 +193,6 @@ enum Command {
         /// its component inlined. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
-        /// Directory of model manifests beyond the set's own tree. A
-        /// manifest in the set compiles into the artifact as a `models[]`
-        /// entry: its `reference` names where the bytes are for the target,
-        /// and the file its `artifact` names is hashed. Repeatable.
-        #[arg(long = "model-dir", value_name = "DIR")]
-        model_dirs: Vec<String>,
     },
     /// Dry-run a workflow against a JSON input file (A6).
     ///
@@ -254,13 +242,6 @@ enum Command {
         /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
-        /// Directory of model manifests and their artifacts. With one,
-        /// `model_infer` runs the model for real, never stubbed; a workflow
-        /// naming a model the directory does not hold, or holds without its
-        /// artifact, fails as MODEL_ARTIFACT_UNAVAILABLE. Without one the
-        /// function is answered from --stubs. Repeatable.
-        #[arg(long = "model-dir", value_name = "DIR")]
-        model_dirs: Vec<String>,
         /// How much of the run to record: `full` (every step with a message
         /// snapshot and its changes), `steps` (ids, timing and changes, no
         /// snapshots) or `none` (no trace and no per-write capture, as a node
@@ -295,22 +276,10 @@ enum Command {
         /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
-        /// Directory of model manifests and their artifacts, loaded once for
-        /// the whole suite. `model_infer` runs the model for real; a case
-        /// naming a model the directory does not hold fails as
-        /// MODEL_ARTIFACT_UNAVAILABLE. Repeatable.
-        #[arg(long = "model-dir", value_name = "DIR")]
-        model_dirs: Vec<String>,
     },
     /// Digest, sign and verify plugin components — what `[plugins.trust]`
     /// checks. PATH is a `plugin.toml`, a directory of them, or any file.
     Plugin {
-        #[command(subcommand)]
-        command: signing_cli::SigningCommand,
-    },
-    /// Digest, sign and verify model artifacts — what `[models.trust]`
-    /// checks. PATH is a model manifest, a directory of them, or any file.
-    Model {
         #[command(subcommand)]
         command: signing_cli::SigningCommand,
     },
@@ -390,10 +359,6 @@ enum Command {
         /// evaluates them. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
-        /// Directory of model manifests beyond the set's own tree, for the
-        /// `lint` gate that runs first. Repeatable.
-        #[arg(long = "model-dir", value_name = "DIR")]
-        model_dirs: Vec<String>,
         /// Apply the fixes the rules can prove — today, folding a run of
         /// steps that repeat one condition into a task group — to the source
         /// files, each verified by recompiling the edited file, then report
@@ -490,9 +455,6 @@ enum SqlCommand {
         /// Directory of plugin manifests beyond the set's own tree.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
-        /// Directory of model manifests beyond the set's own tree.
-        #[arg(long = "model-dir", value_name = "DIR")]
-        model_dirs: Vec<String>,
     },
 }
 
@@ -559,8 +521,8 @@ enum PackageCommand {
         #[arg(short, long)]
         file: String,
         /// Directory of detached signatures to attach before anything is
-        /// sent: `<plugin or model id>.sig` or `<artifact file>.sig` per
-        /// plugin and model — base64 Ed25519 over the digest string, as
+        /// sent: `<plugin id>.sig` or `<artifact file>.sig` per plugin —
+        /// base64 Ed25519 over the digest string, as
         /// `orion-server plugin sign -o <dir>` writes them. The artifact
         /// file, its version and its hash are untouched.
         #[arg(long, value_name = "DIR")]
@@ -592,8 +554,8 @@ enum PackageCommand {
         #[arg(short, long)]
         file: String,
         /// Directory of detached signatures to attach before anything is
-        /// sent: `<plugin or model id>.sig` or `<artifact file>.sig` per
-        /// plugin and model — base64 Ed25519 over the digest string, as
+        /// sent: `<plugin id>.sig` or `<artifact file>.sig` per plugin —
+        /// base64 Ed25519 over the digest string, as
         /// `orion-server plugin sign -o <dir>` writes them. The artifact
         /// file, its version and its hash are untouched.
         #[arg(long, value_name = "DIR")]
@@ -660,7 +622,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // consulted by `verify`, for the trust keys, and nothing else is loaded.
     let signing = match cli.command.take() {
         Some(Command::Plugin { command }) => Some((orion::signatures::Kind::Plugin, command)),
-        Some(Command::Model { command }) => Some((orion::signatures::Kind::Model, command)),
         other => {
             cli.command = other;
             None
@@ -702,12 +663,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_connectors,
             definitions,
             plugin_dirs,
-            model_dirs,
         }) => {
             let boundary = orion::definitions::Boundary {
                 channels: requires_channels,
                 connectors: requires_connectors,
-                ..orion::definitions::Boundary::default()
             };
             return cli::run_lint(
                 &workflow,
@@ -715,7 +674,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 boundary,
                 definitions.as_deref(),
                 &plugin_dirs,
-                &model_dirs,
             );
         }
         Some(Command::Compile {
@@ -732,12 +690,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             deny_warnings,
             no_activate,
             plugin_dirs,
-            model_dirs,
         }) => {
             let boundary = orion::definitions::Boundary {
                 channels: requires_channels,
                 connectors: requires_connectors,
-                ..orion::definitions::Boundary::default()
             };
             return cli::run_compile(cli::CompileRequest {
                 dir: &dir,
@@ -752,7 +708,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 deny_warnings,
                 no_activate,
                 plugin_dirs: &plugin_dirs,
-                model_dirs: &model_dirs,
             });
         }
         Some(Command::DryRun {
@@ -763,7 +718,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             secrets,
             definitions,
             plugin_dirs,
-            model_dirs,
             trace,
         }) => {
             return cli::run_dry_run(cli::DryRunRequest {
@@ -774,7 +728,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 secrets: secrets.as_deref(),
                 definitions: definitions.as_deref(),
                 plugin_dirs: &plugin_dirs,
-                model_dirs: &model_dirs,
                 trace,
             })
             .await;
@@ -783,9 +736,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             path,
             definitions,
             plugin_dirs,
-            model_dirs,
         }) => {
-            return cli::run_test(&path, definitions.as_deref(), &plugin_dirs, &model_dirs).await;
+            return cli::run_test(&path, definitions.as_deref(), &plugin_dirs).await;
         }
         Some(Command::TestConnectivity { wait }) => {
             return cli::run_test_connectivity(&config, wait).await;
@@ -800,7 +752,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_channels,
             requires_connectors,
             plugin_dirs,
-            model_dirs,
             fix,
             check,
         }) => {
@@ -820,11 +771,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     format,
                     definitions: definitions.as_deref(),
                     plugin_dirs: &plugin_dirs,
-                    model_dirs: &model_dirs,
                     boundary: orion::definitions::Boundary {
                         channels: requires_channels,
                         connectors: requires_connectors,
-                        ..orion::definitions::Boundary::default()
                     },
                     // Only a config the operator named counts as "the serving
                     // config": the defaults say nothing about [vars]/[secrets].
@@ -841,7 +790,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
         // Dispatched above, before the config load.
         Some(Command::Fmt { .. }) => unreachable!("fmt returns before config is loaded"),
-        Some(Command::Plugin { .. } | Command::Model { .. }) => {
+        Some(Command::Plugin { .. }) => {
             unreachable!("the signing verbs return before config is loaded")
         }
         Some(Command::Preflight) => return cli::run_preflight(&config).await,
@@ -857,7 +806,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 requires_channels,
                 requires_connectors,
                 plugin_dirs,
-                model_dirs,
             } = command;
             let code = sql_cli::run_sql_check(sql_cli::SqlCheckRequest {
                 path: &path,
@@ -870,10 +818,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 boundary: orion::definitions::Boundary {
                     channels: requires_channels,
                     connectors: requires_connectors,
-                    ..orion::definitions::Boundary::default()
                 },
                 plugin_dirs: &plugin_dirs,
-                model_dirs: &model_dirs,
                 config: &config,
             })
             .await?;
@@ -1002,14 +948,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ready = state.ready.clone();
     let tasks = state.tasks.clone();
 
-    // The model admission worker: drains the queue the model routes fill,
-    // fetching and verifying each artifact and recording the verdict on the
-    // row. Only with `models.enabled`; supervised as `Required` because a
-    // dead worker leaves every registration pending forever.
-    if state.models.is_some() {
-        orion::runtime::model_admission::start(&tasks, state.clone());
-    }
-
     // Cluster background tasks (epoch watcher). None when disabled.
     orion::cluster::start_cluster_tasks(&state);
 
@@ -1020,9 +958,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     orion::runtime::limiter_prune::start(&tasks, state.clone());
 
     // `[packages] apply`: applied now that everything an apply needs is
-    // running — the audit writer, the model admission worker, the epoch
-    // watcher — and concurrently with serving, so `/healthz` answers during
-    // a long admission while `/readyz` holds at 503 until they serve.
+    // running — the audit writer, the epoch watcher — and concurrently with
+    // serving, so `/healthz` answers during a long apply while `/readyz`
+    // holds at 503 until they serve.
     let packages = state.packages.clone();
     tokio::spawn(orion::package::boot::run(state.clone()));
 

@@ -21,8 +21,6 @@ pub struct ChannelMember {
 pub struct PackageMembers {
     /// `plugin_id`.
     pub plugins: Vec<String>,
-    /// `model_id`.
-    pub models: Vec<String>,
     /// The connector's name — its conflict key.
     pub connectors: Vec<String>,
     /// `workflow_id`.
@@ -36,7 +34,6 @@ impl PackageMembers {
     /// target either.
     pub fn from_entries(
         plugins: &[Value],
-        models: &[Value],
         connectors: &[Value],
         workflows: &[Value],
         channels: &[Value],
@@ -75,7 +72,6 @@ impl PackageMembers {
         channel_members.dedup();
         Self {
             plugins: plugin_ids,
-            models: ids(models, "model_id"),
             connectors: ids(connectors, "name"),
             workflows: ids(workflows, "workflow_id"),
             channels: channel_members,
@@ -86,7 +82,6 @@ impl PackageMembers {
     pub fn inventory(&self) -> orion_api::PackageInventory {
         orion_api::PackageInventory {
             plugins: self.plugins.clone(),
-            models: self.models.clone(),
             connectors: self.connectors.clone(),
             workflows: self.workflows.clone(),
             channels: self.channels.iter().map(|c| c.channel_id.clone()).collect(),
@@ -111,7 +106,7 @@ fn manifest_name(manifest: &Value) -> Option<String> {
 /// A member the target is not serving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuarantinedEntity {
-    /// `plugins`, `models`, `connectors`, `workflows` or `channels` — the
+    /// `plugins`, `connectors`, `workflows` or `channels` — the
     /// `kind/id` vocabulary `package` prints.
     pub kind: &'static str,
     pub id: String,
@@ -125,14 +120,14 @@ impl std::fmt::Display for QuarantinedEntity {
 }
 
 /// Which of `members` the issues say are not serving, and why. Ordered by
-/// kind — plugins, models, connectors, workflows, channels — then by id.
+/// kind — plugins, connectors, workflows, channels — then by id.
 ///
 /// - A member channel matches by `channel_id`, or by name from a server
 ///   that does not report ids.
 /// - A member workflow is reported when a channel of *another* package,
 ///   bound to it, is quarantined — a member channel's issue is reported
 ///   once, as the channel.
-/// - Plugins, models and connectors match by id (a connector by name), with
+/// - Plugins and connectors match by id (a connector by name), with
 ///   the stage in front of the reason.
 pub fn quarantined_members(
     members: &PackageMembers,
@@ -144,15 +139,6 @@ pub fn quarantined_members(
             out.push(QuarantinedEntity {
                 kind: "plugins",
                 id: issue.plugin.clone(),
-                reason: format!("{}: {}", issue.stage, issue.reason),
-            });
-        }
-    }
-    for issue in &issues.models {
-        if members.models.contains(&issue.model) {
-            out.push(QuarantinedEntity {
-                kind: "models",
-                id: issue.model.clone(),
                 reason: format!("{}: {}", issue.stage, issue.reason),
             });
         }
@@ -212,7 +198,7 @@ pub fn quarantined_members(
 }
 
 fn kind_rank(kind: &str) -> usize {
-    ["plugins", "models", "connectors", "workflows", "channels"]
+    ["plugins", "connectors", "workflows", "channels"]
         .iter()
         .position(|k| *k == kind)
         .unwrap_or(usize::MAX)
@@ -222,15 +208,13 @@ fn kind_rank(kind: &str) -> usize {
 mod tests {
     use super::*;
     use orion_api::{
-        ChannelLoadIssueResponse, ConnectorLoadIssueResponse, ModelLoadIssueResponse,
-        PluginLoadIssueResponse,
+        ChannelLoadIssueResponse, ConnectorLoadIssueResponse, PluginLoadIssueResponse,
     };
     use serde_json::json;
 
     fn members() -> PackageMembers {
         PackageMembers::from_entries(
             &[json!({"manifest": "abi = \"orion:plugin@1.0.0\"\nname = \"acme.scoring\"\n"})],
-            &[json!({"model_id": "acme.fraud"})],
             &[json!({"name": "orders-db"})],
             &[
                 json!({"workflow_id": "orders"}),
@@ -261,7 +245,6 @@ mod tests {
     fn members_come_from_the_import_shapes() {
         let m = members();
         assert_eq!(m.plugins, ["acme.scoring"]);
-        assert_eq!(m.models, ["acme.fraud"]);
         assert_eq!(m.connectors, ["orders-db"]);
         assert_eq!(m.workflows, ["orders", "sweep"]);
         assert_eq!(m.channels[1].name, "sweep");
@@ -287,10 +270,6 @@ mod tests {
                 plugin: "acme.scoring".to_string(),
                 stage: "signature".to_string(),
                 reason: "does not verify".to_string(),
-                ..Default::default()
-            }],
-            models: vec![ModelLoadIssueResponse {
-                model: "someone.else".to_string(),
                 ..Default::default()
             }],
             connectors: vec![ConnectorLoadIssueResponse {

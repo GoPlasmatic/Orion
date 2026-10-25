@@ -45,7 +45,7 @@ A statement whose `params` binds a different number of values than it takes is a
 | `--database URL` | The PostgreSQL server the scratch schema is built on. |
 | `--role NAME=ROLE` | With `--schema`: the role a connector's statements run as. It defaults to the user of the connector's URL. |
 | `--format json` | One JSON object per finding on stdout, then one `summary` object. |
-| `--requires-*`, `--plugin-dir`, `--model-dir` | As `lint` takes them. |
+| `--requires-*`, `--plugin-dir` | As `lint` takes them. |
 | `-c FILE` (global) | The serving config, for `[vars]` a connector references. |
 
 ## A scratch schema

@@ -1,0 +1,34 @@
+{
+  "workflow_id": "c4-move",
+  "name": "C4 Referee: Play a Move",
+  "description": "Drop the mover's disc in the column the caller names, settle the result, and show the board to the next mover from its side.",
+  "tags": ["pkg:c4-referee"],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "apply",
+      "name": "Play the column",
+      "function": {
+        "name": "c4.rules.apply",
+        "input": {
+          "state": { "var": "data.input.state" },
+          "column": { "var": "data.input.column" },
+          "output": "data.state"
+        }
+      }
+    },
+    {
+      "id": "view",
+      "name": "The board from the next mover's side",
+      "function": {
+        "name": "c4.rules.view",
+        "input": { "state": { "var": "data.state" }, "output": "data.next" }
+      }
+    }
+  ]
+}

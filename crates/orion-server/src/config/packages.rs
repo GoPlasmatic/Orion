@@ -18,13 +18,13 @@ pub struct PackagesConfig {
     pub apply: Vec<String>,
 
     /// A directory of detached signatures attached to each artifact's
-    /// plugins and models before it is applied — `<id>.sig` or
+    /// plugins before it is applied — `<id>.sig` or
     /// `<artifact file>.sig`, as `orion-server plugin sign -o <dir>` writes
     /// them. Unset attaches nothing.
     pub signatures_dir: Option<String>,
 
-    /// The longest the whole startup apply may take, model admission
-    /// included, before the node gives up and exits. `0` means no limit.
+    /// The longest the whole startup apply may take before the node gives
+    /// up and exits. `0` means no limit.
     pub apply_timeout_secs: u64,
 }
 

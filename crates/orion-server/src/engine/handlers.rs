@@ -44,12 +44,6 @@ pub struct HandlerDeps<'a> {
     /// response cache can resolve to, the cluster's shared one included.
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    /// The node's model runtime — the loaded-session cache, the inference
-    /// slots, the runtimes — for `model_infer`. `None` with
-    /// `models.enabled = false`, which the handler answers as `unavailable`
-    /// rather than the build refusing the function.
-    pub models: Option<Arc<crate::model::ModelsRuntime>>,
-    pub models_config: &'a crate::config::ModelsConfig,
     /// The node's v2 provider registry (`rust`, `workflow`, `wasm`) for `connector_call`.
     pub providers: crate::extensions::ProviderRegistry,
 }
@@ -58,8 +52,7 @@ pub struct HandlerDeps<'a> {
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::{
         cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, channel_call, crypto,
-        data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify, storage_head,
-        storage_presign,
+        data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify,
     };
 
     let HandlerDeps {
@@ -74,8 +67,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         cache_pool,
         channel_loader,
         sql_pool_cache,
-        models,
-        models_config,
         providers,
     } = deps;
 
@@ -97,44 +88,12 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
             default_timeout_ms: engine_config.default_channel_call_timeout_ms,
         },
     );
-    // The model set comes off one load of the serving generation per call,
-    // its adapters compiled on the process's expression engine; the loaded
-    // sessions and permits off the node.
-    let models_config = Arc::new(models_config.clone());
-    registry.register(
-        crate::model::handler::NAME,
-        crate::model::ModelInferFunction {
-            source: crate::model::ModelSource::Node(runtime),
-            host: models.map(|models| {
-                Arc::new(crate::model::InferenceHost::node(
-                    &models,
-                    models_config.clone(),
-                    connectors.clone(),
-                    client.clone(),
-                ))
-            }),
-            config: models_config,
-        },
-    );
     // Self-contained (no connector, no deps): digests, MACs, password
     // hashing; then the JWT pair, verification sharing the channel mode's
     // JWKS cache.
     registry.register(crypto::NAME, crypto::CryptoFunction);
     registry.register(jwt_sign::NAME, jwt_sign::JwtSignFunction);
     registry.register(jwt_verify::NAME, jwt_verify::JwtVerifyFunction { jwks });
-    registry.register(
-        storage_presign::NAME,
-        storage_presign::StoragePresignFunction {
-            registry: connectors.clone(),
-        },
-    );
-    registry.register(
-        storage_head::NAME,
-        storage_head::StorageHeadFunction {
-            registry: connectors.clone(),
-            client: client.clone(),
-        },
-    );
     registry.register(
         db_read::NAME,
         db_read::DbReadFunction {

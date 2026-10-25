@@ -27,14 +27,13 @@ A reload does not fail when one entity does not load. The entity is quarantined 
           "reason": "cron scheduler disabled on this node (cron.enabled = false): the schedule would never fire" }
       ],
       "plugins": [],
-      "models": [],
       "connectors": []
     }
   }
 }
 ```
 
-The reload's answer describes the generation *that reload* published. `GET /engine/status` describes the one this node serves now, and adds `capabilities`: whether this node runs cron channels, plugins and models. The four lists are the ones an admin sees on `/health`, built by the same code, so the surfaces cannot disagree. Tooling that needs them should read this endpoint rather than scrape `/health`, whose detail depends on auth configuration.
+The reload's answer describes the generation *that reload* published. `GET /engine/status` describes the one this node serves now, and adds `capabilities`: whether this node runs cron channels and plugins. The three lists are the ones an admin sees on `/health`, built by the same code, so the surfaces cannot disagree. Tooling that needs them should read this endpoint rather than scrape `/health`, whose detail depends on auth configuration.
 
 Both answers describe the node that answered. Peers reload on the epoch bump and may refuse differently, for example with a different `cron.enabled`.
 

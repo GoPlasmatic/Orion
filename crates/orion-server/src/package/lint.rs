@@ -61,13 +61,11 @@ pub fn lint_artifact(artifact: &PackageArtifact) -> Result<LintReport, Error> {
 
     // A signature is not content, so the hash cannot vouch for it: a garbage
     // value would otherwise surface only when the target refuses the import.
-    for (kind, entries) in [("plugins", &artifact.plugins), ("models", &artifact.models)] {
-        for (index, entry) in entries.iter().enumerate() {
-            if let Some(signature) = entry.get("signature").and_then(Value::as_str)
-                && let Err(e) = crate::crypto::ed25519::normalize_signature(signature)
-            {
-                errors.push(format!("{kind}[{index}].signature: {e}"));
-            }
+    for (index, entry) in artifact.plugins.iter().enumerate() {
+        if let Some(signature) = entry.get("signature").and_then(Value::as_str)
+            && let Err(e) = crate::crypto::ed25519::normalize_signature(signature)
+        {
+            errors.push(format!("plugins[{index}].signature: {e}"));
         }
     }
 
@@ -129,12 +127,6 @@ pub fn artifact_as_set(
     let boundary = crate::definitions::Boundary {
         channels: artifact.requires.channels.clone(),
         connectors: artifact.requires.connectors.clone(),
-        models: artifact
-            .requires
-            .models
-            .iter()
-            .map(|m| m.id.clone())
-            .collect(),
     };
     let mut set = crate::definitions::DefinitionSet::from_entries(entries);
     let mut findings = Vec::new();
@@ -148,87 +140,5 @@ pub fn artifact_as_set(
             )),
         }
     }
-    for (i, entry) in artifact.models.iter().enumerate() {
-        match super::artifact::model_definition(i, entry) {
-            Ok(model) => set.models.push(model),
-            Err(e) => findings.push(crate::definitions::Diagnostic::error(
-                "parse.model",
-                format!("models[{i}]"),
-                e.to_string(),
-            )),
-        }
-    }
     (set, boundary, findings)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::artifact::test_support::*;
-    use super::super::artifact::{
-        ModelRequirement, activation_intents, literal_model_ids, members,
-    };
-    use super::*;
-    use serde_json::json;
-
-    /// `requires.models` and `requires.storage` round-trip, tolerate an
-    /// artifact written before they existed, and make the model boundary
-    /// the set check reads.
-    #[test]
-    fn requires_carries_models_and_storage_and_bounds_the_set() {
-        let mut with = artifact(vec![model_entry()]);
-        with.requires.models.push(ModelRequirement {
-            id: "ada.other".to_string(),
-            version: 2,
-            digest: "sha256:def".to_string(),
-        });
-        with.requires.storage.push("models".to_string());
-        with.workflows[0]["tasks"] = json!([
-            {"id": "a", "name": "a", "function": {"name": "model_infer",
-                "input": {"model": "ada.c4-tiny", "input": {"var": ""}}}},
-            {"id": "b", "name": "b", "function": {"name": "model_infer",
-                "input": {"model": "ada.other", "input": {"var": ""}}}}
-        ]);
-        let text = serde_json::to_string(&with).expect("serialises");
-        let back: PackageArtifact = serde_json::from_str(&text).expect("parses");
-        assert_eq!(back.requires.models, with.requires.models);
-        assert_eq!(back.requires.storage, ["models"]);
-        assert_eq!(
-            literal_model_ids(&back.workflows[0]),
-            ["ada.c4-tiny", "ada.other"]
-        );
-
-        let (set, boundary, findings) = artifact_as_set(&back);
-        assert!(findings.is_empty(), "{findings:?}");
-        assert_eq!(set.models.len(), 1);
-        assert_eq!(set.models[0].origin, "models[0]");
-        assert!(boundary.allows_model("ada.other"));
-        assert!(
-            !boundary.allows_model("ada.c4-tiny"),
-            "carried, not required"
-        );
-        let registry = set.function_registry().expect("registry");
-        let findings = crate::definitions::check(&set, &boundary, true, &registry);
-        assert!(
-            !findings.iter().any(|f| f.check == "closure.model"),
-            "{findings:#?}"
-        );
-
-        // Written before the fields existed: both default to empty.
-        let old: PackageArtifact = serde_json::from_value(json!({
-            "package": {"name": "p", "version": "1", "content_hash": "x"},
-            "requires": {"channels": [], "connectors": []},
-        }))
-        .expect("parses");
-        assert!(old.requires.models.is_empty() && old.requires.storage.is_empty());
-        assert!(old.models.is_empty());
-
-        // The intents order models after plugins and before workflows.
-        let intents = activation_intents(&with);
-        assert_eq!(intents[0].0, "models");
-        assert_eq!(intents[0].1, "ada.c4-tiny");
-        assert_eq!(
-            members(&with).map(|(k, _)| k),
-            ["plugins", "connectors", "models", "workflows", "channels"]
-        );
-    }
 }

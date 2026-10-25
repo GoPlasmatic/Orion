@@ -16,7 +16,6 @@ Every connector type carries an `operations` block that limits what workflows ma
 | `cache` | `read` | `cache_read` |
 | `cache` | `write` | `cache_write`, `cache_delete`, `cache_incr`, plus channel stores backed by the connector — see [Cache write covers channel stores](#cache-write-covers-channel-stores) |
 | `http` | `methods` | Any method not on the allow-list — see [http gates by method](#http-gates-by-method) |
-| `storage` | `presign_get`, `presign_put`, `head` | The matching storage function/method |
 
 To make a `db` connector fully delete-proof, disable both `delete` and `raw_write`:
 

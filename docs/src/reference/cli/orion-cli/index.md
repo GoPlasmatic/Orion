@@ -1,10 +1,10 @@
-<!-- description: Every orion-cli command: the entity commands for workflows, channels, connectors, plugins and models, plus send, traces, engine, cron, dlq and the rest. -->
+<!-- description: Every orion-cli command: the entity commands for workflows, channels, connectors and plugins, plus send, traces, engine, cron, dlq and the rest. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # orion-cli
 
-`orion-cli` manages workflows, channels, connectors, plugins, models, data, traces, and engine operations on a running server over HTTP. Every command takes the same [global flags](./global-flags.md), and every `list` pages the same way.
+`orion-cli` manages workflows, channels, connectors, plugins, data, traces, and engine operations on a running server over HTTP. Every command takes the same [global flags](./global-flags.md), and every `list` pages the same way.
 
 | Command | Purpose |
 |---|---|
@@ -15,7 +15,6 @@
 | [`channels`](./channels.md) | Manages channels |
 | [`connectors`](./connectors.md) | Manages connectors and their circuit breakers |
 | [`plugins`](./plugins.md) | Manages plugins — WebAssembly components that add task functions |
-| [`models`](./models.md) | Manages models — ONNX artifacts held in object storage and admitted before they serve |
 | [`send`](./send.md) | Sends data to a channel |
 | [`traces`](./traces.md) | Views execution traces |
 | [`engine`](./engine.md) | Controls the engine |

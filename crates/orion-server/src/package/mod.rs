@@ -22,8 +22,8 @@ pub mod verify;
 
 pub use apply::{ApplyOptions, ApplyOutcome, apply};
 pub use artifact::{
-    ModelRequirement, PackageArtifact, PackageMeta, PluginRequirement, Requires,
-    artifact_content_hash, read_artifact, verify_hash,
+    PackageArtifact, PackageMeta, PluginRequirement, Requires, artifact_content_hash,
+    read_artifact, verify_hash,
 };
 pub use lint::{LintReport, lint_artifact};
 pub use prune::{

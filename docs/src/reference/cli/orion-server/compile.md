@@ -17,8 +17,6 @@ orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk|deployment]
 
 ## Description
 
-**A model manifest in the set compiles into the artifact.** Each becomes a `models[]` entry in the shape `POST /models/import` accepts. The entry holds the manifest (minus its local `artifact` path), an `artifact` reference, and `tags`, marked `activate: true` like everything else. The reference takes `connector` and `key` from the manifest's `reference`, and a `digest` computed from the file its `artifact` names. Both halves are required for `--format artifact`, and a manifest missing either is refused naming what to add. An artifact must name bytes the target can reach, and the digest is what the target checks them against at admission. The storage connectors those references name go to `requires.storage` unless the set carries a connector of that name. `--format bulk` writes the same entries to `models.json`, to be sent after `connectors.json`.
-
 **A `plugin.toml` in the set compiles into the artifact.** Its component, the file the manifest's `component` names beside it, is inlined as base64 under `plugins[]`, digest included. The artifact therefore installs the plugin on a target that has never seen it, and activates it before any workflow that calls it. A manifest with no component beside it is refused for `--format artifact`. The artifact is what carries the bytes, and one without them would fail at `apply`. `--format bulk` writes the same entries to `plugins.json`.
 
 **Why it exists.** References resolve when a *set* is loaded, and the admin API loads no set: it takes one document, with nothing to resolve names against. Without this step the only path from `definitions/` to a running instance was a deploy tool that reimplemented the expander. A partial reimplementation shows up as `UNCOMPILED_SOURCE` on the POST, 62 workflows deep.
@@ -39,13 +37,12 @@ Entities must carry explicit ids for `artifact` and `deployment` only. `apply` a
 | `--version` | Package version. Required for `--format artifact`. Applied versions are immutable — any content change needs a bump. `content` derives the version from the content hash instead; see [Content versions](#content-versions). A version the target would refuse (outside letters, digits, `.`, `_` and `-`, or over 64 characters) is refused here. |
 | `--version-prefix` | With `--version content`, writes `<PREFIX>-<12 hex>` instead of `content-<12 hex>`. At most 51 characters. |
 | `--requires-orion <range>` | The Orion version range the artifact requires of a target, written to `requires.orion`. Overrides the set's own [`package.requires.orion`](../shared-definitions.md#the-package-document). |
-| `--signatures <dir>` | Write the detached signatures in `<dir>` into the artifact's `plugins[]` and `models[]` entries, for a signer that runs at build time. The files are named as [`package apply --signatures`](./package.md#signatures-at-deploy-time) reads them, and a model's local artifact file name also matches. The hash and a content version do not move. |
+| `--signatures <dir>` | Write the detached signatures in `<dir>` into the artifact's `plugins[]` entries, for a signer that runs at build time. The files are named as [`package apply --signatures`](./package.md#signatures-at-deploy-time) reads them. The hash and a content version do not move. |
 | `--requires-channel` | Channel name that may be referenced without being in the set; recorded in the artifact's `requires`. Repeatable. |
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable. |
 | `--deny-warnings` | Exit non-zero on advisory findings too, not only errors. |
 | `--no-activate` | Do not mark workflows and channels for activation, so the artifact applies as drafts. |
 | `--plugin-dir` | Directory of plugin manifests beyond the set's own tree. Repeatable. |
-| `--model-dir` | Directory of model manifests beyond the set's own tree. Repeatable. |
 
 ### Output formats
 
@@ -53,7 +50,7 @@ Entities must carry explicit ids for `artifact` and `deployment` only. `apply` a
 |---|---|---|
 | `artifact` | One promotion artifact, hashed exactly as `package export` hashes one | `orion-server package plan\|apply\|diff` |
 | `dir` | The input tree mirrored, one file per entity, shared documents consumed | a POST per file — `orion-cli workflows import -f …` |
-| `bulk` | `connectors.json`, `workflows.json`, `channels.json` — plus `plugins.json` and `models.json` when the set carries any | the bulk import endpoints, in that order (plugins first, models after connectors) |
+| `bulk` | `connectors.json`, `workflows.json`, `channels.json` — plus `plugins.json` when the set carries any | the bulk import endpoints, in that order (plugins first) |
 | `deployment` | A revision-free v2 deployment directory; see [Deployment directories](#deployment-directories) | `orion-cli deployments plan\|apply -d` |
 
 ### Deployment directories
@@ -106,7 +103,7 @@ Every string in the config that is a secret reference (`env://`, `vault://`) mov
 
 A connector's tags are not carried, and compile prints a note saying so. A workflow `requires` every connection its tasks name: the `connector` of a task whose function takes one (`http_call`, `db_read`, `db_write`, `data_query`, `data_write`, the `cache_*` functions) and the `connection` of a `connector_call`, inside task groups and `loop.setup` too. Each must be a connector in the set. A requirement grants nothing by itself: a workflow may call through `connector_call` only the operations its own `connector_call` tasks name.
 
-The same set compiles to the same bytes. A recompile into the same directory removes the files under `definitions/` and `connections/` that the set no longer produces. `--requires-channel` and `--requires-connector` do not apply: a deployment carries everything it references. A model manifest in the set is an error, because a deployment cannot carry one yet.
+The same set compiles to the same bytes. A recompile into the same directory removes the files under `definitions/` and `connections/` that the set no longer produces. `--requires-channel` and `--requires-connector` do not apply: a deployment carries everything it references.
 
 ### Content versions
 

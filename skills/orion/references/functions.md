@@ -28,7 +28,6 @@ secret references, defaults, `source` (`builtin` or `plugin`), and
 | Raw SQL escape hatch | `db_read`, `db_write` |
 | Cache | `cache_read` (`keys` for several), `cache_write`, `cache_delete`, `cache_incr` (generation counters) |
 | Invalidate a channel response cache | `cache_invalidate` |
-| Object metadata/presigning | `storage_head`, `storage_presign` |
 | Call another Orion service | `channel_call` |
 | Cryptography or JWT | `crypto`, `jwt_sign`, `jwt_verify` |
 | A codec or calculation that already exists as code | a plugin function, named `<plugin>.<label>` |

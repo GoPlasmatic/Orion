@@ -119,16 +119,6 @@ const READABLE_KEYS: &[&str] = &[
     // endpoints (URL-shaped values still get in-band redaction)
     "url",
     "timeout_ms",
-    // storage structure (#265) — both credential fields and the session
-    // token are caught by the secret vocabulary
-    "provider",
-    "endpoint",
-    "region",
-    "bucket",
-    "force_path_style",
-    "presign_get",
-    "presign_put",
-    "head",
     // managed-OAuth2 structure (#268) — the credential halves
     // (`client_secret`, `refresh_token`) are masked by default; the
     // token endpoint stays visible for the same reason `url` does
@@ -181,8 +171,8 @@ fn is_readable_key(key: &str) -> bool {
 ///
 /// The allowlist is flat and keyed by leaf name, so without this a parameter
 /// whose name collides with a structural key is served readable: `username`,
-/// `method`, `url`, `type`, `region`, `bucket`, `resource` and `audience` are
-/// all on `READABLE_KEYS`. These three
+/// `method`, `url`, `type`, `resource` and `audience` are all on
+/// `READABLE_KEYS`. These three
 /// containers hold operator-chosen names carrying operator-chosen values —
 /// there is no name to judge, so the container decides.
 ///
@@ -887,8 +877,8 @@ mod tests {
     /// collides with a structural key was served readable — `headers: {"from":
     /// "x"}` is a **pre-existing** leak this closes, despite the module doc
     /// claiming header values "are all masked". `username`, `method`, `url`,
-    /// `type`, `region`, `bucket`, `resource` and `audience` are all on
-    /// READABLE_KEYS and would have collided the same way.
+    /// `type`, `resource` and `audience` are all on READABLE_KEYS and would
+    /// have collided the same way.
     #[test]
     fn operator_named_container_values_mask_whatever_they_are_called() {
         let config = r#"{"type":"http","url":"https://api.example.com",
@@ -1564,18 +1554,14 @@ mod tests {
         // `connection_string` is a credential bundle; `auth` (when None it
         // serializes as a null leaf) holds only credentials and identities,
         // each covered by behaviour tests. The oauth2 block's two credential
-        // halves (#268), SMTP's `password` (#262), and storage's credential
-        // trio (#265) are the deliberate masks of otherwise-readable
-        // structures.
+        // halves (#268) and SMTP's `password` (#262) are the deliberate masks
+        // of otherwise-readable structures.
         const EXPECTED_MASKED: &[&str] = &[
             "connection_string",
             "auth",
             "client_secret",
             "refresh_token",
             "password",
-            "access_key",
-            "secret_key",
-            "session_token",
         ];
 
         fn walk(v: &Value, out: &mut Vec<String>) {
@@ -1598,7 +1584,6 @@ mod tests {
             r#"{"type":"http","url":"https://x","auth":{"type":"oauth2","grant":"account_credentials","token_url":"https://idp/t","client_id":"c","client_secret":"s","account_id":"acct-1"}}"#,
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,
-            r#"{"type":"storage","endpoint":"https://s3.example.test","region":"r","bucket":"b","access_key":"AK","secret_key":"SK","session_token":"st"}"#,
         ] {
             let parsed: crate::connector::ConnectorConfig =
                 serde_json::from_str(sample).expect("sample parses");

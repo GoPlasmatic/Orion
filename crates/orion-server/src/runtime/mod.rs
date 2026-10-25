@@ -13,18 +13,6 @@
 //! it is injected *downward* into `engine`, `channel`, `cron` and `queue`
 //! rather than reaching up into any of them.
 //!
-//! [`model_admission`] is the worker behind the model routes: it drains the
-//! admission queue the node holds, resolving each job's storage connector
-//! from the registry and recording the verdict through the repository — the
-//! two things `model::admission` deliberately takes as parameters.
-//!
-//! [`models`] is the generation-side of the model subsystem: the quarantine
-//! of a workflow that names a model the generation cannot serve — the same
-//! treatment a workflow naming an unavailable plugin function gets — and the
-//! preload that warms what a published generation will run. Both need the
-//! channel rows, the workflow rows and the node's live components, which is
-//! why they are here and not in `model/`.
-//!
 //! [`reload`] rebuilds that generation. It was `engine::reload`, and that was
 //! the largest of the upward dependency edges in the tree: a module the whole
 //! request path sits *below* reached up into `server::state` for `AppState`.
@@ -38,8 +26,6 @@ pub mod definitions;
 pub mod generation;
 pub mod limiter_prune;
 pub mod load_issues;
-pub mod model_admission;
-pub mod models;
 pub mod reload;
 pub mod tasks;
 
@@ -78,8 +64,6 @@ pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::Ha
         cache_pool: state.caches.cache_pool.clone(),
         channel_loader: state.channel_loader.clone(),
         sql_pool_cache: state.caches.sql_pool_cache.clone(),
-        models: state.models.clone(),
-        models_config: &state.config.models,
         providers: state.composition.providers.clone(),
     }
 }

@@ -58,28 +58,6 @@ pub struct PluginLoadIssueResponse {
     pub reason: String,
 }
 
-/// A model version a generation could not carry.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ModelLoadIssueResponse {
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub model: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub version: i64,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub digest: String,
-    /// `disabled`, `admission`, `manifest`, `artifact` or `adapter`.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub stage: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub reason: String,
-}
-
 /// An enabled connector the registry could not load.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -113,19 +91,13 @@ pub struct EngineLoadIssues {
     pub plugins: Vec<PluginLoadIssueResponse>,
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
-    pub models: Vec<ModelLoadIssueResponse>,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
     pub connectors: Vec<ConnectorLoadIssueResponse>,
 }
 
 impl EngineLoadIssues {
     /// Nothing is quarantined.
     pub fn is_empty(&self) -> bool {
-        self.channels.is_empty()
-            && self.plugins.is_empty()
-            && self.models.is_empty()
-            && self.connectors.is_empty()
+        self.channels.is_empty() && self.plugins.is_empty() && self.connectors.is_empty()
     }
 }
 
@@ -141,10 +113,6 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub plugins: bool,
-    /// `models.enabled`: whether this node carries the model runtime.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub models: bool,
 }
 
 /// `POST /api/v2/admin/engine/reload`.

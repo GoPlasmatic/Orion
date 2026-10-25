@@ -221,7 +221,7 @@ activated channels 'high-value-orders'
 applied high-value-order@1.0.0 to http://localhost:9090
 ```
 
-`apply` stages every entity, activates them in dependency order (plugins, connectors, models, workflows, channels), and reloads the engine once at the end. This package carries only the last two kinds.
+`apply` stages every entity, activates them in dependency order (plugins, connectors, workflows, channels), and reloads the engine once at the end. This package carries only the last two kinds.
 
 > [!NOTE]
 > Against an instance with admin auth enabled, `export`, `plan`, `apply` and `diff` read the admin token from the `ORION_ADMIN_TOKEN` environment variable. `lint` needs no server and no token.

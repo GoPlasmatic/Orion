@@ -64,7 +64,6 @@ fn poison_runtime() -> Arc<orion::runtime::RuntimeHandle> {
         Arc::new(orion::channel::ChannelSnapshot::empty()),
         orion::engine::FunctionRegistry::builtin().clone(),
         Arc::new(orion::plugin::PluginSet::empty()),
-        Arc::new(orion::model::ModelSet::empty()),
     );
     Arc::new(handle)
 }

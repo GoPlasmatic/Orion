@@ -872,7 +872,6 @@ mod tests {
             std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
             crate::engine::FunctionRegistry::builtin().clone(),
             std::sync::Arc::new(crate::plugin::PluginSet::empty()),
-            std::sync::Arc::new(crate::model::ModelSet::empty()),
         );
         let generation = handle.load();
 
@@ -928,7 +927,6 @@ mod tests {
             std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
             crate::engine::FunctionRegistry::builtin().clone(),
             std::sync::Arc::new(crate::plugin::PluginSet::empty()),
-            std::sync::Arc::new(crate::model::ModelSet::empty()),
         );
         let generation = handle.load();
 
@@ -1007,7 +1005,6 @@ mod tests {
                 std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
                 crate::engine::FunctionRegistry::builtin().clone(),
                 std::sync::Arc::new(crate::plugin::PluginSet::empty()),
-                std::sync::Arc::new(crate::model::ModelSet::empty()),
             )
         });
         let generation = handle.load();
@@ -1052,7 +1049,6 @@ mod tests {
                 std::sync::Arc::new(crate::channel::ChannelSnapshot::empty()),
                 crate::engine::FunctionRegistry::builtin().clone(),
                 std::sync::Arc::new(crate::plugin::PluginSet::empty()),
-                std::sync::Arc::new(crate::model::ModelSet::empty()),
             )
         });
         let pinned_gen = handle.load();

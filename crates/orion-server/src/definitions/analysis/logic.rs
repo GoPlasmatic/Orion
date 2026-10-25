@@ -174,16 +174,12 @@ mod tests {
     }
 
     #[test]
-    fn analysis_uses_the_runtime_template_and_tensor_vocabulary() {
+    fn analysis_uses_the_runtime_template_vocabulary() {
         let ev = Evaluator::new();
         let document = json!({"$cat": ["literal"], "count": {"var": "data.n"}});
         assert_eq!(
             ev.evaluate(&document, &json!({"data": {"n": 3}})),
             Some(json!({"cat": ["literal"], "count": 3})),
-        );
-        assert_eq!(
-            ev.evaluate(&json!({"shape": [{"zeros": [[2, 3], "f32"]}]}), &json!({})),
-            Some(json!([2, 3])),
         );
     }
 }

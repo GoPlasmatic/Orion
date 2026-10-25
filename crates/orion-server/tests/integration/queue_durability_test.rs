@@ -767,7 +767,6 @@ fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
         generation.channels.clone(),
         generation.functions.clone(),
         generation.plugins.clone(),
-        generation.models.clone(),
     );
     runtime
 }

@@ -20,15 +20,11 @@
 #   connector.json         a connector the package needs (optional)
 #   connector-<name>.json  additional connectors         (optional)
 #   plugin.toml            a plugin, with its component  (optional)
-#   entrant/model.json     a model the workflows call    (optional)
 #   request.json           a sample request              (optional)
 #
 # A package whose primary channel has no route_pattern — a cron channel — is
 # deployed the same way; the script prints the schedule instead of sending a
-# request. A package that
-# ships a model entrant is deployed whole, but its sample request is not
-# sent: the model's bytes have to be in a bucket and admitted first, which is
-# an organiser's step (the script prints it).
+# request.
 #
 # Example:
 #   ./deploy.sh high-value-order
@@ -75,11 +71,10 @@ if grep -qlE '"\$(sql|from|use|each|param)"' "$DIR"/*.json 2>/dev/null || [[ -f 
   "$ORION_BIN" compile "$DIR" --name "$(basename "$DIR")" --version 0.0.0 \
     --format dir -o "$COMPILED" > /dev/null
   # Everything the deploy reads that compile does not emit: the sample
-  # request, a plugin and its component, a model entrant.
+  # request, a plugin and its component.
   for extra in request.json plugin.toml; do
     [[ -e "$DIR/$extra" ]] && cp -R "$DIR/$extra" "$COMPILED/"
   done
-  [[ -d "$DIR/entrant" ]] && cp -R "$DIR/entrant" "$COMPILED/"
   PLUGIN_COMPONENT_FILE="$(ls "$DIR"/*.wasm 2>/dev/null | head -1 || true)"
   [[ -n "$PLUGIN_COMPONENT_FILE" ]] && cp "$PLUGIN_COMPONENT_FILE" "$COMPILED/"
   DIR="$COMPILED"
@@ -88,7 +83,6 @@ fi
 WF_FILE="$DIR/workflow.json"
 CH_FILE="$DIR/channel.json"
 REQ_FILE="$DIR/request.json"
-ENTRANT_FILE="$DIR/entrant/model.json"
 
 for f in "$WF_FILE" "$CH_FILE"; do
   [[ -f "$f" ]] || { echo "missing $f" >&2; exit 1; }
@@ -226,23 +220,6 @@ fi
 
 if [[ ! -f "$REQ_FILE" ]]; then
   echo "==> Deployed. No request.json to send."
-  exit 0
-fi
-
-# A model entrant is registered by reference to a bucket, then admitted and
-# activated — steps that need a bucket this script does not have. The
-# package is deployed; the request that would run the model is left to the
-# organiser, with the commands to run it.
-if [[ -f "$ENTRANT_FILE" ]]; then
-  MODEL_ID=$(json_field "$ENTRANT_FILE" name)
-  MODEL_ARTIFACT=$(json_field "$ENTRANT_FILE" artifact)
-  echo "==> Deployed. The sample request calls model '$MODEL_ID', which is registered separately:"
-  echo "    1. put $DIR/entrant/$MODEL_ARTIFACT in a bucket behind a 'storage' connector"
-  echo "    2. orion-cli models create -f $DIR/entrant/model.json --connector <bucket> --key <key> \\"
-  echo "           --digest sha256:\$(shasum -a 256 $DIR/entrant/$MODEL_ARTIFACT | cut -d' ' -f1) --wait"
-  echo "    3. orion-cli models activate $MODEL_ID"
-  echo "    4. curl -X POST $BASE/api/v2/data$ROUTE -H 'Content-Type: application/json' --data @$REQ_FILE"
-  echo "    The server needs models.enabled = true; see $DIR/README.md."
   exit 0
 fi
 

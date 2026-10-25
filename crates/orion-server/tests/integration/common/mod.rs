@@ -12,7 +12,6 @@ pub mod deploy;
 pub mod dsl;
 /// The model fixture, the bucket standing in for its object storage, and the
 /// registration helpers the model tests share.
-pub mod models;
 /// The v1 entity routes, for the tests whose subject is v1 lifecycle.
 pub mod v1;
 

@@ -6,10 +6,6 @@
 
 One definition for every term the book uses with a fixed meaning, ten to twenty words each. A term with a page of its own links to it; the concept page is the canonical home, and this line is the pointer.
 
-**Adapter**: the JSONLogic expression in a model manifest that turns the task's JSON into one input tensor. See [Models](./models.md).
-
-**Admission**: the node-run sequence (fetch, verify, parse, probe) a model version passes before it may be activated. See [Models](./models.md#admission).
-
 **Artifact (package)**: the single JSON document a package travels as, carrying its entities, version and content hash. See [Packages](./packages.md).
 
 **Backpressure**: a per-channel cap on concurrent in-flight work; `max_concurrent_per_node` bounds every ingress together. See [Channel configuration](../reference/channel-config/index.md).
@@ -22,11 +18,11 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Circuit breaker**: a per-`channel:connector`, per-node gate that stops calls to a repeatedly failing backend until a recovery timeout elapses. See [Connectors](./connectors.md).
 
-**Closure (of a package)**: the selected channels, their workflows, and every connector, plugin and model those workflows reference. See [Packages](./packages.md#closure-what-travels-with-a-channel).
+**Closure (of a package)**: the selected channels, their workflows, and every connector and plugin those workflows reference. See [Packages](./packages.md#closure-what-travels-with-a-channel).
 
 **Config epoch**: a shared counter in the database, advanced by every mutation; cluster replicas poll it and resync when it moves. See [Run a cluster](../operate/deploy/cluster.md).
 
-**Connector**: a named connection to an external system (`http`, `db`, `cache`, `storage`) that tasks reference by name. See [Connectors](./connectors.md).
+**Connector**: a named connection to an external system (`http`, `db`, `cache`) that tasks reference by name. See [Connectors](./connectors.md).
 
 **Control plane**: the admin API under `/api/v2/admin/`, and the CLI and Console that drive it. See [Admin API](../reference/admin-api/index.md).
 
@@ -44,11 +40,11 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Engine**: the compiled runtime built from every active workflow and plugin; a reload rebuilds and swaps it whole, beside the channel estate. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
 
-**Estate**: everything one instance stores: its channels, workflows, connectors, plugins and models, across all versions.
+**Estate**: everything one instance stores: its channels, workflows, connectors and plugins, across all versions.
 
 **Fragment**: a reusable run of tasks a source-form workflow pulls in with `use`, resolved by `compile` before the definition reaches an instance. See [CLI](../reference/cli/shared-definitions.md).
 
-**Generation**: one published value holding the engine, the channel estate, the function registry, the plugin set and the model set, swapped atomically on reload. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
+**Generation**: one published value holding the engine, the channel estate, the function registry and the plugin set, swapped atomically on reload. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
 
 **Hot reload**: replacing the running generation inside a live process; admin mutations and `POST /api/v2/admin/engine/reload` take effect without a restart. See [The entity lifecycle](./lifecycle.md#what-moves-the-engine).
 
@@ -58,9 +54,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Loop**: a workflow setting that repeats the task list once per sweep, up to a declared `max`, with a counter the tasks can index. See [Workflow definition](../reference/workflows.md#loop).
 
-**Manifest**: a plugin's `plugin.toml` or a model's `orion:model` JSON: the declaration of what the artifact provides and how it is called. See [Plugins](./plugins.md) and [Models](./models.md).
-
-**Model**: an ONNX graph held in a bucket by reference, admitted by a node, and run from a task with `model_infer`. See [Models](./models.md).
+**Manifest**: a plugin's `plugin.toml`: the declaration of what the component provides and how it is called. See [Plugins](./plugins.md).
 
 **Modular monolith**: one Orion instance running many independently shipped services side by side. See [Packages](./packages.md).
 
@@ -68,7 +62,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Operation gates**: per-connector booleans under `operations` that permit or refuse `read`, `insert`, `update`, `delete`, `upsert` and `raw_write`. See [Connectors](../reference/connectors/operation-gates.md).
 
-**Package**: the channels, workflows, connectors, plugins and models of one service, versioned as a unit and promoted between instances. See [Packages](./packages.md).
+**Package**: the channels, workflows, connectors and plugins of one service, versioned as a unit and promoted between instances. See [Packages](./packages.md).
 
 **Plugin**: a versioned entity carrying a WebAssembly component that adds task functions named `<plugin>.<label>`; its world imports nothing. See [Plugins](./plugins.md).
 
@@ -96,6 +90,6 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Trace DLQ**: the dead-letter table for async work that could not complete, retried with backoff. See [Admin API](../reference/admin-api/trace-dlq.md).
 
-**Version**: one immutable row of a channel, workflow, plugin or model under its id; a change is always a new version. See [The entity lifecycle](./lifecycle.md).
+**Version**: one immutable row of a channel, workflow or plugin under its id; a change is always a new version. See [The entity lifecycle](./lifecycle.md).
 
 **Workflow**: a versioned pipeline of tasks selected by JSONLogic conditions, executed by the engine on behalf of a channel. See [Workflows](./workflows.md).

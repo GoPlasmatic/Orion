@@ -125,7 +125,7 @@ See [`compile`](../../reference/cli/orion-server/compile.md) for the other outpu
 
 ## Reach outside the process
 
-Connector-backed tasks call databases, HTTP APIs, caches and object storage. They name a connector rather than a URL, and write their result to an `output` path:
+Connector-backed tasks call databases, HTTP APIs and caches. They name a connector rather than a URL, and write their result to an `output` path:
 
 ```json
 { "id": "enrich", "name": "Look up the customer",

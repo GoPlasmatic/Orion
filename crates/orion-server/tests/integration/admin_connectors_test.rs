@@ -1552,14 +1552,12 @@ async fn probing_an_unknown_connector_is_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ============================================================
-// Storage connector (#265)
-// ============================================================
-
+/// The object-storage connector type left Community with the functions
+/// behind it: `storage` is refused as an unknown type rather than stored as
+/// a connector nothing can use.
 #[tokio::test]
-async fn test_storage_connector_create_mask_and_validation() {
+async fn a_storage_connector_is_refused_as_an_unknown_type() {
     let app = common::test_app().await;
-
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -1568,164 +1566,15 @@ async fn test_storage_connector_create_mask_and_validation() {
             Some(json!({
                 "name": "media",
                 "connector_type": "storage",
-                "config": {
-                    "endpoint": "https://ap-south-1.linodeobjects.com",
-                    "region": "ap-south-1",
-                    "bucket": "media-bucket",
-                    "access_key": "AKIAEXAMPLE",
-                    "secret_key": "supersecret"
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    // Credentials mask; the structural fields stay readable.
-    assert_ne!(body["data"]["config"]["secret_key"], json!("supersecret"));
-    assert_ne!(body["data"]["config"]["access_key"], json!("AKIAEXAMPLE"));
-    assert_eq!(
-        body["data"]["config"]["endpoint"],
-        json!("https://ap-south-1.linodeobjects.com")
-    );
-    assert_eq!(body["data"]["config"]["bucket"], json!("media-bucket"));
-    assert_eq!(body["data"]["config"]["region"], json!("ap-south-1"));
-
-    // A non-http(s) endpoint is refused at the door.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "name": "bad-media",
-                "connector_type": "storage",
-                "config": {
-                    "endpoint": "s3://bucket",
-                    "region": "r",
-                    "bucket": "b",
-                    "access_key": "a",
-                    "secret_key": "s"
-                }
+                "config": {"endpoint": "https://s3.example.com", "region": "r", "bucket": "b",
+                           "access_key": "AK", "secret_key": "SK"},
             })),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn test_storage_presign_workflow_validation_at_create() {
-    let app = common::test_app().await;
-
-    // The playback shape from #265 is accepted as a draft.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Playback URL",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1", "name": "Presign",
-                    "function": {"name": "storage_presign", "input": {
-                        "connector": "media",
-                        "key": {"var": "temp_data.object_key"},
-                        "expires_in": "7d",
-                        "output": "temp_data.play_url"
-                    }}
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    // #367: a bounded upload — `content_length` beside `content_type`, both
-    // signed. `storage_presign` denies unknown keys, so accepting this draft
-    // is what says the field exists at all.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Bounded upload URL",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1", "name": "Presign",
-                    "function": {"name": "storage_presign", "input": {
-                        "connector": "models",
-                        "method": "PUT",
-                        "key": {"var": "temp_data.artifact_key"},
-                        "content_type": "application/octet-stream",
-                        "content_length": {"var": "temp_data.declared_bytes"},
-                        "expires_in": "15m",
-                        "output": "temp_data.put_url"
-                    }}
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    // Authoring-time refusals: over-cap TTL, unknown method, a PUT-only
-    // field on GET, a zero-byte bound — each a named 400.
-    for (input, expected) in [
-        (
-            json!({"connector": "m", "key": "k", "expires_in": "30d"}),
-            "expires_in",
-        ),
-        (
-            json!({"connector": "m", "method": "DELETE", "key": "k", "expires_in": 60}),
-            "method",
-        ),
-        (
-            json!({"connector": "m", "key": "k", "expires_in": 60,
-                   "content_type": "video/mp4"}),
-            "PUT only",
-        ),
-        (
-            json!({"connector": "m", "key": "k", "expires_in": 60,
-                   "content_length": 1024}),
-            "PUT only",
-        ),
-        (
-            json!({"connector": "m", "method": "PUT", "key": "k", "expires_in": 60,
-                   "content_length": 0}),
-            "at least 1",
-        ),
-    ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(json!({
-                    "name": "Bad Presign",
-                    "condition": true,
-                    "tasks": [{
-                        "id": "t1", "name": "Presign",
-                        "function": {"name": "storage_presign", "input": input}
-                    }]
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "expected 400 for {input}"
-        );
-        let body = body_json(resp).await;
-        let details = body["error"]["details"].to_string();
-        assert!(
-            details.contains(expected),
-            "{input} should have reported '{expected}', got {details}"
-        );
-    }
+    let body = body_json(resp).await;
+    assert!(body.to_string().contains("storage"), "{body}");
 }
 
 /// #338: the issue's own connector — `url` and `allow_private_urls` both

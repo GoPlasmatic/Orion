@@ -27,7 +27,6 @@ The command, its flags and exit codes are on the [CLI reference](../cli/orion-se
 | [`correctness.unknown_input_key`](./correctness-unknown-input-key.md) | deny | workflow | a task input key the function does not declare, which is silently ignored |
 | [`correctness.unordered_page`](./correctness-unordered-page.md) | deny | workflow | a read that skips rows without ordering them, so the page it skips is undefined |
 | [`correctness.sql_bind_count`](./correctness-sql-bind-count.md) | deny | workflow | a PostgreSQL statement's `$n` placeholders and its literal `params` differ in number |
-| [`correctness.model_timeout_clamped`](./correctness-model-timeout-clamped.md) | warn | workflow | a literal `model_infer` `timeout_ms` above the ceiling the config gives the model |
 | [`perf.parse_result_overwritten`](./perf-parse-result-overwritten.md) | warn | workflow | a parse/publish target is overwritten by a later unconditional task before anything reads it |
 | [`perf.redundant_step_condition`](./perf-redundant-step-condition.md) | warn | workflow | consecutive steps repeat one condition that none of them can change; a task group evaluates it once |
 | [`perf.group_condition_repeated`](./perf-group-condition-repeated.md) | warn | workflow | a group member repeats the group's own condition, which was already true on entry |

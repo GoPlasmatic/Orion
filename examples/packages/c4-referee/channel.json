@@ -1,0 +1,11 @@
+{
+  "channel_id": "c4-move",
+  "name": "c4-move",
+  "description": "Play one move: POST { \"state\": {...}, \"column\": 0-6 }",
+  "tags": ["pkg:c4-referee"],
+  "channel_type": "sync",
+  "protocol": "http",
+  "methods": ["POST"],
+  "route_pattern": "/c4/move",
+  "workflow_id": "c4-move"
+}

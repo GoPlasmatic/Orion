@@ -204,8 +204,7 @@ behavior.
 
 Connectors update in place; follow the mutation command's current reload
 behavior and verify engine status afterward. The types are `http`, `db`
-(PostgreSQL, MySQL, SQLite), `cache` (per-node memory), and `storage`
-(S3-compatible object storage).
+(PostgreSQL, MySQL, SQLite), and `cache` (per-node memory).
 
 ```json
 {
@@ -229,8 +228,7 @@ Operation gates restrict what a workflow may do:
 
 - database: read, insert, update, delete, upsert, raw write;
 - cache: read and write;
-- HTTP: method allowlist;
-- storage: presign-get, presign-put, and head.
+- HTTP: method allowlist.
 
 For delete-proof database access, disable both structured delete and raw write.
 An HTTP method list becomes exhaustive once non-empty.

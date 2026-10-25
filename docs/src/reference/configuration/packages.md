@@ -20,8 +20,8 @@ apply_timeout_secs = 1800
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
 | `packages.apply` | `[]` | `ORION_PACKAGES__APPLY` | The artifacts an image carries, applied in order. The variable is comma-separated. A later entry may `require` what an earlier one carries. |
-| `packages.signatures_dir` | — | `ORION_PACKAGES__SIGNATURES_DIR` | A mounted directory of `.sig` files, when the target trusts only signed plugins or models. They are attached as [`package apply --signatures`](../cli/orion-server/package.md#signatures-at-deploy-time) attaches them. |
-| `packages.apply_timeout_secs` | `1800` | `ORION_PACKAGES__APPLY_TIMEOUT_SECS` | The whole startup apply's budget, model admission included. Past it the node exits. `0` means no limit. |
+| `packages.signatures_dir` | — | `ORION_PACKAGES__SIGNATURES_DIR` | A mounted directory of `.sig` files, when the target trusts only signed plugins. They are attached as [`package apply --signatures`](../cli/orion-server/package.md#signatures-at-deploy-time) attaches them. |
+| `packages.apply_timeout_secs` | `1800` | `ORION_PACKAGES__APPLY_TIMEOUT_SECS` | The whole startup apply's budget. Past it the node exits. `0` means no limit. |
 
 ## What happens at startup
 

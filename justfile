@@ -57,4 +57,4 @@ fmt:
 
 # Offline workflow regression tests (the examples' *.case.json suite).
 workflow-tests:
-    cargo run -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-tournament --model-dir examples/packages/c4-tournament/entrant
+    cargo run -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-referee

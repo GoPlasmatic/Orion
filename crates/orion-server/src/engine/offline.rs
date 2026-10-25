@@ -37,9 +37,8 @@ pub fn single_engine(compiler: &Compiler, json: &Value) -> Result<dataflow_rs::E
 }
 
 /// The registry an offline run compiles on: every Orion function over inert
-/// dependencies, the expressions reading `secrets`, the `plugins` loaded from
-/// their components, and `model`, when there is one, in place of the node's
-/// `model_infer`.
+/// dependencies, the expressions reading `secrets`, and the `plugins` loaded
+/// from their components.
 ///
 /// # Errors
 ///
@@ -48,7 +47,6 @@ pub fn single_engine(compiler: &Compiler, json: &Value) -> Result<dataflow_rs::E
 pub fn offline_compiler(
     secrets: &super::ResolvedSecrets,
     plugins: Vec<crate::plugin::PluginFunction>,
-    model: Option<crate::model::ModelInferFunction>,
 ) -> Result<Compiler, OrionError> {
     let exprs = super::operators::orion_exprs(secrets, 0)
         .map_err(|e| OrionError::validation(format!("the offline expression engine: {e}")))?;
@@ -56,9 +54,6 @@ pub fn offline_compiler(
     let mut deps = offline.deps();
     deps.exprs = exprs;
     let mut registry = super::serving_registry(deps);
-    if let Some(model) = model {
-        registry.register(crate::model::handler::NAME, model);
-    }
     let refused = super::register_plugin_functions(&mut registry, plugins);
     if !refused.is_empty() {
         return Err(OrionError::validation(format!(

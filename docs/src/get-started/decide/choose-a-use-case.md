@@ -1,4 +1,4 @@
-<!-- description: Choose the Orion learning path for your use case: REST API, webhook ingestion, scheduled work, database access, object storage or AI-assisted authoring. -->
+<!-- description: Choose the Orion learning path for your use case: REST API, webhook ingestion, scheduled work, database access or AI-assisted authoring. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 

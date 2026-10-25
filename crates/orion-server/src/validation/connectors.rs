@@ -85,10 +85,6 @@ pub fn validate_connector_config(
         ConnectorConfig::Http(c) => validate_http(c)?,
         ConnectorConfig::Cache(c) => validate_cache(c, config)?,
         ConnectorConfig::Db(_) => validate_db(config)?,
-        // Nothing beyond the shared gate/retry/query checks and the endpoint
-        // scheme allow-list above: a storage connector's endpoint is
-        // scheme-checked.
-        ConnectorConfig::Storage(_) => {}
     }
 
     Ok(())

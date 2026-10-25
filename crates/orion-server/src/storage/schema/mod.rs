@@ -22,7 +22,7 @@ mod entities;
 mod runtime;
 
 pub use entities::{
-    Channels, ConnectorOauthState, Connectors, CurrentChannels, CurrentWorkflows, Models, Packages,
+    Channels, ConnectorOauthState, Connectors, CurrentChannels, CurrentWorkflows, Packages,
     PluginArtifacts, Plugins, Workflows,
 };
 pub use runtime::{
@@ -220,42 +220,6 @@ mod tests {
                 "config_hash",
                 "next_fire_at",
                 "paused_at",
-            ]
-        );
-
-        // The model columns, in the order the three `models` migrations
-        // declare them: every one is spelled by hand in each set, and the
-        // two derived columns are the ones the immutability trigger must
-        // *not* name.
-        assert_eq!(
-            [
-                Iden::to_string(&Models::ModelId),
-                Iden::to_string(&Models::Version),
-                Iden::to_string(&Models::Status),
-                Iden::to_string(&Models::Digest),
-                Iden::to_string(&Models::ManifestJson),
-                Iden::to_string(&Models::ArtifactJson),
-                Iden::to_string(&Models::AdmissionJson),
-                Iden::to_string(&Models::StatsJson),
-                Iden::to_string(&Models::TagsJson),
-                Iden::to_string(&Models::Signature),
-                Iden::to_string(&Models::CreatedAt),
-                Iden::to_string(&Models::UpdatedAt),
-            ]
-            .to_vec(),
-            [
-                "model_id",
-                "version",
-                "status",
-                "digest",
-                "manifest_json",
-                "artifact_json",
-                "admission_json",
-                "stats_json",
-                "tags_json",
-                "signature",
-                "created_at",
-                "updated_at",
             ]
         );
 

@@ -1,6 +1,6 @@
 use super::authoring::{
-    Catalog, InferTask, OfflinePluginHandlers, format_lint_error, model_infer_tasks,
-    offline_registry, read_expanded_workflow, unverifiable_functions,
+    Catalog, OfflinePluginHandlers, format_lint_error, offline_registry, read_expanded_workflow,
+    unverifiable_functions,
 };
 
 /// Build a dry-run engine over one workflow file, with connector-backed
@@ -190,7 +190,6 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // The stub layer answers every connector-backed call, even with no stub
     // file: an unstubbed call then reports which stub to add.
     let log = std::sync::Arc::new(orion::engine::functions::stub::CallLog::new());
-    let stubs_name_model_infer = stubs.contains_key(orion::model::handler::NAME);
     // Plugin functions are never stubbed: a plugin is capability-free, so the
     // real component runs, exactly as `crypto` does. A manifest whose
     // component is not beside it has functions this run cannot execute, and
@@ -222,103 +221,15 @@ pub(crate) fn build_dry_run_engine_with_stubs(
         }
         plugin_functions = handlers;
     }
-    // Models run for real once a model directory is in hand — a model is a
-    // pure function of its inputs and its weights, like a plugin — and a
-    // workflow naming one the directory does not hold (or holds without its
-    // bytes) is refused here by name. With no manifests at all the function
-    // is answered from the stub file like a connector function, and a
-    // workflow that calls it with no stub either is refused rather than
-    // left to fail at the task with a message about stubs. A computed
-    // `model` resolves against the directory per message, as it would
-    // against a node's generation.
-    let stubs_model = stubs_name_model_infer;
-    let infer_tasks = model_infer_tasks(&req.tasks, req.loop_config.as_ref());
-    let mut model_function = None;
-    match definitions.filter(|c| !c.models.is_empty()) {
-        Some(catalog) if !infer_tasks.is_empty() => {
-            let (handler, unavailable) = catalog.model_handler();
-            for InferTask {
-                path,
-                id: task,
-                model,
-            } in &infer_tasks
-            {
-                let Some(model) = model else {
-                    continue;
-                };
-                if let Some((_, origin)) = unavailable.iter().find(|(id, _)| id == model) {
-                    return Err(format_lint_error(
-                        workflow_path,
-                        orion::errors::OrionError::invalid_field(
-                            path.clone(),
-                            "MODEL_ARTIFACT_UNAVAILABLE",
-                            format!(
-                                "task '{task}' names model '{model}', whose manifest ({origin}) \
-                                 has no artifact beside it — put the file where the manifest's \
-                                 `artifact` names it, so the run can execute the model rather \
-                                 than stub it"
-                            ),
-                        ),
-                    )
-                    .into());
-                }
-                if !catalog.models.iter().any(|m| m.manifest.name == *model) {
-                    return Err(format_lint_error(
-                        workflow_path,
-                        orion::errors::OrionError::invalid_field(
-                            path.clone(),
-                            "MODEL_ARTIFACT_UNAVAILABLE",
-                            format!(
-                                "task '{task}' names model '{model}', and no manifest for it \
-                                 was given — an offline run executes model_infer for real, so \
-                                 pass --model-dir <dir> holding the model's manifest and its \
-                                 artifact"
-                            ),
-                        ),
-                    )
-                    .into());
-                }
-            }
-            model_function = Some(handler);
-        }
-        Some(_) | None if infer_tasks.is_empty() || stubs_model => {}
-        _ => {
-            let InferTask {
-                path,
-                id: task,
-                model,
-            } = &infer_tasks[0];
-            return Err(format_lint_error(
-                workflow_path,
-                orion::errors::OrionError::invalid_field(
-                    path.clone(),
-                    "MODEL_ARTIFACT_UNAVAILABLE",
-                    format!(
-                        "task '{task}' calls model_infer{} and no --model-dir was given — pass \
-                         --model-dir <dir> holding the model's manifest and its artifact to run \
-                         it for real, or answer it from the stubs file with \
-                         {{\"model_infer\": {{\"*\": <result>}}}}",
-                        match model {
-                            Some(model) => format!(" on model '{model}'"),
-                            None => " with a computed model".to_string(),
-                        }
-                    ),
-                ),
-            )
-            .into());
-        }
-    }
     // Compiled on the real functions, over inert dependencies, as a node
     // compiles a row: a workflow a node would quarantine is refused here, and
     // the run speaks the serving engine's expressions. Unbounded: an offline
     // run has no `[engine]` config to read a budget from.
-    let stub_models = model_function.is_none();
-    let compiler =
-        orion::engine::offline::offline_compiler(secrets, plugin_functions, model_function)?;
+    let compiler = orion::engine::offline::offline_compiler(secrets, plugin_functions)?;
     let engine = orion::engine::offline::single_engine(&compiler, &json)?;
     let layers: Vec<std::sync::Arc<dyn dataflow_rs::function::CallLayer>> =
         vec![std::sync::Arc::new(
-            orion::engine::functions::stub::StubLayer::new(stubs, log.clone(), stub_models),
+            orion::engine::functions::stub::StubLayer::new(stubs, log.clone()),
         )];
     Ok(OfflineRun {
         engine,
@@ -369,7 +280,6 @@ pub(crate) struct DryRunRequest<'a> {
     pub(crate) secrets: Option<&'a str>,
     pub(crate) definitions: Option<&'a str>,
     pub(crate) plugin_dirs: &'a [String],
-    pub(crate) model_dirs: &'a [String],
     pub(crate) trace: DryRunTrace,
 }
 
@@ -382,7 +292,6 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
         secrets: secrets_path,
         definitions,
         plugin_dirs,
-        model_dirs,
         trace: trace_mode,
     } = req;
     let input_raw = std::fs::read_to_string(input_path)
@@ -415,7 +324,7 @@ pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn st
         None => orion::engine::ResolvedSecrets::empty(),
     };
 
-    let catalog = Catalog::load_opt(definitions, plugin_dirs, model_dirs)?;
+    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
     let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref(), &secrets)?;
     // Per-write capture is what the audit trail's `changes` report; without
     // a trace the run is a node's untraced run. The trace is kept on every
@@ -557,7 +466,6 @@ pub(crate) async fn run_test(
     path: &str,
     definitions: Option<&str>,
     plugin_dirs: &[String],
-    model_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cases = collect_case_files(path)?;
     if cases.is_empty() {
@@ -571,9 +479,8 @@ pub(crate) async fn run_test(
     // Loaded once for the whole suite rather than per case: the catalog is
     // the same for all of them, and walking the tree per case was most of a
     // run's work on any set of size — and the plugin components it carries
-    // are compiled once for every case that runs them — and the models it
-    // carries are loaded into the runtime once.
-    let catalog = Catalog::load_opt(definitions, plugin_dirs, model_dirs)?;
+    // are compiled once for every case that runs them.
+    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
 
     let mut results = Vec::new();
     for case_path in &cases {

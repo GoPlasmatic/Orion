@@ -1,15 +1,14 @@
-<!-- description: The integration settings of orion-server: the WebAssembly plugin sandbox, and ONNX model admission and runtimes. -->
+<!-- description: The integration settings of orion-server: enabling the WebAssembly plugin sandbox, its resource ceilings, signature trust keys and per-plugin overrides. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # Integration settings
 
-WebAssembly plugins and ONNX models. Every table on these pages carries the wire name, the default the code uses, and the `ORION_*` override.
+WebAssembly plugins. Every table on these pages carries the wire name, the default the code uses, and the `ORION_*` override.
 
 | Page | Holds |
 |---|---|
 | [Plugin settings](./plugins.md) | enabling the WebAssembly sandbox, the memory, size, time and concurrency ceilings, trust keys and per-plugin overrides. |
-| [Model settings](./models.md) | enabling ONNX models, the artifact cache, admission limits, inference ceilings, trust keys, runtimes, devices and overrides. |
 
 ## Related
 

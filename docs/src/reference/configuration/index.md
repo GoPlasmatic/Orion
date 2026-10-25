@@ -23,7 +23,6 @@ Every setting Orion has, with its real default and its environment variable, one
 | Scheduled (cron) channels | [Cron scheduler settings](./cron.md) |
 | Packages a node applies to itself at startup | [Package settings](./packages.md) |
 | Custom task functions in WebAssembly | [Plugin settings](./plugins.md) |
-| ONNX models and the artifact cache | [Model settings](./models.md) |
 | Admin API keys | [Admin authentication settings](./admin-auth.md) |
 | JWKS egress policy | [JWT verification settings](./jwt.md) |
 | OAuth2 token-endpoint egress policy | [Inbound OAuth2 sign-in settings](./oauth2-login.md) |

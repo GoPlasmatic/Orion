@@ -166,226 +166,6 @@ pub struct PluginHealth {
     pub reason: Option<String>,
 }
 
-/// Where a model version's bytes are: an object in a storage connector's
-/// bucket, and the digest the author claims for it.
-///
-/// The reference *is* the content — a model row never carries bytes — so
-/// `connector`, `key` and `digest` are what the content hash covers. `size`
-/// is a hint the registration may carry and admission confirms; it is not
-/// content, and it is omitted from the wire when unknown.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ModelArtifactRef {
-    /// The object-storage connector the artifact is read through.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub connector: String,
-    /// The object key within that connector's bucket.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub key: String,
-    /// `sha256:<hex>` of the artifact bytes, as claimed at registration and
-    /// confirmed by admission.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub digest: String,
-    /// The artifact's size in bytes, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size: Option<u64>,
-}
-
-/// The admission verdict on a model version: whether a node has fetched the
-/// artifact, confirmed its digest and loaded it — and if not, why.
-///
-/// `state` is `pending` until a node has probed the artifact, then `passed`
-/// or `failed`. The other fields are set alongside a verdict and absent on a
-/// pending one, so `{"state":"pending"}` is the whole of a fresh version's
-/// admission.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ModelAdmission {
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub state: String,
-    /// When the verdict was recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<NaiveDateTime>,
-    /// The node that recorded it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node: Option<String>,
-    /// The stage a `failed` verdict stopped at.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stage: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-/// What admission read out of a model, on the node that admitted it. Absent
-/// from a response until admission passes. The graph numbers are read from
-/// the ONNX protobuf itself, so they are the same on every node and every
-/// runtime; the probe numbers are the admitting node's.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ModelStats {
-    /// Every value the graph carries, counted from the graph itself: each
-    /// initializer, each tensor or list of numbers a node holds in an
-    /// attribute, through every subgraph body and every model-local
-    /// function. Moving weights from one of those fields to another does
-    /// not move this number, which is what lets `models.max_parameters`
-    /// bound it.
-    #[serde(default)]
-    pub parameters: u64,
-    /// Node count of the graph, of every subgraph body it carries (`If`,
-    /// `Loop`, `Scan`) and of every model-local function.
-    #[serde(default)]
-    pub nodes: u64,
-    /// The distinct operators those nodes ask a runtime for, sorted, each
-    /// qualified by its domain unless that is the default one — so
-    /// `ai.onnx.ml.LinearRegressor`, but plain `Gemm`. What the graph needs
-    /// implemented, which is what a row cannot otherwise say: it holds the
-    /// artifact's reference, not its bytes. Empty on a version admitted
-    /// before this was recorded.
-    #[serde(default)]
-    pub operators: Vec<String>,
-    /// What each named dimension in the manifest's shapes was bound to for
-    /// the probe. Absent when the manifest declares fixed shapes, which is
-    /// most of them; present when it does not, because `probe_ms` over a
-    /// variable axis says nothing without the size behind it.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub probe_dims: std::collections::BTreeMap<String, u64>,
-    /// The artifact's size as fetched — the confirmed twin of
-    /// [`ModelArtifactRef::size`].
-    #[serde(default)]
-    pub artifact_bytes: u64,
-    /// The admission probe's wall time per inference, in milliseconds: the
-    /// median of five runs over zero-filled inputs on `runtime` and `device`.
-    /// Admission requires it within `models.max_probe_ms`.
-    #[serde(default)]
-    pub probe_ms: f64,
-    /// The ONNX IR version the model declares.
-    #[serde(default)]
-    pub ir_version: i64,
-    /// The default-domain opset the model imports.
-    #[serde(default)]
-    pub opset: i64,
-    /// The runtime the probe ran on — the admitting node's
-    /// `models.default_runtime` row for the manifest's format.
-    #[serde(default)]
-    pub runtime: String,
-    /// The device the probe loaded the model on.
-    #[serde(default)]
-    pub device: String,
-}
-
-/// Whether the node answering has a model version resident, and if not, why.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ModelHealth {
-    /// `disabled` (models are off on this node); `pending` or `rejected`
-    /// while the version's admission has not passed; `admitted` for the
-    /// active version and `inactive` for a draft or archived one; and, on a
-    /// node that loads models, `loaded` (resident in a runtime), `evicted`
-    /// (was resident, dropped under `models.max_loaded_bytes`) or `failed`
-    /// (the generation could not carry it) for the version it serves.
-    #[serde(default)]
-    pub state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub device: Option<String>,
-    /// Bytes the loaded session holds, when loaded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resident_bytes: Option<u64>,
-    /// The stage and reason when `failed`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-/// One version of a model, as every model endpoint returns it.
-///
-/// `manifest` is the validated manifest as JSON — what was registered, with
-/// nothing the server inferred added to it. `inputs` and `outputs` are the
-/// tensor names it declares, repeated at the top level so a client need not
-/// walk the manifest to learn the model's signature. `artifact` is where the
-/// bytes are; `admission` and `stats` are what a node found when it fetched
-/// them — `stats` is `null` until admission passes. `health` is present only
-/// on the single-entity read, and only when the serving node has an opinion:
-/// it says whether *this node* has the version resident.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct ModelResponse {
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub model_id: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub version: i64,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub status: String,
-    /// `sha256:…` of the artifact bytes, as claimed at registration — the
-    /// identity a generation, a trace and a package all name the model by.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub digest: String,
-    /// The manifest ABI the model was registered against.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub abi: String,
-    /// The author's own version string from the manifest, informational.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub model_version: String,
-    /// The artifact format the manifest declares (`onnx`).
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub format: String,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub manifest: Value,
-    /// The input tensor names, in the manifest's order.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub inputs: Vec<String>,
-    /// The output tensor names, in the manifest's order.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub outputs: Vec<String>,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub artifact: ModelArtifactRef,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub admission: ModelAdmission,
-    /// Present as `null` until admission passes.
-    #[serde(default)]
-    pub stats: Option<ModelStats>,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub tags: Value,
-    /// `sha256:…` over the importable content (manifest, artifact reference
-    /// without its size, tags) — the same projection the upsert import
-    /// compares. The signature, the admission verdict and the stats are not
-    /// in it: see `content::model_content`.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub content_hash: String,
-    /// The detached Ed25519 signature over `digest` the registration carried,
-    /// base64, when there was one. Not part of the content hash: the digest
-    /// is the identity, and the signature only attests to it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
-    /// This node's residency for the version, on the single-entity read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub health: Option<ModelHealth>,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
-    pub created_at: NaiveDateTime,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
-    pub updated_at: NaiveDateTime,
-}
-
 /// API-friendly representation of a Channel with parsed JSON fields.
 ///
 /// This — not the server's `Channel` row struct — is what every channel
@@ -550,7 +330,7 @@ pub struct PackageReceiptResponse {
 }
 
 /// The entities one package version carried, by the key each kind is
-/// matched on: `plugin_id`, `model_id`, the connector's `name`,
+/// matched on: `plugin_id`, the connector's `name`,
 /// `workflow_id`, `channel_id`. Each list is sorted and free of
 /// duplicates, so two applies of one artifact record identical JSON.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -558,8 +338,6 @@ pub struct PackageReceiptResponse {
 pub struct PackageInventory {
     #[serde(default)]
     pub plugins: Vec<String>,
-    #[serde(default)]
-    pub models: Vec<String>,
     #[serde(default)]
     pub connectors: Vec<String>,
     #[serde(default)]
@@ -570,12 +348,11 @@ pub struct PackageInventory {
 
 impl PackageInventory {
     /// `(kind, ids)` for every kind, in the order a package stages them:
-    /// plugins, connectors, models, workflows, channels.
-    pub fn kinds(&self) -> [(&'static str, &Vec<String>); 5] {
+    /// plugins, connectors, workflows, channels.
+    pub fn kinds(&self) -> [(&'static str, &Vec<String>); 4] {
         [
             ("plugins", &self.plugins),
             ("connectors", &self.connectors),
-            ("models", &self.models),
             ("workflows", &self.workflows),
             ("channels", &self.channels),
         ]
@@ -590,7 +367,6 @@ impl PackageInventory {
         for ids in [
             &mut self.plugins,
             &mut self.connectors,
-            &mut self.models,
             &mut self.workflows,
             &mut self.channels,
         ] {
@@ -988,11 +764,6 @@ mod tests {
             TraceDlqSummaryResponse,
             TraceListItemResponse,
             AuditLogEntryResponse,
-            ModelResponse,
-            ModelArtifactRef,
-            ModelAdmission,
-            ModelStats,
-            ModelHealth,
         );
     }
 

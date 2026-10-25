@@ -1,6 +1,6 @@
-//! `orion-server plugin|model digest|keygen|pubkey|sign|verify`, through the
+//! `orion-server plugin digest|keygen|pubkey|sign|verify`, through the
 //! binary: what a release pipeline runs to produce what `[plugins.trust]`
-//! and `[models.trust]` check.
+//! checks.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -56,20 +56,6 @@ impl Scratch {
         for file in ["fixture.toml", "fixture.wasm"] {
             std::fs::copy(
                 Path::new(FIXTURES).join("plugins").join(file),
-                dir.join(file),
-            )
-            .expect("copy fixture");
-        }
-        dir.to_string_lossy().into_owned()
-    }
-
-    /// A copy of the fixture model — manifest and artifact.
-    fn model(&self, rel: &str) -> String {
-        let dir = self.0.join(rel);
-        std::fs::create_dir_all(&dir).expect("model dir");
-        for file in ["model.json", "c4-tiny.onnx"] {
-            std::fs::copy(
-                Path::new(FIXTURES).join("models/c4-tiny").join(file),
                 dir.join(file),
             )
             .expect("copy fixture");
@@ -217,10 +203,6 @@ fn verify_reads_the_nodes_own_trust_keys_with_dash_c() {
     .expect("config");
     let stdout = ok(&orion(&["-c", &config, "plugin", "verify", &dir]));
     assert!(stdout.contains("ok  test.fixture"), "{stdout}");
-    // The model noun reads [models.trust], which this config leaves empty.
-    let model = scratch.model("m");
-    let stderr = fails(&orion(&["-c", &config, "model", "verify", &model]));
-    assert!(stderr.contains("[models.trust]"), "{stderr}");
 }
 
 #[test]
@@ -302,49 +284,6 @@ fn sign_into_a_dir_writes_the_layout_a_signatures_dir_reads() {
         "--by-id",
     ]));
     assert!(stderr.contains("bare file"), "{stderr}");
-}
-
-#[test]
-fn a_model_manifest_under_the_plugin_noun_is_refused() {
-    let scratch = Scratch::new();
-    let model = scratch.model("m");
-    let stderr = fails(&orion(&[
-        "plugin",
-        "digest",
-        &format!("{model}/model.json"),
-    ]));
-    assert!(stderr.contains("use `orion-server model`"), "{stderr}");
-    let stderr = fails(&orion(&["plugin", "digest", &model]));
-    assert!(stderr.contains("use `orion-server model`"), "{stderr}");
-    let plugin = scratch.plugin("p");
-    let stderr = fails(&orion(&[
-        "model",
-        "digest",
-        &format!("{plugin}/fixture.toml"),
-    ]));
-    assert!(stderr.contains("use `orion-server plugin`"), "{stderr}");
-}
-
-#[test]
-fn the_model_noun_signs_the_artifact_not_the_manifest() {
-    let scratch = Scratch::new();
-    let model = scratch.model("m");
-    let (key, public) = keygen(&scratch, "signer.pem");
-    let artifact = std::fs::read(Path::new(&model).join("c4-tiny.onnx")).expect("artifact");
-    assert_eq!(
-        ok(&orion(&["model", "digest", &model])).trim(),
-        orion::crypto::sha256_digest(&artifact)
-    );
-    ok(&orion(&["model", "sign", &model, "--key", &key]));
-    assert!(Path::new(&model).join("c4-tiny.onnx.sig").is_file());
-    let stdout = ok(&orion(&[
-        "model",
-        "verify",
-        &model,
-        "--public-key",
-        &public,
-    ]));
-    assert!(stdout.starts_with("ok  "), "{stdout}");
 }
 
 #[test]

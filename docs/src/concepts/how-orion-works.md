@@ -29,7 +29,7 @@ Every Orion service has a channel and a workflow. Add connectors when its logic 
 |-----------|------------|----------|
 | **[Channel](./channels.md)** | The service's entry point: a REST route, a plain HTTP name, or a cron schedule | `POST /orders`, `GET /users/{id}`, `0 15 2 * * *` |
 | **[Workflow](./workflows.md)** | The ordered task pipeline that is the business logic | Parse input → validate → enrich → transform → respond |
-| **[Connector](./connectors.md)** | A reusable client connection to an external system | PostgreSQL, MySQL, a REST API, an S3 bucket |
+| **[Connector](./connectors.md)** | A reusable client connection to an external system | PostgreSQL, MySQL, a REST API, an in-memory cache |
 
 Channels receive traffic. Workflows process it. Connectors reach outside. Rate limiting, metrics, retries and versioning are the runtime's job, not yours.
 
@@ -93,13 +93,12 @@ Nothing about the artifacts changes between the two. A workflow authored against
 
 ## What you can extend
 
-Orion is configurable in five places, and closed everywhere else. Being plain about that is more useful than a feature list:
+Orion is configurable in four places, and closed everywhere else. Being plain about that is more useful than a feature list:
 
 - **Expressions.** Conditions and mappings are [JSONLogic](../reference/expressions.md), evaluated by the engine.
-- **Connectors.** A new external system is reached by configuring a connector of a supported type: HTTP, SQL, an in-memory cache, or object storage.
+- **Connectors.** A new external system is reached by configuring a connector of a supported type: HTTP, SQL, or an in-memory cache.
 - **Composition.** `channel_call` runs another channel's workflow in-process, so services compose without a network hop.
 - **Plugins.** A pure JSON-to-JSON transformation you already have as code ships as a [plugin](./plugins.md): a WebAssembly component that runs in a sandbox importing nothing. It is versioned and promoted like any other definition, and a task calls it like any built-in function.
-- **Models.** A trained ONNX graph is registered as a [model](./models.md), held in object storage, admitted before it serves, and called from a task with `model_infer`. Its manifest declares the JSONLogic that shapes a message into tensors and reads the outputs back, so the workflow stays declarative.
 
 There is no scripting runtime and no general-purpose plugin API. A plugin cannot open a socket, read a file, tell the time, or reach a connector or a secret, by construction. A task function that has to talk to another system is either an `http_call` to a service you write, or a feature request.
 

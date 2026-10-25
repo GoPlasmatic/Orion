@@ -8,7 +8,6 @@ pub mod oauth;
 pub mod pool_cache;
 mod registry;
 pub mod secrets;
-pub mod sigv4;
 pub mod sql_decode;
 pub mod sql_encode;
 
@@ -17,8 +16,7 @@ pub(crate) use pool_access_counter::POOL_ACCESS_COUNTER;
 pub use config::{
     AuthConfig, CacheConnectorConfig, CacheOperationGates, ConnectorConfig, ConnectorType,
     DbConnectorConfig, DbDriver, DialectGuards, HttpConnectorConfig, HttpOperationGates,
-    OAuth2ClientAuth, OAuth2Config, OAuth2Grant, OperationGates, RetryConfig,
-    StorageConnectorConfig, StorageOperationGates, StorageProvider, VALID_CACHE_BACKENDS,
+    OAuth2ClientAuth, OAuth2Config, OAuth2Grant, OperationGates, RetryConfig, VALID_CACHE_BACKENDS,
     VALID_CONNECTOR_TYPES, VALID_HTTP_METHODS, VariantParse,
 };
 pub use kind::{ConnectorKind, ConnectorTarget, DataBackend, PoolSlot};

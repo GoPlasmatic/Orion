@@ -46,7 +46,6 @@ pub(crate) struct SqlCheckRequest<'a> {
     pub(crate) format: ClippyFormat,
     pub(crate) boundary: orion::definitions::Boundary,
     pub(crate) plugin_dirs: &'a [String],
-    pub(crate) model_dirs: &'a [String],
     pub(crate) config: &'a orion::config::AppConfig,
 }
 
@@ -105,7 +104,6 @@ pub(crate) async fn run_sql_check(req: SqlCheckRequest<'_>) -> Result<i32, CliEr
         &req.boundary,
         orion::definitions::GateOpts::default(),
         req.plugin_dirs,
-        req.model_dirs,
     )?;
     for notice in report.notices() {
         eprintln!("{notice}");

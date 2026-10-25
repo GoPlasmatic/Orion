@@ -1,4 +1,4 @@
-<!-- description: Every Orion connector type and its config — http, db, cache and storage — with secret references, auth schemes and per-operation gates. -->
+<!-- description: Every Orion connector type and its config — http, db and cache — with secret references, auth schemes and per-operation gates. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -12,16 +12,15 @@ while an open circuit returns `503 CIRCUIT_OPEN`. Correct the connector definiti
 test it through `POST /connectors/{id}/test`, and use [Errors & Response
 Envelopes](../errors.md) for the complete contract.
 
-A **connector** is a named connection to an external system — an API, a database, a cache, or an object store. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.
+A **connector** is a named connection to an external system — an API, a database or a cache. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.
 
-There are exactly four connector types:
+There are exactly three connector types:
 
 | Type | Backs | Task functions |
 |------|-------|----------------|
 | [`http`](./http.md) | REST APIs and webhooks | `http_call` |
 | [`db`](./db.md) | PostgreSQL, MySQL, SQLite | `data_query`, `data_write`, `db_read`, `db_write` |
 | [`cache`](./cache.md) | Per-node in-process memory | `cache_read`, `cache_write` |
-| [`storage`](./storage.md) | S3-compatible object storage (presign + metadata only) | `storage_presign`, `storage_head` |
 
 Type values match case-insensitively. Any other value is refused with the valid list. A stored connector whose config no longer parses fails to load and surfaces as a connector load issue.
 
@@ -30,7 +29,7 @@ The task functions and their inputs are specified in the [Function Reference](..
 | Page | Holds |
 |---|---|
 | [Shared connector blocks](./common.md) | identity, secret references, masking, authentication, request layering, gates and retries. |
-| [The four types](./types.md) | the four types, what each backs, and the `config` each takes. |
+| [The three types](./types.md) | the three types, what each backs, and the `config` each takes. |
 
 ## Related
 

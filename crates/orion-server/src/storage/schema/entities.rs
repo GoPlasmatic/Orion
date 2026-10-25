@@ -153,28 +153,3 @@ pub enum PluginArtifacts {
     Size,
     CreatedAt,
 }
-
-// ============================================================
-// Models: the versioned entity; its bytes live in a bucket, not here
-// ============================================================
-
-#[derive(Iden)]
-pub enum Models {
-    Table,
-    ModelId,
-    Version,
-    Status,
-    Digest,
-    ManifestJson,
-    /// The artifact reference: `{"connector","key","digest","size"}`.
-    ArtifactJson,
-    /// The admission verdict — derived, outside the immutability trigger.
-    AdmissionJson,
-    /// What admission read out of the model — derived, nullable.
-    StatsJson,
-    TagsJson,
-    /// Optional detached signature over `digest`.
-    Signature,
-    CreatedAt,
-    UpdatedAt,
-}

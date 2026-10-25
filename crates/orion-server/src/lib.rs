@@ -51,7 +51,6 @@ pub mod http_body;
 #[doc(hidden)]
 pub mod jwt;
 pub mod metrics;
-pub mod model;
 pub mod package;
 pub mod plugin;
 pub mod preflight;

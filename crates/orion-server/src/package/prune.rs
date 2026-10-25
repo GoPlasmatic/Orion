@@ -13,7 +13,7 @@ use crate::engine::FunctionRegistry;
 /// What a removal does to the entity.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PruneMode {
-    /// Archive a channel, workflow, plugin or model, and disable a
+    /// Archive a channel, workflow or plugin, and disable a
     /// connector: reversible, and it frees the route or schedule.
     #[default]
     Archive,
@@ -24,7 +24,7 @@ pub enum PruneMode {
 /// One entity to remove, in the `kind/id` vocabulary `package` prints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Removal {
-    /// `plugins`, `connectors`, `models`, `workflows` or `channels`.
+    /// `plugins`, `connectors`, `workflows` or `channels`.
     pub kind: &'static str,
     /// The kind's conflict key: a connector's name, every other kind's id.
     pub id: String,
@@ -57,7 +57,7 @@ pub struct PrunePlan {
     /// active rows, so a route moving to a new channel id could not
     /// activate while the old channel is still active.
     pub early: Vec<Removal>,
-    /// Workflows, then plugins, models and connectors, removed after
+    /// Workflows, then plugins and connectors, removed after
     /// activation: their dependants' gates only pass once the new versions
     /// are active.
     pub late: Vec<Removal>,
@@ -81,8 +81,8 @@ impl PrunePlan {
 }
 
 /// The order `late` removals run in: a workflow before what it calls, so
-/// the plugin and model gates (no active workflow may name them) pass.
-const LATE_ORDER: [&str; 4] = ["workflows", "plugins", "models", "connectors"];
+/// the plugin gate (no active workflow may name one) passes.
+const LATE_ORDER: [&str; 3] = ["workflows", "plugins", "connectors"];
 
 /// What `--prune` would remove, given the package's current receipt, what
 /// this artifact carries, and every *other* package's current inventory.
@@ -142,8 +142,8 @@ pub fn prune_plan(
 }
 
 /// A removal the CLI refuses before removing anything: something outside
-/// the prune still depends on the entity. The server refuses a plugin or a
-/// model with a live dependant itself; nothing refuses a workflow or a
+/// the prune still depends on the entity. The server refuses a plugin with a
+/// live dependant itself; nothing refuses a workflow or a
 /// connector, so these are checked here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
@@ -165,10 +165,8 @@ impl std::fmt::Display for Refusal {
 pub struct References<'a> {
     pub carried_channels: &'a [Value],
     pub carried_workflows: &'a [Value],
-    pub carried_models: &'a [Value],
     pub active_channels: &'a [Value],
     pub active_workflows: &'a [Value],
-    pub active_models: &'a [Value],
 }
 
 /// Every workflow or connector in `plan` that something the prune leaves
@@ -239,30 +237,6 @@ pub fn refusals(
                         reason: format!(
                             "active workflow '{}' (not in this package) still uses it",
                             label(workflow, "workflow_id")
-                        ),
-                    });
-                }
-                let fetches =
-                    |model: &&Value| model["artifact"]["connector"] == removal.id.as_str();
-                for model in refs.carried_models.iter().filter(fetches) {
-                    out.push(Refusal {
-                        removal: removal.clone(),
-                        reason: format!(
-                            "model '{}' in this artifact is fetched through it",
-                            label(model, "model_id")
-                        ),
-                    });
-                }
-                for model in refs.active_models.iter().filter(fetches) {
-                    let id = model["model_id"].as_str().unwrap_or_default();
-                    if pruned("models", id) || carried(refs.carried_models, "model_id", id) {
-                        continue;
-                    }
-                    out.push(Refusal {
-                        removal: removal.clone(),
-                        reason: format!(
-                            "active model '{}' (not in this package) is fetched through it",
-                            label(model, "model_id")
                         ),
                     });
                 }
@@ -426,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn a_connector_a_remaining_workflow_or_model_uses_is_refused() {
+    fn a_connector_a_remaining_workflow_uses_is_refused() {
         let plan = plan_removing("connectors", "crm");
         let reads = |id: &str| {
             json!({"workflow_id": id, "tasks": [
@@ -435,13 +409,11 @@ mod tests {
         };
         let active_workflows = [reads("outside")];
         let carried_workflows = [reads("inside")];
-        let active_models = [json!({"model_id": "m", "artifact": {"connector": "crm"}})];
         let found: Vec<String> = refusals(
             &plan,
             &References {
                 carried_workflows: &carried_workflows,
                 active_workflows: &active_workflows,
-                active_models: &active_models,
                 ..References::default()
             },
             FunctionRegistry::builtin(),
@@ -455,8 +427,6 @@ mod tests {
                 "cannot prune connectors/crm: workflow 'inside' in this artifact still uses it",
                 "cannot prune connectors/crm: active workflow 'outside' (not in this package) \
                  still uses it",
-                "cannot prune connectors/crm: active model 'm' (not in this package) is fetched \
-                 through it",
             ]
         );
     }

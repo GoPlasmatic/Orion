@@ -26,9 +26,7 @@
 pub mod fields;
 pub mod read;
 
-pub use fields::{
-    DetachedExpr, KeyMaterial, KeyMaterialList, KeyRef, Members, key_material, key_material_list,
-};
+pub use fields::{KeyMaterial, KeyMaterialList, KeyRef, Members, key_material, key_material_list};
 
 use std::borrow::Cow;
 use std::future::Future;
@@ -376,7 +374,6 @@ pub struct OfflineDeps {
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     channel_loader: Arc<crate::channel::ChannelLoader>,
     sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    models_config: crate::config::ModelsConfig,
     providers: crate::extensions::ProviderRegistry,
 }
 
@@ -405,15 +402,13 @@ impl OfflineDeps {
             )),
             channel_loader: Arc::new(crate::channel::ChannelLoader::new()),
             sql_pool_cache: Arc::new(crate::connector::pool_cache::SqlPoolCache::new(entries)),
-            models_config: crate::config::ModelsConfig::default(),
             providers: crate::extensions::CompositionRoot::community().providers,
             client,
             engine_config,
         }
     }
 
-    /// The dependencies, as `register_functions` takes them. No model runtime: `model_infer`
-    /// answers `unavailable`, as with `models.enabled = false`.
+    /// The dependencies, as `register_functions` takes them.
     pub fn deps(&self) -> HandlerDeps<'_> {
         HandlerDeps {
             registry: Arc::clone(&self.registry),
@@ -427,8 +422,6 @@ impl OfflineDeps {
             cache_pool: Arc::clone(&self.cache_pool),
             channel_loader: Arc::clone(&self.channel_loader),
             sql_pool_cache: Arc::clone(&self.sql_pool_cache),
-            models: None,
-            models_config: &self.models_config,
             providers: self.providers.clone(),
         }
     }
@@ -884,12 +877,9 @@ mod tests {
     const PORTED: &[&str] = &[
         "http_call",
         "channel_call",
-        "model_infer",
         "crypto",
         "jwt_sign",
         "jwt_verify",
-        "storage_presign",
-        "storage_head",
         "db_read",
         "db_write",
         "data_query",

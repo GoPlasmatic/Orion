@@ -1,4 +1,4 @@
-<!-- description: orion-server test runs a directory of *.case.json workflow regression cases offline, with shared definitions, plugin components and model artifacts. -->
+<!-- description: orion-server test runs a directory of *.case.json workflow regression cases offline, with shared definitions and plugin components. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
@@ -27,7 +27,6 @@ A case runs the way a node runs a message whose channel does not trace task deta
 | `path` | A directory of `*.case.json` files, or a single case file. Paths inside a case resolve relative to the case file. |
 | `--definitions` | Directory holding the set's shared definitions, resolved before each case's workflow is validated and run. |
 | `--plugin-dir` | Directory of plugin manifests and their components, loaded and compiled once for the whole suite. Plugin functions run for real, never stubbed; a case naming one whose component is absent fails as `PLUGIN_ARTIFACT_UNAVAILABLE`, never as a silently passing stub. Repeatable. |
-| `--model-dir` | Directory of model manifests and their artifacts, loaded once for the whole suite — each model is loaded into the runtime once, however many cases call it. `model_infer` runs the model for real, as `dry-run` does with the flag; a case naming a model the directory does not hold fails as `MODEL_ARTIFACT_UNAVAILABLE`. Without the flag a case's `stubs` answer the function by name. Repeatable. |
 
 ## Examples
 

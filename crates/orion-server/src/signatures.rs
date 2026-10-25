@@ -1,10 +1,10 @@
 //! The detached-signature file convention: what a `.sig` file is called and
 //! what is inside it.
 //!
-//! A signature for `[plugins.trust]` or `[models.trust]` belongs to whoever
+//! A signature for `[plugins.trust]` belongs to whoever
 //! holds the key — the deployment — not to the definition set, so it travels
 //! beside the artifact as a file rather than inside it. One rule, read by
-//! every surface that writes or looks for one: `orion-server plugin|model
+//! every surface that writes or looks for one: `orion-server plugin
 //! sign|verify`, and the package verbs that attach signatures at deploy time.
 //!
 //! - **Contents.** Text: the standard-base64 Ed25519 signature over the
@@ -44,15 +44,13 @@ pub fn read_sig_file(path: &Path) -> Result<String, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Plugin,
-    Model,
 }
 
 impl Kind {
-    /// `plugin` / `model`, as a message names it.
+    /// `plugin`, as a message names it.
     pub fn noun(self) -> &'static str {
         match self {
             Kind::Plugin => "plugin",
-            Kind::Model => "model",
         }
     }
 }
@@ -61,7 +59,7 @@ impl Kind {
 #[derive(Debug, Clone)]
 pub struct Subject {
     pub kind: Kind,
-    /// The plugin or model id; empty for a bare file with no manifest.
+    /// The plugin id; empty for a bare file with no manifest.
     pub id: String,
     /// Candidate artifact file names, most specific first. May be empty.
     pub file_names: Vec<String>,
@@ -226,10 +224,10 @@ impl SignatureDir {
         for name in self.files.keys() {
             if !claimed.contains_key(name.as_str()) {
                 errors.push(format!(
-                    "{} matches no plugin or model in this artifact (expected one of: {})",
+                    "{} matches no plugin in this artifact (expected one of: {})",
                     self.root.join(name).display(),
                     if expected.is_empty() {
-                        "nothing — the artifact carries no plugin or model".to_string()
+                        "nothing — the artifact carries no plugin".to_string()
                     } else {
                         expected.join(", ")
                     }
@@ -292,8 +290,8 @@ mod tests {
             ["acme.scoring.sig", "scoring.wasm.sig"]
         );
         assert_eq!(
-            subject("", &["model.onnx"]).candidates(),
-            ["model.onnx.sig"]
+            subject("", &["scoring.wasm"]).candidates(),
+            ["scoring.wasm.sig"]
         );
     }
 
@@ -345,20 +343,16 @@ mod tests {
         let key = crate::crypto::ed25519::SigningKey::generate();
         let sig = key.sign("sha256:00");
         dir.write("acme.scoring.sig", &format!("{sig}\n"));
-        dir.write("model.onnx.sig", &sig);
+        dir.write("shared.wasm.sig", &sig);
         dir.write("typo.sig", &sig);
         dir.write("acme.broken.sig", "not base64!");
         let sigs = SignatureDir::open(&dir.0).expect("open");
-        let mut a = subject("acme.a", &["model.onnx"]);
-        a.kind = Kind::Model;
-        let mut b = subject("acme.b", &["model.onnx"]);
-        b.kind = Kind::Model;
         let errors = sigs
             .resolve(&[
                 subject("acme.scoring", &["scoring.wasm"]),
                 subject("acme.broken", &[]),
-                a,
-                b,
+                subject("acme.a", &["shared.wasm"]),
+                subject("acme.b", &["shared.wasm"]),
             ])
             .expect_err("three problems");
         assert_eq!(errors.len(), 3, "{errors:#?}");
@@ -375,7 +369,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("typo.sig matches no plugin or model")
+                .any(|e| e.contains("typo.sig matches no plugin")
                     && e.contains("acme.scoring.sig"))
         );
     }

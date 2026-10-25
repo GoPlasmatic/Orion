@@ -24,7 +24,6 @@ pub(crate) fn artifact(name: &str, version: &str, route: &str) -> PackageArtifac
         },
         requires: Requires::default(),
         plugins: Vec::new(),
-        models: Vec::new(),
         connectors: Vec::new(),
         workflows: vec![json!({
             "workflow_id": format!("{name}-flow"), "name": format!("{name}-flow"),

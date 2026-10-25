@@ -41,7 +41,7 @@ Each entry takes the per-provider fields — `kind`, `issuer`, `authorize_url`, 
 
 Two limits to know:
 
-- **File only.** A nested, arbitrary-key map does not fit the `ORION_SECTION__KEY` environment scheme (the same limit `models.runtimes` and `plugins.overrides` have), so an individual provider cannot be set through an environment variable. Values inside still take `${VAR}` substitution — applied to the whole file before it is parsed, so `${IITM_TENANT}` works — and `env://NAME` references, resolved when the channel loads. That is how a per-deployment endpoint or secret is supplied.
+- **File only.** A nested, arbitrary-key map does not fit the `ORION_SECTION__KEY` environment scheme (the same limit `plugins.overrides` has), so an individual provider cannot be set through an environment variable. Values inside still take `${VAR}` substitution — applied to the whole file before it is parsed, so `${IITM_TENANT}` works — and `env://NAME` references, resolved when the channel loads. That is how a per-deployment endpoint or secret is supplied.
 - **Read at startup.** These are read once, at boot; they are not re-read on an engine reload. Adding or changing a provider here takes effect on a **process restart**. (A channel's own `providers` map, by contrast, is reload-scoped.) A provider whose shape is wrong quarantines every channel that merges it, named on `/health`.
 
 ## Related

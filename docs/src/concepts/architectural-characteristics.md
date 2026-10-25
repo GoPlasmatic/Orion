@@ -100,9 +100,9 @@ Click a node in the capability map to expand it, and click a capability to open 
       "name": "Extensibility", "type": "connector",
       "children": [
         { "name": "Connector types", "link": "reference/connectors/index.html",
-          "children": ["http", "db — PG / MySQL / SQLite", "cache — per-node memory", "storage — S3-compatible"] },
+          "children": ["http", "db — PG / MySQL / SQLite", "cache — per-node memory"] },
         { "name": "Task functions", "link": "reference/functions/index.html",
-          "children": ["Parse, map, filter, validate", "HTTP calls", "Portable dialect & raw SQL", "Cache read and write", "Object-storage presigning"] },
+          "children": ["Parse, map, filter, validate", "HTTP calls", "Portable dialect & raw SQL", "Cache read and write", "Hashing, HMAC and JWT"] },
         { "name": "Portable data dialect", "link": "reference/data-dialect.html",
           "children": ["One filter syntax", "Lowered to PostgreSQL", "Lowered to MySQL", "Lowered to SQLite"] },
         { "name": "Channel protocols", "link": "reference/channel-config/routing.html",
@@ -209,16 +209,15 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Connector types](../reference/connectors/index.md) | `http`, `db` (PostgreSQL, MySQL or SQLite — chosen by connection-string scheme), `cache` (per-node memory), and `storage` (S3-compatible object stores). |
-| [Task functions](../reference/functions/index.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect and raw SQL; cache read and write; object-storage presigning; hashing, HMAC and JWT sign/verify; model inference. |
+| [Connector types](../reference/connectors/index.md) | `http`, `db` (PostgreSQL, MySQL or SQLite — chosen by connection-string scheme), and `cache` (per-node memory). |
+| [Task functions](../reference/functions/index.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect and raw SQL; cache read and write; hashing, HMAC and JWT sign/verify. |
 | [Portable data dialect](../reference/data-dialect.md) | One filter-and-envelope syntax lowered to PostgreSQL, MySQL or SQLite, so the same task reads from any of them. |
 | [Channel protocols](../reference/channel-config/routing.md) | REST with route patterns and path parameters, plain HTTP by channel name, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |
 | [In-process composition](../reference/functions/channel_call.md) | `channel_call` runs another channel's workflow in the same process: no network hop, no serialization, and the callee's guards still apply. |
 | [Plugins](../reference/plugin-manifest.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and activated like any other definition, promoted in packages, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
-| [Models](./models.md) | ONNX models held in object storage and admitted — fetched, digest-checked, parsed and probed — before a version may serve. A manifest's JSONLogic adapters shape the message into tensors and read the outputs back, so calling one stays a declarative task. Off by default. |
 
 > [!NOTE]
-> Orion extends by configuration, and by pure computation. A plugin is the one way to add a task function at runtime and a model the one way to add a learned one. Both only compute; everything with I/O stays a connector or a service of your own. [What you can extend](./how-orion-works.md#what-you-can-extend) states the boundary exactly.
+> Orion extends by configuration, and by pure computation. A plugin is the one way to add a task function at runtime, and it only computes; everything with I/O stays a connector or a service of your own. [What you can extend](./how-orion-works.md#what-you-can-extend) states the boundary exactly.
 
 ## Availability
 
@@ -235,7 +234,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Admin API](../reference/admin-api/index.md) | Full CRUD over channels, workflows, connectors, plugins, models and packages, plus lifecycle transitions, engine control, and dependency inspection. Everything the console and the CLI do, they do through it. |
+| [Admin API](../reference/admin-api/index.md) | Full CRUD over channels, workflows, connectors, plugins and packages, plus lifecycle transitions, engine control, and dependency inspection. Everything the console and the CLI do, they do through it. |
 | [OpenAPI](../reference/openapi.md) | The whole admin surface as a spec, with Swagger UI served outside production and closed off inside it. |
 | [Offline testing](../guides/author/testing.md) | Lint a workflow file, dry-run it against sample input with stubbed connectors, and keep `*.case.json` regression suites next to the JSON. None of it needs a running server. |
 | [Packages and promotion](../operate/maintain/promotion.md) | `export`, `lint`, `plan`, `apply` and `diff` move a named, versioned unit between instances. Applied versions are content-immutable, and receipts record exactly what shipped. |

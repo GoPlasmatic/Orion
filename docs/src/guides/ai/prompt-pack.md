@@ -27,7 +27,7 @@ Base URL: http://localhost:8080 (adjust if told otherwise).
 - CHANNEL: a service endpoint (REST route, plain HTTP name or cron schedule) that
   routes to a workflow
 - CONNECTOR: a named connection to an external system (HTTP API, SQL database,
-  object storage, an in-memory cache), referenced from tasks by name
+  an in-memory cache), referenced from tasks by name
 
 ## Workflow JSON
 
@@ -59,8 +59,6 @@ db_read, db_write (raw SQL escape hatch), cache_read, cache_write,
 crypto (hash/hmac/hmac_verify/password_hash/password_verify),
 jwt_sign, jwt_verify (tokens; channel auth mode "jwt" exposes verified
 claims at metadata.auth.claims),
-storage_presign, storage_head (object storage),
-model_infer (an admitted ONNX model, by id),
 publish_json, publish_xml, log.
 
 http connectors can carry auth type "oauth2": Orion manages the token

@@ -60,7 +60,7 @@ pub use gate::{GateOpts, GateReport, gate_directory};
 pub use json::{Document, Node, Span, Spanned};
 pub use provenance::{SourceMap, SourceRef, Via};
 pub use set::{
-    Boundary, Definition, DefinitionSet, Entity, LoadReport, ModelDefinition, PluginDefinition,
-    is_plugin_manifest, json_files,
+    Boundary, Definition, DefinitionSet, Entity, LoadReport, PluginDefinition, is_plugin_manifest,
+    json_files,
 };
 pub use shared::{Fragment, FragmentBody, PackageDecl, SharedDefinitions, first_reference};

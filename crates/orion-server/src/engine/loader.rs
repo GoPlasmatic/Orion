@@ -1220,14 +1220,10 @@ mod tests {
                 extra,
             )
         };
-        let infer = |extra| over(json!({"model": "m", "input": {"x": 1}}), extra);
         #[rustfmt::skip]
         let rows = [
             // I183: a field schema.rs marks required, missing.
             row("I183 (O3)", "http_call", json!({}), "INPUT_PARSE", ".connector"),
-            row("I183 (O3)", "storage_presign", json!({"connector": "s3", "expires_in": 60}), "INPUT_PARSE", ".key"),
-            row("I183 (O3)", "storage_presign", json!({"connector": "s3", "key": "k"}), "INPUT_PARSE", ".expires_in"),
-            row("I183 (O3)", "storage_head", json!({"connector": "s3"}), "INPUT_PARSE", ".key"),
             row("I183 (O4)", "db_read", json!({"connector": "db"}), "INPUT_PARSE", ".query"),
             row("I183 (O4)", "db_write", json!({"connector": "db"}), "INPUT_PARSE", ".query"),
             row("I183 (O4)", "data_query", json!({"connector": "db"}), "INPUT_PARSE", ".query"),
@@ -1243,15 +1239,12 @@ mod tests {
             row("I183 (O7)", "jwt_sign", json!({"algorithm": "HS256", "expires_in": "5m"}), "INPUT_PARSE", ".key"),
             row("I183 (O7)", "jwt_verify", json!({"algorithms": ["HS256"], "jwks_url": "https://x"}), "INPUT_PARSE", ".token"),
             row("I183 (O7)", "jwt_verify", json!({"token": "t", "jwks_url": "https://x"}), "INPUT_PARSE", ".algorithms"),
-            row("I183 (O8)", "model_infer", json!({"input": {}}), "INPUT_PARSE", ".model"),
-            row("I183 (O8)", "model_infer", json!({"model": "m"}), "INPUT_PARSE", ".input"),
             row("I183 (O10)", "channel_call", json!({}), "INPUT_PARSE", ".channel"),
             // O2: key material read by the engine's secret checks.
             row("O2, KeyMaterial", "crypto", hmac(json!({"key": {"secret": "nope"}})), "UNKNOWN_SECRET", ".key"),
             row("O2, KeyMaterialList", "jwt_verify", verify(json!({"issuer": {"secret": "nope"}})), "UNKNOWN_SECRET", ".issuer"),
             row("O2, a nested secret in a key-list object", "jwt_verify", verify(json!({"audience": [{"a": {"secret": "s"}}]})), "SECRET_IN_DOCUMENT", ".audience"),
             // O3.
-            row("O3, an output that is not a path", "storage_head", json!({"connector": "s3", "key": "k", "output": "result"}), "INVALID_PATH", ".output"),
             row("O3, an output that is not a path", "http_call", json!({"connector": "api", "output": "response"}), "INVALID_PATH", ".output"),
             // O4.
             row("O4, a non-string connector", "db_read", json!({"connector": 5, "query": "SELECT 1", "output": "data.r"}), "INPUT_PARSE", ".connector"),
@@ -1300,18 +1293,6 @@ mod tests {
             row("O7, jwt_sign: a malformed var hole in claims", "jwt_sign", sign(json!({"claims": {"sub": {"var": 5}}})), "INVALID_PATH", ".claims"),
             row("O7, jwt_sign: a secret in audience", "jwt_sign", sign(json!({"audience": {"secret": "s"}})), "SECRET_IN_DOCUMENT", ".audience"),
             row("O7, a secret in an output", "jwt_verify", verify(json!({"output": {"secret": "s"}})), "SECRET_IN_MESSAGE_WRITE", ".output"),
-            // O8.
-            row("O8, an unknown runtime", "model_infer", infer(json!({"runtime": "torch"})), "INPUT_PARSE", ".runtime"),
-            row("O8, a timeout_ms that is not a positive integer", "model_infer", infer(json!({"timeout_ms": 0})), "INPUT_PARSE", ".timeout_ms"),
-            row("O8, raw beside select", "model_infer", infer(json!({"raw": true, "select": {"var": "x"}})), "INPUT_PARSE", ".select"),
-            row("O8, a blank model", "model_infer", infer(json!({"model": " "})), "INPUT_PARSE", ".model"),
-            row("O8, a non-string runtime", "model_infer", infer(json!({"runtime": 5})), "INPUT_PARSE", ".runtime"),
-            row("O8, a non-boolean raw", "model_infer", infer(json!({"raw": "yes"})), "INPUT_PARSE", ".raw"),
-            row("O8, an output not written as a string", "model_infer", infer(json!({"output": 5})), "INPUT_PARSE", ".output"),
-            row("O8, an empty output", "model_infer", infer(json!({"output": ""})), "INVALID_PATH", ".output"),
-            row("O8, an output that is not a path", "model_infer", infer(json!({"output": "result"})), "INVALID_PATH", ".output"),
-            row("O8, break 2a", "model_infer", infer(json!({"temperature": 1})), "UNKNOWN_KEY", ".temperature"),
-            row("O8, a secret read in select (K52)", "model_infer", infer(json!({"select": {"secret": "s"}})), "SECRET_IN_MESSAGE_WRITE", ".select"),
             // O10.
             row("O10, \"channel\": null", "channel_call", json!({"channel": null}), "INPUT_PARSE", ".channel"),
             row("O10, break 2a", "channel_call", json!({"channel": "x", "retries": 2}), "UNKNOWN_KEY", ".retries"),
@@ -1325,7 +1306,6 @@ mod tests {
             // literal root (the default `data` included).
             row("I185, db_read", "db_read", json!({"connector": "db", "query": "q"}), "INPUT_PARSE", ".output"),
             row("I185, data_query reading rows", "data_query", json!({"connector": "db", "query": {"source": "t"}}), "INPUT_PARSE", ".output"),
-            row("I185, storage_presign", "storage_presign", json!({"connector": "s3", "key": "k", "expires_in": 60, "output": "temp_data"}), "INPUT_PARSE", ".output"),
             row("I185, crypto", "crypto", hmac(json!({"output": "data"})), "INPUT_PARSE", ".output"),
             row("I185, jwt_sign", "jwt_sign", sign(json!({"output": "data"})), "INPUT_PARSE", ".output"),
             row("I185, cache_read with keys", "cache_read", json!({"connector": "c", "keys": ["k"]}), "INPUT_PARSE", ".output"),

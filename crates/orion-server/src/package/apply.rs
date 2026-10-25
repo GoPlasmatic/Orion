@@ -15,7 +15,7 @@ use super::artifact::{
 };
 use super::transport::AdminApi;
 use super::{Baseline, Error, PruneMode, PrunePlan, Reporter};
-use crate::signatures::{Kind, Outcome, Subject};
+use crate::signatures::{Outcome, Subject};
 
 /// How [`apply`] treats what it finds on the target.
 pub struct ApplyOptions<'a, A> {
@@ -41,8 +41,7 @@ pub enum ApplyOutcome {
     /// The package's current version already: nothing written, and the
     /// target serves it.
     AlreadyApplied,
-    /// The current version, with only its re-signed plugins and models
-    /// written.
+    /// The current version, with only its re-signed plugins written.
     Resigned,
     /// A later version is current and `roll_back_superseded` was off:
     /// nothing written, and what the target still holds of this version
@@ -50,24 +49,16 @@ pub enum ApplyOutcome {
     Superseded { by: String },
 }
 
-/// How long `apply` waits for the target to admit a model it staged before
-/// activating it. Admission is a fetch, a parse and a probe, so it is
-/// seconds for a small model and minutes for a large one over a slow
-/// bucket; the wait is bounded so a target whose worker is down fails the
-/// apply rather than hanging it.
-pub const ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(900);
-
 /// The receipt endpoint for this artifact's package.
 pub fn receipt_path(artifact: &PackageArtifact) -> String {
     paths::package(&artifact.package.name)
 }
 
-/// The `/import` endpoint for one of the five entity kinds the artifact
+/// The `/import` endpoint for one of the four entity kinds the artifact
 /// carries. The kinds are a closed set spelled by this module's own loops.
 pub fn import_path_for(kind: &str) -> &'static str {
     match kind {
         "plugins" => paths::PLUGINS_IMPORT,
-        "models" => paths::MODELS_IMPORT,
         "connectors" => paths::CONNECTORS_IMPORT,
         "workflows" => paths::WORKFLOWS_IMPORT,
         _ => paths::CHANNELS_IMPORT,
@@ -78,7 +69,6 @@ pub fn import_path_for(kind: &str) -> &'static str {
 pub fn status_path_for(kind: &str, id: &str) -> String {
     match kind {
         "plugins" => paths::plugin_status(id),
-        "models" => paths::model_status(id),
         "workflows" => paths::workflow_status(id),
         _ => paths::channel_status(id),
     }
@@ -88,7 +78,6 @@ pub fn status_path_for(kind: &str, id: &str) -> String {
 pub fn entity_path_for(kind: &str, id: &str) -> String {
     match kind {
         "plugins" => paths::plugin(id),
-        "models" => paths::model(id),
         "workflows" => paths::workflow(id),
         _ => paths::channel(id),
     }
@@ -119,51 +108,6 @@ pub async fn check_target_version(
     }
     range.check_target(package, server, &status.version)?;
     Ok(())
-}
-
-/// Whether the target holds every `storage` connector the carried models
-/// fetch through — `requires.storage`, checked by `plan` and again by
-/// `apply` before it stages anything, because an import of a model whose
-/// connector is missing fails at write with the receipt already claimed.
-/// One export sweep matched by `name`, as `requires.connectors` is checked:
-/// a model reference names a connector by its name, and `GET
-/// /connectors/{id}` is keyed by the row's id.
-pub async fn missing_storage(
-    client: &impl AdminApi,
-    artifact: &PackageArtifact,
-    report: &dyn Reporter,
-) -> Result<usize, Error> {
-    if artifact.requires.storage.is_empty() {
-        return Ok(0);
-    }
-    let stored: Value = client.get_data(paths::CONNECTORS_EXPORT).await?;
-    let mut missing = 0usize;
-    for name in &artifact.requires.storage {
-        let row = stored
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|c| c["name"].as_str() == Some(name));
-        match row {
-            Some(row) if row["connector_type"] == "storage" => {}
-            Some(row) => {
-                report.err(&format!(
-                    "error: required storage connector '{name}' exists in the target but is a \
-                     '{}' connector — a model artifact is fetched through a storage connector",
-                    row["connector_type"].as_str().unwrap_or("?")
-                ));
-                missing += 1;
-            }
-            None => {
-                report.err(&format!(
-                    "error: required storage connector '{name}' does not exist in the target — \
-                     the models this package carries are fetched through it"
-                ));
-                missing += 1;
-            }
-        }
-    }
-    Ok(missing)
 }
 
 /// The receipt verdict `plan` and `apply` both start from.
@@ -308,8 +252,8 @@ pub async fn prune_plan_for(
 
 /// The removals something outside the prune still depends on. A workflow
 /// or a connector is checked here, against the target's active rows,
-/// because no server gate refuses its removal; a plugin or a model the
-/// server refuses itself, with a `409`.
+/// because no server gate refuses its removal; a plugin the server refuses
+/// itself, with a `409`.
 pub async fn prune_refusals(
     client: &impl AdminApi,
     artifact: &PackageArtifact,
@@ -332,16 +276,13 @@ pub async fn prune_refusals(
     let connectors_pruned = plan.removals().any(|r| r.kind == "connectors");
     let channels = fetch(workflows_pruned, paths::CHANNELS_EXPORT).await?;
     let workflows = fetch(connectors_pruned, paths::WORKFLOWS_EXPORT).await?;
-    let models = fetch(connectors_pruned, paths::MODELS_EXPORT).await?;
     Ok(super::refusals(
         plan,
         &super::References {
             carried_channels: &artifact.channels,
             carried_workflows: &artifact.workflows,
-            carried_models: &artifact.models,
             active_channels: &channels,
             active_workflows: &workflows,
-            active_models: &models,
         },
         crate::engine::FunctionRegistry::builtin(),
     ))
@@ -492,7 +433,6 @@ pub async fn load_issues_or_health(
     serde_json::from_value(json!({
         "channels": list(&health["channels"]["quarantined"]),
         "plugins": list(&health["plugins"]["failed_to_load"]),
-        "models": list(&health["models"]["failed_to_load"]),
         "connectors": list(&health["connectors"]["failed_to_load"]),
     }))
     .ok()
@@ -542,8 +482,7 @@ pub async fn verify_serving(
 /// # Errors
 ///
 /// Every refusal, with the line an operator reads: a target outside
-/// `requires.orion`, an immutability conflict, a missing storage connector,
-/// a `--prune` refusal, a failed stage or activation, and a member the
+/// `requires.orion`, an immutability conflict, a `--prune` refusal, a failed stage or activation, and a member the
 /// reloaded generation quarantined.
 pub async fn apply<A: AdminApi>(
     client: &A,
@@ -577,7 +516,7 @@ pub async fn apply<A: AdminApi>(
             // The content is applied, but a signature is not content: a
             // re-apply with a new key's signatures must still reach the rows.
             let resign = resigned_members(client, artifact, opts.signed).await?;
-            if resign.plugins.is_empty() && resign.models.is_empty() {
+            if resign.plugins.is_empty() {
                 verify_applied(
                     client,
                     server,
@@ -593,14 +532,9 @@ pub async fn apply<A: AdminApi>(
                 ));
                 return Ok(ApplyOutcome::AlreadyApplied);
             }
-            for (kind, entries) in [("plugins", &resign.plugins), ("models", &resign.models)] {
-                for entry in entries {
-                    let id = entry["plugin_id"]
-                        .as_str()
-                        .or(entry["model_id"].as_str())
-                        .unwrap_or("?");
-                    report.out(&format!("re-signed {kind} '{id}'"));
-                }
+            for entry in &resign.plugins {
+                let id = entry["plugin_id"].as_str().unwrap_or("?");
+                report.out(&format!("re-signed plugins '{id}'"));
             }
             // Only the re-signed members, and the receipt stays as it is:
             // the content it records did not move.
@@ -644,15 +578,6 @@ pub async fn apply<A: AdminApi>(
             artifact.package.name
         )),
         ReceiptState::Fresh | ReceiptState::Staged => {}
-    }
-    // Before the claim: a model import fails at write without its storage
-    // connector, and that is better learned with nothing claimed.
-    if missing_storage(client, artifact, report).await? > 0 {
-        return Err(
-            "the target lacks a storage connector this package's models are fetched \
-             through; create it there (or carry it in the package) and re-run apply"
-                .into(),
-        );
     }
     // Also before the claim: what `--prune` removes, measured from the
     // receipt read above, and every removal something outside it still
@@ -795,9 +720,7 @@ pub async fn stage_activate_reload<A: AdminApi>(
     // Phase 2 — stage everything as drafts, in dependency order. Plugins
     // first, so their components are stored before anything names their
     // functions; connector import reloads the connector registry
-    // server-side, so a model's reference resolves and workflow
-    // activation's registry gate sees them; models before the workflows
-    // that name them.
+    // server-side, so workflow activation's registry gate sees them.
     for (kind, items) in members(artifact) {
         if items.is_empty() {
             continue;
@@ -860,18 +783,6 @@ pub async fn stage_activate_reload<A: AdminApi>(
                         .into());
                     }
                 }
-            }
-        }
-        // A model import queues admission on the target — the fetch, the
-        // digest check, the parse and the probe — and activation is refused
-        // until the verdict is `passed`. Wait for it here, model by model,
-        // so phase 3 can activate them in order with everything else.
-        if kind == "models" {
-            for (_, id, _) in activation_intents(artifact)
-                .into_iter()
-                .filter(|(k, _, _)| *k == "models")
-            {
-                wait_for_admission(client, &id, report).await?;
             }
         }
     }
@@ -984,7 +895,6 @@ pub async fn resigned_members(
         package: artifact.package.clone(),
         requires: Requires::default(),
         plugins: Vec::new(),
-        models: Vec::new(),
         connectors: Vec::new(),
         workflows: Vec::new(),
         channels: Vec::new(),
@@ -1011,87 +921,18 @@ pub async fn resigned_members(
     } else {
         client.get_data(paths::PLUGINS_EXPORT).await?
     };
-    let models: Value = if artifact.models.is_empty() {
-        Value::Null
-    } else {
-        client.get_data(paths::MODELS_EXPORT).await?
-    };
-    let entries = artifact.plugins.iter().chain(artifact.models.iter());
-    for (entry, (subject, outcome)) in entries.zip(signed) {
+    for (entry, (subject, outcome)) in artifact.plugins.iter().zip(signed) {
         let Outcome::Signed { signature, .. } = outcome else {
             continue;
         };
-        let (rows, key, into) = match subject.kind {
-            Kind::Plugin => (&plugins, "plugin_id", &mut resign.plugins),
-            Kind::Model => (&models, "model_id", &mut resign.models),
-        };
-        let current = stored(rows, key, &subject.id);
+        let current = stored(&plugins, "plugin_id", &subject.id);
         if current.as_ref().is_none_or(|(stored_signature, status)| {
             stored_signature != signature || status != orion_api::STATUS_ACTIVE
         }) {
-            into.push(entry.clone());
+            resign.plugins.push(entry.clone());
         }
     }
     Ok(resign)
-}
-
-/// Poll `GET /models/{id}` until the target's admission of the latest
-/// version leaves `pending` — `passed` lets phase 3 activate it, `failed`
-/// stops the apply naming the stage and reason, because activation would
-/// be refused with the same message and nothing after it could serve.
-/// Bounded by [`ADMISSION_WAIT`], with a line on stderr every few seconds
-/// so a long fetch does not read as a hang.
-pub async fn wait_for_admission(
-    client: &impl AdminApi,
-    id: &str,
-    report: &dyn Reporter,
-) -> Result<(), Error> {
-    let started = std::time::Instant::now();
-    let mut last_report = std::time::Instant::now();
-    loop {
-        let row: Value = client.get_data(&paths::model(id)).await?;
-        let state = row["admission"]["state"].as_str().unwrap_or("pending");
-        match state {
-            "passed" => {
-                report.out(&format!(
-                    "admitted models '{id}' on the target ({} parameters, {:.1} ms probe)",
-                    row["stats"]["parameters"],
-                    row["stats"]["probe_ms"].as_f64().unwrap_or(0.0)
-                ));
-                return Ok(());
-            }
-            "failed" => {
-                return Err(format!(
-                    "the target refused model '{id}' at admission stage '{}': {} — fix the \
-                     artifact or the reference (POST /models/{id}/admit retries it); the \
-                     receipt stays staged, and nothing was activated",
-                    row["admission"]["stage"].as_str().unwrap_or("unknown"),
-                    row["admission"]["reason"]
-                        .as_str()
-                        .unwrap_or("no reason recorded")
-                )
-                .into());
-            }
-            _ => {}
-        }
-        if started.elapsed() > ADMISSION_WAIT {
-            return Err(format!(
-                "model '{id}' is still pending admission on the target after {}s — is the \
-                 target's model_admission worker running (see /health)? The receipt stays \
-                 staged; re-run apply once GET /models/{id} reports admission.state 'passed'",
-                ADMISSION_WAIT.as_secs()
-            )
-            .into());
-        }
-        if last_report.elapsed() >= std::time::Duration::from_secs(5) {
-            report.err(&format!(
-                "waiting for the target to admit models '{id}' ({}s)",
-                started.elapsed().as_secs()
-            ));
-            last_report = std::time::Instant::now();
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
 }
 
 #[cfg(test)]
@@ -1104,7 +945,7 @@ mod tests {
     /// is the rollback and must run.
     #[test]
     fn an_applied_receipt_is_a_no_op_only_while_current() {
-        let mut artifact = artifact(Vec::new());
+        let mut artifact = artifact();
         artifact.package.content_hash = "sha256:aaa".to_string();
         let receipts = |current: &str| {
             json!({

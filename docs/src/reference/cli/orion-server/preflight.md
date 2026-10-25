@@ -14,7 +14,7 @@ orion-server [-c <config.toml>] preflight
 
 ## Description
 
-The report has two sections and only the first gates. **Breaks** are numbered by their [checklist row](../../../releases/upgrade-to-1.0/index.md) and make the command exit non-zero, so `orion-server preflight || exit 1` is a deploy gate. Not every break has a row. `[channel-auth]` names a stored channel whose `auth` block no longer builds, which the next load would quarantine. A [`scheme`](../../channel-config/auth.md#the-scheme) that is not a scheme name is one cause. **Advisories** carry the same ids `lint` uses: `[engine.unguarded_validation]`, `[logic.tensor_operator_key]`. They name a stored workflow that serves correctly and says less than its author meant it to, and they never change the exit code. `[source.sql_key]` names a stored workflow holding a string `$sql` key, which is now reserved: the next update of that workflow is refused as uncompiled source. `[source.fragment_key]` does the same for a string `$use` or an object `$each`. For the tensor key, `preflight` reports more than `lint` does. On a stored estate a `{"shape": {"var": …}}` written before 1.8 cannot have meant a call. The dynamic objects are therefore listed here as well as the constant ones.
+The report has two sections and only the first gates. **Breaks** are numbered by their [checklist row](../../../releases/upgrade-to-1.0/index.md) and make the command exit non-zero, so `orion-server preflight || exit 1` is a deploy gate. Not every break has a row. `[channel-auth]` names a stored channel whose `auth` block no longer builds, which the next load would quarantine. A [`scheme`](../../channel-config/auth.md#the-scheme) that is not a scheme name is one cause. **Advisories** carry the same id `lint` uses, `[engine.unguarded_validation]`. They name a stored workflow that serves correctly and says less than its author meant it to, and they never change the exit code. `[source.sql_key]` names a stored workflow holding a string `$sql` key, which is now reserved: the next update of that workflow is refused as uncompiled source. `[source.fragment_key]` does the same for a string `$use` or an object `$each`.
 
 Stored workflows are checked against the functions the estate serves: the built-ins plus every function the **active** plugins declare, read from the same database. A workflow calling a function of an archived plugin is therefore a break, because it would not activate. One calling an active plugin's function is not.
 
@@ -27,6 +27,5 @@ orion-server -c config.toml preflight
 ## Related
 
 - [Upgrade to 1.0](../../../releases/upgrade-to-1.0/index.md): the checklist rows the breaks are numbered by.
-- [Upgrade to 1.8](../../../releases/upgrade-to-1.8.md): the tensor-key advisory this command reports.
 - [Upgrade an instance](../../../operate/maintain/upgrades.md): where preflight sits in the procedure.
 - [`orion-server` commands](./index.md): every `orion-server` subcommand.

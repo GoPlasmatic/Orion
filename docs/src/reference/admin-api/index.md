@@ -1,4 +1,4 @@
-<!-- description: Every Orion admin endpoint: workflows, channels, connectors, plugins, models, packages, engine, audit logs and backups, by resource. -->
+<!-- description: Every Orion admin endpoint: workflows, channels, connectors, plugins, packages, engine, audit logs and backups, by resource. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -14,7 +14,6 @@ All admin endpoints are under `/api/v2/admin/`. When [admin authentication](./au
 | [Workflows](./workflows.md) | Create, test, activate, roll out, version, import, and export endpoints |
 | [Connectors](./connectors.md) | Create, validate, test, update, and circuit-breaker endpoints |
 | [Plugins](./plugins.md) | Upload, activate, version, import, and export WebAssembly plugins |
-| [Models](./models.md) | Register, admit, activate, version, import, and export ONNX models held in object storage |
 | [Packages](./packages.md) | Inspect applied package receipts |
 | [Deployments](./deployments.md) | Store definitions and connection revisions, plan, apply, roll back and follow v2 deployments |
 | [Engine](./engine.md) | Inspect and reload the running engine |
@@ -29,7 +28,7 @@ All resources use the [authentication](./authentication.md), [response envelopes
 | Page | Holds |
 |---|---|
 | [Admin API conventions](./conventions.md) | authentication, envelopes, lifecycle, status changes, export and promotion. |
-| [Entity endpoints](./entities.md) | channels, workflows, plugins, models, connectors and packages. |
+| [Entity endpoints](./entities.md) | channels, workflows, plugins, connectors and packages. |
 | [Operational endpoints](./operations.md) | engine, functions, audit logs, trace DLQ, cron occurrences and backups. |
 
 ## Related

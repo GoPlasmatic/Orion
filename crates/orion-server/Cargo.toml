@@ -70,14 +70,12 @@ workspace = true
 orion-definitions.workspace = true
 # dataflow-rs 4 selects the JSONLogic extension families (string, array,
 # math, control, error handling, object) on its ExprEngineBuilder at runtime;
-# only `datetime` and `tensor` still need Cargo features, and `budget`
-# enables the `engine.ops_budget` ceiling. The vocabulary that results is
+# only `datetime` still needs a Cargo feature, and `budget` enables the
+# `engine.ops_budget` ceiling. The vocabulary that results is
 # docs/src/reference/expressions.md#available-operators, asserted against the
-# engine by jsonlogic_operators_test. `tensor` adds the marshalling operators
-# a model adapter is written in, so a stored `map` emitting a literal
-# `{"shape": ...}` must spell it `{"$shape": ...}`. A budget crossed in a
-# condition fails closed to `false`, which is why it is not on by default.
-dataflow-rs = { version = "4.0.1", features = ["datetime", "tensor", "budget"] }
+# engine by jsonlogic_operators_test. A budget crossed in a condition fails
+# closed to `false`, which is why it is not on by default.
+dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went
@@ -119,9 +117,6 @@ serde_path_to_error = "0.1"
 # The Orion version range a definition set declares (`package.requires.orion`).
 semver = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
-# The host name a node records on a model admission verdict when no
-# `cluster.instance_id` is configured.
-gethostname = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # Cron channels (docs/src/guides/patterns/scheduled-workflows.md): the six-field
 # expression parser, and the IANA time-zone table the local calendar times it
@@ -183,25 +178,6 @@ arc-swap = "1"
 # Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
 wasmtime = { version = "49", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
-# The ONNX inference engine behind `model::runtimes::tract`, reached through
-# its stable facade only: `tract-onnx`, `tract-core` and the rest of the
-# family are declared unstable upstream and are never named here.
-# `default-features = false` because the facade's default set includes
-# `cuda-13000`, which links the CUDA toolkit; the features listed are that
-# default set minus CUDA. Until 0.23.8 they were not features at all but always
-# linked, so this list is what keeps a patch bump from dropping them: `onnx` is
-# the `tract::onnx()` loader itself, `metal` the Apple GPU runtime (the facade
-# still gates it to Apple targets), and `transformers`, `pulse` and `flate2` the
-# operator sets and NNEF archive support an ONNX graph may need. The build stays
-# pure Rust — the CPU runtime everywhere, plus Metal on Apple targets. MIT OR
-# Apache-2.0 throughout; rust-version 1.91, under the 1.98 floor.
-tract = { version = "0.23.9", default-features = false, features = ["onnx", "metal", "transformers", "pulse", "flate2"] }
-# The runtime-independent ONNX reader (`model::onnx`): a hand-written subset
-# of onnx.proto3 — the parameter count, node count, IR version, opset and the
-# graph's input and output names an admission records — decoded with prost,
-# which skips every field the subset leaves out. Already in the tree at 0.14,
-# so this adds no crate.
-prost = "0.14"
 utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 # The workspace patches this to upstream's unpublished ZIP 9 security fix.
 # For air-gapped / offline builds (`TD-35`), point `SWAGGER_UI_DOWNLOAD_URL` at

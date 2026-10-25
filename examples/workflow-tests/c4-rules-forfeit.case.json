@@ -1,8 +1,7 @@
 {
-  "name": "c4-tournament: an entrant that picks a full column forfeits the game",
-  "workflow": "../packages/c4-tournament/workflow-turn.json",
+  "name": "c4-referee: a move into a full column forfeits the game",
+  "workflow": "../packages/c4-referee/workflow.json",
   "input": {
-    "mover_model": "example.c4-tiny",
     "state": {
       "board": [
         0,
@@ -50,15 +49,15 @@
       ],
       "to_move": 2,
       "moves": 7
-    }
+    },
+    "column": 4
   },
   "expect": {
-    "data.answer.column.0": 4,
     "data.state.illegal": true,
     "data.state.over": true,
     "data.state.winner": 1,
     "data.state.moves": 7,
     "data.state.board.39": 2
   },
-  "expect_tasks": ["parse", "view", "infer", "apply"]
+  "expect_tasks": ["parse", "apply", "view"]
 }

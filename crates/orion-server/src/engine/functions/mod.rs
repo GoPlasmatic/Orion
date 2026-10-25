@@ -20,9 +20,6 @@ pub mod db_read;
 pub mod db_write;
 pub mod jwt_sign;
 pub mod jwt_verify;
-pub mod model_infer;
-pub mod storage_head;
-pub mod storage_presign;
 
 /// A `validate_static_input`'s refusals as a dataflow-rs 4 config check's
 /// issues: each Rejected, `INPUT_PARSE`, at the field it names, with its
@@ -404,7 +401,7 @@ mod message_shape_pin {
     //! The prefix contract, pinned before the parsers were made to yield bare
     //! messages.
     //!
-    //! `crypto` and `storage_presign` share their parsers between
+    //! `crypto` shares its parsers between
     //! two paths: `execute`, whose errors travel far from the task that
     //! produced them and so name the handler, and `validate_static_input`,
     //! whose errors become `FieldError`s where the field path already supplies
@@ -471,14 +468,5 @@ mod message_shape_pin {
         let errors = super::crypto::validate_static_input(obj.as_object().expect("object"));
         assert!(!errors.is_empty(), "an unknown algorithm must be reported");
         assert_no_prefix("crypto", &errors);
-    }
-
-    #[test]
-    fn storage_presign_static_messages_are_bare() {
-        let obj = json!({"connector": "c", "bucket": "b", "key": "k", "method": "TELEPORT"});
-        let errors =
-            super::storage_presign::validate_static_input(obj.as_object().expect("object"));
-        assert!(!errors.is_empty(), "an unknown method must be reported");
-        assert_no_prefix("storage_presign", &errors);
     }
 }

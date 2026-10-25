@@ -493,7 +493,6 @@ mod tests {
                 Arc::new(crate::channel::ChannelSnapshot::empty()),
                 crate::engine::FunctionRegistry::builtin().clone(),
                 Arc::new(crate::plugin::PluginSet::empty()),
-                Arc::new(crate::model::ModelSet::empty()),
             )
         });
         let run = AdmittedRun::admit(

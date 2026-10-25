@@ -214,14 +214,6 @@ pub(crate) async fn health_check(
     // supervisor cannot see it, because nothing crashed.
     let cron_state = cron_component(&state, &generation);
 
-    // A node without the model runtime admits and runs nothing, which is a
-    // state, not a fault; with it, the admission worker's liveness is what
-    // decides whether a registration will ever get its verdict — and an
-    // active model this generation could not carry quarantines the workflows
-    // naming it, the same way a plugin that did not load does.
-    let model_issues = &issues.models;
-    let models_state = models_component(&state, model_issues.is_empty());
-
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
     // and returning 503 would take a node out of its load balancer over a
     // connector or channel that may be used by nothing currently in flight.
@@ -293,7 +285,6 @@ pub(crate) async fn health_check(
             } else {
                 "degraded"
             },
-            "models": models_state,
         },
     });
     if let Some(cron) = cron_state {
@@ -341,35 +332,6 @@ pub(crate) async fn health_check(
             })).collect::<Vec<_>>(),
             "failed_to_load": plugin_issues,
         });
-        // Absent on a node without the runtime and nothing stored that
-        // needs it; present with the issues alone on one that has an active
-        // row it cannot serve, because the quarantine that follows is only
-        // explained here.
-        if state.models.is_some() || !model_issues.is_empty() {
-            body["models"] = json!({
-                "failed_to_load": model_issues,
-            });
-        }
-        if let Some(models) = &state.models {
-            body["models"]["node"] = json!(models.node);
-            body["models"]["admission_queue_capacity"] = json!(models.queue_capacity());
-            body["models"]["cache_bytes"] = json!(models.store.cached_bytes());
-            body["models"]["loaded_bytes"] = json!(models.loaded.loaded_bytes());
-            body["models"]["loaded"] = json!(
-                models
-                    .loaded
-                    .states()
-                    .into_iter()
-                    .map(|(key, bytes)| json!({
-                        "digest": key.digest,
-                        "binding": key.binding,
-                        "runtime": key.runtime,
-                        "device": key.device,
-                        "resident_bytes": bytes,
-                    }))
-                    .collect::<Vec<_>>()
-            );
-        }
         // O9: task names are internal topology, so the per-task breakdown
         // rides with the other admin-only detail. The coarse
         // `components.background_tasks` above is what a monitor keys on.
@@ -519,28 +481,6 @@ fn cron_component(
             "ok"
         },
     )
-}
-
-/// Coarse state of the model node: `disabled` without the runtime and
-/// nothing stored that needs it; `degraded` when the generation carries a
-/// model it could not load (`set_loaded` false — on a node with the runtime
-/// off, an active row is exactly that) or while the admission worker is
-/// restarting or gone; `ok` otherwise. A node that never started the worker
-/// — the integration harness — has no report for it and is `ok`: nothing is
-/// failing there.
-fn models_component(state: &AppState, set_loaded: bool) -> &'static str {
-    if state.models.is_none() {
-        return if set_loaded { "disabled" } else { "degraded" };
-    }
-    if !set_loaded {
-        return "degraded";
-    }
-    let worker_down = state
-        .tasks
-        .report()
-        .iter()
-        .any(|r| r.name == crate::runtime::model_admission::TASK_NAME && r.is_degraded());
-    if worker_down { "degraded" } else { "ok" }
 }
 
 /// Coarse state of the node's supervised background tasks (the trace
