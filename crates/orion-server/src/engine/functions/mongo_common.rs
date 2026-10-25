@@ -19,8 +19,7 @@
 //! words the refusal.
 
 use dataflow_rs::Ctx;
-use dataflow_rs::expr::{CompileCx, Interpolated, Rendered};
-use dataflow_rs::program::IssueCode;
+use dataflow_rs::expr::{Interpolated, Rendered};
 use futures::TryStreamExt;
 use mongodb::bson::{self, Bson, Document};
 use serde_json::Value;
@@ -210,23 +209,6 @@ pub(super) fn rendered_document_array(
         |folded| document_array_from_value(folded, field, handler_name),
     )
     .map(Some)
-}
-
-/// A `validate_static_input`'s refusals as a dataflow-rs 4 config check's
-/// issues: each Rejected, `INPUT_PARSE`, at the field it names, with its
-/// message. 1.12's own code for each (`unknown_op`, `unknown_stage`, …) has
-/// no place on an `Issue`, whose codes are the engine's.
-pub(super) fn report_static(
-    refusals: Vec<(&'static str, &'static str, String)>,
-    cx: &mut CompileCx<'_>,
-) {
-    for (field, _code, message) in refusals {
-        if field.is_empty() {
-            cx.issue(IssueCode::InputParse, message);
-        } else {
-            cx.at(field, |cx| cx.issue(IssueCode::InputParse, message));
-        }
-    }
 }
 
 /// The refusal of a document field an op requires and the task leaves unset

@@ -175,7 +175,7 @@ fn check(cfg: &JwtSignConfig, cx: &mut CompileCx<'_>) {
     if let Some(expires_in) = &cfg.expires_in {
         input.insert("expires_in".to_string(), expires_in.raw().clone());
     }
-    super::mongo_common::report_static(validate_static_input(&input), cx);
+    super::report_static(validate_static_input(&input), cx);
 }
 
 /// `jwt_sign` as a function: the token 1.12's handler minted, each field

@@ -919,7 +919,7 @@ fn check(cfg: &MongoWriteConfig, cx: &mut CompileCx<'_>) {
     if let Some(all) = cfg.all {
         input.insert("all".to_string(), Value::Bool(all));
     }
-    super::mongo_common::report_static(validate_static_input(&input), cx);
+    super::report_static(validate_static_input(&input), cx);
 }
 
 /// A switch for this call, `resolve_bool_or`'s reading: `default` when

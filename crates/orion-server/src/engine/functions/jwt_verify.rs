@@ -102,7 +102,7 @@ fn check(cfg: &JwtVerifyConfig, cx: &mut CompileCx<'_>) {
     if let Some(url) = &cfg.jwks_url {
         input.insert("jwks_url".to_string(), Value::String(url.clone()));
     }
-    super::mongo_common::report_static(validate_static_input(&input), cx);
+    super::report_static(validate_static_input(&input), cx);
 }
 
 /// `jwt_verify` as a function: the verification 1.12's handler ran, each

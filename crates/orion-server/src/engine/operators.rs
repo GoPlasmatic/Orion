@@ -458,9 +458,7 @@ impl CustomOperator for UrlEncode {
         // the codec operators already reject.
         let text = encode_text("url_encode", args, ctx)?;
         charge_bytes(ctx, text.len())?;
-        // The one RFC 3986 encoder in the tree, shared with SigV4 signing so
-        // the two can never disagree about the unreserved set.
-        Ok(arena.string(&crate::connector::sigv4::uri_encode(&text, false)))
+        Ok(arena.string(&crate::crypto::uri_encode(&text, false)))
     }
 }
 
@@ -1183,7 +1181,7 @@ mod tests {
     fn custom_operators_charge_proportional_to_variable_work() {
         let long_text = "x".repeat(64 * 10);
         let encoded_b64 = crate::crypto::encode_bytes(Codec::Base64, long_text.as_bytes());
-        let encoded_url = crate::connector::sigv4::uri_encode(&long_text, false);
+        let encoded_url = crate::crypto::uri_encode(&long_text, false);
         let items: Vec<String> = (0..20).map(|i| format!("item-{i}")).collect();
         let context = json!({
             "data": {

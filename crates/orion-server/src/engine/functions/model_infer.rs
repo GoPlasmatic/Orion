@@ -246,7 +246,7 @@ impl ModelInferConfig {
 /// every call, in the handler's words: the authored JSON decides, so an
 /// expression that folds to a path is refused too, as 1.12 refused it.
 fn check(cfg: &ModelInferConfig, cx: &mut CompileCx<'_>) {
-    super::mongo_common::report_static(validate_static_input(&cfg.authored()), cx);
+    super::report_static(validate_static_input(&cfg.authored()), cx);
     for (field, out) in [
         ("output", Some(&cfg.output)),
         ("stats_output", cfg.stats_output.as_ref()),

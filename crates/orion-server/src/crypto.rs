@@ -72,6 +72,25 @@ pub fn encode_bytes(codec: Codec, bytes: &[u8]) -> String {
     }
 }
 
+/// Percent-encode one string per RFC 3986: unreserved characters
+/// (`A–Z a–z 0–9 - _ . ~`) stay, everything else is `%XX` uppercase, and
+/// `/` too unless `keep_slash`. The one encoder in the tree: the
+/// `url_encode` operator and SigV4 signing both use it, so the two can never
+/// disagree about the unreserved set.
+pub fn uri_encode(s: &str, keep_slash: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b'/' if keep_slash => out.push('/'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
 /// Strict decode per the same table; the base64 forms tolerate padded and
 /// unpadded input.
 pub fn decode_bytes(codec: Codec, s: &str) -> Result<Vec<u8>, String> {

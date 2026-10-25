@@ -115,7 +115,7 @@ fn check(cfg: &CacheReadConfig, cx: &mut CompileCx<'_>) {
             input.insert(field.to_string(), expr.raw().clone());
         }
     }
-    super::mongo_common::report_static(validate_static_input(&input), cx);
+    super::report_static(validate_static_input(&input), cx);
 }
 
 /// `cache_read` as a dataflow-rs 4 function: the lookup `CacheReadHandler`

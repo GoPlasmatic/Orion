@@ -685,7 +685,7 @@ impl CryptoConfig {
 /// required fields and the fields it does not take, the encodings and the
 /// `params` bounds, each refused at the field 1.12 named, in its words.
 fn check(cfg: &CryptoConfig, cx: &mut CompileCx<'_>) {
-    super::mongo_common::report_static(validate_static_input(&cfg.authored()), cx);
+    super::report_static(validate_static_input(&cfg.authored()), cx);
 }
 
 /// `crypto` as a function: the op, each field read in 1.12's order, the

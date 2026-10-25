@@ -23,9 +23,7 @@ use mongodb::bson::{self, Bson, Document};
 use serde_json::{Map, Value};
 
 use super::connector_helpers::{QueryBudget, require_op_allowed, to_connect_error};
-use super::mongo_common::{
-    docs_to_json, drain_capped, rendered_bson, report_static, require_mongo_backend,
-};
+use super::mongo_common::{docs_to_json, drain_capped, rendered_bson, require_mongo_backend};
 use super::schema::{FieldKind, FieldSchema};
 use crate::config::QueryConfig;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -352,7 +350,7 @@ pub struct MongoAggregateConfig {
 fn check(cfg: &MongoAggregateConfig, cx: &mut CompileCx<'_>) {
     let mut input = Map::new();
     input.insert("pipeline".to_string(), cfg.pipeline.raw().clone());
-    report_static(validate_static_input(&input), cx);
+    super::report_static(validate_static_input(&input), cx);
 }
 
 /// `mongo_aggregate` as a dataflow-rs 4 function: the pipeline
