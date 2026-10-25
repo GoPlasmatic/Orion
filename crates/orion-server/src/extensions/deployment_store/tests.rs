@@ -727,3 +727,55 @@ fn a_builtin_provider_needs_no_declaration_and_an_uploaded_one_does() {
         .expect_err("an undeclared package is refused");
     assert_eq!(err.code, "CONNECTION_PROVIDER_NOT_DECLARED");
 }
+
+/// A key naming an endpoint is public, even when it mentions a token; a key
+/// naming a token is a secret wherever it sits.
+#[test]
+fn an_endpoint_key_is_public_and_a_token_key_is_not() {
+    for key in [
+        "token_url",
+        "TOKEN_URL",
+        "authorization_endpoint",
+        "token_endpoint",
+        "redirect_uri",
+        "jwks_url",
+    ] {
+        assert!(!is_public_config_secret_key(key), "{key} names an endpoint");
+    }
+    for key in [
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_token",
+        "session_token",
+        "client_secret",
+        "password",
+    ] {
+        assert!(is_public_config_secret_key(key), "{key} names a secret");
+    }
+
+    let locators = std::collections::BTreeMap::from([(
+        "auth.client_secret".to_string(),
+        "env://OAUTH_CLIENT_SECRET".to_string(),
+    )]);
+    check_connection_config(
+        &serde_json::json!({"auth": {"type": "oauth2",
+            "token_url": "https://idp.example.com/oauth2/token"}}),
+        &locators,
+    )
+    .expect("an endpoint is public config");
+    // The value is still screened: credentials in it are refused.
+    let err = check_connection_config(
+        &serde_json::json!({"auth": {
+            "token_url": "https://idp.example.com/oauth2/token?access_token=x"}}),
+        &locators,
+    )
+    .expect_err("a secret-named query parameter is refused");
+    assert_eq!(err.code, "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
+    let err = check_connection_config(
+        &serde_json::json!({"auth": {"refresh_token": "literal"}}),
+        &std::collections::BTreeMap::new(),
+    )
+    .expect_err("a token key is refused");
+    assert_eq!(err.code, "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
+}

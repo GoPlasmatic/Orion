@@ -1659,6 +1659,60 @@ fn a_set_db_connector_names_a_driver_its_scheme_agrees_with() {
     assert!(ok, "{report}");
 }
 
+/// An OAuth2 http connector compiles and deploys: its `token_url` is an
+/// endpoint, public, while the client credentials and the refresh-token
+/// seed are secret references that become locators.
+#[tokio::test]
+async fn an_oauth2_connection_compiles_and_creates() {
+    use tower::ServiceExt as _;
+    let scratch = deployment_set("compile-deployment-oauth2");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn-crm.json"),
+        r#"{ "name": "crm", "connector_type": "http",
+             "config": { "type": "http", "url": "https://api.example.com",
+               "auth": { "type": "oauth2", "grant": "refresh_token",
+                 "token_url": "https://idp.example.com/oauth2/token",
+                 "client_id": "env://CRM_CLIENT_ID",
+                 "client_secret": "env://CRM_CLIENT_SECRET",
+                 "refresh_token": "env://CRM_REFRESH_TOKEN_SEED",
+                 "scopes": ["api.read"] } } }"#,
+    )
+    .unwrap();
+    let out = dir.join("dist");
+    let (ok, report) = compile_deployment(dir, &out);
+    assert!(ok, "{report}");
+    let mut crm = read_json(&out.join("connections/crm.json"));
+    assert_eq!(
+        crm["secret_locators"],
+        serde_json::json!({
+            "auth.client_id": "env://CRM_CLIENT_ID",
+            "auth.client_secret": "env://CRM_CLIENT_SECRET",
+            "auth.refresh_token": "env://CRM_REFRESH_TOKEN_SEED",
+        })
+    );
+    assert_eq!(
+        crm["public_config"]["auth"]["token_url"],
+        "https://idp.example.com/oauth2/token"
+    );
+
+    let app = crate::common::test_app().await;
+    let obj = crm.as_object_mut().unwrap();
+    obj.remove("driver");
+    obj.insert("revision".into(), serde_json::json!(1));
+    let resp = app
+        .oneshot(crate::common::json_request(
+            "POST",
+            "/api/v2/admin/connections",
+            Some(crm),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = crate::common::body_json(resp).await;
+    assert_eq!(status, 201, "{body}");
+}
+
 /// A key no definition defines names the entity and the key.
 #[test]
 fn a_key_a_definition_does_not_define_is_named() {

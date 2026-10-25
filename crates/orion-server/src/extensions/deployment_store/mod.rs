@@ -26,8 +26,23 @@ use super::package_identity::{
 };
 use super::schema_profile::{check_manifest_bundle, validate_safe_package_path};
 
+/// Whether `key` names a secret, so its value belongs in `secret_locators`.
+///
+/// A key that names an endpoint — ending `_url`, `_uri` or `_endpoint` — is
+/// not one, whatever else it says: OAuth2's `token_url` is where a token is
+/// fetched from, not a token, and `authorization_endpoint` is a page. Its
+/// value is still screened like every public string (no userinfo, no
+/// secret-named query parameter), which is where a credential in a URL is
+/// caught. `token`, `access_token`, `refresh_token`, `api_token` and
+/// `session_token` stay secret.
 fn is_public_config_secret_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
+    if ["_url", "_uri", "_endpoint"]
+        .iter()
+        .any(|suffix| lower.ends_with(suffix))
+    {
+        return false;
+    }
     const SECRET_PATTERNS: &[&str] = &[
         "secret",
         "password",

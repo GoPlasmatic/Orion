@@ -48,7 +48,7 @@ A definition that would not serve is refused with a `400`, each problem at its f
 
 A connection revision is the configuration a provider runs with: `{connection_id, revision, provider_digest, public_config, secret_locators}`. `(connection_id, revision)` is immutable. Sending the same pair again with the same content answers the stored revision, and with different content a `409`.
 
-`public_config` holds the settings. A secret-shaped key (`password`, `token`, `secret`, …), an `Authorization` value or credentials in a URL are refused there. `secret_locators` maps a dotted config path to a secret reference such as `env://ORDERS_DB_URL` or `vault://secret/data/db#url`. The reference is placed at its path when the connection is used, and resolved there. A locator's path may not be one `public_config` already sets.
+`public_config` holds the settings. A secret-shaped key (`password`, `token`, `secret`, …), an `Authorization` value or credentials in a URL are refused there. A key naming an endpoint, ending `_url`, `_uri` or `_endpoint`, is not secret-shaped, so OAuth2's `token_url` stays public; its value is still screened for credentials. `secret_locators` maps a dotted config path to a secret reference such as `env://ORDERS_DB_URL` or `vault://secret/data/db#url`. The reference is placed at its path when the connection is used, and resolved there. A locator's path may not be one `public_config` already sets.
 
 `provider_digest` names the provider. A built-in driver's digest is listed under `provider_backends[].package_digest` in `GET /api/v2/admin/runtime-capabilities`. The built-in drivers are `org.orion.http`, `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` and `org.orion.memory-cache`.
 
