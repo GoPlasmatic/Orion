@@ -1,10 +1,10 @@
 <!-- description: Run Orion as a multi-node cluster: what replicas share, how a deployment reaches every node, job leases, and the database behind rate limits and caches. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Run a cluster
 
-*Cluster mode* makes N identical Orion replicas behave as one logical system: a change made through any node reaches all of them. The cross-request state that guards depend on, such as deduplication windows, rate-limit windows and response caches, is shared instead of per node. You do not need this page to run Orion on a single node.
+*Cluster mode* makes N identical Orion replicas behave as one logical system: a deployment applied through any node reaches all of them. The cross-request state that guards depend on, such as deduplication windows, rate-limit windows and response caches, is shared instead of per node. You do not need this page to run Orion on a single node.
 
 ## Before you start
 
@@ -63,13 +63,15 @@ Every node also runs a sweeper that deletes expired dedup, cache and rate-limit 
 
 ### How a deployment reaches every node
 
-Every node runs one reconcile loop. Each tick it reads the committed deployment head. When the head has moved, it re-reads the deployment history and builds the revision it should serve. It also applies circuit-breaker resets requested on other nodes, and writes a heartbeat with the revision it serves.
+An apply commits a new head to the shared database and builds it on the node that took the request. Nothing pushes it to the other nodes. Each one finds it through its own reconcile loop, the one loop that changes what a node serves.
 
-A build that fails leaves the node serving what it had. The loop retries on the next tick. `GET /api/v2/admin/deployments/{revision}/convergence?target=observed` reports which nodes serve a revision. See [Convergence](../../reference/admin-api/deployments.md#convergence).
+Each tick, the loop reads the committed head. When the head has moved, it re-reads the deployment history and builds the revision it should serve. It also applies circuit-breaker resets requested on other nodes, and writes a heartbeat naming the revision it serves.
+
+A build that fails leaves the node serving what it had, and its `/health` reports `engine_reload` as degraded. The loop retries on the next tick. `GET /api/v2/admin/deployments/{revision}/convergence?target=observed` reports which nodes serve a revision, from those heartbeats. [Deployments](../../concepts/deployments.md#convergence) explains the model.
 
 ### A node that has recently started
 
-A booting node is at most one `epoch_poll_interval_ms` behind, like every other node. It is behind while serving: `/healthz` and `/readyz` are green as soon as the first generation is published, so a load balancer sends it traffic at once. A deployment committed during that window can answer `404` there and `200` on its peers until the tick lands.
+A booting node is at most one `epoch_poll_interval_ms` behind, like every other node. It is behind while serving. `/healthz` and `/readyz` are green once the first generation is published, so a load balancer sends it traffic at once. A deployment committed during that window can answer `404` there and `200` on its peers until the tick lands.
 
 That is normal eventual consistency, not a fault. It shows up when a rolling restart and a deployment overlap. If that matters, let the restarted node settle for one poll interval before you apply. Or apply first and roll afterwards.
 
@@ -77,7 +79,7 @@ That is normal eventual consistency, not a fault. It shows up when a rolling res
 
 Cron channels coordinate entirely through three shared tables and need no leader. An occurrence's identity is `(channel_id, scheduled_for)`, so two reconcilers racing the same pass produce one row. Claims are leased against the database clock, and a running attempt renews its claim every heartbeat. When a node dies, a peer recovers its work and its singleton slots after one `cron.claim_lease_secs`. A `forbid` singleton is a row exactly one occurrence holds at a time, acquired in the same transaction that marks it running.
 
-Every node should agree on `cron.enabled`. A node with it off quarantines the active cron channels rather than ignoring them. A mixed cluster is visible on `/health` rather than silently half-scheduling.
+Every node should agree on `cron.enabled`. A node with it off quarantines the deployed cron channels rather than ignoring them. A mixed cluster is visible on `/health` rather than silently half-scheduling.
 
 ## What stays per node
 
@@ -115,7 +117,7 @@ curl -s http://node-a:8080/api/v2/admin/deployments | jq '.head_revision'
 curl -s "http://node-b:8080/api/v2/admin/deployments/1/convergence?target=observed"
 ```
 
-Every node reports the head revision within one `epoch_poll_interval_ms`. `deploy/ha/rolling-drill.sh` drives a zero-5xx rolling deploy against the compose topology.
+Every node appears under `converged_nodes` within one `epoch_poll_interval_ms`. `deploy/ha/rolling-drill.sh` drives a zero-5xx rolling deploy against the compose topology.
 
 ## Backups change shape in a cluster
 

@@ -1,7 +1,7 @@
 # Channels and connectors
 
 Read this reference when defining ingress, guards, response behavior, or
-external dependencies.
+the connector files a definition set carries.
 
 ## Channel identity and routing
 
@@ -20,14 +20,15 @@ A channel names one workflow and one ingress shape:
 }
 ```
 
-`channel_type` is `sync` or `async`. Protocol is `rest`, `http`, or `cron`; it
-is immutable across versions. HTTP channels require methods and a route
-pattern. Route parameters arrive in `metadata.params`. A `cron` channel declares none of those
+`channel_type` is `sync` or `async`. Protocol is `rest`, `http`, or `cron`.
+HTTP channels require methods and a route pattern. Route parameters arrive in `metadata.params`. A `cron` channel declares none of those
 routing fields and must be `async` — see [Cron channels](#cron-channels).
 
-The workflow must be active before its channel can activate. Use channel
-activation `--dry-run` because it verifies route collisions, workflow
-availability, connector dependencies, and whether the stored config can build.
+`compile` turns `workflow_id` into the channel member's `requires`, so the
+workflow must be in the same definition set. `lint` on the directory and
+`deployments plan` both check route collisions, the workflow's presence, its
+connections, and whether the config can build. Every channel in a deployment
+serves; to stop serving one, leave it out of the set.
 
 ## Admission configuration
 
@@ -57,7 +58,7 @@ Guard applicability differs by ingress:
 | deduplication | yes | yes | no | no |
 | response cache | yes | no | no | no |
 | backpressure / timeout | yes | yes | yes | yes |
-| `oauth2_login` | yes | no | no | no | no |
+| `oauth2_login` | yes | no | no | no |
 
 The order is rate limit, authentication, origin, validation, deduplication,
 cache lookup, backpressure, then `oauth2_login`. This affects accounting and
@@ -85,7 +86,8 @@ Orion suppresses caching when a shaped response sets cookies.
 To cache until the data changes rather than for a fixed TTL, declare
 `cache.namespaces: ["ladder"]` and call `cache_invalidate` with
 `{"namespaces": ["ladder"]}` from the workflow that writes the data (or
-`POST /api/v1/admin/cache/namespaces/ladder/invalidate`). Keep `ttl_secs` as the
+`POST /api/v2/admin/cache/namespaces/ladder/invalidate`, or
+`orion-cli cache`). Keep `ttl_secs` as the
 staleness ceiling. `cache.coalesce_misses: true` makes concurrent misses for one key
 cost one workflow run per node.
 
@@ -170,23 +172,22 @@ Everything caller-shaped is refused at authoring: the routing fields,
 `config.auth`, `origin_allow_list`, `rate_limit`, `deduplication`, `cache`,
 `request`, `response` and `oauth2_login`. The channel is also unreachable over
 HTTP and by `channel_call` — running it either way would execute the workflow
-outside the ledger and outside its lock. Use `orion-cli channels trigger` for a
-manual run; it takes the same claim and singleton. Read the ledger with
+outside the ledger and outside its lock. Use `orion-cli cron trigger <channel>`
+for a manual run; it takes the same claim and singleton. Read the ledger with
 `orion-cli cron status|list|get`, and `cron retry` for another attempt at the
 same occurrence.
 
-The node must have `cron.enabled` (the default). An active cron channel on a
-node with the scheduler off is quarantined, `components.cron` degrades, and
-activation is refused outright — a stored schedule that silently never fires is
-the failure an operator cannot see.
+The node must have `cron.enabled` (the default). A deployed cron channel on a
+node with the scheduler off is quarantined and `components.cron` degrades. A
+schedule that silently never fires is the failure an operator cannot see, so
+Orion makes it loud.
 
-## Stored configuration values
+## Configuration values
 
 Use one mechanism for each kind of value:
 
 - `var://name` substitutes a non-secret value declared in server `[vars]`
-  into a stored connector or channel config at load time and preserves its
-  JSON type.
+  into a connector or channel config at load time, and keeps its JSON type.
 - `env://NAME` or `vault://...` supplies credentials to connector config,
   the explicitly secret-bearing channel auth fields, and an `oauth2_login`
   block's `client_id`, `client_secret`, `state_secret`, `authorize_url`,
@@ -195,22 +196,22 @@ Use one mechanism for each kind of value:
 - `{"secret":"name"}` reads a declared secret in permitted expressions.
 
 A channel's `*_logic` fields are not traversed for `var://`; use the JSONLogic
-variable form there. An undeclared config var prevents the row from loading.
-Do not use legacy dollar-brace environment placeholders in new connector
-definitions; text substitution is deprecated and has weaker safety/masking
-behavior.
+variable form there. An undeclared config var keeps the channel or connection
+from loading. Do not use dollar-brace environment placeholders in new
+connector files; text substitution is deprecated and less safe.
 
-## Connectors
+## Connector files
 
-Connectors update in place; follow the mutation command's current reload
-behavior and verify engine status afterward. The types are `http`, `db`
-(PostgreSQL, MySQL, SQLite), and `cache` (per-node memory).
+A connector is a file in the definition set. `compile` turns it into a
+connection revision over a built-in driver, named by the connector's `name`.
+Tasks name it by that id. The types are `http`, `db` and `cache` (per-node
+memory).
 
 ```json
 {
+  "id": "payments",
   "name": "payments",
   "connector_type": "http",
-  "enabled": true,
   "config": {
     "type": "http",
     "url": "var://payments_base_url",
@@ -220,9 +221,29 @@ behavior and verify engine status afterward. The types are `http`, `db`
 }
 ```
 
-Let the connector own endpoint/authentication policy and let task inputs carry
-request-specific data. HTTP connectors can manage OAuth2 token acquisition,
-caching, refresh, and rotation; workflows should not implement that lifecycle.
+| Connector | Driver it compiles to |
+|---|---|
+| `http` | `org.orion.http` |
+| `db` with `"driver": "postgresql"`, `"mysql"` or `"sqlite"` | `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` |
+| `cache`, backend `memory` | `org.orion.memory-cache` |
+
+- A `db` connector must name its `driver`. The connection string is usually a
+  secret reference, so its scheme is not visible at compile time.
+- Every `env://` or `vault://` string moves to the connection's
+  `secret_locators` at its dotted path. The rest becomes `public_config`.
+- A literal credential is refused: a secret-shaped key with a literal value, an
+  `Authorization` value, or a password in a URL.
+- `enabled` may only be `true` or absent. Tags are not carried.
+- A connection revision is immutable. A changed connector file becomes the next
+  revision on the next apply; an unchanged one is reused.
+
+The target resolves each reference from its own environment or Vault when the
+connection is used. Define every referenced variable on every node before
+applying. The deployment and the state database never hold the value.
+
+Let the connector own endpoint and authentication policy, and let task inputs
+carry request-specific data. HTTP connectors manage OAuth2 token acquisition,
+caching, refresh and rotation; workflows should not implement that lifecycle.
 
 Operation gates restrict what a workflow may do:
 
@@ -233,12 +254,6 @@ Operation gates restrict what a workflow may do:
 For delete-proof database access, disable both structured delete and raw write.
 An HTTP method list becomes exhaustive once non-empty.
 
-Connector reads mask secret literals while preserving reference names. An
-export containing masked placeholders is not a deployable credential backup.
-Inventory and supply all referenced secrets at the destination before package
-apply.
-
-Use `orion-cli connectors test <id>` for connectivity and the circuit-breaker
-commands for runtime breaker state. Use `orion-server test-connectivity` only
-when the intended offline config and command help confirm it is safe to contact
-those dependencies.
+Use `orion-cli connections probe <id>` for connectivity, and the circuit-breaker
+endpoints for runtime breaker state. Use `orion-server test-connectivity` only
+for the state database; it does not probe connectors.

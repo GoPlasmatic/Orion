@@ -4,11 +4,11 @@
 
 # Prompt pack for any LLM
 
-The [agent skill](./agent-skill.md) is the richest way to give an AI assistant control of Orion, but it needs an agent that can run a shell. This page is the zero-install alternative: one block to paste into any LLM as a system prompt or a first message. With it, the model has enough context to write valid workflows and deploy them through Orion's REST API.
+The [agent skill](./agent-skill.md) gives an AI assistant the most control of Orion, but it needs a shell. This page is the zero-install alternative: one block to paste into any LLM as a system prompt. With it, a model can write valid workflows and deploy them through Orion's REST API.
 
 ## Before you start
 
-You need an LLM you can give a system prompt or a long first message to, and an Orion instance it can reach over HTTP. Adjust the base URL in the block if the instance is not local.
+You need an LLM that takes a system prompt or a long first message. You also need an Orion instance it can reach over HTTP. Adjust the base URL in the block if the instance is not local.
 
 > [!NOTE]
 > The block is hand-maintained. It is deliberately short: a summary an LLM can hold, not a specification. It tells the model to read `GET /api/v2/admin/functions` for exact input schemas rather than trusting the list it carries. If your instance is newer than this page, that endpoint is the authority; this text is the orientation.
@@ -83,6 +83,16 @@ always async.
 
 ## Deployment rules (important)
 
+0. If you can run a shell, do not hand-build manifests. Write a definition
+   set: one directory of workflow, channel and connector JSON files, each with
+   its id (workflow_id, channel_id, a connector's name). Then run
+     orion-server lint <dir>
+     orion-server compile <dir> -o dist
+     orion-cli deployments plan -d dist
+     orion-cli deployments apply -d dist
+   compile resolves shared fragments and turns connectors into connections;
+   apply assigns revisions and reuses unchanged ones. The REST rules below are
+   for an assistant with no shell.
 1. Upload each definition: POST /api/v2/admin/definitions with
    { "kind": "workflow" | "channel", "definition": { ... } }
    → answers { "digest": "sha256:..." }. Uploading serves nothing.
@@ -144,7 +154,7 @@ GET   /api/v2/admin/traces/{trace_id}               poll async result
 
 ## Verify
 
-Ask the assistant to write a workflow and test it before deploying anything. A model that has read the block posts it to `/api/v2/admin/definitions/test` with a `data` body, and reads the trace back before it touches `/deployments`. A worked session using exactly these calls is the [Quickstart](../../get-started/quickstart.md).
+Ask the assistant to write a workflow and test it before deploying anything. A model that has read the block posts it to `/api/v2/admin/definitions/test` with a `data` body. It reads the trace back before it touches `/deployments`. A worked session using exactly these calls is the [Quickstart](../../get-started/quickstart.md).
 
 > [!TIP]
 > The docs site also serves [`llms.txt`](https://docs.goplasmatic.io/llms.txt), a machine-readable index, and [`llms-full.txt`](https://docs.goplasmatic.io/llms-full.txt), the whole book as one file. Point your tools at those for full documentation context.

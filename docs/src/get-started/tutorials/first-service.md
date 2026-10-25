@@ -141,5 +141,6 @@ Re-running the same `apply` does nothing: the CLI reports the head as up to date
 
 - [Add your first connector](./first-connector.md): the same shape of service, reading and writing a real PostgreSQL database.
 - [Test and deploy a service](./test-and-promote.md): test a workflow offline, then deploy it as one reviewed revision.
+- [Deployments](../../concepts/deployments.md): the manifest, the head and the build check behind `apply -d`.
 - [Deployment endpoints](../../reference/admin-api/deployments.md): what `apply -d` does on the server, and how to roll back.
 - [Secure an instance](../../operate/run/security.md): the data plane you called does not authenticate; read this before anything you do not control can reach it.

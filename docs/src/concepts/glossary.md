@@ -1,6 +1,6 @@
 <!-- description: One-line definitions for every term the Orion documentation uses with a fixed meaning — channel, workflow, connector, deployment, quarantine, rollout and more. -->
 <!-- type: glossary -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Glossary
 
@@ -16,11 +16,13 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Circuit breaker**: a per-`channel:connector`, per-node gate that stops calls to a repeatedly failing backend until a recovery timeout elapses. See [Connectors](./connectors.md).
 
-**Connection**: an immutable revision of a connector's configuration: a provider, public settings and secret locators, named by a deployment. See [Connections](../reference/admin-api/deployments.md#connections).
+**Connection**: an immutable revision of a connector's configuration, with a driver, public settings and secret locators, named by a deployment. See [Connectors](./connectors.md#two-forms-the-file-and-the-connection).
 
-**Connector**: a named connection to an external system (`http`, `db`, `cache`) that tasks reference by name. See [Connectors](./connectors.md).
+**Connector**: a named connection to an external system (`http`, `db`, `cache`), written as a file in a definition set and referenced by name. See [Connectors](./connectors.md).
 
-**Control plane**: the admin API under `/api/v2/admin/`, and the CLI and Console that drive it. See [Admin API](../reference/admin-api/index.md).
+**Control plane**: the admin API under `/api/v2/admin/`, and the CLI that drives it. See [Admin API](../reference/admin-api/index.md).
+
+**Convergence**: which nodes serve a committed deployment revision; every node builds the head on its own and reports it. See [Deployments](./deployments.md#convergence).
 
 **Cron channel**: a channel whose `protocol` is `cron`: a six-field schedule and a fixed payload, with no route and no caller. See [Cron transport](../reference/channel-config/cron.md).
 
@@ -30,11 +32,13 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Dedup key (idempotency key)**: the per-channel value, read from a request header, that marks a request as a duplicate inside the dedup window. See [Channel configuration](../reference/channel-config/deduplication.md).
 
-**Definition**: one deployable workflow, channel or plugin document, stored by the digest of its canonical bytes. See [Definitions](../reference/admin-api/deployments.md#definitions).
+**Definition**: one deployable workflow, channel or plugin document, stored by the digest of its canonical bytes. See [Deployments](./deployments.md#definitions).
 
-**Deployment**: a manifest naming every definition and connection a node serves, committed as an immutable, numbered revision. See [Deployment endpoints](../reference/admin-api/deployments.md).
+**Definition set**: a directory of workflow, channel, connector and plugin files that `orion-server compile` turns into one deployment. See [How Orion works](./how-orion-works.md#from-files-to-a-serving-node).
 
-**Deployment head**: the latest committed deployment revision; every node builds it and serves it. With none, a node serves nothing. See [Convergence](../reference/admin-api/deployments.md#convergence).
+**Deployment**: a manifest naming every definition and connection a node serves, committed as an immutable, numbered revision. See [Deployments](./deployments.md).
+
+**Deployment head**: the latest committed deployment revision; every node builds it and serves it. With none, a node serves nothing. See [Deployments](./deployments.md#the-head).
 
 **Dialect (portable data dialect)**: the backend-neutral query and write language that `data_query` and `data_write` lower to PostgreSQL, MySQL or SQLite. See [Portable data dialect](../reference/data-dialect.md).
 
@@ -54,7 +58,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Loop**: a workflow setting that repeats the task list once per sweep, up to a declared `max`, with a counter the tasks can index. See [Workflow definition](../reference/workflows.md#loop).
 
-**Manifest**: a plugin's `plugin.toml`, declaring what the component provides and how it is called. See [Plugins](./plugins.md). A deployment's manifest is its member list. See [Manifests](../reference/admin-api/deployments.md#manifests).
+**Manifest**: a plugin's `plugin.toml`, declaring what the component provides and how it is called. See [Plugins](./plugins.md). A deployment's manifest is its member list. See [Deployments](./deployments.md#the-manifest).
 
 **Modular monolith**: one Orion instance running many services side by side, all from one deployment.
 

@@ -22,7 +22,7 @@ Tested with Orion 1.12.0. You need:
 - Git, and Docker with Compose
 - `curl` and a POSIX shell (on Windows, WSL)
 
-A *connector* is a named, reusable connection to an external system. You declare it once, as a file beside the workflows, and reference it by name from any workflow. The runtime holds the credentials, the pool, the retries and the circuit breaker.
+A *connector* is a named, reusable connection to an external system. You declare it once, as a file beside the workflows, and reference it by name from any workflow. `compile` turns the file into a connection revision, and the node holds the pool, the retries and the circuit breaker.
 
 Every file below ships in the repository, so clone it first:
 
@@ -47,7 +47,7 @@ ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
 
 ## 2. Read the connector
 
-This is the connector definition:
+This is the connector file:
 
 ```json
 {{#include ../../../../examples/packages/postgres-orders/connector.json}}
@@ -89,7 +89,7 @@ orion-server compile . -o /tmp/postgres-orders
 orion-cli deployments apply -d /tmp/postgres-orders
 ```
 
-`compile` reports 1 connector, 1 workflow and 1 channel, and writes `connections/orders-db.json` with the connection string under `secret_locators`. `apply` creates the connection revision, uploads the definitions and commits the deployment. The workflow `requires` the `orders-db` connection, so the deployment cannot leave it behind.
+`compile` reports 1 connector, 1 workflow and 1 channel, and writes `connections/orders-db.json` with the connection string under `secret_locators`. `apply` plans three members, `+ connection orders-db@1` among them, then creates the connection revision, uploads the definitions and commits the deployment. The workflow `requires` the `orders-db` connection, so the deployment cannot leave it behind.
 
 ## 5. Call it
 
@@ -100,22 +100,23 @@ curl -s -X POST http://localhost:8080/api/v2/data/record-order \
   -H 'Content-Type: application/json' --data @request.json
 ```
 
-Output:
+Output, cut to the two fields the workflow wrote:
 
 ```json
 {
   "status": "ok",
   "data": {
-    "created": { "status": "ok", "rows_affected": 1, "returning": [{ "id": 4 }] },
+    "created": { "rows_affected": 1, "returning": [{ "id": 4 }], "status": "ok" },
     "customer": [{
       "id": 1, "name": "Ada Lovelace", "email": "ada@example.com",
       "orders": [
-        { "id": 1, "item": "Analytical Engine Manual", "total": 120.0 },
+        { "id": 4, "item": "Difference Engine Blueprint", "total": 4200.0 },
         { "id": 2, "item": "Punch Card Set", "total": 35.5 },
-        { "id": 4, "item": "Difference Engine Blueprint", "total": 4200.0 }
+        { "id": 1, "item": "Analytical Engine Manual", "total": 120.0 }
       ]
     }]
-  }
+  },
+  "errors": []
 }
 ```
 
@@ -137,7 +138,7 @@ If Orion was running outside that Compose project, [roll back](../../reference/a
 
 ## Recap
 
-- A connector is configured once and referenced by name. Four things came with it, and none of them are in the workflow: a connection pool capped at `max_connections`, a circuit breaker, a delete gate enforced below the logic, and credentials that never entered the database.
+- A connector is a file in the set, deployed as a connection revision and referenced by name. Four things came with it, and none of them are in the workflow: a pool capped at `max_connections`, a circuit breaker, a delete gate below the logic, and a credential that never entered the deployment.
 - Request data enters a query only through `params`, as bound values.
 - The inline schema both permits the query and declares the relations an `include` can hydrate.
 - The same envelope renders PostgreSQL, MySQL or SQLite SQL, depending only on the connector it names.
@@ -145,6 +146,6 @@ If Orion was running outside that Compose project, [roll back](../../reference/a
 ## Next steps
 
 - [Test and deploy a service](./test-and-promote.md): dry-run a workflow with its calls stubbed out, then deploy it.
-- [Connectors](../../concepts/connectors.md): the idea, and the other six types.
+- [Connectors](../../concepts/connectors.md): the connector file, the connection revision it becomes, and the other two types.
 - [Connector types](../../reference/connectors/index.md): every field of every type, with gates, retries and secret handling.
 - [Portable data dialect](../../reference/data-dialect.md): operators, the schema registry, relations, write envelopes and safety guards.

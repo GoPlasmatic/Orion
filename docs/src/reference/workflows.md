@@ -142,7 +142,7 @@ does not have to be found in production.
 
 `on_rejection` and `on_failure` belong to a task. A group has no outcome of its own, so one carrying either is refused at parse, loudly, rather than as a guard that never fires.
 
-The 1.x spellings are no longer read: a task's `halt_on` or `continue_on_error` is refused at create, and a stored row carrying one is quarantined at load. Each refusal names the key to write instead:
+The 1.x spellings are no longer read. A task's `halt_on` or `continue_on_error` is refused by `lint`, `compile` and the upload. Each refusal names the key to write instead:
 
 | 1.x | Write |
 |---|---|
@@ -408,7 +408,7 @@ Stopping early is a [`filter`](./functions/filter.md) task with `on_reject:
 
 The two bounds do different jobs. `max` is structural: the loop cannot outrun it, whatever the body does. The `filter` is what ends it early, once the real work is done. Reaching `max` is normal completion, not an error, because `max` is always something you wrote.
 
-`max` is capped by [`engine.max_loop_iterations`](./configuration/index.md) (default `10000`), and a workflow exceeding it is refused with `400` when it is uploaded rather than when it would serve. A sweep can call a connector, so an unbounded loop is a request that holds pool connections until the channel timeout fires.
+`max` is capped by [`engine.max_loop_iterations`](./configuration/index.md) (default `10000`). A workflow exceeding it is refused with `400` at upload, not when it would serve. A sweep can call a connector, so an unbounded loop is a request that holds pool connections until the channel timeout fires.
 
 Each sweep's steps appear in the [execution trace](../operate/run/traces.md) tagged with the iteration they belong to. A trace of ten sweeps reads as ten groups rather than one flat list.
 
@@ -448,7 +448,7 @@ When a channel resolves its workflows, Orion evaluates its deployed workflows in
 
 ### Rollout
 
-A workflow definition carries no rollout. A split of traffic between workflow revisions belongs to the deployment that serves them, not to the workflow.
+A workflow definition carries no rollout. A split of traffic between workflow revisions belongs to the deployment that serves them: a channel member's `rollouts` give each revision a share of 100 buckets. See [Deployments](../concepts/deployments.md#boundaries).
 
 ## Examples
 

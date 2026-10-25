@@ -20,7 +20,7 @@ secret references, defaults, `source` (`builtin` or `plugin`), and
 | Need | Prefer |
 |---|---|
 | Parse ingress | `parse_json`, `parse_xml` |
-| Transform or branch | `map`, `filter`, `validation` / `validate` |
+| Transform or branch | `map`, `filter`, `validation` (the v3 name `validate` is refused) |
 | Serialize data | `publish_json`, `publish_xml` |
 | Log structured data | `log` |
 | HTTP service | `http_call` |
@@ -29,6 +29,7 @@ secret references, defaults, `source` (`builtin` or `plugin`), and
 | Cache | `cache_read` (`keys` for several), `cache_write`, `cache_delete`, `cache_incr` (generation counters) |
 | Invalidate a channel response cache | `cache_invalidate` |
 | Call another Orion service | `channel_call` |
+| Call an operation on a deployed connection's provider | `connector_call` |
 | Cryptography or JWT | `crypto`, `jwt_sign`, `jwt_verify` |
 | A codec or calculation that already exists as code | a plugin function, named `<plugin>.<label>` |
 
@@ -103,8 +104,9 @@ their names, they do not send data externally.
 ## Connector functions
 
 A connector function names a connector statically unless its runtime schema
-explicitly allows otherwise. Keep connector selection static so activation,
-dependency inspection, rename guards, and package closure can prove it exists.
+explicitly allows otherwise. Keep connector selection static: `compile` reads
+the names to write each workflow's `requires`, so a computed name escapes that
+check.
 
 Current `http_call` fields—including headers, path, body, formats, output,
 and timeout—can be expressions. Let the connector own the base URL,
@@ -112,9 +114,10 @@ authentication, retries, response-size cap, SSRF policy, and allowed methods.
 The workflow supplies request-specific values.
 
 `channel_call` runs another channel's workflow in-process. The called channel
-keeps its own admission rules, workflow versions, timeout, and metadata. Static
-targets appear in `workflows dependencies`; a dynamic target makes that report
-explicitly incomplete. Orion detects cycles and enforces a call-depth limit.
+keeps its own admission rules, workflow revision, timeout, and metadata. Both
+channels must be in the same deployment. `lint` on the set checks a static
+target exists; a dynamic target cannot be checked. Orion detects cycles and
+enforces a call-depth limit (`508 LOOP_DETECTED`).
 
 Connector errors that are continued are recorded in
 `metadata._orion_errors`. Database constraint failures have stable codes such
@@ -140,10 +143,11 @@ anywhere in a plugin task's input; a plugin never sees key material.
 
 ## Plugin functions
 
-A plugin function appears in the catalog with `source: "plugin"` once its
-plugin's version is active, and is named `<plugin>.<label>`. Discover its
-schema there, never from memory — a workflow is accepted only against the
-schema the plugin's *active* version declares.
+A plugin function appears in the catalog with `source: "plugin"` once a
+deployment carries its plugin, and is named `<plugin>.<label>`. Discover its
+schema there or in the `plugin.toml`, never from memory. A workflow is checked
+against the schema the deployed plugin declares. A workflow and the plugin it
+calls deploy together, from one definition set.
 
 Its world imports nothing: no filesystem, clock, randomness, sockets,
 connectors or secrets. It is a pure JSON → JSON transformation, so use one for

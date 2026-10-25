@@ -86,10 +86,16 @@ orion-server dry-run \
 
 ## 3. Start the real dependency
 
-Bring up seeded PostgreSQL and an Orion container together:
+Bring up the seeded PostgreSQL service from the package's compose file:
 
 ```bash
-docker compose -f examples/packages/postgres-orders/docker-compose.yml up -d
+docker compose -f examples/packages/postgres-orders/docker-compose.yml up -d postgres
+```
+
+In a second terminal, start Orion with the variable the connector's `env://ORDERS_DB_URL` reference names:
+
+```bash
+ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
 ```
 
 Verify both before deploying:
@@ -100,7 +106,7 @@ curl --retry 10 --retry-delay 1 --retry-all-errors -fsS \
   http://localhost:8080/healthz
 ```
 
-Both services report `running`, and the health check prints `{"status":"ok"}`.
+The `postgres` service reports `running`, and the health check prints `{"status":"ok"}`.
 
 ## 4. Deploy and invoke the package
 
@@ -114,7 +120,7 @@ curl -sS -X POST http://localhost:8080/api/v2/data/record-order \
   --data @examples/packages/postgres-orders/request.json | jq
 ```
 
-The deployment carries the `orders-db` connection, the workflow and the channel as one revision. Look for `rows_affected: 1`, a generated order id, and customer `Ada Lovelace` with the new order in `orders`. Re-running the apply is safe: the head already deploys the directory. Each request still inserts a new row, so the returned history grows.
+The plan lists three members: `+ channel record-order@1`, `+ connection orders-db@1` and `+ workflow record-order@1`. They commit as one revision. Look for `rows_affected: 1`, a generated order id, and customer `Ada Lovelace` with the new order in `orders`. Re-running the apply is safe: the head already deploys the directory. Each request still inserts a new row, so the returned history grows.
 
 ## 5. Observe the execution
 
@@ -131,7 +137,7 @@ Copy the trace id it prints, then inspect it:
 orion-cli traces get <trace-id>
 ```
 
-The trace is `completed` and shows `parse`, `validate`, `record` and `history` in order. The id is different on every run.
+The trace is `completed`, and its result is the answer the caller received. The id is different on every run. Per-task detail is off by default; a channel's [`tracing.task_details`](../../reference/channel-config/tracing.md) turns it on.
 
 ## 6. Verify live failure handling
 
@@ -161,7 +167,7 @@ The plan lists each member whose definition changed, and commits nothing. The ap
 
 ## Clean up
 
-Remove the containers and the database volume, including every inserted order:
+Stop `orion-server` with Ctrl+C. Then remove the database container and its volume, including every inserted order:
 
 ```bash
 docker compose -f examples/packages/postgres-orders/docker-compose.yml down -v
@@ -173,7 +179,7 @@ Your repository checkout is untouched.
 
 - A `validation` task with `on_rejection: "halt"` is the barrier between input and a write.
 - `lint`, `test` and `dry-run` prove a connector-backed workflow with no database, because stubs answer the connector calls.
-- Every live request leaves a trace, and the trace names each task that ran.
+- Every live request leaves a trace, and its result is what the caller received.
 - A deployed definition is immutable. A change ships as a new revision, tested offline and planned before it serves.
 
 ## Next steps

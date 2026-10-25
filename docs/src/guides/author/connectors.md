@@ -1,6 +1,6 @@
-<!-- description: Create Orion connectors for HTTP APIs, SQL databases and in-memory caches, with secrets held by reference and per-operation gates. -->
+<!-- description: Write Orion connector files for HTTP APIs, SQL databases and in-memory caches, with secrets held by reference and per-operation gates. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Connect a database or API
 
@@ -8,11 +8,11 @@ A connector is how a workflow reaches anything outside the process. You declare 
 
 ## Before you start
 
-You need a server on `http://localhost:8080` and a reachable external system to point the connector at. The examples use a PostgreSQL database; [Add your first connector](../../get-started/tutorials/first-connector.md) ships one in Docker if you need it.
+You need a definition set to add the connector to, a server on `http://localhost:8080`, and a reachable external system. The examples use a PostgreSQL database; [Add your first connector](../../get-started/tutorials/first-connector.md) ships one in Docker if you need it.
 
-## Create one
+## Write the connector file
 
-Write the definition as a file in your definition set, beside the workflows that use it:
+Save the connector as a file in your definition set, beside the workflows that use it:
 
 ```json
 {
@@ -29,7 +29,7 @@ Write the definition as a file in your definition set, beside the workflows that
 }
 ```
 
-[`orion-server compile`](../../reference/cli/orion-server/compile.md#deployment-directories) turns it into a connection revision, and `orion-cli deployments apply -d` deploys it with the workflows. A changed connector becomes a new connection revision, never an edit of the old one.
+[`orion-server compile`](../../reference/cli/orion-server/compile.md#deployment-directories) turns it into a connection revision, and `orion-cli deployments apply -d` deploys it with the workflows. A `db` connector must name its `driver`: `postgresql`, `mysql` or `sqlite`. A changed connector becomes a new connection revision, never an edit of the old one. [Connectors](../../concepts/connectors.md) explains the two forms.
 
 ## Never write a credential into one
 
@@ -41,7 +41,7 @@ Reference the server's environment instead:
 
 The reference resolves from the server's environment when the connection is used, so the deployment holds a variable name. Three things follow:
 
-- The database never holds the credential, so a dump is not a leak.
+- No deployment holds the credential, so a database dump is not a leak.
 - The same JSON works in dev, QA and production; only the variable's value differs.
 - The connector compiles into a deployment. `compile` moves each reference to the connection's `secret_locators`, and refuses a literal credential, so one cannot be deployed at all.
 
@@ -110,13 +110,14 @@ Use the portable dialect by default. Reach for raw SQL only when the dialect can
 
 ## Verify
 
-Probe the deployed connection:
+After the apply, confirm the node holds the connection revision and loaded it:
 
 ```bash
-orion-cli connections probe orders-db
+orion-cli connections list
+curl -s http://localhost:8080/api/v2/admin/engine/status | jq '.data.load_issues.connectors'
 ```
 
-The probe reaches the real backend with the real credentials, which is the point: a wrong password is invisible until traffic hits it. Every probe is audited. Before the server is running at all, `orion-server test-connectivity` probes the configured database.
+The list shows `orders-db` at revision 1, and the load issues list is `[]`. Then send one request through a channel whose workflow uses the connector. Only real traffic proves the credential, because the reference resolves on the node.
 
 ## Keep it healthy
 

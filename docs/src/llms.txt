@@ -32,6 +32,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; definitions are tes
 - [Channels](https://docs.goplasmatic.io/concepts/channels.html): service endpoints — protocols, sync/async, ingress guards, in-process composition
 - [Workflows](https://docs.goplasmatic.io/concepts/workflows.html): task pipelines, the data context, conditions, how a version is selected
 - [Connectors](https://docs.goplasmatic.io/concepts/connectors.html): named external connections, secrets by reference, operation gates, circuit breakers
+- [Deployments](https://docs.goplasmatic.io/concepts/deployments.html): the one manifest a node serves — content-addressed definitions, connection revisions, the head, plan, apply, rollback, the build check and convergence
 - [Plugins](https://docs.goplasmatic.io/concepts/plugins.html): custom task functions as sandboxed WebAssembly — what a plugin may do, how it is deployed, when to write one
 - [Architectural characteristics](https://docs.goplasmatic.io/concepts/architectural-characteristics.html): the capability map — eight characteristics, what the runtime provides under each, and the deliberate gaps
 - [Design notes](https://docs.goplasmatic.io/concepts/design-notes.html): the reasoning behind dedup, cache keys, hot reload, the guard pipeline

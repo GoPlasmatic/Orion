@@ -31,7 +31,7 @@ cd Orion
 
 ## 1. Lint the workflow
 
-`lint` reads a workflow file and applies the validators the server applies when a definition is uploaded: task shapes, function names, and each function's `input` schema:
+`lint` reads a workflow file and applies the checks the server runs on an upload. Those cover task shapes, function names, and each function's `input` schema:
 
 ```bash
 orion-server lint examples/packages/high-value-order/workflow.json
@@ -122,11 +122,15 @@ A dry run you have to read is a demo. A *case file* is the same run with the ans
 }
 ```
 
-`orion-server test` runs a directory of them and exits non-zero on any failure:
+`orion-server test` runs a directory of them and exits non-zero on any failure. Two example packages call plugin functions, so hand the runner their directories too:
 
 ```bash
-orion-server test examples/workflow-tests
+orion-server test examples/workflow-tests \
+  --plugin-dir examples/packages/fixed-width-statement \
+  --plugin-dir examples/packages/c4-referee
 ```
+
+Without the two `--plugin-dir` flags, those four cases fail with `PLUGIN_ARTIFACT_UNAVAILABLE` rather than pass on a stub.
 
 Output, for a suite with one failing case:
 

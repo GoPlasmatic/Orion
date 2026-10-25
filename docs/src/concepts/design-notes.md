@@ -45,7 +45,7 @@ Stated normatively in: [Channel Configuration](../reference/channel-config/index
 
 On the synchronous HTTP path a channel's `timeout_ms` is honoured as declared: nothing but the caller waits on it. On the queued path the deadline protects something shared. An `/async` dispatch occupies one of a fixed number of queue workers, so an over-long channel deadline starves every other channel's queued work.
 
-`timeout_ms` is channel configuration: mutable at runtime through the admin API, and not validated against the ceiling. The clamp is what keeps a config change from becoming an outage. The worst a channel can do is time out sooner than the operator's ceiling. It can never hold a worker past it. A channel that needs longer on that path needs the queue setting raised. That decision belongs to the operator who owns the worker pool, not to the channel author.
+`timeout_ms` is channel configuration: it changes with any deployment, and it is not validated against the ceiling. The clamp is what keeps a config change from becoming an outage. The worst a channel can do is time out sooner than the operator's ceiling. It can never hold a worker past it. A channel that needs longer on that path needs the queue setting raised. That decision belongs to the operator who owns the worker pool, not to the channel author.
 
 A cron occurrence has no such ceiling. `cron.default_timeout_ms` is a default for a channel that sets no `timeout_ms`, and a channel may ask for longer. Occurrences run on their own `cron.workers`, so a long one cannot starve `/async` work.
 

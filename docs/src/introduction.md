@@ -4,7 +4,7 @@
 
 # Orion documentation
 
-Orion is a declarative services runtime. You define what a service does as a JSON workflow and expose it through a channel. Orion serves it with routing, guards, versioning and traces already in place.
+Orion is a declarative services runtime. You define what a service does as a JSON workflow, expose it through a channel, and deploy both as one revision. Orion serves it with routing, guards, rollback and traces already in place.
 
 <div class="hero-logo">
   <img src="images/plasmatic-logo.png" alt="Plasmatic logo">
@@ -22,7 +22,7 @@ The [quickstart](./get-started/quickstart.md) takes about five minutes and ends 
 | Are building a service | [Author a service](./guides/author/index.md), with [Concepts](./concepts/index.md) beside it |
 | Are authoring with an AI assistant | [Build a service with Claude Code](./guides/ai/claude-code.md) |
 | Run Orion for other people | [Production checklist](./operate/production-checklist.md) |
-| Are upgrading | [Releases](./releases/index.md) |
+| Are upgrading | [Upgrade an instance](./operate/maintain/upgrades.md), then [Releases](./releases/index.md) |
 
 ## The six sections
 

@@ -122,11 +122,11 @@ readinessProbe:
 `/health` is deliberately two-tier. Anonymous callers get the coarse component states. Detail fields are served only when admin auth is disabled or the caller presents a valid admin key. Those are `workflows_loaded`, the per-connector circuit-breaker map, failed connector loads and quarantined channel names. A monitor can see *that* something is degraded without learning *what*. Each quarantined channel also carries its `channel_id` and `workflow_id`. Tooling that needs the lists should read [`GET /engine/status`](../../reference/admin-api/engine.md#what-a-generation-could-not-load), which carries the same three under `load_issues` on the admin plane.
 
 
-`components.cron` appears only when this node has something to say about schedules. That is when the scheduler is on, or when it is off while an active cron channel is quarantined. It is `degraded` when the reconciler has not completed a pass for long enough that occurrences are being missed. It is also `degraded` when the scheduler is off while cron channels are stored active. Both are states in which every liveness signal is green and the declared schedules are not running. It does not fail `/readyz`. The node still serves every request correctly, and removing it from the load balancer would not make a single occurrence run. See [Cron occurrences](../../reference/admin-api/cron-occurrences.md).
+`components.cron` appears only when this node has something to say about schedules. That is when the scheduler is on, or when it is off while a deployed cron channel is quarantined. It is `degraded` when the reconciler has not completed a pass for long enough that occurrences are being missed. It is also `degraded` when the scheduler is off while the deployment carries cron channels. Both are states in which every liveness signal is green and the declared schedules are not running. It does not fail `/readyz`. The node still serves every request correctly, and removing it from the load balancer would not make a single occurrence run. See [Cron occurrences](../../reference/admin-api/cron-occurrences.md).
 
 `components.engine` is a constant `"ok"`, kept for response-shape stability: the engine snapshot cannot be unavailable once the process serves.
 
-`components.plugins` carries a third state, `disabled`, which is a configuration choice rather than a fault. The node has `plugins.enabled` off and serves everything else normally. It reads `degraded` when an active plugin exists that this node could not carry. The causes: a missing artifact, a component that does not compile, or a failed self-test. The capability being off while active rows are stored counts too. It is per node: the entity stays stored and active, and it is this node that cannot serve it.
+`components.plugins` carries a third state, `disabled`, which is a configuration choice rather than a fault. The node has `plugins.enabled` off and serves everything else normally. It reads `degraded` when the deployment carries a plugin this node could not load. The causes: a missing artifact, a component that does not compile, or a failed self-test. The capability being off while the deployment carries a plugin counts too. It is per node: the plugin stays deployed, and it is this node that cannot serve it.
 
 It does not flip the top-level `status` on its own. It does not need to. A plugin that did not load quarantines the channels whose workflows use it, and `components.channels` is what carries that into `status`. Alert on `components.channels` for impact; read `components.plugins` for the cause.
 
@@ -134,7 +134,7 @@ It does not flip the top-level `status` on its own. It does not need to. A plugi
 
 `degraded` means this node's last build of a deployment failed. The node still serves the *previous* generation: correct, but not what is committed. It clears on the next successful build.
 
-The signal exists because nothing else reports it. A deployment apply that commits and then fails to build on this node still commits, deliberately, and its answer says so under `evaluation`. In a cluster the other nodes build the revision on their own, so a failure on one of them has no caller to tell at all. `/readyz` is unaffected. This node is serving, only not the newest revision, and ejecting it would trade a stale-config problem for an availability one. [Convergence](../../reference/admin-api/deployments.md#convergence) reports which nodes serve a revision.
+The signal exists because nothing else reports it. A deployment apply that commits and then fails to build on this node still commits, deliberately, and its answer says so under `evaluation`. In a cluster the other nodes build the revision on their own. A failure on one of them has no caller to tell at all. `/readyz` is unaffected. This node is serving, only not the newest revision, and ejecting it would trade a stale-config problem for an availability one. [Convergence](../../reference/admin-api/deployments.md#convergence) reports which nodes serve a revision.
 
 ### `components.background_tasks`
 
@@ -152,7 +152,7 @@ The retention jobs (trace cleanup, audit-log cleanup) are the non-essential ones
 
 With an admin credential, `/health` adds a `background_tasks` array naming each task, its state, and how many times the supervisor has restarted it. A running task with a non-zero restart count is the one worth alerting on: it is up now, and it has been failing.
 
-For a running instance's own view, `GET /api/v2/admin/engine/status` returns the version, uptime, workflow counts, and the channel list.
+For a running instance's own view, `GET /api/v2/admin/engine/status` returns the version, uptime, workflow counts, the generation served and its load issues.
 
 ## Verify
 

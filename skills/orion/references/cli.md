@@ -1,12 +1,12 @@
 # Orion command workflows
 
-Read this reference for local validation, live administration, packages, output
-handling, and diagnosis. Run the relevant command's `--help` before using
-flags not demonstrated here.
+Read this reference for offline validation, compilation, deployments, live
+operations, output handling, and diagnosis. Run the relevant command's
+`--help` before using flags not shown here.
 
 ## Connection and output
 
-Connection precedence is CLI flags, environment, then user config:
+Connection precedence is CLI flags, then environment, then user config:
 
 ```bash
 orion-cli config set-server http://localhost:8080
@@ -15,202 +15,231 @@ orion-cli health
 
 Use `--server` or `ORION_SERVER_URL` for automation, and `--api-key` or
 `ORION_API_KEY` when admin auth is enabled. `--change-context` labels audit
-events. Avoid putting secrets directly in command history.
+events, for example `ticket=OPS-4412`. Keep secrets out of command history.
 
-Global `--output json` preserves the API response envelope. Arrays from list
-commands are generally at `.data`. `--quiet` gives minimal output. Always
-check exit status. Paginate until exhausted when computing a full inventory.
+Global `--output json` keeps the API response envelope. Arrays from list
+commands are generally at `.data`. `--quiet` prints minimal output. Always
+check the exit status. Page through a list until it is exhausted when you need
+a full inventory.
 
 ## Offline authoring
 
-Run local checks before a server write:
+Run local checks before anything touches an instance:
 
 ```bash
 orion-server fmt --check ./definitions
 orion-server lint ./definitions
 orion-server clippy ./definitions
-orion-server dry-run -w workflow.json -i sample.json
-orion-server test ./workflow-tests
+orion-server dry-run -w definitions/workflow.json -i sample.json --stubs stubs.json
+orion-server test ./definitions/tests
 ```
 
-- `fmt` applies canonical style; use `--check` in CI.
-- `lint` validates shapes and cross-definition dependencies. Directory lint
-  understands the whole set.
-- `clippy` reports proof-based issues beyond validity. Read a rule's
-  explanation before changing behavior solely to satisfy it.
-- `dry-run` executes one workflow offline with deterministic egress stubs.
-- `test` runs declarative regression cases.
-- `validate-config`, `preflight`, and `test-connectivity` are operator
-  workflows; inspect help because they may load config or contact dependencies.
-- `dump-openapi` emits the built server's API contract.
-- All five offline commands take `--plugin-dir <dir>` (and find a
-  `plugin.toml` already in the tree without it). With a manifest in hand,
-  plugin task inputs are validated as the admin API validates them and
-  `dry-run` / `test` run the component for real — plugin functions are never
-  stubbed. A function no manifest covers is reported unverifiable, not
-  invalid; a function whose component is absent fails as
+- `fmt` applies the one house style. Use `--check` in CI.
+- `lint` validates shapes and the references between files. Point it at the
+  directory, so it sees the whole set.
+- `clippy` reports proven issues beyond validity. Read a rule's `--explain`
+  before changing behaviour only to satisfy it.
+- `dry-run` executes one workflow offline. `--stubs` answers connector calls,
+  and a task with no stub fails naming the stub it needs.
+- `test` runs `*.case.json` regression cases and exits non-zero on a failure.
+  It refuses a directory that holds no case files.
+- `sql check` prepares every `db_read`/`db_write` statement against a real
+  database. It executes nothing, but it does connect.
+- `validate-config` and `test-connectivity` are operator commands. They read
+  config, and `test-connectivity` contacts the state database.
+- `dump-openapi` prints the built server's API contract.
+- `lint`, `clippy`, `compile`, `dry-run` and `test` take `--plugin-dir <dir>`,
+  and find a `plugin.toml` in the tree without it. With a manifest in hand,
+  plugin task inputs are validated, and `dry-run` and `test` run the component
+  for real. A function no manifest covers is reported unverifiable, not
+  invalid. A function whose component is absent fails as
   `PLUGIN_ARTIFACT_UNAVAILABLE`.
 
-Assert trace/task state and intermediate context, not only final output.
+Assert trace and task state and the intermediate context, not only the final
+output.
 
-## Definition sets and compilation
+## Compile a definition set
 
-A set may include workflows, channels, connectors, shared values, and fragments.
-Lint the directory, then compile it:
-
-```bash
-orion-server compile ./definitions \
-  --name orders --version 2.3.0 -o orders-2.3.0.json
-```
-
-Compilation resolves `$from` and `use`, validates the expanded set, and emits
-a deployable artifact — inlining any `plugin.toml` in the tree together with
-its component. The admin API refuses unresolved source syntax. Other output
-formats exist for per-file/bulk import; inspect `compile --help`.
-
-## Live lifecycle
-
-Safe workflow sequence:
+A set holds workflows, channels, connectors, shared values, fragments and
+plugins. Compile it into a deployment directory:
 
 ```bash
-orion-cli workflows get order-processing
-orion-cli workflows dependencies order-processing
-orion-cli workflows new-version order-processing
-orion-cli workflows update order-processing -f workflow.json
-orion-cli workflows test order-processing -f sample.json --trace
-orion-cli workflows activate order-processing --dry-run
-orion-cli workflows activate order-processing
+orion-server compile ./definitions -o dist/deployment
 ```
 
-For a new ID, use `create`. Channels and plugins follow the same
-draft/version/activation model. Activate a channel's workflow first, and a
-workflow's plugins before the workflow:
+`compile` runs every `lint` check first and writes nothing if one fails. It
+resolves `$from` and `use`, inlines any `plugin.toml` component, and turns each
+connector into a connection file. The output is `deployment.json`,
+`definitions/<hex>.json` and `connections/<id>.json`, with no revision
+numbers in it. The same set compiles to the same bytes.
+
+Files that are not definitions, such as `request.json`, are skipped with a
+note. A connector holding a literal credential, or a `db` connector without a
+`driver`, is an error.
+
+## Plan, apply and verify
 
 ```bash
-orion-cli plugins create -f plugin.toml      # the component is read beside it
-orion-cli plugins activate <plugin-id>
-orion-cli plugins dependencies <plugin-id>   # what would break on archive
+orion-cli deployments plan -d dist/deployment
+orion-cli deployments apply -d dist/deployment
+orion-cli engine status
 ```
 
-A plugin version whose schema an active dependant no longer satisfies is
-refused activation with a `409`. `plugins create --signature` is required when
-the server configures `[plugins.trust]`. All of it answers `400` when
-`plugins.enabled` is off.
+`plan` uploads the definitions and connection revisions, assigns member
+revisions against the target's head, and prints what would change. It commits
+nothing. Lines read:
 
-Transition dry-runs return findings in HTTP 200; the CLI maps invalid findings
-to exit code 1, so gate automation on the exit code.
+- `+ kind id@N`: deployed by this apply.
+- `= kind id@N`: unchanged.
+- `- kind id@N`: removed. It stops serving on apply.
 
-Connectors have no drafts. Validate before create/update, test them, and reload
-when required. Treat connector updates as live dependency changes.
+A changed definition shows as `+ id@2` beside `- id@1`. An apply replaces the
+head with the directory's members, so read every `-` line before applying.
 
-## Atomic visibility and rollout
+`apply` prints the same plan, asks before committing (`--yes` skips the
+prompt), and commits under compare-and-swap on the head. Its idempotency key
+derives from the head and the manifest digest, so a retry replays the first
+answer. `--base-revision <N>` refuses to go ahead unless the head is `N`.
+`--reason` is recorded in the audit log. A directory the head already deploys
+is reported as up to date and not applied.
 
-Batch related transitions with one reload:
+The apply answer carries `committed_revision` and `evaluation.converged`.
+Then check `orion-cli engine status`: a member the node could not load is
+quarantined and listed under its load issues.
+
+Read history with `orion-cli deployments get <revision>`, or the head and every
+revision with `GET /api/v2/admin/deployments`.
+
+## Clusters and convergence
+
+Every node builds the head on its own. Wait until they all serve it:
 
 ```bash
-orion-cli workflows activate order-processing --defer-reload
-orion-cli channels activate orders --defer-reload
-orion-cli engine reload
+orion-cli deployments wait 8 --target observed --timeout-ms 30000
 ```
 
-Until reload, stored state and the serving generation deliberately differ.
-Do not leave a deferred batch unfinished.
+`--target this-node` waits only for the node that answered. A node that cannot
+build a committed head keeps serving its previous generation and reports
+`engine_reload` as degraded on `/health`.
 
-For an already active multi-version rollout, change a version's share with:
+## Rollback
+
+A rollback commits an earlier revision's manifest as a new revision:
 
 ```bash
-orion-cli workflows rollout order-processing -p 50
-orion-cli workflows rollout order-processing -p 100
+orion-cli deployments rollback --target-revision 3 \
+  --expected-head-revision 4 --idempotency-key rollback-4-to-3 \
+  --reason "revert threshold change"
 ```
 
-The CLI's activation command does not currently accept an initial percentage;
-use the documented status API request with `rollout_percentage` when introducing
-a canary. Preflight it first. Monitor metrics, errors, and traces between ramps.
-Active versions must form a valid traffic partition.
+`--expected-head-revision` refuses the rollback if someone deployed in the
+meantime. It restores configuration only. Rows written and calls made under
+the newer revision stay. Recompiling and applying an older commit of the set
+works too: a member whose definition an earlier revision deployed takes that
+revision back.
+
+## Traffic splits
+
+`compile` deploys one revision per workflow. To split a channel's traffic
+between two revisions of one workflow, write the manifest by hand. List both
+workflow revisions as members, and give the channel member `rollouts`
+intervals that partition `0..100`:
+
+```json
+"rollouts": [
+  { "workflow_revision": 1, "start_bucket": 0, "end_bucket": 75 },
+  { "workflow_revision": 2, "start_bucket": 75, "end_bucket": 100 }
+]
+```
+
+Plan it with `deployments plan -f manifest.json --base-revision <head>` and
+apply it with `deployments apply -f manifest.json --base-revision <head>
+--idempotency-key <key> --reviewed-digest <digest>`. Watch metrics, errors and
+traces between ramps.
 
 ## Data, traces, and retries
 
 ```bash
 orion-cli send orders -f request.json
 orion-cli send payload-channel --raw -f body.json
+orion-cli send reports --async-mode --wait -f request.json
 orion-cli traces list --channel orders
 orion-cli traces get <trace-id>
 orion-cli traces wait <trace-id>
 ```
 
-Async sends acknowledge admission; fetch or wait for the trace. Trace policy can
-make a trace ID unavailable, so handle null/missing IDs.
+An async send acknowledges admission. Fetch or wait for the trace. Trace policy
+can make a trace id unavailable, so handle a null or missing id.
 
-DLQ retry repeats external effects. Inspect the failure and idempotency
-guarantees before retrying and honor confirmation prompts.
+`orion-cli dlq list|get|requeue|purge` reads and drains the trace dead-letter
+queue. A requeue repeats external effects. Inspect the failure and the
+destination's idempotency before retrying, and honour confirmation prompts.
 
 ## Scheduled work
 
-A cron channel has no caller, so `send` cannot reach it. Its runs are read from
-the occurrence ledger and started, when started by hand, through the channel:
+A cron channel has no caller, so `send` cannot reach it. Read its runs from the
+occurrence ledger, and start one by hand with `cron trigger`:
 
 ```bash
 orion-cli cron status                  # what is scheduled, next fire, last result
-orion-cli cron list --channel-id nightly-rollup --status failed
+orion-cli cron list --channel-id nightly-order-rollup --status failed
 orion-cli cron get <occurrence-id>
 orion-cli cron retry <occurrence-id>   # same occurrence: same id, same scheduled_for
-orion-cli channels trigger nightly-rollup   # a new manual occurrence
+orion-cli cron trigger nightly-order-rollup   # a new manual occurrence, now
+orion-cli cron cancel <occurrence-id>  # stop one that has not finished
 ```
 
-`retry` and `trigger` answer different questions: `retry` is another attempt at
-work that was due at a past instant, `trigger` is new work now. Both take the
-same claim and singleton a scheduled run takes, so neither can run beside a
-`forbid` schedule's live occurrence.
+`retry` and `trigger` answer different questions. `retry` is another attempt at
+work due at a past instant. `trigger` is new work now. Both take the same claim
+and singleton a scheduled run takes, so neither runs beside a `forbid`
+schedule's live occurrence.
 
-A backlog of `pending` occurrences means the scheduler is behind or off; check
+A backlog of `pending` occurrences means the scheduler is behind or off. Check
 `components.cron` on `/health` and the node's `cron.enabled`.
 
-## Packages and promotion
+## Connections and breakers
 
-Packages compute dependency closure, plan conflicts, apply in dependency order,
-reload once, and record a receipt:
-
-```bash
-orion-server package lint -f orders-2.3.0.json
-orion-server package plan -s https://staging.example -f orders-2.3.0.json
-orion-server package diff -s https://staging.example -f orders-2.3.0.json
-orion-server package apply -s https://staging.example -f orders-2.3.0.json
-```
-
-Before apply, confirm the target, authentication source, referenced secrets and
-vars, connector gates, and plan. Preserve the exact promoted artifact. Rollback
-is reapplying a known-good artifact.
+A connection revision is created by `apply -d` from the set's connector file.
+`orion-cli connections list` shows the stored revisions.
+`orion-cli connections probe` runs an audited health probe against one.
+Circuit breakers are read and reset through
+`GET /api/v2/admin/connectors/circuit-breakers` and
+`POST /api/v2/admin/connectors/circuit-breakers/{channel}:{connector}`.
 
 ## Diagnosis
 
 Use this order:
 
-1. Read exit status and structured field errors.
-2. Run validate/lint or transition `--dry-run`.
-3. Inspect health, engine status, and readiness.
-4. Inspect dependencies and the live function schema.
-5. Inspect the latest trace and stable task error code.
-6. Check connector connectivity and circuit-breaker state.
+1. Read the exit status and the structured field errors.
+2. Rerun `lint` and `clippy` on the set, and `plan` against the target.
+3. Inspect `orion-cli health` and `orion-cli engine status`.
+4. Inspect the live function schema with `orion-cli functions list`.
+5. Inspect the latest trace and its stable task error code.
+6. Check connection probes and circuit-breaker state.
 7. Check the DLQ for async work.
-8. Reload only after deferred changes or confirmed serving-generation drift.
 
 Common causes:
 
-- `UNCOMPILED_SOURCE`: compile the set.
-- `UNRESOLVED_SECRET_REF`: use a supported key field, connector, or declared
-  secret.
+- `UNCOMPILED_SOURCE`: the document still holds `$from` or `use`. Compile the
+  set.
+- `DEPLOYMENT_WOULD_NOT_BUILD`: the plan names why, such as two channels on one
+  route or a function no member serves. Fix the set and re-plan.
+- `DEPLOYMENT_HEAD_CONFLICT`: another apply landed first. Re-plan against the
+  new head.
+- `UNRESOLVED_SECRET_REF`: use a field that accepts a reference, a connector,
+  or a declared secret.
 - request fields are absent: parse `payload` into `data`.
 - payload-mode input is nested: resend with `--raw`.
-- unexpected object output: check operator spelling/template behavior.
-- unavailable channel: inspect workflow activity, rollout partition, connector
-  references, and quarantine findings.
+- unexpected object output: check operator spelling and template behaviour.
+- a `404` on a route: the head does not carry the channel, or this node has not
+  converged yet. Read the head and the node's engine status.
+- a channel is quarantined: read its reason in `engine status`. Typical causes
+  are a missing connection, an unresolvable secret on this node, and a plugin
+  function on a node with `plugins.enabled = false`.
 - a cron channel never fires: check `cron.enabled` on every node,
-  `components.cron` on `/health`, and the channel's quarantine finding.
-- a workflow naming a plugin function is quarantined: check `plugins.enabled`,
-  the plugin's status, and that its active version still declares that
-  function.
-- imported connector fails: supply secrets masked from the export.
-- stored state differs from traffic: finish the deferred reload.
+  `components.cron` on `/health`, and the channel's quarantine reason.
+- `engine_reload` degraded: the node could not build the committed head and
+  serves its previous generation. Read `/health` for the reason.
 
-Do not blindly retry deterministic validation failures; fix the named field or
+Do not blindly retry deterministic validation failures. Fix the named field or
 configuration.

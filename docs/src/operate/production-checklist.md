@@ -22,10 +22,10 @@ Setting `environment = "production"` makes exactly five things fatal at startup 
 | **TLS** | Terminate it: `server.tls` here, or at a load balancer in front. | [Terminate TLS](./run/security.md#terminate-tls) |
 | **CORS** | Replace `["*"]` with explicit origins. Declare any custom request header your browser client sends; `allow_credentials` requires explicit origins. | [Configuration › CORS](../reference/configuration/cors.md) |
 | **Trusted proxies** | `rate_limit.trusted_proxies` if anything proxies to Orion; otherwise every caller shares one rate-limit bucket. | [Trust the right proxies](./run/security.md#trust-the-right-proxies) |
-| **Secrets** | Every connector authored with `env://` or `vault://`, never a literal. Set `storage.connector_encryption_key`. | [Keep credentials out of the database](./run/security.md#keep-credentials-out-of-the-database) |
+| **Secrets** | Every connector file authored with `env://` or `vault://`; `compile` refuses a literal. Set `storage.connector_encryption_key` to encrypt OAuth2 token state. | [Keep credentials out of the database](./run/security.md#keep-credentials-out-of-the-database) |
 | **API docs** | `server.docs.enabled = false` in production, so the admin surface is not published to anonymous callers. | [OpenAPI specification](../reference/openapi.md) |
 | **Database** | PostgreSQL or MySQL for anything multi-replica. Size `storage.max_connections` against the server's limit divided by the replica count. | [Requirements](./deploy/cluster.md#before-you-start) |
-| **Cluster** | More than one replica? `cluster.enabled = true` on every replica over the one shared database, `auto_migrate = false`, and `orion-server migrate` as a deploy step. Without it, a config change reaches only the node that received it, and dedup, response caches and rate limits stay per node. | [Run a cluster](./deploy/cluster.md) |
+| **Cluster** | More than one replica? `cluster.enabled = true` on every replica over the one shared database, `auto_migrate = false`, and `orion-server migrate` as a deploy step. Without it, a deployment reaches only the node that received it, and dedup, response caches and rate limits stay per node. | [Run a cluster](./deploy/cluster.md) |
 | **Rate limiting** | `rate_limit.enabled = true`, sized per channel. | [Rate limiting](../reference/channel-config/rate_limit.md) |
 | **Circuit breakers** | `engine.circuit_breaker.enabled = true` when workflows call external services. Off by default. | [Stop calling a failing backend](./run/failure-handling.md#stop-calling-a-failing-backend) |
 | **Retention** | Bound `trace_queue.retention_hours` and `audit.retention_days`. Nothing else trims those tables. | [Keep the table bounded](./run/traces.md#keep-the-table-bounded) · [Bound retention](./run/audit-logs.md#bound-retention) |
@@ -56,7 +56,8 @@ curl -s http://localhost:8080/health | jq '{status, workflows_loaded, channels, 
 
 ## Before each deploy
 
-- **Read the version's upgrade notes** and run `lint` with the new binary over the definition set you deploy. See [Upgrade an instance](./maintain/upgrades.md).
+- **Read the version's upgrade notes** and run `lint` with the new binary over the definition set you deploy.
+- **Plan before you apply.** `orion-cli deployments plan -d` lists what an apply adds and removes, and commits nothing. See [Upgrade an instance](./maintain/upgrades.md).
 - **Back up first.** Every other step is reversible once this one happened.
 - **Migrate as a deploy step** in a cluster, not at boot.
 - **Roll one node at a time**, and confirm `/readyz` on each before moving on.

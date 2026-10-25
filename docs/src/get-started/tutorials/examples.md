@@ -96,10 +96,12 @@ A package with no HTTP route deploys the same way. `nightly-rollup` is a cron ch
 [`examples/workflow-tests/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/workflow-tests) holds `*.case.json` regression cases for the self-contained packages. Each runs the real workflow JSON through the real engine with no server, database or network:
 
 ```bash
-orion-server test examples/workflow-tests
+orion-server test examples/workflow-tests \
+  --plugin-dir examples/packages/fixed-width-statement \
+  --plugin-dir examples/packages/c4-referee
 ```
 
-It exits non-zero on any failure, so it gates CI beside `orion-server lint`. [`examples/use-cases/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/use-cases) does the same job against a real server: the repository's e2e suite deploys each case through `orion-cli` and asserts the live responses.
+The two `--plugin-dir` flags hand the runner the plugins two packages call, which run for real. It exits non-zero on any failure, so it gates CI beside `orion-server lint`. [`examples/use-cases/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/use-cases) does the same job against a real server: the repository's e2e suite deploys each case through `orion-cli` and asserts the live responses.
 
 ## Clean up or run another example
 

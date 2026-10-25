@@ -12,7 +12,7 @@ You need a workflow file to edit and `orion-server` on your `PATH` for the offli
 
 ## Read the request under `data`
 
-`data` starts as a copy of the request payload, so a JSON body's fields are readable straight away: a caller sending `{"total": 120}` is read as `data.total`. To keep the request under one name instead, start with `parse_json`, which places the whole payload at `data.<target>`:
+`data` starts as a copy of the request payload, so a JSON body's fields are readable straight away. A caller sending `{"total": 120}` is read as `data.total`. To keep the request under one name instead, start with `parse_json`, which places the whole payload at `data.<target>`:
 
 ```json
 { "id": "parse", "name": "Parse payload",

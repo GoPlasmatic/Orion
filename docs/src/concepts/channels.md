@@ -1,6 +1,6 @@
 <!-- description: A channel is an Orion service endpoint: where traffic arrives, which workflow runs, and the contract — auth, rate limits, validation — a caller must satisfy. -->
 <!-- type: concept -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Channels
 
@@ -29,7 +29,7 @@ A channel names exactly one workflow. That is what makes the channel the unit of
 
 ## Protocols
 
-Three protocols, set once and immutable across a channel's revisions:
+Three protocols, one per channel:
 
 - **`rest`**: a method and a path pattern, such as `POST /orders` or `GET /orders/{id}`. Path parameters reach the workflow as request metadata.
 - **`http`**: routes identically to `rest`. Both also stay reachable by channel name at `/api/v2/data/{name}`.
@@ -72,9 +72,9 @@ Every key, default and interaction is specified in [Channel configuration](../re
 
 ## Channels calling channels
 
-A workflow can invoke another channel's workflow with the `channel_call` function. The call runs in-process, with no network hop and no serialization round-trip, while the called channel keeps its own workflow, versions and governance. Cycles are detected and refused.
+A workflow can invoke another channel's workflow with the `channel_call` function. The call runs in-process, with no network hop and no serialization round-trip, while the called channel keeps its own workflow, guards and revision. Cycles are detected and refused.
 
-That is what lets one Orion instance hold a set of small, independently versioned services instead of one large workflow.
+That is what lets one deployment hold a set of small services, each with its own contract, instead of one large workflow.
 
 ## Next steps
 

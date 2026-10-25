@@ -19,7 +19,7 @@ curl -s http://localhost:8080/api/v2/admin/audit-logs
 
 curl -s "http://localhost:8080/api/v2/admin/audit-logs?action=v2_deployment_apply&resource_type=deployment"
 
-curl -s "http://localhost:8080/api/v2/admin/audit-logs?resource_id=nightly-rollup&start_time=2026-07-01T00:00:00Z"
+curl -s "http://localhost:8080/api/v2/admin/audit-logs?resource_id=nightly-order-rollup&start_time=2026-07-01T00:00:00Z"
 ```
 
 The CLI renders a table from the same filters:
@@ -29,7 +29,7 @@ orion-cli audit-logs list
 
 orion-cli audit-logs list --action v2_deployment_apply --resource-type deployment
 
-orion-cli audit-logs list --resource-id nightly-rollup --start-time 2026-07-01T00:00:00Z
+orion-cli audit-logs list --resource-id nightly-order-rollup --start-time 2026-07-01T00:00:00Z
 ```
 
 Each entry carries the principal, the action, the resource type and id, a `details` object, and a timestamp. Filters are applied in the database and combine with AND. `action`, `resource_type`, `resource_id` and `principal` match exactly; `start_time` (inclusive) and `end_time` (exclusive) are RFC 3339; `offset` and `limit` page.

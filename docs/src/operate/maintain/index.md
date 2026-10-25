@@ -7,5 +7,5 @@
 Three pages for the life of an instance after go-live. The first two are procedures you plan; the third is for the day something is wrong.
 
 - [Back up and restore](./backup-restore.md) covers the SQLite backup endpoint, the offline restore procedure, and what PostgreSQL and MySQL rely on instead.
-- [Upgrade an instance](./upgrades.md) is the order that works for a version change: back up, lint, validate the config, migrate, roll the fleet.
+- [Upgrade an instance](./upgrades.md) is the order that works within Orion 2, and the move from 1.x onto a fresh database.
 - [Troubleshooting](./troubleshooting.md) is indexed by symptom: what you see, why it happens, what to do, and how to confirm the fix.

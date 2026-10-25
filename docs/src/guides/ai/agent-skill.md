@@ -4,7 +4,7 @@
 
 # Set up the agent skill
 
-An *agent skill* is a folder of instructions an AI coding agent loads on demand. Orion ships one, in [`skills/orion/`](https://github.com/GoPlasmatic/Orion/tree/main/skills/orion), and the agent works through the CLI you already have. It teaches the JSON shapes, the test-plan-apply discipline, the command surface, and the traps that cost the most time.
+An *agent skill* is a folder of instructions an AI coding agent loads on demand. Orion ships one, in [`skills/orion/`](https://github.com/GoPlasmatic/Orion/tree/main/skills/orion), and the agent works through the CLI you already have. It teaches the JSON shapes, the definition set, the test-compile-plan-apply discipline, the command surface, and the costly traps.
 
 The skill is knowledge; `orion-cli` is the hands. There is no extra process to run, no port to open, and nothing new holding your admin credentials.
 
@@ -40,15 +40,15 @@ Start `claude` and run `/skills`; `orion` should be listed. You do not invoke it
 
 ## What it knows
 
-`SKILL.md` is what enters the agent's context up front. It holds the three primitives, the safe path, the deploy and rollback procedures, and the handful of traps that produce silent wrong answers. The rest is opened only when the task needs it:
+`SKILL.md` enters the agent's context up front. It holds the primitives, the definition set, the safe path to a deployment, and rollback. It also lists the traps that produce silent wrong answers. The rest is opened only when the task needs it:
 
 | File | Covers |
 |---|---|
-| `references/workflows.md` | Tasks, groups, fragments, context, loops, failures, and version selection |
+| `references/workflows.md` | Tasks, groups, fragments, context, loops, failures, and revision selection |
 | `references/functions.md` | Function selection, live schema discovery, expression-capable inputs, and egress boundaries |
 | `references/expressions.md` | JSONLogic evaluation, templates, secrets, and silent-failure edges |
-| `references/channels.md` | Ingress guards, request/response behaviour, cookies, stored config, and connectors |
-| `references/cli.md` | Offline checks, compilation, deployments, and troubleshooting |
+| `references/channels.md` | Ingress guards, cron schedules, request and response behaviour, config values, and connector files |
+| `references/cli.md` | Offline checks, compilation, plan and apply, convergence, rollback, traffic splits, cron, and troubleshooting |
 
 Anything discoverable at runtime is not restated in the skill. It tells the agent to run `orion-cli functions list` for a function's input schema, and `--help` for a command's flags. A table can drift; the instance cannot.
 

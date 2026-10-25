@@ -1,6 +1,6 @@
 <!-- description: A workflow is an ordered pipeline of tasks in JSON, versioned like source code and executed directly by the engine — no build step and no binary. -->
 <!-- type: concept -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Workflows
 
@@ -51,7 +51,7 @@ Tasks do not pass values to each other. They share one JSON document, the *data 
 - **`metadata`**: stamped by the ingress: channel name, method, headers, route parameters.
 - **`temp_data`**: scratch space that never reaches the response.
 
-`data` starts as a copy of the request payload, so a condition can read a field the caller sent as `data.<field>` straight away. The payload itself stays outside the context, unchanged, and a `parse_json` task with `source: "payload"` places it under one key when a workflow wants it there. Because `data` starts from the payload, a sync response carries the caller's fields beside what the tasks wrote, and a request no workflow matches is answered with its own input.
+`data` starts as a copy of the request payload, so a condition can read a field the caller sent as `data.<field>` straight away. The payload itself stays outside the context, unchanged, and a `parse_json` task with `source: "payload"` places it under one key when a workflow wants it there. Because `data` starts from the payload, a sync response carries the caller's fields beside what the tasks wrote. A request no workflow matches is answered with its own input.
 
 ## Conditions
 
@@ -64,11 +64,11 @@ Branching inside a pipeline is the second one. Choosing between two pipelines is
 
 ## How a channel picks a revision
 
-A channel names a workflow by id, but an id can have more than one deployed revision, and several workflows can be bound to one channel. Orion resolves this the same way on every node:
+A channel requires exactly one workflow. Orion decides which revision of it runs the same way on every node:
 
-1. **Only deployed workflows are considered.** A node runs what its committed deployment head names. Nothing else is visible to traffic.
-2. **Higher `priority` is evaluated first**, and the first workflow whose `condition` is truthy wins. A catch-all with low priority under a specific one with high priority is the usual shape.
-3. **A rollout percentage splits revisions.** A deployment can send about a quarter of traffic to a new revision and the rest to the previous one. The split is a stable hash of the request, so a given caller lands consistently instead of flickering between revisions.
+1. **Only deployed revisions are considered.** A node runs what its committed [deployment](./deployments.md) head names. Nothing else is visible to traffic.
+2. **One revision usually takes every request.** A deployment built by `compile` carries one revision of each workflow. It runs whenever its workflow-level `condition` is truthy.
+3. **A rollout splits revisions.** A hand-written manifest can carry two revisions of one workflow, and the channel member's `rollouts` give each a share of 100 buckets. The bucket is a stable hash of the request, so a caller lands consistently instead of flickering between revisions.
 
 ## Versioned, not edited
 

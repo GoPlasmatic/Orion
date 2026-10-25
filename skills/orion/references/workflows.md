@@ -2,12 +2,11 @@
 
 Read this reference when creating or changing workflow JSON.
 
-## Object and lifecycle
+## Object and identity
 
-A workflow requires `workflow_id`, `name`, `condition`, and `tasks`.
-The server owns version, status, rollout, content hash, and timestamps. Optional
-authoring fields include priority, tags, loop configuration, and
-`continue_on_error`.
+A workflow file requires `workflow_id`, `name`, `condition`, and `tasks`.
+Optional authoring fields include `priority`, `tags`, `loop` and
+`continue_on_error`. A workflow carries no version, status or rollout.
 
 ```json
 {
@@ -18,9 +17,10 @@ authoring fields include priority, tags, loop configuration, and
 }
 ```
 
-Create produces a draft. Only drafts are editable, and only one draft exists
-per workflow ID. Activation makes a version immutable. Archive retires active
-versions; it does not reveal or reactivate a predecessor.
+The file lives in the definition set. `compile` strips `workflow_id` into the
+manifest member and stores the rest as a definition named by its digest. A
+change to the file is a new digest, so the next apply deploys it as the next
+revision of that workflow id. A deployed revision is never edited.
 
 ## Steps, groups, and terminal behavior
 
@@ -85,7 +85,8 @@ Every run has three readable roots:
 The raw request body is outside that JSONLogic document. Parsing functions read
 it as `source: "payload"` and write beneath `data`.
 
-HTTP metadata may include channel, method, lower-cased/masked headers, route
+HTTP metadata may include channel, method, lower-cased headers (credential
+headers masked), route
 params, query values, and explicitly opted-in cookies. A cron run carries
 `metadata.trigger`, written only by the cron worker. `channel_call` inherits metadata
 while overwriting the channel identity and adding call-chain fields.
@@ -144,23 +145,25 @@ body: the condition is checked before the first sweep. Put an early exit inside
 the body with a `filter` using `on_reject: "halt"`. Reaching `max` is normal
 completion.
 
-## Matching and version selection
+## Matching and revision selection
 
-A channel binds to a workflow ID. Among eligible active definitions, higher
-priority matches first after conditions and rollout admission are considered.
+A channel binds to one workflow id through its member's `requires`. Among the
+deployed workflows a channel resolves, higher `priority` matches first, then
+the `condition` must be truthy.
 
-Canary activation assigns a percentage to the new active version and leaves the
-remainder on existing active versions. The active percentages for an ID must
-form the partition required by the engine; otherwise bound channels are
-quarantined. Use activation `--dry-run` before changing traffic.
+A deployment normally carries one revision per workflow. A traffic split is a
+hand-written manifest: both workflow revisions are members, and the channel
+member's `rollouts` intervals partition buckets `0..100` between them. See
+the traffic-split section of [cli.md](cli.md). `compile` never produces one.
 
-HTTP rollout can be sticky using the configured identity header, otherwise the
-forwarded client IP, with random-per-request fallback when neither is present.
-`channel_call` preserves the parent rollout decision.
+HTTP bucketing can be sticky on the header named by
+`engine.rollout_sticky_header`, otherwise the forwarded client IP, with a
+random bucket per request when neither is present. `channel_call` preserves
+the parent's bucket.
 
-Promoting a version fully archives the replaced active version. For rollback,
-copy known-good archived content into a new draft, test, and activate it—or
-reapply the previous package artifact.
+Rollback rolls forward. `orion-cli deployments rollback` commits an earlier
+revision's manifest as a new revision. Applying an older commit of the
+definition set has the same effect.
 
 ## Testing checklist
 

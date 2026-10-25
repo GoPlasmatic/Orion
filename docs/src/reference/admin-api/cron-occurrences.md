@@ -1,6 +1,6 @@
 <!-- description: The cron ledger endpoints: list and read occurrences, retry one at its scheduled instant, cancel one that has not finished, scheduler status and triggers. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-25 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Cron occurrence endpoints
 
@@ -11,22 +11,22 @@ Every scheduled instant of a [cron channel](../channel-config/cron.md) becomes a
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v2/admin/cron/occurrences` | List occurrences, newest first, paginated (`?limit=`, `?offset=`). Filter with `?channel_id=`, `?status=`, `?since=`, `?until=`. Summaries only |
-| GET | `/api/v2/admin/cron/occurrences/{id}` | One occurrence in full: the failure reason, the trace id, the executing version and the lease detail |
+| GET | `/api/v2/admin/cron/occurrences/{id}` | One occurrence in full: the failure reason, the trace id, the channel revision it ran under (`executing_version`) and the lease detail |
 | POST | `/api/v2/admin/cron/occurrences/{id}/retry` | Another attempt at the same occurrence. `409` unless it is `failed`, `skipped_misfire` or `skipped_singleton` |
 | POST | `/api/v2/admin/cron/occurrences/{id}/cancel` | Stop an occurrence that has not finished and free its singleton slot. Settles it `failed`. `409` once it is `completed`, `failed` or skipped |
-| GET | `/api/v2/admin/cron/status` | One row per active cron channel: its schedule, its next fire time, its last run, its backlog and its slots |
-| POST | `/api/v2/admin/channels/{id}/trigger` | Run an active cron channel now. `202` with the new occurrence |
+| GET | `/api/v2/admin/cron/status` | One row per deployed cron channel: its schedule, its next fire time, its last run, its backlog and its slots |
+| POST | `/api/v2/admin/channels/{id}/trigger` | Run a deployed cron channel now. `{id}` is its `channel_id`. `202` with the new occurrence |
 
 ```bash
 # What has this schedule been doing?
-curl "http://localhost:8080/api/v2/admin/cron/occurrences?channel_id=nightly-rollup&limit=20" \
+curl "http://localhost:8080/api/v2/admin/cron/occurrences?channel_id=nightly-order-rollup&limit=20" \
   -H "x-api-key: $ORION_API_KEY"
 
 # What is scheduled, and when does it next fire?
 curl http://localhost:8080/api/v2/admin/cron/status -H "x-api-key: $ORION_API_KEY"
 
 # Run it now, without waiting for the schedule.
-curl -X POST http://localhost:8080/api/v2/admin/channels/nightly-rollup/trigger \
+curl -X POST http://localhost:8080/api/v2/admin/channels/nightly-order-rollup/trigger \
   -H "x-api-key: $ORION_API_KEY"
 
 # Stop a run that has not finished, and free its slot.

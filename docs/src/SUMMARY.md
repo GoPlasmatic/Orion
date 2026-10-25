@@ -28,6 +28,7 @@
 - [Channels](./concepts/channels.md)
 - [Workflows](./concepts/workflows.md)
 - [Connectors](./concepts/connectors.md)
+- [Deployments](./concepts/deployments.md)
 - [Plugins](./concepts/plugins.md)
 - [Architectural characteristics](./concepts/architectural-characteristics.md)
 - [Design notes](./concepts/design-notes.md)

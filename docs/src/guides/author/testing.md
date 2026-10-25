@@ -96,7 +96,7 @@ orion-server dry-run -w workflow.json -i payload.json | jq '.output.order'
 
 It exits non-zero when the run fails, and prints the trace either way. A run that dies at task three still tells you what the first two did.
 
-`trace` is the engine's trace, in the shape a node persists one: the context the run started from (`initial`), then each step with the changes it made. Replaying the changes in order gives the context after every step, so the trace grows with the steps rather than with a copy of the message per step. `--trace steps` keeps each step's id, result and timing without its changes. `--trace none` runs it as a node runs an untraced message and reports only `tasks`. See [the trace object](../../reference/data-api.md#the-trace-object) for every field.
+`trace` is the engine's trace, in the shape a node persists one. It holds the context the run started from (`initial`), then each step with the changes it made. Replaying the changes in order gives the context after every step. The trace grows with the steps, not with a copy of the message per step. `--trace steps` keeps each step's id, result and timing without its changes. `--trace none` runs it as a node runs an untraced message and reports only `tasks`. See [the trace object](../../reference/data-api.md#the-trace-object) for every field.
 
 ## Stub the calls that leave the process
 

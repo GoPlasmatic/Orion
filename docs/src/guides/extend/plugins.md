@@ -1,6 +1,6 @@
 <!-- description: Build an Orion plugin: write a pure JSON → JSON function in Rust with the SDK, describe it in a manifest, test it offline, and deploy it. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-19 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Build a plugin
 
@@ -92,7 +92,7 @@ Keep the component beside the manifest that names it; that is how every tool fin
 
 ## 4. Describe it
 
-The manifest declares what the component exports and what each function accepts, in the same vocabulary every built-in function's field table uses. `lint`, the admin API and `GET /admin/functions` all read one thing:
+The manifest declares what the component exports and what each function accepts, in the same vocabulary every built-in function's field table uses. `lint`, the admin API and `GET /api/v2/admin/functions` all read one thing:
 
 ```toml
 # plugin.toml
@@ -139,7 +139,7 @@ orion-server compile ./definitions -o dist/deployment
 orion-cli deployments apply -d dist/deployment
 ```
 
-`compile` writes the plugin as one definition, with its manifest and its component inlined as base64. The server validates it the way a node loads it before storing it. Once the deployment is applied, the functions join the catalogue. The node needs `plugins.enabled = true`; without it, the workflows that call the plugin are quarantined on that node.
+`compile` writes the plugin as one definition, with its manifest and its component inlined as base64. The server validates it the way a node loads it before storing it. Once the deployment is applied, the functions join the catalogue. The node needs `plugins.enabled = true`. Without it, the node refuses the plugin's upload, so the apply stops before it commits. A peer running with the sandbox off quarantines the workflows that call the plugin.
 
 A new plugin version is a new component, so it is a new definition digest and a new deployment revision. Plan it first: [`orion-cli deployments plan -d`](../../reference/admin-api/deployments.md#deploy-a-compiled-directory) shows the plugin as changed, and commits nothing.
 

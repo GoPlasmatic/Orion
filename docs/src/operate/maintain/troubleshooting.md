@@ -1,6 +1,6 @@
-<!-- description: Orion problems indexed by symptom: what you see, why it happens, what to do — from quarantined channels to empty data contexts and tripped circuit breakers. -->
+<!-- description: Orion problems indexed by symptom: what you see, why it happens, what to do, from refused deployments and quarantined channels to tripped breakers. -->
 <!-- type: troubleshooting -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Troubleshooting
 
@@ -21,7 +21,7 @@ Indexed by what you see, most frequent first. Each entry is what it looks like, 
 
 Quarantine is a load-time failure, not an authentication or authorization outcome. The usual triggers from the channel's own configuration:
 
-- An unknown key in the stored `config`, including a retired spelling such as `cors` or `backpressure.max_concurrent`.
+- An unknown key in the channel's `config`, including a retired spelling such as `cors` or `backpressure.max_concurrent`.
 - A `validation_logic` expression that no longer compiles.
 - A credential the config references that does not resolve: an unset `env://` variable in an `auth` block.
 - In cluster mode, a dedup or response-cache backend that cannot be built, or one explicitly set to process memory.
@@ -30,7 +30,8 @@ And from the workflow behind it, since a channel whose workflow cannot be built 
 
 - A task naming a function the engine does not dispatch. A typo is the common case; the subtler one is a name that is real but has no handler behind it, such as `enrich`, which Orion does not implement.
 - A task whose `input` does not parse into its function's expected shape, or a JSONLogic field on one that does not compile.
-- [Rollout](../../reference/workflows.md#rollout) percentages across the deployed revisions of one workflow that do not sum to 100. Under, and part of the traffic matches no revision; over, and the later revisions are unreachable. Either way the whole channel is quarantined rather than serving a rollout that silently misroutes.
+
+`lint`, `compile` and the deployment plan refuse most of these before anything is committed. What reaches quarantine is what differs between nodes: an unset variable, a disabled scheduler, a backend one node cannot build.
 
 **What to do.**
 
@@ -41,28 +42,106 @@ And from the workflow behind it, since a channel whose workflow cannot be built 
      http://localhost:8080/health | jq '.channels.quarantined'
    ```
 
-2. Fix the definition and deploy it as a new revision: `orion-server compile ./definitions -o dist/deployment`, then `orion-cli deployments apply -d dist/deployment`. A committed revision is immutable. See [Deploy a compiled directory](../../reference/admin-api/deployments.md#deploy-a-compiled-directory).
-3. Quarantine clears only when a later build serves the channel successfully. Deploying the fix is that build.
+2. If the cause is the node, such as an unset `env://` variable, fix the node and restart it. Its next build serves the channel.
+3. If the cause is the definition, fix the file and deploy a new revision: `orion-server compile ./definitions -o dist/deployment`, then `orion-cli deployments apply -d dist/deployment`. A committed revision is never edited. See [Deploy a compiled directory](../../reference/admin-api/deployments.md#deploy-a-compiled-directory).
 
 **How to verify.** `/health` no longer lists the channel under `channels.quarantined`, and `components.channels` reads `ok`. There is no metric for quarantine on the synchronous path. `/health` and the build log are the signals, which is why the `channels` component going `degraded` deserves an alert of its own.
 
 **Traffic meanwhile.** Sync and `/async` HTTP requests get the `503` above. A `channel_call` targeting a quarantined channel fails the calling task the same way.
 
-## A channel answers `404` "not found or not active"
+## My endpoint answers `404` after the apply succeeded
 
-**Why.** Different failure, similar symptom. `404` means the name is not a serving channel at all. It is not in the deployment this node serves, or the route pattern does not match what you sent. `503` means the channel exists and failed to load.
+**What you see.** The apply printed a committed revision, but the route still answers `404`:
 
-**What to do.** Check the channel is in the head deployment, and that the engine holds it:
-
-```bash
-curl -s http://localhost:8080/api/v2/admin/deployments | jq '.head_revision'
-curl -s -H "Authorization: Bearer $ORION_ADMIN_TOKEN" \
-  http://localhost:8080/health | jq '.workflows_loaded'
+```json
+{ "error": { "code": "NOT_FOUND", "message": "Channel 'orders' not found or not active" } }
 ```
 
-If the channel is deployed but the request still `404`s, the route pattern is the suspect. Routes match byte-exactly, including case: `/Orders` does not match a channel declaring `/orders`.
+**Why.** `404` means the path is not a channel this node serves. A channel that exists but failed to load answers `503` instead. Four causes, most likely first:
+
+- The route pattern does not match what you sent. Routes match byte-exactly, including case: `/Orders` does not match `/orders`.
+- The head does not carry the channel. A later apply of a directory without it removed it.
+- In a cluster, this node has not yet built the head. It catches up within one `cluster.epoch_poll_interval_ms`.
+- This node could not build the head and still serves the previous generation. `/health` then reports `engine_reload` as degraded.
+
+**What to do.** Read the head's members and whether this node serves it:
+
+```bash
+curl -s http://localhost:8080/api/v2/admin/deployments | jq '{head_revision, applied_revision}'
+curl -s http://localhost:8080/api/v2/admin/deployments/<head> | jq '[.manifest.members[].entity]'
+curl -s "http://localhost:8080/api/v2/admin/deployments/<head>/convergence?target=observed"
+```
+
+If the channel is missing from the members, deploy a directory that carries it. If `applied_revision` trails `head_revision`, see [`/health` reports `engine_reload` as degraded](#health-reports-engine_reload-as-degraded).
 
 **How to verify.** The request answers `200`, or a `4xx` from the workflow's own validation, rather than `404`.
+
+## An apply removed a service I did not touch
+
+**What you see.** The plan or the apply lists members you did not change as removed:
+
+```text
+  - workflow order-summary@1
+  - channel order-summary@1
+```
+
+**Why.** A deployment is everything a node serves. An apply replaces the head with the directory's members, so a service the directory does not carry stops serving. Two teams applying separate directories to one instance remove each other's services.
+
+**What to do.** Keep every service that shares an instance in one definition set, and compile that set. To restore the removed service now, [roll back](../../reference/admin-api/deployments.md#rollback) to the revision before the apply. Read the plan before every apply: `orion-cli deployments plan -d` commits nothing.
+
+**How to verify.** `orion-cli deployments plan -d dist/deployment` lists `0 removed`, and both services answer.
+
+## Plan or apply answers `400 DEPLOYMENT_WOULD_NOT_BUILD`
+
+**What you see.**
+
+```json
+{ "error": { "code": "DEPLOYMENT_WOULD_NOT_BUILD",
+             "message": "Validation failed: workflow 'x' revision 1: names a channel definition" } }
+```
+
+**Why.** Plan and apply build the candidate manifest the way a node would, and refuse one that would not build. Nothing was committed. The message names the cause. Common ones are a member naming a definition of another kind, a workflow calling a function no member serves, and two channels claiming one route.
+
+**What to do.** A directory from `orion-server compile` rarely reaches this, because `compile` runs the same checks offline. Recompile with the binary the target runs, and fix what it reports. A hand-written manifest (`deployments apply -f`) is checked only here, so fix the member the message names.
+
+**How to verify.** `orion-cli deployments plan -d dist/deployment` prints the plan instead of the error.
+
+## Apply answers `409 DEPLOYMENT_HEAD_CONFLICT`
+
+**What you see.**
+
+```json
+{ "error": { "code": "DEPLOYMENT_HEAD_CONFLICT",
+             "message": "expected base_revision 0, but current head_revision is 1" } }
+```
+
+With `orion-cli deployments apply -d --base-revision`, the CLI says `the target's head is revision 1, not 0`.
+
+**Why.** An apply commits only while the head is still the revision it names. Another apply or a rollback committed first. This is the compare-and-swap that stops two pipelines from both winning. `409 REVIEWED_DIGEST_MISMATCH` is its sibling: the manifest differs from the one the plan reviewed.
+
+**What to do.** Read the new head and plan again against it. `orion-cli deployments apply -d` without `--base-revision` plans against whatever the head is now. Check that the other change is one you want to keep, because your apply replaces it.
+
+**How to verify.** The apply answers `202` with the next `committed_revision`.
+
+## `/health` reports `engine_reload` as degraded
+
+**What you see.** `components.engine_reload` is `degraded`, `status` is `degraded` at HTTP 200, and `applied_revision` trails `head_revision`.
+
+**Why.** This node tried to build a committed revision and failed. It keeps serving its previous generation, which is correct but not what is committed. The log has one line per failure: `Deployment build failed: this node is still serving the previous generation`. The usual cause is a node that differs from the one that ran the plan, such as plugins disabled or a different `channel_filter`.
+
+**What to do.** Read the log line's `error`, and fix the node's configuration to match its peers. The reconcile loop retries on every tick, so no reapply is needed once the node can build the head. If the revision itself is wrong, roll back.
+
+**How to verify.** `components.engine_reload` reads `ok`, and the revision's convergence lists this node under `converged_nodes`.
+
+## The admin API answers `400 UNCOMPILED_SOURCE`
+
+**What you see.** Uploading a definition is refused with a field error whose code is `UNCOMPILED_SOURCE`.
+
+**Why.** The document still holds a source-form convenience, such as `$from` or `use`. Those resolve when a definition set is compiled. `POST /api/v2/admin/definitions` takes one document and has no set to resolve the name against.
+
+**What to do.** Deploy the set through `orion-server compile ./definitions -o dist/deployment`, then `orion-cli deployments apply -d dist/deployment`. Do not expand the references by hand.
+
+**How to verify.** The apply uploads every definition without a field error.
 
 ## `/health` says `degraded` but returns HTTP 200
 
@@ -195,9 +274,10 @@ Startup refusals are deliberate. Each one is a problem that would otherwise be s
 | `sqlite:` with cluster mode | Cluster mode needs PostgreSQL or MySQL | Point `storage.url` at a shared database |
 | `auto_migrate` in a production cluster | Replicas would race migrations at boot | Set `auto_migrate = false`, run `orion-server migrate` as a deploy step |
 | A pending migration | The binary is ahead of the schema | Run `orion-server migrate` |
+| Migrations "this binary does not ship" | The state database is an Orion 1.x database | Point `storage.url` at a new database and redeploy. See [Move from Orion 1.x](./upgrades.md#move-from-orion-1x) |
 | Missing admin keys | `environment = "production"` with `admin_auth` unset | Supply keys, or do not claim production |
 
-**How to verify.** `orion-server validate-config -c config.toml` reports all of these without starting the server, and `orion-server test-connectivity` proves the database and brokers are reachable before you find out the hard way.
+**How to verify.** `orion-server validate-config -c config.toml` reports all of these without starting the server, and `orion-server test-connectivity` proves the database is reachable before the server needs it.
 
 ## Related
 
@@ -205,3 +285,4 @@ Startup refusals are deliberate. Each one is a problem that would otherwise be s
 - [Traces and async processing](../run/traces.md): the queue and DLQ in full.
 - [Timeouts, retries and circuit breakers](../run/failure-handling.md): the controls behind several entries above.
 - [Errors and response envelopes](../../reference/errors.md): every error code and what it means.
+- [Deployments](../../concepts/deployments.md): the head, the build check and convergence these entries refer to.

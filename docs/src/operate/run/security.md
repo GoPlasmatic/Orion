@@ -47,7 +47,7 @@ Three modes are built in, all configured per channel:
 - **`hmac`**: a signature (SHA-1, SHA-256 or SHA-512) over a templated signing string, verified before parsing. The raw body is the default, and timestamped schemes come through `message` or a `preset`. This covers the webhook schemes of Stripe, GitHub, Shopify, Slack, Zoom and Webex.
 - **`jwt`**: bearer-token verification, detailed below.
 
-All three take `env://` references, mask their credential fields in API reads, and answer a uniform `401` that never reveals which part failed. The full contract, including why `channel_call` and cron are exempt, is [Authentication](../../reference/channel-config/auth.md).
+All three take `env://` references and answer a uniform `401` that never reveals which part failed. A channel definition reads back exactly as deployed, so write its keys as references. The full contract, including why `channel_call` and cron are exempt, is [Authentication](../../reference/channel-config/auth.md).
 
 JWT verification and inbound OAuth2/OIDC sign-in are built in; mTLS termination is not. The `jwt` auth mode verifies bearer tokens at ingress, from static keys or a JWKS, and exposes the verified claims at `metadata.auth.claims.*`. Identity reaches the workflow without a header-forwarding proxy whose stripping rules Orion cannot validate. The [`oauth2_login`](../../reference/channel-config/oauth2_login.md) block completes a browser sign-in as the relying party — the redirect, PKCE, `id_token` verification and OIDC discovery. What stays out of scope is client-certificate termination. For that, front Orion with a gateway or service mesh, and let the `jwt` mode verify what it forwards.
 
@@ -81,13 +81,13 @@ A malformed entry fails startup even with the limiter disabled. Run `orion-serve
 
 ## Keep credentials out of the database
 
-Author every connector with a reference rather than a literal:
+Author every connector file in the definition set with a reference rather than a literal:
 
 ```json
 { "config": { "type": "http", "auth": { "type": "bearer", "token": "env://STRIPE_KEY" } } }
 ```
 
-References resolve at load time from the server's environment, so the stored row holds a variable name. `vault://<api-path>#<field>` reads HashiCorp Vault when `VAULT_ADDR` and `VAULT_TOKEN` are present, re-read on each reload so a rotated token applies without a restart. `aws-sm://`, `gcp-sm://` and `azure-kv://` are reserved. A reference using one without a live resolver is refused rather than passed to the backend as a literal credential.
+`compile` moves each reference to the connection's `secret_locators` and refuses a literal credential. A deployment therefore never holds a secret value, only the name of one. References resolve from the server's environment when the connection is used. `vault://<api-path>#<field>` reads HashiCorp Vault when `VAULT_ADDR` and `VAULT_TOKEN` are present, re-read on each build so a rotated token applies without a restart. `aws-sm://`, `gcp-sm://` and `azure-kv://` are reserved. A reference using one without a live resolver is refused rather than passed to the backend as a literal credential.
 
 Channel `auth` blocks take the same references, and three workflow functions take them for key material. Which fields resolve one, and which look like they should but do not, is in [Where a reference resolves](../../reference/environment-variables.md#where-a-reference-resolves).
 
@@ -104,14 +104,14 @@ partner_hmac = "env://PARTNER_HMAC_KEY"
 
 Two things change. The workflow reaches an allowlist the operator published rather than whatever the process environment holds under a name the definition chose. And a misspelled name is caught when the engine is built, not by a task failing in production. The value itself is held by the engine, never by a message. It cannot appear in a trace snapshot, a `map` mapping clone or a response body. The engine refuses a workflow that would copy it somewhere recorded. See [Vars and secrets](../../reference/configuration/vars-and-secrets.md).
 
-For defence below the API, encrypt the connector configs at rest:
+One thing Orion does write to the database is OAuth2 token state: the access and refresh tokens an `oauth2` connection obtains. Encrypt it at rest:
 
 ```toml
 [storage]
 connector_encryption_key = "env://ORION_SECRET_CONNECTOR_KEY"
 ```
 
-A database dump then carries an opaque envelope (AES-256-GCM) instead of credentials.
+A database dump then carries an opaque envelope (AES-256-GCM) instead of those tokens.
 
 A connection revision holds no credential to read back. Its `public_config` refuses a secret-shaped key or a password in a URL. Credentials are references under `secret_locators`, resolved where the connection is used. See [Connections](../../reference/admin-api/deployments.md#connections).
 

@@ -1,12 +1,12 @@
 <!-- description: Every Orion admin endpoint: deployments, engine, circuit breakers, functions, audit logs, cron, backups and cache, by resource. -->
 <!-- type: hub -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Admin API
 
 Every endpoint under `/api/v2/admin/`, by the resource it addresses, and the contracts they all share.
 
-All admin endpoints are under `/api/v2/admin/`. When [admin authentication](./authentication.md) is enabled, requests must include a valid API key. Success and error bodies follow the [response envelopes](./envelopes.md) below.
+The [deployment endpoints](./deployments.md) are the only way to change what a node serves. Every other resource reads a running node or drives its operational state, such as a breaker reset or a manual cron run. When [admin authentication](./authentication.md) is enabled, every request carries an API key, and every body follows the [response envelopes](./envelopes.md).
 
 | Resource | Operations |
 |---|---|
@@ -19,7 +19,7 @@ All admin endpoints are under `/api/v2/admin/`. When [admin authentication](./au
 | [Cron occurrences](./cron-occurrences.md) | Inspect, retry and manually trigger scheduled runs |
 | [Backups](./backups.md) | Create and list SQLite backups |
 
-All resources use the [authentication](./authentication.md) and [response envelopes](./envelopes.md) contracts below. The generated [OpenAPI specification](../openapi.md) is the machine-readable source for clients and code generation.
+The generated [OpenAPI specification](../openapi.md) is the machine-readable source for clients and code generation.
 
 | Page | Holds |
 |---|---|

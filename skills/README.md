@@ -2,9 +2,9 @@
 
 An **agent skill** is a folder of instructions an AI coding agent loads on
 demand. `orion/` teaches an agent to build and operate services on an Orion
-runtime: the JSON shapes, the draft → test → activate discipline, the
-`orion-cli` and `orion-server` command surface, and the traps that cost the
-most time.
+runtime: the JSON shapes, the definition set, the test, compile, plan and apply
+discipline, the `orion-cli` and `orion-server` command surface, and the traps
+that cost the most time.
 
 It is knowledge, not a service. The agent acts through the CLI you already
 have installed, so there is no extra process to run, no port to open, and no
@@ -38,30 +38,31 @@ system prompt or project instruction.
 
 ## What the agent needs beside it
 
-- `orion-cli` on `PATH` ([install](https://docs.goplasmatic.io/getting-started/install.html)).
-- `orion-server` on `PATH` too, for the offline half — `fmt`, `lint`,
-  `clippy`, `dry-run`, `test`, `compile` and `package` all run locally against
-  files, with no instance involved. The skill leads with them, because a
-  finding is cheapest before a server write.
+- `orion-cli` on `PATH` ([install](https://docs.goplasmatic.io/get-started/install.html)).
+- `orion-server` on `PATH` too, for the offline half. `fmt`, `lint`,
+  `clippy`, `dry-run`, `test` and `compile` all run locally against files,
+  with no instance involved. The skill leads with them, because a finding is
+  cheapest before anything reaches an instance.
 - A reachable instance: `orion-cli config set-server http://localhost:8080`,
   or `ORION_SERVER_URL`.
 - An API key if the instance has admin auth on — `ORION_API_KEY`.
 
 The agent runs the CLI under your shell, so it has exactly the access you have,
 and every admin write lands in the audit log under your principal. Nothing is
-exposed to the network.
+exposed to the network. The only change it can make to what an instance serves
+is a deployment: `orion-cli deployments apply -d` or a rollback, both recorded.
 
 ## Layout
 
 ```
 orion/
-├── SKILL.md                    # loaded first: concepts, lifecycle, and operating path
+├── SKILL.md                    # loaded first: concepts, deployments, and operating path
 └── references/
     ├── workflows.md            # workflow JSON, task groups, fragments, data context, loops
     ├── functions.md            # function selection, schemas, plugin functions, retry safety
     ├── expressions.md          # JSONLogic evaluation and silent-failure edges
-    ├── channels.md             # ingress guards, cron schedules, responses, stored config, connectors
-    └── cli.md                  # offline checks, lifecycle, plugins, cron, packages, troubleshooting
+    ├── channels.md             # ingress guards, cron schedules, responses, config values, connector files
+    └── cli.md                  # offline checks, compile, deployments, rollback, cron, troubleshooting
 ```
 
 `SKILL.md` is what enters the agent's context up front; the `references/` files

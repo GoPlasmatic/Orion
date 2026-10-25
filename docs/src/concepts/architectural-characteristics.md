@@ -1,6 +1,6 @@
 <!-- description: The capability map: eight architectural characteristics, what the Orion runtime already provides under each, and the gaps it deliberately leaves open. -->
 <!-- type: concept -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Architectural characteristics
 
@@ -53,7 +53,7 @@ Click a node in the capability map to expand it, and click a capability to open 
         { "name": "Data-plane authentication", "link": "operate/run/security.html#decide-how-the-data-plane-authenticates",
           "children": ["api_key per channel", "hmac — templates & presets", "jwt with claims in context", "Uniform 401", "No OIDC flows or mTLS"] },
         { "name": "Secrets by reference", "link": "reference/connectors/secrets.html",
-          "children": ["env:// and vault://", "Masked in API reads", "Optional AES-256-GCM at rest"] },
+          "children": ["env:// and vault://", "References only in a deployment", "OAuth2 tokens encrypted at rest"] },
         { "name": "Payload validation", "link": "reference/channel-config/validation_logic.html",
           "children": ["JSONLogic rules per channel", "Body size limit", "Runs before any logic"] },
         { "name": "Egress control", "link": "operate/run/security.html#bound-what-connectors-can-reach",
@@ -207,12 +207,12 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Connector types](../reference/connectors/index.md) | `http`, `db` (PostgreSQL, MySQL or SQLite — chosen by connection-string scheme), and `cache` (per-node memory). |
+| [Connector types](../reference/connectors/index.md) | `http`, `db` (PostgreSQL, MySQL or SQLite, named by the connector's `driver`), and `cache` (per-node memory). Each deploys as a connection revision over a built-in driver. |
 | [Task functions](../reference/functions/index.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect and raw SQL; cache read and write; hashing, HMAC and JWT sign/verify. |
 | [Portable data dialect](../reference/data-dialect.md) | One filter-and-envelope syntax lowered to PostgreSQL, MySQL or SQLite, so the same task reads from any of them. |
 | [Channel protocols](../reference/channel-config/routing.md) | REST with route patterns and path parameters, plain HTTP by channel name, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |
 | [In-process composition](../reference/functions/channel_call.md) | `channel_call` runs another channel's workflow in the same process: no network hop, no serialization, and the callee's guards still apply. |
-| [Plugins](../reference/plugin-manifest.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and deployed like any other definition, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
+| [Plugins](../reference/plugin-manifest.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, compiled from the definition set and deployed like any other definition, built by every node of a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
 
 > [!NOTE]
 > Orion extends by configuration, and by pure computation. A plugin is the one way to add a task function at runtime, and it only computes; everything with I/O stays a connector or a service of your own. [What you can extend](./how-orion-works.md#what-you-can-extend) states the boundary exactly.

@@ -150,7 +150,7 @@ Output, with build values that differ per release:
 }
 ```
 
-`"status": "ok"` with `"workflows_loaded": 0` means the server is ready and holds no definitions yet. Read `status`, `workflows_loaded` and the component states rather than comparing the whole body: more components may appear in later releases.
+`"status": "ok"` with `"workflows_loaded": 0` means the server is ready and serves nothing yet, because no deployment is committed. Read `status`, `workflows_loaded` and the component states rather than comparing the whole body: more components may appear in later releases.
 
 Two more surfaces are live already. Swagger UI at [http://localhost:8080/docs](http://localhost:8080/docs) shows the whole admin API; it is served outside production environments (see [OpenAPI specification](../reference/openapi.md)). And the CLI, once you point it at the server:
 
@@ -173,6 +173,6 @@ Check a file before you deploy it. `orion-server validate-config -c config.toml`
 ## Next steps
 
 - [Quickstart](./quickstart.md): define one service and call it, in about five minutes.
-- [Build your first service](./tutorials/first-service.md): the same four administration calls, one at a time, with the CLI beside each.
-- [Use the Orion Console](../guides/patterns/console.md): the same flow in a browser, if you would rather not use a terminal.
+- [Build your first service](./tutorials/first-service.md): write a service as two files, compile them and apply the deployment with the CLI.
+- [Deployments](../concepts/deployments.md): what a node serves, and how a change reaches it.
 - [Run the example packages](./tutorials/examples.md): deploy a ready-made service from the repository instead of writing one.

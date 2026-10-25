@@ -98,7 +98,7 @@ headers, cryptographic inputs, conditions, and channel guards when the schema
 permits them.
 
 Do not confuse these with `var://name`. That syntax substitutes a declared
-non-secret variable into stored connector/channel configuration at load time;
+non-secret variable into connector or channel configuration at load time;
 it is not JSONLogic.
 
 ## Connector documents

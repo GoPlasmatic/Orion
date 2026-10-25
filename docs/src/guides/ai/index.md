@@ -4,7 +4,9 @@
 
 # Author with AI
 
-Orion's deployment rules are what make delegating authoring to an assistant safe. Every definition can be dry-run offline, a change reaches a node only as a planned deployment, a deployed definition is immutable, and rollback is one call. These pages give an assistant the knowledge, and show what a session looks like.
+Orion's deployment rules are what make delegating authoring to an assistant safe. Every definition can be dry-run offline, and a change reaches a node only as a planned deployment. A deployed definition is immutable, and rollback is one call.
+
+These pages give an assistant the knowledge, and show what a session looks like.
 
 - [Build a service with Claude Code](./claude-code.md) is a ten-minute session: install the skill, describe a service in a paragraph, and watch it written, tested, deployed and rolled back.
 - [Set up the agent skill](./agent-skill.md) installs the skill for any agent that reads skills and can run a shell, and explains what it knows and what it deliberately leaves to the instance.
