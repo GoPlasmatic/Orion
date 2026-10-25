@@ -11,7 +11,6 @@ pub mod redis_pool;
 mod registry;
 pub mod secrets;
 pub mod sigv4;
-pub mod smtp_pool;
 pub mod sql_decode;
 pub mod sql_encode;
 
@@ -21,9 +20,8 @@ pub use config::{
     AuthConfig, CacheConnectorConfig, CacheOperationGates, ConnectorConfig, ConnectorType,
     DbConnectorConfig, DialectGuards, EsConnectorConfig, HttpConnectorConfig, HttpOperationGates,
     KafkaConnectorConfig, KafkaOperationGates, OAuth2ClientAuth, OAuth2Config, OAuth2Grant,
-    OperationGates, RetryConfig, SmtpAuth, SmtpConnectorConfig, SmtpTls, StorageConnectorConfig,
-    StorageOperationGates, StorageProvider, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES,
-    VALID_HTTP_METHODS, VariantParse, is_mongo_url,
+    OperationGates, RetryConfig, StorageConnectorConfig, StorageOperationGates, StorageProvider,
+    VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES, VALID_HTTP_METHODS, VariantParse, is_mongo_url,
 };
 pub use kind::{ConnectorKind, ConnectorTarget, DataBackend, PoolSlot};
 pub(crate) use masking::{MASK, is_secret_key};

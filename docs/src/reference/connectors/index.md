@@ -23,7 +23,6 @@ There are exactly seven connector types:
 | [`db`](./db.md) | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read`, `mongo_write`, `mongo_aggregate` |
 | [`cache`](./cache.md) | Redis or in-process memory | `cache_read`, `cache_write` |
 | [`es`](./es.md) | Elasticsearch | `data_query`, `data_write` |
-| [`smtp`](./smtp.md) | Transactional email over SMTP | `send_email` |
 | [`storage`](./storage.md) | S3-compatible object storage (presign + metadata only) | `storage_presign`, `storage_head` |
 
 Type values match case-insensitively. Any other value is refused with the valid list. A stored connector whose config no longer parses fails to load and surfaces as a connector load issue.

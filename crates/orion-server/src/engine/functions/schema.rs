@@ -197,7 +197,7 @@ pub enum WriteShape {
 ///
 /// Not the same question as [`ErrorClass::is_retryable`], which asks whether an
 /// *error* was transient. This asks what a retry costs when the answer is yes:
-/// a `db_read` re-run is free, a `send_email` re-run is a second email. Orion
+/// a `db_read` re-run is free, a `db_write` insert re-run is a second row. Orion
 /// retries tasks in more places than an author necessarily has in mind — the
 /// DLQ retry loop, a Kafka redelivery of an uncommitted offset, `http_call`'s
 /// own transport retry — and nothing told them which functions those retries
@@ -347,7 +347,6 @@ use super::mongo_aggregate::MONGO_AGGREGATE_FIELDS;
 use super::mongo_read::MONGO_READ_FIELDS;
 use super::mongo_write::MONGO_WRITE_FIELDS;
 use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
-use super::send_email::SEND_EMAIL_FIELDS;
 use super::storage_head::STORAGE_HEAD_FIELDS;
 use super::storage_presign::STORAGE_PRESIGN_FIELDS;
 
@@ -460,7 +459,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Write documents to a MongoDB connector: insert/update/replace/delete, nested documents as extended JSON.",
         category: "connector",
         // Strict: a typoed `upsert` or `ordered` silently changes what a
-        // write does — the crypto/send_email rationale exactly.
+        // write does — the crypto rationale exactly.
         input_fields: MONGO_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::DependsOn { input: "op" },
@@ -565,19 +564,6 @@ const REGISTRY: &[FunctionSchema] = &[
         connector: ConnectorRule::of(&[ConnectorType::Http]),
         deny_unknown: true,
         validate_static: None,
-    },
-    FunctionSchema {
-        name: "send_email",
-        description: "Send an email through an SMTP connector.",
-        category: "connector",
-        // Same rationale as crypto: a typoed field on an email (a lost `bcc`,
-        // a misspelled `reply_to`) silently changes who gets what.
-        input_fields: SEND_EMAIL_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::UnsafeWrite,
-        connector: ConnectorRule::of(&[ConnectorType::Smtp]),
-        deny_unknown: true,
-        validate_static: Some(super::send_email::validate_static_input),
     },
     FunctionSchema {
         name: "storage_presign",

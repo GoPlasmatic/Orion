@@ -2,7 +2,7 @@
 //! through an oauth2 connector against an in-process fake IdP + fake API, the
 //! probe endpoint acquiring a real token, and the admin read masking the
 //! credential halves. No containers: both backends are axum listeners, the
-//! same pattern as the fake Vault and the in-process SMTP exchange.
+//! same pattern as the fake Vault.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

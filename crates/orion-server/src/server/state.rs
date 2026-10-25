@@ -45,8 +45,6 @@ pub struct Caches {
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     /// External MongoDB connection pool cache — shared so admin routes can evict stale pools.
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
-    /// SMTP transport cache — shared so admin routes can evict stale pools.
-    pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
     /// Extensible provider-owned connection-pool caches (`V2-11.1`, `V2-05.4`).
     pub provider_pools: crate::extensions::ResourcePoolRegistry,
 }
@@ -62,9 +60,8 @@ impl Caches {
     /// Routed through an exhaustive match on `PoolSlot::ALL` for the same
     /// reason the per-connector `evict_connector_pools` is: a cache added
     /// later is a new `PoolSlot` variant and a new variant is a compile error
-    /// here. Before this, the resync path listed the caches by hand and
-    /// silently omitted the SMTP one, which left a node serving through a
-    /// stale SMTP transport after an SMTP connector changed on another node.
+    /// here, where a hand-written list could silently omit one and leave a
+    /// node serving through a stale pool after a peer changed its connector.
     /// Also evicts all dynamically registered [`crate::extensions::ConnectionPoolCache`]
     /// instances in `provider_pools`.
     pub async fn evict_all_pools(&self) {
@@ -74,7 +71,6 @@ impl Caches {
                 PoolSlot::Sql => self.sql_pool_cache.evict_all().await,
                 PoolSlot::Mongo => self.mongo_pool_cache.evict_all().await,
                 PoolSlot::Cache => self.cache_pool.evict_all_pools().await,
-                PoolSlot::Smtp => self.smtp_pool_cache.evict_all().await,
             }
         }
         self.provider_pools.evict_all().await;

@@ -1013,7 +1013,6 @@ mod registry_tests {
                 "mongo_read",
                 "mongo_write",
                 "publish_kafka",
-                "send_email",
                 "storage_head",
                 "storage_presign",
             ]

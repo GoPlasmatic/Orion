@@ -200,24 +200,6 @@ pub fn validate_endpoint_schemes(
             require_scheme("endpoint", &storage.endpoint, &["http", "https"], phase)?;
             Ok(())
         }
-        ConnectorConfig::Smtp(smtp) => {
-            // `host` is a hostname, not a URL — the common slip is pasting a
-            // `smtp://` or `smtps://` URI, which would otherwise fail at the
-            // first send with a DNS error for a host literally containing '/'.
-            if smtp.host.trim().is_empty() {
-                return Err(OrionError::validation(
-                    "SMTP connector requires a non-empty 'host'".to_string(),
-                ));
-            }
-            if smtp.host.contains("://") {
-                return Err(OrionError::validation(format!(
-                    "SMTP 'host' must be a hostname, not a URL — got '{}'; \
-                     the port and TLS mode are separate fields",
-                    smtp.host
-                )));
-            }
-            Ok(())
-        }
         ConnectorConfig::Es(es) => {
             require_scheme("URL", &es.url, ES_SCHEMES, phase)?;
             Ok(())

@@ -33,7 +33,6 @@ Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmat
 | [`mongo_write`](./mongo_write.md) | Connector | MongoDB | Insert/update/replace/delete documents, nested shapes included |
 | [`mongo_aggregate`](./mongo_aggregate.md) | Connector | MongoDB | Run a stage-allowlisted aggregation pipeline |
 | [`publish_kafka`](./publish_kafka.md) | Connector | Kafka | Publish a message to a Kafka topic |
-| [`send_email`](./send_email.md) | Connector | SMTP | Send transactional email through an SMTP connector |
 | [`storage_presign`](./storage_presign.md) | Connector | Storage | Compute a time-limited presigned object URL — no data path |
 | [`storage_head`](./storage_head.md) | Connector | Storage | Object metadata (exists/size/etag) |
 | [`connector_call`](./connector_call.md) | Connector | — | Invoke a v2 connector provider operation under an owned RunContext |

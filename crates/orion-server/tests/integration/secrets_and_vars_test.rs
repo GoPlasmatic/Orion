@@ -1446,9 +1446,9 @@ async fn a_stray_reference_is_refused_on_update() {
             &format!("/api/v2/admin/workflows/{wf_id}"),
             Some(json!({ "tasks": [{
                 "id": "call", "name": "Call",
-                "function": { "name": "send_email", "input": {
-                    "connector": "smtp", "to": "ops@example.com",
-                    "subject": "hi", "text": "vault://secret/data/x#y"
+                "function": { "name": "http_call", "input": {
+                    "connector": "api", "method": "POST",
+                    "body": "vault://secret/data/x#y"
                 } }
             }] })),
         ))

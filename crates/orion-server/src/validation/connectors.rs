@@ -76,14 +76,13 @@ pub fn validate_connector_config(
     // its own" something a variant has to say out loud.
     //
     // The bodies stay here rather than moving to `connector::kind`: they reach
-    // `url`, `send_email::parse_mailbox` and `OrionError`, and `connector` sits
+    // `url` and `OrionError`, and `connector` sits
     // below `engine` and `validation` — `module_layering_test` refuses that
     // edge, and it is right to. What belongs in `kind` is the per-type data
     // (gate keys, pool slots, the typed accessor); what belongs here is the
     // policy that reads it.
     match &parsed {
         ConnectorConfig::Http(c) => validate_http(c)?,
-        ConnectorConfig::Smtp(c) => validate_smtp(c)?,
         ConnectorConfig::Cache(c) => validate_cache(c)?,
         ConnectorConfig::Es(c) => validate_es(c)?,
         // Nothing beyond the shared gate/retry/query checks and the endpoint
@@ -148,35 +147,6 @@ fn validate_es(es: &crate::connector::EsConnectorConfig) -> Result<(), OrionErro
     if matches!(&es.auth, Some(crate::connector::AuthConfig::OAuth2(_))) {
         return Err(OrionError::validation(
             "auth type 'oauth2' is supported on http connectors only".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// SMTP: the fields a send cannot proceed without are checked at the door.
-///
-/// `from` may be a secret-style reference only in theory — sender addresses
-/// are not secrets — so a literal parse failure is a hard error here rather
-/// than a first-send surprise.
-fn validate_smtp(smtp: &crate::connector::SmtpConnectorConfig) -> Result<(), OrionError> {
-    if smtp.port == 0 {
-        return Err(OrionError::validation(
-            "SMTP 'port' must be nonzero".to_string(),
-        ));
-    }
-    if smtp.from.trim().is_empty() {
-        return Err(OrionError::validation(
-            "SMTP connector requires 'from' (the default sender address)".to_string(),
-        ));
-    }
-    if let Err(e) = crate::engine::functions::send_email::parse_mailbox("from", &smtp.from) {
-        return Err(OrionError::validation(e.to_string()));
-    }
-    if let crate::connector::SmtpAuth::Basic { username, .. } = &smtp.auth
-        && username.trim().is_empty()
-    {
-        return Err(OrionError::validation(
-            "SMTP auth type 'basic' requires a non-empty 'username'".to_string(),
         ));
     }
     Ok(())

@@ -26,7 +26,6 @@ pub mod mongo_aggregate;
 pub mod mongo_common;
 pub mod mongo_read;
 pub mod mongo_write;
-pub mod send_email;
 pub mod storage_head;
 pub mod storage_presign;
 
@@ -410,7 +409,7 @@ mod message_shape_pin {
     //! The prefix contract, pinned before the parsers were made to yield bare
     //! messages.
     //!
-    //! `crypto`, `send_email` and `storage_presign` share their parsers between
+    //! `crypto` and `storage_presign` share their parsers between
     //! two paths: `execute`, whose errors travel far from the task that
     //! produced them and so name the handler, and `validate_static_input`,
     //! whose errors become `FieldError`s where the field path already supplies
@@ -477,14 +476,6 @@ mod message_shape_pin {
         let errors = super::crypto::validate_static_input(obj.as_object().expect("object"));
         assert!(!errors.is_empty(), "an unknown algorithm must be reported");
         assert_no_prefix("crypto", &errors);
-    }
-
-    #[test]
-    fn send_email_static_messages_are_bare() {
-        let obj = json!({"connector": "c", "to": "not an address", "subject": "s", "body": "b"});
-        let errors = super::send_email::validate_static_input(obj.as_object().expect("object"));
-        assert!(!errors.is_empty(), "an invalid address must be reported");
-        assert_no_prefix("send_email", &errors);
     }
 
     #[test]

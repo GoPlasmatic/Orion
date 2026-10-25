@@ -122,13 +122,6 @@ const READABLE_KEYS: &[&str] = &[
     "url",
     "brokers",
     "topic",
-    // smtp structure (#262) — the credential halves (`username` is above,
-    // `password` is denylisted) stay as they are
-    "host",
-    "port",
-    "tls",
-    "from",
-    "allow_from_override",
     "timeout_ms",
     // storage structure (#265) — both credential fields and the session
     // token are caught by the secret vocabulary
@@ -1638,7 +1631,6 @@ mod tests {
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,
             r#"{"type":"es","url":"https://es:9200"}"#,
-            r#"{"type":"smtp","host":"mail.example.test","from":"noreply@example.test","auth":{"type":"basic","username":"u","password":"p"}}"#,
             r#"{"type":"storage","endpoint":"https://s3.example.test","region":"r","bucket":"b","access_key":"AK","secret_key":"SK","session_token":"st"}"#,
         ] {
             let parsed: crate::connector::ConnectorConfig =

@@ -581,7 +581,7 @@ fn the_array_spelling_of_a_secret_node_is_reported_too() {
 /// And silent in a field the engine *evaluates*, where the node resolves.
 ///
 /// `secret` is a reserved JSONLogic operator registered on every engine, so
-/// in a `template_at` field — `send_email.subject`, an `http_call` header —
+/// in a `template_at` field — an `http_call` header —
 /// `{"secret": …}` produces the value rather than surviving as an object.
 /// This rule exists for the fields that fold `{"var": …}` and nothing else,
 /// where it would not; firing here would refuse a task that works.
@@ -589,9 +589,9 @@ fn the_array_spelling_of_a_secret_node_is_reported_too() {
 fn a_secret_node_in_an_evaluated_field_is_not_a_finding() {
     let found = secret_reference_errors(&serde_json::json!([{
         "id": "t1",
-        "function": {"name": "send_email", "input": {
-            "connector": "mail",
-            "subject": {"cat": ["token=", {"secret": "api_key"}]},
+        "function": {"name": "http_call", "input": {
+            "connector": "api",
+            "headers": {"X-Token": {"cat": ["token=", {"secret": "api_key"}]}},
         }},
     }]));
     assert!(found.is_empty(), "{found:?}");
@@ -755,15 +755,15 @@ fn a_reference_inside_a_task_group_is_reported() {
         "condition": {"var": "data.ok"},
         "tasks": [{
             "id": "send", "name": "Send",
-            "function": {"name": "send_email", "input": {
-                "connector": "smtp", "to": "ops@example.com",
-                "subject": "hi", "text": "vault://secret/data/x#y"
+            "function": {"name": "http_call", "input": {
+                "connector": "api", "method": "POST",
+                "body": "vault://secret/data/x#y"
             }}
         }]
     }]));
     assert_eq!(found.len(), 1, "got {found:?}");
     assert!(
-        found[0].0.ends_with("function.input.text"),
+        found[0].0.ends_with("function.input.body"),
         "{}",
         found[0].0
     );

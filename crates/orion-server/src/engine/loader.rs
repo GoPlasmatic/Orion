@@ -1200,12 +1200,6 @@ mod tests {
     async fn every_named_load_break_quarantines_its_channel() {
         use serde_json::json;
         let engines = Engines::orion_with(exprs_with_a_secret(), Vec::new());
-        let smtp = |extra| {
-            over(
-                json!({"connector": "smtp", "to": "a@b.c", "subject": "s"}),
-                extra,
-            )
-        };
         let mongo = |extra| {
             over(
                 json!({"connector": "m", "database": "d", "collection": "c"}),
@@ -1238,8 +1232,6 @@ mod tests {
         let rows = [
             // I183: a field schema.rs marks required, missing.
             row("I183 (O3)", "http_call", json!({}), "INPUT_PARSE", ".connector"),
-            row("I183 (O3)", "send_email", json!({"connector": "smtp", "subject": "s"}), "INPUT_PARSE", ".to"),
-            row("I183 (O3)", "send_email", json!({"connector": "smtp", "to": "a@b.c"}), "INPUT_PARSE", ".subject"),
             row("I183 (O3)", "storage_presign", json!({"connector": "s3", "expires_in": 60}), "INPUT_PARSE", ".key"),
             row("I183 (O3)", "storage_presign", json!({"connector": "s3", "key": "k"}), "INPUT_PARSE", ".expires_in"),
             row("I183 (O3)", "storage_head", json!({"connector": "s3"}), "INPUT_PARSE", ".key"),
@@ -1270,10 +1262,6 @@ mod tests {
             row("O2, KeyMaterialList", "jwt_verify", verify(json!({"issuer": {"secret": "nope"}})), "UNKNOWN_SECRET", ".issuer"),
             row("O2, a nested secret in a key-list object", "jwt_verify", verify(json!({"audience": [{"a": {"secret": "s"}}]})), "SECRET_IN_DOCUMENT", ".audience"),
             // O3.
-            row("O3, non-object headers", "send_email", smtp(json!({"headers": "x"})), "INPUT_PARSE", ".headers"),
-            row("O3, a secret in to", "send_email", smtp(json!({"to": {"secret": "s"}})), "SECRET_IN_DOCUMENT", ".to"),
-            row("O3, a secret in cc", "send_email", smtp(json!({"cc": [{"secret": "s"}]})), "SECRET_IN_DOCUMENT", ".cc"),
-            row("O3, a secret in bcc", "send_email", smtp(json!({"bcc": {"secret": "s"}})), "SECRET_IN_DOCUMENT", ".bcc"),
             row("O3, an output that is not a path", "storage_head", json!({"connector": "s3", "key": "k", "output": "result"}), "INVALID_PATH", ".output"),
             row("O3, an output that is not a path", "http_call", json!({"connector": "api", "output": "response"}), "INVALID_PATH", ".output"),
             // O4.

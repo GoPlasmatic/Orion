@@ -9932,7 +9932,6 @@
           "db",
           "cache",
           "es",
-          "smtp",
           "storage"
         ]
       },

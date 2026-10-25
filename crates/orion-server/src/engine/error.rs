@@ -436,11 +436,11 @@ mod tests {
     /// lets the static path read `msg` instead of stripping a prefix back off.
     #[test]
     fn prefixing_is_separable_from_the_message() {
-        let bare = HandlerError::new(ErrorClass::CallerInput, "'from' is not a valid address");
-        assert_eq!(bare.msg, "'from' is not a valid address");
+        let bare = HandlerError::new(ErrorClass::CallerInput, "'algorithm' is not supported");
+        assert_eq!(bare.msg, "'algorithm' is not supported");
         assert_eq!(
-            bare.prefixed("send_email").msg,
-            "send_email: 'from' is not a valid address"
+            bare.prefixed("crypto").msg,
+            "crypto: 'algorithm' is not supported"
         );
     }
 

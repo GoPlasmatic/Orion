@@ -45,7 +45,6 @@ pub struct HandlerDeps<'a> {
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
-    pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
     /// The node's model runtime — the loaded-session cache, the inference
     /// slots, the runtimes — for `model_infer`. `None` with
     /// `models.enabled = false`, which the handler answers as `unavailable`
@@ -65,8 +64,7 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     use functions::{
         cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, channel_call, crypto,
         data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify,
-        mongo_aggregate, mongo_read, mongo_write, publish_kafka, send_email, storage_head,
-        storage_presign,
+        mongo_aggregate, mongo_read, mongo_write, publish_kafka, storage_head, storage_presign,
     };
 
     let HandlerDeps {
@@ -82,7 +80,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         channel_loader,
         sql_pool_cache,
         mongo_pool_cache,
-        smtp_pool_cache,
         models,
         models_config,
         providers,
@@ -131,13 +128,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
     registry.register(crypto::NAME, crypto::CryptoFunction);
     registry.register(jwt_sign::NAME, jwt_sign::JwtSignFunction);
     registry.register(jwt_verify::NAME, jwt_verify::JwtVerifyFunction { jwks });
-    registry.register(
-        send_email::NAME,
-        send_email::SendEmailFunction {
-            registry: connectors.clone(),
-            smtp_pool: smtp_pool_cache,
-        },
-    );
     registry.register(
         storage_presign::NAME,
         storage_presign::StoragePresignFunction {

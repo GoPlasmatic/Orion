@@ -725,10 +725,7 @@ mod tests {
         gated["operations"] = json!({"methods": ["GET"]});
         let connectors = [
             ("api", gated),
-            (
-                "mail",
-                json!({"type": "smtp", "host": "127.0.0.1", "from": "a@b.test"}),
-            ),
+            ("mail", json!({"type": "cache", "backend": "memory"})),
         ];
         for input in [
             json!({"connector": "missing"}),

@@ -22,7 +22,7 @@
 
 use super::config::{
     CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig, EsConnectorConfig,
-    HttpConnectorConfig, KafkaConnectorConfig, SmtpConnectorConfig, StorageConnectorConfig,
+    HttpConnectorConfig, KafkaConnectorConfig, StorageConnectorConfig,
 };
 
 /// A connection-pool cache a connector's config can be cached in.
@@ -38,26 +38,19 @@ pub enum PoolSlot {
     Mongo,
     /// `caches.cache_pool` — Redis/in-memory backends for `cache` connectors.
     Cache,
-    /// `caches.smtp_pool_cache` — SMTP transports for `smtp` connectors.
-    Smtp,
 }
 
 impl PoolSlot {
     /// Every slot. The eviction sweep and the drift guard both read this, so a
     /// cache that exists but is evicted by nothing cannot pass unnoticed.
-    pub const ALL: &'static [PoolSlot] = &[
-        PoolSlot::Sql,
-        PoolSlot::Mongo,
-        PoolSlot::Cache,
-        PoolSlot::Smtp,
-    ];
+    pub const ALL: &'static [PoolSlot] = &[PoolSlot::Sql, PoolSlot::Mongo, PoolSlot::Cache];
 }
 
 /// What a handler names when it asks for a connector.
 ///
 /// The associated `Config` is what makes this worth being a trait rather than a
 /// table: a handler asks for the target it needs and gets that config back, so
-/// `require::<Db>(…)` cannot compile into an SMTP accessor.
+/// `require::<Db>(…)` cannot compile into an HTTP accessor.
 ///
 /// Separate from [`ConnectorKind`] because two handlers do not target a single
 /// type: `data_query` and `data_write` speak the portable dialect, which is
@@ -120,7 +113,6 @@ kinds! {
     Db      => Db,      DbConnectorConfig,      "a database connector";
     Cache   => Cache,   CacheConnectorConfig,   "a cache connector";
     Es      => Es,      EsConnectorConfig,      "an Elasticsearch connector";
-    Smtp    => Smtp,    SmtpConnectorConfig,    "an SMTP connector";
     Storage => Storage, StorageConnectorConfig, "a storage connector";
 }
 
@@ -158,7 +150,6 @@ impl ConnectorType {
         match self {
             ConnectorType::Db => &[PoolSlot::Sql, PoolSlot::Mongo],
             ConnectorType::Cache => &[PoolSlot::Cache],
-            ConnectorType::Smtp => &[PoolSlot::Smtp],
             // Stateless per call: HTTP and Elasticsearch go through the shared
             // reqwest client, Kafka through the producer, storage presigns
             // locally.
