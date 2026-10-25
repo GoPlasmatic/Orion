@@ -109,7 +109,7 @@ pub struct GuardSet {
     /// Reject an `Origin` header the channel does not list (N24: a
     /// server-side allow-list, not CORS negotiation).
     pub origin_allow_list: bool,
-    /// Per-channel token bucket / shared Redis window.
+    /// Per-channel token bucket / shared-store window.
     pub rate_limit: bool,
     /// The channel's compiled `validation_logic`.
     pub validation: bool,
@@ -866,7 +866,7 @@ mod tests {
     }
 
     /// A real, per-test dedup store: claims are held in a map, so a claim, a
-    /// release and a re-claim behave as they do against Redis.
+    /// release and a re-claim behave as they do against a real store.
     #[derive(Default)]
     struct InMemoryDedupBackend {
         held: std::sync::Mutex<std::collections::HashMap<String, String>>,
@@ -973,8 +973,8 @@ mod tests {
         }
     }
 
-    /// Rate-limit backend whose store never answers — a Redis blip, minus
-    /// the Redis.
+    /// Rate-limit backend whose store never answers — a shared-store outage,
+    /// minus the store.
     struct FailingLimiter;
 
     #[async_trait]
@@ -2960,7 +2960,7 @@ mod tests {
     }
 
     /// The property the hash choice exists to serve: the same request must
-    /// key identically in every process, so a replica sharing a Redis cache
+    /// key identically in every process, so a replica sharing a cache store
     /// agrees with its peers. A per-process-seeded hash would pass every other
     /// test in this module and fail only in production, on more than one node.
     #[test]

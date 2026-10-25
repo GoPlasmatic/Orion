@@ -149,6 +149,9 @@ pub struct LruCache<V: Clone> {
 }
 
 impl<V: Clone> LruCache<V> {
+    /// A cache with no evict handler. Test-only: every production cache holds
+    /// pools, which must be closed when they leave ([`Self::with_evict_handler`]).
+    #[cfg(test)]
     pub fn new(max_entries: usize, cache_label: &'static str) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),

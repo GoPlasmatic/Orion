@@ -33,14 +33,12 @@ use super::config::{
 pub enum PoolSlot {
     /// `caches.sql_pool_cache` — sqlx pools for SQL `db` connectors.
     Sql,
-    /// `caches.cache_pool` — Redis/in-memory backends for `cache` connectors.
-    Cache,
 }
 
 impl PoolSlot {
     /// Every slot. The eviction sweep and the drift guard both read this, so a
     /// cache that exists but is evicted by nothing cannot pass unnoticed.
-    pub const ALL: &'static [PoolSlot] = &[PoolSlot::Sql, PoolSlot::Cache];
+    pub const ALL: &'static [PoolSlot] = &[PoolSlot::Sql];
 }
 
 /// What a handler names when it asks for a connector.
@@ -138,10 +136,11 @@ impl ConnectorType {
     pub fn pool_slots(self) -> &'static [PoolSlot] {
         match self {
             ConnectorType::Db => &[PoolSlot::Sql],
-            ConnectorType::Cache => &[PoolSlot::Cache],
             // Stateless per call: HTTP goes through the shared reqwest client,
-            // storage presigns locally.
-            ConnectorType::Http | ConnectorType::Storage => &[],
+            // storage presigns locally, and a cache connector is an in-memory
+            // namespace holding no connection — a delete drops it
+            // (`CachePool::evict_memory_namespaces`), an edit keeps it.
+            ConnectorType::Http | ConnectorType::Storage | ConnectorType::Cache => &[],
         }
     }
 }

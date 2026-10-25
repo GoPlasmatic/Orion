@@ -14,18 +14,17 @@
 //!      and an admin API that blocks on resolution is an admin API that hangs
 //!      when the target is down.
 //!   2. **Private-address check on the pool-open paths**
-//!      ([`check_db_endpoint`], [`check_cache_endpoint`]), with the same
-//!      `allow_private_urls` opt-out the HTTP and ES connectors already had.
+//!      ([`check_db_endpoint`]), with the same `allow_private_urls` opt-out
+//!      the HTTP connector already had.
 //!
 //! **Why not just call `validate_url_not_private`.** S7 made an
 //! `{http, https}` gate the *first* statement of that function, so calling it
-//! on a `postgres://` or `redis://` URL would refuse every database and cache
-//! connector in existence. These paths go through
+//! on a `postgres://` URL would refuse every database connector in existence. These paths go through
 //! [`crate::validation::ssrf::validate_hostport_not_private`] instead, which
 //! judges an already-split host and port and is scheme-agnostic by
 //! construction.
 
-use crate::connector::{CacheConnectorConfig, ConnectorConfig, DbConnectorConfig};
+use crate::connector::{ConnectorConfig, DbConnectorConfig};
 use crate::errors::OrionError;
 use crate::validation::ssrf::validate_hostport_not_private;
 
@@ -35,9 +34,6 @@ use crate::validation::ssrf::validate_hostport_not_private;
 /// check because there is no host to judge.
 pub const DB_SQL_SCHEMES: &[&str] = &["postgres", "postgresql", "mysql", "mariadb", "sqlite"];
 
-/// Schemes a `cache` connector may use when `backend = "redis"`.
-pub const CACHE_SCHEMES: &[&str] = &["redis", "rediss"];
-
 /// Default port per scheme, for connection strings that omit one. Used only to
 /// build the address the private-IP check judges; the driver applies its own
 /// default when it dials.
@@ -45,7 +41,6 @@ fn default_port(scheme: &str) -> Option<u16> {
     match scheme {
         "postgres" | "postgresql" => Some(5432),
         "mysql" | "mariadb" => Some(3306),
-        "redis" | "rediss" => Some(6379),
         "http" => Some(80),
         "https" => Some(443),
         _ => None,
@@ -196,17 +191,8 @@ pub fn validate_endpoint_schemes(
             )?;
             Ok(())
         }
-        ConnectorConfig::Cache(cache) => {
-            // `backend = "memory"` has no URL to check; the requirement that
-            // redis carries one is enforced alongside the backend name.
-            if cache.backend == "redis"
-                && let Some(url) = cache.url.as_deref()
-                && !url.trim().is_empty()
-            {
-                require_scheme("cache URL", url, CACHE_SCHEMES, phase)?;
-            }
-            Ok(())
-        }
+        // A cache connector is in-process memory: it has no endpoint.
+        ConnectorConfig::Cache(_) => Ok(()),
     }
 }
 
@@ -260,20 +246,6 @@ pub async fn check_db_endpoint(
     .await
 }
 
-/// Private-address check for a `cache` connector, on the pool-open path.
-///
-/// A `backend = "memory"` connector carries no URL and has nothing to judge;
-/// the redis pool refuses a missing one before it gets here.
-pub async fn check_cache_endpoint(
-    connector_name: &str,
-    config: &CacheConnectorConfig,
-) -> Result<(), OrionError> {
-    let Some(url) = config.url.as_deref() else {
-        return Ok(());
-    };
-    check_conn_endpoint("cache", connector_name, url, config.allow_private_urls).await
-}
-
 fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
     OrionError::validation(format!(
         "Refusing to connect {kind} connector '{connector_name}': {msg}. \
@@ -285,7 +257,6 @@ fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connector::CacheConnectorConfig;
 
     fn validate_endpoint_schemes_at_authoring(parsed: &ConnectorConfig) -> Result<(), OrionError> {
         validate_endpoint_schemes(parsed, EndpointPhase::Authoring)
@@ -451,35 +422,6 @@ mod tests {
     }
 
     #[test]
-    fn cache_rejects_non_redis_schemes_but_ignores_memory_backend() {
-        let redis = |url: Option<&str>| {
-            ConnectorConfig::Cache(CacheConnectorConfig {
-                backend: "redis".to_string(),
-                url: url.map(str::to_string),
-                allow_private_urls: false,
-                operations: Default::default(),
-            })
-        };
-        validate_endpoint_schemes_at_authoring(&redis(Some("redis://cache.example.com:6379")))
-            .expect("test");
-        validate_endpoint_schemes_at_authoring(&redis(Some("rediss://cache.example.com:6379")))
-            .expect("test");
-        assert!(
-            validate_endpoint_schemes_at_authoring(&redis(Some("http://cache.example.com")))
-                .is_err()
-        );
-
-        // memory backend: no URL to judge.
-        validate_endpoint_schemes_at_authoring(&ConnectorConfig::Cache(CacheConnectorConfig {
-            backend: "memory".to_string(),
-            url: None,
-            allow_private_urls: false,
-            operations: Default::default(),
-        }))
-        .expect("test");
-    }
-
-    #[test]
     fn endpoint_extraction_skips_file_backends() {
         assert_eq!(endpoint_of("sqlite:/app/data/orion.db"), None);
         assert_eq!(
@@ -489,10 +431,6 @@ mod tests {
         assert_eq!(
             endpoint_of("mysql://u:p@db.example.com:3307/orion"),
             Some(("db.example.com".to_string(), 3307))
-        );
-        assert_eq!(
-            endpoint_of("redis://cache.example.com"),
-            Some(("cache.example.com".to_string(), 6379))
         );
     }
 
@@ -512,16 +450,6 @@ mod tests {
         assert!(check_db_endpoint("c", &cfg).await.is_err());
         cfg.allow_private_urls = true;
         assert!(check_db_endpoint("c", &cfg).await.is_ok());
-
-        let mut cache = CacheConnectorConfig {
-            backend: "redis".to_string(),
-            url: Some("redis://127.0.0.1:6379".to_string()),
-            allow_private_urls: false,
-            operations: Default::default(),
-        };
-        assert!(check_cache_endpoint("c", &cache).await.is_err());
-        cache.allow_private_urls = true;
-        assert!(check_cache_endpoint("c", &cache).await.is_ok());
     }
 
     /// The metadata endpoint the whole guard exists for.
@@ -539,14 +467,6 @@ mod tests {
         let err = check_db_endpoint("meta", &cfg).await.expect_err("test");
         assert!(err.to_string().contains("169.254.169.254"), "{err}");
         assert!(err.to_string().contains("allow_private_urls"), "{err}");
-
-        let cache = CacheConnectorConfig {
-            backend: "redis".to_string(),
-            url: Some("redis://169.254.169.254:6379".to_string()),
-            allow_private_urls: false,
-            operations: Default::default(),
-        };
-        assert!(check_cache_endpoint("meta", &cache).await.is_err());
     }
 
     /// sqlite opens a file, so there is no address to judge — it must pass the

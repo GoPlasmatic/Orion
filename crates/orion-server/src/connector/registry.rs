@@ -701,6 +701,22 @@ pub async fn resolve_connector_config(
         );
         return Err(ResolveIssue::new("endpoint", e.client_message()));
     }
+    // A row stored while the cache connector had another backend (Redis,
+    // before it left Community) parses, but this build cannot serve it.
+    // Refused here, so it is a load issue an operator sees on `/health` and
+    // the connector list, not a silent per-node store or a failure on
+    // first use.
+    if let ConnectorConfig::Cache(cache) = &config
+        && let Some(reason) = cache.unsupported_backend()
+    {
+        tracing::warn!(
+            connector_id = %id,
+            connector_name = %name,
+            error = %reason,
+            "Cache connector backend refused at load, skipping"
+        );
+        return Err(ResolveIssue::new("deserialize", reason));
+    }
     Ok(config)
 }
 
@@ -973,11 +989,7 @@ mod tests {
     /// parsing the composite key.
     #[tokio::test]
     async fn prune_breakers_drops_dead_channels_and_connectors() {
-        let repo = StubConnectorRepo::with(vec![(
-            "conn-live",
-            "cache",
-            r#"{"backend":"redis","url":"redis://localhost:6379"}"#,
-        )]);
+        let repo = StubConnectorRepo::with(vec![("conn-live", "cache", r#"{"backend":"memory"}"#)]);
         let config = CircuitBreakerConfig {
             enabled: true,
             failure_threshold: 5,
@@ -1009,6 +1021,32 @@ mod tests {
         );
     }
 
+    /// A cache row stored while Redis was a Community backend parses, but is
+    /// a load issue naming the backend there is, not a connector that fails
+    /// on first use or quietly becomes per-node memory.
+    #[tokio::test]
+    async fn a_stored_redis_cache_row_is_a_load_issue() {
+        let repo = StubConnectorRepo::with(vec![
+            (
+                "old-redis",
+                "cache",
+                r#"{"backend":"redis","url":"redis://cache.internal:6379"}"#,
+            ),
+            ("mem", "cache", r#"{"backend":"memory"}"#),
+        ]);
+        let registry = ConnectorRegistry::default();
+        assert_eq!(registry.reload(&repo).await.expect("loads"), 1);
+        assert!(registry.get("old-redis").await.is_none());
+        assert!(registry.get("mem").await.is_some());
+        let issues = registry.load_issues().await;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].stage, "deserialize");
+        assert_eq!(
+            issues[0].reason,
+            "Invalid cache backend 'redis'. Must be one of: memory"
+        );
+    }
+
     // ---- N17: the generation token tracks changes, not loads --------------
 
     /// The one that matters in a cluster. A connector-scoped resync reloads
@@ -1019,11 +1057,7 @@ mod tests {
     /// the change.
     #[tokio::test]
     async fn reloading_an_unchanged_connector_set_does_not_move_the_token() {
-        let repo = StubConnectorRepo::with(vec![(
-            "cache-1",
-            "cache",
-            r#"{"backend":"redis","url":"redis://localhost:6379"}"#,
-        )]);
+        let repo = StubConnectorRepo::with(vec![("cache-1", "cache", r#"{"backend":"memory"}"#)]);
         let registry = ConnectorRegistry::default();
         assert_eq!(registry.reload(&repo).await.expect("loads"), 1);
         let after_first = registry.config_generation();
@@ -1043,20 +1077,16 @@ mod tests {
     /// pinned to a dedup/response-cache backend the operator has replaced.
     #[tokio::test]
     async fn changing_a_connector_moves_the_token() {
-        let repo = StubConnectorRepo::with(vec![(
-            "cache-1",
-            "cache",
-            r#"{"backend":"redis","url":"redis://old:6379"}"#,
-        )]);
+        let repo = StubConnectorRepo::with(vec![("cache-1", "cache", r#"{"backend":"memory"}"#)]);
         let registry = ConnectorRegistry::default();
         registry.reload(&repo).await.expect("loads");
         let before = registry.config_generation();
 
-        // Same connector, new URL — the case the token exists for.
+        // Same connector, new config — the case the token exists for.
         repo.set(vec![(
             "cache-1",
             "cache",
-            r#"{"backend":"redis","url":"redis://new:6379"}"#,
+            r#"{"backend":"memory","operations":{"write":false}}"#,
         )]);
         registry.reload(&repo).await.expect("loads");
         let after_edit = registry.config_generation();
@@ -1070,7 +1100,7 @@ mod tests {
             (
                 "cache-1",
                 "cache",
-                r#"{"backend":"redis","url":"redis://new:6379"}"#,
+                r#"{"backend":"memory","operations":{"write":false}}"#,
             ),
             ("cache-2", "cache", r#"{"backend":"memory"}"#),
         ]);
@@ -1082,7 +1112,7 @@ mod tests {
         repo.set(vec![(
             "cache-1",
             "cache",
-            r#"{"backend":"redis","url":"redis://new:6379"}"#,
+            r#"{"backend":"memory","operations":{"write":false}}"#,
         )]);
         registry.reload(&repo).await.expect("loads");
         assert_ne!(

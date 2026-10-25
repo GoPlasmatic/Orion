@@ -68,8 +68,8 @@ pub(super) fn resolve_key_field<'a>(data: &'a Value, field: &str) -> Option<&'a 
 ///
 /// # Why SHA-256 and not a fast hash
 ///
-/// The key must be **stable across processes** — replicas sharing a Redis
-/// cache have to agree on the key for the same request — which rules out
+/// The key must be **stable across processes** — replicas sharing a cache
+/// store have to agree on the key for the same request — which rules out
 /// `DefaultHasher` (SipHash under a per-process random seed) and `ahash`
 /// (randomises its seed on construction). FNV-1a satisfied that and was used
 /// here first.
@@ -165,8 +165,8 @@ pub(super) fn compute_cache_key(
     };
 
     // 128 bits of a 256-bit digest: the birthday bound is 2^64 distinct
-    // requests per channel, and the full digest would only make the Redis key
-    // longer.
+    // requests per channel, and the full digest would only make the stored
+    // key longer.
     let digest = h.finalize();
     Some(format!("cache:{channel}:{}", hex::encode(&digest[..16])))
 }

@@ -1,11 +1,10 @@
 //! Unified cache backend abstraction.
 //!
-//! Provides a [`CacheBackend`] trait with two implementations:
-//! - [`MemoryCacheBackend`] — in-process DashMap, used when no Redis connector is configured
-//! - [`RedisCacheBackend`] — Redis via multiplexed connection, selected per connector config
-//!
-//! Both backends are always compiled in. [`CachePool`] dispatches to the
-//! correct one based on the connector referenced by each cache call.
+//! Provides a [`CacheBackend`] trait and its one Community implementation,
+//! [`MemoryCacheBackend`] — an in-process DashMap, so a `cache` connector is
+//! per-node memory. [`CachePool`] hands out one instance per
+//! `(purpose, connector)` namespace. The trait stays the seam a shared store
+//! plugs in at: a cluster's database-backed default store, and test doubles.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -24,7 +23,8 @@ use crate::errors::OrionError;
 
 /// Abstraction over cache get/set operations.
 ///
-/// Implemented by both in-memory (DashMap) and Redis backends.
+/// Implemented by the in-memory (DashMap) backend, the cluster's shared
+/// store and test doubles.
 #[async_trait]
 pub trait CacheBackend: Send + Sync {
     /// Whether a write is an in-process operation with no I/O. A caller off
@@ -42,10 +42,10 @@ pub trait CacheBackend: Send + Sync {
     async fn remove(&self, key: &str) -> Result<(), OrionError>;
 
     /// Read several keys at once, answering in the order asked, `None` for a
-    /// miss. One `MGET` on Redis.
+    /// miss.
     ///
     /// The default is a loop over [`Self::get`], which is what the in-memory
-    /// backend wants; Redis overrides it with one round trip.
+    /// backend wants; the cluster's shared store overrides it with one query.
     async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, OrionError> {
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
@@ -54,8 +54,7 @@ pub trait CacheBackend: Send + Sync {
         Ok(out)
     }
 
-    /// Delete several keys, answering how many of them existed. One `DEL` on
-    /// Redis.
+    /// Delete several keys, answering how many of them existed.
     ///
     /// The default reads before it deletes, so its count is not atomic; it is
     /// for test doubles, and both real backends override it.
@@ -381,193 +380,6 @@ impl CacheBackend for MemoryCacheBackend {
 }
 
 // ============================================================
-// Redis backend
-// ============================================================
-
-/// `INCRBY`, with a TTL applied only when the call created the key.
-///
-/// A script because the two commands must be one step: `INCRBY` then a
-/// separate `EXPIRE` would let a concurrent first bump lose its TTL, and an
-/// unconditional `EXPIRE` would keep a counter alive for as long as something
-/// keeps bumping it. `EXPIRE … NX` would do it without a script, but only on
-/// Redis 7; `EVALSHA` works on every server the connector otherwise supports.
-static INCR_SCRIPT: std::sync::LazyLock<redis::Script> = std::sync::LazyLock::new(|| {
-    redis::Script::new(
-        r"
-local existed = redis.call('EXISTS', KEYS[1])
-local value = redis.call('INCRBY', KEYS[1], ARGV[1])
-local ttl = tonumber(ARGV[2])
-if existed == 0 and ttl > 0 then
-  redis.call('EXPIRE', KEYS[1], ttl)
-end
-return value
-",
-    )
-});
-
-pub struct RedisCacheBackend {
-    conn: redis::aio::ConnectionManager,
-}
-
-impl RedisCacheBackend {
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
-        Self { conn }
-    }
-}
-
-#[async_trait]
-impl CacheBackend for RedisCacheBackend {
-    async fn get(&self, key: &str) -> Result<Option<String>, OrionError> {
-        use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
-        conn.get(key).await.map_err(|e| OrionError::Internal {
-            context: format!("Redis GET failed for key '{key}'"),
-            source: Some(Box::new(e)),
-        })
-    }
-
-    async fn set(&self, key: &str, value: &str) -> Result<(), OrionError> {
-        use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
-        conn.set::<_, _, ()>(key, value)
-            .await
-            .map_err(|e| OrionError::Internal {
-                context: format!("Redis SET failed for key '{key}'"),
-                source: Some(Box::new(e)),
-            })
-    }
-
-    async fn set_ex(&self, key: &str, value: &str, ttl_secs: u64) -> Result<(), OrionError> {
-        use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
-        conn.set_ex::<_, _, ()>(key, value, ttl_secs)
-            .await
-            .map_err(|e| OrionError::Internal {
-                context: format!("Redis SETEX failed for key '{key}'"),
-                source: Some(Box::new(e)),
-            })
-    }
-
-    async fn remove(&self, key: &str) -> Result<(), OrionError> {
-        use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
-        conn.del::<_, ()>(key)
-            .await
-            .map_err(|e| OrionError::Internal {
-                context: format!("Redis DEL failed for key '{key}'"),
-                source: Some(Box::new(e)),
-            })
-    }
-
-    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, OrionError> {
-        if keys.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut conn = self.conn.clone();
-        // `MGET` rather than `AsyncCommands::mget`: the latter sends a bare
-        // `GET` for a one-key slice, whose reply is not an array.
-        redis::cmd("MGET")
-            .arg(keys)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| OrionError::Internal {
-                context: format!("Redis MGET failed for {} keys", keys.len()),
-                source: Some(Box::new(e)),
-            })
-    }
-
-    async fn remove_many(&self, keys: &[String]) -> Result<u64, OrionError> {
-        if keys.is_empty() {
-            return Ok(0);
-        }
-        let mut conn = self.conn.clone();
-        redis::cmd("DEL")
-            .arg(keys)
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| OrionError::Internal {
-                context: format!("Redis DEL failed for {} keys", keys.len()),
-                source: Some(Box::new(e)),
-            })
-    }
-
-    async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, OrionError> {
-        let mut conn = self.conn.clone();
-        // Without a TTL there is nothing to make atomic with the increment, so
-        // a bare `INCRBY` skips the script's `EXISTS`.
-        let result = match ttl_secs.filter(|t| *t > 0) {
-            None => {
-                redis::cmd("INCRBY")
-                    .arg(key)
-                    .arg(by)
-                    .query_async(&mut conn)
-                    .await
-            }
-            Some(ttl) => {
-                INCR_SCRIPT
-                    .key(key)
-                    .arg(by)
-                    .arg(ttl)
-                    .invoke_async(&mut conn)
-                    .await
-            }
-        };
-        result.map_err(|e| OrionError::Internal {
-            context: format!("Redis INCRBY failed for key '{key}'"),
-            source: Some(Box::new(e)),
-        })
-    }
-
-    async fn claim_dedup_key(
-        &self,
-        key: &str,
-        owner: &str,
-        window_secs: u64,
-    ) -> Result<Option<String>, OrionError> {
-        use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
-        // Two rounds, because SET NX and GET are two commands and the key can
-        // expire between them: a failed SET followed by a nil GET means the
-        // holder's window ended in that gap, i.e. nobody holds the key and the
-        // claim should simply be retried. Two rounds is enough in practice;
-        // losing both is treated as "claimed", because processing a message
-        // twice is the transport's documented guarantee while skipping one is
-        // silent loss.
-        for _ in 0..2 {
-            // SET key owner NX EX window_secs — atomic claim
-            let claimed: Option<String> = redis::cmd("SET")
-                .arg(key)
-                .arg(owner)
-                .arg("NX")
-                .arg("EX")
-                .arg(window_secs)
-                .query_async(&mut conn)
-                .await
-                .map_err(|e| OrionError::Internal {
-                    context: format!("Redis SET NX EX failed for key '{key}'"),
-                    source: Some(Box::new(e)),
-                })?;
-            // Redis returns "OK" if SET succeeded (key was free), nil if held
-            if claimed.is_some() {
-                return Ok(None);
-            }
-            let holder: Option<String> = conn.get(key).await.map_err(|e| OrionError::Internal {
-                context: format!("Redis GET failed for key '{key}'"),
-                source: Some(Box::new(e)),
-            })?;
-            if let Some(holder) = holder {
-                return Ok(Some(holder));
-            }
-        }
-        tracing::warn!(
-            key = %key,
-            "Deduplication key expired between claim attempts twice; treating the message as new"
-        );
-        Ok(None)
-    }
-}
-
-// ============================================================
 // CachePool — dispatches to the correct backend
 // ============================================================
 
@@ -621,7 +433,7 @@ impl std::fmt::Display for CachePurpose {
     }
 }
 
-/// Holds both backend implementations and dispatches based on connector config.
+/// The in-memory cache backends, one per namespace.
 pub struct CachePool {
     /// One in-memory instance per namespace (see [`CachePurpose`]), created
     /// lazily and kept for the life of the process — like the single shared
@@ -632,22 +444,14 @@ pub struct CachePool {
     memory: DashMap<String, Arc<MemoryCacheBackend>>,
     cleanup_interval_secs: u64,
     max_memory_cache_entries: usize,
-    redis: Arc<super::redis_pool::RedisPoolCache>,
 }
 
 impl CachePool {
-    pub fn new(
-        max_redis_pool_entries: usize,
-        cleanup_interval_secs: u64,
-        max_memory_cache_entries: usize,
-    ) -> Self {
+    pub fn new(cleanup_interval_secs: u64, max_memory_cache_entries: usize) -> Self {
         Self {
             memory: DashMap::new(),
             cleanup_interval_secs,
             max_memory_cache_entries,
-            redis: Arc::new(super::redis_pool::RedisPoolCache::new(
-                max_redis_pool_entries,
-            )),
         }
     }
 
@@ -671,31 +475,21 @@ impl CachePool {
 
     /// Get a cache backend for the given connector, scoped to `purpose`.
     ///
-    /// Memory backends are isolated per `(purpose, connector)`. Redis
-    /// backends are not: Redis is an external store the operator points
-    /// connectors at, its data must survive restarts and be shared across
-    /// nodes, and workflows legitimately read keys written by other systems
-    /// through it. Pointing a workflow cache connector at the same Redis
-    /// database as a channel's dedup store therefore shares a keyspace —
-    /// use separate databases (`redis://host/0`, `/1`, …) to isolate them.
+    /// Isolated per `(purpose, connector)`: a workflow cache connector and a
+    /// channel's dedup store never share a keyspace, even when they name the
+    /// same connector. A backend other than `memory` — a row stored before
+    /// validation refused it, which the registry also refuses at load — is
+    /// an error here rather than a silent memory store.
     pub async fn get_backend(
         &self,
         purpose: CachePurpose,
         connector_name: &str,
         config: &CacheConnectorConfig,
     ) -> Result<Arc<dyn CacheBackend>, OrionError> {
-        match config.backend.as_str() {
-            "memory" => {
-                Ok(self.memory_namespace(&format!("{}:{connector_name}", purpose.as_str())))
-            }
-            "redis" => {
-                let conn = self.redis.get_conn(connector_name, config).await?;
-                Ok(Arc::new(RedisCacheBackend::new(conn)))
-            }
-            other => Err(OrionError::validation(format!(
-                "Unknown cache backend '{other}'. Must be 'redis' or 'memory'"
-            ))),
+        if let Some(reason) = config.unsupported_backend() {
+            return Err(OrionError::validation(reason));
         }
+        Ok(self.memory_namespace(&format!("{}:{connector_name}", purpose.as_str())))
     }
 
     /// The built-in in-memory backend for `purpose` — the default when a
@@ -720,19 +514,10 @@ impl CachePool {
             .collect()
     }
 
-    /// Evict a cached Redis connection pool for the named connector.
-    /// In-memory namespaces are deliberately left alone: the namespace key
-    /// is stable, so a reloaded connector reattaches to its existing
-    /// entries, exactly as the pre-S19 shared instance did.
-    pub async fn evict_pool(&self, connector_name: &str) {
-        self.redis.evict(connector_name).await;
-    }
-
     /// Drop the in-memory namespaces a *deleted* connector owned, one per
     /// purpose, releasing their entries and the sweep task each backend runs.
     ///
-    /// Deliberately not part of [`Self::evict_pool`]: an update or a reload
-    /// keeps a connector's namespaces (the key is stable, so a reattaching
+    /// Only on a delete: an update or a reload keeps a connector's namespaces (the key is stable, so a reattaching
     /// connector reuses its entries), but a delete is final. Without this, a
     /// create/delete churn of uniquely named cache connectors stranded one
     /// namespace — up to `max_memory_cache_entries` values plus a 60 s timer —
@@ -746,12 +531,6 @@ impl CachePool {
             self.memory
                 .remove(&format!("{}:{connector_name}", purpose.as_str()));
         }
-    }
-
-    /// Evict every cached Redis connection (epoch-driven resync — a remote
-    /// node cannot know which connector changed).
-    pub async fn evict_all_pools(&self) {
-        self.redis.evict_all().await;
     }
 }
 
@@ -1055,8 +834,6 @@ mod tests {
     fn memory_connector() -> CacheConnectorConfig {
         CacheConnectorConfig {
             backend: "memory".to_string(),
-            url: None,
-            allow_private_urls: false,
             operations: Default::default(),
         }
     }
@@ -1066,7 +843,7 @@ mod tests {
     /// key in the dedup store.
     #[tokio::test]
     async fn workflow_writes_cannot_poison_the_dedup_store() {
-        let pool = CachePool::new(4, 60, 1000);
+        let pool = CachePool::new(60, 1000);
         let workflow = pool
             .get_backend(CachePurpose::Workflow, "wf-cache", &memory_connector())
             .await
@@ -1091,7 +868,7 @@ mod tests {
     /// entry must not be served to a real request.
     #[tokio::test]
     async fn workflow_writes_cannot_forge_a_cached_response() {
-        let pool = CachePool::new(4, 60, 1000);
+        let pool = CachePool::new(60, 1000);
         let workflow = pool
             .get_backend(CachePurpose::Workflow, "wf-cache", &memory_connector())
             .await
@@ -1114,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn two_memory_connectors_have_distinct_keyspaces() {
-        let pool = CachePool::new(4, 60, 1000);
+        let pool = CachePool::new(60, 1000);
         let a = pool
             .get_backend(CachePurpose::Workflow, "conn-a", &memory_connector())
             .await
@@ -1160,7 +937,7 @@ mod tests {
     /// belongs to channels naming no connector, is untouched.
     #[tokio::test]
     async fn evict_memory_namespaces_drops_a_deleted_connectors_entries() {
-        let pool = CachePool::new(4, 60, 1000);
+        let pool = CachePool::new(60, 1000);
         let wf = pool
             .get_backend(CachePurpose::Workflow, "gone", &memory_connector())
             .await
@@ -1192,7 +969,7 @@ mod tests {
     /// must not evict another namespace's entries.
     #[tokio::test]
     async fn lru_budgets_are_per_namespace() {
-        let pool = CachePool::new(4, 60, 10);
+        let pool = CachePool::new(60, 10);
         let dedup = pool.default_memory(CachePurpose::Dedup);
         assert_eq!(
             dedup

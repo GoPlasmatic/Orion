@@ -200,7 +200,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         cache_invalidate::NAME,
         cache_invalidate::CacheInvalidateFunction {
             channel_loader,
-            registry: connectors.clone(),
             cache_pool,
         },
     );

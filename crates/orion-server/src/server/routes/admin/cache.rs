@@ -41,7 +41,6 @@ pub(crate) async fn invalidate_namespace(
     let stores = state
         .channel_loader
         .invalidate_namespaces(
-            &state.connector_registry,
             &state.caches.cache_pool,
             std::slice::from_ref(&namespace),
             "admin",

@@ -509,27 +509,39 @@ pub struct DbConnectorConfig {
     pub dialect: DialectGuards,
 }
 
-/// Cache connector. `default_ttl_secs`, `max_connections`, `auth` and `retry`
-/// were accepted here until 1.0 and never read (proposal F22): TTL comes from
-/// each `cache_write` task, Redis credentials go in the `url`, and the
-/// connection manager has neither a pool size nor a retry policy to configure.
+/// Cache connector: a named, per-node in-memory store. `default_ttl_secs`,
+/// `max_connections`, `auth` and `retry` were accepted here until 1.0 and
+/// never read (proposal F22): TTL comes from each `cache_write` task.
+///
+/// `url` and `allow_private_urls` described the Redis backend, which is no
+/// longer in Community. Stored rows carrying them still parse (connector
+/// configs do not deny unknown fields) and the keys are ignored; validation
+/// refuses a non-null `url`, and a `backend` other than `memory`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheConnectorConfig {
-    /// Cache backend: `"redis"` or `"memory"`. Required — no default.
+    /// Cache backend. `"memory"` is the only one. Required — no default, so
+    /// a config written for another backend is refused rather than quietly
+    /// becoming a per-node store.
     pub backend: String,
-    /// Connection URL. Required when `backend = "redis"`, ignored for `"memory"`.
-    /// Carries credentials when Redis needs them: `redis://user:pass@host:6379`.
-    #[serde(default)]
-    pub url: Option<String>,
-    /// Allow connecting to private/internal IP addresses. Default false
-    /// (SSRF protection). Redis is usually private, so this is commonly
-    /// set; the point is that it is stated rather than assumed. Ignored for
-    /// `backend = "memory"`, which opens no socket.
-    #[serde(default)]
-    pub allow_private_urls: bool,
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: CacheOperationGates,
+}
+
+impl CacheConnectorConfig {
+    /// Why this build cannot serve `backend`, naming the backends it can, or
+    /// `None` when it can. One sentence for the authoring refusal, the
+    /// registry load and the pool, so a stored `redis` row reads the same
+    /// wherever it is met.
+    pub fn unsupported_backend(&self) -> Option<String> {
+        (!VALID_CACHE_BACKENDS.contains(&self.backend.as_str())).then(|| {
+            format!(
+                "Invalid cache backend '{}'. Must be one of: {}",
+                self.backend,
+                VALID_CACHE_BACKENDS.join(", ")
+            )
+        })
+    }
 }
 
 /// Object-storage connector (#265): a scoped, zero-data-path surface —
@@ -650,7 +662,7 @@ impl Default for StorageOperationGates {
 pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "db", "cache", "storage"];
 
 /// Allowed cache backend values.
-pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
+pub const VALID_CACHE_BACKENDS: &[&str] = &["memory"];
 
 /// Typed enum for the connector `type` field on create/update requests.
 /// Wire format is lowercase ("http", "db", "cache", "storage");
@@ -867,26 +879,12 @@ mod tests {
     }
 
     #[test]
-    fn test_connector_config_deserialization_cache_redis() {
-        let json = r#"{"type":"cache","backend":"redis","url":"redis://localhost:6379","default_ttl_secs":300}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
-        match config {
-            ConnectorConfig::Cache(cache) => {
-                assert_eq!(cache.backend, "redis");
-                assert_eq!(cache.url, Some("redis://localhost:6379".to_string()));
-            }
-            _ => unreachable!("Expected Cache config"),
-        }
-    }
-
-    #[test]
     fn test_connector_config_deserialization_cache_memory() {
         let json = r#"{"type":"cache","backend":"memory","default_ttl_secs":60}"#;
         let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Cache(cache) => {
                 assert_eq!(cache.backend, "memory");
-                assert!(cache.url.is_none());
             }
             _ => unreachable!("Expected Cache config"),
         }
@@ -911,12 +909,12 @@ mod tests {
             _ => unreachable!("Expected Db config"),
         }
 
-        let cache = r#"{"type":"cache","backend":"redis","url":"redis://localhost:6379",
-                        "default_ttl_secs":300,"max_connections":10,"retry":{"max_retries":3}}"#;
+        let cache = r#"{"type":"cache","backend":"memory","default_ttl_secs":300,
+                        "max_connections":10,"retry":{"max_retries":3}}"#;
         match serde_json::from_str::<ConnectorConfig>(cache)
             .expect("0.3.x cache config must still load")
         {
-            ConnectorConfig::Cache(c) => assert_eq!(c.backend, "redis"),
+            ConnectorConfig::Cache(c) => assert_eq!(c.backend, "memory"),
             _ => unreachable!("Expected Cache config"),
         }
     }
@@ -953,7 +951,7 @@ mod tests {
     #[test]
     fn test_connector_config_deserialization_cache_missing_backend() {
         // backend is required — deserialization should fail
-        let json = r#"{"type":"cache","url":"redis://localhost:6379"}"#;
+        let json = r#"{"type":"cache","operations":{"read":true}}"#;
         let result = serde_json::from_str::<ConnectorConfig>(json);
         assert!(result.is_err());
     }

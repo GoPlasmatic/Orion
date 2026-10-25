@@ -6,7 +6,6 @@ pub(crate) mod lru_cache;
 mod masking;
 pub mod oauth;
 pub mod pool_cache;
-pub mod redis_pool;
 mod registry;
 pub mod secrets;
 pub mod sigv4;

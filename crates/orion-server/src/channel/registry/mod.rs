@@ -136,8 +136,8 @@ pub struct ChannelRuntimeConfig {
     /// Parsed per-channel configuration.
     pub parsed_config: ChannelConfig,
     /// Per-channel rate limiter, built from `parsed_config.rate_limit` if
-    /// configured. Governor-local on a single node; shared Redis fixed
-    /// window in cluster mode.
+    /// configured. Governor-local on a single node; a fixed window in the
+    /// shared state database in cluster mode.
     pub rate_limiter: Option<Arc<dyn RateLimitBackend>>,
     /// Pre-compiled JSONLogic expression for computing the rate limit key.
     pub rate_limit_key_logic: Option<Arc<Expr>>,
@@ -161,7 +161,8 @@ pub struct ChannelRuntimeConfig {
     /// Limits max in-flight requests — returns 503 when exhausted.
     pub backpressure_semaphore: Option<Arc<Semaphore>>,
     /// Per-channel deduplication backend for idempotent request handling.
-    /// Can be backed by in-memory DashMap or Redis, depending on channel config.
+    /// In-memory on one node; the cluster's shared store by default in
+    /// cluster mode.
     pub dedup_store: Option<Arc<dyn CacheBackend>>,
     /// Per-channel response cache backend.
     /// When set, sync responses are cached with a configurable TTL.
@@ -292,19 +293,17 @@ impl ChannelRow {
 ///   `AppState` for the life of the process. Nothing rebuilds or replaces it,
 ///   so a compiled `Expr` carried over a reload was compiled by the same
 ///   engine that would compile its replacement.
-/// - **`cache_pool`** — likewise a process singleton, and its mutations are
-///   evictions (`evict_pool` / `evict_all_pools`), not replacements. An
-///   eviction drops the pool's *cached* handle; a channel holding an
-///   `Arc<dyn CacheBackend>` keeps a live one. That is safe precisely while
-///   the connector behind it is unchanged: a memory backend is keyed
-///   `(purpose, connector)` and is never evicted at all, and a Redis backend
-///   holds a self-healing `ConnectionManager` against the same URL the
-///   re-resolved one would use. Every eviction path — the connector admin
-///   handlers, and `resync_from_db` on a scope that touches connectors —
-///   reloads the connector registry in the same breath, so a connector that
-///   actually changed moves the token and forces the rebuild. **An eviction
-///   that is not paired with a connector load would not.** A
-///   definitions-scoped resync satisfies the rule by doing neither.
+/// - **`cache_pool`** — likewise a process singleton. Its backends are
+///   in-memory namespaces keyed `(purpose, connector)`, which an edit or a
+///   reload never replaces: a channel holding an `Arc<dyn CacheBackend>`
+///   holds the same store a re-resolved one would get. Only a connector
+///   *delete* drops a namespace, and the delete reloads the connector
+///   registry in the same breath, so the token moves and forces the rebuild.
+///   The SQL pool evictions follow the same rule — every path (the connector
+///   admin handlers, and `resync_from_db` on a scope that touches
+///   connectors) loads connectors too. **An eviction that is not paired with
+///   a connector load would not.** A definitions-scoped resync satisfies the
+///   rule by doing neither.
 /// - **`cluster_shared`** — held by the registry itself, fixed at construction.
 ///
 /// So the obligation this key places on the rest of the process is: keep the
@@ -514,7 +513,8 @@ impl ChannelSnapshot {
     /// `key_logic` header value) ever seen, and governor's store only shrinks
     /// when asked — and per-channel limiters are carried across reloads by
     /// `Arc`, so nothing else ever prompts it. The supervised limiter-prune
-    /// task calls this; a Redis-backed limiter is a no-op ([`RateLimitBackend::prune`]).
+    /// task calls this; a limiter over the shared store is a no-op
+    /// ([`RateLimitBackend::prune`]).
     pub fn prune_rate_limiters(&self) {
         for cfg in self.by_name.values() {
             if let Some(limiter) = &cfg.rate_limiter {

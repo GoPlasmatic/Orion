@@ -400,7 +400,6 @@ impl OfflineDeps {
             query_config: crate::config::QueryConfig::default(),
             write_config: crate::config::WriteConfig::default(),
             cache_pool: Arc::new(crate::connector::cache_backend::CachePool::new(
-                entries,
                 engine_config.cache_cleanup_interval_secs,
                 engine_config.max_memory_cache_entries,
             )),

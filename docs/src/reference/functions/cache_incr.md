@@ -1,4 +1,4 @@
-<!-- description: The cache_incr task function: atomically add to an integer on a Redis or in-memory cache connector, with a TTL applied only when the key is created. -->
+<!-- description: The cache_incr task function: atomically add to an integer on a per-node in-memory cache connector, with a TTL applied only when the key is created. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
@@ -12,7 +12,7 @@ Atomically adds to an integer on a cache connector and returns the new value.
 {
   "name": "cache_incr",
   "input": {
-    "connector": "redis",
+    "connector": "cache",
     "key": "gen:ladder",
     "by": 1,
     "output": "temp_data.gen"
@@ -24,14 +24,14 @@ Atomically adds to an integer on a cache connector and returns the new value.
 
 `cache_incr` is a connector function. It names a [connector](../connectors/index.md) for its credentials and endpoint. Orion validates its `input` when the workflow is saved, and the call runs through the connector's circuit breaker.
 
-A missing key counts as `0` and is created. On Redis the increment is `INCRBY`, run in one script with the TTL so the two cannot be separated. Two callers bumping the same key at the same moment always get different values, which is what makes it a **generation counter**. A write bumps `gen:ladder`, and every cached read embeds the generation it read in its own key:
+A missing key counts as `0` and is created. The increment and the TTL are one step, so the two cannot be separated. Two callers on one node bumping the same key at the same moment always get different values, which is what makes it a **generation counter**. A write bumps `gen:ladder`, and every cached read embeds the generation it read in its own key:
 
 ```json
 [
   { "id": "gen", "name": "Read generation",
-    "function": { "name": "cache_read", "input": { "connector": "redis", "key": "gen:ladder", "output": "temp_data.gen" } } },
+    "function": { "name": "cache_read", "input": { "connector": "cache", "key": "gen:ladder", "output": "temp_data.gen" } } },
   { "id": "hit", "name": "Read cached standings",
-    "function": { "name": "cache_read", "input": { "connector": "redis",
+    "function": { "name": "cache_read", "input": { "connector": "cache",
       "key": { "cat": ["ladder:", { "var": "temp_data.gen" }] }, "output": "data.standings" } } }
 ]
 ```
@@ -57,7 +57,7 @@ A connector whose `write` [operation gate](../connectors/cache.md) is off refuse
 ## Examples
 
 ```json
-{ "name": "cache_incr", "input": { "connector": "redis", "key": "idle:worker-7", "ttl_secs": 300 } }
+{ "name": "cache_incr", "input": { "connector": "cache", "key": "idle:worker-7", "ttl_secs": 300 } }
 ```
 
 ## Related

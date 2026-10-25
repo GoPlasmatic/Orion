@@ -94,7 +94,7 @@ flowchart LR
 |---|---|---|
 | **Channel** | Receives traffic and applies ingress policy | `POST /orders`, Kafka topic, `0 15 2 * * *` `order.placed` |
 | **Workflow** | Runs the business logic as an ordered task pipeline | Parse → validate → enrich → respond |
-| **Connector** | Provides a reusable connection to an external system | PostgreSQL, Redis, Kafka, REST API |
+| **Connector** | Provides a reusable connection to an external system | PostgreSQL, Kafka, REST API |
 
 The definitions belonging to one service can be shipped together as a
 **package**. One Orion instance can run many packages side by side, each with
@@ -132,7 +132,7 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 | **Resilience** | Timeouts, retries, circuit breakers, idempotency, response caching, dead-letter handling |
 | **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins, ONNX models admitted before they serve |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
-| **Data** | PostgreSQL, MySQL, SQLite, MongoDB, Elasticsearch, Redis, Kafka, HTTP, SMTP, S3-compatible storage |
+| **Data** | PostgreSQL, MySQL, SQLite, MongoDB, Elasticsearch, Kafka, HTTP, SMTP, S3-compatible storage |
 | **Operations** | Embedded SQLite for one node; one shared PostgreSQL/MySQL for clustered replicas |
 
 Configuration is explicit, and several production controls are permissive or

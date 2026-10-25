@@ -684,9 +684,9 @@ scenario_reload() {
 # G: Cluster through the load balancer — the HA compose stack (opt-in)
 #
 # Runs the same simple workflow as B, but through docker-compose.ha.yml's
-# topology: nginx → 2 replicas in cluster mode → shared Postgres + Redis.
+# topology: nginx → 2 replicas in cluster mode → shared Postgres.
 # This is the half the single-process scenarios cannot measure — the
-# per-request price of cluster mode (shared Redis dedup / rate-limit /
+# per-request price of cluster mode (shared-store dedup / rate-limit /
 # response-cache round trips ride the hot path) plus the LB hop, and what a
 # second node actually buys. Compare G against B for per-node overhead;
 # re-run against a scaled stack for efficiency at N=2/3.

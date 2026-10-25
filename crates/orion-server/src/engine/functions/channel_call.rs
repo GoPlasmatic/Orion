@@ -872,7 +872,7 @@ mod tests {
                 crate::channel::ReloadDeps {
                     vars: None,
                     connector_registry: &connectors,
-                    cache_pool: &crate::connector::cache_backend::CachePool::new(4, 60, 128),
+                    cache_pool: &crate::connector::cache_backend::CachePool::new(60, 128),
                     exprs: &exprs,
                     jwks: &Arc::new(crate::jwt::jwks::JwksCache::new(client.clone(), false)),
                     http_client: &client,

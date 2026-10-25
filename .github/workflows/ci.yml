@@ -857,7 +857,7 @@ jobs:
       matrix:
         include:
           # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins
-          # up ephemeral Postgres / MySQL / Redis / Vault containers
+          # up ephemeral Postgres / MySQL / Vault containers
           # on demand. Filters are substring matches on the
           # full module::test path — every module with #[ignore] tests must
           # appear on one of these lines by module name, or its tests never
@@ -867,13 +867,13 @@ jobs:
           # critical path: 462s as one leg,
           # against 258s for the next longest. Divided by the backend each
           # module starts a container for, which is what the time is actually
-          # spent on — Postgres/MySQL on one, Redis/Vault on the other. Every test brings up its own container, so the
+          # spent on — Postgres/MySQL on one, Vault on the other. Every test brings up its own container, so the
           # grouping is free to change; keep the two legs balanced.
           - name: data-sql
             run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test sql_check_test
 
           - name: data-nosql
-            run: cargo test --test integration -- --ignored connector_redis_test vault_test
+            run: cargo test --test integration -- --ignored vault_test
 
           # Orion's own storage on Postgres / MySQL. Separate binaries (one
           # process each) because the storage backend is pinned per process

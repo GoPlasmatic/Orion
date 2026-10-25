@@ -175,7 +175,7 @@ pub(crate) mod twin {
             unreachable!("a cache connector")
         };
         let cache = Cache {
-            pool: Arc::new(crate::connector::cache_backend::CachePool::new(4, 60, 128)),
+            pool: Arc::new(crate::connector::cache_backend::CachePool::new(60, 128)),
             registry,
             config,
         };

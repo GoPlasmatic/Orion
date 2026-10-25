@@ -10,7 +10,7 @@ The seven types a connector may be, and the `config` each one takes.
 |------|-------|----------------|
 | [`http`](./http.md) | REST APIs and webhooks | `http_call` |
 | [`db`](./db.md) | PostgreSQL, MySQL, SQLite | `data_query`, `data_write`, `db_read`, `db_write` |
-| [`cache`](./cache.md) | Redis or in-process memory | `cache_read`, `cache_write` |
+| [`cache`](./cache.md) | Per-node in-process memory | `cache_read`, `cache_write` |
 | [`storage`](./storage.md) | S3-compatible object storage (presign + metadata only) | `storage_presign`, `storage_head` |
 
 Type values match case-insensitively. Any other value is refused with the valid list. A stored connector whose config no longer parses fails to load and surfaces as a connector load issue.

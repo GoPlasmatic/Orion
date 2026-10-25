@@ -100,7 +100,7 @@ Click a node in the capability map to expand it, and click a capability to open 
       "name": "Extensibility", "type": "connector",
       "children": [
         { "name": "Connector types", "link": "reference/connectors/index.html",
-          "children": ["http", "kafka", "db — PG / MySQL / SQLite / Mongo", "cache — Redis or memory", "es", "smtp — transactional email", "storage — S3-compatible"] },
+          "children": ["http", "kafka", "db — PG / MySQL / SQLite / Mongo", "cache — per-node memory", "es", "smtp — transactional email", "storage — S3-compatible"] },
         { "name": "Task functions", "link": "reference/functions/index.html",
           "children": ["Parse, map, filter, validate", "HTTP calls", "Portable dialect & raw SQL", "Cache read and write", "Kafka publish"] },
         { "name": "Portable data dialect", "link": "reference/data-dialect.html",
@@ -123,7 +123,7 @@ Click a node in the capability map to expand it, and click a capability to open 
         { "name": "Rollback", "link": "guides/author/versioning.html#roll-back",
           "children": ["Rollout to 0", "Or archive the version", "Nothing to redeploy"] },
         { "name": "Response caching", "link": "reference/channel-config/cache.html",
-          "children": ["Keyed from the request", "Memory, shared database or Redis", "Never reaches the workflow"] },
+          "children": ["Keyed from the request", "Memory or the shared database", "Never reaches the workflow"] },
         { "name": "Connection pooling", "link": "reference/connectors/db.html",
           "children": ["Pools cached per connector", "Reused across requests"] }
       ]
@@ -209,7 +209,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Connector types](../reference/connectors/index.md) | `http`, `kafka`, `db` (PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme), `cache` (Redis or in-memory), `es`, `smtp` (transactional email), and `storage` (S3-compatible object stores). |
+| [Connector types](../reference/connectors/index.md) | `http`, `kafka`, `db` (PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme), `cache` (per-node memory), `es`, `smtp` (transactional email), and `storage` (S3-compatible object stores). |
 | [Task functions](../reference/functions/index.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect, raw SQL and MongoDB; cache read and write; Kafka publish; transactional email; object-storage presigning; hashing, HMAC and JWT sign/verify; model inference. |
 | [Portable data dialect](../reference/data-dialect.md) | One filter-and-envelope syntax lowered to SQL, MongoDB, or an Elasticsearch Query DSL body, so the same task reads from any of them. |
 | [Channel protocols](../reference/channel-config/routing.md) | REST with route patterns and path parameters, plain HTTP by channel name, Kafka topics, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |

@@ -880,7 +880,7 @@ mod tests {
         // The reserved list must not catch ordinary connector URLs.
         let mut v = json!({
             "connection_string": "postgres://user:pass@db.internal:5432/app",
-            "url": "redis://cache.internal:6379",
+            "url": "http://api.internal:8080/v1",
             "endpoint": "https://s3.internal:9000"
         });
         resolve_in_place(&mut v, default_resolvers(), "test")
@@ -890,7 +890,7 @@ mod tests {
             v["connection_string"],
             "postgres://user:pass@db.internal:5432/app"
         );
-        assert_eq!(v["url"], "redis://cache.internal:6379");
+        assert_eq!(v["url"], "http://api.internal:8080/v1");
         assert_eq!(v["endpoint"], "https://s3.internal:9000");
     }
 

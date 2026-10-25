@@ -53,7 +53,6 @@ mod connector_db_test;
 mod connector_encryption_test;
 mod connector_load_issues_test;
 mod connector_ops_test;
-mod connector_redis_test;
 mod cron_channel_validation_test;
 mod cron_runtime_test;
 mod data_mounts_test;

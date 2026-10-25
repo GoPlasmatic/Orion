@@ -210,7 +210,7 @@ Add unit tests inline in the relevant module using `#[cfg(test)]` blocks. See `s
 
 ### Container-gated tests
 
-Tests that need a real backend (PostgreSQL, MySQL, Redis, Vault, or a
+Tests that need a real backend (PostgreSQL, MySQL, Vault, or a
 multi-node cluster) are `#[ignore]`d, so `cargo test` skips
 them locally. CI runs every one of them; run them yourself with Docker up
 ([`tests/README.md`](crates/orion-server/tests/README.md) explains the six-binary layout, why the

@@ -26,7 +26,7 @@
 | `ttl_secs` | integer | no | `300` | Seconds an entry lives. |
 | `cache_key_fields` | array of strings | no | whole payload | Payload fields that form the cache key. |
 | `key_logic` | JSONLogic | no | — | Computes the cache key over `{data, metadata}`. Takes precedence over `cache_key_fields`. |
-| `connector` | string | no | in-memory | Name of a [cache connector](../connectors/index.md) backing the cache. In cluster mode the default is the cluster's shared database. |
+| `connector` | string | no | in-memory | Name of a [cache connector](../connectors/cache.md), a per-node memory store, backing the cache. In cluster mode the default is the cluster's shared database, and naming a connector refuses to load. |
 | `namespaces` | array of strings | no | — | 1 to 8 [invalidation namespaces](#invalidation) the channel's entries belong to. Each name is 1–64 of `a-z 0-9 _ - . :`. |
 | `coalesce_misses` | boolean | no | `false` | [Coalesce concurrent misses](#coalescing-misses) for one key on this node, so an expiry under load costs one workflow run. |
 
@@ -72,11 +72,11 @@ Each namespace has a version counter in the response-cache store. An entry recor
 
 Behaviour:
 
-- **One round trip.** The versions are read in the same `MGET` as the entry, so a namespaced lookup costs what a plain one does.
+- **One round trip.** The versions are read in the same batched read as the entry, so a namespaced lookup costs what a plain one does.
 - **No stale store.** An entry is stored with the versions read at its lookup, before the workflow ran. An invalidation that lands while the workflow is running makes the entry it produces stale at once, rather than pinning a response computed from the old data.
-- **`ttl_secs` is the ceiling.** An invalidation that fails to reach a store (an unreachable Redis, say) leaves entries there to expire at their TTL, so the TTL bounds the staleness even then.
-- **Every store.** An invalidation bumps the namespace in the default store, in every in-memory response-cache store on the node, and in every Redis cache connector. A store it cannot reach is logged and skipped. A channel archived with live entries and reactivated later therefore reads them against an already-bumped counter.
-- **The counter's key** is `orion:rc:ns:<namespace>`, in each store. `INCR` on it from outside Orion is an invalidation too.
+- **`ttl_secs` is the ceiling.** An invalidation that fails to reach a store (an unreachable shared database, say) leaves entries there to expire at their TTL, so the TTL bounds the staleness even then.
+- **Every store.** An invalidation bumps the namespace in the default store and in every in-memory response-cache store on the node, the built-in one and each cache connector's. A store it cannot reach is logged and skipped. A channel archived with live entries and reactivated later therefore reads them against an already-bumped counter.
+- **The counter's key** is `orion:rc:ns:<namespace>`, in each store.
 - A lookup that cannot read the counters, or finds one holding something other than an integer, bypasses the cache for that request and stores nothing.
 
 A namespaced entry is stored under a key prefix of its own, so an older binary never reads one as a response body. An older binary also refuses the `namespaces` field and quarantines the channel. During a rolling upgrade, only nodes that understand the field serve such a channel.

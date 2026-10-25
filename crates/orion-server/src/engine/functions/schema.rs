@@ -331,7 +331,7 @@ use super::storage_presign::STORAGE_PRESIGN_FIELDS;
 const REGISTRY: &[FunctionSchema] = &[
     FunctionSchema {
         name: "cache_read",
-        description: "Read a value from a cache connector (Redis or in-memory).",
+        description: "Read a value from a cache connector (per-node, in memory).",
         category: "connector",
         input_fields: CACHE_READ_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },

@@ -3,7 +3,7 @@
 //! The write-side half of `cache.namespaces` (see `channel::cache_namespace`).
 //! A workflow that changes the data a namespace covers bumps it, and every
 //! channel response cached under that namespace stops matching — on this node
-//! and, through the shared Redis, on every node.
+//! and, in a cluster, through the shared store on every node.
 //!
 //! It takes no connector, deliberately. A response-cache entry can live in any
 //! store a channel resolves — the default one or any cache connector — and the
@@ -23,7 +23,6 @@ use dataflow_rs::{Ctx, Expr, Function, Outcome, Path};
 use super::connector_helpers::to_exec_error;
 use super::schema::{FieldKind, FieldSchema};
 use crate::channel::cache_namespace;
-use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
@@ -55,12 +54,11 @@ fn check_namespaces(namespaces: &[String]) -> Result<(), HandlerError> {
 /// stores it reached.
 async fn invalidate(
     loader: &crate::channel::ChannelLoader,
-    registry: &ConnectorRegistry,
     pool: &CachePool,
     namespaces: &[String],
 ) -> Result<usize, HandlerError> {
     let stores = loader
-        .invalidate_namespaces(registry, pool, namespaces, "workflow")
+        .invalidate_namespaces(pool, namespaces, "workflow")
         .await
         .map_err(to_exec_error)?;
     tracing::debug!(namespaces = ?namespaces, stores, "Invalidated response-cache namespaces");
@@ -85,7 +83,6 @@ pub struct CacheInvalidateConfig {
 /// its name as 1.12's were.
 pub struct CacheInvalidateFunction {
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
-    pub registry: Arc<ConnectorRegistry>,
     pub cache_pool: Arc<CachePool>,
 }
 
@@ -109,13 +106,7 @@ impl CacheInvalidateFunction {
             .as_ref()
             .map(|out| kit::output_path(ctx, out, Some(&kit::DATA)))
             .transpose()?;
-        let stores = invalidate(
-            &self.channel_loader,
-            &self.registry,
-            &self.cache_pool,
-            &namespaces,
-        )
-        .await?;
+        let stores = invalidate(&self.channel_loader, &self.cache_pool, &namespaces).await?;
         Ok(output.map(|path| {
             let answer = OwnedDataValue::Object(vec![
                 ("namespaces".to_string(), namespaces.len().into()),
@@ -187,16 +178,14 @@ mod tests {
     /// cache, made as a channel's first cached response makes it.
     struct Stores {
         pool: Arc<CachePool>,
-        registry: Arc<ConnectorRegistry>,
         loader: Arc<crate::channel::ChannelLoader>,
     }
 
     fn stores() -> Stores {
-        let pool = Arc::new(CachePool::new(4, 60, 128));
+        let pool = Arc::new(CachePool::new(60, 128));
         pool.default_memory(CachePurpose::ResponseCache);
         Stores {
             pool,
-            registry: Arc::new(ConnectorRegistry::new(Default::default())),
             loader: Arc::new(crate::channel::ChannelLoader::new()),
         }
     }
@@ -205,7 +194,6 @@ mod tests {
         fn function(&self) -> CacheInvalidateFunction {
             CacheInvalidateFunction {
                 channel_loader: self.loader.clone(),
-                registry: self.registry.clone(),
                 cache_pool: self.pool.clone(),
             }
         }

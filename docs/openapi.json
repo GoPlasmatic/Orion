@@ -9015,7 +9015,7 @@
           "Operational"
         ],
         "summary": "Liveness probe",
-        "description": "Liveness probe. Returns `200 {\"status\":\"ok\"}` as long as the process is running and the HTTP server is accepting connections — it performs no dependency checks, so a database or Redis outage must not restart the pod. Use `/readyz` for rotation decisions and `/health` for a detailed report. Unauthenticated, so probes work without provisioning an admin key.",
+        "description": "Liveness probe. Returns `200 {\"status\":\"ok\"}` as long as the process is running and the HTTP server is accepting connections — it performs no dependency checks, so a database outage must not restart the pod. Use `/readyz` for rotation decisions and `/health` for a detailed report. Unauthenticated, so probes work without provisioning an admin key.",
         "operationId": "liveness_probe",
         "responses": {
           "200": {
@@ -9373,7 +9373,7 @@
           "stores": {
             "type": "integer",
             "format": "int64",
-            "description": "How many response-cache stores the bump reached: the default store,\neach in-memory store on the node that answered, and each Redis cache\nconnector. A shared Redis carries the bump to every node.",
+            "description": "How many response-cache stores the bump reached: the default store\nand each in-memory store on the node that answered. In a cluster the\ndefault store is the shared database, which carries the bump to every\nnode.",
             "minimum": 0
           }
         }
@@ -10603,7 +10603,7 @@
               "stores": {
                 "type": "integer",
                 "format": "int64",
-                "description": "How many response-cache stores the bump reached: the default store,\neach in-memory store on the node that answered, and each Redis cache\nconnector. A shared Redis carries the bump to every node.",
+                "description": "How many response-cache stores the bump reached: the default store\nand each in-memory store on the node that answered. In a cluster the\ndefault store is the shared database, which carries the bump to every\nnode.",
                 "minimum": 0
               }
             }

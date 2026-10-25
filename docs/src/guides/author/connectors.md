@@ -1,4 +1,4 @@
-<!-- description: Create Orion connectors for HTTP APIs, SQL, MongoDB, Redis, Kafka, SMTP and object storage, with secrets by reference and per-operation gates. -->
+<!-- description: Create Orion connectors for HTTP APIs, SQL, MongoDB, Kafka, SMTP, object storage and in-memory caches, with secrets by reference and per-operation gates. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -75,7 +75,7 @@ Connections to private ranges are refused unless the connector says otherwise:
 { "allow_private_urls": true }
 ```
 
-Most databases and caches *are* private, so most connectors set this. The point is that reaching an internal address becomes a stated decision. The unstated case, a workflow-authored connector reaching a metadata endpoint, stays refused by default.
+Most databases *are* private, so most connectors set this. The point is that reaching an internal address becomes a stated decision. The unstated case, a workflow-authored connector reaching a metadata endpoint, stays refused by default.
 
 ## Use it from a workflow
 
@@ -115,7 +115,7 @@ Test the connector from the API:
 curl -s -X POST http://localhost:8080/api/v2/admin/connectors/orders-db/test
 ```
 
-For a `db` or `cache` connector this opens a real connection. For `http` it issues a real GET with real credentials, which is the point: a wrong bearer token is invisible until traffic hits it. A `401` or `403` is reported as *not* reachable. Before the server is running at all, `orion-server test-connectivity` probes the configured database and, when enabled, Kafka.
+For a `db` connector this opens a real connection, and for `cache` it reads its in-memory store. For `http` it issues a real GET with real credentials, which is the point: a wrong bearer token is invisible until traffic hits it. A `401` or `403` is reported as *not* reachable. Before the server is running at all, `orion-server test-connectivity` probes the configured database and, when enabled, Kafka.
 
 ## Keep it healthy
 

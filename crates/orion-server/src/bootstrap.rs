@@ -278,9 +278,9 @@ pub async fn build_engine_components(
         crate::engine::FunctionRegistry::builtin().clone(),
     ));
 
-    // Build cache pool (memory backend always available, redis always compiled)
+    // The in-memory cache backends behind `cache` connectors and the
+    // single-node dedup/response-cache defaults.
     let cache_pool = Arc::new(crate::connector::cache_backend::CachePool::new(
-        config.engine.max_pool_cache_entries,
         config.engine.cache_cleanup_interval_secs,
         config.engine.max_memory_cache_entries,
     ));
@@ -932,8 +932,8 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         metrics_handle,
     } = params;
 
-    // Cluster runtime: instance identity + shared Redis (fails fast when
-    // enabled and Redis is unreachable).
+    // Cluster runtime: instance identity and the shared store over the state
+    // database.
     let cluster = crate::cluster::init_cluster_runtime(&config.cluster, &pool).await?;
     tracing::info!(
         instance_id = %cluster.instance_id,

@@ -564,8 +564,8 @@ pub struct ChannelTracingConfig {
 
 /// What a guard does when its backing store cannot answer (N7).
 ///
-/// Applies to the shared-Redis rate-limit window and to Redis-backed dedup
-/// stores: a backend outage forces a choice between availability and
+/// Applies to the cluster's shared rate-limit window and to dedup stores
+/// over the shared store: a backend outage forces a choice between availability and
 /// enforcement. `allow` (the default) keeps serving without the guard;
 /// `deny` refuses the request with `503` — the right trade for
 /// payment/idempotency workloads where a duplicate is worse than an error.
@@ -609,7 +609,7 @@ pub struct ChannelRateLimitConfig {
     /// control and not for a quota.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_headers: Option<Vec<String>>,
-    /// Policy when the rate-limit backend (the shared cluster Redis) cannot
+    /// Policy when the rate-limit backend (the cluster's shared store) cannot
     /// answer. Irrelevant to the in-process limiter, which cannot fail.
     #[serde(default)]
     pub on_backend_error: BackendErrorPolicy,
@@ -695,8 +695,9 @@ pub struct DeduplicationConfig {
     #[serde(default)]
     pub window_secs: Option<u64>,
     /// Optional cache connector name for the dedup backend.
-    /// When set, uses the connector's backend (redis or memory).
-    /// When absent, uses the built-in in-memory store.
+    /// When set, uses that connector's in-memory store (refused in cluster
+    /// mode). When absent, uses the built-in in-memory store, or the
+    /// cluster's shared store in cluster mode.
     #[serde(default)]
     pub connector: Option<String>,
     /// Policy when the dedup backend cannot answer: without it, an outage

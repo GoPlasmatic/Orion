@@ -1,9 +1,9 @@
 //! Multi-instance (HA) coordination runtime.
 //!
 //! One [`ClusterRuntime`] lives on `AppState`. With `cluster.enabled = false`
-//! (the default) there is no Redis connection or shared backend. Configuration
-//! reconciliation still runs so failed inline reloads can recover. When enabled it
-//! carries the shared Redis handle, the default shared cache backend, the
+//! (the default) there is no shared backend. Configuration reconciliation
+//! still runs so failed inline reloads can recover. When enabled it carries
+//! the default shared cache backend (over the state database), the
 //! [`ClusterRepository`] used for epoch/lease coordination, and the last
 //! epoch values this node has applied.
 

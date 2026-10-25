@@ -1,9 +1,8 @@
 //! `/readyz` component reporting (D15, O10).
 //!
-//! The cluster-Redis probe only appears when cluster mode is on — a
-//! single-node deployment has no shared Redis to be unready about. The
-//! negative case (Redis unreachable → 503) needs a real container and lives
-//! in `tests/cluster`.
+//! A cluster's shared store lives in the state database, so the database
+//! ping covers it; the `cluster_redis` component a cluster with a Redis
+//! used to report is gone, and must stay gone.
 
 use axum::http::StatusCode;
 use tower::ServiceExt;
@@ -11,7 +10,7 @@ use tower::ServiceExt;
 use crate::common::{self, body_json, json_request};
 
 #[tokio::test]
-async fn readyz_omits_cluster_redis_on_a_single_node() {
+async fn readyz_reports_no_cluster_redis_component() {
     let app = common::test_app().await;
     let resp = app
         .oneshot(json_request("GET", "/readyz", None))
@@ -24,7 +23,7 @@ async fn readyz_omits_cluster_redis_on_a_single_node() {
     assert_eq!(body["components"]["engine"], "ok");
     assert!(
         body["components"].get("cluster_redis").is_none(),
-        "cluster_redis must be absent outside cluster mode: {body}"
+        "the cluster_redis component is gone: {body}"
     );
 }
 

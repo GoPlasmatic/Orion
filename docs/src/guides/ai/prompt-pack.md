@@ -27,7 +27,7 @@ Base URL: http://localhost:8080 (adjust if told otherwise).
 - CHANNEL: a service endpoint (REST route, Kafka topic or cron schedule) that
   routes to a workflow
 - CONNECTOR: a named connection to an external system (HTTP API, SQL database,
-  MongoDB, Elasticsearch, Redis cache, Kafka, SMTP, object storage), referenced
+  MongoDB, Elasticsearch, Kafka, SMTP, object storage, an in-memory cache), referenced
   from tasks by name
 
 ## Workflow JSON

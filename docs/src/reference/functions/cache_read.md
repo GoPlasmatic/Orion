@@ -1,11 +1,11 @@
-<!-- description: The cache_read task function: read one key, or several in one round trip, from a Redis or in-memory cache connector, with null for a missing key. -->
+<!-- description: The cache_read task function: read one key, or several in one round trip, from a per-node in-memory cache connector, with null for a missing key. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
 # `cache_read`
 
-Reads a key, or several keys at once, from a cache connector (Redis or the
-built-in in-memory backend). Missing keys yield `null`.
+Reads a key, or several keys at once, from a cache connector, a per-node
+in-memory store. Missing keys yield `null`.
 
 ## Synopsis
 
@@ -13,7 +13,7 @@ built-in in-memory backend). Missing keys yield `null`.
 {
   "name": "cache_read",
   "input": {
-    "connector": "redis",
+    "connector": "cache",
     "key": "rate:42",
     "output": "data.cached"
   }
@@ -24,7 +24,7 @@ built-in in-memory backend). Missing keys yield `null`.
 
 `cache_read` is a connector function. It names a [connector](../connectors/index.md) for its credentials and endpoint. Orion validates its `input` when the workflow is saved, and the call runs through the connector's circuit breaker.
 
-`keys` in place of `key` reads several keys in one round trip (one `MGET` on Redis). It writes an array in the same order, with `null` for each miss. A route that depends on two [generation counters](./cache_incr.md) reads both before it looks up its entry, in one call. Exactly one of `key` and `keys` is required; the workflow is refused at save time otherwise.
+`keys` in place of `key` reads several keys in one call. It writes an array in the same order, with `null` for each miss. A route that depends on two [generation counters](./cache_incr.md) reads both before it looks up its entry, in one call. Exactly one of `key` and `keys` is required; the workflow is refused at save time otherwise.
 
 **Retry safety:** `read`. See [Retry safety](./retry-safety.md) for what the answer costs.
 
@@ -40,11 +40,11 @@ built-in in-memory backend). Missing keys yield `null`.
 ## Examples
 
 ```json
-{ "name": "cache_read", "input": { "connector": "redis", "key": "rate:42", "output": "data.cached" } }
+{ "name": "cache_read", "input": { "connector": "cache", "key": "rate:42", "output": "data.cached" } }
 ```
 
 ```json
-{ "name": "cache_read", "input": { "connector": "redis", "keys": ["gen:ladder", "gen:season"], "output": "temp_data.gens" } }
+{ "name": "cache_read", "input": { "connector": "cache", "keys": ["gen:ladder", "gen:season"], "output": "temp_data.gens" } }
 ```
 
 ## Related

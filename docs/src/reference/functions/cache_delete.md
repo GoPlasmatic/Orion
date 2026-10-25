@@ -1,4 +1,4 @@
-<!-- description: The cache_delete task function: delete exact keys from a Redis or in-memory cache connector, so a write can drop the entries it made stale. -->
+<!-- description: The cache_delete task function: delete exact keys from a per-node in-memory cache connector, so a write can drop the entries it made stale. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
@@ -12,7 +12,7 @@ Deletes exact keys from a cache connector, and reports how many existed.
 {
   "name": "cache_delete",
   "input": {
-    "connector": "redis",
+    "connector": "cache",
     "keys": [{ "cat": ["ladder:", { "var": "data.game" }] }],
     "output": "data.invalidated"
   }
@@ -23,9 +23,9 @@ Deletes exact keys from a cache connector, and reports how many existed.
 
 `cache_delete` is a connector function. It names a [connector](../connectors/index.md) for its credentials and endpoint. Orion validates its `input` when the workflow is saved, and the call runs through the connector's circuit breaker.
 
-It is the invalidation half of caching a read in a workflow. The workflow that changes the data deletes the entries it made stale, rather than waiting out their TTL. On Redis the keys go in one `DEL`. A key that is not present is not an error; it is not counted.
+It is the invalidation half of caching a read in a workflow. The workflow that changes the data deletes the entries it made stale, rather than waiting out their TTL. A key that is not present is not an error; it is not counted.
 
-Keys are exact. There is no prefix or pattern form, because on Redis one would be a `SCAN` over the whole keyspace. To retire a family of keys at once, embed a generation counter in each key and bump it with [`cache_incr`](./cache_incr.md). To invalidate a channel's response cache, use [`cache.namespaces`](../channel-config/cache.md#invalidation) and [`cache_invalidate`](./cache_invalidate.md).
+Keys are exact. There is no prefix or pattern form, because one would be a scan over the whole keyspace. To retire a family of keys at once, embed a generation counter in each key and bump it with [`cache_incr`](./cache_incr.md). To invalidate a channel's response cache, use [`cache.namespaces`](../channel-config/cache.md#invalidation) and [`cache_invalidate`](./cache_invalidate.md).
 
 A delete changes what later reads see, so a connector whose `write` [operation gate](../connectors/cache.md) is off refuses it, as it refuses `cache_write`. It reaches the same keyspace as `cache_read` and `cache_write`, never the channel deduplication store or response cache.
 
@@ -42,7 +42,7 @@ A delete changes what later reads see, so a connector whose `write` [operation g
 ## Examples
 
 ```json
-{ "name": "cache_delete", "input": { "connector": "redis", "keys": ["ladder:chess", "ladder:go"] } }
+{ "name": "cache_delete", "input": { "connector": "cache", "keys": ["ladder:chess", "ladder:go"] } }
 ```
 
 ## Related

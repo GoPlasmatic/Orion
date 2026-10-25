@@ -39,7 +39,7 @@ fn json_response(status: StatusCode, body: String) -> Response {
 /// per-request profile when one is in scope.
 ///
 /// The cache store does not hold up the response: a store that does I/O
-/// (Redis) runs in the background, alongside the trace insert, and carries
+/// (the cluster's shared store) runs in the background, alongside the trace insert, and carries
 /// the coalescing guard with it, so callers waiting on this key are released
 /// once the value is there. An in-process store is a map insert and runs
 /// inline, so the next request for the key always sees it.

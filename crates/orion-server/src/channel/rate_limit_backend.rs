@@ -28,7 +28,7 @@ pub trait RateLimitBackend: Send + Sync {
     /// when asked, so a channel keyed by client identity would otherwise grow
     /// one entry per address (or header value) ever seen and never shrink. The
     /// supervised limiter-prune task calls this periodically; a store that ages
-    /// its own keys out (Redis) leaves it a no-op.
+    /// its own keys out (the cluster's shared store) leaves it a no-op.
     fn prune(&self) {}
 }
 

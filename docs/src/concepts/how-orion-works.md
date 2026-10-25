@@ -29,7 +29,7 @@ Every Orion service has a channel and a workflow. Add connectors when its logic 
 |-----------|------------|----------|
 | **[Channel](./channels.md)** | The service's entry point: a REST route, a plain HTTP name, a Kafka topic, or a cron schedule | `POST /orders`, `GET /users/{id}`, topic `order.placed`, `0 15 2 * * *` |
 | **[Workflow](./workflows.md)** | The ordered task pipeline that is the business logic | Parse input → validate → enrich → transform → respond |
-| **[Connector](./connectors.md)** | A reusable client connection to an external system | PostgreSQL, Redis, MongoDB, Elasticsearch, a Kafka cluster, a REST API |
+| **[Connector](./connectors.md)** | A reusable client connection to an external system | PostgreSQL, MongoDB, Elasticsearch, a Kafka cluster, a REST API |
 
 Channels receive traffic. Workflows process it. Connectors reach outside. Rate limiting, metrics, retries and versioning are the runtime's job, not yours.
 

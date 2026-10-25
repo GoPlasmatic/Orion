@@ -138,7 +138,7 @@ just test-containers    # all of the below, in CI's exact invocations
 
 | Suite | Covers |
 |-------|--------|
-| `integration -- --ignored <filters>` | Portable-dialect parity/round-trips on Postgres/MySQL/Mongo/ES, raw-SQL backends, Redis cache/dedup, column-type matrix, dynamic inputs |
+| `integration -- --ignored <filters>` | Portable-dialect parity/round-trips on Postgres/MySQL, raw-SQL backends, Vault secret resolution, column-type matrix |
 | `integration -- --ignored sql_check_test` | `sql check` against PostgreSQL 16 (grants proven), an older PostgreSQL (schema only), a rolled-back `--schema`, and MySQL |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |

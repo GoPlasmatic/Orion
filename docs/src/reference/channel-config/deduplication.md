@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | `header` | string | yes | — | Header carrying the idempotency key. |
 | `window_secs` | integer | no | `300` | Seconds a key is remembered. |
-| `connector` | string | no | in-memory store | Name of a [cache connector](../connectors/index.md) backing the dedup store. In cluster mode the default is the cluster's shared database. |
+| `connector` | string | no | in-memory store | Name of a [cache connector](../connectors/cache.md), a per-node memory store, backing the dedup store. In cluster mode the default is the cluster's shared database, and naming a connector refuses to load. |
 | `on_backend_error` | string | no | `"allow"` | `allow` proceeds without the check when the store cannot answer; `deny` refuses with `503` — never `409`, because the key is unverifiable, not a known duplicate. |
 
 Rules:

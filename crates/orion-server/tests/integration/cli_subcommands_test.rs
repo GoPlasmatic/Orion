@@ -93,11 +93,11 @@ fn scalar_connector_fields_evaluate_and_documents_still_fold() {
                 {"path":"data.id","logic":42},
                 {"path":"data.page","logic":5}]}}},
             {"id":"c","name":"c","function":{"name":"cache_read","input":{
-                "connector":"redis",
+                "connector":"cache",
                 "key":{"cat":["tenant:",{"var":"data.tenant"},":order:",{"var":"data.id"}]},
                 "output":"data.hit"}}},
             {"id":"m","name":"m","function":{"name":"cache_write","input":{
-                "connector":"redis","key":"orders",
+                "connector":"cache","key":"orders",
                 "value":{"tenant":{"var":"data.tenant"},"$set":{"page":1}},
                 "ttl_secs":{"var":"data.page"}}}}
         ]
@@ -1693,7 +1693,7 @@ fn a_computed_output_destination_writes_where_the_message_says() {
             {"id":"seed","name":"seed","function":{"name":"map","input":{"mappings":[
                 {"path":"data.tenant","logic":"acme"}]}}},
             {"id":"r","name":"r","function":{"name":"cache_read","input":{
-                "connector":"redis","key":"k",
+                "connector":"cache","key":"k",
                 "output":{"cat":["data.by_tenant.",{"var":"data.tenant"}]}}}}
         ]
     }"#,

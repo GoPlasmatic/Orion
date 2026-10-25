@@ -441,7 +441,7 @@ pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl Into
     description = "\
 Liveness probe. Returns `200 {\"status\":\"ok\"}` as long as the process is \
 running and the HTTP server is accepting connections — it performs no \
-dependency checks, so a database or Redis outage must not restart the pod. \
+dependency checks, so a database outage must not restart the pod. \
 Use `/readyz` for rotation decisions and `/health` for a detailed report. \
 Unauthenticated, so probes work without provisioning an admin key.",
     responses(
@@ -568,7 +568,7 @@ fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskR
     (component, report)
 }
 
-/// Readiness probe — checks DB, engine, cluster Redis, background tasks, and
+/// Readiness probe — checks DB, engine, background tasks, and
 /// startup readiness. Use for Kubernetes
 /// `readinessProbe`.
 #[utoipa::path(

@@ -55,7 +55,6 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str, slots: &[
     for slot in slots {
         match slot {
             PoolSlot::Sql => state.caches.sql_pool_cache.evict(connector_name).await,
-            PoolSlot::Cache => state.caches.cache_pool.evict_pool(connector_name).await,
         }
     }
     state
@@ -1000,11 +999,8 @@ async fn probe_cache(
         .await
         .map(|_| ())
         .map_err(|e| {
-            // S21: same redaction as `probe_db` — the backend error can
-            // carry the Redis host:port. And like `probe_db`, the backend
-            // handle may be cached from an earlier probe, so a failed read
-            // is not proof a connection existed — the wording must not
-            // claim one.
+            // S21: same redaction as `probe_db` — the backend error stays
+            // in the server log, and the wording claims no connection.
             tracing::warn!(connector = %name, error = %e, "connectivity probe read failed");
             "the probe read failed — the backend may be unreachable; the driver \
              error is in the server log"

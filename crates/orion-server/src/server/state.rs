@@ -14,8 +14,8 @@ use crate::storage::repositories::Repositories;
 
 /// Shared cache and external connection-pool caches, grouped (R26).
 pub struct Caches {
-    /// Cache backends (memory/Redis) for workflow cache functions, dedup
-    /// stores and response caches.
+    /// In-memory cache backends for workflow cache functions, dedup stores
+    /// and response caches.
     pub cache_pool: Arc<CachePool>,
     /// External SQL connection pool cache — shared so admin routes can evict stale pools.
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
@@ -43,7 +43,6 @@ impl Caches {
         for slot in PoolSlot::ALL {
             match slot {
                 PoolSlot::Sql => self.sql_pool_cache.evict_all().await,
-                PoolSlot::Cache => self.cache_pool.evict_all_pools().await,
             }
         }
         self.provider_pools.evict_all().await;

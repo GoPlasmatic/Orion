@@ -257,7 +257,7 @@ impl TestDeps {
             connectors: ConnectorRegistry::new(
                 crate::config::EngineConfig::default().circuit_breaker,
             ),
-            cache_pool: CachePool::new(4, 60, 1000),
+            cache_pool: CachePool::new(60, 1000),
             exprs: test_exprs(),
             jwks: test_jwks(),
             http_client: reqwest::Client::new(),
@@ -334,7 +334,7 @@ fn cluster_backends() -> ClusterBackends {
     ClusterBackends {
         // Stands in for the cluster's shared store, which serves both
         // internal purposes (their keys are structurally prefixed).
-        default_cache: Some(CachePool::new(4, 60, 1000).default_memory(CachePurpose::Dedup)),
+        default_cache: Some(CachePool::new(60, 1000).default_memory(CachePurpose::Dedup)),
         shared: None,
     }
 }
@@ -381,7 +381,7 @@ async fn registry_with_cache(name: &str, write: bool) -> ConnectorRegistry {
 /// F22e: a dedup store *writes* through its connector, so a cache
 /// connector gated `write: false` cannot back one. Without this the gate
 /// would cover `cache_write` only, and a channel pointing its dedup store
-/// at a shared Redis would keep writing to it — which is exactly what the
+/// at the connector would keep writing to it — which is exactly what the
 /// gate exists to prevent.
 #[tokio::test]
 async fn test_write_gated_connector_cannot_back_a_dedup_store() {
@@ -396,7 +396,7 @@ async fn test_write_gated_connector_cannot_back_a_dedup_store() {
             ReloadDeps {
                 vars: None,
                 connector_registry: &registry_with_cache("ro-cache", false).await,
-                cache_pool: &CachePool::new(4, 60, 1000),
+                cache_pool: &CachePool::new(60, 1000),
                 exprs: &test_exprs(),
                 jwks: &test_jwks(),
                 http_client: &reqwest::Client::new(),
@@ -435,7 +435,7 @@ async fn test_ungated_connector_still_backs_a_dedup_store() {
             ReloadDeps {
                 vars: None,
                 connector_registry: &registry_with_cache("rw-cache", true).await,
-                cache_pool: &CachePool::new(4, 60, 1000),
+                cache_pool: &CachePool::new(60, 1000),
                 exprs: &test_exprs(),
                 jwks: &test_jwks(),
                 http_client: &reqwest::Client::new(),
@@ -472,7 +472,7 @@ async fn test_single_node_write_gated_connector_falls_back() {
             ReloadDeps {
                 vars: None,
                 connector_registry: &registry_with_cache("ro-cache", false).await,
-                cache_pool: &CachePool::new(4, 60, 1000),
+                cache_pool: &CachePool::new(60, 1000),
                 exprs: &test_exprs(),
                 jwks: &test_jwks(),
                 http_client: &reqwest::Client::new(),

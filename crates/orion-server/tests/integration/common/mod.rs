@@ -318,24 +318,6 @@ pub fn cache_connector_memory(name: &str) -> serde_json::Value {
     })
 }
 
-/// A Redis-backed cache connector (for #[ignore] tests).
-///
-/// `allow_private_urls` is required — the S6 endpoint check refuses loopback
-/// targets, and the Redis container publishes on 127.0.0.1.
-pub fn cache_connector_redis(name: &str, url: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": name,
-        "name": name,
-        "connector_type": "cache",
-        "config": {
-            "type": "cache",
-            "backend": "redis",
-            "url": url,
-            "allow_private_urls": true
-        }
-    })
-}
-
 /// Create a connector via admin API and return the connector ID.
 pub async fn create_connector(app: &axum::Router, connector_json: serde_json::Value) -> String {
     let resp = app

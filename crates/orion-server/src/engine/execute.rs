@@ -1046,14 +1046,13 @@ mod tests {
     #[tokio::test]
     async fn pinned_generation_isolates_connector_snapshot_across_rotation() {
         let registry = crate::connector::ConnectorRegistry::default();
-        let initial_cfg = crate::connector::ConnectorConfig::Cache(
+        let initial_cfg = crate::connector::ConnectorConfig::Http(
             serde_json::from_value(serde_json::json!({
-                "backend": "redis",
-                "url": "redis://cache-gen1.internal:6379"
+                "url": "https://api-gen1.internal"
             }))
-            .expect("valid cache config"),
+            .expect("valid http config"),
         );
-        registry.insert_for_test("shared-cache", initial_cfg).await;
+        registry.insert_for_test("shared-api", initial_cfg).await;
 
         let handle = crate::runtime::generation::test_handle();
         handle.publish_parts(crate::runtime::generation::GenerationParts {
@@ -1071,36 +1070,29 @@ mod tests {
         let pinned_gen = handle.load();
 
         // Rotate connector in the live registry to a different URL.
-        let rotated_cfg = crate::connector::ConnectorConfig::Cache(
+        let rotated_cfg = crate::connector::ConnectorConfig::Http(
             serde_json::from_value(serde_json::json!({
-                "backend": "redis",
-                "url": "redis://cache-gen2.internal:6379"
+                "url": "https://api-gen2.internal"
             }))
-            .expect("valid cache config"),
+            .expect("valid http config"),
         );
-        registry.insert_for_test("shared-cache", rotated_cfg).await;
+        registry.insert_for_test("shared-api", rotated_cfg).await;
 
         // Outside a pinned generation, the live registry returns the new URL.
-        let live = registry.get("shared-cache").await.expect("live config");
-        let crate::connector::ConnectorConfig::Cache(live_cache) = live.as_ref() else {
-            panic!("expected cache connector");
+        let live = registry.get("shared-api").await.expect("live config");
+        let crate::connector::ConnectorConfig::Http(live_http) = live.as_ref() else {
+            panic!("expected http connector");
         };
-        assert_eq!(
-            live_cache.url.as_deref(),
-            Some("redis://cache-gen2.internal:6379")
-        );
+        assert_eq!(live_http.url, "https://api-gen2.internal");
 
         // Inside `PINNED_GENERATION`, `registry.get` returns the pinned snapshot's URL.
         crate::runtime::generation::PINNED_GENERATION
             .scope(pinned_gen, async {
-                let pinned = registry.get("shared-cache").await.expect("pinned config");
-                let crate::connector::ConnectorConfig::Cache(pinned_cache) = pinned.as_ref() else {
-                    panic!("expected cache connector");
+                let pinned = registry.get("shared-api").await.expect("pinned config");
+                let crate::connector::ConnectorConfig::Http(pinned_http) = pinned.as_ref() else {
+                    panic!("expected http connector");
                 };
-                assert_eq!(
-                    pinned_cache.url.as_deref(),
-                    Some("redis://cache-gen1.internal:6379")
-                );
+                assert_eq!(pinned_http.url, "https://api-gen1.internal");
             })
             .await;
     }

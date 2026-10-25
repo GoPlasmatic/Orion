@@ -916,10 +916,10 @@ async fn test_connector_url_password_round_trip() {
             "POST",
             "/api/v2/admin/connectors",
             Some(json!({
-                "id": "f34-cache",
-                "name": "f34-cache",
-                "connector_type": "cache",
-                "config": {"backend": "redis", "url": "redis://admin:hunter2@redis:6379"}
+                "id": "f34-api",
+                "name": "f34-api",
+                "connector_type": "http",
+                "config": {"url": "https://admin:hunter2@api.internal"}
             })),
         ))
         .await
@@ -930,7 +930,7 @@ async fn test_connector_url_password_round_trip() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/connectors/f34-cache",
+            "/api/v2/admin/connectors/f34-api",
             None,
         ))
         .await
@@ -938,13 +938,13 @@ async fn test_connector_url_password_round_trip() {
     let body = body_json(resp).await;
     let config: serde_json::Value =
         serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
-    assert_eq!(config["url"], "redis://admin:******@redis:6379");
+    assert_eq!(config["url"], "https://admin:******@api.internal");
 
     let resp = app
         .clone()
         .oneshot(json_request(
             "PUT",
-            "/api/v2/admin/connectors/f34-cache",
+            "/api/v2/admin/connectors/f34-api",
             Some(json!({"config": config})),
         ))
         .await
@@ -1276,27 +1276,38 @@ async fn s6_db_connector_accepts_every_real_backend_scheme() {
 }
 
 #[tokio::test]
-async fn s6_cache_endpoints_are_shape_checked() {
+async fn a_cache_connector_is_memory_only() {
     let app = common::test_app().await;
 
-    // A redis cache pointed at an HTTP endpoint.
+    // `redis` is refused like any unsupported backend, naming the one there is.
     let (status, body) = create_connector_status(
         &app,
-        "s6-cache-http",
-        "cache",
-        json!({"backend": "redis", "url": "http://cache.example.com"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-
-    // rediss:// (TLS) is legitimate.
-    let (status, body) = create_connector_status(
-        &app,
-        "s6-cache-tls",
+        "cache-redis",
         "cache",
         json!({"backend": "redis", "url": "rediss://cache.example.com:6379"}),
     )
     .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid cache backend 'redis'. Must be one of: memory"),
+        "{body}"
+    );
+
+    // A memory connector has no endpoint, so a `url` is refused too.
+    let (status, body) = create_connector_status(
+        &app,
+        "cache-url",
+        "cache",
+        json!({"backend": "memory", "url": "redis://cache.example.com:6379"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) =
+        create_connector_status(&app, "cache-memory", "cache", json!({"backend": "memory"})).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 

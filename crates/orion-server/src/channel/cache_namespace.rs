@@ -22,7 +22,7 @@
 //! Tags (a set of entry keys per tag, deleted on invalidation) were the other
 //! design. They cost a set per tag growing with every stored entry and a
 //! delete per member on invalidation; a counter costs neither and behaves the
-//! same on the in-memory backend and on Redis.
+//! same on the in-memory backend and on the cluster's shared store.
 
 use std::sync::Arc;
 
@@ -30,15 +30,15 @@ use crate::connector::cache_backend::CacheBackend;
 use crate::errors::OrionError;
 
 /// Most namespaces one channel may declare. Each is one more key in the
-/// lookup's `MGET`.
+/// lookup's batched read.
 pub const MAX_NAMESPACES: usize = 8;
 
 /// Longest namespace name.
 pub const MAX_NAMESPACE_LEN: usize = 64;
 
 /// The key a namespace's version counter lives under, in every response-cache
-/// store. Documented: an operator's own tooling may read it, and `redis-cli
-/// INCR orion:rc:ns:<name>` is an invalidation.
+/// store. Documented: in a cluster it is a row of the shared store an
+/// operator's own tooling may read.
 pub fn version_key(namespace: &str) -> String {
     format!("orion:rc:ns:{namespace}")
 }

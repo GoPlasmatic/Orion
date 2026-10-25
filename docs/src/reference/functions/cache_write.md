@@ -1,4 +1,4 @@
-<!-- description: The cache_write task function: write one key to a Redis or in-memory cache connector, JSON-serializing non-string values, with an optional TTL. -->
+<!-- description: The cache_write task function: write one key to a per-node in-memory cache connector, JSON-serializing non-string values, with an optional TTL. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -12,7 +12,7 @@ Writes a key to a cache connector, optionally with a TTL.
 {
   "name": "cache_write",
   "input": {
-    "connector": "redis",
+    "connector": "cache",
     "key": "rate:42",
     "value": 1,
     "ttl_secs": 60
@@ -38,7 +38,7 @@ Writes a key to a cache connector, optionally with a TTL.
 ## Examples
 
 ```json
-{ "name": "cache_write", "input": { "connector": "redis", "key": "rate:42", "value": 1, "ttl_secs": 60 } }
+{ "name": "cache_write", "input": { "connector": "cache", "key": "rate:42", "value": 1, "ttl_secs": 60 } }
 ```
 
 ## Related

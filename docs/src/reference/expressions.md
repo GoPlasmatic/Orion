@@ -218,7 +218,7 @@ Five operators take a shape or a value that is often got wrong. Each bullet stat
 Most of a connector task's fields are JSONLogic, evaluated against the message like anything else on this page. A cache key, a storage key, an email subject or recipient, a TTL, a JWT audience and the data going into `crypto` all are:
 
 ```json
-{ "connector": "redis",
+{ "connector": "cache",
   "key": { "cat": ["tenant:", { "var": "data.tenant" }, ":order:", { "var": "data.id" }] } }
 ```
 

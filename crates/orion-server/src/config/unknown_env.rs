@@ -331,7 +331,8 @@ mod tests {
     /// Exactly what the kubelet injects into a pod whose namespace holds
     /// Services named `orion`, `orion-postgres` and `orion-redis` — which is
     /// what `helm template orion deploy/helm/orion --set devStack.enabled=true`
-    /// renders. Every name is `ORION_`-prefixed and none carries the section
+    /// rendered while the dev stack shipped a Redis, and what a namespace that
+    /// still runs one beside Orion injects. Every name is `ORION_`-prefixed and none carries the section
     /// separator.
     fn injected_service_links() -> Vec<String> {
         names(&[

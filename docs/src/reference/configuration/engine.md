@@ -70,7 +70,7 @@ An enabled connector whose config cannot be loaded — a missing `env://DB_PASSW
 Three surfaces report this:
 
 - `GET /health` sets `components.connectors` to `degraded` and lists the failures under `connectors.failed_to_load`. The overall status becomes `degraded`, but the HTTP status stays **200**: the rest of the instance is serving, and a 503 would pull the node out of its load balancer over a connector nothing in flight may be using. Alert on the field, not the status code.
-- `GET /api/v2/admin/connectors` gives every row a `load_status` of `loaded`, `failed`, or `disabled`, with `load_error` and `load_error_stage` on the failures. The stage is one of `env_substitution`, `json_parse`, `var_reference`, `secret_resolution`, `deserialize` or `endpoint`, the last for a resolved endpoint whose scheme its backend cannot serve.
+- `GET /api/v2/admin/connectors` gives every row a `load_status` of `loaded`, `failed`, or `disabled`, with `load_error` and `load_error_stage` on the failures. The stage is one of `env_substitution`, `json_parse`, `var_reference`, `secret_resolution`, `deserialize` or `endpoint`, the last for a resolved endpoint whose scheme its backend cannot serve. A `cache` connector stored with a backend this build does not have, such as `redis`, fails at `deserialize`.
 - `engine.fail_on_connector_load_error = true` refuses to start at all, so a bad rollout fails where the orchestrator will catch it. This is startup only — a hot reload never takes a running process down.
 
 ### `max_memory_cache_entries`

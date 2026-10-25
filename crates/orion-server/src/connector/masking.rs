@@ -11,7 +11,7 @@
 //!
 //!   - a readable URL-shaped value still has its in-band secrets redacted —
 //!     userinfo password and secret-named query values
-//!     (`redis://:PASSWORD@host`, `?api_key=SECRET`) — so the endpoint stays
+//!     (`postgres://:PASSWORD@host`, `?api_key=SECRET`) — so the endpoint stays
 //!     visible without its credentials;
 //!   - a resolvable secret *reference* (`env://NAME`, `vault://…`) survives
 //!     unmasked wherever it appears: the stored config never held the value,
@@ -646,7 +646,7 @@ pub fn mask_connector(connector: &crate::storage::models::Connector) -> Connecto
 ///
 /// Defined by re-masking the stored config and comparing, rather than by
 /// re-testing key names: that covers whole-value masks
-/// (`"password": "******"`), the URL form (`"url": "redis://u:******@host"`),
+/// (`"password": "******"`), the URL form (`"url": "https://u:******@host"`),
 /// and any masking rule added later, with no second copy of the logic to keep
 /// in sync. A URL that matches neither the stored value nor its masked form
 /// is restored *per position* instead (`restore_url_secrets`) — S18 gave
@@ -838,12 +838,11 @@ mod tests {
 
     #[test]
     fn url_userinfo_password_is_redacted_without_a_username() {
-        let config =
-            r#"{"type":"cache","backend":"redis","url":"redis://:hunter2@cache.internal:6379/0"}"#;
+        let config = r#"{"type":"http","url":"https://:hunter2@api.internal:8443/v1"}"#;
         let masked = mask_connector_secrets(config);
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
-        assert_eq!(val["url"], "redis://:******@cache.internal:6379/0");
-        assert_eq!(val["backend"], "redis");
+        assert_eq!(val["url"], "https://:******@api.internal:8443/v1");
+        assert_eq!(val["type"], "http");
     }
 
     /// H3 inversion: every header *value* is masked, whatever the name — a
@@ -1257,15 +1256,15 @@ mod tests {
     #[test]
     fn test_unmask_restores_url_password() {
         let stored: Value =
-            serde_json::from_str(r#"{"type":"cache","url":"redis://admin:hunter2@redis:6379"}"#)
+            serde_json::from_str(r#"{"type":"http","url":"https://admin:hunter2@api.internal"}"#)
                 .expect("test");
         let mut incoming: Value =
             serde_json::from_str(&mask_connector_secrets(&stored.to_string())).expect("test");
-        assert_eq!(incoming["url"], "redis://admin:******@redis:6379");
+        assert_eq!(incoming["url"], "https://admin:******@api.internal");
 
         unmask_config(&mut incoming, &stored);
 
-        assert_eq!(incoming["url"], "redis://admin:hunter2@redis:6379");
+        assert_eq!(incoming["url"], "https://admin:hunter2@api.internal");
     }
 
     /// Masking is index-preserving, so a list of secrets round-trips per
@@ -1480,7 +1479,7 @@ mod tests {
     #[test]
     fn test_find_masked_value_detects_the_url_form() {
         let config: Value =
-            serde_json::from_str(r#"{"url":"redis://admin:******@redis:6379"}"#).expect("test");
+            serde_json::from_str(r#"{"url":"https://admin:******@api.internal"}"#).expect("test");
         assert_eq!(find_masked_value(&config).as_deref(), Some("url"));
     }
 

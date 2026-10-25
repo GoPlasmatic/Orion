@@ -83,7 +83,7 @@ pub fn validate_connector_config(
     // policy that reads it.
     match &parsed {
         ConnectorConfig::Http(c) => validate_http(c)?,
-        ConnectorConfig::Cache(c) => validate_cache(c)?,
+        ConnectorConfig::Cache(c) => validate_cache(c, config)?,
         // Nothing beyond the shared gate/retry/query checks and the endpoint
         // scheme allow-list above. A db connector is its connection string,
         // and a storage connector's endpoint is scheme-checked.
@@ -136,24 +136,26 @@ fn validate_http(http_config: &crate::connector::HttpConnectorConfig) -> Result<
     Ok(())
 }
 
-/// Cache: the backend name, and the URL redis cannot work without.
-fn validate_cache(cache_config: &crate::connector::CacheConnectorConfig) -> Result<(), OrionError> {
-    if !crate::connector::VALID_CACHE_BACKENDS.contains(&cache_config.backend.as_str()) {
+/// Cache: the backend name, and no endpoint.
+///
+/// `memory` is the only backend, and it opens no socket, so a `url` is a
+/// config written for a backend this build does not have. Refused rather
+/// than ignored: a connector the author believes is shared across nodes
+/// would otherwise quietly become per-node memory. A `null` url passes,
+/// because connectors exported by earlier releases serialized one.
+fn validate_cache(
+    cache_config: &crate::connector::CacheConnectorConfig,
+    raw: &serde_json::Value,
+) -> Result<(), OrionError> {
+    if let Some(reason) = cache_config.unsupported_backend() {
+        return Err(OrionError::validation(reason));
+    }
+    if raw.get("url").is_some_and(|url| !url.is_null()) {
         return Err(OrionError::validation(format!(
-            "Invalid cache backend '{}'. Must be one of: {}",
-            cache_config.backend,
+            "A cache connector has no 'url': its backend is per-node memory. Remove \
+             the 'url' (supported backends: {})",
             crate::connector::VALID_CACHE_BACKENDS.join(", ")
         )));
-    }
-    if cache_config.backend == "redis"
-        && cache_config
-            .url
-            .as_ref()
-            .is_none_or(|u| u.trim().is_empty())
-    {
-        return Err(OrionError::validation(
-            "Cache connector with backend='redis' requires a non-empty 'url'".to_string(),
-        ));
     }
     Ok(())
 }
@@ -920,12 +922,37 @@ mod tests {
         assert!(validate_connector_config(ConnectorType::Cache, &config).is_err());
     }
 
+    /// `memory` is the only backend: `redis` is refused like any other
+    /// unsupported value, naming the supported one, and so is a `url`.
     #[test]
-    fn test_connector_config_cache_redis_requires_url() {
-        let config = json!({"backend": "redis"});
-        assert!(validate_connector_config(ConnectorType::Cache, &config).is_err());
-        let config = json!({"backend": "redis", "url": "redis://localhost:6379"});
-        assert!(validate_connector_config(ConnectorType::Cache, &config).is_ok());
+    fn a_cache_connector_is_memory_only() {
+        for config in [
+            json!({"backend": "redis"}),
+            json!({"backend": "redis", "url": "redis://localhost:6379"}),
+        ] {
+            let err = validate_connector_config(ConnectorType::Cache, &config)
+                .expect_err("redis is not a Community backend");
+            assert!(
+                err.to_string()
+                    .contains("Invalid cache backend 'redis'. Must be one of: memory"),
+                "{err}"
+            );
+        }
+        let err = validate_connector_config(
+            ConnectorType::Cache,
+            &json!({"backend": "memory", "url": "redis://localhost:6379"}),
+        )
+        .expect_err("a memory connector has no url");
+        assert!(err.to_string().contains("no 'url'"), "{err}");
+
+        validate_connector_config(ConnectorType::Cache, &json!({"backend": "memory"}))
+            .expect("memory");
+        // The shape earlier releases exported for a memory connector.
+        validate_connector_config(
+            ConnectorType::Cache,
+            &json!({"backend": "memory", "url": null, "allow_private_urls": false}),
+        )
+        .expect("a null url from an old export");
     }
 
     /// `ALLOWED_RETRY_KEYS` mirrors `RetryConfig` by hand; this pins the two

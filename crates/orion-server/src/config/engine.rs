@@ -8,7 +8,7 @@ use crate::errors::OrionError;
 #[serde(default, deny_unknown_fields)]
 pub struct EngineConfig {
     pub circuit_breaker: crate::connector::circuit_breaker::CircuitBreakerConfig,
-    /// Timeout in seconds for the `/readyz` cluster-Redis ping.
+    /// Timeout in seconds for the health and readiness database ping.
     pub health_check_timeout_secs: u64,
     /// Maximum nesting depth for channel_call invocations.
     pub max_channel_call_depth: u32,
