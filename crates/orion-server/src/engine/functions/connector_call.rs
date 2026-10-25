@@ -269,9 +269,20 @@ async fn execute_connector_call(
              this node has no deployment store"
         )));
     };
-    let Some(conn_row) = store.get_active_connection(connection) else {
+    // The revision the manifest deploys, never one stored since.
+    let deployed = crate::runtime::generation::PINNED_GENERATION
+        .try_with(|generation| {
+            generation
+                .connector_authority
+                .connection_revision(connection)
+        })
+        .ok()
+        .flatten();
+    let Some(conn_row) = deployed.and_then(|revision| store.get_connection(connection, revision))
+    else {
         return Err(forbidden(format!(
-            "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' has no connection revision"
+            "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' is not a member of the \
+             deployed manifest"
         )));
     };
     let provider = match store.get_package(&conn_row.provider_digest) {

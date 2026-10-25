@@ -379,8 +379,25 @@ impl ConnectorRegistry {
         &self,
         repo: &dyn ConnectorRepository,
     ) -> Result<usize, OrionError> {
-        let connectors = repo.list_enabled().await?;
+        let connectors = repo
+            .list_enabled()
+            .await?
+            .into_iter()
+            .map(|c| StoredConnector {
+                id: c.id,
+                name: c.name,
+                connector_type: c.connector_type,
+                config_json: c.config_json,
+            })
+            .collect();
+        Ok(self.load(connectors).await)
+    }
 
+    /// Replace the loaded connectors with `connectors`, each resolved the
+    /// way a stored one is (`resolve_connector_config`): references
+    /// resolved, the typed parse by type, the endpoint checked. One that does
+    /// not resolve is a load issue, never an abort. Answers how many loaded.
+    pub async fn load(&self, connectors: Vec<StoredConnector>) -> usize {
         // Build new map outside the lock to avoid holding it during deserialization
         let mut new_configs = HashMap::new();
         let mut issues: Vec<ConnectorLoadIssue> = Vec::new();
@@ -455,7 +472,7 @@ impl ConnectorRegistry {
             );
         }
         *self.load_issues.write().await = issues;
-        Ok(count)
+        count
     }
 
     /// Insert an already-parsed connector under `name`.
@@ -518,6 +535,18 @@ impl ConnectorRegistry {
     pub async fn reload(&self, repo: &dyn ConnectorRepository) -> Result<usize, OrionError> {
         self.load_from_repo(repo).await
     }
+}
+
+/// One connector to load: a v1 connector row, or a deployed connection over
+/// a built-in driver, in the same shape.
+#[derive(Debug, Clone)]
+pub struct StoredConnector {
+    /// Identifies it in a load issue.
+    pub id: String,
+    /// The name tasks reference it by.
+    pub name: String,
+    pub connector_type: String,
+    pub config_json: String,
 }
 
 /// Why a stored connector did not resolve: the `ConnectorLoadIssue` fields

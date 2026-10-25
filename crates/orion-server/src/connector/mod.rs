@@ -32,7 +32,7 @@ pub use masking::{
 /// token, so testing it takes a connector *load*.
 #[cfg(test)]
 pub(crate) use registry::test_support;
-pub use registry::{ConnectorRegistry, ResolveIssue, resolve_connector_config};
+pub use registry::{ConnectorRegistry, ResolveIssue, StoredConnector, resolve_connector_config};
 
 mod pool_access_counter {
     use std::sync::atomic::AtomicU64;

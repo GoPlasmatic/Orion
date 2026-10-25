@@ -194,3 +194,78 @@ async fn a_manifest_naming_a_missing_definition_is_refused() {
         "{body}"
     );
 }
+
+/// A Connection over a built-in driver is a connector the built-in functions
+/// use: `db_read` reads through a deployed `org.orion.sqlite` connection by
+/// its id, with no v1 connector anywhere.
+#[tokio::test]
+async fn a_deployed_connection_serves_the_built_in_functions() {
+    let app = test_app().await;
+    let sqlite = orion::extensions::foundation::builtin_provider_digest(
+        orion::extensions::foundation::DRIVER_SQLITE,
+    )
+    .expect("a built-in driver");
+    let (status, created) = send(
+        &app,
+        "POST",
+        "/api/v2/admin/connections",
+        Some(json!({
+            "connection_id": "numbers",
+            "revision": 1,
+            "provider_digest": sqlite,
+            "public_config": {"connection_string": "sqlite::memory:"},
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let connection = created["connection"]["configuration_digest"]
+        .as_str()
+        .expect("a digest")
+        .to_string();
+
+    let workflow = upload(
+        &app,
+        json!({"kind": "workflow", "definition": {
+            "name": "Count",
+            "tasks": [{"id": "read", "function": {"name": "db_read", "input": {
+                "connector": "numbers",
+                "query": "SELECT 41 + 1 AS answer",
+                "output": "data.rows"
+            }}}]
+        }}),
+    )
+    .await;
+    let channel = upload(&app, greeting_channel()).await;
+    let mut manifest = manifest(&channel, &workflow);
+    manifest["members"]
+        .as_array_mut()
+        .expect("members")
+        .push(json!({
+            "entity": {"kind": "connection", "id": "numbers", "revision": 1},
+            "definition_digest": connection,
+        }));
+    let (status, applied) = send(
+        &app,
+        "POST",
+        DEPLOYMENTS,
+        Some(json!({
+            "idempotency_key": "numbers-1",
+            "base_revision": 0,
+            "manifest": manifest,
+            "reason": "deploy numbers",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{applied}");
+    assert_eq!(applied["evaluation"]["converged"], true, "{applied}");
+
+    let (status, answer) = send(
+        &app,
+        "POST",
+        "/api/v2/data/greet",
+        Some(json!({"data": {}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["data"]["rows"][0]["answer"], 42, "{answer}");
+}

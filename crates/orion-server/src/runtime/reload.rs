@@ -317,6 +317,56 @@ async fn manifest_definitions(
     })
 }
 
+/// The connectors a manifest generation serves the built-in functions
+/// through: each Connection member over a built-in driver, named by its id,
+/// its configuration the revision's `public_config` with its secret
+/// references in place. A Connection over an uploaded provider serves only
+/// `connector_call` and is not here.
+fn manifest_connectors(
+    state: &AppState,
+    target_revision: u64,
+) -> Result<Vec<crate::connector::StoredConnector>, crate::errors::OrionError> {
+    use crate::extensions::deployment_store::EntityKind;
+    let revision = state
+        .composition
+        .deployments
+        .get_revision(target_revision)
+        .ok_or_else(|| {
+            crate::errors::OrionError::NotFound(format!(
+                "Deployment revision {target_revision} not found"
+            ))
+        })?;
+    let mut connectors = Vec::new();
+    for member in &revision.manifest.members {
+        if member.entity.kind != EntityKind::Connection {
+            continue;
+        }
+        let Some(row) = state
+            .composition
+            .deployments
+            .get_connection(&member.entity.id, member.entity.revision)
+        else {
+            continue;
+        };
+        let Some(driver) = crate::extensions::foundation::builtin_driver(&row.provider_digest)
+        else {
+            continue;
+        };
+        let Some((connector_type, config)) =
+            crate::extensions::foundation::builtin_connector(driver, row.config_with_locators())
+        else {
+            continue;
+        };
+        connectors.push(crate::connector::StoredConnector {
+            id: format!("{}@{}", row.connection_id, row.revision),
+            name: row.connection_id.clone(),
+            connector_type: connector_type.to_string(),
+            config_json: serde_json::to_string(&config)?,
+        });
+    }
+    Ok(connectors)
+}
+
 async fn reload_with_scope(
     state: &AppState,
     scope: Option<crate::cluster::EpochScope>,
@@ -342,7 +392,13 @@ async fn reload_with_manifest(
     // See `AppStateInner::reload_lock`.
     let _reload_guard = state.reload_lock.lock().await;
 
-    let prev_connector_state = if scope.is_some_and(|scope| scope.touches_connectors()) {
+    // A generation built from a manifest takes its connectors from the
+    // manifest's Connections, every time; one built from the v1 tables
+    // reloads them when the change touched connectors.
+    let loads_connectors =
+        manifest_revision.is_some() || scope.is_some_and(|scope| scope.touches_connectors());
+    let connector_generation_before = state.connector_registry.config_generation();
+    let prev_connector_state = if loads_connectors {
         Some((
             state.connector_registry.snapshot_configs(),
             state.connector_registry.config_generation(),
@@ -355,11 +411,20 @@ async fn reload_with_manifest(
     let result = async {
         // Registry replacement belongs to the same serialized operation as
         // channel construction, including peer-driven and connector reloads.
-        if scope.is_some_and(|scope| scope.touches_connectors()) {
-            state
-                .connector_registry
-                .reload(state.repos.connectors.as_ref())
-                .await?;
+        match manifest_revision {
+            Some(revision) => {
+                state
+                    .connector_registry
+                    .load(manifest_connectors(state, revision)?)
+                    .await;
+            }
+            None if loads_connectors => {
+                state
+                    .connector_registry
+                    .reload(state.repos.connectors.as_ref())
+                    .await?;
+            }
+            None => {}
         }
         let crate::storage::repositories::ActiveDefinitions {
             channels,
@@ -538,7 +603,14 @@ async fn reload_with_manifest(
             }
         }
 
-        if scope.is_some_and(|scope| scope.touches_connectors()) && evict_connector_pools {
+        // A connector change evicts every pool even when no config text
+        // moved: the secret behind an unchanged reference may have rotated.
+        // A manifest rebuild evicts when its connector set moved, and keeps
+        // the pools of a rebuild that changed nothing about them.
+        let connectors_moved =
+            state.connector_registry.config_generation() != connector_generation_before;
+        let connector_change = scope.is_some_and(|scope| scope.touches_connectors());
+        if evict_connector_pools && (connector_change || (loads_connectors && connectors_moved)) {
             state.caches.evict_all_pools().await;
         }
 

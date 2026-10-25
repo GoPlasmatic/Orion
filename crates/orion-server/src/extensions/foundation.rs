@@ -47,6 +47,28 @@ pub const COMMUNITY_RUST_DRIVERS: &[&str] = &[
     DRIVER_MEMORY_CACHE,
 ];
 
+/// The connector type a built-in driver serves the built-in task functions
+/// as (`http_call`, `db_read`/`data_*`, `cache_*`), and its connection's
+/// configuration in that type's shape. `None` for a driver that serves only
+/// `connector_call`.
+pub fn builtin_connector(driver_id: &str, mut config: Value) -> Option<(&'static str, Value)> {
+    let connector_type = match driver_id {
+        DRIVER_HTTP => "http",
+        DRIVER_POSTGRESQL | DRIVER_MYSQL | DRIVER_SQLITE => "db",
+        DRIVER_MEMORY_CACHE => {
+            // The one backend this driver has, so a connection need not say so.
+            if let Some(object) = config.as_object_mut() {
+                object
+                    .entry("backend")
+                    .or_insert_with(|| Value::String("memory".to_string()));
+            }
+            "cache"
+        }
+        _ => return None,
+    };
+    Some((connector_type, config))
+}
+
 /// The contract generation the built-in drivers' identities name. It moves
 /// only when a driver's operations change incompatibly, never with the
 /// build, so a connection revision naming a built-in provider stays valid

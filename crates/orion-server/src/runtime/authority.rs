@@ -20,6 +20,9 @@ use crate::storage::models::Workflow;
 #[derive(Debug, Clone, Default)]
 pub struct ConnectorAuthority {
     by_workflow: BTreeMap<String, AuthorityGrant>,
+    /// The revision of each connection the manifest deploys: the one a call
+    /// resolves, never a later revision stored since.
+    connections: BTreeMap<String, u64>,
 }
 
 impl ConnectorAuthority {
@@ -43,6 +46,13 @@ impl ConnectorAuthority {
             }
         }
 
+        let connections = manifest
+            .members
+            .iter()
+            .filter(|m| m.entity.kind == EntityKind::Connection)
+            .map(|m| (m.entity.id.clone(), m.entity.revision))
+            .collect();
+
         let mut by_workflow: BTreeMap<String, AuthorityGrant> = BTreeMap::new();
         for wf in workflows {
             let version = u64::try_from(wf.version).unwrap_or_default();
@@ -56,15 +66,29 @@ impl ConnectorAuthority {
                 .extend(&grant);
             by_workflow.insert(format!("{}:v{}", wf.workflow_id, wf.version), grant);
         }
-        Self { by_workflow }
+        Self {
+            by_workflow,
+            connections,
+        }
     }
 
-    /// One workflow's grant, for tests that need a generation with one.
+    /// One workflow's grant, for tests that need a generation with one; each
+    /// granted connection deployed at revision 1.
     #[cfg(test)]
     pub(crate) fn for_test(engine_id: &str, grant: AuthorityGrant) -> Self {
         Self {
+            connections: grant
+                .allowed_operations
+                .keys()
+                .map(|c| (c.clone(), 1))
+                .collect(),
             by_workflow: BTreeMap::from([(engine_id.to_string(), grant)]),
         }
+    }
+
+    /// The revision of `connection` the manifest deploys, if it deploys one.
+    pub fn connection_revision(&self, connection: &str) -> Option<u64> {
+        self.connections.get(connection).copied()
     }
 
     /// What the workflow the engine runs as `engine_id` may call.
