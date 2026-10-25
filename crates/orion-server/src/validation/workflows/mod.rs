@@ -505,11 +505,11 @@ pub fn validate_workflow_tasks_schema(
         errors.extend(
             issues
                 .into_iter()
-                // What the parser refuses outright. An advisory must never
-                // become a create-time refusal, and a Defect is left to the
-                // loader's verdict: a near-miss key (`LIKELY_TYPO`) is
-                // accepted here and quarantined at load, as 1.12 accepted it.
-                .filter(|issue| issue.severity == dataflow_rs::program::Severity::Rejected)
+                // Whatever the loader would quarantine is refused here, so
+                // an accepted definition always serves: every Rejected issue,
+                // and the Defects `engine::quarantines` names (a near-miss
+                // key, `LIKELY_TYPO`). An advisory never becomes a refusal.
+                .filter(crate::engine::quarantines)
                 .map(engine_issue_to_field_error),
         );
     }

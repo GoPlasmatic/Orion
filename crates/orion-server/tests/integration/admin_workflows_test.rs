@@ -2001,6 +2001,30 @@ async fn duplicate_task_ids_are_refused_at_create() {
     );
 }
 
+/// A near miss of a known key is a `LIKELY_TYPO` Defect, which the loader
+/// quarantines, so create refuses it: an accepted workflow always serves.
+#[tokio::test]
+async fn a_likely_typo_is_refused_at_create() {
+    let app = common::test_app().await;
+    let (status, body) = create_status_and_body(
+        &app,
+        workflow_with_tasks(
+            "typo-key",
+            json!([
+                {"id": "t1", "name": "A", "conditon": false,
+                 "function": {"name": "log", "input": {"message": "a"}}}
+            ]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("tasks[0].conditon") && rendered.contains("UNKNOWN_FIELD"),
+        "the error must name the typo'd key, got: {body}"
+    );
+}
+
 /// A blank `id`, unlike a blank `name`, is refused — the one place Orion is
 /// deliberately stricter than the parse. `""` deserializes fine, but two of
 /// them collide on `Workflow::validate()`'s uniqueness check, and even one

@@ -992,7 +992,13 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
 
     validate_workflow_condition(&req.condition, exprs, &mut errors);
     validate_dataflow_conversion(req, &mut errors);
-    warnings.extend(load_defects(req, &generation));
+    let (refusals, defects) = load_defects(req, &generation);
+    // A compile refusal repeats a parse refusal already reported; added only
+    // when nothing else refused, it names what the loader would quarantine.
+    if errors.is_empty() {
+        errors.extend(refusals);
+    }
+    warnings.extend(defects);
 
     // Advisory: JSONLogic in a connector-payload field that folds `{"var": ..}`
     // and nothing else, so the expression is stored or sent verbatim. A warning
@@ -1281,51 +1287,58 @@ fn validate_workflow_condition(
     }
 }
 
-/// What dataflow-rs 4 reports about the workflow at load and loads anyway: a
-/// Defect that does not quarantine its channel, such as a
-/// `PAYLOAD_VAR`, a `var` rooted at `payload`, which reads nothing. The
-/// loader logs each at `warn`; this is where an author sees one before the
-/// workflow serves. Warnings, so `valid` keeps meaning what create accepts.
-/// Compiled as the serving generation's loader compiles a row: its
-/// JSON, on its dataflow-rs 4 compiler.
+/// What dataflow-rs 4 reports about the workflow at load, split by verdict:
+/// the issues that would quarantine it (`engine::quarantines`), which
+/// create refuses, and the Defects it loads anyway, such as a `PAYLOAD_VAR`,
+/// a `var` rooted at `payload`, which reads nothing. The loader logs each of
+/// the second kind at `warn`; this is where an author sees one before the
+/// workflow serves. Compiled as the serving generation's loader compiles a
+/// row: its JSON, on its dataflow-rs 4 compiler.
 fn load_defects(
     req: &CreateWorkflowRequest,
     generation: &crate::runtime::RuntimeGeneration,
-) -> Vec<ValidationIssue> {
+) -> (Vec<ValidationIssue>, Vec<ValidationIssue>) {
     use crate::storage::repositories::workflows::{synthetic_workflow, workflow_json};
 
     let Some(engine4) = generation.engine.as_ref() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let Ok(row) = synthetic_workflow(req, "temp-validate") else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     // A row that is not JSON is `validate_dataflow_conversion`'s finding.
     let Ok(json) = workflow_json(&row, "__validate__", "temp-validate", "active", None) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let issues = match crate::engine::compile_row(&engine4.compiler(), &json) {
         Ok(compiled) => compiled.issues,
         Err(issues) => issues,
     };
-    issues
+    let finding = |issue: &dataflow_rs::Issue| {
+        let path = issue.path.to_string();
+        ValidationIssue {
+            field: if path.is_empty() {
+                "(root)".to_string()
+            } else {
+                path
+            },
+            message: format!("{}: {}", issue.code.as_str(), issue.message),
+        }
+    };
+    let refusals = issues
+        .iter()
+        .filter(|issue| crate::engine::quarantines(issue))
+        .map(finding)
+        .collect();
+    let defects = issues
         .iter()
         .filter(|issue| {
             issue.severity == dataflow_rs::program::Severity::Defect
                 && !crate::engine::quarantines(issue)
         })
-        .map(|issue| {
-            let path = issue.path.to_string();
-            ValidationIssue {
-                field: if path.is_empty() {
-                    "(root)".to_string()
-                } else {
-                    path
-                },
-                message: format!("{}: {}", issue.code.as_str(), issue.message),
-            }
-        })
-        .collect()
+        .map(finding)
+        .collect();
+    (refusals, defects)
 }
 
 /// Validate that the workflow's fields build the definition the engine reads.
