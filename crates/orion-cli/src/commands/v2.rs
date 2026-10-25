@@ -52,32 +52,50 @@ pub struct DeploymentsCmd {
 pub enum DeploymentsSubcommand {
     /// Discover server runtime capabilities and Community/Enterprise assembly boundary
     Capabilities,
-    /// Plan and validate a candidate deployment manifest against a base revision
+    /// Plan and validate a candidate deployment against a base revision: a
+    /// manifest file (-f), or a compiled deployment directory (-d)
     Plan {
         /// Path to candidate manifest JSON file (or '-' for stdin)
-        #[arg(short, long)]
-        file: String,
-        /// Expected current head revision (0 for initial deployment)
-        #[arg(long, default_value_t = 0)]
-        base_revision: u64,
+        #[arg(short, long, required_unless_present = "dir", conflicts_with = "dir")]
+        file: Option<String>,
+        /// A directory `orion-server compile --format deployment` wrote. Its
+        /// definitions and connection revisions are stored on the target and
+        /// its members assigned revisions against the target's head, which is
+        /// the base revision
+        #[arg(short, long, value_name = "DIR")]
+        dir: Option<String>,
+        /// Expected current head revision (0 for initial deployment). With
+        /// -d, the plan is refused unless the head is this revision
+        #[arg(long)]
+        base_revision: Option<u64>,
         /// Optional change reason
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Atomically apply a reviewed candidate deployment manifest under CAS + idempotency
+    /// Atomically apply a reviewed candidate deployment under CAS + idempotency:
+    /// a manifest file (-f), or a compiled deployment directory (-d)
     Apply {
         /// Path to candidate manifest JSON file (or '-' for stdin)
-        #[arg(short, long)]
-        file: String,
-        /// Expected current head revision
-        #[arg(long)]
-        base_revision: u64,
+        #[arg(short, long, required_unless_present = "dir", conflicts_with = "dir")]
+        file: Option<String>,
+        /// A directory `orion-server compile --format deployment` wrote:
+        /// stored, planned against the target's head and applied with the
+        /// plan's reviewed digest. A directory the head already deploys is
+        /// not applied again
+        #[arg(short, long, value_name = "DIR")]
+        dir: Option<String>,
+        /// Expected current head revision. Required with -f; with -d, the
+        /// apply is refused unless the head is this revision
+        #[arg(long, required_unless_present = "dir")]
+        base_revision: Option<u64>,
         /// Reviewed manifest SHA-256 digest returned by `deployments plan`
         #[arg(long)]
         reviewed_digest: Option<String>,
-        /// Client-generated idempotency key
-        #[arg(long)]
-        idempotency_key: String,
+        /// Client-generated idempotency key. Required with -f; with -d it
+        /// defaults to one derived from the head and the manifest digest, so
+        /// a retry of the same apply replays it
+        #[arg(long, required_unless_present = "dir")]
+        idempotency_key: Option<String>,
         /// Audit reason for applying this deployment
         #[arg(long, default_value = "cli apply")]
         reason: String,
@@ -164,12 +182,26 @@ impl DeploymentsCmd {
             }
             DeploymentsSubcommand::Plan {
                 file,
+                dir,
                 base_revision,
                 reason,
             } => {
-                let manifest = load_file_or_stdin(file)?;
+                if let Some(dir) = dir {
+                    return plan_directory(
+                        client,
+                        format,
+                        quiet,
+                        dir,
+                        *base_revision,
+                        reason,
+                        false,
+                    )
+                    .await
+                    .map(|_| 0);
+                }
+                let manifest = load_file_or_stdin(file.as_deref().unwrap_or("-"))?;
                 let body = CreateDeploymentPlanRequest {
-                    base_revision: *base_revision,
+                    base_revision: base_revision.unwrap_or(0),
                     manifest,
                     reason: reason.clone(),
                 };
@@ -192,6 +224,7 @@ impl DeploymentsCmd {
             }
             DeploymentsSubcommand::Apply {
                 file,
+                dir,
                 base_revision,
                 reviewed_digest,
                 idempotency_key,
@@ -199,13 +232,51 @@ impl DeploymentsCmd {
                 wait_ms,
                 wait_target,
             } => {
-                let manifest = load_file_or_stdin(file)?;
-                let body = ApplyDeploymentRequest {
-                    idempotency_key: idempotency_key.clone(),
-                    base_revision: *base_revision,
-                    manifest,
-                    reason: reason.clone(),
-                    reviewed_manifest_digest: reviewed_digest.clone(),
+                let body = match dir {
+                    Some(dir) => {
+                        let planned = plan_directory(
+                            client,
+                            format,
+                            quiet,
+                            dir,
+                            *base_revision,
+                            &Some(reason.clone()),
+                            true,
+                        )
+                        .await?;
+                        let Some((prepared, plan)) = planned else {
+                            // The head deploys it already; nothing to apply.
+                            return Ok(0);
+                        };
+                        if let Some(reviewed) = reviewed_digest
+                            && reviewed != &plan.reviewed_manifest_digest
+                        {
+                            anyhow::bail!(
+                                "--reviewed-digest {reviewed} is not the plan's {}: the \
+                                 directory or the target changed since it was reviewed",
+                                plan.reviewed_manifest_digest
+                            );
+                        }
+                        ApplyDeploymentRequest {
+                            idempotency_key: idempotency_key.clone().unwrap_or_else(|| {
+                                super::deployment_dir::default_idempotency_key(
+                                    prepared.base_revision,
+                                    &plan.reviewed_manifest_digest,
+                                )
+                            }),
+                            base_revision: prepared.base_revision,
+                            manifest: prepared.manifest,
+                            reason: reason.clone(),
+                            reviewed_manifest_digest: Some(plan.reviewed_manifest_digest),
+                        }
+                    }
+                    None => ApplyDeploymentRequest {
+                        idempotency_key: idempotency_key.clone().unwrap_or_default(),
+                        base_revision: base_revision.unwrap_or(0),
+                        manifest: load_file_or_stdin(file.as_deref().unwrap_or("-"))?,
+                        reason: reason.clone(),
+                        reviewed_manifest_digest: reviewed_digest.clone(),
+                    },
                 };
                 let resp: ApplyDeploymentResponse =
                     client.post_dto(paths::V2_DEPLOYMENTS, &body).await?;
@@ -308,6 +379,89 @@ impl DeploymentsCmd {
             }
         }
     }
+}
+
+/// Store a deployment directory on the target and plan it against the
+/// head, printing what would change. `None` when the head deploys exactly
+/// this already; otherwise what was prepared and the plan.
+///
+/// The summary goes to stderr, so stdout carries only the plan (or, for
+/// `apply`, the receipt that follows) in the chosen format.
+#[allow(clippy::too_many_arguments)]
+async fn plan_directory(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    dir: &str,
+    expected_head: Option<u64>,
+    reason: &Option<String>,
+    for_apply: bool,
+) -> Result<Option<(super::deployment_dir::Prepared, DeploymentPlanResponse)>> {
+    let directory = super::deployment_dir::DeploymentDir::read(std::path::Path::new(dir))?;
+    let prepared = super::deployment_dir::prepare(client, &directory, expected_head).await?;
+    let plan: DeploymentPlanResponse = client
+        .post_dto(
+            paths::V2_DEPLOYMENT_PLANS,
+            &CreateDeploymentPlanRequest {
+                base_revision: prepared.base_revision,
+                manifest: prepared.manifest.clone(),
+                reason: reason.clone(),
+            },
+        )
+        .await?;
+
+    let up_to_date = prepared.base_revision > 0
+        && prepared.head_manifest_digest.as_deref() == Some(plan.reviewed_manifest_digest.as_str());
+    if quiet {
+        // Plan prints what to review; apply prints the revision it ends at,
+        // here only when there is nothing to apply.
+        if up_to_date {
+            println!("{}", prepared.base_revision);
+        } else if !for_apply {
+            println!("{}", plan.reviewed_manifest_digest);
+        }
+    } else {
+        eprintln!(
+            "{} {dir} against head revision {}",
+            "Plan:".bold(),
+            prepared.base_revision
+        );
+        for member in &prepared.assigned {
+            let mark = if member.unchanged {
+                "=".dimmed()
+            } else {
+                "+".green()
+            };
+            eprintln!("  {mark} {} {}@{}", member.kind, member.id, member.revision);
+        }
+        for removed in &plan.removed_entities {
+            eprintln!(
+                "  {} {} {}@{}",
+                "-".red(),
+                removed["kind"].as_str().unwrap_or_default(),
+                removed["id"].as_str().unwrap_or_default(),
+                removed["revision"]
+            );
+        }
+        let changed = prepared.assigned.iter().filter(|m| !m.unchanged).count();
+        eprintln!(
+            "  {changed} to deploy, {} unchanged, {} removed; reviewed manifest digest {}",
+            prepared.assigned.len() - changed,
+            plan.removed_entities.len(),
+            plan.reviewed_manifest_digest
+        );
+        if up_to_date {
+            eprintln!(
+                "{} the head (revision {}) deploys this already",
+                "Up to date:".green().bold(),
+                prepared.base_revision
+            );
+        }
+        if !for_apply {
+            output::print_value(format, &serde_json::to_value(&plan)?)?;
+        }
+    }
+    Ok((!up_to_date).then_some((prepared, plan)))
 }
 
 async fn wait_for_convergence(
@@ -897,8 +1051,9 @@ mod tests {
         .unwrap();
 
         let code = DeploymentsCmd::new(DeploymentsSubcommand::Plan {
-            file: manifest_file.to_string_lossy().to_string(),
-            base_revision: 0,
+            file: Some(manifest_file.to_string_lossy().to_string()),
+            dir: None,
+            base_revision: Some(0),
             reason: Some("plan".to_string()),
         })
         .run(&client, &fmt, true)
@@ -907,10 +1062,11 @@ mod tests {
         assert_eq!(code, 0);
 
         let code = DeploymentsCmd::new(DeploymentsSubcommand::Apply {
-            file: manifest_file.to_string_lossy().to_string(),
-            base_revision: 0,
+            file: Some(manifest_file.to_string_lossy().to_string()),
+            dir: None,
+            base_revision: Some(0),
             reviewed_digest: Some("sha256:3333".to_string()),
-            idempotency_key: "idem-1".to_string(),
+            idempotency_key: Some("idem-1".to_string()),
             reason: "cli apply".to_string(),
             wait_ms: 1000,
             wait_target: "this-node".to_string(),
@@ -936,5 +1092,149 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(code, 0);
+    }
+
+    /// `apply -d`: every definition uploaded and checked against its file
+    /// name, a connection revision created past the stored ones, members
+    /// given revisions against the head, and the plan's digest applied.
+    #[tokio::test]
+    async fn apply_dir_assigns_revisions_against_the_head() {
+        use std::sync::{Arc, Mutex};
+        let dir = tempfile::tempdir().unwrap();
+        let wf_hex = "a".repeat(64);
+        let ch_hex = "b".repeat(64);
+        std::fs::create_dir_all(dir.path().join("definitions")).unwrap();
+        std::fs::create_dir_all(dir.path().join("connections")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("definitions")
+                .join(format!("{wf_hex}.json")),
+            r#"{"kind":"workflow","definition":{"name":"w","tasks":[]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join("definitions")
+                .join(format!("{ch_hex}.json")),
+            r#"{"kind":"channel","definition":{"name":"c","protocol":"rest"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("connections/db.json"),
+            r#"{"connection_id":"db","driver":"org.orion.sqlite","provider_digest":"sha256:p",
+                "public_config":{"connection_string":"sqlite::memory:"},"secret_locators":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("deployment.json"),
+            format!(
+                r#"{{"schema_version":1,"members":[
+                {{"kind":"channel","id":"c","definition":"sha256:{ch_hex}",
+                  "requires":[{{"kind":"workflow","id":"w"}}]}},
+                {{"kind":"connection","id":"db","connection":"db","requires":[]}},
+                {{"kind":"workflow","id":"w","definition":"sha256:{wf_hex}",
+                  "requires":[{{"kind":"connection","id":"db"}}]}}]}}"#
+            ),
+        )
+        .unwrap();
+
+        let applied: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+        let seen = applied.clone();
+        let client = OrionClient::with_mock_transport(move |method, path, body| {
+            let body = body.cloned().unwrap_or(Value::Null);
+            match (method, path) {
+                // Head 4 deploys the channel as it is, the workflow at an
+                // older definition.
+                ("GET", "/api/v2/admin/deployments") => Ok(json!({
+                    "head_revision": 4,
+                    "revisions": [{
+                        "revision": 4,
+                        "manifest_digest": "sha256:head",
+                        "manifest": {"members": [
+                            {"entity": {"kind": "channel", "id": "c", "revision": 2},
+                             "definition_digest": format!("sha256:{}", "b".repeat(64))},
+                            {"entity": {"kind": "workflow", "id": "w", "revision": 5},
+                             "definition_digest": "sha256:old"},
+                        ]},
+                    }],
+                })),
+                ("POST", "/api/v2/admin/definitions") => {
+                    let hex = if body["kind"] == "workflow" { "a" } else { "b" };
+                    Ok(json!({"digest": format!("sha256:{}", hex.repeat(64)),
+                              "kind": body["kind"], "size_bytes": 1}))
+                }
+                ("GET", "/api/v2/admin/runtime-capabilities") => Ok(json!({
+                    "provider_backends": [
+                        {"driver_id": "org.orion.sqlite", "package_digest": "sha256:p"}],
+                })),
+                ("GET", "/api/v2/admin/connections") => Ok(json!({"connections": [
+                    {"connection_id": "db", "revision": 2, "provider_digest": "sha256:p",
+                     "public_config": {"connection_string": "sqlite:/other.db"}},
+                ]})),
+                ("POST", "/api/v2/admin/connections") => {
+                    assert_eq!(body["revision"], 3, "one past the stored revisions");
+                    Ok(json!({"connection": {"connection_id": "db", "revision": 3,
+                              "configuration_digest": "sha256:cfg"}}))
+                }
+                ("POST", "/api/v2/admin/deployment-plans") => {
+                    assert_eq!(body["base_revision"], 4);
+                    Ok(json!({"reviewed_manifest_digest": "sha256:next",
+                              "candidate_digest": "sha256:next"}))
+                }
+                ("POST", "/api/v2/admin/deployments") => {
+                    *seen.lock().unwrap() = Some(body);
+                    Ok(json!({"status": "accepted", "committed_revision": 5}))
+                }
+                _ => anyhow::bail!("unexpected {method} {path}"),
+            }
+        })
+        .unwrap();
+
+        let code = DeploymentsCmd::new(DeploymentsSubcommand::Apply {
+            file: None,
+            dir: Some(dir.path().to_string_lossy().to_string()),
+            base_revision: None,
+            reviewed_digest: None,
+            idempotency_key: None,
+            reason: "cli apply".to_string(),
+            wait_ms: 0,
+            wait_target: "this-node".to_string(),
+        })
+        .run(&client, &OutputFormat::Json, true)
+        .await
+        .unwrap();
+        assert_eq!(code, 0);
+
+        let request = applied.lock().unwrap().clone().expect("applied");
+        assert_eq!(request["base_revision"], 4);
+        assert_eq!(request["reviewed_manifest_digest"], "sha256:next");
+        assert_eq!(request["idempotency_key"], "deploy-4-next");
+        let members = request["manifest"]["members"].as_array().unwrap();
+        let revision_of = |kind: &str| {
+            members
+                .iter()
+                .find(|m| m["entity"]["kind"] == kind)
+                .map(|m| m["entity"]["revision"].clone())
+                .unwrap()
+        };
+        assert_eq!(revision_of("channel"), 2, "unchanged keeps its revision");
+        assert_eq!(revision_of("workflow"), 6, "changed takes the next");
+        assert_eq!(revision_of("connection"), 3);
+        let workflow = members
+            .iter()
+            .find(|m| m["entity"]["kind"] == "workflow")
+            .unwrap();
+        assert_eq!(
+            workflow["requires"],
+            json!([{"kind": "connection", "id": "db", "revision": 3}])
+        );
+        let channel = members
+            .iter()
+            .find(|m| m["entity"]["kind"] == "channel")
+            .unwrap();
+        assert_eq!(
+            channel["requires"],
+            json!([{"kind": "workflow", "id": "w", "revision": 6}])
+        );
     }
 }

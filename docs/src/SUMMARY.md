@@ -97,6 +97,7 @@
     - [Model endpoints](./reference/admin-api/models.md)
     - [Connector endpoints](./reference/admin-api/connectors.md)
     - [Package endpoints](./reference/admin-api/packages.md)
+    - [Deployment endpoints](./reference/admin-api/deployments.md)
   - [Operational endpoints](./reference/admin-api/operations.md)
     - [Engine endpoints](./reference/admin-api/engine.md)
     - [Function endpoints](./reference/admin-api/functions.md)

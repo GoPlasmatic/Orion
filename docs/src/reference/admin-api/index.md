@@ -16,6 +16,7 @@ All admin endpoints are under `/api/v2/admin/`. When [admin authentication](./au
 | [Plugins](./plugins.md) | Upload, activate, version, import, and export WebAssembly plugins |
 | [Models](./models.md) | Register, admit, activate, version, import, and export ONNX models held in object storage |
 | [Packages](./packages.md) | Inspect applied package receipts |
+| [Deployments](./deployments.md) | Store definitions and connection revisions, plan, apply, roll back and follow v2 deployments |
 | [Engine](./engine.md) | Inspect and reload the running engine |
 | [Functions](./functions.md) | Discover registered task functions and schemas |
 | [Audit logs](./audit-logs.md) | Query administrative actions |

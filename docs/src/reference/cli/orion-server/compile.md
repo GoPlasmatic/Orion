@@ -58,7 +58,7 @@ Entities must carry explicit ids for `artifact` and `deployment` only. `apply` a
 
 ### Deployment directories
 
-`--format deployment` writes the set as a v2 deployment with no revisions in it. Only the target knows which revision a changed definition gets, so the deployer assigns them: `orion-cli deployments apply -d` does.
+`--format deployment` writes the set as a v2 deployment with no revisions in it. Only the target knows which revision a changed definition gets, so the deployer assigns them. [`orion-cli deployments apply -d`](../../admin-api/deployments.md#deploy-a-compiled-directory) does.
 
 ```text
 dist/
@@ -148,4 +148,5 @@ orion-server compile ./definitions --format deployment -o dist/deployment && ori
 - [Packages](../../../concepts/packages.md): what a promotion artifact is.
 - [CI/CD with packages](../../../guides/patterns/ci-cd.md): compile in a pipeline, from a repository to an instance.
 - [`orion-server package`](./package.md): the verbs that consume the artifact.
+- [Deployment endpoints](../../admin-api/deployments.md): what a deployment directory deploys through.
 - [`orion-server` commands](./index.md): every `orion-server` subcommand.

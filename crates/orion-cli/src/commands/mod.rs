@@ -8,6 +8,7 @@ pub mod config;
 pub mod connectors;
 pub mod cron;
 pub mod data;
+pub mod deployment_dir;
 pub mod dlq;
 pub mod engine;
 pub mod functions;

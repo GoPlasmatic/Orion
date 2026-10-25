@@ -39,7 +39,7 @@ down — nothing to start or clean up manually.
 tests/e2e/
 ├── run.sh          # entry point: prerequisites, build, server lifecycle, suite discovery
 ├── helpers.sh      # framework: assertions, CLI wrappers, server control, case runner
-├── suites/         # 18 suites, sourced in filename order
+├── suites/         # 19 suites, sourced in filename order
 ├── cases/          # data-driven runtime-behaviour cases (run by suite 13)
 └── fixtures/       # workflow / connector / request JSON used by the suites
 ```
@@ -64,6 +64,7 @@ tests/e2e/
 | `16_plugins` | The plugin entity through the CLI against a server with the sandbox on: upload from a manifest (the component read beside it), activate, a workflow serving through a plugin function including a `template_at` field, the archive gate, export with artifacts, import, delete. Suite 13's `fixed-width-statement` case deploys the example codec the same way (`"plugins"` in the case file) |
 | `17_cron` | A schedule through the CLI against a real server: create and activate a `protocol: "cron"` channel, watch occurrences appear on their own, trigger one by hand with `channels trigger`, and read the ledger back with `cron status|list|get|retry`. The schedule fires every second, so nothing waits on a guessed duration |
 | `18_models` | The model entity through the CLI against a server with the runtime on, with a Python static server standing in for the bucket: register the `c4-tournament` entrant with `models create --wait`, `get` (the verdict, the measured parameter count), `validate`, `activate`; the whole example package deployed with the CLI and a turn, a match and the leaderboard served over the data plane; a wrong digest failing admission at the `digest` stage; `dependencies`, and delete/archive refused while an active workflow names the model by literal id |
+| `19_deployments` | The v2 deployment path on a server of its own (a committed deployment makes a node serve from its manifest alone): the `order-classification` example compiled with `orion-server compile --format deployment`, deployed with `deployments plan\|apply -d` and served over the data plane; one workflow changed, recompiled and re-applied, and only its member's revision moving; an unchanged directory applying nothing |
 
 The suites speak the v1.0 API: every send goes through a channel bound to
 exactly one workflow (`create_channel` in `helpers.sh`), and reading a
