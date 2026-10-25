@@ -26,7 +26,7 @@ This is the one page here that is not a competitive comparison. It is a build de
 | Unit of work | A message processed by an engine you construct | A [channel](../../concepts/channels.md) answering a request or a scheduled occurrence |
 | How you write the logic | Rust, plus workflow definitions you load yourself | JSON, posted to a running server |
 | Where state lives | Wherever your program puts it | The embedded database, or PostgreSQL or MySQL |
-| How a change ships | Recompile and redeploy your binary | One API call, hot-reloaded |
+| How a change ships | Recompile and redeploy your binary | One deployment, hot-reloaded |
 | Who serves the endpoint | You do | Orion does |
 | What it needs to run | Your application | [One binary](../install.md) |
 
@@ -43,9 +43,9 @@ Everything between "the engine can run a pipeline" and "this is a service you ca
 
 - [Channels](../../concepts/channels.md): REST routes, plain HTTP and cron schedules, each with the ingress guards its transport can carry.
 - [Connectors](../../concepts/connectors.md): pooled, credential-holding connections with circuit breakers, referenced by name.
-- Storage and [lifecycle](../../concepts/lifecycle.md): draft, active, archived, immutable versions, and an atomic engine swap on activation.
+- Storage and [deployments](../../reference/admin-api/deployments.md): immutable definitions, numbered revisions, and an atomic engine swap when a revision is applied.
 - The [admin API](../../reference/admin-api/index.md), the CLI, and the agent skill that lets an assistant drive all of it.
-- [Traces](../../operate/run/traces.md), [metrics](../../operate/run/monitoring.md), [packages and promotion](../../operate/maintain/promotion.md), and [cluster mode](../../operate/deploy/cluster.md).
+- [Traces](../../operate/run/traces.md), [metrics](../../operate/run/monitoring.md), [deployments and rollback](../../reference/admin-api/deployments.md), and [cluster mode](../../operate/deploy/cluster.md).
 
 ## Where they overlap
 
@@ -66,7 +66,7 @@ In an estate running both, keep the definitions in Orion and let the embedded en
 
 - You want the endpoint, not only the engine.
 - The logic should change without recompiling anything.
-- You need versioning, rollout, rollback and an audit trail around changes.
+- You need versioned deployments, rollback and an audit trail around changes.
 - Someone other than a Rust programmer, including an assistant, authors the logic.
 
 ## Running both

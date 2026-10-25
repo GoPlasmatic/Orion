@@ -23,10 +23,10 @@
 //!
 //! Two reference forms are read, because the audit found a broken example in
 //! each: a `curl` against `http://localhost:8080`, and an inline code span
-//! like `` `POST /api/v2/admin/engine/reload` ``. The inline form is only read
-//! when the path starts with `/api/v1/`, which is what separates a real
-//! reference from the shorthand the prose uses for a family of endpoints
-//! (`POST /{kind}/import`, `POST /engine/reload`).
+//! like `` `POST /api/v2/admin/deployments` ``. The inline form is only read
+//! when the path starts with `/api/v1/` or `/api/v2/`, which is what
+//! separates a real reference from the shorthand the prose uses for a family
+//! of endpoints (`POST /deployments`).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -292,6 +292,10 @@ fn code_spans(line: &str) -> Vec<&str> {
 fn all_references() -> Vec<Reference> {
     let mut files = Vec::new();
     markdown_files(Path::new(DOCS_SRC), &mut files);
+    // Release notes are history: an upgrade note names the routes of the
+    // release it describes, which a later release may have removed.
+    let releases = Path::new(DOCS_SRC).join("releases");
+    files.retain(|f| !f.starts_with(&releases));
     files.sort();
     files.iter().flat_map(|f| references(f)).collect()
 }
@@ -364,8 +368,8 @@ fn the_extractor_finds_the_books_endpoint_references() {
         references.len()
     );
     assert!(
-        references.iter().any(|r| r.method == "PATCH"),
-        "no PATCH reference found; the method parser has regressed"
+        references.iter().any(|r| r.method == "POST"),
+        "no POST reference found; the method parser has regressed"
     );
     assert!(
         references.iter().any(|r| !r.query.is_empty()),

@@ -122,7 +122,7 @@ readinessProbe:
 `/health` is deliberately two-tier. Anonymous callers get the coarse component states. Detail fields are served only when admin auth is disabled or the caller presents a valid admin key. Those are `workflows_loaded`, the per-connector circuit-breaker map, failed connector loads and quarantined channel names. A monitor can see *that* something is degraded without learning *what*. Each quarantined channel also carries its `channel_id` and `workflow_id`. Tooling that needs the lists should read [`GET /engine/status`](../../reference/admin-api/engine.md#what-a-generation-could-not-load), which carries the same three under `load_issues` on the admin plane.
 
 
-`components.cron` appears only when this node has something to say about schedules. That is when the scheduler is on, or when it is off while an active cron channel is quarantined. It is `degraded` when the reconciler has not completed a pass for long enough that occurrences are being missed. It is also `degraded` when the scheduler is off while cron channels are stored active. Both are states in which every liveness signal is green and the declared schedules are not running. Like `config_propagation` it does not fail `/readyz`. The node still serves every request correctly, and removing it from the load balancer would not make a single occurrence run. See [Cron occurrences](../../reference/admin-api/cron-occurrences.md).
+`components.cron` appears only when this node has something to say about schedules. That is when the scheduler is on, or when it is off while an active cron channel is quarantined. It is `degraded` when the reconciler has not completed a pass for long enough that occurrences are being missed. It is also `degraded` when the scheduler is off while cron channels are stored active. Both are states in which every liveness signal is green and the declared schedules are not running. It does not fail `/readyz`. The node still serves every request correctly, and removing it from the load balancer would not make a single occurrence run. See [Cron occurrences](../../reference/admin-api/cron-occurrences.md).
 
 `components.engine` is a constant `"ok"`, kept for response-shape stability: the engine snapshot cannot be unavailable once the process serves.
 
@@ -130,17 +130,11 @@ readinessProbe:
 
 It does not flip the top-level `status` on its own. It does not need to. A plugin that did not load quarantines the channels whose workflows use it, and `components.channels` is what carries that into `status`. Alert on `components.channels` for impact; read `components.plugins` for the cause.
 
-### `components.config_propagation`
-
-Cluster mode only. `degraded` means this node committed a change, applied it locally, and then failed to advance the shared config epoch. The other replicas have not been told. The request that made the change still succeeded, because it did. [When a change does not propagate](../deploy/cluster.md#when-a-change-does-not-propagate) explains why that is a node-health signal rather than a client error. It clears on the next successful bump. `/readyz` is unaffected: this node is serving correctly, and ejecting it would not help the ones that are stale.
-
 ### `components.engine_reload`
 
-`degraded` means the last engine reload attempt failed. This node is still serving the *previous* generation of channels and workflows: correct, but no longer what the database says. It clears on the next successful reload.
+`degraded` means this node's last build of a deployment failed. The node still serves the *previous* generation: correct, but not what is committed. It clears on the next successful build.
 
-The signal exists because nothing else reports it. An admin mutation that commits and then fails to reload answers 2xx, deliberately. The row is `active` and the next successful reload serves it. A 5xx would tell the client its change failed when it did not. The natural response, retrying, writes a second version or collides with the first. The same argument [`config_propagation`](#componentsconfig_propagation) makes for a lost epoch bump. The cluster epoch watcher's resync has no caller to tell at all.
-
-`POST /api/v2/admin/engine/reload` is the exception. A caller who *asked* for a reload is told when it failed, because there is no committed write for the error to misdescribe. `/readyz` is unaffected, for the same reason as `config_propagation`. This node is serving, only not the newest config, and ejecting it would trade a stale-config problem for an availability one.
+The signal exists because nothing else reports it. A deployment apply that commits and then fails to build on this node still commits, deliberately, and its answer says so under `evaluation`. In a cluster the other nodes build the revision on their own, so a failure on one of them has no caller to tell at all. `/readyz` is unaffected. This node is serving, only not the newest revision, and ejecting it would trade a stale-config problem for an availability one. [Convergence](../../reference/admin-api/deployments.md#convergence) reports which nodes serve a revision.
 
 ### `components.background_tasks`
 
@@ -152,7 +146,7 @@ The node's long-lived tasks are supervised, and this is what they report:
 | `degraded` | A task is being restarted after a failure, or a non-essential one has given up. | ready |
 | `error` | A task the node cannot work without has stopped for good. | **not ready** |
 
-The essential ones are the trace dispatcher, the trace persistence workers, the audit writer, the DLQ retry consumer, and in cluster mode the epoch watcher. Each fails silently by nature. A dead persistence worker drops traces and counts them as queue overflow. A dead audit writer loses the record of every later admin mutation. A dead epoch watcher leaves the node serving the configuration it booted with. `error` takes the node out of rotation so the loss stops rather than continues unobserved.
+The essential ones are the trace dispatcher, the trace persistence workers, the audit writer, the DLQ retry consumer, and in cluster mode the v2 reconciler. Each fails silently by nature. A dead persistence worker drops traces and counts them as queue overflow. A dead audit writer loses the record of every later admin mutation. A dead reconciler leaves the node serving the revision it last built. `error` takes the node out of rotation so the loss stops rather than continues unobserved.
 
 The retention jobs (trace cleanup, audit-log cleanup) are the non-essential ones. A node that has stopped expiring old rows still answers every request correctly, so they show as `degraded` and readiness is unaffected.
 

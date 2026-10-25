@@ -1,15 +1,15 @@
-<!-- description: Ready-to-deploy Orion example packages — order classification, webhook transforms, scheduled rollups, IoT alerts — each with a step-by-step walkthrough. -->
+<!-- description: Ready-to-deploy Orion example packages, such as order classification, webhook transforms and scheduled rollups, each compiled and applied in two commands. -->
 <!-- type: tutorial -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Run the example packages
 
-The repository ships twelve ready-to-deploy services, each a *package*: one service's channels, workflows and connector, grouped so they deploy and [promote](../../concepts/packages.md) together. This tutorial deploys one, then shows what the deploy script did.
+The repository ships ready-to-deploy services, each a *package*: one directory holding a service's channels, workflows and connector. This tutorial compiles one into a deployment and applies it.
 
 ## What you will learn
 
-- What files a package directory holds, and which admin call each one is sent to.
-- What `deploy.sh` does, and how to do the same by hand.
+- What files a package directory holds, and what each one becomes in a deployment.
+- How `compile` and `orion-cli deployments apply -d` deploy a directory.
 - Which examples need a plugin sandbox, and which need nothing.
 - Where the offline regression suite for the examples lives.
 
@@ -17,7 +17,7 @@ The repository ships twelve ready-to-deploy services, each a *package*: one serv
 
 Tested with Orion 1.12.0. You need:
 
-- Git, `curl` and Python 3
+- Git, `curl`, `orion-server` and `orion-cli`
 - an Orion server on `http://localhost:8080`
 - a POSIX shell (on Windows, WSL)
 - Docker with Compose, for the packages whose descriptions call for it
@@ -35,15 +35,25 @@ cd Orion/examples
 
 ## 2. Deploy one
 
-With the server running:
+With the server running, compile the package and apply it:
 
 ```bash
-./deploy.sh high-value-order
+orion-server compile packages/high-value-order -o /tmp/high-value-order
+orion-cli deployments apply -d /tmp/high-value-order
 ```
 
-`deploy.sh` creates and activates every workflow the package ships, then every channel, creating a connector first if the package has one. It then posts `request.json` to the primary channel and prints the response. Re-running it is safe: objects that already exist are skipped.
+`compile` checks the directory and writes a deployment directory. It skips `request.json`, with a note, because that file is not a definition. `apply` uploads the definitions, prints the plan, and commits it as the server's next revision. Re-running it is safe: a directory the head already deploys is reported as up to date.
 
-A package with no HTTP route deploys the same way, and the script prints what it now listens to instead of sending a request. `nightly-rollup` prints its schedule.
+A deployment is everything the node serves. Applying a second package removes the first, and the plan shows that as `-` lines. To run several examples side by side, copy their files into one directory and compile that.
+
+Then send the sample request:
+
+```bash
+curl -X POST http://localhost:8080/api/v2/data/high-value-orders \
+  -H 'Content-Type: application/json' --data @packages/high-value-order/request.json
+```
+
+A package with no HTTP route deploys the same way. `nightly-rollup` is a cron channel: it runs on its schedule instead of answering a request.
 
 ## The packages
 
@@ -63,67 +73,23 @@ A package with no HTTP route deploys the same way, and the script prints what it
 
 ## What is in a package directory
 
-| File | Sent to | Purpose |
+| File | Becomes | Purpose |
 |------|---------|---------|
-| `workflow.json` | `POST /api/v2/admin/workflows` | The task pipeline, which is the logic |
-| `workflow-<name>.json` *(optional)* | `POST /api/v2/admin/workflows` | Additional workflows, when the package is more than one service |
-| `channel.json` | `POST /api/v2/admin/channels` | The endpoint that routes to the workflow |
-| `channel-<name>.json` *(optional)* | `POST /api/v2/admin/channels` | Additional channels |
-| `request.json` | `POST /api/v2/data/<route>` | A sample request to try it |
-| `connector.json` *(optional)* | `POST /api/v2/admin/connectors` | A named connection to an external system, when the package needs one |
-| `plugin.toml` + the component it names *(optional)* | `POST /api/v2/admin/plugins` | A WebAssembly plugin the workflows call, uploaded and activated before them. Needs `plugins.enabled = true` |
+| `workflow.json` | a workflow definition | The task pipeline, which is the logic |
+| `workflow-<name>.json` *(optional)* | a workflow definition | Additional workflows, when the package is more than one service |
+| `channel.json` | a channel definition | The endpoint that routes to the workflow |
+| `channel-<name>.json` *(optional)* | a channel definition | Additional channels |
+| `request.json` | nothing; `compile` skips it | A sample request to send to `POST /api/v2/data/<route>` |
+| `connector.json` *(optional)* | a connection revision | A named connection to an external system, when the package needs one |
+| `plugin.toml` + the component it names *(optional)* | a plugin definition, component inlined | A WebAssembly plugin the workflows call. Needs `plugins.enabled = true` |
 
-Every entity carries a `tags: ["pkg:<name>"]` label. That label is what marks it as part of the package, and what package export selects on.
+[Deployment directories](../../reference/cli/orion-server/compile.md#deployment-directories) lists exactly what `compile` writes for each.
 
 > [!NOTE]
 > Requests use the `{ "data": { … } }` envelope. Orion unwraps `data` into the workflow payload, which `parse_json` reads with `"source": "payload"`.
 
-## 3. Deploy one step by step
-
-`deploy.sh` is four API calls and a request. Running them yourself shows the lifecycle each one drives:
-
-```bash
-cd packages/high-value-order
-```
-
-Create the workflow. It lands as a draft:
-
-```bash
-curl -X POST http://localhost:8080/api/v2/admin/workflows \
-  -H 'Content-Type: application/json' --data @workflow.json
-```
-
-Activate it:
-
-```bash
-curl -X PATCH http://localhost:8080/api/v2/admin/workflows/high-value-order/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
-```
-
-Create the channel, then activate it:
-
-```bash
-curl -X POST http://localhost:8080/api/v2/admin/channels \
-  -H 'Content-Type: application/json' --data @channel.json
-
-curl -X PATCH http://localhost:8080/api/v2/admin/channels/high-value-orders/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
-```
-
-Send the sample request:
-
-```bash
-curl -X POST http://localhost:8080/api/v2/data/high-value-orders \
-  -H 'Content-Type: application/json' --data @request.json
-```
-
 > [!TIP]
-> A draft workflow can be dry-run against sample data without serving any traffic. `/test` takes the same `{ "data": … }` envelope and returns an execution trace showing which tasks ran or were skipped:
->
-> ```bash
-> curl -X POST http://localhost:8080/api/v2/admin/workflows/high-value-order/test \
->   -H 'Content-Type: application/json' --data @request.json
-> ```
+> To run a workflow on the server once without deploying it, send it to [`POST /api/v2/admin/definitions/test`](../../reference/admin-api/deployments.md#test-a-workflow-definition). The answer carries an execution trace showing which tasks ran or were skipped. Offline, `orion-server dry-run` does the same with no server at all.
 
 ## The offline test suite
 
@@ -137,17 +103,17 @@ It exits non-zero on any failure, so it gates CI beside `orion-server lint`. [`e
 
 ## Clean up or run another example
 
-`deploy.sh` is repeatable: it skips existing definitions and sends the sample request again. To avoid identifier collisions while experimenting, use a fresh local SQLite database, or remove the example's channel before its workflow with `orion-cli … delete --yes`. Connector-backed package READMEs name their Docker volumes and cleanup commands.
+Applying the same directory again does nothing, and sending the sample request again is always safe. Applying another package's directory replaces this one, so moving between examples needs no cleanup. To start from nothing, use a fresh local SQLite database. Connector-backed package READMEs name their Docker volumes and cleanup commands.
 
 ## Recap
 
-- A package directory is a set of admin-API request bodies plus a sample request, tagged `pkg:<name>`.
-- `deploy.sh` posts them in dependency order and activates each; doing it by hand is four calls.
+- A package directory is a set of definitions plus a sample request.
+- `compile` turns it into a deployment directory, and `orion-cli deployments apply -d` deploys it as one revision.
 - The self-contained packages need nothing but a server. Plugin packages need `plugins.enabled = true`.
 - `examples/workflow-tests/` proves the packages offline; `examples/use-cases/` proves them against a live server.
 
 ## Next steps
 
-- [Test and promote a service](./test-and-promote.md): take one of these packages from a local run to a second instance.
+- [Test and deploy a service](./test-and-promote.md): prove one of these packages offline, then deploy it as one reviewed revision.
 - [Add your first connector](./first-connector.md): build `postgres-orders` by hand, one step at a time.
 - [Workflow definition](../../reference/workflows.md) and [Task functions](../../reference/functions/index.md): the reference behind every file above.

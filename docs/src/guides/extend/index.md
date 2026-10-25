@@ -6,4 +6,4 @@
 
 A definition can express most services. One thing it cannot is a compiled transformation that already exists as code. That has one extension point, and it only computes; anything with I/O stays a connector or a service of your own.
 
-- [Build a plugin](./plugins.md) takes a pure JSON-to-JSON function through the SDK, the manifest, the build, the offline test, the upload and the promotion.
+- [Build a plugin](./plugins.md) takes a pure JSON-to-JSON function through the SDK, the manifest, the build, the offline test and the deployment.

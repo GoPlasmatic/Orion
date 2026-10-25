@@ -115,27 +115,6 @@ pub struct EngineCapabilities {
     pub plugins: bool,
 }
 
-/// `POST /api/v2/admin/engine/reload`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
-pub struct EngineReloadedResponse {
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub reloaded: bool,
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub workflows_count: u64,
-    /// The id of the generation this reload published. `0` from a server
-    /// that predates it.
-    #[serde(default)]
-    #[cfg_attr(feature = "utoipa", schema(required))]
-    pub generation: u64,
-    /// What that generation could not load. `None` from a server that
-    /// predates the field.
-    #[serde(default)]
-    pub load_issues: Option<EngineLoadIssues>,
-}
-
 /// `GET /api/v2/admin/engine/status`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -175,17 +154,16 @@ pub struct EngineStatusResponse {
 mod tests {
     use super::*;
 
-    /// An older server's reload answer parses, and says it cannot tell.
+    /// An older server's status answer parses, and says it cannot tell.
     #[test]
-    fn a_reload_answer_without_load_issues_is_the_skew_signal() {
-        let old: EngineReloadedResponse =
-            serde_json::from_str(r#"{"reloaded": true, "workflows_count": 3}"#).expect("parses");
-        assert!(old.reloaded);
+    fn a_status_answer_without_load_issues_is_the_skew_signal() {
+        let old: EngineStatusResponse =
+            serde_json::from_str(r#"{"workflows_count": 3}"#).expect("parses");
         assert_eq!(old.generation, 0);
         assert!(old.load_issues.is_none());
 
-        let new: EngineReloadedResponse = serde_json::from_str(
-            r#"{"reloaded": true, "workflows_count": 3, "generation": 7,
+        let new: EngineStatusResponse = serde_json::from_str(
+            r#"{"workflows_count": 3, "generation": 7,
                 "load_issues": {"channels": [{"channel": "c", "reason": "r",
                                               "some_future_key": 1}]}}"#,
         )

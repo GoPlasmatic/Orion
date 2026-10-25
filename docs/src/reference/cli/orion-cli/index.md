@@ -1,32 +1,29 @@
-<!-- description: Every orion-cli command: the entity commands for workflows, channels, connectors and plugins, plus send, traces, engine, cron, dlq and the rest. -->
+<!-- description: Every orion-cli command: deployments, connections and providers, plus send, traces, engine, cron, dlq and the rest. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # orion-cli
 
-`orion-cli` manages workflows, channels, connectors, plugins, data, traces, and engine operations on a running server over HTTP. Every command takes the same [global flags](./global-flags.md), and every `list` pages the same way.
+`orion-cli` deploys to a running server and operates it over HTTP: deployments, connections, providers, data, traces and the engine. Every command takes the same [global flags](./global-flags.md), and every `list` pages the same way.
 
 | Command | Purpose |
 |---|---|
 | [Global flags](./global-flags.md) | The flags, environment variables and paging controls every command shares |
 | [`config`](./config.md) | Manages the CLI's own settings in `~/.orion/config.toml` |
 | [`health`](./health.md) | Checks server health, version, and component status |
-| [`workflows`](./workflows.md) | Manages workflows |
-| [`channels`](./channels.md) | Manages channels |
-| [`connectors`](./connectors.md) | Manages connectors and their circuit breakers |
-| [`plugins`](./plugins.md) | Manages plugins — WebAssembly components that add task functions |
 | [`send`](./send.md) | Sends data to a channel |
 | [`traces`](./traces.md) | Views execution traces |
-| [`engine`](./engine.md) | Controls the engine |
+| [`engine`](./engine.md) | Shows what the engine on this node serves |
 | [`functions`](./functions.md) | `list` shows the workflow task functions registered in the engine and their input schemas |
 | [`metrics`](./metrics.md) | Fetches `GET /metrics` from the server |
 | [`audit-logs`](./audit-logs.md) | `list` shows audit log entries of admin actions |
 | [`backups`](./backups.md) | Creates and lists database backups |
 | [`cache`](./cache.md) | Invalidates channel response-cache namespaces |
-| [`packages`](./packages.md) | Inspects package promotion receipts |
 | [`dlq`](./dlq.md) | Inspects and drains the trace dead-letter queue |
 | [`cron`](./cron.md) | Inspects scheduled runs |
-| [`benchmark`](./benchmark.md) | Runs a performance benchmark against the server |
+| `deployments` | Plans, applies and rolls back v2 deployments, including `apply -d` for a compiled directory. See [Deployment endpoints](../../admin-api/deployments.md#deploy-a-compiled-directory) |
+| `provider` | Authors, lints, packs, uploads, admits and revokes v2 connector provider packages |
+| `connections` | Manages immutable v2 connection revisions and runs audited health probes |
 | [`completions`](./completions.md) | Generates shell completions for `bash`, `zsh`, `fish`, `powershell`, or `elvish` |
 
 ## Related

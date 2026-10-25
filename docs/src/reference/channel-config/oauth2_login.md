@@ -35,7 +35,7 @@
 
 This is *establishment*, not verification, which is why it is a `config` block rather than a fourth [`auth.mode`](./auth.md). The two compose: `oauth2_login` mints a session, and `auth.mode = "jwt"` with `source: {"cookie": …}` guards every route the session then reaches.
 
-**The channel serves two routes.** Its `route_pattern` is the authorize leg, where you send a user to begin, and `callback_path` is where the identity provider sends the browser back. Both are gated for collisions at activation, like any other route.
+**The channel serves two routes.** Its `route_pattern` is the authorize leg, where you send a user to begin, and `callback_path` is where the identity provider sends the browser back. Both are checked for collisions when the deployment is built, like any other route.
 
 ## Fields
 
@@ -53,7 +53,7 @@ This is *establishment*, not verification, which is why it is a `config` block r
 | `providers` | object | no | — | Several identity providers on one channel, selected by `{provider}`. See [Several providers on one channel](#several-providers-on-one-channel). Mutually exclusive with the flat provider fields above. |
 | `providers_from_instance` | boolean | no | `false` | Merge the deployment's [`[oauth2_login.providers]`](../configuration/oauth2-login.md#deployment-supplied-providers) under this block's `providers` map (the definition's own entries win a clash). Implies multi-provider mode. |
 | `scopes` | array of strings | no | `[]` | Requested scopes, space-joined. Empty sends no `scope` parameter. |
-| `extra_authorize_params` | object | no | `{}` | Extra query parameters on the authorize URL (`prompt`, `hd`, `allow_signup`). Naming a reserved parameter is a create-time error; see [Reserved authorize parameters](#reserved-authorize-parameters). |
+| `extra_authorize_params` | object | no | `{}` | Extra query parameters on the authorize URL (`prompt`, `hd`, `allow_signup`). Naming a reserved parameter is refused at upload; see [Reserved authorize parameters](#reserved-authorize-parameters). |
 | `pkce` | boolean | no | `true` | PKCE (RFC 7636), S256 only. `plain` is not representable. Shared by every provider. |
 | `state_secret` | string | yes | — | HS256 key for the state cookie. `env://NAME` or `vault://…`, at least 32 bytes. Must be identical on every node. Shared by every provider. |
 | `state_cookie` | object | no | see [`state_cookie`](#state_cookie) | The state cookie's attributes. Shared by every provider. |
@@ -193,7 +193,7 @@ Key the upsert on `(metadata.identity.provider, metadata.identity.subject)` and 
 
 ### Reserved authorize parameters
 
-`extra_authorize_params` may not set `client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `nonce`, `code_challenge` or `code_challenge_method`. Naming one is a create-time `400`; a workflow contributing one under `run_workflow_on_authorize` has it ignored with a warning. Overriding `state` would disable the CSRF binding the block exists to provide.
+`extra_authorize_params` may not set `client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `nonce`, `code_challenge` or `code_challenge_method`. Naming one is a `400` at upload; a workflow contributing one under `run_workflow_on_authorize` has it ignored with a warning. Overriding `state` would disable the CSRF binding the block exists to provide.
 
 ### `run_workflow_on_authorize`
 

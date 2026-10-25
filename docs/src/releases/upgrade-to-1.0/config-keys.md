@@ -162,5 +162,5 @@ Because the driver re-resolves the hostname when it dials, this is a guard rathe
 
 - [Upgrade to 1.0.0](./index.md): the checklist, and every other break.
 - [Upgrades](../../operate/maintain/upgrades.md): the version-independent procedure.
-- [`orion-server preflight`](../../reference/cli/orion-server/preflight.md): the scan that finds the stored ones.
+- `orion-server preflight`: the scan that finds the stored ones.
 - [Releases](./index.md): what changed in each version.

@@ -83,7 +83,7 @@ enum Command {
     },
     /// Statically validate a workflow JSON file (A6).
     ///
-    /// Runs the same checks the admin POST /workflows endpoint performs:
+    /// Runs the same checks a workflow in a definition set is held to:
     /// name/id/description, task uniqueness, and the A1 function-input
     /// schema registry. Exits non-zero with field-pathed errors on
     /// failure — wire into CI to catch broken workflows before deploy.
@@ -664,7 +664,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ready = state.ready.clone();
     let tasks = state.tasks.clone();
 
-    // Cluster background tasks (epoch watcher). None when disabled.
+    // Cluster background tasks: the deployment reconciler, and the shared-state
+    // sweeper in cluster mode.
     orion::cluster::start_cluster_tasks(&state);
 
     // Rate-limiter prune: sweep governor's in-process keyed stores so they
@@ -708,7 +709,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     bootstrap::join_metrics_listener(metrics_server).await;
 
     // Graceful shutdown. Stop the supervised tasks first: the retention jobs,
-    // the DLQ retry consumer and the epoch watcher all hold an `AppState` clone, and the
+    // the DLQ retry consumer and the cluster reconciler all hold an `AppState` clone, and the
     // drain below cannot start until the last trace-queue sender is gone.
     // Cooperative, so a job in the middle of a DELETE finishes it — this
     // used to be `JoinHandle::abort()`.

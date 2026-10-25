@@ -75,7 +75,7 @@ Behaviour:
 - **One round trip.** The versions are read in the same batched read as the entry, so a namespaced lookup costs what a plain one does.
 - **No stale store.** An entry is stored with the versions read at its lookup, before the workflow ran. An invalidation that lands while the workflow is running makes the entry it produces stale at once, rather than pinning a response computed from the old data.
 - **`ttl_secs` is the ceiling.** An invalidation that fails to reach a store (an unreachable shared database, say) leaves entries there to expire at their TTL, so the TTL bounds the staleness even then.
-- **Every store.** An invalidation bumps the namespace in the default store and in every in-memory response-cache store on the node, the built-in one and each cache connector's. A store it cannot reach is logged and skipped. A channel archived with live entries and reactivated later therefore reads them against an already-bumped counter.
+- **Every store.** An invalidation bumps the namespace in the default store and in every in-memory response-cache store on the node, the built-in one and each cache connector's. A store it cannot reach is logged and skipped. A channel removed from a deployment with live entries and deployed again later therefore reads them against an already-bumped counter.
 - **The counter's key** is `orion:rc:ns:<namespace>`, in each store.
 - A lookup that cannot read the counters, or finds one holding something other than an integer, bypasses the cache for that request and stores nothing.
 

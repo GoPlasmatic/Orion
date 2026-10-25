@@ -19,7 +19,7 @@
 //!
 //! What the registry deliberately does **not** own is the functions. A
 //! generation builds more than one engine (the serving one, the
-//! `POST /workflows/{id}/test` one), so an entry describes a function and
+//! `POST /definitions/test` one), so an entry describes a function and
 //! whoever builds an engine's `dataflow_rs::Registry` supplies the function
 //! behind it — `engine::register_functions` for an Orion entry, a loaded
 //! plugin for a plugin entry. The `functions_docs_drift_test` and `function_schema_test`

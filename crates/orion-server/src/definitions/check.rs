@@ -21,9 +21,9 @@ use crate::engine::FunctionRegistry;
 use super::diagnostic::Diagnostic;
 use super::set::Definition;
 use super::set::{Boundary, DefinitionSet, Entity};
-use crate::storage::repositories::channels::CreateChannelRequest;
-use crate::storage::repositories::connectors::CreateConnectorRequest;
-use crate::storage::repositories::workflows::CreateWorkflowRequest;
+use crate::storage::models::CreateChannelRequest;
+use crate::storage::models::CreateConnectorRequest;
+use crate::storage::models::CreateWorkflowRequest;
 
 /// Run every check over `set`, treating names in `boundary` as satisfied
 /// outside it.

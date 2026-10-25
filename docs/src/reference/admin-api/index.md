@@ -1,4 +1,4 @@
-<!-- description: Every Orion admin endpoint: workflows, channels, connectors, plugins, packages, engine, audit logs and backups, by resource. -->
+<!-- description: Every Orion admin endpoint: deployments, engine, circuit breakers, functions, audit logs, cron, backups and cache, by resource. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -10,30 +10,26 @@ All admin endpoints are under `/api/v2/admin/`. When [admin authentication](./au
 
 | Resource | Operations |
 |---|---|
-| [Channels](./channels.md) | Create, validate, activate, version, import, and export endpoints |
-| [Workflows](./workflows.md) | Create, test, activate, roll out, version, import, and export endpoints |
-| [Connectors](./connectors.md) | Create, validate, test, update, and circuit-breaker endpoints |
-| [Plugins](./plugins.md) | Upload, activate, version, import, and export WebAssembly plugins |
-| [Packages](./packages.md) | Inspect applied package receipts |
 | [Deployments](./deployments.md) | Store definitions and connection revisions, plan, apply, roll back and follow v2 deployments |
-| [Engine](./engine.md) | Inspect and reload the running engine |
+| [Engine](./engine.md) | Inspect what the running engine serves |
+| [Circuit breakers](./circuit-breakers.md) | List and reset connector circuit breakers |
 | [Functions](./functions.md) | Discover registered task functions and schemas |
 | [Audit logs](./audit-logs.md) | Query administrative actions |
 | [Trace DLQ](./trace-dlq.md) | Inspect and retry failed asynchronous persistence |
 | [Cron occurrences](./cron-occurrences.md) | Inspect, retry and manually trigger scheduled runs |
 | [Backups](./backups.md) | Create and list SQLite backups |
 
-All resources use the [authentication](./authentication.md), [response envelopes](./envelopes.md), and [lifecycle](./lifecycle.md) contracts below. The generated [OpenAPI specification](../openapi.md) is the machine-readable source for clients and code generation.
+All resources use the [authentication](./authentication.md) and [response envelopes](./envelopes.md) contracts below. The generated [OpenAPI specification](../openapi.md) is the machine-readable source for clients and code generation.
 
 | Page | Holds |
 |---|---|
-| [Admin API conventions](./conventions.md) | authentication, envelopes, lifecycle, status changes, export and promotion. |
-| [Entity endpoints](./entities.md) | channels, workflows, plugins, connectors and packages. |
-| [Operational endpoints](./operations.md) | engine, functions, audit logs, trace DLQ, cron occurrences and backups. |
+| [Admin API conventions](./conventions.md) | authentication and envelopes. |
+| [Deployment endpoints](./deployments.md) | definitions, connections, plans, deployments, rollback and convergence. |
+| [Circuit breaker endpoints](./circuit-breakers.md) | listing this node's breakers, and resetting one on every node. |
+| [Operational endpoints](./operations.md) | engine, functions, audit logs, trace DLQ, cron occurrences, backups and cache. |
 
 ## Related
 
 - [Errors and response envelopes](../errors.md): every code these endpoints return.
-- [Promote between environments](../../operate/maintain/promotion.md): the operator's guide to export and import.
+- [Deployment endpoints](./deployments.md): how definitions reach a node.
 - [OpenAPI specification](../openapi.md): the generated contract, and where to fetch it.
-- [The entity lifecycle](../../concepts/lifecycle.md): the rules the status endpoints enforce.

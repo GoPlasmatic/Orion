@@ -19,7 +19,8 @@ instead of Postgres and the same workflow JSON runs unchanged.
 
 ```bash
 docker compose up -d          # Postgres (seeded) + Orion
-cd ../.. && ./deploy.sh postgres-orders
+cd ../.. && orion-server compile examples/packages/postgres-orders -o dist/postgres-orders
+orion-cli deployments apply -d dist/postgres-orders
 ```
 
 Or run a locally installed `orion-server` against just the database:
@@ -28,12 +29,20 @@ Or run a locally installed `orion-server` against just the database:
 docker compose up -d postgres
 ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
 # in another terminal:
-cd ../.. && ./deploy.sh postgres-orders
+cd ../.. && orion-server compile examples/packages/postgres-orders -o dist/postgres-orders
+orion-cli deployments apply -d dist/postgres-orders
 ```
 
 > Requires Orion ≥ 1.0.0 — the dialect envelope changed shape for 1.0 (see
 > the [upgrade guide](../../../docs/src/operate/upgrading-to-1.0.md)), and this
 > example is written against the 1.0 form.
+
+Then send the sample request:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/data/record-order \
+  -H 'Content-Type: application/json' --data @examples/packages/postgres-orders/request.json
+```
 
 Expected response (ids vary):
 
@@ -54,8 +63,8 @@ Expected response (ids vary):
 }
 ```
 
-Re-run `./deploy.sh postgres-orders` and the deploy steps are skipped — but
-each request still inserts a new order, so the history grows.
+Applying the same directory again is a no-op, but each request still inserts a
+new order, so the history grows.
 
 ## What to look at
 
@@ -68,7 +77,7 @@ each request still inserts a new order, so the history grows.
   (`localhost`).
 - `"driver": "postgresql"` names the backend the reference hides. A
   definition set must name it on every `db` connector: it is how
-  `orion-server compile --format deployment` picks the connection's
+  `orion-server compile` picks the connection's
   provider.
 - `"operations": { "delete": false }` makes the connector **delete-proof**:
   any workflow that tries a `data_write` delete through it is rejected at

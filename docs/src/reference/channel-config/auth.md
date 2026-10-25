@@ -20,9 +20,9 @@
 | `signature_prefix` | string | no | none | `hmac` only: prefix stripped from the signature before decoding, for example `sha256=`. Mutually exclusive with `signature_key`. |
 | `signature_key` | string | no | none | `hmac` only: extract the signature from a comma-separated `k=v` packed header instead — Stripe's `v1`. Every occurrence is tried. |
 | `algorithm` | string | no | `sha256` | `hmac` only: `sha1`, `sha256`, or `sha512`. The provider chooses; refusing `sha1` would only leave those webhooks unauthenticated. |
-| `message` | string | no | `{body}` | `hmac` only: the signing-string template — literals plus `{body}` (required), `{header:<name>}`, and `{header:<name>:<key>}` for packed headers. Strictly parsed at create time. |
+| `message` | string | no | `{body}` | `hmac` only: the signing-string template — literals plus `{body}` (required), `{header:<name>}`, and `{header:<name>:<key>}` for packed headers. Strictly parsed at upload. |
 | `encoding` | string | no | auto-detect | `hmac` only: pins the presented signature encoding (`hex`, `base64`, `base64url`). Absent keeps auto-detection: hex first, then base64. |
-| `timestamp` | string | no | — | `hmac` only: where the unix-seconds timestamp lives — `<header>` or `<header>:<key>`. Paired with `tolerance_secs`; either alone is a create-time error. |
+| `timestamp` | string | no | — | `hmac` only: where the unix-seconds timestamp lives — `<header>` or `<header>:<key>`. Paired with `tolerance_secs`; either alone is refused at upload. |
 | `tolerance_secs` | integer | no | — | `hmac` only: replay window in seconds around `timestamp`; requests outside it are refused before the MAC is computed. |
 | `preset` | string | no | — | `hmac` only: `zoom`, `slack`, `stripe`, `github`, `shopify`, or `webex` — expands to the fields above; an explicitly set field overrides its preset row. |
 | `jwt_keys` | array | no | — | `jwt` only: static verification keys `[{algorithm, key, kid?, key_encoding?}]`. At least one of `jwt_keys`/`jwks_url`. |
@@ -105,9 +105,9 @@ Verification is fail-fast (RFC 8725): extract, then the allowlist (`alg: none` a
 Rules:
 
 - **A failure is always `401` with one message**, whatever the cause. The response never reveals whether the header was missing, the key wrong, the signature malformed, or the timestamp stale. A template header missing from the request refuses — never empty-string substitution, and the replay window is checked before any MAC work.
-- **Auth configs are validated structurally at create/update/validate/import**: a missing `secret`, an unknown preset, a malformed template, or half a replay guard is a `400` naming the problem — not a channel quarantined at the next reload.
+- **Auth configs are validated structurally at upload and by `lint`**: a missing `secret`, an unknown preset, a malformed template, or half a replay guard is a `400` naming the problem, not a channel quarantined when it loads.
 - **`env://` references resolve at channel load.** An `auth` block that cannot be built — an unset `env://` secret, for example — quarantines the channel rather than serving it unauthenticated.
-- **`auth.keys`, `auth.secret`/`auth.secrets`, and `auth.jwt_keys[].key` are masked** as `"******"` in every API read. A masked value sent back on update is restored from the stored config; a sentinel with nothing to restore from is refused.
+- **Write `auth.keys`, `auth.secret`/`auth.secrets`, and `auth.jwt_keys[].key` as `env://` references.** A channel definition is stored as uploaded and `GET /api/v2/admin/definitions/{digest}` reads it back unmasked, so a literal key would be readable to any admin.
 - **`channel_call` and cron are exempt by design.** A cron occurrence has no caller to authenticate. A `channel_call` is a step inside a request that already authenticated at its own ingress and holds no credential to present.
 - Inbound OAuth2/OIDC sign-in — the redirect, PKCE, `id_token` verification and OIDC discovery — is the [`oauth2_login`](./oauth2_login.md) block's job. The `jwt` mode is not an IdP; it verifies tokens. mTLS termination stays out of scope. See [Secure an Instance](../../operate/run/security.md).
 
@@ -124,7 +124,7 @@ Authorization: Bearer  <credential>
 
 `Authorization: Bearer<credential>`, with no space, is refused: the text before the first space is not the scheme. The credential after the spaces is compared byte-for-byte.
 
-The value is a scheme name, not a prefix, so `"Bearer"` and `"Bearer "` are the same scheme. A value that is not an RFC 9110 token, such as `"Key="` or `"Bearer:"`, cannot be a scheme name. It is a `400` at create, update, validate and import, and an error from `lint` and `package lint`. A channel already stored with one is quarantined at load. `orion-server preflight` reports a stored one as `channel-auth`.
+The value is a scheme name, not a prefix, so `"Bearer"` and `"Bearer "` are the same scheme. A value that is not an RFC 9110 token, such as `"Key="` or `"Bearer:"`, cannot be a scheme name. It is a `400` at upload, and an error from `lint`. A channel that reaches a node with one is quarantined at load.
 
 ## Related
 

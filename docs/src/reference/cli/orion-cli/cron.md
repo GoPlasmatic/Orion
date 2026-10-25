@@ -10,14 +10,14 @@ Inspects scheduled runs. Every scheduled instant of a
 ## Synopsis
 
 ```bash
-orion-cli cron <status|list|get|retry|cancel> [args] [flags]
+orion-cli cron <status|list|get|trigger|retry|cancel> [args] [flags]
 ```
 
 ## Description
 
 `retry` keeps the occurrence's identity and its scheduled time. It is another attempt at the work that was due *then*, which is what lets a workflow use
 `metadata.trigger.scheduled_for` as an idempotency key. To run a schedule again
-*now*, use `channels trigger`, which mints a new occurrence at the current
+*now*, use `trigger <channel>` (`POST /api/v2/admin/channels/{id}/trigger`), which mints a new occurrence at the current
 instant. `completed` occurrences are refused with a `409` for exactly that
 reason.
 
@@ -32,6 +32,7 @@ running it is still alive. It is how to release the slots of a node that died mi
 | `status` | What is scheduled, when it next fires, its last run, its backlog and its slots, as `held/slots` — one row per active cron channel. |
 | `list` | List occurrences, newest first; filter with `--channel-id` and `--status`. |
 | `get <id>` | Show one occurrence: both instants, the attempt, the singleton and slot it held, its trace, and why it failed. |
+| `trigger <channel>` | Run a deployed cron channel now. The occurrence takes the same claim and concurrency path as a scheduled run, so a `forbid` channel already running records it as skipped. |
 | `retry <id>` | Attempt a `failed`, `skipped_misfire` or `skipped_singleton` occurrence again. |
 | `cancel <id>` | Stop a `pending`, `claimed` or `running` occurrence: settle it `failed` and free its singleton slot. |
 
@@ -45,5 +46,4 @@ orion-cli cron list --channel-id nightly-order-rollup --status failed
 
 - [Scheduled workflows](../../../guides/patterns/scheduled-workflows.md): cron channels, occurrences and misfires.
 - [Admin API › Cron occurrences](../../admin-api/cron-occurrences.md): the endpoints behind the subcommands.
-- [`orion-cli channels`](./channels.md): `trigger`, which mints a new occurrence now.
 - [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

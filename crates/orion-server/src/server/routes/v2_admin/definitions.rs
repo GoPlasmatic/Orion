@@ -19,6 +19,7 @@ use super::deployment_err_response;
 use crate::errors::{FieldError, OrionError};
 use crate::runtime::definitions;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::extract::OrionJson;
 use crate::server::state::AppState;
 
 /// `POST /api/v2/admin/definitions`.
@@ -37,7 +38,7 @@ use crate::server::state::AppState;
 pub(crate) async fn upload_definition(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(mut definition): Json<Definition>,
+    OrionJson(mut definition): OrionJson<Definition>,
 ) -> Result<impl IntoResponse, OrionError> {
     validate(&state, &mut definition).await?;
     let bytes = definitions::canonical_bytes(&definition)?;
@@ -116,7 +117,7 @@ const TEST_CHANNEL: &str = "__test__";
 pub(crate) async fn test_definition(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(request): Json<TestDefinitionRequest>,
+    OrionJson(request): OrionJson<TestDefinitionRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let TestDefinitionRequest {
         definition,
@@ -158,13 +159,8 @@ pub(crate) async fn test_definition(
     // a deployment compiles a member.
     let generation = state.runtime.load();
     let row = definitions::workflow_row(&definition, TEST_CHANNEL, 1)?;
-    let workflow_json = crate::storage::repositories::workflows::workflow_json(
-        &row,
-        TEST_CHANNEL,
-        TEST_CHANNEL,
-        "active",
-        None,
-    )?;
+    let workflow_json =
+        crate::engine::workflow_json(&row, TEST_CHANNEL, TEST_CHANNEL, "active", None)?;
     let engine =
         crate::engine::offline::single_engine(&generation.engine.compiler(), &workflow_json)?;
 
@@ -221,18 +217,13 @@ async fn validate(state: &AppState, definition: &mut Definition) -> Result<(), O
         Definition::Workflow(workflow) => workflow_problems(state, workflow)?,
         Definition::Channel(channel) => channel_problems(channel),
         Definition::Plugin(plugin) => {
-            let prepared = crate::server::routes::admin::services::plugins::prepare(
-                &state.config.plugins,
-                None,
+            plugin.manifest = super::plugin_definition::check(
+                state,
                 &plugin.manifest,
-                Some(&plugin.component),
-                None,
+                &plugin.component,
                 plugin.signature.as_deref(),
-                &plugin.tags,
-            )?;
-            let manifest = prepared.manifest_json.clone();
-            crate::server::routes::admin::services::plugins::resolve(state, prepared).await?;
-            plugin.manifest = manifest;
+            )
+            .await?;
             Vec::new()
         }
     };
@@ -246,31 +237,39 @@ async fn validate(state: &AppState, definition: &mut Definition) -> Result<(), O
     })
 }
 
-/// A workflow is checked the way the loader reads it: the step shape, then
-/// the strict parse and compile on this node's engine, refusing every issue
-/// that would quarantine it.
+/// A workflow is checked the way the loader reads it: everything a definition
+/// set's workflow is checked for — its name, uncompiled source form, the loop,
+/// every step's function input, secret references where nothing resolves one
+/// — then the strict parse and compile on this node's engine, refusing every
+/// issue that would quarantine it.
 fn workflow_problems(
     state: &AppState,
     workflow: &WorkflowDefinition,
 ) -> Result<Vec<FieldError>, OrionError> {
     let generation = state.runtime.load();
-    let mut problems = crate::validation::validate_workflow_tasks_schema(
-        &workflow.tasks,
-        workflow.loop_config.as_ref(),
+    let request = crate::storage::models::CreateWorkflowRequest {
+        workflow_id: None,
+        name: workflow.name.clone(),
+        description: workflow.description.clone(),
+        priority: workflow.priority,
+        condition: workflow.condition.clone(),
+        tasks: workflow.tasks.clone(),
+        tags: workflow.tags.clone(),
+        loop_config: workflow.loop_config.clone(),
+        continue_on_error: false,
+    };
+    if let Err(e) = crate::validation::validate_create_workflow(
+        &request,
+        state.config.engine.max_loop_iterations,
         &generation.functions,
-    );
-    if !problems.is_empty() {
-        return Ok(problems);
+    ) {
+        return Ok(refusal_details(&e, "workflow"));
     }
+    let mut problems = Vec::new();
     let engine = &generation.engine;
     let row = definitions::workflow_row(workflow, "__definition__", 1)?;
-    let json = crate::storage::repositories::workflows::workflow_json(
-        &row,
-        "__definition__",
-        "__definition__",
-        "active",
-        None,
-    )?;
+    let json =
+        crate::engine::workflow_json(&row, "__definition__", "__definition__", "active", None)?;
     if let Err(issues) = crate::engine::compile_row(&engine.compiler(), &json) {
         problems.extend(crate::validation::quarantine_refusals(issues));
     }
@@ -280,7 +279,7 @@ fn workflow_problems(
 /// A channel is checked as a channel create is, minus its identity and its
 /// workflow, which the manifest supplies.
 fn channel_problems(channel: &ChannelDefinition) -> Vec<FieldError> {
-    let request = crate::storage::repositories::channels::CreateChannelRequest {
+    let request = crate::storage::models::CreateChannelRequest {
         channel_id: None,
         name: channel.name.clone(),
         description: channel.description.clone(),
@@ -298,28 +297,32 @@ fn channel_problems(channel: &ChannelDefinition) -> Vec<FieldError> {
     };
     match crate::validation::validate_create_channel(&request) {
         Ok(()) => Vec::new(),
-        Err(e) => {
-            // Channel validation roots its paths at the v1 request's
-            // `channel`; a definition's fields sit directly under it.
-            let details: Vec<FieldError> = e
-                .field_errors()
-                .iter()
-                .cloned()
-                .map(|mut d| {
-                    if let Some(rest) = d.path.strip_prefix("channel.") {
-                        d.path = rest.to_string();
-                    } else if d.path == "channel" {
-                        d.path = String::new();
-                    }
-                    d
-                })
-                .collect();
-            if details.is_empty() {
-                vec![FieldError::new("", "INVALID", e.to_string())]
-            } else {
-                details
+        Err(e) => refusal_details(&e, "channel"),
+    }
+}
+
+/// A definition-set validator's refusal as problems by field. Those
+/// validators root their paths at `root` (`channel.config.…`,
+/// `workflow.name`); a definition's fields sit directly under it.
+fn refusal_details(error: &OrionError, root: &str) -> Vec<FieldError> {
+    let prefix = format!("{root}.");
+    let details: Vec<FieldError> = error
+        .field_errors()
+        .iter()
+        .cloned()
+        .map(|mut d| {
+            if let Some(rest) = d.path.strip_prefix(&prefix) {
+                d.path = rest.to_string();
+            } else if d.path == root {
+                d.path = String::new();
             }
-        }
+            d
+        })
+        .collect();
+    if details.is_empty() {
+        vec![FieldError::new("", "INVALID", error.client_message())]
+    } else {
+        details
     }
 }
 

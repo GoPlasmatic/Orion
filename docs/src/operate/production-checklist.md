@@ -43,7 +43,7 @@ Three commands answer most of the list above against a real instance:
 ```bash
 orion-server validate-config -c config.toml   # config file + ORION_* environment
 orion-server test-connectivity -c config.toml # the database
-orion-server preflight -c config.toml         # stored channels and workflows
+orion-server lint ./definitions               # the definition set you deploy
 ```
 
 Then confirm the running instance agrees:
@@ -56,7 +56,7 @@ curl -s http://localhost:8080/health | jq '{status, workflows_loaded, channels, 
 
 ## Before each deploy
 
-- **Read the version's upgrade notes** and run `preflight` with the new binary against the current database. See [Upgrade an instance](./maintain/upgrades.md).
+- **Read the version's upgrade notes** and run `lint` with the new binary over the definition set you deploy. See [Upgrade an instance](./maintain/upgrades.md).
 - **Back up first.** Every other step is reversible once this one happened.
 - **Migrate as a deploy step** in a cluster, not at boot.
 - **Roll one node at a time**, and confirm `/readyz` on each before moving on.

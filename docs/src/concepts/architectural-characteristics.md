@@ -93,7 +93,7 @@ Click a node in the capability map to expand it, and click a capability to open 
         { "name": "Configuration", "link": "reference/configuration/how-settings-are-resolved.html",
           "children": ["TOML file", "ORION_SECTION__KEY overrides", "Defaults for everything", "Misspelling is a startup error"] },
         { "name": "Pre-flight checks", "link": "guides/author/testing.html#check-the-config-and-the-backends",
-          "children": ["validate-config", "test-connectivity", "preflight"] }
+          "children": ["validate-config", "test-connectivity", "lint"] }
       ]
     },
     {
@@ -114,14 +114,12 @@ Click a node in the capability map to expand it, and click a capability to open 
     {
       "name": "Availability", "type": "workflow",
       "children": [
-        { "name": "Hot reload", "link": "concepts/lifecycle.html#what-moves-the-engine",
+        { "name": "Hot reload", "link": "reference/admin-api/deployments.html#plan-and-apply",
           "children": ["Atomic engine swap", "In-flight requests unaffected", "No restart"] },
-        { "name": "Immutable versions", "link": "concepts/lifecycle.html#why-immutability-is-the-load-bearing-rule",
-          "children": ["Active cannot be edited", "Change is a new version", "History kept"] },
-        { "name": "Canary rollout", "link": "guides/author/versioning.html#roll-out-gradually",
-          "children": ["Percentage traffic split", "Sticky per caller", "Moved with one call"] },
-        { "name": "Rollback", "link": "guides/author/versioning.html#roll-back",
-          "children": ["Rollout to 0", "Or archive the version", "Nothing to redeploy"] },
+        { "name": "Immutable revisions", "link": "reference/admin-api/deployments.html#manifests",
+          "children": ["A committed revision never changes", "Change is a new revision", "History kept"] },
+        { "name": "Rollback", "link": "reference/admin-api/deployments.html#rollback",
+          "children": ["Commit an earlier revision", "History moves forward", "Nothing to rebuild"] },
         { "name": "Response caching", "link": "reference/channel-config/cache.html",
           "children": ["Keyed from the request", "Memory or the shared database", "Never reaches the workflow"] },
         { "name": "Connection pooling", "link": "reference/connectors/db.html",
@@ -132,15 +130,15 @@ Click a node in the capability map to expand it, and click a capability to open 
       "name": "Maintainability", "type": "channel",
       "children": [
         { "name": "Admin API", "link": "reference/admin-api/index.html",
-          "children": ["CRUD for every entity", "Lifecycle transitions", "Engine control", "Dependency inspection"] },
+          "children": ["Definitions and connections", "Plan, apply, roll back", "Engine status", "Convergence"] },
         { "name": "OpenAPI", "link": "reference/openapi.html",
           "children": ["Full admin surface", "Swagger UI outside production", "Closed in production"] },
         { "name": "Offline testing", "link": "guides/author/testing.html",
           "children": ["Lint a workflow file", "Dry-run with stubs", "*.case.json suites", "No server needed"] },
-        { "name": "Packages & promotion", "link": "operate/maintain/promotion.html",
-          "children": ["export, lint, plan, apply, diff", "Content-immutable versions", "Receipts of what shipped"] },
+        { "name": "Deployments", "link": "reference/admin-api/deployments.html#deploy-a-compiled-directory",
+          "children": ["compile, plan, apply", "Content-addressed definitions", "Revision history"] },
         { "name": "CI/CD", "link": "guides/patterns/ci-cd.html",
-          "children": ["Offline PR gates", "Plan-then-apply pipelines", "Scheduled drift detection"] },
+          "children": ["Offline PR gates", "Plan-then-apply pipelines", "Rollback by revision"] },
         { "name": "Audit logs", "link": "operate/run/audit-logs.html",
           "children": ["Who changed what, when", "Filterable", "Bounded retention", "Change-context grouping"] },
         { "name": "Backups", "link": "operate/maintain/backup-restore.html",
@@ -178,7 +176,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 |---|---|
 | [Admin authentication](../operate/run/security.md#authenticate-the-admin-plane) | Keys compared in constant time, storable as `sha256:` digests, several at once so rotation needs no downtime. Missing admin auth is a startup error in production, not a warning. |
 | [Data-plane authentication](../operate/run/security.md#decide-how-the-data-plane-authenticates) | Per channel: `api_key`, `hmac` over a templated signing string (raw body by default; provider presets) verified before parsing, or `jwt` with the verified claims exposed to channel logic and the workflow. OIDC flows and mTLS termination stay out of scope — put a gateway in front for those. |
-| [Secrets by reference](../reference/connectors/secrets.md) | `env://` and `vault://` references resolved at load, never stored inline. Secret fields are masked in API reads, and the stored config is AES-256-GCM encrypted at rest when `storage.connector_encryption_key` is set (plaintext by default). |
+| [Secrets by reference](../reference/connectors/secrets.md) | `env://` and `vault://` references resolved at load, never stored inline. A deployment carries references only, and a connection's public settings refuse a secret-shaped key. |
 | [Payload validation](../reference/channel-config/validation_logic.md) | JSONLogic rules per channel, plus a body-size limit, enforced before any workflow logic runs. |
 | [Egress control](../operate/run/security.md#bound-what-connectors-can-reach) | SSRF protection blocks private and internal addresses unless a connector opts in. [Operation gates](../reference/connectors/operation-gates.md) make a connector read-only, delete-proof, or anything between. |
 | [Query safety](../reference/connectors/db.md#dialect-guards) | Parameterized queries throughout, with dialect guards on `db` connectors that refuse statements the connector was not opened for. |
@@ -192,7 +190,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 | [Backpressure](../reference/channel-config/backpressure.md) | A per-channel semaphore bounds in-flight work. When permits run out the channel sheds load with `503` immediately rather than queueing. |
 | [Deduplication](../reference/channel-config/deduplication.md) | Idempotency keys refused within a window on sync and `/async` HTTP, backed by the cluster's shared database when clustered. |
 | [Async processing](../operate/run/traces.md#run-an-async-channel) | `/async` returns a trace id at once and a bounded worker queue drains the work, with the DLQ behind it. |
-| [Cluster mode](../operate/deploy/cluster.md#what-the-cluster-shares) | N replicas as one logical system: rate limits, deduplication and caches shared through the database, config changes propagated by epoch, scheduled jobs leased to one node. |
+| [Cluster mode](../operate/deploy/cluster.md#what-the-cluster-shares) | N replicas as one logical system: rate limits, deduplication and caches shared through the database, every node reconciling to the same deployment head, scheduled jobs leased to one node. |
 | [Database backends](../reference/configuration/storage.md) | SQLite embedded for a single node; PostgreSQL or MySQL when replicas share state. The scheme in `storage.url` picks one — nothing else changes. |
 
 ## Deployability
@@ -203,7 +201,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 | [Containers](../operate/deploy/docker.md) | Multi-stage image, non-root execution, health probes wired up, and a reference HA compose topology. |
 | [Kubernetes](../operate/deploy/kubernetes.md) | A Helm chart with liveness and readiness probes, migrations as a Job rather than at boot, and cluster mode configured through values. |
 | [Configuration](../reference/configuration/how-settings-are-resolved.md) | TOML with `ORION_SECTION__KEY` environment overrides and a default for everything. A misspelled key is a startup error, not a silent no-op. |
-| [Pre-flight checks](../guides/author/testing.md#check-the-config-and-the-backends) | `validate-config`, `test-connectivity` and `preflight` answer "will this instance come up, reach its backends, and load what is already stored" before the deploy, not after. |
+| [Pre-flight checks](../guides/author/testing.md#check-the-config-and-the-backends) | `validate-config`, `test-connectivity` and `lint` answer "will this instance come up, reach its backends, and load what you deploy" before the deploy, not after. |
 
 ## Extensibility
 
@@ -214,7 +212,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 | [Portable data dialect](../reference/data-dialect.md) | One filter-and-envelope syntax lowered to PostgreSQL, MySQL or SQLite, so the same task reads from any of them. |
 | [Channel protocols](../reference/channel-config/routing.md) | REST with route patterns and path parameters, plain HTTP by channel name, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |
 | [In-process composition](../reference/functions/channel_call.md) | `channel_call` runs another channel's workflow in the same process: no network hop, no serialization, and the callee's guards still apply. |
-| [Plugins](../reference/plugin-manifest.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and activated like any other definition, promoted in packages, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
+| [Plugins](../reference/plugin-manifest.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and deployed like any other definition, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
 
 > [!NOTE]
 > Orion extends by configuration, and by pure computation. A plugin is the one way to add a task function at runtime, and it only computes; everything with I/O stays a connector or a service of your own. [What you can extend](./how-orion-works.md#what-you-can-extend) states the boundary exactly.
@@ -223,10 +221,9 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Hot reload](./lifecycle.md#what-moves-the-engine) | Activating a version swaps the engine atomically. Requests already in flight finish on the engine they started on. No restart, no dropped connection, no deploy window. |
-| [Immutable versions](./lifecycle.md#why-immutability-is-the-load-bearing-rule) | An active version cannot be edited. Every change is a new version, so what ran yesterday is still there to compare against and return to. |
-| [Canary rollout](../guides/author/versioning.md#roll-out-gradually) | A percentage of traffic on the new version, sticky per caller by header, moved up or back with one call. |
-| [Rollback](../guides/author/versioning.md#roll-back) | Setting the rollout to `0` or archiving the new version restores the previous one at once — no rebuild, and nothing to redeploy. |
+| [Hot reload](../reference/admin-api/deployments.md#plan-and-apply) | Applying a deployment swaps the engine atomically. Requests already in flight finish on the engine they started on. No restart, no dropped connection, no deploy window. |
+| [Immutable revisions](../reference/admin-api/deployments.md#manifests) | A committed deployment cannot be edited. Every change is a new revision, so what ran yesterday is still there to compare against and return to. |
+| [Rollback](../reference/admin-api/deployments.md#rollback) | A rollback commits an earlier revision's manifest as a new revision. Nothing is rebuilt from source. |
 | [Response caching](../reference/channel-config/cache.md) | Per channel, keyed from the request, in memory, in a cache connector or, in cluster mode, in the shared database, so repeated reads never reach the workflow. |
 | [Connection pooling](../reference/connectors/db.md) | Pools are cached per connector and reused across requests instead of being opened per call. |
 
@@ -234,11 +231,11 @@ Click a node in the capability map to expand it, and click a capability to open 
 
 | Area | What the runtime provides |
 |---|---|
-| [Admin API](../reference/admin-api/index.md) | Full CRUD over channels, workflows, connectors, plugins and packages, plus lifecycle transitions, engine control, and dependency inspection. Everything the console and the CLI do, they do through it. |
+| [Admin API](../reference/admin-api/index.md) | Store definitions and connections, plan, apply and roll back deployments, and read engine status and convergence. Everything the console and the CLI do, they do through it. |
 | [OpenAPI](../reference/openapi.md) | The whole admin surface as a spec, with Swagger UI served outside production and closed off inside it. |
 | [Offline testing](../guides/author/testing.md) | Lint a workflow file, dry-run it against sample input with stubbed connectors, and keep `*.case.json` regression suites next to the JSON. None of it needs a running server. |
-| [Packages and promotion](../operate/maintain/promotion.md) | `export`, `lint`, `plan`, `apply` and `diff` move a named, versioned unit between instances. Applied versions are content-immutable, and receipts record exactly what shipped. |
-| [CI/CD](../guides/patterns/ci-cd.md) | Offline pull-request gates, plan-then-apply pipelines, scheduled drift detection, and a rollback path that is the same one verb. |
+| [Deployments](../reference/admin-api/deployments.md#deploy-a-compiled-directory) | `orion-server compile` turns a definition set into a deployment directory, and `orion-cli deployments plan` and `apply` deploy it to any instance. Definitions are stored by digest, and every committed revision is kept. |
+| [CI/CD](../guides/patterns/ci-cd.md) | Offline pull-request gates, plan-then-apply pipelines, and a rollback to an earlier revision. |
 | [Audit logs](../operate/run/audit-logs.md) | Who changed what and when, filterable, with bounded retention and a change-context header that groups a multi-step operation into one story. |
 | [Backups](../operate/maintain/backup-restore.md) | SQLite backups on demand through the API. Restore is a deliberate offline procedure, and PostgreSQL or MySQL use your own snapshot and PITR tooling. |
 

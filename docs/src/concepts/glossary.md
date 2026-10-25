@@ -1,12 +1,10 @@
-<!-- description: One-line definitions for every term the Orion documentation uses with a fixed meaning — channel, workflow, connector, package, quarantine, rollout and more. -->
+<!-- description: One-line definitions for every term the Orion documentation uses with a fixed meaning — channel, workflow, connector, deployment, quarantine, rollout and more. -->
 <!-- type: glossary -->
 <!-- last_verified: 2026-09-14 -->
 
 # Glossary
 
 One definition for every term the book uses with a fixed meaning, ten to twenty words each. A term with a page of its own links to it; the concept page is the canonical home, and this line is the pointer.
-
-**Artifact (package)**: the single JSON document a package travels as, carrying its entities, version and content hash. See [Packages](./packages.md).
 
 **Backpressure**: a per-channel cap on concurrent in-flight work; `max_concurrent_per_node` bounds every ingress together. See [Channel configuration](../reference/channel-config/index.md).
 
@@ -18,9 +16,7 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Circuit breaker**: a per-`channel:connector`, per-node gate that stops calls to a repeatedly failing backend until a recovery timeout elapses. See [Connectors](./connectors.md).
 
-**Closure (of a package)**: the selected channels, their workflows, and every connector and plugin those workflows reference. See [Packages](./packages.md#closure-what-travels-with-a-channel).
-
-**Config epoch**: a shared counter in the database, advanced by every mutation; cluster replicas poll it and resync when it moves. See [Run a cluster](../operate/deploy/cluster.md).
+**Connection**: an immutable revision of a connector's configuration: a provider, public settings and secret locators, named by a deployment. See [Connections](../reference/admin-api/deployments.md#connections).
 
 **Connector**: a named connection to an external system (`http`, `db`, `cache`) that tasks reference by name. See [Connectors](./connectors.md).
 
@@ -34,19 +30,23 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Dedup key (idempotency key)**: the per-channel value, read from a request header, that marks a request as a duplicate inside the dedup window. See [Channel configuration](../reference/channel-config/deduplication.md).
 
+**Definition**: one deployable workflow, channel or plugin document, stored by the digest of its canonical bytes. See [Definitions](../reference/admin-api/deployments.md#definitions).
+
+**Deployment**: a manifest naming every definition and connection a node serves, committed as an immutable, numbered revision. See [Deployment endpoints](../reference/admin-api/deployments.md).
+
+**Deployment head**: the latest committed deployment revision; every node builds it and serves it. With none, a node serves nothing. See [Convergence](../reference/admin-api/deployments.md#convergence).
+
 **Dialect (portable data dialect)**: the backend-neutral query and write language that `data_query` and `data_write` lower to PostgreSQL, MySQL or SQLite. See [Portable data dialect](../reference/data-dialect.md).
 
-**Draft / active / archived**: the three entity statuses: drafts are editable, active versions are immutable and served, archived versions are retired. See [The entity lifecycle](./lifecycle.md).
+**Engine**: the compiled runtime built from every deployed workflow and plugin; a reload rebuilds and swaps it whole, beside the channel estate. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
 
-**Engine**: the compiled runtime built from every active workflow and plugin; a reload rebuilds and swaps it whole, beside the channel estate. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
-
-**Estate**: everything one instance stores: its channels, workflows, connectors and plugins, across all versions.
+**Estate**: everything one instance serves: the channels, workflows, connections and plugins of its deployment head.
 
 **Fragment**: a reusable run of tasks a source-form workflow pulls in with `use`, resolved by `compile` before the definition reaches an instance. See [CLI](../reference/cli/shared-definitions.md).
 
 **Generation**: one published value holding the engine, the channel estate, the function registry and the plugin set, swapped atomically on reload. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
 
-**Hot reload**: replacing the running generation inside a live process; admin mutations and `POST /api/v2/admin/engine/reload` take effect without a restart. See [The entity lifecycle](./lifecycle.md#what-moves-the-engine).
+**Hot reload**: replacing the running generation inside a live process; a committed deployment takes effect without a restart. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
 
 **Ingress**: any path work enters a channel: a synchronous request, an `/async` submission, a `channel_call`, or a claimed cron occurrence.
 
@@ -54,25 +54,21 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Loop**: a workflow setting that repeats the task list once per sweep, up to a declared `max`, with a counter the tasks can index. See [Workflow definition](../reference/workflows.md#loop).
 
-**Manifest**: a plugin's `plugin.toml`: the declaration of what the component provides and how it is called. See [Plugins](./plugins.md).
+**Manifest**: a plugin's `plugin.toml`, declaring what the component provides and how it is called. See [Plugins](./plugins.md). A deployment's manifest is its member list. See [Manifests](../reference/admin-api/deployments.md#manifests).
 
-**Modular monolith**: one Orion instance running many independently shipped services side by side. See [Packages](./packages.md).
+**Modular monolith**: one Orion instance running many services side by side, all from one deployment.
 
 **Occurrence**: one scheduled instant of a cron channel, written to a durable ledger before the work starts and kept after; identified by `(channel_id, scheduled_for)`. See [Cron occurrences](../reference/admin-api/cron-occurrences.md).
 
 **Operation gates**: per-connector booleans under `operations` that permit or refuse `read`, `insert`, `update`, `delete`, `upsert` and `raw_write`. See [Connectors](../reference/connectors/operation-gates.md).
 
-**Package**: the channels, workflows, connectors and plugins of one service, versioned as a unit and promoted between instances. See [Packages](./packages.md).
+**Plugin**: a definition carrying a WebAssembly component that adds task functions named `<plugin>.<label>`; its world imports nothing. See [Plugins](./plugins.md).
 
-**Plugin**: a versioned entity carrying a WebAssembly component that adds task functions named `<plugin>.<label>`; its world imports nothing. See [Plugins](./plugins.md).
+**Quarantine**: the state of a channel that failed to build into a generation; it is refused at every ingress until a later build succeeds. See [Troubleshooting](../operate/maintain/troubleshooting.md).
 
-**Promotion**: moving a package between instances through `export` or `compile`, `plan` and `apply`. See [Promote between environments](../operate/maintain/promotion.md).
+**Revision**: one immutable, numbered version of a deployment, a manifest member or a connection; a change is always a new revision. See [Deployment endpoints](../reference/admin-api/deployments.md).
 
-**Quarantine**: the state of a channel that failed to build during a reload; it is refused at every ingress until a later reload succeeds. See [The entity lifecycle](./lifecycle.md#when-a-stored-entity-cannot-be-loaded).
-
-**Receipt (package receipt)**: the target instance's record of a package application; an applied version is content-immutable. See [Packages](./packages.md#receipts-and-immutability).
-
-**Rollout bucket**: the stable request hash that decides which workflow version serves a call during a percentage rollout. See [Workflow definition](../reference/workflows.md#rollout).
+**Rollout bucket**: the stable request hash that decides which workflow revision serves a call during a percentage rollout. See [Workflow definition](../reference/workflows.md#rollout).
 
 **Route pattern**: a channel's REST method and path template, with parameters, matched against requests under `/api/v2/data/`. See [Data API](../reference/data-api.md#route-resolution).
 
@@ -90,6 +86,4 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Trace DLQ**: the dead-letter table for async work that could not complete, retried with backoff. See [Admin API](../reference/admin-api/trace-dlq.md).
 
-**Version**: one immutable row of a channel, workflow or plugin under its id; a change is always a new version. See [The entity lifecycle](./lifecycle.md).
-
-**Workflow**: a versioned pipeline of tasks selected by JSONLogic conditions, executed by the engine on behalf of a channel. See [Workflows](./workflows.md).
+**Workflow**: a pipeline of tasks selected by JSONLogic conditions, executed by the engine on behalf of a channel. See [Workflows](./workflows.md).

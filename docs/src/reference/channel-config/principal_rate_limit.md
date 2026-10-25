@@ -24,9 +24,9 @@ A per-caller quota keyed on **verified** identity, applied straight after authen
 
 Both limits apply. `rate_limit` runs **before** authentication, deliberately, so a refusal costs the least work and credential-stuffing is metered like any other traffic. The consequence is that it cannot know who the caller is: the only identities it can key on are the address and a caller-supplied header. `principal_rate_limit` is the quota half, and the address limit stays the cheap outer guard.
 
-The two limiters keep separate buckets and separate state across reloads. A refusal from either answers `429` and counts in `orion_rate_limit_rejections_total` under the channel's name, so 429 accounting stays whole. Which of the two refused is in the log line.
+The two limiters keep separate buckets and separate state across rebuilds. A refusal from either answers `429` and counts in `orion_rate_limit_rejections_total` under the channel's name, so 429 accounting stays whole. Which of the two refused is in the log line.
 
-The block takes the same fields as `rate_limit`: `requests_per_second`, `burst`, `key_logic`, `key_headers`, `on_backend_error`. There are two differences, both refused at create rather than at run time:
+The block takes the same fields as `rate_limit`: `requests_per_second`, `burst`, `key_logic`, `key_headers`, `on_backend_error`. There are two differences, both refused at upload rather than at run time:
 
 - **`key_logic` is required.** The address limiter falls back to the caller
   identity when none is given; a principal has no such fallback, and inventing

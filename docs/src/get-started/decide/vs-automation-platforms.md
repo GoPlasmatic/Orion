@@ -24,7 +24,7 @@ Automation platforms optimize for building an integration in minutes across doze
 | Unit of work | A scenario or flow, usually triggered on a schedule or webhook | A [channel](../../concepts/channels.md) answering a request or a scheduled occurrence |
 | How you write the logic | Drag and drop in a browser | JSON, posted to a running server |
 | Where state lives | In the platform, with per-run history | In the run's data context while it lasts; nothing after it unless you wrote it to a datastore |
-| How a change ships | Save in the editor | One API call, versioned, hot-reloaded |
+| How a change ships | Save in the editor | One deployment, versioned, hot-reloaded |
 | Typical latency | Seconds; a few runs an hour to a few thousand a day | Milliseconds; thousands of requests a second |
 | What it needs to run | A hosted account, or a container plus its database | [One binary](../install.md) |
 
@@ -39,8 +39,8 @@ Automation platforms optimize for building an integration in minutes across doze
 ## What Orion does instead
 
 - Serves production request traffic: single-digit millisecond responses at [thousands of requests a second](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md).
-- Keeps the definition as JSON in your repository, promoted between environments as a [package](../../concepts/packages.md).
-- Versions every change, with [percentage rollout and one-command rollback](../../guides/author/versioning.md).
+- Keeps the definition as JSON in your repository, deployed to each environment as a [reviewed deployment](../../reference/admin-api/deployments.md).
+- Records every change as a deployment revision, with [one-call rollback](../../reference/admin-api/deployments.md#rollback).
 - Brings the production furniture: [circuit breakers](../../operate/run/failure-handling.md), [Prometheus metrics](../../operate/run/monitoring.md), rate limits, and per-request [traces](../../operate/run/traces.md).
 
 The [Orion Console](../../guides/patterns/console.md) adds a browser view for managing and inspecting all of this, but the API stays the source of truth.
@@ -65,7 +65,7 @@ They diverge on what happens next. An automation platform is built so that flow 
 - The workflow *is* one of your services, on the critical path of a product.
 - It has to answer in milliseconds, under sustained load, with metrics you can alert on.
 - The definition belongs in your repository and your CI pipeline.
-- You need versioned rollout and rollback rather than "undo in the editor".
+- You need versioned deployments and rollback rather than "undo in the editor".
 
 ## Running both
 
@@ -86,5 +86,5 @@ The clean split is by traffic class, not by capability. Keep the SaaS glue on th
 - [Is Orion right for you?](./is-orion-right-for-you.md): the chart, and the other neighbours.
 - [Orion and durable execution engines](./vs-durable-execution.md): where the long-running work goes instead.
 - [Connector types](../../reference/connectors/index.md): the three types, and how credentials are held.
-- [Version and roll out changes](../../guides/author/versioning.md): what "rollback" means here.
+- [Deployment endpoints](../../reference/admin-api/deployments.md#rollback): what "rollback" means here.
 - [Use the Orion Console](../../guides/patterns/console.md): the browser view, and what it is for.

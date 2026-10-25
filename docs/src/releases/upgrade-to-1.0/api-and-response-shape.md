@@ -121,9 +121,9 @@ The one trap: in a dry run `imported` is now the count that *would* be created, 
 failed, so check `failed` rather than the status code.
 
 **Added in 1.0, additive:** both modes also carry `unchanged`, `skipped`
-and a per-item `results` array, populated by the new `?on_conflict=skip` / `?on_conflict=new_version` upsert modes. See [Admin API › Export & Promotion](../../reference/admin-api/export-and-promotion.md#promoting-over-an-existing-estate-on_conflict). The default `on_conflict=fail` behaves exactly as before.
+and a per-item `results` array, populated by the new `?on_conflict=skip` / `?on_conflict=new_version` upsert modes. See Admin API › Export & Promotion. The default `on_conflict=fail` behaves exactly as before.
 
-Four things are also additive in 1.0. A real (non-dry-run) import writes one audit row per entity written, alongside the `"{n} imported"` summary row. Channels and connectors gained `tags` and `?tag=` filtering, matching workflows. Status and rollout changes accept `?reload=defer` to batch engine rebuilds. An `X-Orion-Change-Context` request header is recorded in audit `details`. The 1.0 API also adds `GET /workflows/{id}/dependencies`, `content_hash` on every entity response, exports that read as one consistent snapshot. The `orion-server package` CLI that composes all of it. See [Admin API › Export & Promotion](../../reference/admin-api/export-and-promotion.md).
+Four things are also additive in 1.0. A real (non-dry-run) import writes one audit row per entity written, alongside the `"{n} imported"` summary row. Channels and connectors gained `tags` and `?tag=` filtering, matching workflows. Status and rollout changes accept `?reload=defer` to batch engine rebuilds. An `X-Orion-Change-Context` request header is recorded in audit `details`. The 1.0 API also adds `GET /workflows/{id}/dependencies`, `content_hash` on every entity response, exports that read as one consistent snapshot. The `orion-server package` CLI that composes all of it. See Admin API › Export & Promotion.
 
 ### `db_read` returns values for float and blob columns
 
@@ -475,5 +475,5 @@ rejected on create, update and import. Patterns are written literally and reques
 
 - [Upgrade to 1.0.0](./index.md): the checklist, and every other break.
 - [Upgrades](../../operate/maintain/upgrades.md): the version-independent procedure.
-- [`orion-server preflight`](../../reference/cli/orion-server/preflight.md): the scan that finds the stored ones.
+- `orion-server preflight`: the scan that finds the stored ones.
 - [Releases](./index.md): what changed in each version.

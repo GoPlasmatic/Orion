@@ -161,7 +161,6 @@ pub struct EngineComponents {
 /// caches, and the custom function handlers.
 pub async fn build_engine_components(
     config: &config::AppConfig,
-    repos: &Repositories,
     channel_loader: &Arc<crate::channel::ChannelLoader>,
 ) -> Result<EngineComponents, Box<dyn std::error::Error>> {
     // `[vars]` before the connectors that may reference them. Pure config —
@@ -170,36 +169,11 @@ pub async fn build_engine_components(
     // per call.
     let vars = config.vars.to_json().map(Arc::new);
 
-    // Load connectors
+    // Empty until the committed deployment head, if any, is built: its
+    // Connections over built-in drivers are what the registry loads.
     let connector_registry = Arc::new(
         ConnectorRegistry::new(config.engine.circuit_breaker.clone()).with_vars(vars.clone()),
     );
-    let connector_count = connector_registry
-        .load_from_repo(repos.connectors.as_ref())
-        .await?;
-    tracing::info!(count = connector_count, "Connectors loaded");
-
-    // F16: an enabled connector that fails to load is absent from the
-    // registry, so the failure surfaces as a 500 on the first request that
-    // needs it — possibly hours after the deploy that caused it. Operators who
-    // would rather have the rollout fail at boot opt in here.
-    let connector_issues = connector_registry.load_issues().await;
-    if !connector_issues.is_empty() && config.engine.fail_on_connector_load_error {
-        let detail = connector_issues
-            .iter()
-            .map(|i| format!("{} ({}): {}", i.connector, i.stage, i.reason))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(crate::errors::OrionError::Config {
-            message: format!(
-                "refused to start: {} enabled connector(s) failed to load: {detail}. \
-                 Set engine.fail_on_connector_load_error = false to start anyway \
-                 (they will fail at request time instead).",
-                connector_issues.len()
-            ),
-        }
-        .into());
-    }
 
     // Create a shared HTTP client. Redirects are off: execute_request follows
     // them manually with per-hop SSRF validation. The pinned resolver connects
@@ -353,12 +327,12 @@ pub async fn build_engine_components(
 }
 
 impl EngineComponents {
-    /// Load active channels and workflows, build the engine's workflow set,
-    /// build the channel estate (quarantining channels that fail to load),
-    /// and publish the two as generation 1 through the pre-created runtime
-    /// handle. Returns the
-    /// [`ServingComponents`] `AppState` is assembled from and the
-    /// active-workflow count (for the gauge).
+    /// Publish generation 1 through the pre-created runtime handle: the
+    /// serving registry — Orion's functions, no workflows, no channels, no
+    /// plugins — so a definition upload has the engine it compiles on before
+    /// anything is deployed. The committed deployment head, if any, is built
+    /// over it next. Returns the [`ServingComponents`] `AppState` is
+    /// assembled from.
     ///
     /// F55: takes `self` by value. This step *consumes* the custom-function
     /// handlers, so when it took `&mut self` the map was left as an empty hole
@@ -366,131 +340,11 @@ impl EngineComponents {
     /// `build_app_state` first compiled fine and silently produced an engine
     /// with no Orion handlers registered at all. Consuming the value makes that
     /// order a compile error instead.
-    pub async fn load_channels_and_build_engine(
-        self,
-        config: &config::AppConfig,
-        repos: &Repositories,
-        channel_loader: &crate::channel::ChannelLoader,
-    ) -> Result<(ServingComponents, usize), Box<dyn std::error::Error>> {
-        let EngineComponents {
-            serving,
-            mut registry,
-        } = self;
-        // Load active channels and workflows, build engine
-        let channels = repos.channels.list_active().await?;
-        let total_active = channels.len();
-        let channels = crate::engine::filter_channels(channels, &config.channel_filter);
-        // F32: a wrong include/exclude pattern silently drops a channel; the
-        // resolved list makes the filter's effect visible at boot.
-        if !config.channel_filter.include.is_empty() || !config.channel_filter.exclude.is_empty() {
-            tracing::info!(
-                resolved = ?channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-                filtered_out = total_active - channels.len(),
-                "Channel include/exclude filters applied"
-            );
-        }
-        let active_workflows = repos.workflows.list_active().await?;
-
-        // The active plugins, loaded into the sandbox — or every one a load
-        // issue, on a node with the sandbox off — and the registry this
-        // generation carries: the built-ins plus what loaded.
-        let plugin_rows = repos.plugins.list_active().await?;
-        let plugins = Arc::new(
-            crate::plugin::load_active(
-                plugin_rows,
-                &std::collections::HashMap::new(),
-                repos.plugins.as_ref(),
-                serving.plugins.as_ref(),
-                &config.plugins,
-            )
-            .await,
-        );
-        let functions = Arc::new(
-            crate::engine::FunctionRegistry::builtin()
-                .with_entries(plugins.entries())
-                .map_err(|e| crate::errors::OrionError::Config {
-                    message: format!("plugin function registry: {e}"),
-                })?,
-        );
-        // The plugin functions go on the registry before anything compiles on
-        // it: a workflow links only under the registry it compiled under.
-        crate::engine::register_plugin_functions(&mut registry, plugins.functions().cloned());
+    pub fn publish_first_generation(self, config: &config::AppConfig) -> ServingComponents {
+        let EngineComponents { serving, registry } = self;
         let compiler = registry.compiler(dataflow_rs::program::CompileOptions::default());
-
-        // A workflow naming a function nothing will dispatch, or carrying an
-        // input its function cannot parse, is quarantined per channel instead
-        // of aborting the whole build.
-        let crate::engine::LoadedWorkflows {
-            workflows,
-            issues: engine_issues,
-        } = crate::engine::build_engine_workflows(
-            &channels,
-            &active_workflows,
-            &crate::engine::EngineLoad {
-                compiler: &compiler,
-                plugins: &plugins,
-            },
-        );
-        let engine = crate::engine::serving_engine(compiler.link(workflows));
-        let channel_count = engine
-            .program()
-            .workflows()
-            .iter()
-            .map(|w| w.channel.as_str())
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-
-        let previous = serving.runtime.load();
-        let channels_snapshot = channel_loader
-            .build(
-                &previous.channels,
-                &channels,
-                crate::channel::ReloadDeps {
-                    vars: serving.vars.as_ref(),
-                    connector_registry: &serving.connector_registry,
-                    cache_pool: &serving.cache_pool,
-                    exprs: &serving.exprs,
-                    jwks: &serving.jwks,
-                    http_client: &serving.http_client,
-                    allow_private_token_urls: config.oauth2_login.allow_private_token_urls,
-                    instance_oauth_providers: &config.oauth2_login.providers,
-                    oidc_discovery: &serving.oidc_discovery,
-                    global_trace_storage: &config.trace_storage,
-                    cron_enabled: config.cron.enabled,
-                },
-                engine_issues,
-            )
-            .await;
-        // A channel whose stored config or validation_logic no longer loads
-        // (any mode), or whose shared backend cannot be built (cluster mode),
-        // must never be served unguarded. It is quarantined: absent from the
-        // registry and the route table, and refused at every ingress with a
-        // 503. Booting anyway is the F35 change — the alternative was that one
-        // broken row stopped the whole instance, including every channel that
-        // is fine.
-        //
-        // N21: read from the registry rather than from a return value.
-        // `reload` used to hand the same list back, so the quarantine set had
-        // two representations and `/health` and this log could disagree.
-        for issue in channels_snapshot.quarantined() {
-            tracing::error!(
-                channel = %issue.channel,
-                reason = %issue.reason,
-                "Channel quarantined: it will be refused at every ingress until fixed"
-            );
-        }
-
-        tracing::info!(
-            workflows = active_workflows.len(),
-            channels = channel_count,
-            "Workflows loaded"
-        );
-
-        // Generation 1: the engine and the channel estate built from the same
-        // rows, published together. Nothing serves before this — the readiness
-        // flag is set by the caller afterwards — but publishing them as a pair
-        // is what makes the boot path and the reload path the same shape, and
-        // there is only one way to publish.
+        let engine = crate::engine::serving_engine(compiler.link(Vec::new()));
+        let channels = serving.runtime.load().channels.clone();
         serving
             .runtime
             .publish_parts(crate::runtime::generation::GenerationParts {
@@ -498,13 +352,12 @@ impl EngineComponents {
                 run_budget_limits: config.engine.run_budget_limits(),
                 ..crate::runtime::generation::GenerationParts::new(
                     engine,
-                    Arc::new(channels_snapshot),
-                    functions,
-                    plugins,
+                    channels,
+                    crate::engine::FunctionRegistry::builtin().clone(),
+                    Arc::new(crate::plugin::PluginSet::empty()),
                 )
             });
-
-        Ok((serving, active_workflows.len()))
+        serving
     }
 }
 
@@ -600,7 +453,7 @@ pub fn build_rate_limit_state(
 /// The three queue drains, in the order they must run.
 ///
 /// Only the queue consumers are here. The periodic jobs (trace cleanup, audit
-/// cleanup, DLQ retry) and the cluster epoch watcher used to be `JoinHandle`s
+/// cleanup, DLQ retry) and the cluster reconciler used to be `JoinHandle`s
 /// in this struct that shutdown `abort()`ed; they belong to
 /// [`crate::runtime::TaskRegistry`] now, which stops them cooperatively and —
 /// the point of the move — reports them to `/health` and `/readyz` while they
@@ -913,7 +766,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
 
     // Connector registry, shared HTTP client, runtime handle, cache pools and
     // custom function handlers.
-    let components = build_engine_components(&config, &repos, &channel_loader).await?;
+    let components = build_engine_components(&config, &channel_loader).await?;
 
     // #268: hand the managed-OAuth2 token manager its runtime — the shared
     // client, the encrypted state store, and (in cluster mode) the refresh
@@ -926,7 +779,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         .oauth()
         .init(crate::connector::oauth::OAuthRuntimeDeps {
             http_client: components.serving.http_client.clone(),
-            repo: repos.connectors.clone(),
+            repo: repos.oauth_state.clone(),
             lease: config.cluster.enabled.then(|| {
                 Arc::new(crate::cluster::JobLeaseGate::new(
                     cluster.repo.clone(),
@@ -939,13 +792,10 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     // committed deployment head, if there is one, has been built.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Load active channels and workflows, build both halves of the first
-    // generation, and publish it through the pre-created runtime handle.
+    // Publish the first generation through the pre-created runtime handle.
     // Consumes `components`: the handler map goes into the engine, and what
     // comes back is the half that backs `AppState` (F55).
-    let (components, active_workflow_count) = components
-        .load_channels_and_build_engine(&config, &repos, &channel_loader)
-        .await?;
+    let components = components.publish_first_generation(&config);
 
     // One supervisor for every long-lived background task, so `/health` and
     // `/readyz` can report their liveness; the scheduler's own status is
@@ -978,8 +828,9 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     }
 
     // Initial active-workflows gauge. After the recorder is installed (the
-    // caller did that before `assemble`), or the write lands nowhere.
-    crate::metrics::set_active_workflows(active_workflow_count as f64);
+    // caller did that before `assemble`), or the write lands nowhere. The
+    // head build below moves it.
+    crate::metrics::set_active_workflows(0.0);
 
     let rate_limit_state = build_rate_limit_state(&config);
 
@@ -1010,13 +861,35 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         .load_from_db_pool(&state.db_pool)
         .await
         .map_err(|e| format!("reading the committed deployments failed: {e}"))?;
-    crate::cluster::epoch_watcher::sync_v2_revocations(&state);
+    crate::cluster::reconcile::sync_v2_revocations(&state);
     let (head_rev, _) = state.composition.deployments.current_head();
     if head_rev > 0 {
         crate::runtime::reconcile_deployment_revision(&state, head_rev)
             .await
             .map_err(|e| format!("deployment revision {head_rev} could not be built: {e}"))?;
     }
+    // F16: a connection that fails to load is absent from the
+    // registry, so the failure surfaces as a 500 on the first request that
+    // needs it — possibly hours after the boot that caused it. Operators who
+    // would rather have the rollout fail at boot opt in here.
+    let connector_issues = state.connector_registry.load_issues().await;
+    if !connector_issues.is_empty() && state.config.engine.fail_on_connector_load_error {
+        let detail = connector_issues
+            .iter()
+            .map(|i| format!("{} ({}): {}", i.connector, i.stage, i.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(crate::errors::OrionError::Config {
+            message: format!(
+                "refused to start: {} connection(s) of the committed deployment failed to load: {detail}. \
+                 Set engine.fail_on_connector_load_error = false to start anyway \
+                 (they will fail at request time instead).",
+                connector_issues.len()
+            ),
+        }
+        .into());
+    }
+
     if let Err(e) = state
         .composition
         .reconciler

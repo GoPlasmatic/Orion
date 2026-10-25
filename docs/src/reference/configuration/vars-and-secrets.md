@@ -44,5 +44,4 @@ See [Environment Variables](../environment-variables.md) for how these fit with 
 
 - [Environment variables](../environment-variables.md): how these fit with `${VAR}`, `env://` and `var://`.
 - [Expression language › Secrets](../expressions.md#secrets): the `secret` operator's rules.
-- [Promote between environments](../../operate/maintain/promotion.md): why a definition carries no environment-specific value.
 - [Server configuration](./index.md): every section, by what you are configuring.

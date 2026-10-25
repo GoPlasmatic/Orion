@@ -30,7 +30,7 @@ TTL is set per write, through `cache_write`'s `ttl_secs`. There is no connector-
 
 A cache connector is memory in the process that serves the request. Each node has its own copy, and a restart empties it. Two nodes behind a load balancer each see only their own writes. The store is bounded by [`engine.max_memory_cache_entries`](../configuration/engine.md), and each connector gets its own budget, separate from the channel stores.
 
-A connector has no endpoint, so a `url` is refused. Exports from earlier releases carry `"url": null` and `"allow_private_urls": false`, and those still import.
+A connector has no endpoint, so a `url` is refused. `"url": null` and `"allow_private_urls": false` are still accepted.
 
 A channel's [deduplication](../channel-config/deduplication.md) store and [response cache](../channel-config/cache.md) can name a cache connector. In cluster mode they must not. A dedup store or response cache shared across nodes uses the cluster's shared store, the state database, when the channel names **no** connector. A channel that names an in-memory connector in cluster mode refuses to load rather than degrade to per-node state.
 

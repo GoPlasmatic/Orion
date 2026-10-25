@@ -10,10 +10,6 @@ pub mod backends;
 pub mod deploy;
 /// Shared task-builder DSL for the data-plane (data_query/data_write) tests.
 pub mod dsl;
-/// The model fixture, the bucket standing in for its object storage, and the
-/// registration helpers the model tests share.
-/// The v1 entity routes, for the tests whose subject is v1 lifecycle.
-pub mod v1;
 
 use std::sync::Arc;
 
@@ -756,28 +752,6 @@ pub async fn poll_trace_until_done(
 /// process environment in toolchains newer than 1.88.
 pub fn orion_bin() -> String {
     env!("CARGO_BIN_EXE_orion-server").to_string()
-}
-
-/// Create a workflow as a draft (no activation) and return its id — the
-/// create-only sibling of [`create_and_activate_workflow`].
-pub async fn create_and_return_workflow_id(
-    app: &axum::Router,
-    workflow_json: serde_json::Value,
-) -> String {
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow_json),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string()
 }
 
 /// Self-cleaning scratch directory; `tempfile` is not in the dependency tree.

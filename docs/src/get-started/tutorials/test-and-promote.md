@@ -1,24 +1,24 @@
-<!-- description: Prove an Orion workflow offline with lint, dry-run and regression cases, then export, plan and apply it to a second instance as one versioned package. -->
+<!-- description: Prove an Orion workflow offline with lint, dry-run and regression cases, then compile it into a deployment and apply it to a running instance. -->
 <!-- type: tutorial -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
-# Test and promote a service
+# Test and deploy a service
 
-A service you can call is not yet a service you can ship. This tutorial takes a working workflow, proves it offline, and moves it to a second instance as one versioned artifact.
+A service you can call is not yet a service you can ship. This tutorial takes a working workflow, proves it offline, and deploys it to an instance as one reviewed revision.
 
 ## What you will learn
 
 - How to validate and run a workflow file with no server.
 - What a stub file is, and why a half-stubbed run fails rather than passes.
 - How a regression case turns a dry run into a CI gate.
-- What a package is, and what `plan`, `apply` and `diff` each promise.
+- How `compile` turns a definition set into a deployment, and what `plan`, `apply` and `rollback` each do.
 
 ## Before you start
 
 Tested with Orion 1.12.0. You need:
 
-- `orion-server`, `curl`, `jq` and Git
-- one Orion instance on `http://localhost:8080`; the promotion steps start a second one on port `9090`
+- `orion-server`, `orion-cli`, `curl`, `jq` and Git
+- one Orion instance on `http://localhost:8080` for the deployment steps
 - a POSIX shell (on Windows, WSL)
 - [Build your first service](./first-service.md) behind you, so the definitions make sense
 
@@ -31,7 +31,7 @@ cd Orion
 
 ## 1. Lint the workflow
 
-`lint` reads a workflow file and applies the validators the admin API applies on create: task shapes, function names, and each function's `input` schema:
+`lint` reads a workflow file and applies the validators the server applies when a definition is uploaded: task shapes, function names, and each function's `input` schema:
 
 ```bash
 orion-server lint examples/packages/high-value-order/workflow.json
@@ -140,124 +140,90 @@ Output, for a suite with one failing case:
 
 `workflow` and `stubs_file` resolve relative to the case file. `expect` maps dotted output paths to expected values, and `expect_errors` defaults to empty, so a workflow that starts failing its tasks cannot pass silently. Every field is in [Test a workflow offline](../../guides/author/testing.md#build-a-regression-suite). Together, `lint` and `test` gate CI without a server, a database or a secret.
 
-## 5. Deploy it to the first instance
+## 5. Compile it into a deployment
 
-With a server on `http://localhost:8080`:
-
-```bash
-./examples/deploy.sh high-value-order
-```
-
-The script creates and activates the workflow and the channel, sends `request.json`, and prints the response. Every entity it creates carries the tag `pkg:high-value-order`, which is what makes the next step possible.
-
-## 6. Export it as a package
-
-A *package* is the unit Orion promotes. It holds the channels of one service, their workflows, and every connector those workflows reference, as one versioned JSON artifact:
+A node serves exactly what its committed deployment names. `compile` turns a definition set into the directory a deployment is made from. It runs every `lint` check first and writes nothing if one fails:
 
 ```bash
-orion-server package export -s http://localhost:8080 \
-  --tag pkg:high-value-order --name high-value-order --version 1.0.0 \
-  -o high-value-order-1.0.0.json
+orion-server compile examples/packages/high-value-order -o dist/high-value-order
 ```
 
 Output:
 
 ```text
-wrote high-value-order@1.0.0 (0 connectors, 1 workflows, 1 channels) to high-value-order-1.0.0.json
+note: examples/packages/high-value-order/request.json is not a channel, workflow or connector — skipped
+examples/packages/high-value-order: 0 connector(s), 1 workflow(s), 1 channel(s) — 0 error(s), 0 warning(s)
+wrote a deployment of 1 workflow(s), 1 channel(s), 0 plugin(s) and 0 connection(s) to dist/high-value-order
 ```
 
-Export selects channels. Each selected channel pulls in its workflow, and each workflow pulls in its connectors; that set is the package's *closure*. Validate the artifact offline before it travels:
+The directory holds `deployment.json`, which lists the members, and one file per definition under `definitions/`, named by its digest. It carries no revision numbers. The target assigns those when you apply it. The layout is in [Deployment directories](../../reference/cli/orion-server/compile.md#deployment-directories).
+
+## 6. Plan and apply it
+
+Ask what would change before anything is committed:
 
 ```bash
-orion-server package lint -f high-value-order-1.0.0.json
+orion-cli --server http://localhost:8080 deployments plan -d dist/high-value-order
 ```
 
-Output:
+Output, on an instance with nothing deployed yet (the JSON plan that follows is cut):
 
 ```text
-'high-value-order-1.0.0.json' is a valid package: high-value-order@1.0.0 — 0 connectors, 1 workflows, 1 channels
+Plan: dist/high-value-order against head revision 0
+  + channel high-value-orders@1
+  + workflow high-value-order@1
+  2 to deploy, 0 unchanged, 0 removed; reviewed manifest digest sha256:036d4cc2…
 ```
 
-> [!TIP]
-> If your definitions live in a directory rather than on an instance, [`orion-server compile`](../../reference/cli/orion-server/compile.md) builds the same artifact straight from the files and resolves shared values and fragments on the way. Everything from here on is identical.
+`plan` uploads the definitions, checks the manifest against the instance's current head, and prints what would be added and removed. It commits nothing.
 
-## 7. Apply it to a second instance
-
-Start a second server on another port with its own database. It stands in for QA or production:
+A deployment is everything the node serves. Anything the head deploys that this directory does not carry shows as removed (`-`) and stops serving on apply. If you deployed the quickstart service on this instance, its workflow and channel appear that way. Then apply it:
 
 ```bash
-ORION_SERVER__PORT=9090 ORION_STORAGE__URL="sqlite:orion-qa.db" orion-server
+orion-cli --server http://localhost:8080 deployments apply -d dist/high-value-order
 ```
 
-Ask what would happen before anything is written:
-
-```bash
-orion-server package plan -s http://localhost:9090 -f high-value-order-1.0.0.json
-```
-
-Output:
-
-```text
-  workflows  high-value-order             created
-  channels   high-value-orders            created
-  workflows  high-value-order             gate pending apply order: Workflow 'high-value-order' not found
-  channels   high-value-orders            gate pending apply order: Channel 'high-value-orders' not found
-plan: high-value-order@1.0.0 applies cleanly to http://localhost:9090
-```
-
-`plan` writes nothing. It reports the action `apply` would take per entity, verifies every declared requirement exists on the target, and checks the activation gates. The `gate pending apply order` lines are not errors. A channel's gate wants an active workflow that this same apply is about to create, so it can only be satisfied in order. The last line is the verdict.
-
-```bash
-orion-server package apply -s http://localhost:9090 -f high-value-order-1.0.0.json
-```
-
-Output:
-
-```text
-staged workflows: 1 written, 0 unchanged, 0 failed
-staged channels: 1 written, 0 unchanged, 0 failed
-activated workflows 'high-value-order'
-activated channels 'high-value-orders'
-applied high-value-order@1.0.0 to http://localhost:9090
-```
-
-`apply` stages every entity, activates them in dependency order (plugins, connectors, workflows, channels), and reloads the engine once at the end. This package carries only the last two kinds.
+`apply` prints the same plan, then commits the manifest as the next revision, under compare-and-swap on the head. The answer's `committed_revision` is the new head, and `evaluation.converged` says the node built it. Applying the same directory again does nothing: the CLI reports the head as up to date. [Deploy a compiled directory](../../reference/admin-api/deployments.md#deploy-a-compiled-directory) lists every step it takes.
 
 > [!NOTE]
-> Against an instance with admin auth enabled, `export`, `plan`, `apply` and `diff` read the admin token from the `ORION_ADMIN_TOKEN` environment variable. `lint` needs no server and no token.
+> Against an instance with admin auth enabled, pass `--api-key` or set `ORION_API_KEY`. `lint`, `dry-run`, `test` and `compile` need no server and no key.
 
 ## Verify
 
-Call the second instance. The service you built on 8080 answers on 9090:
+Call the channel the deployment added:
 
 ```bash
-curl -s -X POST http://localhost:9090/api/v2/data/high-value-orders \
+curl -s -X POST http://localhost:8080/api/v2/data/high-value-orders \
   -H 'Content-Type: application/json' \
   --data @examples/packages/high-value-order/request.json
 ```
 
-Then confirm the two instances agree:
+The answer's `data.order` carries `"flagged": true` and the alert string, as the dry run did.
+
+Then read the head the instance now serves:
 
 ```bash
-orion-server package diff -s http://localhost:9090 -f high-value-order-1.0.0.json
+curl -s http://localhost:8080/api/v2/admin/deployments | jq '{head_revision, applied_revision}'
 ```
 
-Output:
+## Roll back
 
-```text
-  unchanged  workflow 'high-value-order'
-  unchanged  channel 'high-value-orders'
-no drift: high-value-order@1.0.0 matches http://localhost:9090
+History only moves forward. A rollback commits an earlier revision's manifest as a new revision, so the revision you leave stays as it was:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/admin/deployments/rollback \
+  -H 'Content-Type: application/json' \
+  -d '{"idempotency_key": "rollback-1", "expected_head_revision": 2, "target_revision": 1}'
 ```
 
-`diff` compares content hashes and exits non-zero on drift, so it works as a CI check that production still runs what you shipped. Re-running the same `apply` is a no-op: the target recognizes the receipt and answers that the version is already applied with identical content. A *changed* artifact reusing an applied version is refused with `409`; content changes ride a version bump.
+`expected_head_revision` must be the current head, and `target_revision` the revision to restore. Pick the target from the history `GET /api/v2/admin/deployments` lists. The example assumes the head is revision 2, such as after a second apply. `orion-cli deployments rollback` takes the same three values as flags.
 
 ## Clean up
 
-Stop the port-9090 server with `Ctrl-C` in its terminal. From the repository root, remove only the files this tutorial created:
+From the repository root, remove the directory this tutorial wrote:
 
 ```bash
-rm -i orion-qa.db high-value-order-1.0.0.json
+rm -ri dist/high-value-order
 ```
 
 The interactive prompt protects similarly named files. Nothing under `examples/` was modified.
@@ -266,12 +232,12 @@ The interactive prompt protects similarly named files. Nothing under `examples/`
 
 - `lint`, `dry-run` and `test` run with no server. A stub file answers connector calls, and a missing stub is a failure, never a pass.
 - A case file is a dry run with the answer written down. `expect_errors` defaults to empty, so silent failure cannot pass.
-- A package is a service's channels plus their closure, versioned. `plan` writes nothing, `apply` activates in dependency order and reloads once, `diff` detects drift.
-- An applied version is content-immutable. A changed artifact needs a new version.
+- `compile` writes a definition set as a deployment directory. `plan` commits nothing, `apply` commits the next revision, and the node serves it.
+- A rollback is a new revision with an earlier manifest. History is never rewritten.
 
 ## Next steps
 
-- [Packages](../../concepts/packages.md): what a package is, and why the module boundary sits there.
-- [Promote between environments](../../operate/maintain/promotion.md): receipts, rollback, secrets that survive the trip, and the `requires` boundary.
+- [Deployment endpoints](../../reference/admin-api/deployments.md): definitions, connections, plans, apply, rollback and convergence.
+- [CI/CD with deployments](../../guides/patterns/ci-cd.md): the same steps as a pipeline.
 - [Author a workflow](../../guides/author/workflows.md): the how-to layer, now that you can test what you write.
-- [CLI](../../reference/cli/index.md): every flag of `lint`, `dry-run`, `test` and `package`.
+- [CLI](../../reference/cli/index.md): every flag of `lint`, `dry-run`, `test` and `compile`.

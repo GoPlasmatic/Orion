@@ -127,14 +127,9 @@ pub enum CronSingletonSlots {
 pub enum ConfigEpoch {
     Table,
     Id,
-    Epoch,
-    /// What the bumping node changed, so a peer can scope its resync.
-    EpochScope,
-    /// The epoch [`ConfigEpoch::EpochScope`] was written for. A scope is only
-    /// trustworthy when this matches [`ConfigEpoch::Epoch`] *and* the reader is
-    /// applying that one epoch — see
-    /// [`crate::cluster::EpochScope::for_advance`].
-    EpochScopeAt,
+    // `epoch`, `epoch_scope` and `epoch_scope_at` carried the v1
+    // entity-change bus and are no longer read or written; the columns stay
+    // until the v2 baseline migration drops them.
     BreakerEpoch,
     BreakerKey,
     UpdatedAt,

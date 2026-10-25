@@ -6,9 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::errors::OrionError;
-use crate::storage::repositories::connectors::ConnectorRepository;
-
 use super::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use super::config::ConnectorConfig;
 
@@ -213,20 +210,16 @@ impl ConnectorRegistry {
     /// `ChannelRuntimeConfig` across reloads, and that struct embeds dedup and
     /// response-cache backends resolved *through this registry*. The cache is
     /// only sound while the connector set behind those backends is unchanged,
-    /// so this token is part of its key. Every production path that changes a
-    /// connector — create, update, delete, import, and the epoch-driven
-    /// resync — goes through [`Self::reload`], which is what keeps the token
-    /// honest; a future path that mutates `configs` without loading would have
-    /// to advance it too.
+    /// so this token is part of its key. Every production path that changes
+    /// the connector set — a deployment build — goes through [`Self::load`],
+    /// which is what keeps the token honest; a future path that mutates
+    /// `configs` without loading would have to advance it too.
     ///
-    /// "On change" rather than "on load" still matters on a remote node.
-    /// `resync_from_db` no longer reloads connectors on every epoch tick — the
-    /// bump carries an [`crate::cluster::EpochScope`] and a definitions-only
-    /// change skips the connector half entirely — but a connector-scoped bump,
-    /// an unknown scope, and every bump from a pre-scope node all still reload
-    /// here. A token that moved per load would make each of those rebuild
-    /// every channel's runtime on every node, which is exactly the cost N17
-    /// exists to remove.
+    /// "On change" rather than "on load" matters: every deployment build
+    /// loads the manifest's Connections, including the many that change no
+    /// connection. A token that moved per load would make each of those
+    /// rebuild every channel's runtime, which is exactly the cost N17 exists
+    /// to remove.
     pub fn config_generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
@@ -366,37 +359,15 @@ impl ConnectorRegistry {
         self.cb_config.enabled
     }
 
-    /// Load all enabled connectors from the repository into the registry.
-    ///
-    /// Connectors that fail to load are skipped, as before, but are now also
-    /// recorded as `ConnectorLoadIssue`s so the degraded set is reportable
-    /// (F16) rather than existing only as a log line.
+    /// Replace the loaded connectors with `connectors` — a deployment's
+    /// Connections over built-in drivers — each resolved by
+    /// `resolve_connector_config`: references resolved, the typed parse by
+    /// type, the endpoint checked. One that does not resolve is a load issue
+    /// (F16), never an abort. Answers how many loaded.
     ///
     /// A load that produces the same connector set leaves both the stored map
     /// and [`Self::config_generation`] untouched — see that method for why the
     /// distinction between "loaded" and "changed" matters.
-    pub async fn load_from_repo(
-        &self,
-        repo: &dyn ConnectorRepository,
-    ) -> Result<usize, OrionError> {
-        let connectors = repo
-            .list_enabled()
-            .await?
-            .into_iter()
-            .map(|c| StoredConnector {
-                id: c.id,
-                name: c.name,
-                connector_type: c.connector_type,
-                config_json: c.config_json,
-            })
-            .collect();
-        Ok(self.load(connectors).await)
-    }
-
-    /// Replace the loaded connectors with `connectors`, each resolved the
-    /// way a stored one is (`resolve_connector_config`): references
-    /// resolved, the typed parse by type, the endpoint checked. One that does
-    /// not resolve is a load issue, never an abort. Answers how many loaded.
     pub async fn load(&self, connectors: Vec<StoredConnector>) -> usize {
         // Build new map outside the lock to avoid holding it during deserialization
         let mut new_configs = HashMap::new();
@@ -477,8 +448,8 @@ impl ConnectorRegistry {
 
     /// Insert an already-parsed connector under `name`.
     ///
-    /// Test-only: production loads go through [`Self::load_from_repo`], which
-    /// does `${VAR}` substitution and `env://` secret resolution first.
+    /// Test-only: production loads go through [`Self::load`], which does
+    /// `${VAR}` substitution and `env://` secret resolution first.
     #[cfg(test)]
     pub(crate) async fn insert_for_test(&self, name: &str, config: ConnectorConfig) {
         let _reload_guard = self.reload_lock.lock().await;
@@ -530,15 +501,9 @@ impl ConnectorRegistry {
             .map(|(name, cfg)| (name.clone(), cfg.clone()))
             .collect()
     }
-
-    /// Reload all connectors from the repository.
-    pub async fn reload(&self, repo: &dyn ConnectorRepository) -> Result<usize, OrionError> {
-        self.load_from_repo(repo).await
-    }
 }
 
-/// One connector to load: a v1 connector row, or a deployed connection over
-/// a built-in driver, in the same shape.
+/// One connector to load: a deployed connection over a built-in driver.
 #[derive(Debug, Clone)]
 pub struct StoredConnector {
     /// Identifies it in a load issue.
@@ -743,27 +708,23 @@ pub async fn resolve_connector_config(
     Ok(config)
 }
 
-/// A repository that returns whatever connector rows a test hands it.
+/// Connector rows a test hands the registry, and an in-memory OAuth2 state
+/// store.
 ///
 /// Lives outside `mod tests` because the channel loader's tests need it too:
 /// its per-channel cache is keyed on
 /// [`ConnectorRegistry::config_generation`], and the thing worth pinning is
-/// what happens to that key when a *load* of an unchanged set runs — which
-/// takes a repository.
+/// what happens to that key when a *load* of an unchanged set runs.
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use crate::storage::models::Connector;
-    use crate::storage::repositories::connectors::{
-        ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
-    };
-    use crate::storage::repositories::helpers::PaginatedResult;
+    use crate::errors::OrionError;
 
     pub(crate) struct StubConnectorRepo {
-        rows: std::sync::Mutex<Vec<Connector>>,
+        rows: std::sync::Mutex<Vec<StoredConnector>>,
         /// In-memory `connector_oauth_state` (#268): name → (fingerprint,
-        /// state_json). Functional rather than `unreachable!` because the
-        /// token-manager tests exercise rotation persistence through it.
+        /// state_json). The token-manager tests exercise rotation
+        /// persistence through it.
         oauth_state: std::sync::Mutex<std::collections::HashMap<String, (String, String)>>,
     }
 
@@ -779,80 +740,24 @@ pub(crate) mod test_support {
         pub(crate) fn set(&self, rows: Vec<(&str, &str, &str)>) {
             *self.rows.lock().expect("test") = rows.into_iter().map(row).collect();
         }
+
+        /// The rows, as [`ConnectorRegistry::load`] takes them.
+        pub(crate) fn stored(&self) -> Vec<StoredConnector> {
+            self.rows.lock().expect("test").clone()
+        }
     }
 
-    fn row((name, connector_type, config_json): (&str, &str, &str)) -> Connector {
-        let now = chrono::Utc::now().naive_utc();
-        Connector {
-            tags_json: "[]".to_string(),
+    fn row((name, connector_type, config_json): (&str, &str, &str)) -> StoredConnector {
+        StoredConnector {
             id: format!("con_{name}"),
             name: name.to_string(),
             connector_type: connector_type.to_string(),
             config_json: config_json.to_string(),
-            enabled: true,
-            created_at: now,
-            updated_at: now,
         }
     }
 
     #[async_trait::async_trait]
-    impl ConnectorRepository for StubConnectorRepo {
-        async fn list_enabled(&self) -> Result<Vec<Connector>, OrionError> {
-            Ok(self.rows.lock().expect("test").clone())
-        }
-        async fn create(&self, _req: &CreateConnectorRequest) -> Result<Connector, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn get_by_id(&self, _id: &str) -> Result<Connector, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn list_paginated(
-            &self,
-            _filter: &ConnectorFilter,
-        ) -> Result<PaginatedResult<Connector>, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn update(
-            &self,
-            _id: &str,
-            _req: &UpdateConnectorRequest,
-        ) -> Result<Connector, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn delete(&self, _id: &str) -> Result<(), OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn create_tx(
-            &self,
-            _tx: &mut crate::storage::DbTransaction,
-            _req: &CreateConnectorRequest,
-        ) -> Result<Connector, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn update_tx(
-            &self,
-            _tx: &mut crate::storage::DbTransaction,
-            _id: &str,
-            _req: &UpdateConnectorRequest,
-        ) -> Result<Connector, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn delete_tx(
-            &self,
-            _tx: &mut crate::storage::DbTransaction,
-            _id: &str,
-        ) -> Result<(), OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn exists_by_name(&self, _name: &str) -> Result<bool, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn get_by_name(&self, _name: &str) -> Result<Connector, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
-        async fn snapshot(&self, _filter: &ConnectorFilter) -> Result<Vec<Connector>, OrionError> {
-            unreachable!("not used by load_from_repo")
-        }
+    impl crate::storage::repositories::oauth_state::OAuthStateRepository for StubConnectorRepo {
         async fn get_oauth_state(
             &self,
             connector_name: &str,
@@ -1020,7 +925,7 @@ mod tests {
             ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
-        registry.load_from_repo(&repo).await.expect("load");
+        registry.load(repo.stored()).await;
 
         registry.get_or_create_breaker("ch-live", "conn-live").await;
         registry.get_or_create_breaker("ch-gone", "conn-live").await;
@@ -1058,7 +963,7 @@ mod tests {
             ("mem", "cache", r#"{"backend":"memory"}"#),
         ]);
         let registry = ConnectorRegistry::default();
-        assert_eq!(registry.reload(&repo).await.expect("loads"), 1);
+        assert_eq!(registry.load(repo.stored()).await, 1);
         assert!(registry.get("old-redis").await.is_none());
         assert!(registry.get("mem").await.is_some());
         let issues = registry.load_issues().await;
@@ -1082,11 +987,11 @@ mod tests {
     async fn reloading_an_unchanged_connector_set_does_not_move_the_token() {
         let repo = StubConnectorRepo::with(vec![("cache-1", "cache", r#"{"backend":"memory"}"#)]);
         let registry = ConnectorRegistry::default();
-        assert_eq!(registry.reload(&repo).await.expect("loads"), 1);
+        assert_eq!(registry.load(repo.stored()).await, 1);
         let after_first = registry.config_generation();
 
         for _ in 0..5 {
-            assert_eq!(registry.reload(&repo).await.expect("loads"), 1);
+            assert_eq!(registry.load(repo.stored()).await, 1);
             assert_eq!(
                 registry.config_generation(),
                 after_first,
@@ -1102,7 +1007,7 @@ mod tests {
     async fn changing_a_connector_moves_the_token() {
         let repo = StubConnectorRepo::with(vec![("cache-1", "cache", r#"{"backend":"memory"}"#)]);
         let registry = ConnectorRegistry::default();
-        registry.reload(&repo).await.expect("loads");
+        registry.load(repo.stored()).await;
         let before = registry.config_generation();
 
         // Same connector, new config — the case the token exists for.
@@ -1111,7 +1016,7 @@ mod tests {
             "cache",
             r#"{"backend":"memory","operations":{"write":false}}"#,
         )]);
-        registry.reload(&repo).await.expect("loads");
+        registry.load(repo.stored()).await;
         let after_edit = registry.config_generation();
         assert_ne!(
             before, after_edit,
@@ -1127,7 +1032,7 @@ mod tests {
             ),
             ("cache-2", "cache", r#"{"backend":"memory"}"#),
         ]);
-        registry.reload(&repo).await.expect("loads");
+        registry.load(repo.stored()).await;
         let after_add = registry.config_generation();
         assert_ne!(after_edit, after_add, "a new connector must move the token");
 
@@ -1137,7 +1042,7 @@ mod tests {
             "cache",
             r#"{"backend":"memory","operations":{"write":false}}"#,
         )]);
-        registry.reload(&repo).await.expect("loads");
+        registry.load(repo.stored()).await;
         assert_ne!(
             after_add,
             registry.config_generation(),
@@ -1153,10 +1058,10 @@ mod tests {
         let repo =
             StubConnectorRepo::with(vec![("http-1", "http", r#"{"url":"https://example.com"}"#)]);
         let registry = ConnectorRegistry::default();
-        registry.reload(&repo).await.expect("loads");
+        registry.load(repo.stored()).await;
         let first = registry.get("http-1").await.expect("loaded");
 
-        registry.reload(&repo).await.expect("loads");
+        registry.load(repo.stored()).await;
         let second = registry.get("http-1").await.expect("loaded");
         assert!(Arc::ptr_eq(&first, &second));
     }
@@ -1171,8 +1076,8 @@ mod tests {
             StubConnectorRepo::with(vec![("http-1", "http", r#"{"url":"https://example.com"}"#)]);
         let a = ConnectorRegistry::default();
         let b = ConnectorRegistry::default();
-        a.reload(&repo).await.expect("loads");
-        b.reload(&repo).await.expect("loads");
+        a.load(repo.stored()).await;
+        b.load(repo.stored()).await;
         assert_ne!(a.config_generation(), b.config_generation());
     }
 }

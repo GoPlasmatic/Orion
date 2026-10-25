@@ -249,7 +249,7 @@ pub(super) fn connection_config_bytes(
     public_config: &Value,
     secret_locators: &std::collections::BTreeMap<String, String>,
 ) -> Vec<u8> {
-    crate::storage::content::canonical_json(&serde_json::json!({
+    crate::canonical::canonical_json(&serde_json::json!({
         "public_config": public_config,
         "secret_locators": secret_locators,
     }))
@@ -262,7 +262,7 @@ pub(super) fn locators_column(
     secret_locators: &std::collections::BTreeMap<String, String>,
 ) -> Option<String> {
     (!secret_locators.is_empty())
-        .then(|| crate::storage::content::canonical_json(&serde_json::json!(secret_locators)))
+        .then(|| crate::canonical::canonical_json(&serde_json::json!(secret_locators)))
 }
 
 /// The map a `secret_locator` column holds, read strictly.

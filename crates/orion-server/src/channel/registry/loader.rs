@@ -730,7 +730,7 @@ impl ChannelLoader {
     /// from being served unguarded, which is right, but it also meant one
     /// channel with an unparseable `config_json` failed *every* operation that
     /// triggers a reload (activate, archive, delete, rollout) with a 500, and
-    /// stopped the cluster epoch watcher resyncing every node (F35). Refusing
+    /// stopped the cluster reconciler resyncing every node (F35). Refusing
     /// the broken channel individually keeps the guarantee and drops the
     /// blast radius to the one row that is actually broken.
     ///

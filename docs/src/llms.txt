@@ -2,7 +2,7 @@
 
 > Orion is a declarative services runtime for microservices, AI agent tools, business rules, event processing, scheduled jobs, and webhook data ingestion. Logic is declared as JSON specifications and exposed through channels (REST routes, plain HTTP, or a cron schedule) through an administrative REST API, which orion-cli drives from the terminal. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
 
-Key facts: workflows are pipelines of tasks using JSONLogic; everything is created as a draft, tested with dry-run, then activated (the engine hot-reloads); active versions are immutable; connectors are named connections to external systems (HTTP, SQL, an in-memory cache) referenced from tasks by name; a plugin adds a custom task function as a sandboxed WebAssembly component. The full documentation concatenated into one file is at https://docs.goplasmatic.io/llms-full.txt
+Key facts: workflows are pipelines of tasks using JSONLogic; definitions are tested offline with dry-run, compiled into a deployment, and applied as an immutable revision that the node then serves (rollback commits an earlier revision again); connectors are named connections to external systems (HTTP, SQL, an in-memory cache) referenced from tasks by name; a plugin adds a custom task function as a sandboxed WebAssembly component. The full documentation concatenated into one file is at https://docs.goplasmatic.io/llms-full.txt
 
 
 ## Get started
@@ -10,11 +10,11 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Orion documentation](https://docs.goplasmatic.io/introduction.html): what Orion is, why it exists, and where to start
 - [Quickstart](https://docs.goplasmatic.io/get-started/quickstart.html): start Orion, deploy a tested service, and call its endpoint through one short path
 - [Install and run Orion](https://docs.goplasmatic.io/get-started/install.html): install matrix for server and CLI, first run, health check
-- [Tutorials](https://docs.goplasmatic.io/get-started/tutorials/index.html): the tutorials that follow the quickstart: build a service, add a connector, complete an orders API, then test and promote it to a second instance
-- [Build your first service](https://docs.goplasmatic.io/get-started/tutorials/first-service.html): create and activate a workflow and channel in four administration calls, then invoke it
+- [Tutorials](https://docs.goplasmatic.io/get-started/tutorials/index.html): the tutorials that follow the quickstart: build a service, add a connector, complete an orders API, then test and deploy it
+- [Build your first service](https://docs.goplasmatic.io/get-started/tutorials/first-service.html): write a workflow and a channel as two files, compile them into a deployment, apply it, then invoke it
 - [Add your first connector](https://docs.goplasmatic.io/get-started/tutorials/first-connector.html): PostgreSQL + the portable data dialect
 - [Build an orders API end to end](https://docs.goplasmatic.io/get-started/tutorials/orders-api.html): validation, PostgreSQL, offline stubs, deployment, traces, failure handling and safe updates in one tested orders service
-- [Test and promote a service](https://docs.goplasmatic.io/get-started/tutorials/test-and-promote.html): lint, dry-run with stubs, regression cases, then export/plan/apply to a second instance
+- [Test and deploy a service](https://docs.goplasmatic.io/get-started/tutorials/test-and-promote.html): lint, dry-run with stubs, regression cases, then compile, plan and apply a deployment
 - [Run the example packages](https://docs.goplasmatic.io/get-started/tutorials/examples.html): the deployable example packages, with the step-by-step walkthrough
 - [Decide](https://docs.goplasmatic.io/get-started/decide/index.html): decide whether Orion fits: the one-page fit check, a use-case router, and five side-by-side comparisons with the neighbouring tool categories
 - [Is Orion right for you?](https://docs.goplasmatic.io/get-started/decide/is-orion-right-for-you.html): the one chart of neighbouring tools, where Orion fits, and where it is the wrong tool
@@ -27,14 +27,12 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 
 ## Concepts
 
-- [Concepts](https://docs.goplasmatic.io/concepts/index.html): understand what each part of Orion is and why it behaves as it does: the three primitives, the lifecycle, packages, plugins and the glossary
+- [Concepts](https://docs.goplasmatic.io/concepts/index.html): understand what each part of Orion is and why it behaves as it does: the three primitives, deployments, plugins and the glossary
 - [How Orion works](https://docs.goplasmatic.io/concepts/how-orion-works.html): the three primitives, one request's journey, sync vs async, dev vs prod topology, extension surface
 - [Channels](https://docs.goplasmatic.io/concepts/channels.html): service endpoints — protocols, sync/async, ingress guards, in-process composition
 - [Workflows](https://docs.goplasmatic.io/concepts/workflows.html): task pipelines, the data context, conditions, how a version is selected
 - [Connectors](https://docs.goplasmatic.io/concepts/connectors.html): named external connections, secrets by reference, operation gates, circuit breakers
-- [The entity lifecycle](https://docs.goplasmatic.io/concepts/lifecycle.html): draft/active/archived, immutability, what reloads the engine, quarantine
-- [Packages](https://docs.goplasmatic.io/concepts/packages.html): the module boundary — tags, closure, artifacts, receipts, rollback
-- [Plugins](https://docs.goplasmatic.io/concepts/plugins.html): custom task functions as sandboxed WebAssembly — what a plugin may do, its lifecycle, when to write one
+- [Plugins](https://docs.goplasmatic.io/concepts/plugins.html): custom task functions as sandboxed WebAssembly — what a plugin may do, how it is deployed, when to write one
 - [Architectural characteristics](https://docs.goplasmatic.io/concepts/architectural-characteristics.html): the capability map — eight characteristics, what the runtime provides under each, and the deliberate gaps
 - [Design notes](https://docs.goplasmatic.io/concepts/design-notes.html): the reasoning behind dedup, cache keys, hot reload, the guard pipeline
 - [Glossary](https://docs.goplasmatic.io/concepts/glossary.html): one-line definitions of the load-bearing vocabulary
@@ -42,23 +40,22 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 ## Guides
 
 - [Guides](https://docs.goplasmatic.io/guides/index.html): complete one task at a time: author a service, extend Orion with plugins, author with an AI assistant, or apply a pattern or integration
-- [Author a service](https://docs.goplasmatic.io/guides/author/index.html): recommended authoring sequence across workflows, channels, connectors, tests, and rollout
+- [Author a service](https://docs.goplasmatic.io/guides/author/index.html): recommended authoring sequence across workflows, channels, connectors and tests
 - [Author a workflow](https://docs.goplasmatic.io/guides/author/workflows.html): reading the request, mapping, conditions, task groups and terminal steps, shared values and fragments, connector tasks, error handling
 - [Configure a channel](https://docs.goplasmatic.io/guides/author/channels.html): routes, async, auth, rate limits, validation, dedup, cache, backpressure, timeouts
 - [Connect a database or API](https://docs.goplasmatic.io/guides/author/connectors.html): creating connectors, env:// secrets, operation gates, data_query vs db_read
-- [Test a workflow offline](https://docs.goplasmatic.io/guides/author/testing.html): lint one file or a whole definition set, dry-run, connector stubs, *.case.json suites with request metadata and recorded-call assertions, validate-config, preflight
-- [Version and roll out changes](https://docs.goplasmatic.io/guides/author/versioning.html): new versions, dry_run activation, reload=defer, canary rollout, import/export
+- [Test a workflow offline](https://docs.goplasmatic.io/guides/author/testing.html): lint one file or a whole definition set, dry-run, connector stubs, *.case.json suites with request metadata and recorded-call assertions, validate-config
 - [Extend Orion](https://docs.goplasmatic.io/guides/extend/index.html): extend the runtime with your own code: ship a codec or calculation as a sandboxed WebAssembly plugin
-- [Build a plugin](https://docs.goplasmatic.io/guides/extend/plugins.html): a JSON → JSON function in Rust on the plugin SDK — manifest, offline tests, upload, promotion
+- [Build a plugin](https://docs.goplasmatic.io/guides/extend/plugins.html): a JSON → JSON function in Rust on the plugin SDK — manifest, offline tests, deployment
 - [Author with AI](https://docs.goplasmatic.io/guides/ai/index.html): author Orion services with an AI assistant: the Claude Code walkthrough, the agent skill, a prompt pack for any LLM and four worked examples
 - [Build a service with Claude Code](https://docs.goplasmatic.io/guides/ai/claude-code.html): driving Orion from Claude Code with the agent skill and orion-cli
 - [Set up the agent skill](https://docs.goplasmatic.io/guides/ai/agent-skill.html): installing the Orion agent skill so an assistant can author, test and deploy through orion-cli
 - [Prompt pack for any LLM](https://docs.goplasmatic.io/guides/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
 - [Worked examples: prompt to service](https://docs.goplasmatic.io/guides/ai/worked-examples.html): four services from prompt to deployed JSON, included from the tested example packages
-- [Patterns and integrations](https://docs.goplasmatic.io/guides/patterns/index.html): reusable workflow patterns and the integrations around them: scheduled work, CI/CD with packages and the Orion Console
+- [Patterns and integrations](https://docs.goplasmatic.io/guides/patterns/index.html): reusable workflow patterns and the integrations around them: scheduled work, CI/CD with deployments and the Orion Console
 - [Common workflow patterns](https://docs.goplasmatic.io/guides/patterns/workflow-patterns.html): reading the request, exclusive branches, enrichment, channel_call composition, error collection
 - [Run work on a schedule](https://docs.goplasmatic.io/guides/patterns/scheduled-workflows.html): cron channels — the six-field expression, time zones and DST, misfire policies, non-overlap, the occurrence ledger
-- [CI/CD with packages](https://docs.goplasmatic.io/guides/patterns/ci-cd.html): offline PR gates, plan/apply pipelines, drift detection, rollback
+- [CI/CD with deployments](https://docs.goplasmatic.io/guides/patterns/ci-cd.html): offline PR gates, compile and plan/apply pipelines, rollback
 - [Use the Orion Console](https://docs.goplasmatic.io/guides/patterns/console.html): graphical UI over the admin API
 
 ## Operate
@@ -75,10 +72,9 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Traces and async processing](https://docs.goplasmatic.io/operate/run/traces.html): trace storage modes, the async queue, the DLQ, retention
 - [Timeouts, retries and circuit breakers](https://docs.goplasmatic.io/operate/run/failure-handling.html): the four timeout levels, the HTTP-only retry rule, breakers, graceful shutdown
 - [Audit logs](https://docs.goplasmatic.io/operate/run/audit-logs.html): filtering, change context, retention, dropped-event alerting
-- [Maintain and recover](https://docs.goplasmatic.io/operate/maintain/index.html): maintain an Orion instance over time: promote definitions between environments, back up and restore, upgrade, and diagnose a live problem
-- [Promote between environments](https://docs.goplasmatic.io/operate/maintain/promotion.html): the five package verbs, receipts, secrets, mid-apply failure modes, rollback
+- [Maintain and recover](https://docs.goplasmatic.io/operate/maintain/index.html): maintain an Orion instance over time: back up and restore, upgrade, and diagnose a live problem
 - [Back up and restore](https://docs.goplasmatic.io/operate/maintain/backup-restore.html): per-backend backup, the offline restore procedure, package artifacts as estate backup
-- [Upgrade an instance](https://docs.goplasmatic.io/operate/maintain/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
+- [Upgrade an instance](https://docs.goplasmatic.io/operate/maintain/upgrades.html): the per-version guides, the standing upgrade procedure, and the expand and contract migration rule
 - [Troubleshooting](https://docs.goplasmatic.io/operate/maintain/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, conditions over payload
 
 ## Reference
@@ -86,20 +82,13 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Reference](https://docs.goplasmatic.io/reference/index.html): task-oriented routes to APIs, schemas, functions, configuration, metrics, and errors
 - [Reference conventions](https://docs.goplasmatic.io/reference/conventions.html): field-table conventions, version applicability, stable errors and the boundary between contracts and rationale
 - [Admin API](https://docs.goplasmatic.io/reference/admin-api/index.html): every endpoint under /api/v2/admin/, by resource, plus the contracts they all share
-- [Admin API conventions](https://docs.goplasmatic.io/reference/admin-api/conventions.html): what holds for every admin endpoint: the API key, the envelopes, the lifecycle, status changes, export and promotion
+- [Admin API conventions](https://docs.goplasmatic.io/reference/admin-api/conventions.html): what holds for every admin endpoint: the API key and the envelopes
 - [Authentication](https://docs.goplasmatic.io/reference/admin-api/authentication.html): the single header the server reads, plain and sha256 key forms, rotation, and the per-source failed-auth backoff
-- [Response envelopes](https://docs.goplasmatic.io/reference/admin-api/envelopes.html): the admin success and error bodies, paging and sorting per list endpoint, and the five most common errors
-- [Lifecycle over the API](https://docs.goplasmatic.io/reference/admin-api/lifecycle.html): what an admin write does to an entity's status and version, and which writes reach the running engine
-- [Status changes](https://docs.goplasmatic.io/reference/admin-api/status-changes.html): the shared status endpoint: activating and archiving, the dry_run pre-flight, and batching reloads with reload=defer
-- [Export and promotion](https://docs.goplasmatic.io/reference/admin-api/export-and-promotion.html): export and import endpoints, the on_conflict modes, X-Orion-Change-Context grouping, and secrets in a bundle
-- [Entity endpoints](https://docs.goplasmatic.io/reference/admin-api/entities.html): the admin endpoints for channels, workflows, plugins, connectors and package receipts
-- [Channel endpoints](https://docs.goplasmatic.io/reference/admin-api/channels.html): create, validate, activate, version, import and export a channel, and the name, route and tag rules each enforces
-- [Workflow endpoints](https://docs.goplasmatic.io/reference/admin-api/workflows.html): create, test, activate, roll out, version and export a workflow, and read its connector and channel_call dependencies
-- [Plugin endpoints](https://docs.goplasmatic.io/reference/admin-api/plugins.html): upload a WebAssembly component as JSON or multipart, sign it, version it, and the schema-compatibility refusal on activation
-- [Connector endpoints](https://docs.goplasmatic.io/reference/admin-api/connectors.html): create, validate, update, reload and probe a connector, and list or reset its circuit breakers
-- [Package endpoints](https://docs.goplasmatic.io/reference/admin-api/packages.html): read the receipts an instance keeps of every package applied to it, and the content-immutability rule
-- [Operational endpoints](https://docs.goplasmatic.io/reference/admin-api/operations.html): the admin endpoints that drive a running instance rather than its stored definitions
-- [Engine endpoints](https://docs.goplasmatic.io/reference/admin-api/engine.html): engine status, and the hot reload that republishes channels and workflows without restarting the process
+- [Response envelopes](https://docs.goplasmatic.io/reference/admin-api/envelopes.html): the admin success and error bodies, paging and sorting per list endpoint, and the four most common errors
+- [Deployment endpoints](https://docs.goplasmatic.io/reference/admin-api/deployments.html): definitions stored by digest, immutable connection revisions with secret locators, plans, compare-and-swap apply, rollback, convergence, and deploying a compiled directory
+- [Operational endpoints](https://docs.goplasmatic.io/reference/admin-api/operations.html): the admin endpoints that read and drive a running instance rather than what it is deployed with
+- [Engine endpoints](https://docs.goplasmatic.io/reference/admin-api/engine.html): engine status: the generation this node serves, what it could not load, and the node's capabilities
+- [Circuit breaker endpoints](https://docs.goplasmatic.io/reference/admin-api/circuit-breakers.html): listing this node's circuit breaker states, and resetting one breaker on every node
 - [Function endpoints](https://docs.goplasmatic.io/reference/admin-api/functions.html): the catalogue of every task function a workflow may name, with the input-field schema of each one that declares one
 - [Audit log endpoints](https://docs.goplasmatic.io/reference/admin-api/audit-logs.html): querying the row every admin mutation writes: filters, time range, paging, and what a row records
 - [Trace dead-letter endpoints](https://docs.goplasmatic.io/reference/admin-api/trace-dlq.html): listing, retrying and purging traces the asynchronous persistence pipeline could not write
@@ -108,7 +97,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Cache endpoints](https://docs.goplasmatic.io/reference/admin-api/cache.html): invalidating a response-cache namespace, so every channel declaring it misses on its next request, on every node sharing the store
 - [Data API](https://docs.goplasmatic.io/reference/data-api.html): routing, sync/async processing, traces
 - [OpenAPI specification](https://docs.goplasmatic.io/reference/openapi.html): where the generated 3.1 spec lives and how it is gated
-- [Workflow definition](https://docs.goplasmatic.io/reference/workflows.html): workflow & task JSON schema, the data context, matching, rollout
+- [Workflow definition](https://docs.goplasmatic.io/reference/workflows.html): workflow & task JSON schema, task groups, the data context, matching, loops
 - [Channel configuration](https://docs.goplasmatic.io/reference/channel-config/index.html): every key of an Orion channel's config object and its routing fields, one page per guard, with the ingresses each applies to and what each refuses.
 - [Routing and transports](https://docs.goplasmatic.io/reference/channel-config/transports.html): how a request reaches an Orion channel: the guard-by-ingress matrix, the routing fields, the cron schedule of a clockwork channel, and OAuth2 sign-in.
 - [Guards by ingress](https://docs.goplasmatic.io/reference/channel-config/guards-by-ingress.html): which channel guard runs on which of the four ingresses (HTTP sync, /async, channel_call, cron), and the fixed order the guards apply in.
@@ -149,6 +138,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [`cache_delete`](https://docs.goplasmatic.io/reference/functions/cache_delete.html): the cache_delete task function: delete exact keys from a per-node in-memory cache connector, so a write can drop the entries it made stale.
 - [`cache_incr`](https://docs.goplasmatic.io/reference/functions/cache_incr.html): the cache_incr task function: atomically add to an integer on a per-node in-memory cache connector, with a TTL applied only when the key is created.
 - [`cache_invalidate`](https://docs.goplasmatic.io/reference/functions/cache_invalidate.html): the cache_invalidate task function: bump channel response-cache namespaces so every channel declaring them misses on its next request, on every store and node.
+- [`connector_call`](https://docs.goplasmatic.io/reference/functions/connector_call.html): the connector_call task function: invoke a v2 connector provider operation on a connection the workflow's deployment member requires
 - [`channel_call`](https://docs.goplasmatic.io/reference/functions/channel_call.html): the channel_call task function: invoke another channel's workflow in-process with no network hop, with cycle detection and a maximum call depth.
 - [`crypto`](https://docs.goplasmatic.io/reference/functions/crypto.html): the crypto task function: digests, HMAC compute and verify, and argon2id or bcrypt password hashing as one self-contained operation envelope.
 - [`jwt_sign`](https://docs.goplasmatic.io/reference/functions/jwt_sign.html): the jwt_sign task function: mint a compact JWS with the HS, RS, PS, ES or EdDSA algorithms, a required expiry, and claims folded from the message.
@@ -157,10 +147,10 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Runtime function discovery](https://docs.goplasmatic.io/reference/functions/runtime-discovery.html): the live function catalogue GET /api/v2/admin/functions serves
 - [Plugin manifest and ABI](https://docs.goplasmatic.io/reference/plugin-manifest.html): the manifest, the component ABI, the limits an invocation runs under, and the shape of a failure
 - [Connector types](https://docs.goplasmatic.io/reference/connectors/index.html): a named connection to an external system: the three types, the shared blocks every one carries, and where each is specified
-- [Shared connector blocks](https://docs.goplasmatic.io/reference/connectors/common.html): what every connector row carries whatever its type: identity, secret references, masking, auth, request layering, gates and retries
-- [Definition and identity](https://docs.goplasmatic.io/reference/connectors/identity.html): name, config, enabled and tags; the two masked copies of config a read returns, and when the parsed one is null
+- [Shared connector blocks](https://docs.goplasmatic.io/reference/connectors/common.html): what every connector carries whatever its type: identity, secret references, secret locators, auth, request layering, gates and retries
+- [Definition and identity](https://docs.goplasmatic.io/reference/connectors/identity.html): a connector's name, type and config in a definition set, and the connection revision compile turns it into
 - [Secrets by reference](https://docs.goplasmatic.io/reference/connectors/secrets.html): env:// and vault:// in any config string, the reserved ORION_SECRET_ prefix, and what an unset variable does at load
-- [Secret masking](https://docs.goplasmatic.io/reference/connectors/masking.html): connector reads and exports mask by allowlist; references pass through, literals do not survive export then import
+- [Secret masking](https://docs.goplasmatic.io/reference/connectors/masking.html): why a connection revision holds no secret value: references move to secret locators, and a literal credential is refused
 - [Connector authentication](https://docs.goplasmatic.io/reference/connectors/authentication.html): bearer, basic and apikey on http connectors, plus the managed oauth2 grant Orion acquires, caches and refreshes
 - [Request layering](https://docs.goplasmatic.io/reference/connectors/request-layering.html): the four header layers and three query-parameter layers http_call applies, in precedence order; why credentials belong in query_params
 - [Operation gates](https://docs.goplasmatic.io/reference/connectors/operation-gates.html): the operations block per type, which gate blocks which task function, the http method allow-list, and cache-backed channel stores
@@ -171,7 +161,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [`cache` connectors](https://docs.goplasmatic.io/reference/connectors/cache.html): the per-node memory backend, and the read and write operation gates
 - [Portable data dialect](https://docs.goplasmatic.io/reference/data-dialect.html): backend-neutral query/write envelope across PostgreSQL, MySQL and SQLite
 - [Server configuration](https://docs.goplasmatic.io/reference/configuration/index.html): every Orion server setting with its real default and ORION_* environment variable, grouped by what you are configuring, one page per config section.
-- [Core settings](https://docs.goplasmatic.io/reference/configuration/core.html): the core orion-server settings: how settings resolve, the environment, vars and secrets, the server, storage, cluster mode and startup packages.
+- [Core settings](https://docs.goplasmatic.io/reference/configuration/core.html): the core orion-server settings: how settings resolve, the environment, vars and secrets, the server, storage, and cluster mode.
 - [How settings are resolved](https://docs.goplasmatic.io/reference/configuration/how-settings-are-resolved.html): the three layers an Orion setting resolves through: struct defaults, the config file with ${VAR} and env:// references, then ORION_SECTION__KEY variables.
 - [Deployment environment](https://docs.goplasmatic.io/reference/configuration/environment.html): the environment setting: any value starting with prod turns three warnings into startup errors, and ORION_ENVIRONMENT is the override.
 - [Vars and secrets](https://docs.goplasmatic.io/reference/configuration/vars-and-secrets.html): the [vars] and [secrets] sections: the per-environment values a workflow reads by name, which is recorded in traces, and which value shapes each refuses.
@@ -202,42 +192,34 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Metrics](https://docs.goplasmatic.io/reference/metrics.html): every exported series, its type and labels
 - [Errors and response envelopes](https://docs.goplasmatic.io/reference/errors.html): the admin and data envelopes, every error code, verbose_errors
 - [CLI](https://docs.goplasmatic.io/reference/cli/index.html): the two binaries, and where each command is documented
-- [orion-server](https://docs.goplasmatic.io/reference/cli/orion-server/index.html): every orion-server subcommand: validate-config, migrate, lint, compile, fmt, clippy, dry-run, test, test-connectivity, sql check, preflight, dump-openapi and package.
+- [orion-server](https://docs.goplasmatic.io/reference/cli/orion-server/index.html): every orion-server subcommand: validate-config, migrate, lint, compile, fmt, clippy, dry-run, test, test-connectivity, sql check, dump-openapi and plugin.
 - [Start the server](https://docs.goplasmatic.io/reference/cli/orion-server/start.html): starting orion-server: the -c config flag every subcommand shares, how defaults, the file and ORION_* overrides merge, and what a bare invocation does.
 - [`orion-server validate-config`](https://docs.goplasmatic.io/reference/cli/orion-server/validate-config.html): orion-server validate-config checks the merged configuration without starting and prints it with secrets masked, as TOML, JSON or a short summary.
 - [`orion-server migrate`](https://docs.goplasmatic.io/reference/cli/orion-server/migrate.html): orion-server migrate runs the database migrations for the configured storage.url without starting the server; --dry-run previews the pending set.
-- [`orion-server lint`](https://docs.goplasmatic.io/reference/cli/orion-server/lint.html): orion-server lint validates one workflow or a whole definition set with the admin API's checks, resolves cross-references, and reports stable [check] ids.
-- [`orion-server compile`](https://docs.goplasmatic.io/reference/cli/orion-server/compile.html): orion-server compile resolves $from and use in a definition set and writes a package artifact, a directory of request bodies, or bulk-import files.
+- [`orion-server lint`](https://docs.goplasmatic.io/reference/cli/orion-server/lint.html): orion-server lint validates one workflow or a whole definition set with the server's checks, resolves cross-references, and reports stable [check] ids.
+- [`orion-server compile`](https://docs.goplasmatic.io/reference/cli/orion-server/compile.html): orion-server compile resolves $from, use, $each and $sql in a definition set and writes it as a revision-free v2 deployment directory.
 - [`orion-server fmt`](https://docs.goplasmatic.io/reference/cli/orion-server/fmt.html): orion-server fmt rewrites definition files to the one house style, with --check for CI and --stdin for editors; the exit codes and what it refuses.
 - [`orion-server clippy`](https://docs.goplasmatic.io/reference/cli/orion-server/clippy.html): orion-server clippy runs the advisory rules beyond lint, only where certain, with --list, --explain, JSON output and the -c config for the vars rules.
 - [`orion-server dry-run`](https://docs.goplasmatic.io/reference/cli/orion-server/dry-run.html): orion-server dry-run executes a workflow offline against a JSON input with canned connector stubs and real plugin execution, and prints the trace.
 - [`orion-server test`](https://docs.goplasmatic.io/reference/cli/orion-server/test.html): orion-server test runs a directory of *.case.json workflow regression cases offline, with shared definitions and plugin components.
 - [`orion-server test-connectivity`](https://docs.goplasmatic.io/reference/cli/orion-server/test-connectivity.html): orion-server test-connectivity probes the configured database, so wrong credentials surface before the server tries to start.
 - [`orion-server sql check`](https://docs.goplasmatic.io/reference/cli/orion-server/sql-check.html): orion-server sql check prepares every db_read and db_write statement of a set against a real database, as the connector's role, executing nothing.
-- [`orion-server preflight`](https://docs.goplasmatic.io/reference/cli/orion-server/preflight.html): orion-server preflight scans the stored channels and workflows for anything the 1.0 rules refuse, and lists engine advisories, without changing a row.
 - [`orion-server dump-openapi`](https://docs.goplasmatic.io/reference/cli/orion-server/dump-openapi.html): orion-server dump-openapi prints the public HTTP API's OpenAPI 3.1 document as JSON to stdout, with no config, database or running server.
-- [`orion-server package`](https://docs.goplasmatic.io/reference/cli/orion-server/package.html): orion-server package exports, lints, plans, applies and diffs a promotion artifact of channels, workflows, connectors and plugins between instances.
 - [`orion-server plugin`](https://docs.goplasmatic.io/reference/cli/orion-server/plugin.html): orion-server plugin digests, signs and verifies plugin components with the Ed25519 keys [plugins.trust] checks, with no OpenSSL pipeline.
-- [orion-cli](https://docs.goplasmatic.io/reference/cli/orion-cli/index.html): every orion-cli command: the entity commands for workflows, channels, connectors and plugins, plus send, traces, engine, cron, dlq and the rest.
+- [orion-cli](https://docs.goplasmatic.io/reference/cli/orion-cli/index.html): every orion-cli command: deployments, connections and providers, plus send, traces, engine, cron, dlq and the rest.
 - [Global flags](https://docs.goplasmatic.io/reference/cli/orion-cli/global-flags.html): the flags every orion-cli command accepts, the environment variables and config file behind them, and the paging and sorting controls shared by every list.
 - [`orion-cli config`](https://docs.goplasmatic.io/reference/cli/orion-cli/config.html): orion-cli config reads and writes the CLI's own settings in ~/.orion/config.toml: the server URL, the API key and header, and the default output format.
 - [`orion-cli health`](https://docs.goplasmatic.io/reference/cli/orion-cli/health.html): orion-cli health checks the server's health, version and component status, and exits 1 when any component is degraded, for scripts and probes.
-- [`orion-cli workflows`](https://docs.goplasmatic.io/reference/cli/orion-cli/workflows.html): orion-cli workflows creates, versions, activates, rolls out, tests, exports, imports and diffs workflows, with --dry-run and --defer-reload on transitions.
-- [`orion-cli channels`](https://docs.goplasmatic.io/reference/cli/orion-cli/channels.html): orion-cli channels creates, versions, activates, exports and imports channels, and triggers a cron channel now; --dry-run pre-flights an activation.
-- [`orion-cli connectors`](https://docs.goplasmatic.io/reference/cli/orion-cli/connectors.html): orion-cli connectors creates, updates, enables, tests, exports and imports connectors, and lists or resets their circuit breakers; secrets stay masked.
-- [`orion-cli plugins`](https://docs.goplasmatic.io/reference/cli/orion-cli/plugins.html): orion-cli plugins uploads, versions, activates, validates and exports WebAssembly plugins, with the signature and component flags an upload takes.
 - [`orion-cli send`](https://docs.goplasmatic.io/reference/cli/orion-cli/send.html): orion-cli send posts a payload to a channel, sync or async with --wait, wrapping it in the data envelope unless --raw, with optional metadata and profiling.
 - [`orion-cli traces`](https://docs.goplasmatic.io/reference/cli/orion-cli/traces.html): orion-cli traces lists, reads and waits on execution traces, with the trace token an async submission returns and keyset paging for large tables.
-- [`orion-cli engine`](https://docs.goplasmatic.io/reference/cli/orion-cli/engine.html): orion-cli engine shows the running engine's status and hot-reloads it from the database, which is how deferred activations are batched into one reload.
+- [`orion-cli engine`](https://docs.goplasmatic.io/reference/cli/orion-cli/engine.html): orion-cli engine status shows what the engine on this node serves: version, uptime, workflow and channel counts.
 - [`orion-cli functions`](https://docs.goplasmatic.io/reference/cli/orion-cli/functions.html): orion-cli functions list shows every task function the engine registers and its input schema, the same catalogue GET /api/v2/admin/functions serves.
 - [`orion-cli metrics`](https://docs.goplasmatic.io/reference/cli/orion-cli/metrics.html): orion-cli metrics fetches GET /metrics from the server as a reformatted list, or the raw Prometheus exposition text with --raw.
 - [`orion-cli audit-logs`](https://docs.goplasmatic.io/reference/cli/orion-cli/audit-logs.html): orion-cli audit-logs lists admin actions with exact-match filters on action, resource type, resource id, principal and time, applied in the database.
 - [`orion-cli backups`](https://docs.goplasmatic.io/reference/cli/orion-cli/backups.html): orion-cli backups creates and lists SQLite database backups through the admin API; the other backends rely on their own snapshot tooling.
 - [`orion-cli cache`](https://docs.goplasmatic.io/reference/cli/orion-cli/cache.html): orion-cli cache invalidate bumps a channel response-cache namespace through the admin API, so every channel declaring it misses on its next request.
-- [`orion-cli packages`](https://docs.goplasmatic.io/reference/cli/orion-cli/packages.html): orion-cli packages lists and shows package promotion receipts, the read side of what orion-server package plan and apply record on an instance.
 - [`orion-cli dlq`](https://docs.goplasmatic.io/reference/cli/orion-cli/dlq.html): orion-cli dlq lists, inspects, requeues and purges entries of the trace dead-letter queue, including the exhausted ones nothing retries again.
 - [`orion-cli cron`](https://docs.goplasmatic.io/reference/cli/orion-cli/cron.html): orion-cli cron shows what each cron channel has scheduled, lists and inspects occurrences, retries a failed or skipped one, and cancels one that has not finished.
-- [`orion-cli benchmark`](https://docs.goplasmatic.io/reference/cli/orion-cli/benchmark.html): orion-cli benchmark runs the built-in load scenarios, or an existing workflow through a channel, with request count, concurrency and timeout flags.
 - [`orion-cli completions`](https://docs.goplasmatic.io/reference/cli/orion-cli/completions.html): orion-cli completions generates shell completion scripts for bash, zsh, fish, PowerShell or elvish, ready to source or install into the shell's path.
 - [Shared definitions](https://docs.goplasmatic.io/reference/cli/shared-definitions.html): how a definition set says a thing once: $from splices a shared constant or error, use expands a parameterised task fragment, and compile resolves both.
 - [Definition style (`fmt`)](https://docs.goplasmatic.io/reference/fmt.html): the one layout `orion-server fmt` writes — the numbers, the key order of every recognised shape, the JSONLogic inlining rules; nothing to configure

@@ -65,13 +65,12 @@ They complement `ops_budget`, which bounds a single expression evaluation: a wor
 
 ### Connector load failures
 
-An enabled connector whose config cannot be loaded — a missing `env://DB_PASSWORD`, an unparseable `config_json`, an unresolvable secret reference — is skipped. It is then *absent*: every workflow using it returns a 500 at request time, which may be hours after the deploy that broke it.
+A deployed connection whose config cannot be loaded, such as one with a missing `env://DB_PASSWORD` or an unresolvable secret reference, is skipped. It is then *absent*: every workflow using it returns a 500 at request time, which may be hours after the deploy that broke it.
 
-Three surfaces report this:
+Two surfaces report this:
 
 - `GET /health` sets `components.connectors` to `degraded` and lists the failures under `connectors.failed_to_load`. The overall status becomes `degraded`, but the HTTP status stays **200**: the rest of the instance is serving, and a 503 would pull the node out of its load balancer over a connector nothing in flight may be using. Alert on the field, not the status code.
-- `GET /api/v2/admin/connectors` gives every row a `load_status` of `loaded`, `failed`, or `disabled`, with `load_error` and `load_error_stage` on the failures. The stage is one of `env_substitution`, `json_parse`, `var_reference`, `secret_resolution`, `deserialize` or `endpoint`, the last for a resolved endpoint whose scheme its backend cannot serve. A `cache` connector stored with a backend this build does not have, such as `redis`, fails at `deserialize`.
-- `engine.fail_on_connector_load_error = true` refuses to start at all, so a bad rollout fails where the orchestrator will catch it. This is startup only — a hot reload never takes a running process down.
+- `engine.fail_on_connector_load_error = true` refuses to start at all, so a bad rollout fails where the orchestrator will catch it. This is startup only. A later deployment never takes a running process down.
 
 ### `max_memory_cache_entries`
 
@@ -83,7 +82,7 @@ The setting decides how a request is bucketed for canary rollouts. With a header
 
 ### `ops_budget`
 
-The setting bounds one JSONLogic evaluation, deterministically, on every engine this node builds: the serving generation, every reload, and `POST /workflows/{id}/test`. An offline `dry-run` runs unbounded. One operation is one dispatched node, one item an iterator examines, or what an operator charges for the data it moves. The collection and string operators (`merge`, `in`, `keys`, `sort`, `distinct`, `cat`, …) charge per item, or per 64 bytes of string. An accumulator built with `merge` is charged for every item it copies. Constant-folded subtrees cost nothing. The ceiling is per *evaluation*, not per task or message: a task that evaluates ten expressions gets it ten times. It exists for expressions the operator did not write.
+The setting bounds one JSONLogic evaluation, deterministically, on every engine this node builds: the serving generation, every rebuild, and `POST /api/v2/admin/definitions/test`. An offline `dry-run` runs unbounded. One operation is one dispatched node, one item an iterator examines, or what an operator charges for the data it moves. The collection and string operators (`merge`, `in`, `keys`, `sort`, `distinct`, `cat`, …) charge per item, or per 64 bytes of string. An accumulator built with `merge` is charged for every item it copies. Constant-folded subtrees cost nothing. The ceiling is per *evaluation*, not per task or message: a task that evaluates ten expressions gets it ten times. It exists for expressions the operator did not write.
 
 How a refusal surfaces is not uniform. A custom function's template field (`http_call.path`, `crypto.data`) fails the task with `BUDGET_EXCEEDED`, which is not retried. A sync caller gets a `400` carrying the refusal's own text: which operations were charged against which ceiling. A built-in `map` mapping fails its task with `BUDGET_EXCEEDED` too, and writes nothing to its target. A **condition** (workflow, task, group, `filter`) fails closed to `false` and is only logged, because condition evaluation has no error channel. A ceiling low enough to trip an ordinary condition therefore reads as "no workflow matched". The caller gets their own input back with a `200`. Size it from the heaviest legitimate expression in the estate, then leave headroom. The counter runs whether or not a ceiling is set, at one add-and-compare per node. The count is deterministic for a given expression, data and engine version. It is **not** stable across versions: a new fast path or constant fold changes what gets dispatched. Budget for the work you mean to allow, not for an exact number you once measured.
 
@@ -105,6 +104,5 @@ Sheds load to a failing dependency. After `failure_threshold` consecutive failur
 ## Related
 
 - [Timeouts, retries and circuit breakers](../../operate/run/failure-handling.md): the breaker in operation.
-- [Version and roll out changes](../../guides/author/versioning.md): sticky rollouts in practice.
 - [Expression language](../expressions.md): what `ops_budget` prices.
 - [Server configuration](./index.md): every section, by what you are configuring.

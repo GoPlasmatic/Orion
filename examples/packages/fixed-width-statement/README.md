@@ -13,22 +13,25 @@ The one example that is **not** zero-configuration: the server must run with
 repository root, with such a server on `http://localhost:8080`:
 
 ```bash
-./examples/deploy.sh fixed-width-statement
+orion-server compile examples/packages/fixed-width-statement -o dist/fixed-width-statement
+orion-cli deployments apply -d dist/fixed-width-statement
 ```
 
-That uploads and activates the plugin, creates and activates the workflow and
-channel, POSTs `request.json` to `POST /api/v2/data/statements`, and prints the
-response — `data.statement.amount` is `12500.99`, decoded from the eleven
-minor-unit digits in columns 11–21.
+`compile` inlines the component beside `plugin.toml`, so the deployment carries
+the plugin, the workflow and the channel. POST `request.json` to
+`POST /api/v2/data/statements` and `data.statement.amount` is `12500.99`,
+decoded from the eleven minor-unit digits in columns 11–21:
 
-The same package is a promotion artifact: `orion-server compile
-examples/packages/fixed-width-statement --name statements --version 1.0.0 -o
-pkg.json` inlines the component, and `orion-server package apply` installs
-the plugin on the target before the workflow that calls it. Offline,
+```bash
+curl -s -X POST http://localhost:8080/api/v2/data/statements \
+  -H 'Content-Type: application/json' --data @examples/packages/fixed-width-statement/request.json
+```
+
+Offline,
 `orion-server test examples/workflow-tests --plugin-dir
 examples/packages/fixed-width-statement` runs the codec for real. See
 [`examples/README.md`](../../README.md) for the file layout and the full example
-list, [Run the Examples](https://docs.goplasmatic.io/getting-started/examples.html)
+list, [Run the Examples](https://docs.goplasmatic.io/get-started/tutorials/examples.html)
 for the step-by-step walkthrough, and
 [Build a plugin](https://docs.goplasmatic.io/build/plugins.html) for how the
 codec was written.

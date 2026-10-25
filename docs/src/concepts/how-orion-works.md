@@ -33,7 +33,7 @@ Every Orion service has a channel and a workflow. Add connectors when its logic 
 
 Channels receive traffic. Workflows process it. Connectors reach outside. Rate limiting, metrics, retries and versioning are the runtime's job, not yours.
 
-The primitives of one service group into a [package](./packages.md): the named, versioned unit that moves between instances. One Orion runs many packages side by side, as a modular monolith. Each service ships on its own schedule without becoming its own deployment.
+A node serves one [deployment](../reference/admin-api/deployments.md): a manifest of the channels, workflows, connections and plugins it runs. Each deployment is an immutable revision. With none committed, a node serves nothing.
 
 ## One request's journey
 
@@ -58,7 +58,7 @@ The primitives of one service group into a [package](./packages.md): the named, 
 
 1. **Orion finds the channel.** A REST route pattern matches the method and path. If none does, the path is looked up as a channel name.
 2. **The channel's guards run.** Whatever the channel declares is enforced before any logic executes: rate limit, authentication, origin allow-list, payload validation, deduplication, response cache, backpressure. Every ingress gets the same contract, minus what its transport cannot carry. See [Channel configuration](../reference/channel-config/index.md).
-3. **A workflow is selected.** The channel names one workflow. The engine picks the version to run from its condition and any active rollout percentage.
+3. **A workflow is selected.** The channel names one workflow. The engine picks the revision to run from its condition and any rollout percentage.
 4. **The tasks run in order.** Each task reads and writes one shared data context. Connector-backed tasks call out; the rest transform data in process.
 5. **The context is returned.** A sync channel answers with it as JSON; an async channel stores it as a trace.
 
@@ -87,9 +87,9 @@ The same binary serves both planes. Only the configuration and the backends chan
 | **Clustering** | One process, no coordination | Replicas coordinated through the shared database |
 | **Schema migrations** | Applied at startup | A deploy step; replicas never migrate at boot |
 | **Scaling** | One local instance | Replicas behind a load balancer |
-| **Hot reload** | On activation, at once | Propagated to every replica with no request downtime |
+| **Hot reload** | On each deployment, at once | Every replica builds the new head with no request downtime |
 
-Nothing about the artifacts changes between the two. A workflow authored against SQLite on a laptop is the same JSON that runs on a PostgreSQL-backed fleet. That is what makes [promotion](./packages.md) a file transfer rather than a rewrite.
+Nothing about the artifacts changes between the two. A workflow authored against SQLite on a laptop is the same JSON that runs on a PostgreSQL-backed fleet. That is what makes [deploying to another instance](../reference/admin-api/deployments.md#deploy-a-compiled-directory) a file transfer rather than a rewrite.
 
 ## What you can extend
 
@@ -98,14 +98,14 @@ Orion is configurable in four places, and closed everywhere else. Being plain ab
 - **Expressions.** Conditions and mappings are [JSONLogic](../reference/expressions.md), evaluated by the engine.
 - **Connectors.** A new external system is reached by configuring a connector of a supported type: HTTP, SQL, or an in-memory cache.
 - **Composition.** `channel_call` runs another channel's workflow in-process, so services compose without a network hop.
-- **Plugins.** A pure JSON-to-JSON transformation you already have as code ships as a [plugin](./plugins.md): a WebAssembly component that runs in a sandbox importing nothing. It is versioned and promoted like any other definition, and a task calls it like any built-in function.
+- **Plugins.** A pure JSON-to-JSON transformation you already have as code ships as a [plugin](./plugins.md): a WebAssembly component that runs in a sandbox importing nothing. It is deployed like any other definition, and a task calls it like any built-in function.
 
 There is no scripting runtime and no general-purpose plugin API. A plugin cannot open a socket, read a file, tell the time, or reach a connector or a secret, by construction. A task function that has to talk to another system is either an `http_call` to a service you write, or a feature request.
 
 ## Next steps
 
 - [Channels](./channels.md), [Workflows](./workflows.md) and [Connectors](./connectors.md): one page per primitive.
-- [The entity lifecycle](./lifecycle.md): draft, active, archived, and what each transition does to the running engine.
+- [Deployment endpoints](../reference/admin-api/deployments.md): how definitions reach a node, and how a rollback works.
 - [Is Orion right for you?](../get-started/decide/is-orion-right-for-you.md): the same boundary from outside, and where a neighbouring tool does the job better.
 - [Build your first service](../get-started/tutorials/first-service.md): the calls that turn the diagram above into a live endpoint.
 - [Design notes](./design-notes.md): the internals behind the guarantees, for when you want them.

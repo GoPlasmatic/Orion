@@ -4,7 +4,7 @@
 
 # Set up the agent skill
 
-An *agent skill* is a folder of instructions an AI coding agent loads on demand. Orion ships one, in [`skills/orion/`](https://github.com/GoPlasmatic/Orion/tree/main/skills/orion), and the agent works through the CLI you already have. It teaches the JSON shapes, the draft-test-activate discipline, the command surface, and the traps that cost the most time.
+An *agent skill* is a folder of instructions an AI coding agent loads on demand. Orion ships one, in [`skills/orion/`](https://github.com/GoPlasmatic/Orion/tree/main/skills/orion), and the agent works through the CLI you already have. It teaches the JSON shapes, the test-plan-apply discipline, the command surface, and the traps that cost the most time.
 
 The skill is knowledge; `orion-cli` is the hands. There is no extra process to run, no port to open, and nothing new holding your admin credentials.
 
@@ -40,7 +40,7 @@ Start `claude` and run `/skills`; `orion` should be listed. You do not invoke it
 
 ## What it knows
 
-`SKILL.md` is what enters the agent's context up front. It holds the three primitives, the safe path, the rollout and rollback procedures, and the handful of traps that produce silent wrong answers. The rest is opened only when the task needs it:
+`SKILL.md` is what enters the agent's context up front. It holds the three primitives, the safe path, the deploy and rollback procedures, and the handful of traps that produce silent wrong answers. The rest is opened only when the task needs it:
 
 | File | Covers |
 |---|---|
@@ -48,7 +48,7 @@ Start `claude` and run `/skills`; `orion` should be listed. You do not invoke it
 | `references/functions.md` | Function selection, live schema discovery, expression-capable inputs, and egress boundaries |
 | `references/expressions.md` | JSONLogic evaluation, templates, secrets, and silent-failure edges |
 | `references/channels.md` | Ingress guards, request/response behaviour, cookies, stored config, and connectors |
-| `references/cli.md` | Offline checks, lifecycle operations, compilation, packages, and troubleshooting |
+| `references/cli.md` | Offline checks, compilation, deployments, and troubleshooting |
 
 Anything discoverable at runtime is not restated in the skill. It tells the agent to run `orion-cli functions list` for a function's input schema, and `--help` for a command's flags. A table can drift; the instance cannot.
 
@@ -56,7 +56,7 @@ Anything discoverable at runtime is not restated in the skill. It tells the agen
 
 Ask for something read-only first:
 
-> Is my Orion instance healthy? How many workflows and channels are active?
+> Is my Orion instance healthy? What does it serve?
 
 The agent should reach for `orion-cli health` and `orion-cli engine status`. From there, [Build a service with Claude Code](./claude-code.md) walks a full session, from one paragraph of English to a live endpoint.
 
@@ -65,7 +65,7 @@ The agent should reach for `orion-cli health` and `orion-cli engine status`. Fro
 It runs `orion-cli` under your shell, so it has exactly the access you have, and no more. Every admin write lands in the audit log under your principal, and you can label a whole session's changes for later:
 
 ```bash
-orion-cli --change-context "ticket=OPS-4412" workflows activate order-triage
+orion-cli --change-context "ticket=OPS-4412" deployments apply -d dist/deployment
 ```
 
 Nothing is exposed to the network. To give an agent *less* than your access, give it its own API key on an instance with [admin authentication](../../operate/run/security.md) enabled. Set `ORION_API_KEY` in the environment you launch it from.
@@ -78,4 +78,4 @@ Nothing is exposed to the network. To give an agent *less* than your access, giv
 - [Build a service with Claude Code](./claude-code.md): a full guided session.
 - [Prompt pack for any LLM](./prompt-pack.md): for an assistant with no shell.
 - [CLI](../../reference/cli/index.md): every command the skill drives.
-- [The entity lifecycle](../../concepts/lifecycle.md): the draft and active rules that make delegating this safe.
+- [Deployment endpoints](../../reference/admin-api/deployments.md): the plan, apply and rollback rules that make delegating this safe.

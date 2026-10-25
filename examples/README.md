@@ -1,14 +1,13 @@
 # Orion Examples
 
-Ready-to-deploy example **packages** you can POST to a running Orion instance
-and call immediately. A package is Orion's unit of shipping: the channel,
-workflow, and connector that belong to one service, grouped so they deploy — and
-later export, promote, and version — together.
+Ready-to-deploy example **packages** you can deploy to a running Orion instance
+and call immediately. A package here is one directory holding the channel,
+workflow, and connector that belong to one service. Each directory is a
+definition set: `orion-server compile` turns it into a deployment.
 
 **The walkthrough lives in the documentation:**
-[Run the Examples](https://docs.goplasmatic.io/getting-started/examples.html)
-— what each package shows, the step-by-step deploy, and how to dry-run a draft
-before activating it.
+[Run the Examples](https://docs.goplasmatic.io/get-started/tutorials/examples.html)
+shows what each package does and how to deploy it.
 
 ## Layout
 
@@ -25,12 +24,18 @@ examples/
 
 ## Quick start
 
-Start Orion (`orion-server`, listening on `http://localhost:8080`), then:
+Start Orion (`orion-server`, listening on `http://localhost:8080`), then compile
+one package and deploy it:
 
 ```bash
-./deploy.sh high-value-order          # deploy one package and send its sample request
-./quickstart.sh                       # or: your first service, built from scratch
+orion-server compile examples/packages/high-value-order -o dist/high-value-order
+orion-cli deployments apply -d dist/high-value-order
+curl -s -X POST http://localhost:8080/api/v2/data/high-value-orders \
+  -H 'Content-Type: application/json' --data @examples/packages/high-value-order/request.json
 ```
+
+A deployment states everything a node serves. Applying a second package's
+directory replaces the first, so deploy one package at a time.
 
 ## The packages
 
@@ -47,9 +52,6 @@ Start Orion (`orion-server`, listening on `http://localhost:8080`), then:
 | [`order-summary`](packages/order-summary/) | `POST /order-summary` | The dependency-free files behind the documentation's HTTP-flow tutorial |
 | [`nightly-rollup`](packages/nightly-rollup/) | `0 15 2 * * *` (no route) | **Scheduled:** a `protocol: "cron"` channel runs the workflow on a six-field expression; every instant becomes a durable occurrence |
 | [`c4-referee`](packages/c4-referee/) | `POST /c4/move` | **Plugin-backed:** the rules of Connect Four compiled to WebAssembly ([source](plugins/c4-rules/)) play the column the caller names and settle a win, a draw or a forfeit — needs `plugins.enabled = true` |
-
-Every entity carries a `tags: ["pkg:<name>"]` label — that is what marks it as
-belonging to the package, and what `orion-server package export` selects on.
 
 ## Testing
 
@@ -69,9 +71,8 @@ documents the server-backed scenario format.
 
 ## Documentation
 
-- [Run the Examples](https://docs.goplasmatic.io/getting-started/examples.html) — the full walkthrough
-- [Test & Promote a Service](https://docs.goplasmatic.io/getting-started/test-and-promote.html) — from a local run to a second instance
-- [Packages](https://docs.goplasmatic.io/concepts/packages.html) — what a package is and why the boundary sits there
-- [Task Functions](https://docs.goplasmatic.io/reference/functions.html) — every function's input schema
-- [Workflow Schema](https://docs.goplasmatic.io/reference/workflows.html) — workflow shape, conditions, and lifecycle
-- [Orion CLI](../crates/orion-cli/) — deploy with `orion-cli workflows create -f workflow.json`
+- [Run the Examples](https://docs.goplasmatic.io/get-started/tutorials/examples.html) — the full walkthrough
+- [Deployment endpoints](https://docs.goplasmatic.io/reference/admin-api/deployments.html) — how a compiled directory is deployed
+- [Task Functions](https://docs.goplasmatic.io/reference/functions/index.html) — every function's input schema
+- [Workflow Schema](https://docs.goplasmatic.io/reference/workflows.html) — workflow shape, conditions, and matching
+- [Orion CLI](../crates/orion-cli/) — deploy with `orion-cli deployments apply -d <dir>`

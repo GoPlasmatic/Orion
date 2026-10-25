@@ -4,7 +4,7 @@
 //! [`tasks`] supervises the long-lived background tasks. It lives here rather
 //! than in `queue/` because it is not about traces: the trace dispatcher, the
 //! persistence workers, the audit writer, the retention jobs and the cluster
-//! epoch watcher are owned by four different modules, and "is every one of
+//! reconciler are owned by four different modules, and "is every one of
 //! them still alive?" is a question about the node.
 //!
 //! [`generation`] is that serving generation — the engine and the channel
@@ -13,11 +13,9 @@
 //! it is injected *downward* into `engine`, `channel`, `cron` and `queue`
 //! rather than reaching up into any of them.
 //!
-//! [`reload`] rebuilds that generation. It was `engine::reload`, and that was
-//! the largest of the upward dependency edges in the tree: a module the whole
-//! request path sits *below* reached up into `server::state` for `AppState`.
-//! It is not an engine concern — it reads the database and rebuilds the
-//! channel estate, and the engine is one of the things it swaps. Here it
+//! [`reload`] builds that generation from a committed deployment revision.
+//! It is not an engine concern — it reads the deployment store and rebuilds
+//! the channel estate, and the engine is one of the things it swaps. Here it
 //! depends downward on all of them.
 
 pub mod authority;
@@ -29,12 +27,12 @@ pub mod reload;
 pub mod tasks;
 
 pub use generation::{RuntimeGeneration, RuntimeHandle};
-pub use reload::{reconcile_deployment_revision, reload_engine, resync_from_db};
+pub use reload::reconcile_deployment_revision;
 pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, TaskState};
 
 /// Borrow the handler dependencies straight off a live `AppState`.
 ///
-/// The dry-run engine in `POST /workflows/{id}/test` must be built from the
+/// The dry-run engine in `POST /definitions/test` must be built from the
 /// *same* registries and pools as the serving engine — a copy that drifted
 /// would make dry-run results a lie about production.
 ///

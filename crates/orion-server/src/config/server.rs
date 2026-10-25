@@ -41,7 +41,7 @@ pub struct ServerConfig {
     ///
     /// R16: the body limit used to be one global layer set from
     /// `ingest.max_payload_size` — a name that says *data plane* — so bulk
-    /// import, connector config PUTs and `POST /workflows/{id}/test` shared a
+    /// import, connector config PUTs and `POST /definitions/test` shared a
     /// ceiling with anonymous channel traffic. Raising it for a big import
     /// raised it for the unauthenticated plane too, which is the opposite of
     /// what an operator wants. The admin API is authenticated and its payloads

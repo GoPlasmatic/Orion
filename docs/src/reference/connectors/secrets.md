@@ -38,7 +38,7 @@ An endpoint that arrives by reference is judged when it resolves. An `http` URL 
 "headers": { "Authorization": "Bearer env://API_KEY" }
 ```
 
-That header carries the characters `env://API_KEY`, not the key. `lint`, `package lint` and `POST /connectors/validate` warn about it with the check id `env.embedded_reference`. For a bearer token, use the [`auth`](./authentication.md) block, whose `token` takes a reference:
+That header carries the characters `env://API_KEY`, not the key. `lint` and `compile` warn about it with the check id `env.embedded_reference`. For a bearer token, use the [`auth`](./authentication.md) block, whose `token` takes a reference:
 
 ```json
 "auth": { "type": "bearer", "token": "env://API_KEY" }
@@ -48,5 +48,5 @@ That header carries the characters `env://API_KEY`, not the key. `lint`, `packag
 
 - [Connector types](./index.md): every type, and the shared blocks all of them carry.
 - [Environment variables](../environment-variables.md): every scheme, and what an unset variable does.
-- [Secret masking](./masking.md): why a literal secret does not survive export then import.
+- [Secret masking](./masking.md): why a connection revision holds no secret value.
 - [Definition and identity](./identity.md): the config field a reference lives in.

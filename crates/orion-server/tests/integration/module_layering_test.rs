@@ -79,7 +79,7 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         ],
     ),
     // The version this build is, and the range a set may require: read by
-    // the offline commands, the package verbs and (at boot) the loader.
+    // the offline commands.
     (
         "version.rs",
         &[
@@ -90,9 +90,8 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
             "crate::storage::",
         ],
     ),
-    // The detached-signature convention is read by the signing CLI, the
-    // package verbs and (at boot) the package loader: it names `crypto` and
-    // nothing that serves.
+    // The detached-signature convention is read by the signing CLI: it names
+    // `crypto` and nothing that serves.
     (
         "signatures.rs",
         &[
@@ -148,18 +147,8 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
     ("storage", &["crate::runtime::"]),
-    // `package` is a top layer beside `bootstrap`: what an artifact carries
-    // and whether a target serves it. Nothing that serves may name it.
-    ("engine", &["crate::package::"]),
-    ("channel", &["crate::package::"]),
-    ("connector", &["crate::package::"]),
-    ("queue", &["crate::package::"]),
-    ("jwt", &["crate::package::"]),
-    ("plugin", &["crate::package::"]),
-    ("cron", &["crate::package::"]),
-    ("storage", &["crate::package::"]),
     // V2 extension seams and composition root sit below the HTTP server,
-    // bootstrap, reload, package CLI, and background workers (`TD-36`).
+    // bootstrap, reload, and background workers (`TD-36`).
     (
         "extensions",
         &[
@@ -167,7 +156,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
             "crate::bootstrap::",
             "crate::runtime::reload",
             "crate::runtime::handler_deps",
-            "crate::package::",
             "crate::cron::",
             "crate::queue::",
         ],

@@ -8,7 +8,7 @@ A channel is the endpoint plus the contract it enforces on the way in. This guid
 
 ## Before you start
 
-You need an active workflow for the channel to point at, and a server on `http://localhost:8080`. The channel is created through the admin API and activated like any other entity; [Build your first service](../../get-started/tutorials/first-service.md) shows those calls.
+You need a workflow for the channel to point at, and a server on `http://localhost:8080`. The channel is a file in your definition set, deployed with its workflow; [Build your first service](../../get-started/tutorials/first-service.md) shows those steps.
 
 ## Choose a route
 
@@ -136,11 +136,11 @@ By default a sync channel returns the standard envelope with the final `data` co
 
 ## Verify
 
-Ask whether the activation would succeed, without making it:
+Ask whether the deployment would succeed, without committing it:
 
 ```bash
-curl -s -X PATCH "http://localhost:8080/api/v2/admin/channels/orders/status?dry_run=true" \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
+orion-server compile ./definitions -o dist/deployment
+orion-cli deployments plan -d dist/deployment
 ```
 
 Unknown keys anywhere in `config` are refused with a `400` naming the key. That is deliberate: a silently ignored guard reads as protection while providing none.

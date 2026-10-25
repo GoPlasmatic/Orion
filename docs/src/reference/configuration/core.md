@@ -1,10 +1,10 @@
-<!-- description: The core orion-server settings: how settings resolve, the environment, vars and secrets, the server, storage, cluster mode and startup packages. -->
+<!-- description: The core orion-server settings: how settings resolve, the environment, vars and secrets, the server, storage, and cluster mode. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # Core settings
 
-Resolution, the environment, vars and secrets, the server, storage, clusters and startup packages. Every table on these pages carries the wire name, the default the code uses, and the `ORION_*` override.
+Resolution, the environment, vars and secrets, the server, storage and clusters. Every table on these pages carries the wire name, the default the code uses, and the `ORION_*` override.
 
 | Page | Holds |
 |---|---|

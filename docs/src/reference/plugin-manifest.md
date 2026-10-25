@@ -4,11 +4,11 @@
 
 # Plugin manifest and ABI
 
-The manifest a plugin is uploaded with, the ABI its component implements, how
+The manifest a plugin is deployed with, the ABI its component implements, how
 an invocation is bounded, and what a failure looks like. The concept page is
 [Plugins](../concepts/plugins.md). The ceilings are under
-[Configuration › Plugins](./configuration/plugins.md) and the endpoints under
-[Admin API › Plugins](./admin-api/plugins.md).
+[Configuration › Plugins](./configuration/plugins.md), and a plugin is deployed
+as a definition through the [deployment endpoints](./admin-api/deployments.md#definitions).
 
 ## Manifest
 
@@ -18,7 +18,7 @@ the same field table every built-in function declares, and nothing more.
 ```toml
 abi = "orion:plugin@1.0.0"
 name = "acme.iso8583"
-version = "1.2.0"            # informational; Orion assigns the entity version
+version = "1.2.0"            # informational; the deployment assigns the revision
 component = "component.wasm" # relative to this file; read by tooling and the CLI only
 
 [[functions]]
@@ -43,8 +43,8 @@ required = true
 |---|---|
 | `abi` | Must be `orion:plugin@1.0.0`, the WIT package version this server speaks. |
 | `name` | The plugin id: lowercase reverse-domain with at least two labels (`[a-z][a-z0-9-]*`). `orion.*` and unqualified names are reserved. |
-| `version` | The author's own version string. Informational: Orion assigns the entity version. |
-| `component` | Path of the component relative to the manifest, with no way out of its directory. Read only by offline tooling and the CLI upload; the server receives bytes and identifies them by digest. |
+| `version` | The author's own version string. Informational: the deployment assigns the revision. |
+| `component` | Path of the component relative to the manifest, with no way out of its directory. Read only by offline tooling such as `compile`; the server receives bytes and identifies them by digest. |
 | `functions[].name` | Must be `<name>.<label>` — a plugin's functions live in its own namespace, which is what keeps them from colliding with a built-in or another plugin. |
 | `functions[].category` | Free text, defaulting to `transform`. |
 | `functions[].output_default_root` | `data`, `temp_data` or `metadata`: where the result lands when a task names no `output`. Absent means a task must name one. |
@@ -61,12 +61,8 @@ literal. `secret_at` does not exist, and a `{"secret": …}` node is refused at
 create time anywhere in a plugin task's input. A plugin never sees key
 material.
 
-Activating a version checks every active workflow that calls its functions
-against the schema it declares. A field renamed or newly required between
-versions is refused with a `409` naming the workflow, while the previous
-version keeps serving. A workflow can still reach the engine with an input its plugin's table
-refuses, through an import for example. It is quarantined when it loads, with
-the mismatch in the reason.
+A workflow whose plugin task input the deployed plugin's field table
+refuses is quarantined when it loads, with the mismatch in the reason.
 
 ## ABI
 
@@ -129,11 +125,8 @@ See [Metrics › Plugins](./metrics.md#plugins).
 
 ## Health
 
-`GET /plugins/{id}` reports this node's load state under `health`. The states
-are `loaded` (with the compile time), `failed` (with the stage and reason),
-`disabled` (the sandbox is off on this node) and `inactive`. The last means the
-version is not the one this node's generation carries. `/health` carries a `plugins`
-component that is `ok`, `degraded` when an active plugin did not load, or
+`/health` carries a `plugins`
+component that is `ok`, `degraded` when a deployed plugin did not load, or
 `disabled`. The admin-only detail lists every loaded version and every
 failure. The stages a failure names are `manifest`, `signature`, `artifact`,
 `compile`, `link`, `size` and `self_test`.
@@ -151,15 +144,15 @@ component digest**, configured under
 public_keys = ["MCowBQYDK2VwAyEA…"]   # raw 32-byte keys, base64
 ```
 
-When any key is configured, an upload must carry `signature`: the base64
+When any key is configured, a plugin definition must carry `signature`: the base64
 Ed25519 signature over the ASCII digest string (`sha256:<64 hex>`) by one of
 those keys. The digest is what is signed, not the bytes. A release
 pipeline therefore signs the identity every other surface already names and never needs
 the component in memory. An upload with no signature is refused at
 `signature` with `REQUIRED`; one that does not verify, with `INVALID`. The
-signature is stored on the version and **verified again by every node that
-loads it**. A row that arrived through an import on a node without keys, or
-a peer's activation, is checked by the node that runs it. One that fails
+signature is stored with the definition and **verified again by every node that
+loads it**. A definition uploaded to a node without keys is checked by each
+node that serves it. One that fails
 is a `signature` load issue that quarantines the workflows naming its
 functions. A node with no keys configured checks nothing and stores whatever
 the upload sent.
@@ -170,7 +163,6 @@ with the server's own digest and signing code:
 ```bash
 orion-server plugin keygen -o signer.pem          # prints the value for public_keys
 orion-server plugin sign plugin.toml --key signer.pem   # writes plugin.wasm.sig
-orion-cli plugins create -f plugin.toml --signature plugin.wasm.sig
 ```
 
 The equivalent OpenSSL pipeline signs the same message with the same
@@ -182,28 +174,21 @@ printf '%s' "$digest" | openssl pkeyutl -sign -rawin -inkey signer.pem | base64 
 openssl pkey -in signer.pem -pubout -outform DER | tail -c 32 | base64 -w0   # the value for public_keys
 ```
 
-`orion-cli plugins create --signature <file>` reads the base64 text from a
-file. Over the API, `signature` is a field of the JSON body or a part of the
-multipart form.
+Over the API, `signature` is a field of the plugin definition, beside
+`manifest` and `component` ([Definitions](./admin-api/deployments.md#definitions)).
 
-## Packages and offline tooling
+## Deployments and offline tooling
 
-A plugin is the fourth member of a [package](../concepts/packages.md).
-`package export` resolves every plugin function a selected workflow calls to
-the active version and digest serving it, and carries each under `plugins[]`.
-`GET /workflows/{id}/dependencies` reports the same set under `plugins`. With
-`--include-artifacts` the component travels inline. `apply` then installs and
-activates it on a target that has never seen it, before any workflow that
-calls it. Without the component the target must already hold the digest, and
-`plan` says so. A plugin the source no longer serves at that digest goes to
-`requires.plugins`, which `plan` checks the target has active.
-[`compile`](./cli/orion-server/compile.md) does the same for a `plugin.toml` in a
-definition set, inlining the component beside it.
+A plugin is a member of a deployment, like a workflow or a channel.
+[`compile`](./cli/orion-server/compile.md) writes a `plugin.toml` in a
+definition set as a plugin definition, with the component beside it inlined.
+`compile` writes no signature, so a target with `[plugins.trust]` keys needs
+the definition uploaded with its `signature` over the API.
 
 Offline, [`lint`](./cli/orion-server/lint.md), `clippy` and `compile` read the manifests in
 the set and in every `--plugin-dir`. They validate a plugin task's input
-against the manifest's field table exactly as the admin API validates it
-against the active plugin. A function of a plugin no manifest accounts for is
+against the manifest's field table exactly as the server validates it
+against the deployed plugin. A function of a plugin no manifest accounts for is
 reported as unverifiable: a note, never an error. Only the serving instance
 can answer for it. [`dry-run`](./cli/orion-server/dry-run.md) and
 [`test`](./cli/orion-server/test.md) go further. Given `--plugin-dir` with the components
@@ -234,7 +219,7 @@ rows are within a few percent of each other. Treat that as the shape of the
 answer, not the answer; the release record is.
 
 Two things move the number more than the sandbox does. A component compiles
-**once per digest per process**, on a blocking thread, when its version
+**once per digest per process**, on a blocking thread, when it
 loads, so that cost never sits on a request. And `max_live_instances` bounds
 how many invocations can be in flight at once across every function. A
 pool sized below the concurrency the node sees surfaces as
@@ -245,6 +230,5 @@ instantiation failures under load rather than as latency.
 - [Plugins](../concepts/plugins.md): why a plugin imports nothing, and what that buys.
 - [Write a plugin](../guides/extend/plugins.md): the SDK, the build, the upload and the first call.
 - [Configuration › Plugins](./configuration/plugins.md): the ceilings and the trust block, with defaults.
-- [Admin API › Plugins](./admin-api/plugins.md): every endpoint, with `curl` examples.
-- [Packages](../concepts/packages.md): how a plugin travels between instances.
+- [Deployment endpoints](./admin-api/deployments.md): storing a plugin definition and deploying it.
 

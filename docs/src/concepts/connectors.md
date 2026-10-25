@@ -35,7 +35,7 @@ Two workflows pointing at `payments-api` share one configured connection, one cr
 | `db` | PostgreSQL, MySQL, SQLite | `data_query`, `data_write`, `db_read`, `db_write` |
 | `cache` | Per-node process memory | `cache_read`, `cache_write` |
 
-One `db` type covers PostgreSQL, MySQL and SQLite; the connection-string scheme selects the backend. Connectors are unversioned. Unlike channels and workflows, an update replaces the stored config and the registry reloads at once. There is no draft step and no activation.
+One `db` type covers PostgreSQL, MySQL and SQLite; the connection-string scheme selects the backend. A deployed connector is a [connection revision](../reference/admin-api/deployments.md#connections). Each revision is immutable, so changing a connector means deploying a new revision.
 
 ## Secrets live outside the config
 
@@ -48,8 +48,8 @@ Any string field can hold a reference instead of a value:
 Orion resolves `env://` from the server's environment each time the connector loads. Three things follow, and they are the reason to always author connectors this way:
 
 - **The database never stores the credential**, so a database dump is not a credential leak.
-- **The same JSON works in every environment.** Dev, QA and production differ only in what the variable holds, which is what makes a connector [promotable](./packages.md).
-- **A connector holding a literal secret exports as `"******"` and is refused on import.** Masked values cannot round-trip, by design.
+- **The same JSON works in every environment.** Dev, QA and production differ only in what the variable holds, which is what makes a connector portable between instances.
+- **A connector holding a literal secret is refused by `compile`.** A deployment carries references only.
 
 `vault://` reads from HashiCorp Vault. Cloud secret-manager schemes are reserved: a reference using one without a live resolver is refused rather than passed through as a literal.
 
@@ -73,6 +73,6 @@ Breakers are off by default. Turn them on with `engine.circuit_breaker.enabled =
 ## Next steps
 
 - [Add your first connector](../get-started/tutorials/first-connector.md): configure one against PostgreSQL and use it from a workflow.
-- [Connector types](../reference/connectors/index.md): every field of every type, with defaults, gates, retries and masking rules.
+- [Connector types](../reference/connectors/index.md): every field of every type, with defaults, gates and retries.
 - [Portable data dialect](../reference/data-dialect.md): the backend-neutral query and write envelope, so switching databases is a connector change.
 - [Task functions](../reference/functions/index.md): the functions that call connectors, and their inputs.

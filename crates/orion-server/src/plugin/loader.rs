@@ -16,8 +16,7 @@ use dataflow_rs::program::{IssueCode, PathSeg};
 
 use crate::config::PluginsConfig;
 use crate::engine::{FunctionEntry, PluginBinding};
-use crate::storage::models::{Plugin, PluginHealth};
-use crate::storage::repositories::plugins::PluginRepository;
+use crate::storage::models::Plugin;
 
 use super::handler::{PluginFunction, PluginFunctionHandler};
 use super::limits::Limits;
@@ -99,41 +98,6 @@ impl PluginSet {
         self.plugins.iter().flat_map(|p| p.plugin_functions.iter())
     }
 
-    /// This node's account of one plugin version.
-    pub fn health_of(&self, plugin_id: &str, version: i64, enabled: bool) -> PluginHealth {
-        if let Some(p) = self
-            .plugins
-            .iter()
-            .find(|p| p.id == plugin_id && p.version == version)
-        {
-            return PluginHealth {
-                state: "loaded".to_string(),
-                compile_ms: Some(p.compile_ms),
-                reason: None,
-            };
-        }
-        if let Some(issue) = self
-            .issues
-            .iter()
-            .find(|i| i.plugin == plugin_id && i.version == version)
-        {
-            return PluginHealth {
-                state: if issue.stage == "disabled" {
-                    "disabled".to_string()
-                } else {
-                    "failed".to_string()
-                },
-                compile_ms: None,
-                reason: Some(format!("{}: {}", issue.stage, issue.reason)),
-            };
-        }
-        PluginHealth {
-            state: if enabled { "inactive" } else { "disabled" }.to_string(),
-            compile_ms: None,
-            reason: None,
-        }
-    }
-
     /// Attach the plugin reason to a load issue that names an unavailable
     /// function, so the quarantine message says which plugin and why.
     pub fn annotate(&self, reason: &mut String) {
@@ -189,14 +153,13 @@ impl PluginSet {
     }
 }
 
-/// Load every active row. `runtime` is `None` on a node with plugins
-/// disabled, which makes every row an issue rather than an abort: the
-/// estate stays observable and the workflows naming those functions are
-/// quarantined with the reason.
+/// Load every deployed plugin, its component from `components` by digest.
+/// `runtime` is `None` on a node with plugins disabled, which makes every
+/// row an issue rather than an abort: the estate stays observable and the
+/// workflows naming those functions are quarantined with the reason.
 pub async fn load_active(
     rows: Vec<Plugin>,
     components: &std::collections::HashMap<String, Vec<u8>>,
-    repo: &dyn PluginRepository,
     runtime: Option<&Arc<WasmRuntime>>,
     config: &PluginsConfig,
 ) -> PluginSet {
@@ -206,7 +169,7 @@ pub async fn load_active(
         ..PluginSet::default()
     };
     for row in rows {
-        match load_one(&row, components, repo, runtime, config).await {
+        match load_one(&row, components, runtime, config).await {
             Ok(loaded) => {
                 crate::metrics::record_plugin_load(
                     &row.plugin_id,
@@ -260,7 +223,6 @@ pub async fn load_active(
 async fn load_one(
     row: &Plugin,
     components: &std::collections::HashMap<String, Vec<u8>>,
-    repo: &dyn PluginRepository,
     runtime: Option<&Arc<WasmRuntime>>,
     config: &PluginsConfig,
 ) -> Result<LoadedPlugin, (&'static str, String)> {
@@ -273,10 +235,10 @@ async fn load_one(
         ));
     };
     // The upload's check, repeated by the node that will run the version:
-    // a row can reach the database through an import on a node with no
-    // keys, or a peer's activation, and this node's `[plugins.trust]` is the
-    // policy that applies here. Checked before the bytes are fetched — a
-    // signature that fails needs no compile to fail.
+    // a definition can be uploaded through a peer with no keys, and this
+    // node's `[plugins.trust]` is the policy that applies here. Checked
+    // before the component is compiled — a signature that fails needs no
+    // compile to fail.
     super::trust::verify(
         &config.trust.public_keys,
         &row.digest,
@@ -286,21 +248,13 @@ async fn load_one(
     let loaded = match runtime.cached(&row.digest) {
         Some(loaded) => loaded,
         None => {
-            // A deployed plugin's component rides in its definition; a row
-            // from the v1 tables names one in `plugin_artifacts`.
-            let bytes = match components.get(&row.digest) {
-                Some(bytes) => bytes.clone(),
-                None => repo
-                    .get_artifact(&row.digest)
-                    .await
-                    .map_err(|e| ("artifact", e.to_string()))?
-                    .ok_or_else(|| {
-                        (
-                            "artifact",
-                            format!("no component is stored under {}", row.digest),
-                        )
-                    })?,
-            };
+            // A deployed plugin's component rides in its definition.
+            let bytes = components.get(&row.digest).cloned().ok_or_else(|| {
+                (
+                    "artifact",
+                    format!("no component is deployed under {}", row.digest),
+                )
+            })?;
             let started = Instant::now();
             let loaded = runtime
                 .load(bytes)

@@ -1,6 +1,6 @@
 <!-- description: Four Orion services, each described in a sentence and deployed as JSON — with every block pulled from the example packages CI actually deploys and tests. -->
 <!-- type: tutorial -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Worked examples: prompt to service
 
@@ -15,14 +15,14 @@ Four services, each described in a sentence, generated as JSON, and deployed. Th
 
 ## Before you start
 
-Tested with Orion 1.12.0. You need Git, `curl`, Python 3, a POSIX shell (on Windows, WSL), and an Orion server on `http://localhost:8080`. The examples use the shipped packages, so start from a clone:
+Tested with Orion 1.12.0. You need Git, `curl`, `orion-server`, `orion-cli`, a POSIX shell (on Windows, WSL), and an Orion server on `http://localhost:8080`. The examples use the shipped packages, so start from a clone:
 
 ```bash
 git clone https://github.com/GoPlasmatic/Orion.git
 cd Orion
 ```
 
-Each example names the one command that creates its workflow and its channel and activates both. Running the `curl` before that command is the one guaranteed way to get a `404`: the endpoint does not exist until the channel does.
+Each example names the two commands that compile its package and deploy it. Running the `curl` before them is the one guaranteed way to get a `404`: the endpoint does not exist until a deployment carries the channel. A deployment is everything the node serves, so deploying the next example replaces the previous one.
 
 ## 1. Tiered order classification
 
@@ -45,7 +45,8 @@ discount, premium from 100 to 500 with 5%, standard below 100 with none.
 **Deploy and call it:**
 
 ```bash
-./examples/deploy.sh order-classification
+orion-server compile examples/packages/order-classification -o /tmp/order-classification
+orion-cli deployments apply -d /tmp/order-classification --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/order-tiers \
   -H 'Content-Type: application/json' \
@@ -76,7 +77,8 @@ warning.
 **Deploy and call it:**
 
 ```bash
-./examples/deploy.sh iot-sensor-alert
+orion-server compile examples/packages/iot-sensor-alert -o /tmp/iot-sensor-alert
+orion-cli deployments apply -d /tmp/iot-sensor-alert --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/sensors \
   -H 'Content-Type: application/json' \
@@ -106,7 +108,8 @@ fields.
 **Deploy and call it:**
 
 ```bash
-./examples/deploy.sh webhook-transform
+orion-server compile examples/packages/webhook-transform -o /tmp/webhook-transform
+orion-cli deployments apply -d /tmp/webhook-transform --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/webhooks \
   -H 'Content-Type: application/json' \
@@ -141,7 +144,8 @@ sends SMS only for high and critical.
 **Deploy and call it:**
 
 ```bash
-./examples/deploy.sh notification-routing
+orion-server compile examples/packages/notification-routing -o /tmp/notification-routing
+orion-cli deployments apply -d /tmp/notification-routing --yes
 
 curl -s -X POST http://localhost:8080/api/v2/data/notifications \
   -H 'Content-Type: application/json' \
@@ -169,4 +173,4 @@ What this shows is the `in` operator for set membership. It is also a progressiv
 - [Add your first connector](../../get-started/tutorials/first-connector.md): a connector-backed example, built by hand against a real database.
 - [Common workflow patterns](../patterns/workflow-patterns.md): the patterns behind these four.
 - [Test a workflow offline](../author/testing.md): the regression cases that hold them true.
-- [CI/CD with packages](../patterns/ci-cd.md): shipping them.
+- [CI/CD with deployments](../patterns/ci-cd.md): shipping them.

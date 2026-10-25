@@ -30,8 +30,8 @@ The example deploy script posts each file as it is, and the admin API refuses
 an uncompiled `$sql`. Compile the package and apply the artifact instead:
 
 ```bash
-orion-server compile examples/packages/sql-files --name sql-files --version content -o sql-files.json
-orion-server package apply -s http://localhost:8080 -f sql-files.json
+orion-server compile examples/packages/sql-files -o dist/sql-files
+orion-cli deployments apply -d dist/sql-files
 ```
 
 ## Try it

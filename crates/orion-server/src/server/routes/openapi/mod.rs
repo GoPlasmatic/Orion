@@ -10,10 +10,9 @@ use utoipa::{Modify, OpenApi};
 use crate::server::admin_auth::is_guarded_path;
 
 pub(crate) use schemas::{
-    BackupFile, BackupListItem, CircuitBreakerReset, CircuitBreakerStates, ConnectorExportItem,
-    ConnectorListItem, DataEnvelope, DlqPurgeResult, ErrorDetail, ErrorFieldDetail, ErrorResponse,
-    FunctionSchemaItem, HealthStatus, ImportResult, PaginatedEnvelope, TraceDetail,
-    TracePageEnvelope, WorkflowTestResult,
+    BackupFile, BackupListItem, CircuitBreakerReset, CircuitBreakerStates, DataEnvelope,
+    DlqPurgeResult, ErrorDetail, ErrorFieldDetail, ErrorResponse, FunctionSchemaItem, HealthStatus,
+    PaginatedEnvelope, TraceDetail, TracePageEnvelope,
 };
 
 /// The spec is generated without a config, so it has to pick one deployment
@@ -230,12 +229,10 @@ validation failures.",
     ),
     modifiers(&SecurityAddon),
     tags(
-        (name = "Channels", description = "Channel management"),
-        (name = "Workflows", description = "Workflow management"),
-        (name = "Connectors", description = "Connector management"),
-        (name = "Engine", description = "Engine control"),
+        (name = "Circuit Breakers", description = "Per-(channel, connector) circuit breakers: \
+            this node's states, and a reset that reaches every node"),
+        (name = "Engine", description = "What this node serves"),
         (name = "Functions", description = "Engine function schemas"),
-        (name = "Plugins", description = "WebAssembly plugins: sandboxed custom task functions"),
         (name = "Audit", description = "Admin audit-log history"),
         (name = "Traces", description = "Execution trace listing and polling"),
         (name = "Trace DLQ", description = "Dead-letter queue inspection, replay, and purge"),
@@ -272,61 +269,11 @@ validation failures.",
         super::v2_admin::authoring::authoring_scaffold,
         super::v2_admin::authoring::authoring_lint,
         super::v2_admin::authoring::authoring_pack,
-        // Channels
-        super::admin::channels::list_channels,
-        super::admin::channels::create_channel,
-        super::admin::channels::get_channel,
-        super::admin::channels::update_channel,
-        super::admin::channels::delete_channel,
-        super::admin::channels::change_channel_status,
-        super::admin::channels::list_channel_versions,
-        super::admin::channels::create_new_channel_version,
-        super::admin::channels::import_channels,
-        super::admin::channels::export_channels,
-        super::admin::channels::validate_channel,
-        // Plugins
-        super::admin::plugins::list_plugins,
-        super::admin::plugins::create_plugin,
-        super::admin::plugins::get_plugin,
-        super::admin::plugins::update_plugin,
-        super::admin::plugins::delete_plugin,
-        super::admin::plugins::change_plugin_status,
-        super::admin::plugins::list_plugin_versions,
-        super::admin::plugins::create_new_plugin_version,
-        super::admin::plugins::plugin_dependencies,
-        super::admin::plugins::import_plugins,
-        super::admin::plugins::export_plugins,
-        super::admin::plugins::validate_plugin,
-        // Workflows
-        super::admin::workflows::list_workflows,
-        super::admin::workflows::create_workflow,
-        super::admin::workflows::get_workflow,
-        super::admin::workflows::update_workflow,
-        super::admin::workflows::delete_workflow,
-        super::admin::workflows::change_workflow_status,
-        super::admin::workflows::update_rollout,
-        super::admin::workflows::list_workflow_versions,
-        super::admin::workflows::create_new_workflow_version,
-        super::admin::workflows::test_workflow,
-        super::admin::workflows::import_workflows,
-        super::admin::workflows::export_workflows,
-        super::admin::workflows::validate_workflow,
-        super::admin::workflows::workflow_dependencies,
-        // Connectors
-        super::admin::connectors::list_connectors,
-        super::admin::connectors::create_connector,
-        super::admin::connectors::get_connector,
-        super::admin::connectors::update_connector,
-        super::admin::connectors::delete_connector,
-        super::admin::connectors::list_circuit_breakers,
-        super::admin::connectors::reset_circuit_breaker,
-        super::admin::connectors::import_connectors,
-        super::admin::connectors::export_connectors,
-        super::admin::connectors::validate_connector,
-        super::admin::connectors::test_connector,
+        // Circuit breakers
+        super::admin::circuit_breakers::list_circuit_breakers,
+        super::admin::circuit_breakers::reset_circuit_breaker,
         // Engine
         super::admin::engine::engine_status,
-        super::admin::engine::engine_reload,
         // Response-cache namespaces (#354)
         super::admin::cache::invalidate_namespace,
         // Functions (A1: input-schema registry surfaced for tooling)
@@ -361,34 +308,11 @@ validation failures.",
     components(
         schemas(
             // R22/D28: only shapes an endpoint actually returns, and never a
-            // row struct. Row structs were registered here and `$ref`d by
-            // nothing — they described `condition_json` / `tasks_json` as
-            // strings, which no response carries. `ConnectorResponse` is the
-            // masked wire shape for a single connector; the `Connector` row it
-            // is built from carries the unmasked config and cannot be
-            // serialized at all.
-            crate::storage::models::ConnectorResponse,
-            crate::storage::repositories::workflows::CreateWorkflowRequest,
-            crate::storage::repositories::workflows::UpdateWorkflowRequest,
-            crate::storage::repositories::plugins::CreatePluginRequest,
-            crate::storage::repositories::plugins::UpdatePluginRequest,
-            crate::storage::models::PluginResponse,
-            crate::storage::models::PluginHealth,
-            super::admin::plugins::PluginDependencies,
-            crate::storage::repositories::workflows::StatusChangeRequest,
-            crate::storage::repositories::workflows::RolloutUpdateRequest,
-            crate::storage::repositories::channels::CreateChannelRequest,
-            crate::storage::repositories::channels::UpdateChannelRequest,
-            crate::storage::repositories::channels::ChannelStatusChangeRequest,
-            crate::storage::repositories::connectors::CreateConnectorRequest,
-            crate::storage::repositories::connectors::UpdateConnectorRequest,
+            // row struct.
             crate::storage::models::CronOccurrenceResponse,
             crate::storage::models::CronOccurrenceSummaryResponse,
             crate::storage::models::CronScheduleStatusResponse,
             super::admin::trace_dlq::PurgeTraceDlqRequest,
-            super::admin::ValidationEnvelope,
-            super::admin::workflows::WorkflowDependencies,
-            super::admin::workflows::ConnectorDependency,
             super::data::ProcessRequest,
             super::data::ProcessResponse,
             super::data::ProcessTaskError,

@@ -112,7 +112,7 @@ What it demonstrates, and what to copy into your own topology:
 ## Upgrade a compose deployment
 
 1. **Back up the database**: a SQLite volume snapshot, or your database's own tooling. See [Back up and restore](../maintain/backup-restore.md).
-2. **Read the version's upgrade guide** and run `orion-server preflight` with the new image against the old database. See [Upgrade an instance](../maintain/upgrades.md).
+2. **Read the version's upgrade guide** and run `orion-server lint` with the new image over the definition set you deploy. See [Upgrade an instance](../maintain/upgrades.md).
 3. **Bump the pinned tag** and, in a cluster, let the `migrate` service apply migrations before the replicas restart.
 4. **Restart one node at a time** so the load balancer always has a node to send to. With a single node there is a gap, which is the argument for the second one.
 

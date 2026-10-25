@@ -144,7 +144,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     definitions: Option<&Catalog>,
     secrets: &orion::engine::ResolvedSecrets,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
-    use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_json};
+    use orion::{engine::workflow_json, storage::models::CreateWorkflowRequest};
 
     let doc = read_expanded_workflow(workflow_path, definitions)?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
@@ -175,7 +175,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 
     // Build a synthetic Workflow row from the request to reuse the
     // existing dataflow conversion. Version + timestamps are placeholders.
-    let synthetic = orion::storage::repositories::workflows::synthetic_workflow(
+    let synthetic = orion::storage::models::synthetic_workflow(
         &req,
         req.workflow_id.as_deref().unwrap_or("dry-run"),
     )?;
@@ -245,7 +245,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 /// (see [`orion::engine::functions::stub`]); without one, any such task fails
 /// naming the stub that would satisfy it. Nothing reaches a real backend
 /// either way — this is the offline counterpart to
-/// `POST /workflows/{id}/test`, which runs against live connectors.
+/// `POST /definitions/test`, which runs against live connectors.
 /// How much of a run `dry-run` records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum DryRunTrace {

@@ -1,14 +1,14 @@
-<!-- description: The admin endpoints that are not an entity: engine status and reload, functions, audit logs, the trace DLQ, cron occurrences, backups and cache invalidation. -->
+<!-- description: The admin endpoints that read and drive a running instance: engine status, functions, audit logs, the trace DLQ, cron, backups and cache. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # Operational endpoints
 
-The endpoints that read and drive a running instance rather than its stored definitions.
+The endpoints that read and drive a running instance rather than what it is deployed with.
 
 | Page | Holds |
 |---|---|
-| [Engine](./engine.md) | engine status, and the hot reload. |
+| [Engine](./engine.md) | engine status: the generation served and what it could not load. |
 | [Functions](./functions.md) | the catalogue of task functions and their input schemas. |
 | [Audit logs](./audit-logs.md) | querying the row every admin mutation writes. |
 | [Trace DLQ](./trace-dlq.md) | listing, retrying and purging traces the async pipeline could not persist. |
@@ -20,5 +20,5 @@ The endpoints that read and drive a running instance rather than its stored defi
 
 - [Admin API](./index.md): every admin resource, and the contracts they share.
 - [Admin API conventions](./conventions.md): what holds for every one of them.
-- [Entity endpoints](./entities.md): the stored definitions these operate on.
+- [Deployment endpoints](./deployments.md): what the node serves.
 - [Run an instance](../../operate/index.md): the operator guides that use them.

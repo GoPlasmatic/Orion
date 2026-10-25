@@ -62,7 +62,7 @@ curl -s http://localhost:8080/api/v2/admin/connectors/circuit-breakers
 curl -s -X POST http://localhost:8080/api/v2/admin/connectors/circuit-breakers/{key}
 ```
 
-In cluster mode breakers trip per node. Each replica learns independently that a backend is down, while a reset fans out to every node over the config epoch. That asymmetry is deliberate. Tripping is an observation, and each node observes for itself; resetting is a decision, and you make it once.
+In cluster mode breakers trip per node. Each replica learns independently that a backend is down, while a reset reaches every node through the cluster's reconcile loop. That asymmetry is deliberate. Tripping is an observation, and each node observes for itself; resetting is a decision, and you make it once.
 
 ## Decide what a failing task does to the request
 

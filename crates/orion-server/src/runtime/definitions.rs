@@ -26,7 +26,7 @@ use crate::storage::models::{Channel, EntityStatus, Plugin, Workflow};
 /// floats and non-ASCII text that a workflow is made of.
 pub fn canonical_bytes(definition: &Definition) -> Result<Vec<u8>, OrionError> {
     let value = serde_json::to_value(definition)?;
-    Ok(crate::storage::content::canonical_json(&value).into_bytes())
+    Ok(crate::canonical::canonical_json(&value).into_bytes())
 }
 
 /// The definition stored as `bytes`, read strictly.

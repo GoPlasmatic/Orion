@@ -1,131 +1,80 @@
-<!-- description: Build your first Orion service by hand: create and activate a workflow and a channel in four administration calls, then call the endpoint and read the response. -->
+<!-- description: Build your first Orion service by hand: write a workflow and a channel, compile them into a deployment, apply it, then call the endpoint. -->
 <!-- type: tutorial -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Build your first service
 
-An Orion service is a workflow that says what to do and a channel that says where to reach it. This tutorial creates both against a running server, activates them, and calls the result. The `curl` and CLI form of every step sit side by side.
+An Orion service is a workflow that says what to do and a channel that says where to reach it. This tutorial writes both as files, deploys them to a running server, and calls the result.
 
 ## What you will learn
 
 - What a workflow and a channel each declare, and why they are two documents.
-- What the draft-then-activate lifecycle protects you from.
+- How a directory of definitions becomes a deployment the server serves.
 - How to read a data-plane response, and what its `id` is for.
-- How the CLI maps onto the admin API.
 
 ## Before you start
 
 Tested with Orion 1.12.0. You need:
 
 - an Orion server on `http://localhost:8080`, from [Install and run Orion](../install.md)
+- `orion-server` and `orion-cli` on your `PATH`
 - `curl` and a POSIX shell (on Windows, WSL)
 - `jq`, for the verification step
-- `orion-cli`, if you want the CLI tab of each step
 
-The service is smaller than the quickstart's: it adds one summary field to an incoming order. Every request body is complete as written, and the same files ship as [`examples/packages/order-summary/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/order-summary).
+The service is smaller than the quickstart's: it adds one summary field to an incoming order. Every file is complete as written, and the same files ship as [`examples/packages/order-summary/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/order-summary).
 
-<div class="asciinema-player" data-cast="casts/quickstart.cast"></div>
-<span class="asciinema-caption">The whole tutorial over plain HTTP. Click to play.</span>
+## 1. Write the workflow
 
-## 1. Create the workflow
+The workflow parses the incoming payload, then writes one new field derived from it. Two tasks, run in order. Save it as `order-summary/workflow.json`:
 
-The workflow parses the incoming payload, then writes one new field derived from it. Two tasks, run in order:
-
-<div class="tabs">
-<section data-tab="curl">
-
-```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/workflows \
-  -H "Content-Type: application/json" \
-  -d '{
-    "workflow_id": "order-summary",
-    "name": "Order Summary",
-    "condition": true,
-    "tasks": [
-      { "id": "parse", "name": "Parse", "function": {
-          "name": "parse_json", "input": { "source": "payload", "target": "req" }
-      }},
-      { "id": "summarize", "name": "Summarize", "function": {
-          "name": "map", "input": { "mappings": [
-            { "path": "data.req.summary", "logic": {
-              "cat": ["Order ", { "var": "data.req.order_id" }, ": $", { "var": "data.req.total" }]
-            }}
-          ]}
-      }}
-    ]
-  }'
+```json
+{
+  "workflow_id": "order-summary",
+  "name": "Order Summary",
+  "condition": true,
+  "tasks": [
+    { "id": "parse", "name": "Parse", "function": {
+        "name": "parse_json", "input": { "source": "payload", "target": "req" }
+    }},
+    { "id": "summarize", "name": "Summarize", "function": {
+        "name": "map", "input": { "mappings": [
+          { "path": "data.req.summary", "logic": {
+            "cat": ["Order ", { "var": "data.req.order_id" }, ": $", { "var": "data.req.total" }]
+          }}
+        ]}
+    }}
+  ]
+}
 ```
 
-</section>
-<section data-tab="CLI">
+## 2. Write the channel
 
-Save the JSON body from the `curl` tab as `workflow.json`, then:
+The channel is the endpoint. It names the route, the methods it answers, and the workflow it runs. Save it as `order-summary/channel.json`:
 
-```bash
-orion-cli workflows create -f workflow.json
+```json
+{
+  "channel_id": "order-summary",
+  "name": "order-summary",
+  "channel_type": "sync",
+  "protocol": "rest",
+  "route_pattern": "/order-summary",
+  "methods": ["POST"],
+  "workflow_id": "order-summary"
+}
 ```
 
-</section>
-</div>
+## 3. Compile and deploy
 
-The response carries `"status": "draft"`. A draft serves no traffic and never touches the running engine, so nothing you do here can affect a live endpoint.
-
-## 2. Activate the workflow
-
-Activation is a status change on the workflow you created:
-
-<div class="tabs">
-<section data-tab="curl">
+`compile` checks the directory the way the server would and writes it as a deployment directory. `deployments apply -d` uploads it and commits it as the server's next revision:
 
 ```bash
-curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/order-summary/status \
-  -H "Content-Type: application/json" -d '{"status": "active"}'
+orion-server compile order-summary -o dist/deployment
+orion-cli deployments apply -d dist/deployment
 ```
 
-</section>
-<section data-tab="CLI">
+`compile` prints `order-summary: 0 connector(s), 1 workflow(s), 1 channel(s) — 0 error(s), 0 warning(s)`. `apply` prints the plan first: `+ channel order-summary@1` and `+ workflow order-summary@1`. It asks before it commits; `--yes` skips the prompt.
 
-```bash
-orion-cli workflows activate order-summary
-```
-
-</section>
-</div>
-
-Activation triggers a hot reload: Orion builds a new engine and swaps it in. Requests in flight finish on the engine they started with, so nothing restarts and no traffic is dropped.
-
-## 3. Create and activate the channel
-
-The channel is the endpoint. It names the route, the methods it answers, and the workflow it runs:
-
-<div class="tabs">
-<section data-tab="curl">
-
-```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/channels \
-  -H "Content-Type: application/json" \
-  -d '{ "channel_id": "order-summary", "name": "order-summary", "channel_type": "sync",
-        "protocol": "rest", "route_pattern": "/order-summary",
-        "methods": ["POST"], "workflow_id": "order-summary" }'
-
-curl -s -X PATCH http://localhost:8080/api/v2/admin/channels/order-summary/status \
-  -H "Content-Type: application/json" -d '{"status": "active"}'
-```
-
-</section>
-<section data-tab="CLI">
-
-Save the JSON body from the `curl` tab as `channel.json`, then:
-
-```bash
-orion-cli channels create -f channel.json
-orion-cli channels activate order-summary
-```
-
-</section>
-</div>
-
-A channel can only be activated once its workflow is active, so an endpoint can never point at logic that is not serving.
+The server builds a new engine from the deployment and swaps it in. Requests in flight finish on the engine they started with, so nothing restarts and no traffic is dropped. A deployment is everything the node serves: anything an earlier deployment carried that this one does not shows as removed (`-`) in the plan.
 
 ## 4. Call it
 
@@ -156,7 +105,10 @@ Output, with an `id` that differs on every call:
 {
   "id": "019febae-d01f-7c31-b6f3-671a42a4a74e",
   "status": "ok",
-  "data": { "req": { "order_id": "ORD-42", "total": 125, "summary": "Order ORD-42: $125" } },
+  "data": {
+    "order_id": "ORD-42", "total": 125,
+    "req": { "order_id": "ORD-42", "total": 125, "summary": "Order ORD-42: $125" }
+  },
   "errors": []
 }
 ```
@@ -169,35 +121,25 @@ Two checks confirm the service is live, not only accepted:
 
 ```bash
 curl -s http://localhost:8080/health | jq '.workflows_loaded'
-orion-cli channels list
+curl -s http://localhost:8080/api/v2/admin/deployments | jq '{head_revision, applied_revision}'
 ```
 
-The health response reports `"workflows_loaded": 1`. That field counts what the running engine holds, so it moves only when an activation has reloaded the engine. A workflow created but never activated leaves it at `0`. `orion-cli channels list` shows `order-summary` as active with its workflow beside it.
-
-<div class="asciinema-player" data-cast="casts/cli-lifecycle.cast"></div>
-<span class="asciinema-caption">Create, activate, dry-run, then live traffic, with one tool. Click to play.</span>
+The health response reports `"workflows_loaded": 1`. That field counts what the running engine holds, so it moves only when a deployment has been built. The second shows the head revision and the revision this node has applied; they match once the node serves it.
 
 ## Clean up or run it again
 
-Re-running the create calls answers `409 CONFLICT`, because the identifiers exist. Calling the active endpoint again is always safe. To repeat the whole flow on the same instance, remove the channel before its workflow:
-
-```bash
-orion-cli channels delete order-summary --yes
-orion-cli workflows delete order-summary --yes
-```
-
-Deletion removes every stored version of both definitions. Keep them if you are continuing to the next tutorial.
+Re-running the same `apply` does nothing: the CLI reports the head as up to date. Calling the endpoint again is always safe. To take the service down, [roll back](../../reference/admin-api/deployments.md#rollback) to an earlier revision, or deploy a directory that does not carry it. Remove the files with `rm -ri order-summary dist`, or keep them if you are continuing to the next tutorial.
 
 ## Recap
 
-- A workflow is an ordered list of tasks; a channel binds a route to one workflow. They are separate documents because one workflow can serve several channels, and a channel can move between versions.
-- Everything is created as a draft. Only an active workflow can back an active channel, and only activation touches the engine.
+- A workflow is an ordered list of tasks; a channel binds a route to one workflow. They are separate documents because one workflow can serve several channels.
+- Definitions are files. `compile` turns a directory of them into a deployment, and only applying a deployment changes what the engine serves.
 - A data-plane response returns the finished data context plus an `id`, which is the trace of that run.
-- `orion-cli` is a thin client over the admin API: every command above is one of the `curl` calls.
+- `orion-cli deployments apply -d` is a thin client over the [deployment endpoints](../../reference/admin-api/deployments.md); the [quickstart](../quickstart.md) makes the same calls with `curl`.
 
 ## Next steps
 
 - [Add your first connector](./first-connector.md): the same shape of service, reading and writing a real PostgreSQL database.
-- [Test and promote a service](./test-and-promote.md): test this workflow offline, then ship it to a second instance as a versioned package.
-- [Packages](../../concepts/packages.md): keep the two definitions together as one versioned unit for source control and promotion.
+- [Test and deploy a service](./test-and-promote.md): test a workflow offline, then deploy it as one reviewed revision.
+- [Deployment endpoints](../../reference/admin-api/deployments.md): what `apply -d` does on the server, and how to roll back.
 - [Secure an instance](../../operate/run/security.md): the data plane you called does not authenticate; read this before anything you do not control can reach it.

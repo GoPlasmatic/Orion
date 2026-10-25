@@ -46,7 +46,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 
 use super::config::{HttpConnectorConfig, OAuth2ClientAuth, OAuth2Config, OAuth2Grant};
-use crate::storage::repositories::connectors::ConnectorRepository;
+use crate::storage::repositories::oauth_state::OAuthStateRepository;
 
 /// How long a token-endpoint rejection (`invalid_grant`, …) is answered from
 /// memory before the IdP is asked again.
@@ -73,7 +73,7 @@ pub struct OAuthRuntimeDeps {
     /// The shared engine client (SSRF-pinned, no auto-redirects).
     pub http_client: reqwest::Client,
     /// Where rotation state persists.
-    pub repo: Arc<dyn ConnectorRepository>,
+    pub repo: Arc<dyn OAuthStateRepository>,
     /// Cross-node single-flight for refresh-token rotation. `None` on a
     /// single node, where the per-connector mutex already serialises.
     pub lease: Option<Arc<crate::cluster::JobLeaseGate>>,

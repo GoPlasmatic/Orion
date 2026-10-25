@@ -34,10 +34,10 @@ listing never reads as a complete one.
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
-| `--limit <n>` | every `list`, and `workflows`/`channels versions` | Page size, clamped to 1–1000. |
+| `--limit <n>` | every `list` | Page size, clamped to 1–1000. |
 | `--offset <n>` | as above | Rows to skip. |
-| `--sort-by <col>` | `workflows`, `channels`, `connectors`, `traces` | Column to order by. The accepted columns differ per resource; see each command below. |
-| `--sort-order <dir>` | as above | `asc` or `desc`. Defaults to `desc` for the versioned lists (ordered by `priority`) and `asc` for connectors (ordered by `name`). |
+| `--sort-by <col>` | `traces list` | Column to order by: `created_at`, `updated_at`, `status`, `channel` or `mode`. |
+| `--sort-order <dir>` | `traces list` | `asc` or `desc`. |
 
 ## Environment variables
 

@@ -8,7 +8,7 @@ Orion is a declarative services runtime. You define what a service does as a JSO
 
 <div class="hero-logo">
   <img src="images/plasmatic-logo.png" alt="Plasmatic logo">
-  <p class="hero-sub">Post two JSON definitions, activate them, and the endpoint is live. No application server to write, build or restart.</p>
+  <p class="hero-sub">Deploy two JSON definitions and the endpoint is live. No application server to write, build or restart.</p>
 </div>
 
 ## Start here

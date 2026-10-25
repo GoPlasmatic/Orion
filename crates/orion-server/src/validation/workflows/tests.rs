@@ -8,9 +8,6 @@ fn registry() -> &'static FunctionRegistry {
 fn validate_create_workflow(req: &CreateWorkflowRequest, cap: i64) -> Result<(), OrionError> {
     super::validate_create_workflow(req, cap, registry())
 }
-fn validate_update_workflow(req: &UpdateWorkflowRequest, cap: i64) -> Result<(), OrionError> {
-    super::validate_update_workflow(req, None, cap, registry())
-}
 fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
     super::unresolvable_logic_warnings(tasks, None, registry())
 }
@@ -158,51 +155,6 @@ fn test_validate_create_workflow_long_description() {
     assert!(validate_create_workflow(&req, 10_000).is_err());
 }
 
-#[test]
-fn test_validate_update_workflow_all_fields() {
-    let req = UpdateWorkflowRequest {
-        name: Some("Updated Name".to_string()),
-        description: Some("Updated desc".to_string()),
-        priority: Some(5),
-        condition: None,
-        tasks: None,
-        tags: None,
-        loop_config: None,
-        continue_on_error: None,
-    };
-    assert!(validate_update_workflow(&req, 10_000).is_ok());
-}
-
-#[test]
-fn test_validate_update_workflow_invalid_name() {
-    let req = UpdateWorkflowRequest {
-        name: Some("".to_string()),
-        description: None,
-        priority: None,
-        condition: None,
-        tasks: None,
-        tags: None,
-        loop_config: None,
-        continue_on_error: None,
-    };
-    assert!(validate_update_workflow(&req, 10_000).is_err());
-}
-
-#[test]
-fn test_validate_update_workflow_invalid_description() {
-    let req = UpdateWorkflowRequest {
-        name: None,
-        description: Some("x".repeat(MAX_DESCRIPTION_LEN + 1)),
-        priority: None,
-        condition: None,
-        tasks: None,
-        tags: None,
-        loop_config: None,
-        continue_on_error: None,
-    };
-    assert!(validate_update_workflow(&req, 10_000).is_err());
-}
-
 /// One `log` step with this id.
 fn log_step(id: &str) -> serde_json::Value {
     serde_json::json!({"id": id, "name": id, "function": {"name": "log", "input": {"message": "x"}}})
@@ -219,39 +171,6 @@ fn create_with_loop(tasks: Value, loop_config: Value) -> CreateWorkflowRequest {
         tags: vec![],
         loop_config: Some(loop_config),
         continue_on_error: false,
-    }
-}
-
-fn update_of(tasks: Option<Value>, loop_config: Option<Value>) -> UpdateWorkflowRequest {
-    UpdateWorkflowRequest {
-        name: None,
-        description: None,
-        priority: None,
-        condition: None,
-        tasks,
-        tags: None,
-        loop_config,
-        continue_on_error: None,
-    }
-}
-
-/// A stored draft carrying these halves.
-fn stored_draft(tasks: &Value, loop_config: Option<&Value>) -> crate::storage::models::Workflow {
-    crate::storage::models::Workflow {
-        workflow_id: "wf".to_string(),
-        version: 1,
-        name: "Looping".to_string(),
-        description: None,
-        priority: 0,
-        status: "draft".to_string(),
-        rollout_percentage: 100,
-        condition_json: "true".to_string(),
-        tasks_json: tasks.to_string(),
-        tags_json: "[]".to_string(),
-        loop_json: loop_config.map(Value::to_string),
-        continue_on_error: false,
-        created_at: chrono::NaiveDateTime::default(),
-        updated_at: chrono::NaiveDateTime::default(),
     }
 }
 
@@ -298,46 +217,6 @@ fn a_loop_with_distinct_setup_ids_is_accepted() {
         serde_json::json!({"max": 2, "setup": [log_step("s1")]}),
     );
     assert!(validate_create_workflow(&req, 10_000).is_ok());
-}
-
-/// An update carrying only `tasks` keeps the stored loop, so the new body
-/// is checked against the stored setup steps.
-#[test]
-fn an_update_of_tasks_is_checked_against_the_stored_loop() {
-    let loop_config = serde_json::json!({"max": 2, "setup": [log_step("s1")]});
-    let stored = stored_draft(&serde_json::json!([log_step("t1")]), Some(&loop_config));
-    let req = update_of(Some(serde_json::json!([log_step("s1")])), None);
-    assert!(super::validate_update_workflow(&req, Some(&stored), 10_000, registry()).is_err());
-    // Without the stored draft the request alone is consistent.
-    assert!(validate_update_workflow(&req, 10_000).is_ok());
-}
-
-/// And the reverse: a loop-only update is checked against the stored body.
-#[test]
-fn an_update_of_the_loop_is_checked_against_the_stored_tasks() {
-    let stored = stored_draft(&serde_json::json!([log_step("t1")]), None);
-    let colliding = update_of(
-        None,
-        Some(serde_json::json!({"max": 2, "setup": [log_step("t1")]})),
-    );
-    assert!(
-        super::validate_update_workflow(&colliding, Some(&stored), 10_000, registry()).is_err()
-    );
-    let distinct = update_of(
-        None,
-        Some(serde_json::json!({"max": 2, "setup": [log_step("s1")]})),
-    );
-    assert!(super::validate_update_workflow(&distinct, Some(&stored), 10_000, registry()).is_ok());
-}
-
-/// `loop: null` removes the loop, so a stored setup step can no longer
-/// collide with anything.
-#[test]
-fn clearing_the_loop_drops_its_setup_steps_from_the_check() {
-    let loop_config = serde_json::json!({"max": 2, "setup": [log_step("t1")]});
-    let stored = stored_draft(&serde_json::json!([log_step("t0")]), Some(&loop_config));
-    let req = update_of(Some(serde_json::json!([log_step("t1")])), Some(Value::Null));
-    assert!(super::validate_update_workflow(&req, Some(&stored), 10_000, registry()).is_ok());
 }
 
 /// #351: neither `loop` nor `for_each` is parsed strictly, so a typo in

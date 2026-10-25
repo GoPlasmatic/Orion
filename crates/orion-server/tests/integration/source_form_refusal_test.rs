@@ -1,8 +1,9 @@
-//! The admin API names an uncompiled reference instead of its symptom (#295).
+//! A definition upload names an uncompiled reference instead of its symptom
+//! (#295).
 //!
 //! `$from` and `use` are resolved when a definition set is compiled, and the
-//! admin API compiles nothing — it takes one document with no set to resolve
-//! names against. That much is deliberate. What was not is how the refusal
+//! admin API compiles nothing — `POST /definitions` takes one document with no
+//! set to resolve names against. That much is deliberate. What was not is how the refusal
 //! read: the reference reached the function-input validator as literal JSON
 //! and was refused for the fields it would have supplied, so an author went
 //! looking for a typo that was not there.
@@ -10,20 +11,15 @@
 //! Each test below is one of the shapes that was confirmed broken before the
 //! fix, with the message it produced then in the comment.
 
-use crate::common::{self, body_json, json_request};
+use crate::common;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use tower::ServiceExt;
 
-/// `(status, code, path, message)` of the first field error.
-async fn post(uri: &str, body: Value) -> (StatusCode, Value) {
+/// Upload a v1-shaped workflow body as a workflow definition, answering the
+/// status and body.
+async fn upload(body: Value) -> (StatusCode, Value) {
     let app = common::test_app().await;
-    let resp = app
-        .oneshot(json_request("POST", uri, Some(body)))
-        .await
-        .unwrap();
-    let status = resp.status();
-    (status, body_json(resp).await)
+    common::deploy::try_upload(&app, common::deploy::workflow_definition(&body)).await
 }
 
 fn detail<'a>(body: &'a Value, path: &str) -> &'a Value {
@@ -39,22 +35,19 @@ fn detail<'a>(body: &'a Value, path: &str) -> &'a Value {
 /// `constants.db` would have supplied, and nothing naming `$from`.
 #[tokio::test]
 async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
-        json!({
-            "workflow_id": "probe", "name": "Probe",
-            "tasks": [
-                {"id": "t1", "name": "T1", "function": {"name": "map",
-                  "input": {"mappings": [{"path": "data.out", "logic": {"ok": true}}]}}},
-                {"id": "t2", "name": "T2", "function": {"name": "data_query",
-                  "input": {"$from": "constants.db", "query": {"source": "users"},
-                            "output": "temp_data.u"}}}]
-        }),
-    )
+    let (status, body) = upload(json!({
+        "workflow_id": "probe", "name": "Probe",
+        "tasks": [
+            {"id": "t1", "name": "T1", "function": {"name": "map",
+              "input": {"mappings": [{"path": "data.out", "logic": {"ok": true}}]}}},
+            {"id": "t2", "name": "T2", "function": {"name": "data_query",
+              "input": {"$from": "constants.db", "query": {"source": "users"},
+                        "output": "temp_data.u"}}}]
+    }))
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let d = detail(&body, "tasks[1].function.input");
+    let d = detail(&body, "definition.tasks[1].function.input");
     assert_eq!(d["code"], "UNCOMPILED_SOURCE");
     let message = d["message"].as_str().unwrap();
     assert!(
@@ -73,27 +66,24 @@ async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
         .iter()
         .map(|d| d["path"].as_str().unwrap())
         .collect();
-    assert_eq!(paths, vec!["tasks[1].function.input"], "{body}");
+    assert_eq!(paths, vec!["definition.tasks[1].function.input"], "{body}");
 }
 
 /// Before: `tasks[0].name REQUIRED` and `tasks[0].function.name REQUIRED` — a
 /// fragment call site looks to the validator like a task missing both.
 #[tokio::test]
 async fn a_use_step_is_named_not_its_missing_task_fields() {
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
-        json!({
-            "workflow_id": "probe", "name": "Probe",
-            "tasks": [
-                {"id": "_session", "use": "require-session", "with": {"deny_message": "x"}},
-                {"id": "t1", "name": "T1", "function": {"name": "map",
-                  "input": {"mappings": [{"path": "data.out", "logic": {"ok": true}}]}}}]
-        }),
-    )
+    let (status, body) = upload(json!({
+        "workflow_id": "probe", "name": "Probe",
+        "tasks": [
+            {"id": "_session", "use": "require-session", "with": {"deny_message": "x"}},
+            {"id": "t1", "name": "T1", "function": {"name": "map",
+              "input": {"mappings": [{"path": "data.out", "logic": {"ok": true}}]}}}]
+    }))
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let d = detail(&body, "tasks[0]");
+    let d = detail(&body, "definition.tasks[0]");
     assert_eq!(d["code"], "UNCOMPILED_SOURCE");
     let message = d["message"].as_str().unwrap();
     assert!(
@@ -108,20 +98,20 @@ async fn a_use_step_is_named_not_its_missing_task_fields() {
 /// wrote the literal `{"$from": …}` object into `data.out` at runtime.
 #[tokio::test]
 async fn a_from_deep_in_a_payload_is_refused_rather_than_stored() {
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
-        json!({
-            "workflow_id": "probe", "name": "Probe",
-            "tasks": [
-                {"id": "t1", "name": "T1", "function": {"name": "map",
-                  "input": {"mappings": [
-                    {"path": "data.out", "logic": {"$from": "errors.USER_NOT_FOUND"}}]}}}]
-        }),
-    )
+    let (status, body) = upload(json!({
+        "workflow_id": "probe", "name": "Probe",
+        "tasks": [
+            {"id": "t1", "name": "T1", "function": {"name": "map",
+              "input": {"mappings": [
+                {"path": "data.out", "logic": {"$from": "errors.USER_NOT_FOUND"}}]}}}]
+    }))
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let d = detail(&body, "tasks[0].function.input.mappings[0].logic");
+    let d = detail(
+        &body,
+        "definition.tasks[0].function.input.mappings[0].logic",
+    );
     assert_eq!(d["code"], "UNCOMPILED_SOURCE");
 }
 
@@ -132,23 +122,25 @@ async fn condition_and_loop_are_checked_as_well_as_tasks() {
     let task = json!({"id": "t", "name": "T", "function": {"name": "map",
         "input": {"mappings": [{"path": "data.ok", "logic": true}]}}});
 
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
+    let (status, body) = upload(
         json!({"workflow_id": "p1", "name": "P", "tasks": [task.clone()],
                "condition": {"$from": "constants.guard"}}),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(detail(&body, "condition")["code"], "UNCOMPILED_SOURCE");
+    assert_eq!(
+        detail(&body, "definition.condition")["code"],
+        "UNCOMPILED_SOURCE"
+    );
 
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
-        json!({"workflow_id": "p2", "name": "P", "tasks": [task],
-               "loop": {"$from": "constants.sweep"}}),
-    )
+    let (status, body) = upload(json!({"workflow_id": "p2", "name": "P", "tasks": [task],
+               "loop": {"$from": "constants.sweep"}}))
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(detail(&body, "loop")["code"], "UNCOMPILED_SOURCE");
+    assert_eq!(
+        detail(&body, "definition.loop")["code"],
+        "UNCOMPILED_SOURCE"
+    );
 }
 
 /// Before: `unknown field '$from', expected one of rate_limit, timeout_ms, …`
@@ -181,20 +173,17 @@ async fn a_channel_config_says_what_the_key_is_rather_than_offering_spellings() 
 /// must accept them.
 #[tokio::test]
 async fn a_payload_that_merely_resembles_a_reference_still_creates() {
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
-        json!({
-            "workflow_id": "lookalike", "name": "Lookalike",
-            "tasks": [{"id": "t", "name": "T", "function": {"name": "map",
-                "input": {"mappings": [
-                    {"path": "data.a", "logic": {"use": "cache"}},
-                    {"path": "data.b", "logic": {"tasks": [{"use": "nested"}]}},
-                    {"path": "data.c", "logic": {"$from": 5}},
-                    {"path": "data.d", "logic": {"$sql": 5}},
-                    {"path": "data.e", "logic": {"$use": 5}},
-                    {"path": "data.f", "logic": {"$each": "x"}}]}}}]
-        }),
-    )
+    let (status, body) = upload(json!({
+        "workflow_id": "lookalike", "name": "Lookalike",
+        "tasks": [{"id": "t", "name": "T", "function": {"name": "map",
+            "input": {"mappings": [
+                {"path": "data.a", "logic": {"use": "cache"}},
+                {"path": "data.b", "logic": {"tasks": [{"use": "nested"}]}},
+                {"path": "data.c", "logic": {"$from": 5}},
+                {"path": "data.d", "logic": {"$sql": 5}},
+                {"path": "data.e", "logic": {"$use": 5}},
+                {"path": "data.f", "logic": {"$each": "x"}}]}}}]
+    }))
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
@@ -203,17 +192,14 @@ async fn a_payload_that_merely_resembles_a_reference_still_creates() {
 /// the API names it rather than refusing the statement's absence.
 #[tokio::test]
 async fn a_sql_reference_is_named_by_uncompiled_source() {
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
-        json!({
-            "workflow_id": "sqlref", "name": "SQL ref",
-            "tasks": [{"id": "r", "name": "R", "function": {"name": "db_read",
-                "input": {"connector": "db", "query": {"$sql": "sql/read.sql"}}}}]
-        }),
-    )
+    let (status, body) = upload(json!({
+        "workflow_id": "sqlref", "name": "SQL ref",
+        "tasks": [{"id": "r", "name": "R", "function": {"name": "db_read",
+            "input": {"connector": "db", "query": {"$sql": "sql/read.sql"}}}}]
+    }))
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let d = detail(&body, "tasks[0].function.input.query");
+    let d = detail(&body, "definition.tasks[0].function.input.query");
     assert_eq!(d["code"], "UNCOMPILED_SOURCE");
     let message = d["message"].as_str().unwrap();
     assert!(message.contains("sql/read.sql"), "{message}");
@@ -223,24 +209,21 @@ async fn a_sql_reference_is_named_by_uncompiled_source() {
 /// each is named, where it sits, rather than stored as a literal key.
 #[tokio::test]
 async fn a_value_fragment_and_a_repetition_are_named() {
-    let (status, body) = post(
-        "/api/v2/admin/workflows",
-        json!({
-            "workflow_id": "sugar", "name": "Sugar",
-            "condition": {"$use": "positive", "with": {"field": "total"}},
-            "tasks": [{"$each": {"p": [0, 1]}, "do": {"id": "t{{p}}", "name": "T",
-                "function": {"name": "map", "input": {"mappings": []}}}}]
-        }),
-    )
+    let (status, body) = upload(json!({
+        "workflow_id": "sugar", "name": "Sugar",
+        "condition": {"$use": "positive", "with": {"field": "total"}},
+        "tasks": [{"$each": {"p": [0, 1]}, "do": {"id": "t{{p}}", "name": "T",
+            "function": {"name": "map", "input": {"mappings": []}}}}]
+    }))
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let condition = detail(&body, "condition");
+    let condition = detail(&body, "definition.condition");
     assert_eq!(condition["code"], "UNCOMPILED_SOURCE");
     assert!(
         condition["message"].as_str().unwrap().contains("positive"),
         "{condition}"
     );
-    let each = detail(&body, "tasks[0]");
+    let each = detail(&body, "definition.tasks[0]");
     assert_eq!(each["code"], "UNCOMPILED_SOURCE", "{body}");
     assert!(
         each["message"].as_str().unwrap().contains("$each"),

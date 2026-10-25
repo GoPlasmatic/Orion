@@ -1,11 +1,11 @@
 //! Multi-instance (HA) coordination runtime.
 //!
 //! One [`ClusterRuntime`] lives on `AppState`. With `cluster.enabled = false`
-//! (the default) there is no shared backend. Configuration reconciliation
-//! still runs so failed inline reloads can recover. When enabled it carries
-//! the default shared cache backend (over the state database), the
-//! [`ClusterRepository`] used for epoch/lease coordination, and the last
-//! epoch values this node has applied.
+//! (the default) there is no shared backend. Deployment reconciliation still
+//! runs so a failed inline build can recover. When enabled it carries the
+//! default shared cache backend (over the state database), the
+//! [`ClusterRepository`] used for breaker-reset and lease coordination, and
+//! the last breaker epoch this node has applied.
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
@@ -17,111 +17,12 @@ use crate::storage::DbPool;
 use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
 use crate::storage::repositories::shared_state::SqlSharedState;
 
-pub mod epoch_watcher;
 pub mod job_lease;
+pub mod reconcile;
 pub mod shared_store;
 
-pub use epoch_watcher::{reconcile_v2_state_once, start_cluster_tasks, start_v2_reconciler};
 pub use job_lease::JobLeaseGate;
-
-/// What a config-epoch bump changed, so a peer can size its resync.
-///
-/// The epoch used to be a bare counter. A node answering a bump had no idea
-/// what had moved, so it ran the widest resync there is: reload every
-/// connector and evict **every** cached SQL, MongoDB and cache pool. One
-/// workflow activation was therefore a fleet-wide reconnect storm — every node
-/// dropping every pooled connection for a change that touched no connector.
-///
-/// The scope rides in the same `UPDATE` as the counter, so a reader that sees
-/// the new epoch always sees the scope that goes with it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum EpochScope {
-    /// Republish the runtime generation. No connector reload and no
-    /// pool eviction: nothing about a workflow or a channel row changes which
-    /// connectors exist or what they point at.
-    Definitions,
-    /// A connector was created, updated, deleted or reloaded. Reload the
-    /// connector registry and evict the pools, because the endpoint or the
-    /// credentials behind a cached connection may now be wrong.
-    Connectors,
-    /// A plugin was activated, archived or deleted. Peers republish the
-    /// generation and compare the active plugin set's fingerprint, which is
-    /// what makes each compile locally only what changed. No connector
-    /// reload: a plugin row changes nothing about a connector.
-    Plugins,
-    /// Everything. The default, and what an unrecognised or absent scope
-    /// means — an older node's bump, or a value a newer node writes that this
-    /// one does not know. Reading an unknown scope as "resync everything"
-    /// is what keeps a mixed-version fleet correct: the cost is the storm
-    /// this type exists to avoid, never a missed change.
-    #[default]
-    All,
-}
-
-impl EpochScope {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Definitions => "definitions",
-            Self::Connectors => "connectors",
-            Self::Plugins => "plugins",
-            Self::All => "all",
-        }
-    }
-
-    /// Read a scope off the epoch row. Anything unrecognised — including the
-    /// empty string a pre-scope writer leaves — is [`Self::All`].
-    pub fn parse(raw: &str) -> Self {
-        match raw {
-            "definitions" => Self::Definitions,
-            "connectors" => Self::Connectors,
-            "plugins" => Self::Plugins,
-            _ => Self::All,
-        }
-    }
-
-    /// The scope a node at watermark `from` may narrow to when it applies
-    /// epoch `to`.
-    ///
-    /// Two conditions, and they are one requirement seen from either end: a
-    /// narrow scope is safe only when it accounts for **every** change the
-    /// resync it sizes is about to apply.
-    ///
-    /// * **The scope must be attributable to `to`.** `epoch_scope` is a
-    ///   *sticky* column: the writer sets it, and a writer that predates it
-    ///   leaves whatever the last writer put there. So a recognised scope is
-    ///   not on its own evidence that it describes *this* epoch — after any
-    ///   scope-aware bump, a 1.3.x node's bump advances the counter and leaves
-    ///   the earlier scope standing. `scope_at` is the epoch the scope was
-    ///   written for, so the two agreeing is what makes it this change's
-    ///   scope.
-    /// * **The scope must be the only one this advance covers** — `to` is
-    ///   exactly one past `from`. The row holds *one* scope, so a node two or
-    ///   more epochs behind has lost every scope but the last: the bumps in
-    ///   between overwrote each other, and it is applying all of them in one
-    ///   resync. Create a connector and activate the workflow that uses it —
-    ///   three bumps well inside one poll interval — and a peer reading the
-    ///   row once at the end sees only `definitions`, never reloads its
-    ///   connector registry, and runs the workflow against a connector it has
-    ///   never heard of.
-    ///
-    /// Everything else is [`Self::All`], which is the same answer
-    /// [`Self::parse`] gives an unknown value and for the same reason: a
-    /// scope that does not account for the whole advance must cost a wide
-    /// resync, never a missed change.
-    pub fn for_advance(from: i64, to: i64, scope_at: i64, raw: &str) -> Self {
-        if scope_at == to && to == from + 1 {
-            Self::parse(raw)
-        } else {
-            Self::All
-        }
-    }
-
-    /// Whether a peer answering this scope must reload the connector registry
-    /// and drop its cached pools.
-    pub fn touches_connectors(self) -> bool {
-        matches!(self, Self::Connectors | Self::All)
-    }
-}
+pub use reconcile::{reconcile_v2_state_once, start_cluster_tasks, start_v2_reconciler};
 
 pub struct ClusterRuntime {
     /// Mirrors `cluster.enabled`.
@@ -136,59 +37,11 @@ pub struct ClusterRuntime {
     pub shared: Option<SqlSharedState>,
     /// Default shared cache backend (dedup/response-cache) on that store.
     pub default_cache: Option<Arc<dyn CacheBackend>>,
-    /// Epoch/lease coordination repository (always present; harmless when
-    /// disabled — the epoch tables exist on every backend).
+    /// Breaker-reset/lease coordination repository (always present; harmless
+    /// when disabled — the tables exist on every backend).
     pub repo: Arc<dyn ClusterRepository>,
-    /// Highest committed config epoch this node has applied. An inline reload
-    /// marks only its next epoch, and only after success. A gap may contain a
-    /// peer's connector edit, so the watcher must reconcile it.
-    pub last_seen_epoch: AtomicI64,
     /// Highest breaker epoch this node has already applied.
     pub last_seen_breaker_epoch: AtomicI64,
-    /// A manual publication request failed to record its epoch. Entity
-    /// mutations roll back if their transactional notification fails.
-    /// Reported as `config_propagation` in cluster health.
-    propagation_degraded: std::sync::atomic::AtomicBool,
-}
-
-impl ClusterRuntime {
-    /// Mark only the next committed change applied. A gap includes peer
-    /// changes this node may not have loaded (in particular connectors).
-    pub fn record_config_applied(&self, epoch: i64) {
-        let _ = self.last_seen_epoch.compare_exchange(
-            epoch - 1,
-            epoch,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
-
-    /// Persist the intent of a manual reload before trying to build it.
-    /// Entity mutations use `AuditedWrite::commit_published` instead.
-    pub async fn request_config_reload(&self, scope: EpochScope) -> Result<i64, OrionError> {
-        use std::sync::atomic::Ordering;
-        match self.repo.bump_epoch(scope.as_str()).await {
-            Ok(epoch) => {
-                self.propagation_degraded.store(false, Ordering::Release);
-                Ok(epoch)
-            }
-            Err(error) => {
-                if self.enabled {
-                    self.propagation_degraded.store(true, Ordering::Release);
-                    crate::metrics::record_error("config_epoch_bump");
-                }
-                Err(error)
-            }
-        }
-    }
-
-    /// Whether a bump has failed since the last successful one — the
-    /// `config_propagation` component of `/health`. Always false outside
-    /// cluster mode, where there is nothing to propagate to.
-    pub fn propagation_degraded(&self) -> bool {
-        self.propagation_degraded
-            .load(std::sync::atomic::Ordering::Acquire)
-    }
 }
 
 impl From<&ClusterRuntime> for crate::channel::registry::ClusterBackends {
@@ -202,7 +55,7 @@ impl From<&ClusterRuntime> for crate::channel::registry::ClusterBackends {
 
 /// Build the cluster runtime. When enabled, the shared stores are built over
 /// `pool`, the state database the node has already connected; disabled, it
-/// has none. Either way it reads the current epochs.
+/// has none. Either way it reads the current breaker epoch.
 pub async fn init_cluster_runtime(
     config: &ClusterConfig,
     pool: &DbPool,
@@ -224,12 +77,9 @@ pub async fn init_cluster_runtime(
 
     let repo: Arc<dyn ClusterRepository> = Arc::new(SqlClusterRepository::new(pool.clone()));
 
-    // Seed last-seen epochs with the current DB values: this runs BEFORE the
-    // initial channel/workflow load, so anything already counted is included
-    // in that load, and any bump that lands after this read correctly
-    // triggers a watcher resync.
-    let row = repo.get_epoch().await?;
-    let (epoch, breaker_epoch) = (row.epoch, row.breaker_epoch);
+    // Seed the last-seen breaker epoch with the current DB value, so a reset
+    // requested before this node started is not replayed on it.
+    let breaker_epoch = repo.get_epoch().await?.breaker_epoch;
 
     Ok(Arc::new(ClusterRuntime {
         enabled: config.enabled,
@@ -237,129 +87,12 @@ pub async fn init_cluster_runtime(
         shared,
         default_cache,
         repo,
-        last_seen_epoch: AtomicI64::new(epoch),
         last_seen_breaker_epoch: AtomicI64::new(breaker_epoch),
-        propagation_degraded: std::sync::atomic::AtomicBool::new(false),
     }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::EpochScope;
-
-    /// The round trip a bump and a watcher make through the `epoch_scope`
-    /// column.
-    #[test]
-    fn a_scope_survives_the_column() {
-        for scope in [
-            EpochScope::Definitions,
-            EpochScope::Connectors,
-            EpochScope::Plugins,
-            EpochScope::All,
-        ] {
-            assert_eq!(EpochScope::parse(scope.as_str()), scope);
-        }
-    }
-
-    /// The rolling-deploy rule. A node running the previous release bumps the
-    /// epoch without writing a scope, and a future release may write one this
-    /// node has never heard of. Both must read as "resync everything": the
-    /// cost is the reconnect storm the scope exists to avoid, never a change
-    /// this node fails to apply.
-    #[test]
-    fn an_absent_or_unknown_scope_resyncs_everything() {
-        assert_eq!(EpochScope::parse(""), EpochScope::All);
-        assert_eq!(EpochScope::parse("something-newer"), EpochScope::All);
-        // A scope an earlier release wrote for a kind this one no longer has.
-        assert_eq!(EpochScope::parse("models"), EpochScope::All);
-        assert_eq!(EpochScope::default(), EpochScope::All);
-        assert!(EpochScope::All.touches_connectors());
-    }
-
-    /// The stickiness hazard. `epoch_scope` is sticky, so after any scoped
-    /// bump the column holds a *recognised* value forever. A node on the
-    /// previous release then bumps the counter and writes neither column,
-    /// leaving that value standing over an epoch it says nothing about — and
-    /// reading it at face value skips the connector reload the old node's
-    /// change actually needed.
-    #[test]
-    fn a_scope_left_over_from_an_earlier_epoch_is_not_trusted() {
-        // The scope-aware bump that wrote it: the two agree, so it counts.
-        assert_eq!(
-            EpochScope::for_advance(6, 7, 7, "definitions"),
-            EpochScope::Definitions
-        );
-        // A 1.3.x node then bumps 7 -> 8, touching neither scope column. The
-        // stale `definitions` must not answer for epoch 8.
-        assert_eq!(
-            EpochScope::for_advance(7, 8, 7, "definitions"),
-            EpochScope::All
-        );
-        // And it must stay untrusted however far behind it falls.
-        assert_eq!(
-            EpochScope::for_advance(98, 99, 7, "connectors"),
-            EpochScope::All
-        );
-    }
-
-    /// The coalescing hazard, and the reason a scope alone is not enough: the
-    /// row holds one scope, so a node more than one epoch behind is applying
-    /// bumps whose scopes were overwritten. Create a connector (`connectors`),
-    /// then activate the workflow that uses it (`definitions`, twice) — all
-    /// three inside one poll interval — and a peer that trusted the last scope
-    /// would rebuild its engine and never load the connector.
-    #[test]
-    fn an_advance_over_several_bumps_resyncs_everything() {
-        assert_eq!(
-            EpochScope::for_advance(0, 3, 3, "definitions"),
-            EpochScope::All
-        );
-        // Even when every bump in the span was in fact a connector bump: the
-        // row cannot say so, and a scope is only ever read as exhaustive.
-        assert_eq!(
-            EpochScope::for_advance(0, 3, 3, "connectors"),
-            EpochScope::All
-        );
-        // One step is one bump, which the row does describe.
-        assert_eq!(
-            EpochScope::for_advance(2, 3, 3, "connectors"),
-            EpochScope::Connectors
-        );
-    }
-
-    /// A row from before the column existed: `epoch_scope_at` defaults to 0,
-    /// which can only match an epoch of 0 — so every real epoch reads wide.
-    #[test]
-    fn a_row_predating_the_binding_column_resyncs_everything() {
-        assert_eq!(EpochScope::for_advance(0, 1, 0, ""), EpochScope::All);
-        assert_eq!(
-            EpochScope::for_advance(41, 42, 0, "connectors"),
-            EpochScope::All
-        );
-    }
-
-    /// `for_advance` narrows `parse`, it does not replace it: an unknown value
-    /// written for this very epoch is still the widest resync.
-    #[test]
-    fn an_unknown_scope_is_wide_even_when_it_matches_the_epoch() {
-        assert_eq!(
-            EpochScope::for_advance(2, 3, 3, "something-newer"),
-            EpochScope::All
-        );
-        assert_eq!(EpochScope::for_advance(2, 3, 3, ""), EpochScope::All);
-        assert_eq!(
-            EpochScope::for_advance(2, 3, 3, "connectors"),
-            EpochScope::Connectors
-        );
-    }
-
-    /// The whole point: a channel or workflow change must not drop a single
-    /// pooled connection anywhere in the fleet.
-    #[test]
-    fn a_definitions_change_leaves_the_connector_pools_alone() {
-        assert!(!EpochScope::Definitions.touches_connectors());
-        assert!(EpochScope::Connectors.touches_connectors());
-    }
     use super::*;
 
     async fn sqlite_pool() -> DbPool {

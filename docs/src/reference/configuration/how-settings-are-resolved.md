@@ -8,7 +8,7 @@ Three layers, in increasing precedence:
 
 ## Description
 
-One more `ORION_*` name is read but is **not** a config setting. `ORION_ADMIN_TOKEN` is the bearer token the [`orion-server package`](../cli/orion-server/package.md) subcommands send when calling a target instance's admin API. It carries no `__`, so the startup scan leaves it alone, like the `ORION_SERVER_URL` / `ORION_API_KEY` pair `orion-cli` reads.
+Some `ORION_*` names are read but are **not** config settings, such as the `ORION_SERVER_URL` / `ORION_API_KEY` pair `orion-cli` reads. They carry no `__`, so the startup scan leaves them alone.
 
 1. **Struct defaults**: everything on this page.
 2. **The config file**, passed with `-c`. Values may reference process environment variables two ways:

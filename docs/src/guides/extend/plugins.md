@@ -1,12 +1,12 @@
-<!-- description: Build an Orion plugin: write a pure JSON → JSON function in Rust with the SDK, describe it in a manifest, test it offline, upload it, and promote it. -->
+<!-- description: Build an Orion plugin: write a pure JSON → JSON function in Rust with the SDK, describe it in a manifest, test it offline, and deploy it. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-19 -->
 
 # Build a plugin
 
-A plugin adds a task function without a release of Orion: a WebAssembly component that takes a task's evaluated `input` as JSON and returns JSON. The workflow writes that value wherever its `output` says. This guide is the build, from the decision to the promotion.
+A plugin adds a task function without a release of Orion: a WebAssembly component that takes a task's evaluated `input` as JSON and returns JSON. The workflow writes that value wherever its `output` says. This guide is the build, from the decision to the deployment.
 
-The sandbox imports nothing: no filesystem, clock, randomness, sockets, connectors or secrets. A plugin can only compute. That is the whole reason it can be uploaded to a running instance by the same credential that edits workflows. [Plugins](../../concepts/plugins.md) is the concept page.
+The sandbox imports nothing: no filesystem, clock, randomness, sockets, connectors or secrets. A plugin can only compute. That is the whole reason it can be deployed to a running instance by the same credential that deploys workflows. [Plugins](../../concepts/plugins.md) is the concept page.
 
 ## Before you start
 
@@ -130,18 +130,18 @@ orion-server test ./cases --plugin-dir ./plugin
 
 `lint` needs only the manifest. It checks a task's input against it exactly as the admin API does: a missing required field, a wrong kind, an undeclared field. A case that names a function whose component is not beside its manifest fails as `PLUGIN_ARTIFACT_UNAVAILABLE`, never as a silently passing stub. [Test a workflow offline](../author/testing.md) covers the case format.
 
-## 6. Upload and activate it
+## 6. Deploy it
 
-Create the plugin from its manifest, then activate it:
+A plugin deploys with the workflows that call it. Put `plugin.toml` and the component it names in the definition set, and compile it:
 
 ```bash
-orion-cli plugins create -f plugin.toml --tag codecs
-orion-cli plugins activate acme.fixedwidth
+orion-server compile ./definitions -o dist/deployment
+orion-cli deployments apply -d dist/deployment
 ```
 
-The upload validates the manifest, hashes the component, compiles it and probes every declared function before the draft exists. A draft is therefore already known to load. Activation rebuilds the engine, and the functions join the catalogue; a workflow may name them from then on.
+`compile` writes the plugin as one definition, with its manifest and its component inlined as base64. The server validates it the way a node loads it before storing it. Once the deployment is applied, the functions join the catalogue. The node needs `plugins.enabled = true`; without it, the workflows that call the plugin are quarantined on that node.
 
-A new version is a new upload against a new draft (`orion-cli plugins new-version`, then `update`), and activating it supersedes the previous version in one transaction. Activation is refused while an active workflow calls one of the version's functions with an input its schema no longer accepts. A renamed field cannot quarantine a running workflow. Archiving is refused while any active workflow calls the plugin at all.
+A new plugin version is a new component, so it is a new definition digest and a new deployment revision. Plan it first: [`orion-cli deployments plan -d`](../../reference/admin-api/deployments.md#deploy-a-compiled-directory) shows the plugin as changed, and commits nothing.
 
 ## Verify
 
@@ -152,18 +152,6 @@ orion-cli functions list --output json | jq '.data[] | select(.source == "plugin
 ```
 
 Each function appears with `source: "plugin"` and the field table the manifest declared.
-
-## 7. Promote it
-
-A plugin is a member of a [package](../../concepts/packages.md). Export with the component inlined, and the target installs it before the workflow that calls it:
-
-```bash
-orion-server package export -s https://dev.orion.internal --tag codecs \
-  --name statements --version 1.0.0 --include-artifacts -o statements.json
-orion-server package apply -s https://prod.orion.internal -f statements.json
-```
-
-Or compile from source form: a `plugin.toml` in a definition set is compiled into the artifact the same way. [Promote between environments](../../operate/maintain/promotion.md) has the order `apply` runs in.
 
 ## What the host promises, and does not
 

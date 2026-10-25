@@ -18,13 +18,6 @@ pub struct EngineCmd {
 enum EngineSubcommand {
     /// Show engine status (version, uptime, workflow and channel counts)
     Status,
-    /// Hot-reload the engine to apply workflow and channel changes
-    #[command(
-        long_about = "Hot-reload the engine to apply workflow and channel changes without server restart.\n\n\
-            Required after creating, updating, activating, or archiving workflows and channels.\n\
-            Changes are not active until this command is run."
-    )]
-    Reload,
 }
 
 impl EngineCmd {
@@ -33,11 +26,9 @@ impl EngineCmd {
         client: &OrionClient,
         format: &OutputFormat,
         quiet: bool,
-        yes: bool,
     ) -> Result<i32> {
         match &self.command {
             EngineSubcommand::Status => status(client, format, quiet).await,
-            EngineSubcommand::Reload => reload(client, quiet, yes).await,
         }
     }
 }
@@ -119,25 +110,4 @@ fn print_load_issues(resp: &Value) {
     for line in lines {
         println!("    {line}");
     }
-}
-
-async fn reload(client: &OrionClient, quiet: bool, yes: bool) -> Result<i32> {
-    if !utils::confirm("Reload engine?", yes)? {
-        println!("Cancelled.");
-        return Ok(0);
-    }
-
-    let resp: Value = client.post_empty(paths::ENGINE_RELOAD).await?;
-    let resp = resp.get("data").cloned().unwrap_or(resp);
-
-    if !quiet {
-        let workflows = resp["workflows_count"].as_u64().unwrap_or(0);
-        println!(
-            "{} Engine reloaded with {workflows} workflow(s)",
-            "OK".green().bold()
-        );
-        print_load_issues(&resp);
-    }
-
-    Ok(0)
 }

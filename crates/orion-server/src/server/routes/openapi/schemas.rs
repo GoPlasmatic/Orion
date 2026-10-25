@@ -25,13 +25,6 @@ pub(crate) use orion_api::{
     ErrorBody as ErrorDetail, ErrorEnvelope as ErrorResponse, FieldError as ErrorFieldDetail,
 };
 
-// Result of a bulk import (R18, K2). This used to be a schema-only mirror of
-// what `import_response` built with `json!`; the shared `orion-api` type is
-// now both the runtime shape and the published schema, so the mirror is gone
-// and the two cannot drift. Re-exported so `#[utoipa::path]` bodies keep
-// referencing it by its old path.
-pub(crate) use orion_api::ImportResult;
-
 // ============================================================
 // Response envelopes (R17 shape, R22 schemas)
 // ============================================================
@@ -40,7 +33,7 @@ pub(crate) use orion_api::ImportResult;
 ///
 /// Generic so each resource gets a described response without a hand-written
 /// wrapper struct per endpoint. utoipa inlines the type parameter, so
-/// `DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44
+/// `DataEnvelope<CronOccurrenceResponse>` publishes the full shape. Before R22, 44
 /// of the 48 2xx responses had no `content` block at all.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct DataEnvelope<T> {
@@ -60,66 +53,6 @@ pub(crate) struct PaginatedEnvelope<T> {
     pub(crate) limit: i64,
     #[allow(dead_code)]
     pub(crate) offset: i64,
-}
-
-/// One row of `GET /api/v2/admin/connectors`: the stored connector with
-/// secrets masked, plus the registry's view of whether it actually loaded.
-///
-/// Declared separately from [`crate::storage::models::ConnectorResponse`]
-/// because `PaginatedEnvelope<ConnectorResponse>` would under-describe the row
-/// by exactly the three fields an operator reads the list for.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct ConnectorListItem {
-    id: String,
-    name: String,
-    connector_type: String,
-    /// Connector config with every secret replaced by `******`, verbatim.
-    config_json: String,
-    /// The same masked config, parsed — the shape `POST`/`PUT` accept.
-    config: serde_json::Value,
-    enabled: bool,
-    /// Selection labels; filter the list with `?tag=`.
-    tags: Vec<String>,
-    /// `sha256:…` over the canonical importable content.
-    content_hash: String,
-    created_at: String,
-    updated_at: String,
-    /// `loaded`, `failed`, or `disabled`.
-    #[schema(example = "loaded")]
-    load_status: String,
-    /// Why the connector failed to load. Present only when
-    /// `load_status = "failed"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    load_error: Option<String>,
-    /// Which load stage failed. Present only when `load_status = "failed"`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    load_error_stage: Option<String>,
-}
-
-/// One item of `GET /api/v2/admin/connectors/export`.
-///
-/// Declared separately from [`crate::storage::models::ConnectorResponse`]
-/// because an export has to emit the shape `/import` *accepts*, not the shape
-/// the read endpoints return: `config` is the parsed object here, where the
-/// read shape carries `config_json` as a string. Publishing the read type for
-/// this route promised three fields the body does not carry (`config_json`,
-/// `created_at`, `updated_at`) and hid the one it does.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct ConnectorExportItem {
-    id: String,
-    name: String,
-    connector_type: String,
-    /// The parsed connector config, with every secret replaced by `******`.
-    /// `env://`-style references survive the masking as references.
-    config: serde_json::Value,
-    enabled: bool,
-    /// Selection labels; filter the export with `?tag=`.
-    tags: serde_json::Value,
-    /// `sha256:…` over the canonical importable content, computed on the
-    /// stored (unmasked) config. Ignored by `/import`, like the other extras.
-    content_hash: String,
 }
 
 /// `GET /api/v2/admin/connectors/circuit-breakers`.
@@ -144,8 +77,8 @@ pub(crate) struct CircuitBreakerReset {
     reset: bool,
     key: String,
     /// Whether the breaker existed on the node that served the request.
-    /// Breakers are node-local; in cluster mode the reset is broadcast over
-    /// the epoch bus regardless, so `false` here is not a failure.
+    /// Breakers are node-local; in cluster mode the reset reaches every node
+    /// regardless, so `false` here is not a failure.
     found_on_this_node: bool,
 }
 

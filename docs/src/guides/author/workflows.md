@@ -40,7 +40,7 @@ Everything downstream then reads `data.order.*`. The examples on this page use t
 Paths are created if they do not exist. Order matters: a mapping can read what an earlier task wrote.
 
 > [!WARNING]
-> A misspelled operator is not an error. `{"catt": [...]}` is not a mis-typed `cat`; it is a literal object, and it lands at the target path verbatim. Inside a condition, that literal is truthy, so the condition always fires. Check names against [Expression language](../../reference/expressions.md) and dry-run before you activate.
+> A misspelled operator is not an error. `{"catt": [...]}` is not a mis-typed `cat`; it is a literal object, and it lands at the target path verbatim. Inside a condition, that literal is truthy, so the condition always fires. Check names against [Expression language](../../reference/expressions.md) and dry-run before you deploy.
 
 ## Branch with conditions
 
@@ -117,11 +117,11 @@ All of them resolve before validation, so `lint`, `dry-run` and `test` all check
 To deploy a set that uses either, compile it first. The admin API takes one document and has no set to resolve names against, so it refuses a reference rather than guessing:
 
 ```bash
-orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json
-orion-server package apply -s https://prod.orion.internal -f dist/package.json
+orion-server compile ./definitions -o dist/deployment
+orion-cli --server https://prod.orion.internal deployments apply -d dist/deployment
 ```
 
-See [`compile`](../../reference/cli/orion-server/compile.md) for the other output formats.
+See [`compile`](../../reference/cli/orion-server/compile.md) for what the directory holds.
 
 ## Reach outside the process
 

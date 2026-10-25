@@ -83,4 +83,3 @@ contains one, because the static list of targets cannot be complete:
 - [Author a workflow](../../guides/author/workflows.md): composing pipelines out of tasks.
 - [Task functions](./index.md): the whole catalogue, and each function's retry safety.
 - [Common workflow patterns](../../guides/patterns/workflow-patterns.md): composition and fan-out shapes in practice.
-- [Admin API › Workflows](../admin-api/workflows.md): the dependencies endpoint that lists a workflow's targets.

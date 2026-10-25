@@ -103,7 +103,7 @@ Every `error.code` the server emits, on both the admin and data planes:
 | `FORBIDDEN` | 403 | Access denied — a read-only admin key on a mutating method, an `Origin` outside a channel's `origin_allow_list`, or a `channel_call` relaying a target channel's 403. A channel **auth** failure is `UNAUTHORIZED` above |
 | `NOT_FOUND` | 404 | Resource not found |
 | `METHOD_NOT_ALLOWED` | 405 | The path exists but not for this HTTP method |
-| `CONFLICT` | 409 | Duplicate or conflicting state: a second draft, an import collision, an idempotency-key replay, or a database unique/foreign-key constraint a workflow did not catch (see [integrity violations](./workflows.md#integrity-violations)) |
+| `CONFLICT` | 409 | Duplicate or conflicting state: a stale deployment head, a connection revision reused with different content, an idempotency-key replay, or a database unique/foreign-key constraint a workflow did not catch (see [integrity violations](./workflows.md#integrity-violations)) |
 | `PAYLOAD_TOO_LARGE` | 413 | The request body exceeded `ingest.max_payload_size` (data plane) or `server.max_admin_body_size` (admin plane) — the caller's to fix, unlike `RESPONSE_TOO_LARGE` |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
 | `RATE_LIMITED` | 429 | The caller exceeded a rate limit. The response carries a `Retry-After` header |
@@ -173,25 +173,24 @@ The complete vocabulary. It is closed: a code outside this table is a bug. A dri
 
 The same mistake can surface as `body.protocol` or `channel.protocol` depending on whether it was a parse failure or a validation failure. Match on the last segment to treat both alike.
 
-The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
+The same envelope is returned by `POST /api/v2/admin/definitions`, `POST /api/v2/admin/definitions/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
 
 ## Validation warnings
 
-`POST /workflows/validate` returns `{ "valid", "errors", "warnings" }`. `valid` reflects `errors` only. It means "`POST /workflows` would accept this", so a workflow can be valid and still carry warnings. These are reported:
+`orion-server lint` reports warnings beside its errors. Only errors refuse a workflow, so a workflow can be valid and still carry warnings. These are reported:
 
 | Warning | Meaning |
 |---|---|
-| `Connector '…' not found in registry` | The task names a connector that does not exist yet. Not an error at create time (connectors and workflows may be authored in either order), but **activation refuses it**. |
 | `reads '…', which no earlier task writes` | A `data.*` path read by a task that no earlier task writes. |
 | `… is JSONLogic in a field nothing evaluates` | An operator node in a connector-payload field, which folds `{"var": …}` and nothing else — so the expression is stored or sent verbatim. |
 | `… emits '…' with one '$' stripped` | A `$`-prefixed key in a template position. The engine strips one `$` from every such key, so a `{"$set": …}` update document composed in a `map` goes out as `{"set": …}`. Double the prefix (`$$set`) to emit the `$`. |
 | `a failing rule here records status 400 and task '…' still runs` | A [`validation`](./functions/validation.md) whose failure stops nothing: `4xx` warns and carries on, and `on_failure` governs `5xx` only. Add [`"on_rejection": "halt"`](./workflows.md#halting-on-a-rejection), or gate what follows. |
 
-The last three are the engine's own findings, reported wherever a workflow is checked: this endpoint, `orion-server lint`, `orion-server clippy`, the definition-set check and `preflight`. Each carries a stable id there ([`lint`](./cli/orion-server/lint.md)); here they arrive as warnings like any other.
+The last three are the engine's own findings, reported wherever a workflow is checked: `orion-server lint`, `orion-server clippy` and the definition-set check. Each carries a stable id there ([`lint`](./cli/orion-server/lint.md)); here they arrive as warnings like any other.
 
-The second warning exists because the failure it predicts is invisible at runtime. JSONLogic resolves an unknown `var` to null. A mistyped path therefore leaves the task running, the workflow succeeding, and the caller receiving a `200` with the field quietly missing.
+The `reads '…'` warning exists because the failure it predicts is invisible at runtime. JSONLogic resolves an unknown `var` to null. A mistyped path therefore leaves the task running, the workflow succeeding, and the caller receiving a `200` with the field quietly missing.
 
-It is advisory in both directions. Writes are tracked from `parse_json` and `parse_xml` targets, `map` mapping paths, and connector `output` paths. They are matched by prefix: writing `data.order` covers a read of `data.order.total`. Reads of `metadata.*`, `payload`, and the element rebinding inside `map` and `reduce` bodies are out of scope and never warn. A value that legitimately arrives another way, such as a connector response shape or a `continue_on_error` predecessor, can still be flagged. That is why it never blocks creation.
+It is advisory in both directions. Writes are tracked from `parse_json` and `parse_xml` targets, `map` mapping paths, and connector `output` paths. They are matched by prefix: writing `data.order` covers a read of `data.order.total`. Reads of `metadata.*`, `payload`, and the element rebinding inside `map` and `reduce` bodies are out of scope and never warn. A value that legitimately arrives another way, such as a connector response shape or a `continue_on_error` predecessor, can still be flagged. That is why it never blocks a workflow.
 
 ## Message sanitization (`verbose_errors`)
 

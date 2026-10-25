@@ -26,7 +26,7 @@ Calls REST APIs and webhooks through [`http_call`](../functions/http_call.md).
 | `url` | string or reference | yes | — | Base URL for every request through this connector. An `env://` reference is scheme-checked when it resolves at load |
 | `method` | string | no | `""` | Default HTTP method when the task sets none |
 | `headers` | object | no | `{}` | Default headers for every request — see [Header precedence](./request-layering.md#header-precedence) |
-| `query_params` | object | no | `{}` | Query parameters appended to every request — see [Query-parameter precedence](./request-layering.md#query-parameter-precedence). Values are secret-resolvable and masked on reads |
+| `query_params` | object | no | `{}` | Query parameters appended to every request — see [Query-parameter precedence](./request-layering.md#query-parameter-precedence). Values are secret-resolvable; write a secret one as a reference |
 | `auth` | object | no | — | [Authentication](./authentication.md): `bearer`, `basic`, `apikey`, or managed [`oauth2`](./authentication.md#managed-oauth2) |
 | `retry` | object | no | `{"max_retries": 3, "retry_delay_ms": 1000}` | Retry policy — see [Retries](./reliability.md#retries) |
 | `retry_non_idempotent` | boolean | no | `false` | Also retry POST and PATCH — see [Retries](./reliability.md#retries) |

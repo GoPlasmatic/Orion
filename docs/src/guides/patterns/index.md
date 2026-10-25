@@ -1,4 +1,4 @@
-<!-- description: Reusable workflow patterns and the integrations around them: scheduled work, CI/CD with packages, and the Orion Console over the admin API. -->
+<!-- description: Reusable workflow patterns and the integrations around them: scheduled work, CI/CD with deployments, and the Orion Console over the admin API. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -8,5 +8,5 @@ The first page here is the shapes most workflows are built from. The rest are th
 
 - [Common workflow patterns](./workflow-patterns.md) states seven shapes, each with the problem it solves and the mistake it prevents: parse first, exclusive branches, in-process composition, one call per element, and more.
 - [Run work on a schedule](./scheduled-workflows.md) binds a six-field schedule to a workflow, with misfire policies, non-overlapping runs, and a ledger of what ran.
-- [CI/CD with packages](./ci-cd.md) is a three-stage pipeline: prove the logic offline, plan against the target with no writes, then apply the same versioned artifact.
+- [CI/CD with deployments](./ci-cd.md) is a three-stage pipeline: prove the logic offline, plan against the target, then apply the compiled deployment.
 - [Use the Orion Console](./console.md) is the operations console over the admin API: dashboards, the System Map, trace drill-downs and a Data Console.

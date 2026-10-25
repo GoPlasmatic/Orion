@@ -36,16 +36,12 @@ pub struct Workflow {
     pub rollout_percentage: i64,
     pub condition_json: String,
     pub tasks_json: String,
-    /// JSON array of tag strings. Named for the column, not for the
-    /// `tags` field the admin API publishes — that lives on
-    /// [`super::dto::WorkflowResponse`] and is a `Value`, already decoded.
+    /// JSON array of tag strings, still encoded.
     pub tags_json: String,
     /// The engine-managed loop over this workflow's task list, stored as the
     /// `LoopConfig` object verbatim — `{counter, init, increment, max}` — or
-    /// `None` for a workflow that runs its tasks exactly once. Nullable
-    /// because absent and empty are different statements, and because a
-    /// stored `NULL` keeps the [`content_hash`](crate::storage::content)
-    /// projection identical to what it was before the column existed.
+    /// `None` for a workflow that runs its tasks exactly once. Optional
+    /// because absent and empty are different statements.
     pub loop_json: Option<String>,
     pub continue_on_error: bool,
     pub created_at: NaiveDateTime,
@@ -117,9 +113,8 @@ pub struct Channel {
     pub description: Option<String>,
     pub channel_type: String,
     pub protocol: String,
-    /// JSON array of HTTP method names, `None` for non-REST channels. Named
-    /// for the column; the admin API's `methods` field lives on
-    /// [`super::dto::ChannelResponse`].
+    /// JSON array of HTTP method names, still encoded; `None` for non-REST
+    /// channels.
     pub methods_json: Option<String>,
     pub route_pattern: Option<String>,
     pub topic: Option<String>,
@@ -144,9 +139,7 @@ impl Channel {
     /// This is the rule the *runtime* wants — the route table and the
     /// activation gate must keep working on a row they cannot parse, and the
     /// update validator treats an undecodable column as "the request must
-    /// supply them". The admin response deliberately uses the strict decode in
-    /// [`super::dto::ChannelResponse`] instead, so a corrupt row is visible
-    /// rather than silently empty.
+    /// supply them".
     pub fn methods(&self) -> Option<Vec<String>> {
         self.methods_json
             .as_deref()

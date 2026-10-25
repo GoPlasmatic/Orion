@@ -84,18 +84,18 @@ The second check matters more than it looks. `/readyz` says the process is servi
 
 ## Back up the estate, not only the database
 
-A database backup restores an instance. A package export restores a *service*, into any instance:
+A database backup restores an instance. The definition set restores a *service*, into any instance:
 
 ```bash
-orion-server package export -s https://prod.orion.internal \
-  --tag pkg:payments --name payments --version 1.4.0 -o payments-1.4.0.json
+orion-server compile ./definitions -o dist/deployment
+orion-cli deployments apply -d dist/deployment
 ```
 
-Keep these in git. They are readable, reviewable and diffable in a way a database dump is not. They are how you rebuild a service on a fresh instance without restoring anything. See [Promote between environments](./promotion.md). The two cover different failures: the database backup is for "this instance broke", the package artifact is for "this service needs to exist somewhere else".
+Keep the definitions in git. They are readable, reviewable and diffable in a way a database dump is not. They are how you rebuild a service on a fresh instance without restoring anything. See [Deploy a compiled directory](../../reference/admin-api/deployments.md#deploy-a-compiled-directory). The two cover different failures: the database backup is for "this instance broke", the definition set is for "this service needs to exist somewhere else".
 
 ## Next steps
 
 - [Run a cluster](../deploy/cluster.md): why the backup endpoint is refused there.
-- [Promote between environments](./promotion.md): package export as the estate-level backup.
+- [Deployment endpoints](../../reference/admin-api/deployments.md): deploying a definition set onto a fresh instance.
 - [Upgrade an instance](./upgrades.md): where "back up first" is step one.
 - [Configuration › Storage](../../reference/configuration/storage.md): the `[storage]` backup keys.

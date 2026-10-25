@@ -21,13 +21,10 @@ pub use config::{
 };
 pub use kind::{ConnectorKind, ConnectorTarget, DataBackend, PoolSlot};
 pub(crate) use masking::MASK;
-pub use masking::{
-    find_masked_value, mask_channel_config, mask_connector, mask_secrets, redact_url_secrets,
-    redact_url_secrets_or_raw, unmask_channel_config, unmask_config,
-};
-/// A stub `ConnectorRepository` shared by the connector and channel loader
-/// tests — the channel loader's reuse cache is keyed on the connector
-/// token, so testing it takes a connector *load*.
+pub use masking::{find_masked_value, mask_secrets, redact_url_secrets, redact_url_secrets_or_raw};
+/// Stub connector rows shared by the connector and channel loader tests —
+/// the channel loader's reuse cache is keyed on the connector token, so
+/// testing it takes a connector *load*.
 #[cfg(test)]
 pub(crate) use registry::test_support;
 pub use registry::{ConnectorRegistry, ResolveIssue, StoredConnector, resolve_connector_config};

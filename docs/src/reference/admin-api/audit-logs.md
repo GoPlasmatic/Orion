@@ -11,7 +11,7 @@ Querying the row every admin mutation writes, and what that row holds.
 | GET | `/api/v2/admin/audit-logs` | List audit log entries, newest first. Filters (AND-combined, exact match): `?action=`, `?resource_type=`, `?resource_id=`, `?principal=`; time range: `?start_time=` (inclusive) and `?end_time=` (exclusive), RFC 3339; paging: `?offset=`, `?limit=` (clamped to 1–1000, default 50). An unknown parameter returns `400` |
 
 **What a row records.** Every admin mutation writes one, including
-`POST /workflows/{id}/test`, which runs the workflow's tasks against live connectors and so is a side-effecting operation, not a dry run.
+`POST /definitions/test`, which runs a workflow's tasks against live connections and so is a side-effecting operation, not a dry run.
 
 - `principal` — the actor. `key-<16 hex>` for an authenticated caller, or
   `anonymous` when `admin_auth.enabled = false`. The id is derived as
@@ -23,9 +23,9 @@ Querying the row every admin mutation writes, and what that row holds.
 - `details` — a JSON object with the request context: `request_id` (the same
   value as the `x-request-id` header and `error.request_id`), `client_ip`,
   `user_agent`, and `change_context` when the request carried an
-  `X-Orion-Change-Context` header — free-form, truncated at 256 bytes;
-  promotion tooling stamps `package=<name>@<version>` on every call of an
-  apply so the trail groups the whole operation. Both attacker-controlled inputs are truncated before storage
+  `X-Orion-Change-Context` header — free-form, truncated at 256 bytes.
+  `orion-cli --change-context` sets it on every call it makes, so the trail
+  groups a multi-request operation. Both attacker-controlled inputs are truncated before storage
   (256 bytes for `user_agent`, 200 for a supplied `x-request-id`). Fields that
   are unavailable are omitted rather than recorded empty.
 
@@ -41,4 +41,3 @@ Rows are written asynchronously, so admin responses never wait on the INSERT. Th
 - [Admin API](./index.md): every admin resource, and the contracts they share.
 - [Audit logs](../../operate/run/audit-logs.md): every action and resource type a row can carry.
 - [Audit log settings](../configuration/audit.md): retention, cleanup and the write queue.
-- [Export and promotion](./export-and-promotion.md): the header that groups a promotion's rows.

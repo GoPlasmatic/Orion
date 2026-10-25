@@ -1,4 +1,4 @@
-<!-- description: Understand what each part of Orion is and why it behaves as it does: the three primitives, the lifecycle, packages, plugins, and the glossary. -->
+<!-- description: Understand what each part of Orion is and why it behaves as it does: the three primitives, deployments, plugins, and the glossary. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -10,7 +10,7 @@ Start with [How Orion works](./how-orion-works.md): the three primitives, one re
 
 Then the primitives, one page each. A [channel](./channels.md) is where traffic arrives and what contract a caller must satisfy. A [workflow](./workflows.md) is the ordered pipeline of tasks a channel runs. A [connector](./connectors.md) is a named connection to an external system that workflows reference by name.
 
-Two pages cover governance. [The entity lifecycle](./lifecycle.md) is the one-way path from draft to active to archived that every versioned entity follows. [Packages](./packages.md) are the unit a service ships as, from one instance to another.
+A node serves one committed [deployment](../reference/admin-api/deployments.md): a manifest naming every definition and connection it runs. Each deployment is an immutable revision, and a rollback commits an earlier one again.
 
 One page covers the extension point. A [plugin](./plugins.md) adds a task function as a sandboxed WebAssembly component.
 

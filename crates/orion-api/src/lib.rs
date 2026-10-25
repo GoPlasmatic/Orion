@@ -12,24 +12,19 @@
 //!
 //! | Module | Holds |
 //! |---|---|
-//! | [`content`] | the importable-content projection every `content_hash` is taken over |
 //! | [`dto`] | one struct per response body the admin API serves |
 //! | [`enums`] | closed value sets (status, protocol, …) and their string constants |
 //! | [`envelope`] | the `{"data": …}` and paginated envelopes admin 2xx responses carry |
 //! | [`error`] | the `{"error": {code, message, details[], request_id}}` envelope and the stable code registry |
-//! | [`import`] | the bulk-import report and its vocabulary (`on_conflict`, per-item actions) |
 //!
 //! What deliberately does **not** live here: the server's `OrionError` enum
 //! (its internal error domain — only the serialized envelope is contract),
-//! database row types, request validation, and any I/O. Nor the content
-//! *hash* — [`content`] defines the projection a hash is taken over, but
-//! `canonical_json` and `content_hash` stay in the server, which is the only
-//! thing that computes one; see that module's doc for why.
+//! database row types, request validation, and any I/O.
 //!
 //! **Response deserialization is tolerant by design**: every field on every
 //! [`dto`] struct carries `#[serde(default)]`, unknown fields are ignored, and
 //! the fields that hold a growing vocabulary — `status`, `state`,
-//! `channel_type`, `mode`, the import report's `action` — are `String` on the
+//! `channel_type`, `mode` — are `String` on the
 //! wire rather than an enum. A v1.0 CLI must keep reading pre-1.0 servers and
 //! a v1.0 server's responses must keep parsing in older clients; version skew
 //! across the fleet is normal during a rollout, not an error. Compare those
@@ -47,24 +42,21 @@
 //! The `utoipa` feature adds `ToSchema` derives so the server can publish
 //! these exact types in its OpenAPI document; clients leave it off.
 
-pub mod content;
 pub mod dto;
 pub mod engine;
 pub mod enums;
 pub mod envelope;
 pub mod error;
-pub mod import;
 pub mod v2;
 
 pub use dto::{
-    AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
-    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, TraceDlqEntryResponse,
-    TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
+    AuditLogEntryResponse, CronOccurrenceResponse, CronOccurrenceSummaryResponse,
+    CronScheduleStatusResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse,
+    TraceListItemResponse,
 };
 pub use engine::{
     CacheInvalidatedResponse, ChannelLoadIssueResponse, ConnectorLoadIssueResponse,
-    EngineCapabilities, EngineLoadIssues, EngineReloadedResponse, EngineStatusResponse,
-    PluginLoadIssueResponse,
+    EngineCapabilities, EngineLoadIssues, EngineStatusResponse, PluginLoadIssueResponse,
 };
 pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelProtocol, ChannelType, EntityStatus,
@@ -74,4 +66,3 @@ pub use enums::{
 };
 pub use envelope::{Data, Paginated, TracePage};
 pub use error::{ErrorBody, ErrorEnvelope, FieldError, codes, field_codes};
-pub use import::{ImportAction, ImportItemError, ImportItemResult, ImportResult, OnConflict};

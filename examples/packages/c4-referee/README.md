@@ -19,12 +19,19 @@ From the repository root, with a server on `http://localhost:8080` started
 with `ORION_PLUGINS__ENABLED=true`:
 
 ```bash
-./examples/deploy.sh c4-referee
+orion-server compile examples/packages/c4-referee -o dist/c4-referee
+orion-cli deployments apply -d dist/c4-referee
 ```
 
-That uploads and activates the plugin, creates and activates the workflow and
-channel, POSTs `request.json` to `POST /api/v2/data/c4/move` and prints the
-response: `data.state` is the state after the move and `data.next` the board
+That deploys the plugin, the workflow and the channel. POST `request.json` to
+`POST /api/v2/data/c4/move` to play a move:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/data/c4/move \
+  -H 'Content-Type: application/json' --data @examples/packages/c4-referee/request.json
+```
+
+In the response, `data.state` is the state after the move and `data.next` the board
 from the next mover's side, with the seven legal-column flags.
 
 Without a server:

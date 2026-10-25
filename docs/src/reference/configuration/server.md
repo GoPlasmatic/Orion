@@ -41,7 +41,7 @@ Both endpoints are unauthenticated, and the spec publishes the complete admin AP
 | `server.port` | `8080` | `ORION_SERVER__PORT` | To fit an existing port convention. |
 | `server.shutdown_drain_secs` | `30` | `ORION_SERVER__SHUTDOWN_DRAIN_SECS` | Raise it if your slowest request legitimately outlives 30 s, so rolling deploys stop cutting them off. |
 | `server.shutdown_force_timeout_secs` | `30` | `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS` | Hard cap on waiting after the drain window. `0` waits forever — only with an orchestrator that will eventually SIGKILL. |
-| `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for bulk imports or workflow exports above 8 MiB. Applies to `/api/v2/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
+| `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for definition uploads, such as a plugin component, above 8 MiB. Applies to `/api/v2/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
 | `server.data_mounts` | `[]` | `ORION_SERVER__DATA_MOUNTS` | Serve the data plane at extra path prefixes, for deployed clients that call legacy paths. Comma-separated in the env var. |
 
 **`data_mounts` is additive.** `/api/v2/data` stays mounted, so every existing client and `orion-cli` command keeps working — this is not a movable prefix. A channel's `route_pattern` is unchanged; it is also served under each mount:

@@ -24,7 +24,7 @@ A rule engine works out the firing order itself and re-fires rules as new facts 
 | Unit of work | A rule set evaluated against working memory | A [workflow](../../concepts/workflows.md) run against one payload |
 | How you write the logic | DRL, Rego, or a decision table | [JSONLogic](../../reference/expressions.md), inside a task or a condition |
 | Where state lives | Facts in working memory, accumulating | The run's [data context](../../reference/workflows.md#the-data-context), which each task adds to and the response ends |
-| How a change ships | Rebuild or redistribute the rule set | One API call, hot-reloaded |
+| How a change ships | Rebuild or redistribute the rule set | One deployment, hot-reloaded |
 | Typical latency | Sub-millisecond decisions, after the engine is loaded | The whole request, in milliseconds |
 | What it needs to run | The engine, embedded or as a sidecar | [One binary](../install.md) |
 
@@ -38,10 +38,10 @@ A rule engine works out the firing order itself and re-fires rules as new facts 
 
 ## What Orion does instead
 
-- Compiles conditions at engine build time, so evaluation is fast and deterministic, and a bad expression fails at [activation](../../concepts/lifecycle.md) rather than at request time.
+- Compiles conditions at engine build time, so evaluation is fast and deterministic, and a bad expression fails when [the definition is uploaded](../../reference/admin-api/deployments.md#definitions) rather than at request time.
 - Puts the decision *inside* the service: the same workflow validates the payload, decides, enriches from a database, and returns the answer.
 - Collects rule violations as data with the [`validation` function](../../reference/functions/validation.md), so a decision API can return every failure at once rather than the first.
-- Makes the rules something an LLM can write, and safe to let it: [draft, dry run, activate, roll back](../../guides/author/versioning.md).
+- Makes the rules something an LLM can write, and safe to let it: [dry run, plan, apply, roll back](../../reference/admin-api/deployments.md).
 
 ## Where they overlap
 

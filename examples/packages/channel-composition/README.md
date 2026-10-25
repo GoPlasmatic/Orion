@@ -20,11 +20,18 @@ database.
 From the repository root, with a server on `http://localhost:8080`:
 
 ```bash
-./examples/deploy.sh channel-composition
+orion-server compile examples/packages/channel-composition -o dist/channel-composition
+orion-cli deployments apply -d dist/channel-composition
 ```
 
-That creates and activates both workflows and both channels, POSTs
-`request.json` to `POST /api/v2/data/order-enrichment`, and prints the response.
+That deploys both workflows and both channels. POST `request.json` to
+`POST /api/v2/data/order-enrichment` to call the caller:
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/data/order-enrichment \
+  -H 'Content-Type: application/json' --data @examples/packages/channel-composition/request.json
+```
+
 The callee is live too, so this works on its own:
 
 ```bash

@@ -6,7 +6,7 @@ use crate::errors::OrionError;
 /// Multi-instance (HA) coordination settings.
 ///
 /// With `enabled = false` (the default) Orion behaves exactly as a single
-/// node: no epoch watcher, no shared backends, no job leases. When enabled,
+/// node: no shared backends, no job leases. When enabled,
 /// N replicas sharing one Postgres/MySQL behave as a single logical system:
 /// config changes propagate via a DB epoch, dedup, the response cache and
 /// rate limits are shared through that database, and background jobs

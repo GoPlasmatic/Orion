@@ -90,8 +90,10 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
         .route("/readyz", get(readiness_check))
         .nest(
             "/api/v2/admin",
-            admin::admin_routes(max_admin_body_size, plugin_body_size)
-                .merge(v2_admin::v2_admin_routes(max_admin_body_size)),
+            admin::admin_routes(max_admin_body_size).merge(v2_admin::v2_admin_routes(
+                max_admin_body_size,
+                plugin_body_size.max(max_admin_body_size),
+            )),
         )
         .nest("/api/v2/data", data::data_routes());
 
@@ -191,7 +193,7 @@ pub(crate) async fn health_check(
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
 
-    // Every load issue, from the one collector `POST /engine/reload` and
+    // Every load issue, from the one collector a deployment apply and
     // `GET /engine/status` answer from too, so the three surfaces cannot
     // disagree about what is quarantined.
     //
@@ -218,10 +220,9 @@ pub(crate) async fn health_check(
     // connector or channel that may be used by nothing currently in flight.
     let (tasks_state, task_reports) = tasks_component(&state);
 
-    // A reload that failed leaves this node serving the previous generation:
-    // correct, but no longer what the database says. Nothing else reports that
-    // — an admin mutation now answers 2xx for a change that is committed, and
-    // the epoch watcher has no caller to tell.
+    // A deployment build that failed leaves this node serving the previous
+    // generation: correct, but not what is committed. Nothing else reports
+    // that — the reconciler retrying it has no caller to tell.
     let reload_degraded = state
         .reload_degraded
         .load(std::sync::atomic::Ordering::Acquire);
@@ -231,8 +232,7 @@ pub(crate) async fn health_check(
         && quarantined_channels.is_empty()
         && cron_state != Some("degraded")
         && tasks_state == "ok"
-        && !reload_degraded
-        && !(state.cluster.enabled && state.cluster.propagation_degraded());
+        && !reload_degraded;
     let status_str = if overall_healthy && fully_loaded {
         "ok"
     } else {
@@ -265,10 +265,9 @@ pub(crate) async fn health_check(
             "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
             "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
             "background_tasks": tasks_state,
-            // `degraded`, not `error`, and absent from `/readyz` for the same
-            // reason as `config_propagation`: this node is serving, just not
-            // the newest config. Taking it out of rotation would trade a
-            // stale-config problem for an availability one.
+            // `degraded`, not `error`, and absent from `/readyz`: this node is
+            // serving, just not the newest revision. Taking it out of rotation
+            // would trade a stale-config problem for an availability one.
             "engine_reload": if reload_degraded { "degraded" } else { "ok" },
             // `disabled` is a state, not a fault: a node without the sandbox
             // serves everything else. It degrades only when an active plugin
@@ -284,17 +283,6 @@ pub(crate) async fn health_check(
     });
     if let Some(cron) = cron_state {
         body["components"]["cron"] = json!(cron);
-    }
-    // Cluster mode only: outside it there are no peers to propagate to.
-    // `degraded`, not `error`, and absent from `/readyz` on purpose — this
-    // node is serving the change correctly; it is the peers that have not
-    // heard, and taking this one out of rotation would not tell them.
-    if state.cluster.enabled {
-        body["components"]["config_propagation"] = json!(if state.cluster.propagation_degraded() {
-            "degraded"
-        } else {
-            "ok"
-        });
     }
     if show_detail {
         body["git_hash"] = json!(env!("GIT_HASH"));
@@ -434,8 +422,7 @@ fn workflows_loaded(generation: &crate::runtime::RuntimeGeneration) -> usize {
 /// against an unreachable database stays `Running` forever. What is reported
 /// here is whether it is *achieving* anything.
 ///
-/// It degrades `/health` but does **not** fail `/readyz`, for the reason
-/// `config_propagation` does not: this node still serves every request
+/// It degrades `/health` but does **not** fail `/readyz`: this node still serves every request
 /// correctly, and taking it out of the load balancer would remove capacity
 /// without making a single occurrence run.
 fn cron_component(
@@ -472,7 +459,7 @@ fn cron_component(
 
 /// Coarse state of the node's supervised background tasks (the trace
 /// dispatcher and persistence pool, the audit writer, the retention jobs, the
-/// DLQ retry consumer, the cluster epoch watcher).
+/// DLQ retry consumer, the cluster reconciler).
 ///
 /// `"error"` means at least one `Required` task has stopped for good, which is
 /// the state that used to be invisible: a dead persistence worker dropped
@@ -515,7 +502,7 @@ the process serves.
 
 The `components.background_tasks` is `error` when a required task — the trace \
 dispatcher, the persistence workers, the audit writer, the DLQ retry \
-consumer, the cluster epoch watcher — has stopped for good; each of those \
+consumer, the cluster reconciler — has stopped for good; each of those \
 fails silently otherwise, dropping traces or audit rows while the data plane \
 keeps answering 200s. \
 Unauthenticated, so probes work without provisioning an admin key.",

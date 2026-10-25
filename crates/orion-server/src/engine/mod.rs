@@ -219,6 +219,7 @@ pub use handlers::{
 pub use loader::{
     EngineLoad, LoadedWorkflows, build_engine_workflows, compile_row, filter_channels,
     name_v3_spellings, parse_options, quarantines, serving_engine, serving_engine_with_policy,
+    workflow_json,
 };
 pub use observer::MetricsObserver;
 pub use refs::{

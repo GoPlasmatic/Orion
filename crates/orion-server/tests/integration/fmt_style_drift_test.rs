@@ -3,7 +3,7 @@
 //! The canonical key order is a hand-written table per document shape, and
 //! a table is a promise that goes stale the moment a request struct gains a
 //! field. So each one is pinned to the thing it describes: the entity
-//! tables to the request schemas in `docs/openapi.json`, the step tables to
+//! tables to the definition-file request schemas, the step tables to
 //! dataflow-rs's own `Task`, the input tables to the function registry and
 //! the reference page, and the style numbers to the page that documents
 //! them.
@@ -11,8 +11,7 @@
 use std::collections::BTreeSet;
 
 use orion::definitions::fmt::style::{self, STYLE};
-
-const OPENAPI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/openapi.json");
+use orion::storage::models::{CreateChannelRequest, CreateConnectorRequest, CreateWorkflowRequest};
 const FMT_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/reference/fmt.md"
@@ -26,12 +25,14 @@ const FUNCTIONS_DIR: &str = concat!(
     "/../../docs/src/reference/functions"
 );
 
-fn schema_properties(name: &str) -> BTreeSet<String> {
-    let spec: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(OPENAPI).unwrap()).unwrap();
-    spec["components"]["schemas"][name]["properties"]
+/// The properties of a definition file's schema. The definition-file shapes
+/// are no longer request bodies of any route, so they are read off the type
+/// rather than `docs/openapi.json`.
+fn schema_properties<T: utoipa::PartialSchema>() -> BTreeSet<String> {
+    let schema = serde_json::to_value(T::schema()).unwrap();
+    schema["properties"]
         .as_object()
-        .unwrap_or_else(|| panic!("schema {name} has no properties"))
+        .expect("a definition-file schema has properties")
         .keys()
         .cloned()
         .collect()
@@ -50,14 +51,29 @@ fn without_activate(mut set: BTreeSet<String>) -> BTreeSet<String> {
 
 #[test]
 fn entity_key_tables_cover_exactly_the_request_schemas() {
-    for (name, schema, keys) in [
-        ("workflow", "CreateWorkflowRequest", style::WORKFLOW_KEYS),
-        ("channel", "CreateChannelRequest", style::CHANNEL_KEYS),
-        ("connector", "CreateConnectorRequest", style::CONNECTOR_KEYS),
+    for (name, schema, keys, properties) in [
+        (
+            "workflow",
+            "CreateWorkflowRequest",
+            style::WORKFLOW_KEYS,
+            schema_properties::<CreateWorkflowRequest>(),
+        ),
+        (
+            "channel",
+            "CreateChannelRequest",
+            style::CHANNEL_KEYS,
+            schema_properties::<CreateChannelRequest>(),
+        ),
+        (
+            "connector",
+            "CreateConnectorRequest",
+            style::CONNECTOR_KEYS,
+            schema_properties::<CreateConnectorRequest>(),
+        ),
     ] {
         assert_eq!(
             without_activate(table(keys)),
-            schema_properties(schema),
+            properties,
             "{name}: the canonical key table and the {schema} schema disagree — a field \
              was added to one and not the other"
         );

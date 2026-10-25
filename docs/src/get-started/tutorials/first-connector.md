@@ -1,6 +1,6 @@
 <!-- description: Connect Orion to PostgreSQL and build a service that writes an order and reads back the customer's history, using the portable, injection-safe data dialect. -->
 <!-- type: tutorial -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Add your first connector
 
@@ -18,10 +18,11 @@
 Tested with Orion 1.12.0. You need:
 
 - an Orion server on `http://localhost:8080`, and [Build your first service](./first-service.md) behind you
+- `orion-server` and `orion-cli` on your `PATH`
 - Git, and Docker with Compose
 - `curl` and a POSIX shell (on Windows, WSL)
 
-A *connector* is a named, reusable connection to an external system. You configure it once through the admin API and reference it by name from any workflow. The runtime holds the credentials, the pool, the retries and the circuit breaker.
+A *connector* is a named, reusable connection to an external system. You declare it once, as a file beside the workflows, and reference it by name from any workflow. The runtime holds the credentials, the pool, the retries and the circuit breaker.
 
 Every file below ships in the repository, so clone it first:
 
@@ -29,9 +30,6 @@ Every file below ships in the repository, so clone it first:
 git clone https://github.com/GoPlasmatic/Orion.git
 cd Orion/examples/packages/postgres-orders
 ```
-
-> [!TIP]
-> `docker compose up -d && cd ../.. && ./deploy.sh postgres-orders` builds the whole thing in two commands. The steps below do it one piece at a time, so you can see what each piece is for.
 
 ## 1. Start a database
 
@@ -47,7 +45,7 @@ Then start Orion, telling it where the database is:
 ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
 ```
 
-## 2. Create the connector
+## 2. Read the connector
 
 This is the connector definition:
 
@@ -55,35 +53,18 @@ This is the connector definition:
 {{#include ../../../../examples/packages/postgres-orders/connector.json}}
 ```
 
-Post it. Connectors are live on creation; there is no activation step, and the registry reloads on every connector change:
+`compile` turns it into a connection revision. Three details are worth copying into every real deployment:
 
-```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/connectors \
-  -H 'Content-Type: application/json' --data @connector.json
-```
-
-Three details are worth copying into every real deployment:
-
-- **The connection string is an environment reference.** `${ORDERS_DB_URL:-…}` is substituted from the server's environment when the connector loads. The saved config carries no credentials, and the same JSON works in every environment.
+- **The connection string is an environment reference.** `env://ORDERS_DB_URL` is resolved from the server's environment when the connection is used. The deployment carries the reference, never the credential, and the same JSON works in every environment.
 - **`"operations": { "delete": false }` makes the connector delete-proof.** Operation gates are enforced at the connector, whatever a workflow asks for.
 - **`allow_private_urls` is required for a private address.** Orion blocks connections to private ranges by default. A database on `localhost` or a container network is the normal case for saying so explicitly.
 
-## 3. Create the workflow
+## 3. Read the workflow
 
 Three tasks: parse the request, insert the order, read back the customer with their order history:
 
 ```json
 {{#include ../../../../examples/packages/postgres-orders/workflow.json}}
-```
-
-Create and activate it:
-
-```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/workflows \
-  -H 'Content-Type: application/json' --data @workflow.json
-
-curl -s -X PATCH http://localhost:8080/api/v2/admin/workflows/record-order/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
 How the pieces fit:
@@ -101,17 +82,14 @@ The channel binds `POST /record-order` to the workflow:
 {{#include ../../../../examples/packages/postgres-orders/channel.json}}
 ```
 
-Create and activate it:
+Compile the directory and deploy it:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/channels \
-  -H 'Content-Type: application/json' --data @channel.json
-
-curl -s -X PATCH http://localhost:8080/api/v2/admin/channels/record-order/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
+orion-server compile . -o /tmp/postgres-orders
+orion-cli deployments apply -d /tmp/postgres-orders
 ```
 
-Both calls answer a successful admin envelope, and `orion-cli channels list` shows `record-order` as active.
+`compile` reports 1 connector, 1 workflow and 1 channel, and writes `connections/orders-db.json` with the connection string under `secret_locators`. `apply` creates the connection revision, uploads the definitions and commits the deployment. The workflow `requires` the `orders-db` connection, so the deployment cannot leave it behind.
 
 ## 5. Call it
 
@@ -149,13 +127,13 @@ Nothing in that workflow is PostgreSQL-specific. Point `orders-db` at MySQL or S
 
 ## Clean up or run it again
 
-The deployment script skips definitions that already exist, but every request inserts another order. Stop the local database and remove its data volume from the package directory:
+Applying the same directory again changes nothing, but every request inserts another order. Stop the local database and remove its data volume from the package directory:
 
 ```bash
 docker compose down -v
 ```
 
-If Orion was running outside that Compose project, delete `record-order` as a channel and as a workflow, then delete the `orders-db` connector, with `orion-cli … delete --yes`. Deletion is permanent; keep the definitions if you are continuing to the next tutorial.
+If Orion was running outside that Compose project, [roll back](../../reference/admin-api/deployments.md#rollback) to the revision before this one to stop serving the service.
 
 ## Recap
 
@@ -166,7 +144,7 @@ If Orion was running outside that Compose project, delete `record-order` as a ch
 
 ## Next steps
 
-- [Test and promote a service](./test-and-promote.md): dry-run this workflow with the database stubbed out, then ship it to another instance.
+- [Test and deploy a service](./test-and-promote.md): dry-run a workflow with its calls stubbed out, then deploy it.
 - [Connectors](../../concepts/connectors.md): the idea, and the other six types.
 - [Connector types](../../reference/connectors/index.md): every field of every type, with gates, retries and secret handling.
 - [Portable data dialect](../../reference/data-dialect.md): operators, the schema registry, relations, write envelopes and safety guards.

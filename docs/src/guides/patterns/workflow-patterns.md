@@ -60,7 +60,7 @@ Most workflows are `"condition": true` at the top with conditions on tasks. Reac
 
 ## Enrich from an external system
 
-**Problem.** Credentials end up in workflow JSON, which is then unreviewable and unpromotable.
+**Problem.** Credentials end up in workflow JSON, which is then unreviewable and unsafe to deploy.
 
 **Pattern.** Reference a connector by name and keep the secret in the connector:
 
@@ -79,7 +79,7 @@ Most workflows are `"condition": true` at the top with conditions on tasks. Reac
 }
 ```
 
-**Why it bites.** A workflow with an embedded credential exports as `"******"` and is refused on import, so it cannot be promoted at all. And it was in your git history the whole time. See [Connect a database or API](../author/connectors.md).
+**Why it bites.** A credential in a workflow is stored in every deployment that carries it, readable by anyone who can read definitions back. And it was in your git history the whole time. See [Connect a database or API](../author/connectors.md).
 
 ## Compose channels in-process
 
@@ -100,7 +100,8 @@ The called channel is an ordinary service with its own workflow, channel and ver
 Run the example:
 
 ```bash
-./examples/deploy.sh channel-composition
+orion-server compile examples/packages/channel-composition -o /tmp/channel-composition
+orion-cli deployments apply -d /tmp/channel-composition
 
 curl -s -X POST http://localhost:8080/api/v2/data/order-enrichment \
   -H 'Content-Type: application/json' \

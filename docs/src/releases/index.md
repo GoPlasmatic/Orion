@@ -30,6 +30,6 @@ The [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-serv
 ## Related
 
 - [Upgrades](../operate/maintain/upgrades.md): the order that works, whatever version you are on.
-- [`orion-server preflight`](../reference/cli/orion-server/preflight.md): the read-only scan that finds stored breaks before a rollout.
+- `orion-server preflight`: the read-only scan that finds stored breaks before a rollout.
 - [Back up and restore](../operate/maintain/backup-restore.md): the step every upgrade starts with.
-- [The entity lifecycle](../concepts/lifecycle.md): why a stored channel survives a binary swap.
+- The entity lifecycle: why a stored channel survives a binary swap.

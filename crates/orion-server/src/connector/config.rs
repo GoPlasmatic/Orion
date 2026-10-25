@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 /// A parsed connector configuration.
 ///
 /// `PartialEq` runs the whole tree and is load-bearing, not a convenience:
-/// [`crate::connector::ConnectorRegistry::load_from_repo`] compares the map it
+/// [`crate::connector::ConnectorRegistry::load`] compares the map it
 /// just built against the one it holds and only advances
-/// `config_generation` when they differ, which is what keeps an epoch resync
+/// `config_generation` when they differ, which is what keeps a deployment
 /// that touched no connector from invalidating every channel's cached runtime.
 /// Every field of every variant therefore has to take part — a field
 /// left out of the comparison would be a config change the channel loader

@@ -62,17 +62,17 @@ Conditions are [JSONLogic](../reference/expressions.md) expressions, compiled on
 
 Branching inside a pipeline is the second one. Choosing between two pipelines is the first.
 
-## How a channel picks a version
+## How a channel picks a revision
 
-A channel names a workflow by id, but an id can have many versions, and several workflows can be bound to one channel. Orion resolves this the same way on every node:
+A channel names a workflow by id, but an id can have more than one deployed revision, and several workflows can be bound to one channel. Orion resolves this the same way on every node:
 
-1. **Only active workflows are considered.** Drafts and archived versions are invisible to traffic.
+1. **Only deployed workflows are considered.** A node runs what its committed deployment head names. Nothing else is visible to traffic.
 2. **Higher `priority` is evaluated first**, and the first workflow whose `condition` is truthy wins. A catch-all with low priority under a specific one with high priority is the usual shape.
-3. **A rollout percentage splits versions.** Activating a new version at 25 sends about a quarter of traffic to it and the rest to the previously active one. The split is a stable hash of the request, so a given caller lands consistently instead of flickering between versions.
+3. **A rollout percentage splits revisions.** A deployment can send about a quarter of traffic to a new revision and the rest to the previous one. The split is a stable hash of the request, so a given caller lands consistently instead of flickering between revisions.
 
 ## Versioned, not edited
 
-An active workflow is immutable. Changing one means creating a new version, testing it, and activating that. Rolling back is putting known-good content into a new version rather than a redeploy. That content is guaranteed to be what it was when it last served. [The entity lifecycle](./lifecycle.md) covers the rules. What matters here is that "edit the running logic" is not an operation Orion offers, on purpose.
+A deployed workflow is immutable. Changing one means testing a new definition and deploying it as a new revision. Rolling back commits an earlier deployment's manifest again, so the content is exactly what it was when it last served. [Rollback](../reference/admin-api/deployments.md#rollback) covers the call. What matters here is that "edit the running logic" is not an operation Orion offers, on purpose.
 
 ## Errors
 
@@ -84,4 +84,4 @@ By default the pipeline halts on the first task that errors, meaning a handler e
 - [Task functions](../reference/functions/index.md): what each function does and the exact `input` it takes.
 - [Expression language](../reference/expressions.md): the JSONLogic operator catalogue, and the silent-failure edges to avoid.
 - [Author a workflow](../guides/author/workflows.md): the how-to layer, from a first task to groups and loops.
-- [Test and promote a service](../get-started/tutorials/test-and-promote.md): run a workflow offline before it sees traffic.
+- [Test and deploy a service](../get-started/tutorials/test-and-promote.md): run a workflow offline before it sees traffic.

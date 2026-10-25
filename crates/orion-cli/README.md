@@ -3,9 +3,9 @@
 
   # Orion
 
-  **The command-line interface for [Orion](https://github.com/GoPlasmatic/Orion) — manage workflows, channels, connectors, plugins, schedules, and data pipelines from your terminal.**
+  **The command-line interface for [Orion](https://github.com/GoPlasmatic/Orion) — deploy services, send data, and inspect traces, schedules and health from your terminal.**
 
-  Create, test, and deploy workflows. Define channels as service endpoints. Send data through channels. Monitor engine health and metrics. Pair it with the [Orion agent skill](../../skills/orion/) to let an AI assistant drive the same commands.
+  Deploy a compiled definition set as an immutable revision. Send data through channels. Monitor engine health and metrics. Pair it with the [Orion agent skill](../../skills/orion/) to let an AI assistant drive the same commands.
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![Rust](https://img.shields.io/badge/rust-1.98+-orange.svg)](https://www.rust-lang.org)
@@ -15,12 +15,6 @@
 ---
 
 ## Quick Start
-
-<div align="center">
-  <img src="https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/media/cli-lifecycle.gif" alt="orion-cli creating and activating a workflow, dry-running it, then sending live data" width="100%">
-  <br>
-  <em>Create, activate, dry-run and send — the full lifecycle from one terminal.</em>
-</div>
 
 **1. Install the CLI:**
 
@@ -49,27 +43,22 @@ Orion Server v1.0.0
     engine       OK
 ```
 
-**4. Create a workflow and channel, test it, send data:**
+**4. Compile a definition set, deploy it, send data:**
 
 ```bash
-# Create a workflow from a JSON file
-orion-cli workflows create -f high-value-order.json
+# Compile a directory of workflow, channel and connector files
+orion-server compile ./definitions -o dist/deployment
 
-# Activate it
-orion-cli workflows activate <WORKFLOW_ID>
-
-# Create a channel that links to the workflow
-orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"http","route_pattern":"/orders","methods":["POST"],"workflow_id":"<WORKFLOW_ID>"}'
-orion-cli channels activate <CHANNEL_ID>
-
-# Activation hot-reloads the engine on its own — no reload step needed
-
-# Dry-run test with sample data
-orion-cli workflows test <WORKFLOW_ID> -d '{"order_id":"ORD-9182","total":25000}' --trace
+# See what would change, then deploy it as the next revision
+orion-cli deployments plan -d dist/deployment
+orion-cli deployments apply -d dist/deployment
 
 # Send real data through the channel
 orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 ```
+
+A deployment states everything the node serves. Applying a directory replaces
+what the previous revision deployed.
 
 ---
 
@@ -78,20 +67,18 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | Command | Description |
 |---------|-------------|
 | `health` | Check server health and component status |
-| `benchmark` | Load-test a channel and report latency statistics |
-| `workflows` | Manage workflows — create, update, delete, test, import/export, diff |
-| `channels` | Manage channels — create, update, delete, activate/archive, versioning, bulk import |
-| `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers, bulk import |
-| `plugins` | Manage WebAssembly plugins — create from a manifest, activate/archive, versioning, dependencies, import/export |
+| `deployments` | Plan, apply, read, wait for and roll back v2 deployments; `-d` deploys a compiled directory |
+| `connections` | List, create and probe immutable connection revisions |
+| `provider` | Author, lint, pack, upload, admit and revoke connector provider packages |
 | `cron` | The scheduled-run ledger — status, list, get, retry or cancel an occurrence |
 | `send` | Send data through channels (sync or async; `--profile` for timing breakdown) |
 | `traces` | View and monitor execution traces |
-| `engine` | View engine status and trigger reloads |
+| `engine` | View what the engine on this node serves |
 | `functions` | Inspect workflow task functions registered in the engine |
 | `metrics` | Retrieve Prometheus metrics |
 | `audit-logs` | View audit logs of admin actions |
 | `backups` | Create and list database backups (SQLite) |
-| `packages` | List and inspect package promotion receipts |
+| `cache` | Invalidate a channel response-cache namespace |
 | `dlq` | Inspect and requeue the trace dead-letter queue |
 | `config` | Configure server URL and defaults |
 | `completions` | Generate shell completions (bash, zsh, fish, powershell) |
@@ -109,135 +96,24 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 
 ---
 
-## Workflow Management
+## Deployments
 
-Full lifecycle management for [Orion workflows](https://docs.goplasmatic.io/reference/admin-api.html):
-
-```bash
-# List workflows with filters
-orion-cli workflows list --status active --tag fraud
-
-# Get full workflow details
-orion-cli workflows get <ID>
-
-# Create from file or inline JSON
-orion-cli workflows create -f workflow.json
-orion-cli workflows create -d '{"name":"My Workflow",...}'
-
-# Create with a custom ID
-orion-cli workflows create --id my-custom-id -f workflow.json
-
-# Update a workflow (version auto-increments)
-orion-cli workflows update <ID> -f updated-workflow.json
-
-# Change workflow status
-orion-cli workflows activate <ID>
-orion-cli workflows archive <ID>
-
-# Control rollout percentage
-orion-cli workflows rollout <ID> -p 50
-
-# Delete (with confirmation prompt)
-orion-cli workflows delete <ID>
-```
-
-### Dry-Run Testing
-
-Test any workflow against sample data before activating — with a full execution trace:
+`orion-server compile` writes a definition set as a deployment directory with
+no revisions in it. `deployments apply -d` uploads its definitions, reuses or
+creates connection revisions, assigns member revisions against the target's
+history, plans against the head and applies with the reviewed digest:
 
 ```bash
-orion-cli workflows test <ID> -d '{"order_id":"ORD-9182","total":25000}' --trace
+orion-cli deployments plan -d dist/deployment     # what would change
+orion-cli deployments apply -d dist/deployment    # commit it as the next revision
+orion-cli deployments get <REVISION>              # one committed revision
+orion-cli deployments wait <REVISION> --target observed
+orion-cli deployments rollback --target-revision 1 --expected-head-revision 3 \
+  --idempotency-key rollback-3
 ```
 
-```
-Result: MATCHED
-
-Trace:
-  parse    executed
-  flag     executed
-
-Output:
-  {
-    "order": {
-      "order_id": "ORD-9182",
-      "total": 25000,
-      "flagged": true,
-      "alert": "High-value order: $25000"
-    }
-  }
-```
-
-Supports input from file (`-f`), inline JSON (`-d`), or stdin (`--stdin`).
-
-### Import, Export & Diff
-
-GitOps-ready workflows for CI/CD pipelines:
-
-```bash
-# Export workflows (with optional filters)
-orion-cli workflows export --status active > workflows.json
-
-# Import workflows from file
-orion-cli workflows import -f workflows.json
-
-# Validate the import on the server without applying (reports would_create/would_fail)
-orion-cli workflows import -f workflows.json --dry-run
-
-# Compare local file against server state
-orion-cli workflows diff -f workflows.json
-```
-
-The diff command shows color-coded changes: **+** new, **~** modified, **=** unchanged, **-** deleted.
-
----
-
-## Channel Management
-
-Channels are service endpoints that receive data and route it to workflows:
-
-```bash
-# List channels
-orion-cli channels list --status active --protocol rest
-
-# Create a channel
-orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"rest","route_pattern":"/orders/{id}","methods":["GET"],"workflow_id":"process-orders"}'
-
-# Activate / Archive
-orion-cli channels activate <ID>
-orion-cli channels archive <ID>
-
-# Version management
-orion-cli channels versions <ID>
-orion-cli channels new-version <ID>
-
-# Bulk import (server-side validation with --dry-run)
-orion-cli channels import -f channels.json --dry-run
-orion-cli channels import -f channels.json
-```
-
----
-
-## Connectors
-
-Manage [named external service configurations](https://docs.goplasmatic.io/reference/connectors.html) with auth and retry policies:
-
-```bash
-orion-cli connectors list
-orion-cli connectors get <ID>
-orion-cli connectors create -f connector.json
-orion-cli connectors update <ID> -f connector.json
-orion-cli connectors delete <ID>
-orion-cli connectors enable <ID>
-orion-cli connectors disable <ID>
-
-# Circuit breaker management
-orion-cli connectors circuit-breakers
-orion-cli connectors reset-breaker <KEY>
-
-# Bulk import (server-side validation with --dry-run)
-orion-cli connectors import -f connectors.json --dry-run
-orion-cli connectors import -f connectors.json
-```
+A directory the head already deploys is not applied again. A rollback commits
+an earlier revision's manifest as a new revision.
 
 ---
 
@@ -267,22 +143,6 @@ orion-cli send orders --async-mode --wait --timeout 30 -d '{"amount":100}'
 
 ---
 
-## Plugins
-
-A plugin adds a custom task function as a sandboxed WebAssembly component. It
-is a versioned entity, so it follows the same draft → activate path:
-
-```bash
-orion-cli plugins create -f plugin.toml     # the component is read beside it
-orion-cli plugins activate <ID>
-orion-cli plugins dependencies <ID>         # what would break on archive
-orion-cli plugins export --include-artifacts -o plugins.json
-```
-
-Activate a plugin before the workflows that call its functions. The server
-needs `plugins.enabled = true`, and `--signature` where it configures
-`[plugins.trust]`.
-
 ## Scheduled runs
 
 A `protocol: "cron"` channel has no caller, so `send` cannot reach it. Its runs
@@ -294,8 +154,9 @@ orion-cli cron list --status failed
 orion-cli cron get <OCCURRENCE_ID>
 orion-cli cron retry <OCCURRENCE_ID>       # same occurrence, same scheduled_for
 orion-cli cron cancel <OCCURRENCE_ID>      # stop one that has not finished, free its slot
-orion-cli channels trigger <CHANNEL_ID>    # a new manual occurrence, now
 ```
+
+A new manual occurrence, now, is `POST /api/v2/admin/channels/{id}/trigger`.
 
 ## Traces
 
@@ -313,14 +174,11 @@ Exit codes: `0` completed, `1` failed, `2` timeout.
 
 ---
 
-## Engine Control
+## Engine Status
 
 ```bash
-# View engine status — version, uptime, workflow counts, channels
+# What this node serves — version, uptime, workflow counts, channels, load issues
 orion-cli engine status
-
-# Hot-reload workflows, channels and plugins (zero downtime)
-orion-cli engine reload
 ```
 
 ---
@@ -342,8 +200,8 @@ orion-cli --output json functions list
 ## AI Assistants
 
 Install the [Orion agent skill](../../skills/orion/) and an AI coding agent can
-drive every command below — authoring workflow JSON, dry-running it, and walking
-the draft → test → activate path on its own.
+drive every command below — authoring workflow JSON, dry-running it, and
+compiling and deploying it on its own.
 
 ```bash
 mkdir -p .claude/skills && cp -r skills/orion .claude/skills/
@@ -371,17 +229,12 @@ REST API instead.
 All commands support three output formats:
 
 ```bash
-orion-cli --output table workflows list    # Pretty tables (default)
-orion-cli --output json  workflows list    # JSON for scripting
-orion-cli --output yaml  workflows list    # YAML for config files
+orion-cli --output table functions list    # Pretty tables (default)
+orion-cli --output json  functions list    # JSON for scripting
+orion-cli --output yaml  functions list    # YAML for config files
 ```
 
-Use `--quiet` for minimal output (just IDs) — ideal for shell scripts:
-
-```bash
-WF_ID=$(orion-cli --quiet workflows create -f workflow.json)
-orion-cli workflows test "$WF_ID" -d '{"amount":100}'
-```
+Use `--quiet` for minimal output — ideal for shell scripts.
 
 ---
 
@@ -448,7 +301,7 @@ Verify with `orion-cli --version`. Requires Rust 1.98+ for source builds.
 - **[Orion Server](https://github.com/GoPlasmatic/Orion)** — The services runtime platform
 - **[API Reference](https://docs.goplasmatic.io/reference/admin-api.html)** — Full REST API documentation
 - **[Connectors Guide](https://docs.goplasmatic.io/reference/connectors.html)** — Auth schemes, retry policies, and secrets
-- **[Production Features](https://docs.goplasmatic.io/reference/cli.html)** — Custom IDs, versioning, fault tolerance
+- **[CLI Reference](https://docs.goplasmatic.io/reference/cli/index.html)** — Every command and flag
 - **[Use Cases & Patterns](https://docs.goplasmatic.io/guides/worked-examples.html)** — Real-world examples and AI prompt templates
 - **[Observability](https://docs.goplasmatic.io/operate/monitoring.html)** — Prometheus metrics, health checks, logging
 

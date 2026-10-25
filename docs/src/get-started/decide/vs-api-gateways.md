@@ -24,7 +24,7 @@ A gateway polices traffic on its way to a service that handles it. Orion *is* th
 | Unit of work | A route, mapped to a backend | A [channel](../../concepts/channels.md), bound to a workflow |
 | How you write the logic | You don't; the logic is behind the gateway | JSON, posted to a running server |
 | Where state lives | Not applicable; it forwards | Not applicable; it answers |
-| How a change ships | Config reload, or a plugin deploy | One API call, hot-reloaded |
+| How a change ships | Config reload, or a plugin deploy | One deployment, hot-reloaded |
 | Typical latency | Sub-millisecond added to a proxied hop | The whole response, in milliseconds |
 | What it needs to run | The proxy, plus something behind it | [One binary](../install.md) |
 

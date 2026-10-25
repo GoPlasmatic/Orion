@@ -342,10 +342,8 @@ async fn execute_connector_call(
             String::new()
         } else {
             sha256_digest(
-                crate::storage::content::canonical_json(&serde_json::json!(
-                    conn_row.secret_locators
-                ))
-                .as_bytes(),
+                crate::canonical::canonical_json(&serde_json::json!(conn_row.secret_locators))
+                    .as_bytes(),
             )
         },
     };

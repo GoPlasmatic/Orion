@@ -8,7 +8,7 @@
 //! `Connector '…' not found`. Only a pure mapping workflow could be dry-run,
 //! which is not many of them.
 //!
-//! The alternative was `POST /workflows/{id}/test`, whose own documentation
+//! The alternative was `POST /definitions/test`, whose own documentation
 //! warns that it runs against **live** connectors: it will POST to real
 //! webhooks, write to real databases and publish to real topics. So the
 //! offline option could not run a realistic workflow and the realistic option

@@ -47,7 +47,7 @@ Runs one **backend-neutral query** against a SQL (PostgreSQL, MySQL, SQLite) con
 
 > [!NOTE]
 > The `schema` requirement is enforced when the query runs, not when the
-> workflow is created: a task without one is accepted at create and refused at
+> workflow is uploaded: a task without one is accepted at upload and refused at
 > its first request, with an error naming the key to add. Every entity the
 > dialect resolves goes through the schema, so no schema-less call can succeed.
 

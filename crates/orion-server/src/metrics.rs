@@ -662,7 +662,7 @@ pub fn record_cache_miss(channel: &str) {
 /// unix time, in seconds.
 ///
 /// The periodic jobs — trace cleanup, audit-log cleanup, DLQ retry, the
-/// and the cluster epoch watcher — deliberately swallow
+/// and the cluster reconciler — deliberately swallow
 /// per-tick errors and keep looping, because a transient DB blip must not
 /// kill the loop. That left a *sustained* failure with no alertable signal:
 /// the task was still running, but had not done its job in hours, and

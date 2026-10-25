@@ -1,5 +1,10 @@
-//! Cluster coordination repository: config epoch, breaker-reset fan-out,
-//! and job leases (multi-instance-ha A2/A7/A11).
+//! Cluster coordination repository: the breaker-reset fan-out and job
+//! leases (multi-instance-ha A7/A11).
+//!
+//! The breaker reset rides the single `config_epoch` row's `breaker_epoch`
+//! and `breaker_key`. The row's `epoch` and `epoch_scope*` columns carried
+//! the v1 entity-change bus and are no longer written; the v2 deployment
+//! head is what peers reconcile on.
 //!
 //! All statements use each backend's own clock (`datetime('now')` /
 //! `LOCALTIMESTAMP` / `UTC_TIMESTAMP()`) so lease comparisons never depend
@@ -16,33 +21,16 @@ use crate::storage::{DbBackend, DbPool, build_sqlx};
 
 use super::helpers::{fetch_required, insert_if_absent, update_returning_scalar};
 
-/// The single `config_epoch` row.
+/// The breaker-reset half of the single `config_epoch` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EpochRow {
-    pub epoch: i64,
     pub breaker_epoch: i64,
     pub breaker_key: String,
-    /// What the bumping node changed, as
-    /// [`crate::cluster::EpochScope::as_str`] wrote it. Empty for a row an
-    /// older writer bumped, which a reader treats as "everything" — see
-    /// [`crate::cluster::EpochScope::parse`].
-    pub epoch_scope: String,
-    /// The epoch [`Self::epoch_scope`] was written for. Zero on a row last
-    /// bumped by a writer that predates the column — and, more importantly,
-    /// stale whenever such a writer bumped *after* a scope-aware one, which is
-    /// one of the two cases [`crate::cluster::EpochScope::for_advance`] exists
-    /// to catch; the other is a reader more than one epoch behind, for which
-    /// no stamp can vouch because the row keeps only the last scope.
-    pub epoch_scope_at: i64,
 }
 
 #[async_trait]
 pub trait ClusterRepository: Send + Sync {
-    /// Atomically increment the config epoch, recording what changed;
-    /// returns the post-increment value.
-    async fn bump_epoch(&self, scope: &str) -> Result<i64, OrionError>;
-
-    /// Read the current epoch row.
+    /// Read the current breaker epoch and key.
     async fn get_epoch(&self) -> Result<EpochRow, OrionError>;
 
     /// Bump `breaker_epoch` and record the breaker key so other nodes reset
@@ -65,47 +53,6 @@ pub struct SqlClusterRepository {
     pool: DbPool,
 }
 
-/// Record a configuration change in the transaction that made it. A crash
-/// after commit cannot lose the notification, and rollback loses both.
-pub(crate) async fn bump_epoch_tx(
-    tx: &mut crate::storage::DbTransaction,
-    scope: &str,
-) -> Result<i64, OrionError> {
-    let (sql, values) = build_sqlx(
-        tx.backend(),
-        Query::update()
-            .table(ConfigEpoch::Table)
-            // MySQL evaluates SET left to right; all backends must stamp
-            // the new epoch, rather than incrementing the stamp twice.
-            .value(
-                ConfigEpoch::EpochScopeAt,
-                Expr::col(ConfigEpoch::Epoch).add(1),
-            )
-            .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
-            .value(ConfigEpoch::EpochScope, scope)
-            .value(
-                ConfigEpoch::UpdatedAt,
-                Expr::cust(super::helpers::sql_now(tx.backend())),
-            )
-            .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
-    );
-    if tx.execute_query(&sql, values).await? != 1 {
-        return Err(SqlClusterRepository::missing_epoch_row());
-    }
-    let (sql, values) = build_sqlx(
-        tx.backend(),
-        Query::select()
-            .column(ConfigEpoch::Epoch)
-            .from(ConfigEpoch::Table)
-            .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
-    );
-    let (epoch,) = tx
-        .fetch_optional_as::<(i64,)>(&sql, values)
-        .await?
-        .ok_or_else(SqlClusterRepository::missing_epoch_row)?;
-    Ok(epoch)
-}
-
 impl SqlClusterRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
@@ -124,7 +71,7 @@ impl SqlClusterRepository {
 
     /// `UPDATE config_epoch ... WHERE id = 1` returning `returning_col`, with
     /// the MySQL read-back handled by [`update_returning_scalar`]. Shared by
-    /// `bump_epoch` and `request_breaker_reset`.
+    /// `request_breaker_reset` and the tests.
     async fn update_epoch_row(
         &self,
         mut update: sea_query::UpdateStatement,
@@ -151,28 +98,12 @@ impl SqlClusterRepository {
 
 #[async_trait]
 impl ClusterRepository for SqlClusterRepository {
-    async fn bump_epoch(&self, scope: &str) -> Result<i64, OrionError> {
-        crate::metrics::timed_db_op("cluster.bump_epoch", async {
-            let mut tx = self.pool.begin_write_tx().await?;
-            let epoch = bump_epoch_tx(&mut tx, scope).await?;
-            tx.commit().await?;
-            Ok(epoch)
-        })
-        .await
-    }
-
     async fn get_epoch(&self) -> Result<EpochRow, OrionError> {
         crate::metrics::timed_db_op("cluster.get_epoch", async {
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
                 Query::select()
-                    .columns([
-                        ConfigEpoch::Epoch,
-                        ConfigEpoch::BreakerEpoch,
-                        ConfigEpoch::BreakerKey,
-                        ConfigEpoch::EpochScope,
-                        ConfigEpoch::EpochScopeAt,
-                    ])
+                    .columns([ConfigEpoch::BreakerEpoch, ConfigEpoch::BreakerKey])
                     .from(ConfigEpoch::Table)
                     .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
             );
@@ -247,74 +178,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bump_epoch_increments() {
-        let repo = test_repo().await;
-        assert_eq!(repo.get_epoch().await.expect("get").epoch, 0);
-        assert_eq!(repo.bump_epoch("definitions").await.expect("bump"), 1);
-        assert_eq!(repo.bump_epoch("definitions").await.expect("bump"), 2);
-        assert_eq!(repo.get_epoch().await.expect("get").epoch, 2);
-    }
-
-    /// A bump stamps the scope with the epoch it produced, so a reader can
-    /// tell this change's scope from one left behind by an earlier bump.
-    /// Both columns move in one statement — the read-back must never show a
-    /// scope trailing its epoch by one, which is what a right-hand side
-    /// evaluated against the *new* `epoch` would produce.
-    #[tokio::test]
-    async fn a_bump_binds_the_scope_to_the_epoch_it_wrote() {
-        let repo = test_repo().await;
-        for expected in 1..=3 {
-            assert_eq!(repo.bump_epoch("connectors").await.expect("bump"), expected);
-            let row = repo.get_epoch().await.expect("get");
-            assert_eq!(row.epoch, expected);
-            assert_eq!(row.epoch_scope_at, expected);
-            assert_eq!(row.epoch_scope, "connectors");
-            assert_eq!(
-                crate::cluster::EpochScope::for_advance(
-                    row.epoch - 1,
-                    row.epoch,
-                    row.epoch_scope_at,
-                    &row.epoch_scope
-                ),
-                crate::cluster::EpochScope::Connectors
-            );
-        }
-    }
-
-    /// The rolling-deploy case, reproduced against the real column: a writer
-    /// that predates the binding advances `epoch` alone. The scope it leaves
-    /// behind is recognised, so only `epoch_scope_at` can disqualify it.
-    #[tokio::test]
-    async fn an_unstamped_bump_leaves_the_previous_scope_untrusted() {
-        let repo = test_repo().await;
-        repo.bump_epoch("definitions").await.expect("bump");
-
-        // What a 1.3.x binary's bump_epoch does: the counter, nothing else.
-        let update = Query::update()
-            .table(ConfigEpoch::Table)
-            .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
-            .to_owned();
-        repo.update_epoch_row(update, ConfigEpoch::Epoch)
-            .await
-            .expect("legacy bump");
-
-        let row = repo.get_epoch().await.expect("get");
-        assert_eq!(row.epoch, 2);
-        assert_eq!(row.epoch_scope, "definitions", "the column is sticky");
-        assert_eq!(row.epoch_scope_at, 1, "and it still names the old epoch");
-        assert_eq!(
-            crate::cluster::EpochScope::for_advance(
-                row.epoch - 1,
-                row.epoch,
-                row.epoch_scope_at,
-                &row.epoch_scope
-            ),
-            crate::cluster::EpochScope::All,
-            "an unattributable scope must cost the wide resync"
-        );
-    }
-
-    #[tokio::test]
     async fn test_breaker_reset_records_key() {
         let repo = test_repo().await;
         assert_eq!(
@@ -326,8 +189,6 @@ mod tests {
         let row = repo.get_epoch().await.expect("get");
         assert_eq!(row.breaker_epoch, 1);
         assert_eq!(row.breaker_key, "conn:http");
-        // Config epoch untouched.
-        assert_eq!(row.epoch, 0);
     }
 
     #[tokio::test]

@@ -26,19 +26,20 @@ recorded `skipped_singleton` rather than piling on.
 
 **`package.json` says which Orion the set needs.** Cron channels arrived in
 1.6.0, so the set declares `">=1.6.0, <2"`. `lint`, `compile` and `fmt` check
-the running binary against it first, and `compile` carries it into the
-artifact's `requires.orion`, where `package plan` and `apply` check the target.
+the running binary against it first, so a set compiled by an older binary
+fails before it is deployed.
 
 ## Deploy it
 
 ```bash
-./examples/deploy.sh nightly-rollup
+orion-server compile examples/packages/nightly-rollup -o dist/nightly-rollup
+orion-cli deployments apply -d dist/nightly-rollup
 ```
 
 ## Run it now, without waiting until 02:15
 
 ```bash
-orion-cli channels trigger nightly-order-rollup
+curl -s -X POST http://localhost:8080/api/v2/admin/channels/nightly-order-rollup/trigger
 orion-cli cron list --channel-id nightly-order-rollup
 ```
 

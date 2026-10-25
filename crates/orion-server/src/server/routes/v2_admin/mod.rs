@@ -15,6 +15,7 @@ pub(crate) mod definitions;
 pub(crate) mod deployments;
 pub(crate) mod edition;
 pub(crate) mod packages;
+pub(crate) mod plugin_definition;
 
 use std::collections::BTreeMap;
 
@@ -38,7 +39,13 @@ pub use orion_api::v2::{
     RollbackDeploymentRequest, ScaffoldRequest, UploadPackageRequest,
 };
 
-pub fn v2_admin_routes(max_admin_body_size: usize) -> Router<AppState> {
+/// The v2 admin API. `definition_body_size` bounds `POST /definitions`,
+/// whose plugin definitions carry a component; everything else is bounded by
+/// `max_admin_body_size`.
+pub fn v2_admin_routes(
+    max_admin_body_size: usize,
+    definition_body_size: usize,
+) -> Router<AppState> {
     Router::new()
         .route("/runtime-capabilities", get(get_runtime_capabilities))
         .route(
@@ -88,7 +95,7 @@ pub fn v2_admin_routes(max_admin_body_size: usize) -> Router<AppState> {
         .route("/authoring/scaffold", post(authoring::authoring_scaffold))
         .route("/authoring/lint", post(authoring::authoring_lint))
         .route("/authoring/pack", post(authoring::authoring_pack))
-        .merge(definitions::routes())
+        .merge(definitions::routes().layer(DefaultBodyLimit::max(definition_body_size)))
         .layer(DefaultBodyLimit::max(max_admin_body_size))
 }
 
@@ -322,7 +329,10 @@ mod tests {
         .await
         .expect("assemble test server");
         let app = axum::Router::new()
-            .nest("/api/v2/admin", super::v2_admin_routes(10 * 1024 * 1024))
+            .nest(
+                "/api/v2/admin",
+                super::v2_admin_routes(10 * 1024 * 1024, 10 * 1024 * 1024),
+            )
             .with_state(assembled.state);
 
         async fn send_get<Resp: serde::de::DeserializeOwned>(

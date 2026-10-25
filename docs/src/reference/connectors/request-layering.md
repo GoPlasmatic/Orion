@@ -42,7 +42,7 @@ Parameters are applied in this order, and all three layers survive:
 | 2 | A query string on the task's `path` |
 | 3 | Connector `query_params` |
 
-**Do not put credentials in the connector `url` instead.** It works, and it fails two ways. Export masks a query value whose *name* looks secret, and `pwd` is masked where `pass` is not. Re-import then refuses the masked literal, so the connector cannot be promoted between instances. The resolved URL is also interpolated into every timeout and failure message. That reaches traces, the DLQ, server logs, OTel spans, the trace read API and the admin connector probe's response body. A caller can reach the trace read API with its own `x-trace-token`, so this is not an admin-only exposure.
+**Do not put credentials in the connector `url` instead.** A deployment refuses credentials in a URL, so the connector does not compile. The resolved URL is also interpolated into every timeout and failure message. That reaches traces, the DLQ, server logs, OTel spans and the trace read API. A caller can reach the trace read API with its own `x-trace-token`, so this is not an admin-only exposure.
 
 `query_params` avoids all of that because the values are **never merged into the URL**. They are applied at the request builder, so the SSRF-validated URL and every error message stay credential-free. They cannot ride a cross-host redirect, the same rule headers and auth already follow. They are percent-encoded, so a secret containing `&`, `=` or a space works where URL interpolation would silently corrupt it.
 
@@ -51,7 +51,7 @@ Two behaviours to know:
 - **Order is sorted, not authored.** Parameter order is observable on the wire and matters to signature-based gateways, so the map is stored sorted rather than in an order that would vary per call.
 - **A name already present in the connector `url`'s query is refused at authoring time**: the request would otherwise carry it twice with an undefined tie-break.
 
-Values mask on admin reads like header values do, and a `env://`/`vault://` reference survives export → import intact. Use references rather than literals for anything secret: a masked literal cannot be re-imported.
+Use `env://` or `vault://` references rather than literals for anything secret. A reference becomes a secret locator of the connection, so the stored revision never holds the value.
 
 ## Related
 

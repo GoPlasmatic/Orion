@@ -1,21 +1,16 @@
 Getting Started:
   orion-cli config set-server http://localhost:8080
   orion-cli health
-  orion-cli workflows create -f workflow.json
-  orion-cli workflows activate <id>
+  orion-server compile ./definitions -o dist/deployment
+  orion-cli deployments apply -d dist/deployment
   orion-cli send my-channel -d '{"key": "value"}'
 
 Typical Workflow:
-  1. health          -- verify server is reachable
-  2. connectors      -- set up external service connections
-  3. workflows       -- define processing pipelines
-  4. channels        -- create endpoints that route data to workflows
-  5. activate        -- activate draft workflows and channels
-  6. workflows test  -- dry-run with sample data
-  7. send            -- send real data for processing
-
-  Activation hot-reloads the engine on its own; `engine reload` is only
-  needed for changes committed with --defer-reload, or to force a rebuild.
+  1. health              -- verify server is reachable
+  2. orion-server compile -- turn a definition set into a deployment directory
+  3. deployments apply -d -- upload its definitions and connections, apply it
+  4. send                -- send real data for processing
+  5. traces              -- see what ran
 
 Environment Variables:
   ORION_SERVER_URL      Server URL (overrides config file)

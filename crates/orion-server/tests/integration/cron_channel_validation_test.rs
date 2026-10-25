@@ -333,7 +333,7 @@ async fn routing_fields_of_other_protocols_are_refused() {
             ))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "{field}");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{field}");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .expect("body");

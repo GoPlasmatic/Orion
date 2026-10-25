@@ -70,13 +70,14 @@ wrote signer.pem
 public_keys value: YpbiNmxkTrZbCBochFhVIDEKlXbVrHwdtUcw93+slbM=
 ```
 
-Sign every plugin in a tree, check the result against a node's own config, and upload one:
+Sign every plugin in a tree, and check the result against a node's own config:
 
 ```bash
 orion-server plugin sign plugins/ --key signer.pem
 orion-server -c config.toml plugin verify plugins/
-orion-cli plugins create -f plugins/scoring/plugin.toml --signature plugins/scoring/scoring.wasm.sig
 ```
+
+A plugin definition sent to [`POST /api/v2/admin/definitions`](../../admin-api/deployments.md#definitions) carries its detached signature beside the manifest and the component.
 
 Write the signatures into one directory instead of beside each component:
 
@@ -90,4 +91,4 @@ The same message and encodings are what the OpenSSL pipeline on the [manifest pa
 
 - [Plugin manifest](../../plugin-manifest.md): the `component` field and the signature rules.
 - [Server configuration › Plugins](../../configuration/plugins.md): `[plugins.trust]` and `public_keys`.
-- [`orion-cli plugins`](../orion-cli/plugins.md): uploading a component with its `.sig`.
+- [Deployment endpoints](../../admin-api/deployments.md#definitions): uploading a plugin definition with its signature.

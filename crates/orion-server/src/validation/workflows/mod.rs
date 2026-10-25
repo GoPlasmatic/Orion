@@ -1,6 +1,6 @@
 use crate::engine::FunctionRegistry;
 use crate::errors::{FieldError, OrionError};
-use crate::storage::repositories::workflows::{CreateWorkflowRequest, UpdateWorkflowRequest};
+use crate::storage::models::CreateWorkflowRequest;
 use serde_json::Value;
 
 use super::common::{uncompiled_source_errors, validate_description, validate_id, validate_name};
@@ -79,72 +79,6 @@ fn reject_stray_secret_references(
         "Workflow sends a secret reference somewhere it is never resolved",
         refs,
     ))
-}
-
-/// `stored` is the draft the update applies to, when the caller has it. An
-/// update carrying only one of `tasks` and `loop` keeps the stored other half,
-/// and the two share one step-id namespace, so each is checked against the
-/// other as it will be written: a new body step can collide with a stored
-/// setup step and the reverse. Without `stored`, only the request's own half
-/// is checked.
-pub fn validate_update_workflow(
-    req: &UpdateWorkflowRequest,
-    stored: Option<&crate::storage::models::Workflow>,
-    max_loop_iterations: i64,
-    functions: &FunctionRegistry,
-) -> Result<(), OrionError> {
-    if let Some(ref name) = req.name {
-        validate_name(name, "workflow.name")?;
-    }
-    if let Some(ref desc) = req.description {
-        validate_description(desc, "workflow.description")?;
-    }
-    let source = source_form_errors(
-        req.tasks.as_ref(),
-        req.condition.as_ref(),
-        req.loop_config.as_ref(),
-    );
-    if !source.is_empty() {
-        return Err(uncompiled(source));
-    }
-    // `null` clears the loop and needs no checking; anything else is a config
-    // that has to hold up.
-    if let Some(loop_config) = &req.loop_config
-        && !loop_config.is_null()
-    {
-        let loop_errors = validate_workflow_loop_schema(loop_config, max_loop_iterations);
-        if !loop_errors.is_empty() {
-            return Err(validation_with_details(
-                "Workflow loop is invalid",
-                loop_errors,
-            ));
-        }
-    }
-    let loop_changed = matches!(&req.loop_config, Some(l) if !l.is_null());
-    if req.tasks.is_some() || loop_changed {
-        // The steps as they will be written: the request's half where it
-        // carries one, the stored draft's otherwise. With no body to check a
-        // new loop against (no stored draft given), the loop's own fields
-        // above are all this request can speak for.
-        let stored_tasks = stored.and_then(|w| serde_json::from_str::<Value>(&w.tasks_json).ok());
-        let stored_loop = stored
-            .and_then(|w| w.loop_json.as_deref())
-            .and_then(|json| serde_json::from_str::<Value>(json).ok());
-        let loop_config = match &req.loop_config {
-            Some(l) if l.is_null() => None,
-            Some(l) => Some(l),
-            None => stored_loop.as_ref(),
-        };
-        if let Some(tasks) = req.tasks.as_ref().or(stored_tasks.as_ref()) {
-            reject_task_errors(validate_workflow_tasks_schema(
-                tasks,
-                loop_config,
-                functions,
-            ))?;
-            reject_stray_secret_references(tasks, loop_config, functions)?;
-        }
-    }
-    Ok(())
 }
 
 /// The keys dataflow-rs reads on a `loop` (3.14).

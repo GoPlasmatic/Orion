@@ -133,10 +133,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ClusterRepository for LeaseHeldElsewhere {
-        async fn bump_epoch(&self, _scope: &str) -> Result<i64, OrionError> {
-            unreachable!("not used by audit cleanup")
-        }
-
         async fn get_epoch(&self) -> Result<EpochRow, OrionError> {
             unreachable!("not used by audit cleanup")
         }

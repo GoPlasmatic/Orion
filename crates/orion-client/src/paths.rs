@@ -11,8 +11,7 @@
 //! `[alnum][alnum.\-_]*` server-side and so encode to themselves, but a
 //! channel **name** is not: `validate_name` checks only emptiness and length.
 //! A channel named `orders/v2` was therefore reachable over HTTP and
-//! unreachable from this client, which is the whole of `orion-cli` and
-//! `orion-server package`.
+//! unreachable from this client, which is the whole of `orion-cli`.
 //!
 //! The server has always been ready for the encoded spelling: it decodes a
 //! single-segment data path exactly once, "so the encoded spelling of a name
@@ -35,85 +34,15 @@ const UNRESERVED_ONLY: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPH
 
 /// Percent-encode one path segment. A well-formed entity id is entirely
 /// unreserved and encodes to itself, so this is a no-op on every path that
-/// carries one — it earns its keep on the free-form values: a channel name, a
-/// package name, an id a caller typed wrong.
+/// carries one — it earns its keep on the free-form values: a channel name,
+/// an id a caller typed wrong.
 fn seg(value: &str) -> percent_encoding::PercentEncode<'_> {
     percent_encoding::utf8_percent_encode(value, UNRESERVED_ONLY)
 }
 
-// -- Admin: workflows --
-pub const WORKFLOWS: &str = "/api/v2/admin/workflows";
-pub const WORKFLOWS_EXPORT: &str = "/api/v2/admin/workflows/export";
-pub const WORKFLOWS_IMPORT: &str = "/api/v2/admin/workflows/import";
-pub const WORKFLOWS_VALIDATE: &str = "/api/v2/admin/workflows/validate";
-
-pub fn workflow(id: &str) -> String {
-    format!("{WORKFLOWS}/{}", seg(id))
-}
-pub fn workflow_status(id: &str) -> String {
-    format!("{WORKFLOWS}/{}/status", seg(id))
-}
-pub fn workflow_rollout(id: &str) -> String {
-    format!("{WORKFLOWS}/{}/rollout", seg(id))
-}
-pub fn workflow_test(id: &str) -> String {
-    format!("{WORKFLOWS}/{}/test", seg(id))
-}
-pub fn workflow_versions(id: &str) -> String {
-    format!("{WORKFLOWS}/{}/versions", seg(id))
-}
-pub fn workflow_dependencies(id: &str) -> String {
-    format!("{WORKFLOWS}/{}/dependencies", seg(id))
-}
-
-// -- Admin: channels --
-pub const CHANNELS: &str = "/api/v2/admin/channels";
-pub const CHANNELS_EXPORT: &str = "/api/v2/admin/channels/export";
-pub const CHANNELS_IMPORT: &str = "/api/v2/admin/channels/import";
-pub const CHANNELS_VALIDATE: &str = "/api/v2/admin/channels/validate";
-
-pub fn channel(id: &str) -> String {
-    format!("{CHANNELS}/{}", seg(id))
-}
-pub fn channel_status(id: &str) -> String {
-    format!("{CHANNELS}/{}/status", seg(id))
-}
-pub fn channel_versions(id: &str) -> String {
-    format!("{CHANNELS}/{}/versions", seg(id))
-}
-
-// -- Admin: plugins --
-pub const PLUGINS: &str = "/api/v2/admin/plugins";
-pub const PLUGINS_EXPORT: &str = "/api/v2/admin/plugins/export";
-pub const PLUGINS_IMPORT: &str = "/api/v2/admin/plugins/import";
-pub const PLUGINS_VALIDATE: &str = "/api/v2/admin/plugins/validate";
-
-pub fn plugin(id: &str) -> String {
-    format!("{PLUGINS}/{}", seg(id))
-}
-pub fn plugin_status(id: &str) -> String {
-    format!("{PLUGINS}/{}/status", seg(id))
-}
-pub fn plugin_versions(id: &str) -> String {
-    format!("{PLUGINS}/{}/versions", seg(id))
-}
-pub fn plugin_dependencies(id: &str) -> String {
-    format!("{PLUGINS}/{}/dependencies", seg(id))
-}
-
-// -- Admin: connectors --
-pub const CONNECTORS: &str = "/api/v2/admin/connectors";
-pub const CONNECTORS_EXPORT: &str = "/api/v2/admin/connectors/export";
-pub const CONNECTORS_IMPORT: &str = "/api/v2/admin/connectors/import";
-pub const CONNECTORS_VALIDATE: &str = "/api/v2/admin/connectors/validate";
+// -- Admin: circuit breakers --
 pub const CIRCUIT_BREAKERS: &str = "/api/v2/admin/connectors/circuit-breakers";
 
-pub fn connector(id: &str) -> String {
-    format!("{CONNECTORS}/{}", seg(id))
-}
-pub fn connector_test(id: &str) -> String {
-    format!("{CONNECTORS}/{}/test", seg(id))
-}
 pub fn circuit_breaker(id: &str) -> String {
     format!("{CIRCUIT_BREAKERS}/{}", seg(id))
 }
@@ -154,13 +83,12 @@ pub fn cron_occurrence_cancel(id: &str) -> String {
 /// A manual run of a cron channel. On the *channel* route, not under `/cron`,
 /// because it names a channel and is audited as a channel mutation.
 pub fn channel_trigger(id: &str) -> String {
-    format!("{CHANNELS}/{id}/trigger")
+    format!("/api/v2/admin/channels/{}/trigger", seg(id))
 }
 
 pub const AUDIT_LOGS: &str = "/api/v2/admin/audit-logs";
 pub const BACKUPS: &str = "/api/v2/admin/backups";
 pub const ENGINE_STATUS: &str = "/api/v2/admin/engine/status";
-pub const ENGINE_RELOAD: &str = "/api/v2/admin/engine/reload";
 pub const FUNCTIONS: &str = "/api/v2/admin/functions";
 
 // -- Admin: response-cache invalidation --
@@ -250,10 +178,10 @@ mod tests {
 
     #[test]
     fn parameterized_paths_interpolate() {
-        assert_eq!(workflow("wf-1"), "/api/v2/admin/workflows/wf-1");
+        assert_eq!(trace("t-1"), "/api/v2/admin/traces/t-1");
         assert_eq!(
-            workflow_status("wf-1"),
-            "/api/v2/admin/workflows/wf-1/status"
+            channel_trigger("nightly"),
+            "/api/v2/admin/channels/nightly/trigger"
         );
         assert_eq!(
             circuit_breaker("db"),
@@ -294,11 +222,11 @@ mod tests {
     #[test]
     fn a_well_formed_id_encodes_to_itself() {
         for id in ["wf-1", "orders_v2", "a.b.c", "X9", "a-b_c.d~e"] {
-            assert_eq!(workflow(id), format!("/api/v2/admin/workflows/{id}"));
-            assert_eq!(channel(id), format!("/api/v2/admin/channels/{id}"));
-            assert_eq!(connector(id), format!("/api/v2/admin/connectors/{id}"));
-            assert_eq!(plugin(id), format!("/api/v2/admin/plugins/{id}"));
             assert_eq!(trace(id), format!("/api/v2/admin/traces/{id}"));
+            assert_eq!(
+                v2_connection_probe(id),
+                format!("/api/v2/admin/connections/{id}/probe")
+            );
         }
     }
 
@@ -307,8 +235,8 @@ mod tests {
     #[test]
     fn surrounding_segments_are_not_encoded() {
         assert_eq!(
-            workflow_status("a/b"),
-            "/api/v2/admin/workflows/a%2Fb/status"
+            channel_trigger("a/b"),
+            "/api/v2/admin/channels/a%2Fb/trigger"
         );
         assert_eq!(
             trace_dlq_requeue("a b"),

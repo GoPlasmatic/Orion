@@ -32,8 +32,8 @@ Guessing is already rate-limited. After five consecutive failures a client is pu
 With `header = "Authorization"` the key travels as `Bearer <key>`; any other header name takes the raw value:
 
 ```bash
-curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/api/v2/admin/workflows
-curl -H "X-API-Key: your-secret-key"            http://localhost:8080/api/v2/admin/workflows
+curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/api/v2/admin/deployments
+curl -H "X-API-Key: your-secret-key"            http://localhost:8080/api/v2/admin/deployments
 ```
 
 ## Decide how the data plane authenticates
@@ -113,7 +113,7 @@ connector_encryption_key = "env://ORION_SECRET_CONNECTOR_KEY"
 
 A database dump then carries an opaque envelope (AES-256-GCM) instead of credentials.
 
-Reads of a connector are masked by allowlist. Only the structural vocabulary each type defines comes back readable, and everything else is `"******"`. A credential under an unanticipated key fails closed rather than shipping in clear. The normative rules are [Secret masking](../../reference/connectors/masking.md).
+A connection revision holds no credential to read back. Its `public_config` refuses a secret-shaped key or a password in a URL. Credentials are references under `secret_locators`, resolved where the connection is used. See [Connections](../../reference/admin-api/deployments.md#connections).
 
 ### What a failed call may repeat back
 
@@ -170,9 +170,9 @@ Credentialed cross-origin sessions usually also need `set-cookie` in `cors.addit
 
 A [plugin](../../concepts/plugins.md) is code you did not write running inside the server, so its security model is worth stating exactly. Three things are true by construction, and two are deliberately not claimed.
 
-**By construction.** The WebAssembly world a plugin implements imports nothing: no filesystem, clock, randomness, sockets, logging, connectors, secrets or task context. Reads arrive only through the task's evaluated input; writes leave only through the return value, which the host writes at one `output` path. Every invocation runs in a fresh instance under the node's ceilings, set in [`[plugins]`](../../reference/configuration/plugins.md). Those are linear memory, wall clock, input and output size, concurrency per function, and a fuel backstop. A per-plugin override may only lower one. A failure of any kind writes nothing; a trapped instance is dropped, so no guest state crosses messages. Guest strings never reach a metric label, and a trap's internals go to the operator log, never to a client. A `{"secret": …}` node is refused anywhere in a plugin task's input at create time, so a template field cannot evaluate a secret into the sandbox.
+**By construction.** The WebAssembly world a plugin implements imports nothing: no filesystem, clock, randomness, sockets, logging, connectors, secrets or task context. Reads arrive only through the task's evaluated input; writes leave only through the return value, which the host writes at one `output` path. Every invocation runs in a fresh instance under the node's ceilings, set in [`[plugins]`](../../reference/configuration/plugins.md). Those are linear memory, wall clock, input and output size, concurrency per function, and a fuel backstop. A per-plugin override may only lower one. A failure of any kind writes nothing; a trapped instance is dropped, so no guest state crosses messages. Guest strings never reach a metric label, and a trap's internals go to the operator log, never to a client. A `{"secret": …}` node is refused anywhere in a plugin task's input at upload time, so a template field cannot evaluate a secret into the sandbox.
 
-**Who may install one.** The admin credential, the one that already reads and writes connector secrets, so a plugin adds no new principal. The optional hardening on top is [`[plugins.trust]`](../../reference/plugin-manifest.md#trust). When it names Ed25519 public keys, an upload must carry a signature over the component digest by one of them. Every node verifies it again when it loads the version. [`orion-server plugin`](../../reference/cli/orion-server/plugin.md) creates the key and signs the component. Leave `plugins.enabled = false` on any node that should never run one; a stored plugin then quarantines the workflows naming its functions rather than running.
+**Who may install one.** The admin credential, the one that already deploys workflows and connections, so a plugin adds no new principal. The optional hardening on top is [`[plugins.trust]`](../../reference/plugin-manifest.md#trust). When it names Ed25519 public keys, an upload must carry a signature over the component digest by one of them. Every node verifies it again when it loads the version. [`orion-server plugin`](../../reference/cli/orion-server/plugin.md) creates the key and signs the component. Leave `plugins.enabled = false` on any node that should never run one; a deployed plugin then quarantines the workflows naming its functions rather than running.
 
 **Not claimed.** That a malicious plugin is harmless. Wasmtime, Cranelift and the component toolchain join the trusted computing base, and the update policy for them is in `SECURITY.md`. Or that the sandbox sees a wrong answer. It bounds blast radius, not truth, and a codec that mis-parses a field mis-parses it in a sandbox. Review a plugin's source as you would a connector's credentials.
 
@@ -188,7 +188,7 @@ Check the config, then prove the admin plane refuses an anonymous caller:
 
 ```bash
 orion-server validate-config -c config.toml
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/api/v2/admin/workflows
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/api/v2/admin/deployments
 ```
 
 The first prints the effective config with secrets masked and refuses a malformed proxy entry. The second prints `401`. With TLS on, `curl -sI https://…` shows a `strict-transport-security` header.
@@ -198,5 +198,5 @@ The first prints the effective config with secrets masked and refuses a malforme
 - [Production checklist](../production-checklist.md): every pre-go-live item, including the ones on this page, as one list.
 - [Run a cluster](../deploy/cluster.md): what changes about all of this once there is more than one replica.
 - [Channel configuration](../../reference/channel-config/index.md): the per-channel `auth`, `origin_allow_list` and validation contracts.
-- [Connector types](../../reference/connectors/index.md): secret references, masking and operation gates in full.
+- [Connector types](../../reference/connectors/index.md): secret references and operation gates in full.
 - [Server configuration](../../reference/configuration/index.md): every key named here, with its default and environment variable.

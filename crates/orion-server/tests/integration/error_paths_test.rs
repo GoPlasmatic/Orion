@@ -271,7 +271,29 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
     );
 
     // Admin, over its *own* bound: the same condition as the data plane's, so
-    // the same status.
+    // the same status. (`POST /definitions` carries plugin components, so its
+    // bound is the component-sized one; a connection revision is held to
+    // `server.max_admin_body_size`.)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/admin/connections",
+            Some(json!({"connection_id": "big", "revision": 1,
+                        "provider_digest": "sha256:x",
+                        "public_config": { "note": "y".repeat(300 * 1024) }})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "both planes must answer an oversize body the same way"
+    );
+
+    // A definition upload is bounded by the largest plugin component it can
+    // carry, not by `server.max_admin_body_size`: the same 300 KiB reaches
+    // validation, which refuses it for what it is.
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -281,9 +303,5 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         ))
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::PAYLOAD_TOO_LARGE,
-        "both planes must answer an oversize body the same way"
-    );
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

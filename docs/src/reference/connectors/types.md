@@ -14,7 +14,7 @@ The three types a connector may be, and the `config` each one takes.
 
 Type values match case-insensitively. Any other value is refused with the valid list. A stored connector whose config no longer parses fails to load and surfaces as a connector load issue.
 
-**Required** `yes` on a type's field table means create and update are refused without the field. `—` in **Default** means the field is optional and unset until you set it.
+**Required** `yes` on a type's field table means a connector without the field is refused. `—` in **Default** means the field is optional and unset until you set it.
 
 ## Related
 

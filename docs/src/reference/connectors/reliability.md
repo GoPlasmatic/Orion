@@ -8,7 +8,7 @@ The one connector type that retries, the loop it runs, and the breaker that shed
 
 ## Retries
 
-Only `http` connectors retry. A `retry` block on any other type is refused with 400 on create and update — it would otherwise be silently ignored. No other connector type re-drives a failed call: a call that timed out may already have been applied.
+Only `http` connectors retry. A `retry` block on any other type is refused, because it would otherwise be silently ignored. No other connector type re-drives a failed call: a call that timed out may already have been applied.
 
 The `retry` object accepts exactly two keys; an unknown key is refused:
 
@@ -40,7 +40,7 @@ When enabled, breakers behave as follows:
 - **Half-open admits a single probe.** After `recovery_timeout_secs`, one request is let through. Success closes the breaker; failure reopens it.
 - **The breaker map is bounded** at `max_breakers` entries with LRU eviction. Eviction prefers a closed victim: evicting an open breaker would re-admit full load to a dependency still known to be broken. Only when every breaker is open does plain LRU apply, with a warning.
 
-List and reset breakers through the [Admin API](../admin-api/connectors.md).
+List and reset breakers through the [circuit breaker endpoints](../admin-api/circuit-breakers.md).
 
 ## Related
 

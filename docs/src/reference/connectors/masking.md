@@ -1,22 +1,23 @@
-<!-- description: How connector reads and exports mask by allowlist, which values pass through unmasked, and why a literal secret cannot be re-imported. -->
+<!-- description: Why a connection revision holds no secret value: references move to secret locators, and a literal credential is refused before it is stored. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Secret masking
 
-What a connector read gives back readable, what it replaces, and what that means for export then import.
+Why a connection read has nothing to mask.
 
-Connector API reads mask by **allowlist**. A field comes back readable only when its key is on the known-safe list. Every other value — including a secret stored under a key the list never anticipated — returns as `"******"`. Unanticipated secrets fail closed.
+A connection revision stores no secret value. Its `secret_locators` map a dotted config path to a reference such as `env://ORDERS_DB_URL` or `vault://secret/data/db#url`. The node resolves the reference when the connection is used. A read of the revision therefore gives back the references, which are pointers, not secrets.
 
-- `env://` and `vault://` references pass through unmasked. They are pointers, not secrets, and masking them would break export → import.
-- `connection_string` and all header values are always masked.
-- Readable URL-shaped values are redacted in band: userinfo and query parameters are stripped.
+`public_config` refuses anything that looks like a credential, before it is stored:
 
-Exports apply the same masking, so a literal secret does not survive export → import. Author connectors with `env://` references. See [Secrets in an exported bundle](../admin-api/export-and-promotion.md#secrets-in-an-exported-bundle).
+- a secret-shaped key, such as `password`, `token` or `secret`, with a literal value;
+- an `Authorization` value;
+- credentials in a URL.
+
+`orion-server compile` applies the same check to a definition set, so a literal credential fails at compile rather than at deploy. Author connectors with `env://` or `vault://` references.
 
 ## Related
 
 - [Connector types](./index.md): every type, and the shared blocks all of them carry.
-- [Secrets by reference](./secrets.md): the references that pass through unmasked.
-- [Promote a package](../../operate/maintain/promotion.md): moving connectors between instances.
-- [Admin API — Connectors](../admin-api/connectors.md): the endpoints, and the reachability probe.
+- [Secrets by reference](./secrets.md): the references a locator holds.
+- [Deployment endpoints](../admin-api/deployments.md#connections): connection revisions and their locators.

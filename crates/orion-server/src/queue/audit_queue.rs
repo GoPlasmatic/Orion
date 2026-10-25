@@ -104,7 +104,7 @@ impl AuditWriterHandle {
     /// * The queue depth reaches zero. This is the condition that actually
     ///   matters, and waiting on it as well means a background task still
     ///   holding an `AppState` clone the runtime has not finished dropping
-    ///   (the cluster epoch watcher, just aborted) cannot stall shutdown for
+    ///   (the cluster reconciler, just aborted) cannot stall shutdown for
     ///   the whole timeout over a queue that is already empty.
     ///
     /// Truncation is reported, never silent: an audit trail that lost rows has

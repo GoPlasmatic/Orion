@@ -1,4 +1,4 @@
-<!-- description: Run Orion as a multi-node cluster: what replicas share, epoch-based reload, job leases, and the one database behind rate limits, dedup and caches. -->
+<!-- description: Run Orion as a multi-node cluster: what replicas share, how a deployment reaches every node, job leases, and the database behind rate limits and caches. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -10,7 +10,7 @@
 
 Cluster mode needs one shared backend: **PostgreSQL or MySQL**. Startup refuses `sqlite:`, because a file is single-host by construction.
 
-That database is all the replicas share. Config epochs, job leases and the cron ledger live in it, and so do dedup claims, response caches and per-channel rate-limit windows. A cluster needs no Redis or other coordination service.
+That database is all the replicas share. The deployment history, job leases and the cron ledger live in it, and so do dedup claims, response caches and per-channel rate-limit windows. A cluster needs no Redis or other coordination service.
 
 | Backend | Single instance | Cluster mode | Notes |
 |---------|:-:|:-:|-------|
@@ -24,7 +24,7 @@ Reach for cluster mode when you need one of these, in roughly this order:
 
 - **Availability.** One node is one restart away from an outage. Two behind a load balancer survive a rolling deploy, a node failure and a kernel upgrade.
 - **Correct guards across replicas.** The moment a second node exists, per-node dedup and rate limits stop meaning what they say. Cluster mode is what makes "100 requests per second" a fleet-wide number rather than a per-node one.
-- **Config changes that fan out.** Without it, an activation reaches only the node that received the API call.
+- **Deployments that every node serves.** Every replica follows the same deployment head, and convergence reports which nodes serve it.
 
 Throughput is usually the weakest reason. In the published Orion 1.0.0 test, a single instance sustained 5.1K to 5.7K workflow requests per second with single-digit-millisecond average latency. The [benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) ran on an Apple M2 Pro Mac Mini with a release build and 50 concurrent connections. Treat that as a versioned benchmark result, not a capacity promise for another release, machine or workflow. Most estates hit an availability requirement long before they hit a throughput ceiling.
 
@@ -38,7 +38,7 @@ Point every replica at the shared database:
 ```toml
 [cluster]
 enabled = true
-epoch_poll_interval_ms = 2000      # how often nodes poll for config changes
+epoch_poll_interval_ms = 2000      # how often each node's reconciler polls the database
 instance_id = ""                   # auto-generated UUID when empty; max 64 chars
 
 [storage]
@@ -52,49 +52,26 @@ auto_migrate = false               # run `orion-server migrate` as a deploy step
 
 | Concern | How it works |
 |---|---|
-| **Config changes** | Every admin mutation advances a shared config epoch in the database, recording *what* it changed. Each replica polls it every `epoch_poll_interval_ms` and resyncs the parts that moved. See [How a change reaches every node](#how-a-change-reaches-every-node). |
+| **Deployments** | A committed deployment is a row in the database. Each replica's reconciler polls the head every `epoch_poll_interval_ms` and builds the revision it should serve. See [How a deployment reaches every node](#how-a-deployment-reaches-every-node). |
 | **Deduplication** | In the shared database: the same idempotency key on two nodes gets exactly one execution and a `409` for the replay. Expiry is judged on the database's clock, so nodes with skewed clocks agree. |
 | **Response caching** | In the shared database, so a second node serves a warm cache instead of warming its own. |
 | **Per-channel rate limits** | A one-second fixed window counted in the shared database; the configured rate holds across all replicas combined. Each limited request costs a short write transaction, so a busy rate-limited channel is database load to size for. |
 | **Background jobs** | Trace cleanup and DLQ retry take a per-tick lease, so one node runs each job. DLQ rows are row-leased too, so each entry is retried once. |
-| **Circuit-breaker resets** | `POST /circuit-breakers/{key}` fans out over the epoch bus; one call resets the key everywhere. |
+| **Circuit-breaker resets** | `POST /circuit-breakers/{key}` is recorded in the database, and every node's reconciler applies it. One call resets the key everywhere. |
 
 Every node also runs a sweeper that deletes expired dedup, cache and rate-limit rows from the shared tables every 30 seconds. Concurrent sweeps are harmless. An expired row already reads as absent, so a sweeper that stops leaves every answer correct and only lets the tables grow.
 
-### How a change reaches every node
+### How a deployment reaches every node
 
-The bump carries a *scope*, and the replicas resync to it:
+Every node runs one reconcile loop. Each tick it reads the committed deployment head. When the head has moved, it re-reads the deployment history and builds the revision it should serve. It also applies circuit-breaker resets requested on other nodes, and writes a heartbeat with the revision it serves.
 
-| What you changed | What every other node does |
-|---|---|
-| A workflow or a channel | Republishes its runtime generation (engine plus channel estate, one store). Connector pools are untouched. |
-| A connector (create, update, delete, reload) | The above, plus reloads its connector registry and drops its cached SQL pools, because the endpoint or the credentials behind a live connection may now be wrong. |
-
-Only the second row costs reconnections, and that is the point. Before the scope existed the epoch was a bare counter, so every node answered every bump with the widest resync there is. One workflow activation dropped every pooled connection across the whole fleet.
-
-A node running an older release bumps the epoch without writing a scope, and its peers read that as "everything". A mixed-version fleet therefore behaves as it did before: the reconnect storm, never a missed change. It stops as soon as every node is writing scopes.
-
-That holds because the scope is stamped with the epoch it was written for, not only stored. The scope column is sticky. An older node's bump advances the counter and leaves whatever the last scope-aware node wrote still sitting there. Read at face value, a connector change made by an old node would arrive at its peers wearing the previous change's `definitions` label. They would skip the connector reload and pool eviction it needed, and serve the old endpoint and the old credentials until something else bumped. A scope counts only when its stamp matches the current epoch. Anything else is the widest resync, which is what an unattributable scope has always meant.
-
-The row keeps one scope, so it describes one bump. A node that finds the epoch several ahead of what it last applied is applying all of those bumps in one resync. The scopes of the earlier ones were overwritten by the later ones. It resyncs wide, exactly as it would for a scope it could not attribute. That is the common case whenever changes come in a burst. Creating a connector and activating the workflow that uses it is three bumps, and they land well inside one `epoch_poll_interval_ms`. Peers pay one wide resync for the burst rather than one per change. The narrow scope does its work where it matters: a fleet at rest, where each change arrives on its own.
+A build that fails leaves the node serving what it had. The loop retries on the next tick. `GET /api/v2/admin/deployments/{revision}/convergence?target=observed` reports which nodes serve a revision. See [Convergence](../../reference/admin-api/deployments.md#convergence).
 
 ### A node that has recently started
 
-A booting node reads the epoch before it loads channels and workflows. Anything committed while it was starting is picked up by its first poll rather than missed. It is at most one `epoch_poll_interval_ms` behind, exactly like every other node. What is worth knowing is that it is behind while serving. `/healthz` and `/readyz` are green as soon as the first generation is published, so a load balancer sends it traffic at once. A channel activated during that window answers `404` there and `200` on its peers until the tick lands.
+A booting node is at most one `epoch_poll_interval_ms` behind, like every other node. It is behind while serving: `/healthz` and `/readyz` are green as soon as the first generation is published, so a load balancer sends it traffic at once. A deployment committed during that window can answer `404` there and `200` on its peers until the tick lands.
 
-That is normal eventual consistency, not a fault, and it is invisible at rest. It shows up when a deploy and a configuration change overlap. Roll a node and activate a channel in the same couple of seconds. A few requests meet the node that has not caught up yet. If that matters for a particular rollout, let the restarted node settle for one poll interval before making the change. Or make the change first and roll afterwards.
-
-### When a change does not propagate
-
-The bump happens after the mutation is committed and live on the node that served it. If the bump itself fails, because the database went away between the two, that node keeps serving the change. The others never hear about it. The request still succeeds, because it did: the row is written, and a `500` would only invite a retry that writes a second version.
-
-The signal is on the node instead. `/health` carries a `config_propagation` component in cluster mode:
-
-```json
-{ "components": { "config_propagation": "degraded" } }
-```
-
-`degraded` means at least one bump has failed since the last successful one, and peers may be serving stale configuration. It clears on the next successful bump; any mutation will do, because a resync re-reads everything from the database rather than applying a delta. `/readyz` is deliberately unaffected. This node is correct, and taking it out of rotation would not tell the others. Alert on the component, and on `orion_errors_total{reason="config_epoch_bump"}`.
+That is normal eventual consistency, not a fault. It shows up when a rolling restart and a deployment overlap. If that matters, let the restarted node settle for one poll interval before you apply. Or apply first and roll afterwards.
 
 ### Scheduled runs
 
@@ -114,7 +91,7 @@ These are per node by design, and each has ×N semantics you should size for:
 | **`/metrics`** | Scraped per node. Point Prometheus at every replica, or let it discover pods. |
 
 > [!WARNING]
-> A channel whose dedup or cache connector is missing, broken, or explicitly in-memory refuses to load in cluster mode. The activating admin call succeeds; the channel is then quarantined at load, refused at every ingress with a `503`, absent from the route table, and listed under `/health`'s `channels.quarantined` with `components.channels: "degraded"`. The node boots and every other channel keeps serving. Silently degrading to per-node state would leave a channel advertising a guarantee it no longer keeps.
+> A channel whose dedup or cache connector is missing, broken, or explicitly in-memory refuses to load in cluster mode. The deployment commits; the channel is then quarantined at load, refused at every ingress with a `503`, absent from the route table, and listed under `/health`'s `channels.quarantined` with `components.channels: "degraded"`. The node boots and every other channel keeps serving. Silently degrading to per-node state would leave a channel advertising a guarantee it no longer keeps.
 
 ## Migrate as a deploy step, not at boot
 
@@ -131,15 +108,14 @@ Both packaged deployments wire this in already. The Helm chart runs migrations a
 
 ## Verify
 
-Confirm that a change made through one node reaches the others:
+Confirm that a deployment applied through one node reaches the others:
 
 ```bash
-curl -s -X POST http://node-a:8080/api/v2/admin/engine/reload
-sleep 3
-curl -s http://node-b:8080/health | jq '{status, config_propagation: .components.config_propagation}'
+curl -s http://node-a:8080/api/v2/admin/deployments | jq '.head_revision'
+curl -s "http://node-b:8080/api/v2/admin/deployments/1/convergence?target=observed"
 ```
 
-`config_propagation` reads `ok` on every node, and an activation made through node A answers on node B within one `epoch_poll_interval_ms`. `deploy/ha/rolling-drill.sh` drives a zero-5xx rolling deploy against the compose topology. `deploy/ha/plugin-drill.sh` activates a [plugin](../../concepts/plugins.md) on one node and waits for it to converge on the other.
+Every node reports the head revision within one `epoch_poll_interval_ms`. `deploy/ha/rolling-drill.sh` drives a zero-5xx rolling deploy against the compose topology.
 
 ## Backups change shape in a cluster
 

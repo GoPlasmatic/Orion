@@ -159,6 +159,6 @@ key_path  = "/etc/orion/tls/server.key"
 ## Related
 
 - [Upgrades](../../operate/maintain/upgrades.md): the version-independent procedure.
-- [`orion-server preflight`](../../reference/cli/orion-server/preflight.md): the scan that finds the stored breaks.
+- `orion-server preflight`: the scan that finds the stored breaks.
 - [Server configuration](../../reference/configuration/index.md): every key, with its default.
 - [Releases](./index.md): what changed in each version.

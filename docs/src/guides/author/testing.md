@@ -51,7 +51,7 @@ Output:
 
 Pointing it at a directory validates every channel, workflow and connector under it *and* resolves the references between them. That catches a `channel_call` target that exists nowhere, a task naming a connector of the wrong type, and two channels claiming one route. Those cannot be caught one file at a time, because the file that would disprove them is one the command never opens. See [`lint`](../../reference/cli/orion-server/lint.md) for the flags.
 
-`lint` applies the same validators the admin API applies on create: task shapes, function names, and each connector function's `input` schema. It exits non-zero on any error, which is all a pull-request gate needs.
+`lint` applies the same validators the server applies when a definition is uploaded: task shapes, function names, and each connector function's `input` schema. It exits non-zero on any error, which is all a pull-request gate needs.
 
 It also prints advisory warnings on stderr without failing. Today there is one: JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim. `--deny-warnings` turns those into a failure for a gate that wants them to block:
 
@@ -59,7 +59,7 @@ It also prints advisory warnings on stderr without failing. Today there is one: 
 orion-server lint workflow.json --deny-warnings
 ```
 
-It stays advisory by default because operator names such as `length`, `type`, `keys` and `in` are ordinary field names. A document that legitimately holds a stored rule is a real payload. `POST /api/v2/admin/workflows/validate` reports the same findings in its `warnings` array.
+It stays advisory by default because operator names such as `length`, `type`, `keys` and `in` are ordinary field names. A document that legitimately holds a stored rule is a real payload.
 
 Every `orion-server` subcommand run without `-c` prints `Note: no config file specified…` on stderr. It is not a finding; redirect it or pass a config file.
 
@@ -120,7 +120,7 @@ orion-server dry-run -w workflow.json -i payload.json --stubs stubs.json
 Stubbing is all-or-nothing. A task with no matching stub fails, and the error names the stub that would satisfy it. A half-stubbed run reporting success would be worse than no stubs at all, because it looks like a pass. Two mistakes are caught when the file is parsed rather than at the failing task. One is naming a function that is not connector-backed; the other is putting the response where the target map belongs.
 
 > [!NOTE]
-> This is the offline counterpart to `POST /workflows/{id}/test`, which runs the same workflow against *live* connectors: real webhooks, real databases, real topics. Reach for the endpoint when you mean to touch the real systems, and for `dry-run` when you do not.
+> This is the offline counterpart to [`POST /api/v2/admin/definitions/test`](../../reference/admin-api/deployments.md#test-a-workflow-definition), which runs the same workflow on a node against *live* connections: real webhooks, real databases. Reach for the endpoint when you mean to touch the real systems, and for `dry-run` when you do not.
 
 ## Build a regression suite
 
@@ -298,7 +298,6 @@ Two more gates are worth running before a deploy, and both need config rather th
 ```bash
 orion-server validate-config -c config.toml    # unknown keys, invalid values, the effective config
 orion-server test-connectivity -c config.toml  # the database
-orion-server preflight -c config.toml          # stored channels and workflows the current rules refuse
 ```
 
 `validate-config` prints the full effective config, which is the defaults plus the file plus `ORION_*` overrides, with secrets masked. You can see what the process runs with.
@@ -326,11 +325,11 @@ One job, no server, no database, no secrets:
     orion-server test ./workflow-tests
 ```
 
-The deploy half of the pipeline is [CI/CD with packages](../patterns/ci-cd.md).
+The deploy half of the pipeline is [CI/CD with deployments](../patterns/ci-cd.md).
 
 ## Next steps
 
 - [CLI](../../reference/cli/index.md): every flag of every subcommand.
-- [Test and promote a service](../../get-started/tutorials/test-and-promote.md): the same commands as a walkthrough.
-- [CI/CD with packages](../patterns/ci-cd.md): the promotion pipeline these gates feed.
+- [Test and deploy a service](../../get-started/tutorials/test-and-promote.md): the same commands as a walkthrough.
+- [CI/CD with deployments](../patterns/ci-cd.md): the delivery pipeline these gates feed.
 - [Author a workflow](./workflows.md): what you are testing.

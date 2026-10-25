@@ -51,13 +51,13 @@ async fn security_headers_middleware(req: axum::extract::Request, next: Next) ->
     response
 }
 
-/// Build the Axum router with all middleware layers.
-/// The admin body limit for the plugin routes: base64 of the largest
-/// component plus room for the manifest and import framing.
+/// The body limit for definition uploads, which carry a plugin's component:
+/// base64 of the largest component plus room for the manifest and framing.
 pub fn plugin_body_size(config: &crate::config::AppConfig) -> usize {
     config.plugins.max_component_bytes / 3 * 4 + (1 << 20)
 }
 
+/// Build the Axum router with all middleware layers.
 pub fn build_router(state: AppState) -> Router {
     let x_request_id = axum::http::HeaderName::from_static("x-request-id");
     let max_body_size = state.config.ingest.max_payload_size;

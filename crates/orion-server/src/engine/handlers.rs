@@ -16,7 +16,7 @@ use crate::connector::ConnectorRegistry;
 ///
 /// F44: this was ten positional parameters carrying
 /// `#[allow(clippy::too_many_arguments)]`, and the full call was written out
-/// twice — once at boot and once in `POST /workflows/{id}/test`, which builds a
+/// twice — once at boot and once in `POST /definitions/test`, which builds a
 /// throwaway engine over the same dependencies. Two call sites with ten
 /// same-typed `Arc`s between them is a silent-transposition hazard the compiler
 /// cannot see; every field here already lives on `AppState`, so

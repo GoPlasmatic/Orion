@@ -8,6 +8,9 @@ Orion itself is API-first; everything in this book is plain HTTP. [Orion UI](htt
 
 ## Before you start
 
+> [!WARNING]
+> The console's import wizard, channel form and lifecycle actions were built on the per-entity admin endpoints (`/admin/workflows`, `/admin/channels`, `/admin/connectors`), which this release removed. Definitions now reach a node only as a deployment: compile them and apply them with `orion-cli deployments apply -d`, as in [Build your first service](../../get-started/tutorials/first-service.md). The video and screenshots below show the earlier flow.
+
 Tested with Orion 1.12.0. You need Docker and a running Orion server on port 8080. The command below starts the console on port 8081. On Linux, `host.docker.internal` may need Docker's `host-gateway` mapping; the Orion UI repository documents the alternatives.
 
 The video shows the full creation loop. You import a workflow (paste, validate, dry-run, activate) and watch its logic render as a graph. Then you give it an endpoint with the channel form, send a request from the Data Console, and see the service on the System Map.

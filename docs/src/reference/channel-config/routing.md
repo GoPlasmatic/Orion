@@ -17,7 +17,7 @@ These fields sit on the channel object itself, beside `config`. They decide how 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `channel_type` | string | yes | — | `sync` (the caller waits for the result) or `async` (queued; answers `202` with a trace id). Case-insensitive. A `cron` channel must be `async`. |
-| `protocol` | string | yes | — | `rest`, `http`, or `cron`. Case-insensitive. Immutable across versions. |
+| `protocol` | string | yes | — | `rest`, `http`, or `cron`. Case-insensitive. |
 | `methods` | array of strings | `rest`, `http` | — | HTTP methods the route answers. Valid values: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`. An unknown or duplicated method is refused. |
 | `route_pattern` | string | `rest`, `http` | — | Path pattern, for example `/orders/{id}`. Grammar below. At most 255 characters. |
 | `topic` | string | no | — | Stored with the channel; nothing in this build reads it. At most 255 characters. Refused on a `cron` channel. |
@@ -30,7 +30,7 @@ A `cron` channel declares none of those four fields, and each is refused. It reg
 
 **`route_pattern` grammar.** The pattern must start with `/`. It must not contain whitespace, `?`, `#`, or `%`. No segment may be empty (no `//`, no trailing `/`). A parameter is a whole segment written `{name}`; the name must match `[A-Za-z_][A-Za-z0-9_]*` and be unique within the pattern. Captured parameters reach the workflow as `metadata.params`. See the [Workflow Schema](../workflows.md).
 
-A channel names its workflow with a top-level `workflow_id`; how conditions and rollout percentages select a workflow version is specified in the [Workflow Schema](../workflows.md). Activation requires that workflow to be active.
+A channel names its workflow with a top-level `workflow_id`; how conditions select a workflow is specified in the [Workflow Schema](../workflows.md). A deployment requires that workflow to be a member beside the channel.
 
 Guard keys go in a `config` object beside these fields:
 

@@ -46,7 +46,7 @@ Inline `#[cfg(test)]` modules across all five crates: `orion-server`
 (config parsing, error mapping, validation/SSRF, query lowering, the
 definition-set loader and its cross-reference pass, the shared-definition
 `$from`/fragment resolver, the step flattener, …),
-`orion-cli` (string helpers and benchmark statistics only — see Known gaps),
+`orion-cli` (string helpers and the deployment-directory reader — see Known gaps),
 `orion-api` (wire-contract serde: envelope shapes, skew-tolerant defaults,
 enum round-trips), `orion-client` (path builders, error classification), and
 `orion-plugin-sdk` (the JSON boundary and the error classes of the guest ABI).
@@ -140,7 +140,7 @@ just test-containers    # all of the below, in CI's exact invocations
 | `integration -- --ignored sql_check_test` | `sql check` against PostgreSQL 16 (grants proven), an older PostgreSQL (schema only), a rolled-back `--schema`, and MySQL |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |
-| `cluster` | Multi-node contracts: two AppStates over one shared Postgres, epoch watching, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes (`--test-threads=1`) |
+| `cluster` | Multi-node contracts: two AppStates over one shared Postgres, the v2 reconciler, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes (`--test-threads=1`) |
 
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.
@@ -243,17 +243,15 @@ recompiled from cold.
 ## Known gaps (accepted, with reasons)
 
 - **`orion-cli`'s rendering, help/hint and argument-plumbing code has no unit
-  tests.** The crate's inline tests cover two helpers (`utils.rs` and
-  `commands/benchmark/stats.rs`); output formatting and error hints are
+  tests.** The crate's inline tests cover its helpers (`utils.rs` and the
+  deployment-directory reader); output formatting and error hints are
   exercised only indirectly, through the e2e suite's assertions on command
   output.
-- **The e2e suite invokes 17 of the CLI's 18 command groups.** The nine the
-  lifecycle suites exercise in depth (`workflows`, `channels`, `connectors`,
-  `send`, `traces`, `engine`, `health`, `plugins`, `cron`) plus eight covered
-  at smoke depth by `suites/14_read_only_commands.sh` (`functions`, `metrics`,
-  `audit-logs`, `backups`, `packages`, `dlq`, `completions`, `config`) —
-  enough to catch a broken output shape or envelope, not enough to call them
-  tested. `benchmark` is never invoked.
+- **Not every CLI command group has e2e depth.** `send`, `traces`, `engine`,
+  `health` and `cron` are exercised by the behaviour suites, and
+  `suites/14_read_only_commands.sh` covers `functions`, `audit-logs`,
+  `backups` and `dlq` at smoke depth: enough to catch a broken output shape or
+  envelope, not enough to call them tested.
 - **The e2e suite runs SQLite only.** Backend variance is covered at the
   integration layer (layer 3); duplicating the shell suite per backend was
   judged not worth the CI cost.

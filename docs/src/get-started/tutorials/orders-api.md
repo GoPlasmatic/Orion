@@ -1,17 +1,17 @@
 <!-- description: Build a production-shaped Orion orders API with validation, PostgreSQL, offline stubs, deployment, traces, failure checks and safe updates. -->
 <!-- type: tutorial -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Build an orders API end to end
 
-This tutorial follows one orders service from source files to a safe update. It validates input, writes to PostgreSQL through a restricted connector, and reads the customer's recent history. It runs without dependencies in CI, handles invalid input, deploys as a package, and exposes its traces.
+This tutorial follows one orders service from source files to a safe update. It validates input, writes to PostgreSQL through a restricted connector, and reads the customer's recent history. It runs without dependencies in CI, handles invalid input, deploys as one revision, and exposes its traces.
 
 ## What you will learn
 
 - How `on_rejection: "halt"` keeps invalid input away from a write.
 - How to prove a connector-backed workflow offline, with the database stubbed.
 - What a trace shows after a live request.
-- How to update an active workflow without editing it.
+- How to ship a change as a new deployment revision, and how to roll it back.
 
 ## Before you start
 
@@ -104,13 +104,17 @@ Both services report `running`, and the health check prints `{"status":"ok"}`.
 
 ## 4. Deploy and invoke the package
 
-The deploy script creates the connector, workflow and channel in dependency order, activates them, sends `request.json` and prints the response:
+Compile the package into a deployment directory, apply it, and send the sample request:
 
 ```bash
-./examples/deploy.sh postgres-orders
+orion-server compile examples/packages/postgres-orders -o /tmp/postgres-orders
+orion-cli deployments apply -d /tmp/postgres-orders
+curl -sS -X POST http://localhost:8080/api/v2/data/record-order \
+  -H 'Content-Type: application/json' \
+  --data @examples/packages/postgres-orders/request.json | jq
 ```
 
-Look for `rows_affected: 1`, a generated order id, and customer `Ada Lovelace` with the new order in `orders`. Re-running the script is safe: existing definitions are skipped. Each request still inserts a new row, so the returned history grows.
+The deployment carries the `orders-db` connection, the workflow and the channel as one revision. Look for `rows_affected: 1`, a generated order id, and customer `Ada Lovelace` with the new order in `orders`. Re-running the apply is safe: the head already deploys the directory. Each request still inserts a new row, so the returned history grows.
 
 ## 5. Observe the execution
 
@@ -143,19 +147,17 @@ The response carries a validation error stating `total must be positive`, and no
 
 ## 7. Update safely
 
-Never edit the active workflow. Create a draft version, change it, test it, preflight the activation, then activate:
+A deployed definition is never edited. A change is a new deployment revision: edit the files, rerun the offline checks, compile, plan, then apply:
 
 ```bash
-orion-cli workflows new-version record-order
-orion-cli workflows update record-order \
-  -f examples/packages/postgres-orders/workflow.json
-orion-cli workflows test record-order \
-  -f examples/packages/postgres-orders/request.json --trace
-orion-cli workflows activate record-order --dry-run
-orion-cli workflows activate record-order
+orion-server lint examples/packages/postgres-orders
+orion-server test examples/packages/postgres-orders/tests
+orion-server compile examples/packages/postgres-orders -o /tmp/postgres-orders
+orion-cli deployments plan -d /tmp/postgres-orders
+orion-cli deployments apply -d /tmp/postgres-orders
 ```
 
-The test prints a successful task trace, the preflight reports a valid transition without writing anything, and the activation hot-reloads the new version. For a real change, edit a copy on a branch and rerun the offline suite before touching the instance.
+The plan lists each member whose definition changed, and commits nothing. The apply commits the next revision, and the node swaps it in without dropping a request. If the new revision misbehaves, [roll back](../../reference/admin-api/deployments.md#rollback): that commits the earlier manifest as a new revision. For a real change, edit a copy on a branch and rerun the offline suite before touching the instance.
 
 ## Clean up
 
@@ -172,10 +174,10 @@ Your repository checkout is untouched.
 - A `validation` task with `on_rejection: "halt"` is the barrier between input and a write.
 - `lint`, `test` and `dry-run` prove a connector-backed workflow with no database, because stubs answer the connector calls.
 - Every live request leaves a trace, and the trace names each task that ran.
-- An active workflow is immutable. Change ships as a new version, tested and preflighted before it serves.
+- A deployed definition is immutable. A change ships as a new revision, tested offline and planned before it serves.
 
 ## Next steps
 
 - [Portable data dialect](../../reference/data-dialect.md): the exact query and write envelopes the workflow uses.
-- [CI/CD with packages](../../guides/patterns/ci-cd.md): compile, plan and apply these definitions between environments.
+- [CI/CD with deployments](../../guides/patterns/ci-cd.md): compile, plan and apply these definitions in each environment.
 - [Production checklist](../../operate/production-checklist.md): replace the local defaults before accepting external traffic.

@@ -1,17 +1,17 @@
-<!-- description: Start Orion in Docker, post one workflow and one channel, and call your first live endpoint. Under five minutes, with nothing to build or deploy. -->
+<!-- description: Start Orion in Docker, upload one workflow and one channel, deploy them, and call your first live endpoint. Under five minutes, with nothing to build. -->
 <!-- type: quickstart -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-10-25 -->
 
 # Quickstart
 
-Start Orion, define one service as two JSON documents, and call it over HTTP. The service flags any order over $10,000. The six commands below run in under 5 seconds once the image is local; the first run also pulls 204 MB.
+Start Orion, define one service as two JSON documents, and call it over HTTP. The service flags any order over $10,000. The commands below run in under 5 seconds once the image is local; the first run also pulls 204 MB.
 
 ## Before you start
 
 Tested with Orion 1.12.0. You need:
 
 - Docker Engine or Docker Desktop
-- `curl`
+- `curl` and `jq`
 - port `8080` free on your machine
 
 The commands use a POSIX shell. On Windows, run them from WSL.
@@ -38,17 +38,15 @@ Output:
 {"status":"ok"}
 ```
 
-## 2. Create the workflow
+## 2. Upload the workflow
 
-A workflow is the logic. This one has two tasks: parse the request, then flag it when `total` is over 10,000. Post it to the admin API:
+A workflow is the logic. This one has two tasks: parse the request, then flag it when `total` is over 10,000. Upload it to the admin API and keep the digest it answers:
 
 ```bash
-curl -fsS -X POST http://localhost:8080/api/v2/admin/workflows \
+WF=$(curl -fsS -X POST http://localhost:8080/api/v2/admin/definitions \
   -H 'Content-Type: application/json' \
-  -d '{
-    "workflow_id": "quickstart-orders",
+  -d '{"kind": "workflow", "definition": {
     "name": "High-value order",
-    "condition": true,
     "tasks": [
       { "id": "parse", "name": "Parse payload",
         "function": { "name": "parse_json",
@@ -62,37 +60,41 @@ curl -fsS -X POST http://localhost:8080/api/v2/admin/workflows \
                                { "var": "data.order.total" }] } }
         ] } } }
     ]
-  }'
+  }}' | jq -r .digest)
 ```
 
-The response echoes the definition with `"status": "draft"`. A draft serves no traffic and never touches the running engine.
+The server validates the definition the way a node loads it, and answers `{"digest": "sha256:…", "kind": "workflow", …}`. Uploading serves nothing yet. A definition is stored by its content, and has no name or version until a deployment gives it one.
 
-## 3. Activate the workflow
+## 3. Upload the channel
 
-Activation is a status change:
-
-```bash
-curl -fsS -X PATCH \
-  http://localhost:8080/api/v2/admin/workflows/quickstart-orders/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
-```
-
-Orion builds a new engine with this workflow in it and swaps it in. Nothing restarts and no request is dropped.
-
-## 4. Create and activate the channel
-
-A channel is the endpoint. It binds a route to the workflow, and it can only be activated once that workflow is active:
+A channel is the endpoint. It binds a route to a workflow. The binding lives in the deployment, not in the channel:
 
 ```bash
-curl -fsS -X POST http://localhost:8080/api/v2/admin/channels \
+CH=$(curl -fsS -X POST http://localhost:8080/api/v2/admin/definitions \
   -H 'Content-Type: application/json' \
-  -d '{ "channel_id": "orders", "name": "orders", "channel_type": "sync",
-        "protocol": "rest", "route_pattern": "/orders",
-        "methods": ["POST"], "workflow_id": "quickstart-orders" }'
-
-curl -fsS -X PATCH http://localhost:8080/api/v2/admin/channels/orders/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
+  -d '{"kind": "channel", "definition": {
+    "name": "orders", "channel_type": "sync", "protocol": "rest",
+    "route_pattern": "/orders", "methods": ["POST"] }}' | jq -r .digest)
 ```
+
+## 4. Deploy them
+
+A deployment names everything the node serves. This one deploys the workflow as `quickstart-orders` and the channel as `orders`, and says the channel requires the workflow:
+
+```bash
+curl -fsS -X POST http://localhost:8080/api/v2/admin/deployments \
+  -H 'Content-Type: application/json' \
+  -d '{"idempotency_key": "quickstart-1", "base_revision": 0, "reason": "quickstart",
+    "manifest": { "schema_version": 2, "providers": [], "members": [
+      { "entity": { "kind": "workflow", "id": "quickstart-orders", "revision": 1 },
+        "definition_digest": "'"$WF"'" },
+      { "entity": { "kind": "channel", "id": "orders", "revision": 1 },
+        "definition_digest": "'"$CH"'",
+        "requires": [{ "kind": "workflow", "id": "quickstart-orders", "revision": 1 }] }
+    ] } }'
+```
+
+The answer carries `"committed_revision": 1` and an `evaluation` with `"converged": true`. Orion built a new engine from the deployment and swapped it in. Nothing restarts and no request is dropped. `base_revision: 0` means "only if nothing is deployed yet", so two deploys racing on one instance cannot both win.
 
 ## 5. Call it
 
@@ -108,9 +110,11 @@ Output, with an `id` that differs on every call:
 
 ```json
 {
-  "id": "019febae-d01f-7c31-b6f3-671a42a4a74e",
+  "id": "01a1738f-4070-70ba-abbb-e76b63dd57e7",
   "status": "ok",
   "data": {
+    "order_id": "ORD-9182",
+    "total": 25000,
     "order": {
       "order_id": "ORD-9182",
       "total": 25000,
@@ -136,7 +140,7 @@ The `data.order` object comes back with `order_id` and `total` only. There is no
 
 ## What just happened
 
-You posted two definitions and Orion did the rest. The workflow holds the logic as an ordered list of tasks, each with an optional JSONLogic condition. The channel binds a route to that workflow and answers the request. Everything around them is the runtime's: routing, the draft-then-activate lifecycle, hot reload, validation, and the trace behind that `id`. It is the same for every service you put on it.
+You uploaded two definitions, deployed them, and Orion did the rest. The workflow holds the logic as an ordered list of tasks, each with an optional JSONLogic condition. The channel binds a route to that workflow and answers the request. Everything around them is the runtime's: routing, numbered deployments with rollback, hot reload, validation, and the trace behind that `id`. It is the same for every service you put on it.
 
 Congratulations: you have a live Orion service.
 
@@ -152,7 +156,7 @@ The container held its database internally, so removing it removes the definitio
 
 ## Next steps
 
-- [Build your first service](./tutorials/first-service.md): the same four calls one at a time, with the CLI beside each and what every response means.
+- [Build your first service](./tutorials/first-service.md): the same service as files, compiled and deployed with the CLI.
 - [How Orion works](../concepts/how-orion-works.md): the three primitives and one request's journey through them.
 - [Install and run Orion](./install.md): the binary on your own machine, without Docker.
 - [Is Orion right for you?](./decide/is-orion-right-for-you.md): the neighbouring tools, and the cases where Orion is the wrong choice.

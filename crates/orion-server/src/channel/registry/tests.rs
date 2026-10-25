@@ -1065,10 +1065,7 @@ async fn test_reload_rebuilds_when_the_connector_generation_moves() {
     let registry = TestRegistry::new();
     let deps = TestDeps::new();
     let repo = StubConnectorRepo::with(vec![("dedup-cache", "cache", MEMORY_CACHE)]);
-    deps.connectors
-        .reload(&repo)
-        .await
-        .expect("connectors load");
+    deps.connectors.load(repo.stored()).await;
     let channel = test_channel(
         "dep-ch",
         r#"{"deduplication": {"header": "idem", "connector": "dedup-cache"}}"#,
@@ -1082,10 +1079,7 @@ async fn test_reload_rebuilds_when_the_connector_generation_moves() {
     // reused runtime would keep serving through a backend that no longer
     // has a connector behind it.
     repo.set(vec![]);
-    deps.connectors
-        .reload(&repo)
-        .await
-        .expect("connectors load");
+    deps.connectors.load(repo.stored()).await;
     deps.reload(&registry, std::slice::from_ref(&channel)).await;
     let second = registry.get_by_name("dep-ch").expect("loaded");
 
@@ -1109,10 +1103,7 @@ async fn test_reload_reuses_across_a_connector_load_that_changed_nothing() {
     let registry = TestRegistry::new();
     let deps = TestDeps::new();
     let repo = StubConnectorRepo::with(vec![("dedup-cache", "cache", MEMORY_CACHE)]);
-    deps.connectors
-        .reload(&repo)
-        .await
-        .expect("connectors load");
+    deps.connectors.load(repo.stored()).await;
     let channel = test_channel(
         "resync-ch",
         r#"{"deduplication": {"header": "idem", "connector": "dedup-cache"},
@@ -1125,10 +1116,7 @@ async fn test_reload_reuses_across_a_connector_load_that_changed_nothing() {
     // Three epoch ticks' worth of resync, none of which touched a
     // connector.
     for _ in 0..3 {
-        deps.connectors
-            .reload(&repo)
-            .await
-            .expect("connectors load");
+        deps.connectors.load(repo.stored()).await;
         deps.reload(&registry, std::slice::from_ref(&channel)).await;
         let next = registry.get_by_name("resync-ch").expect("loaded");
         assert!(

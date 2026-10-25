@@ -6,7 +6,7 @@
 
 The `config` fields of a `db` connector, which backs PostgreSQL, MySQL and SQLite.
 
-Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_string` scheme selects the backend: `postgres://` or `postgresql://`, `mysql://` or `mariadb://`, `sqlite:`. Any other scheme, `mongodb://` included, is refused at create and update.
+Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_string` scheme selects the backend: `postgres://` or `postgresql://`, `mysql://` or `mariadb://`, `sqlite:`. Any other scheme, `mongodb://` included, is refused when the set is linted or compiled.
 
 ```json
 {
@@ -25,7 +25,7 @@ Runs parameterized queries against PostgreSQL, MySQL or SQLite. The `connection_
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `connection_string` | string | yes | — | Database URL; the scheme selects the backend. Carries credentials, and is always masked in API reads |
+| `connection_string` | string | yes | — | Database URL; the scheme selects the backend. Carries credentials, so write it as a secret reference |
 | `driver` | string | in a definition set | — | `postgresql`, `mysql` or `sqlite`: the backend, stated. See [The `driver` field](#the-driver-field) |
 | `max_connections` | integer | no | — | Connection pool maximum size |
 | `connect_timeout_ms` | integer | no | — | Connection establishment timeout |
@@ -40,9 +40,9 @@ There is no `retry` field: a statement that timed out may already have been appl
 
 ## The `driver` field
 
-`driver` names the backend the connection string selects. It does not select it: the scheme still does. Where the scheme is visible, the two must agree. `"driver": "mysql"` with a `postgres://` URL is refused at create and update, and by `lint`. A connection string that is a secret reference (`env://…`) or a `${VAR}` placeholder shows no scheme until the serving node resolves it, so there is nothing to compare, and the field is the only statement of the backend. Any value other than the three names is refused.
+`driver` names the backend the connection string selects. It does not select it: the scheme still does. Where the scheme is visible, the two must agree. `"driver": "mysql"` with a `postgres://` URL is refused at upload and by `lint`. A connection string that is a secret reference (`env://…`) or a `${VAR}` placeholder shows no scheme until the serving node resolves it, so there is nothing to compare, and the field is the only statement of the backend. Any value other than the three names is refused.
 
-The single-entity admin API (`POST /api/v2/admin/connectors`) does not require it. A [definition set](../cli/orion-server/lint.md) does: `lint <dir>` and `compile` refuse a `db` connector without one with `[connector.db_driver]`, whether its connection string is a reference or not. A set is what `orion-server compile --format deployment` reads, and a deployed connection's provider is its driver (`org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`), which a hidden scheme cannot name. The field becomes the provider and is not carried in the connection's `public_config`.
+A [definition set](../cli/orion-server/lint.md) requires it: `lint <dir>` and `compile` refuse a `db` connector without one with `[connector.db_driver]`, whether its connection string is a reference or not. A set is what `orion-server compile` reads, and a deployed connection's provider is its driver (`org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`), which a hidden scheme cannot name. The field becomes the provider and is not carried in the connection's `public_config`.
 
 ## Dialect guards
 
@@ -53,7 +53,7 @@ The single-entity admin API (`POST /api/v2/admin/connectors`) does not require i
 | `require_schema` | boolean | no | `false` | Refuse any `data_query` / `data_write` call without a real [schema](../data-dialect.md): at least one declared entity, and not `"unmapped": "identity"` |
 | `allowed_entities` | array of strings | no | `[]` (unrestricted) | Physical table names the dialect may touch. Matched after schema renames apply; covers relation targets and junction tables |
 
-Unknown keys inside `dialect` are refused on create and update.
+Unknown keys inside `dialect` are refused.
 
 ## Related
 

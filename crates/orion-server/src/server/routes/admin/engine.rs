@@ -1,14 +1,11 @@
+use axum::Json;
 use axum::extract::State;
-use axum::{Extension, Json};
 use serde_json::Value;
 
 use crate::errors::OrionError;
-use crate::server::admin_auth::AdminPrincipal;
 use crate::server::routes::openapi::DataEnvelope;
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
-
-use super::audit_and_reload;
 
 // ============================================================
 // Engine Control
@@ -58,44 +55,5 @@ pub(crate) async fn engine_status(
             cron: state.config.cron.enabled,
             plugins: state.plugins.is_some(),
         }),
-    }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v2/admin/engine/reload",
-    tag = "Engine",
-    responses(
-        (status = 200, description = "Engine reloaded. `generation` is the id of the generation \
-            this reload published and `load_issues` is what *that* generation could not load — \
-            an entity quarantined by it is not serving, though the reload succeeded.",
-            body = DataEnvelope<orion_api::EngineReloadedResponse>),
-    )
-)]
-#[tracing::instrument(skip(state, principal))]
-pub(crate) async fn engine_reload(
-    State(state): State<AppState>,
-    principal: Option<Extension<AdminPrincipal>>,
-) -> Result<Json<Value>, OrionError> {
-    // `Now` always reloads, so the generation is always there; the fallback
-    // is only the type's other arm.
-    let generation = audit_and_reload(
-        &state,
-        &principal,
-        "reload",
-        "engine",
-        "manual",
-        super::ReloadMode::Now,
-    )
-    .await?
-    .unwrap_or_else(|| state.runtime.load());
-    let load_issues =
-        crate::runtime::load_issues::collect(&generation, &state.connector_registry).await;
-
-    Ok(data_response(orion_api::EngineReloadedResponse {
-        reloaded: true,
-        workflows_count: generation.workflows().len() as u64,
-        generation: generation.id,
-        load_issues: Some(load_issues),
     }))
 }

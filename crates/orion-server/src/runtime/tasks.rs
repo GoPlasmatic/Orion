@@ -3,7 +3,7 @@
 //! Every one of them used to be a bare `tokio::spawn` whose `JoinHandle` was
 //! kept only so shutdown could `abort()` it. Nothing watched them. If the
 //! trace dispatcher, a persistence worker, the audit writer, the DLQ retry
-//! consumer or the cluster epoch watcher stopped — a panic in a task is not a
+//! consumer or the cluster reconciler stopped — a panic in a task is not a
 //! process abort, it resolves the join handle nobody was awaiting — the node
 //! kept answering `/readyz` with `ready` and kept serving 200s. Submitters saw
 //! the symptom and reported it as something else: the trace queue turned a
@@ -24,7 +24,7 @@
 //!
 //! The split is not a policy choice, it is what the tasks allow.
 //!
-//! A retention job or the epoch watcher holds nothing but clones — running its
+//! A retention job or the reconcile loop holds nothing but clones — running its
 //! body again is exactly as valid as running it the first time, so the
 //! registry can own it outright and repair it.
 //!
@@ -45,7 +45,7 @@
 //! return when it fires; [`TaskRegistry::shutdown`] signals, then joins under
 //! one deadline for the set it owns and names anything that outlived it. That
 //! replaces `JoinHandle::abort()`, which could cut a retention job between its
-//! `DELETE` and its metric, or an epoch watcher mid-query.
+//! `DELETE` and its metric, or a reconcile tick mid-query.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
@@ -335,7 +335,7 @@ impl TaskRegistry {
     /// Signal every task to stop, without waiting.
     ///
     /// For a caller that cannot `.await` — the cluster test harness's `Drop`,
-    /// which needs its per-test epoch watchers to stop polling a database it
+    /// which needs its per-test reconcile loops to stop polling a database it
     /// is about to destroy. A supervised loop sees the signal at its next tick
     /// and returns.
     pub fn signal_shutdown(&self) {

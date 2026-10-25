@@ -1,4 +1,4 @@
-<!-- description: The v2 deployment endpoints: definitions stored by digest, immutable connection revisions with secret locators, plans, CAS apply, rollback and convergence, and the compile-and-apply CLI flow. -->
+<!-- description: The v2 deployment endpoints: definitions by digest, connection revisions, plans, compare-and-swap apply, rollback, convergence and the CLI apply flow. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-10-25 -->
 
@@ -155,10 +155,10 @@ curl -s "http://localhost:8080/api/v2/admin/deployments/2/convergence?target=obs
 
 ## Deploy a compiled directory
 
-`orion-server compile --format deployment` writes a definition set as a deployment directory with no revisions in it ([Deployment directories](../cli/orion-server/compile.md#deployment-directories)). `orion-cli deployments apply -d` deploys it:
+`orion-server compile` writes a definition set as a deployment directory with no revisions in it ([Deployment directories](../cli/orion-server/compile.md#deployment-directories)). `orion-cli deployments apply -d` deploys it:
 
 ```bash
-orion-server compile ./definitions --format deployment -o dist/deployment
+orion-server compile ./definitions -o dist/deployment
 orion-cli deployments plan -d dist/deployment     # what would change
 orion-cli deployments apply -d dist/deployment
 ```

@@ -25,11 +25,11 @@ A *channel* is a service endpoint. It says where traffic arrives, which workflow
 }
 ```
 
-A channel names exactly one workflow. That is what makes the channel the unit of selection when a service is [packaged](./packages.md): picking the endpoints picks the service.
+A channel names exactly one workflow. That is what makes the channel the unit of selection when a service is deployed: picking the endpoints picks the service.
 
 ## Protocols
 
-Three protocols, set once and immutable across a channel's versions:
+Three protocols, set once and immutable across a channel's revisions:
 
 - **`rest`**: a method and a path pattern, such as `POST /orders` or `GET /orders/{id}`. Path parameters reach the workflow as request metadata.
 - **`http`**: routes identically to `rest`. Both also stay reachable by channel name at `/api/v2/data/{name}`.
@@ -49,7 +49,7 @@ Use sync for request/response APIs: validation, enrichment, lookups, and transfo
 
 ## Scheduled work
 
-A cron channel binds a schedule to a workflow the way a REST channel binds a route to one. That makes a schedule an *ingress*, not part of the workflow. One workflow can carry an hourly trigger and a nightly one with different payloads. Changing when something runs does not create a new version of what it does.
+A cron channel binds a schedule to a workflow the way a REST channel binds a route to one. That makes a schedule an *ingress*, not part of the workflow. One workflow can carry an hourly trigger and a nightly one with different payloads. Changing when something runs does not create a new revision of what it does.
 
 Occurrences are durable rows, so a schedule survives a restart, a rolling deploy and a node failure. A run that was missed is visible rather than absent. A `forbid` concurrency policy makes a schedule non-overlapping across the whole cluster. See [Cron transport](../reference/channel-config/cron.md).
 
@@ -68,7 +68,7 @@ A channel declares its own guards in a `config` object, and Orion enforces them 
 Every key, default and interaction is specified in [Channel configuration](../reference/channel-config/index.md). Two properties are worth carrying in your head from here:
 
 - **Guards apply per ingress, not per protocol.** An `/async` submission, an in-process `channel_call` and a cron occurrence get the same contract as a synchronous request, minus only what their transport cannot carry. A cron occurrence has no caller to authenticate.
-- **A config that no longer parses quarantines the channel.** It is refused at every ingress rather than served with a guard silently missing. See [The entity lifecycle](./lifecycle.md).
+- **A config that no longer parses quarantines the channel.** It is refused at every ingress rather than served with a guard silently missing. See [Troubleshooting](../operate/maintain/troubleshooting.md).
 
 ## Channels calling channels
 

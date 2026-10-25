@@ -85,7 +85,7 @@ The counter behind the setting runs whether or not a ceiling is set. The cost is
 
 - [Expressions](../reference/expressions.md) › Tensors: the twenty operators, and the `$` escape. — the
   operator table with an example per operator.
-- [CLI › `lint`](../reference/cli/orion-server/lint.md) and [CLI › `preflight`](../reference/cli/orion-server/preflight.md)
+- [CLI › `lint`](../reference/cli/orion-server/lint.md) and CLI › `preflight`
   — the advisory ids and what each command reports.
 - [Engine settings](../reference/configuration/engine.md): `ops_budget`, and what a ceiling does to a condition. —
   `engine.ops_budget`.

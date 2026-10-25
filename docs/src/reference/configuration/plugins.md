@@ -5,7 +5,7 @@
 # Plugin settings
 
 Custom task functions as sandboxed WebAssembly Components. Off by default,
-and turning it on changes nothing until a plugin is uploaded and activated. Every limit here is the
+and turning it on changes nothing until a plugin is deployed. Every limit here is the
 host's: a plugin requests nothing, and a per-plugin override may only lower a
 ceiling, never raise one.
 

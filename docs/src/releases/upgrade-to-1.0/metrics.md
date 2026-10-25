@@ -129,5 +129,5 @@ It is a move, not a copy: once `bind_addr` is set the main listener returns `404
 
 - [Upgrade to 1.0.0](./index.md): the checklist, and every other break.
 - [Upgrades](../../operate/maintain/upgrades.md): the version-independent procedure.
-- [`orion-server preflight`](../../reference/cli/orion-server/preflight.md): the scan that finds the stored ones.
+- `orion-server preflight`: the scan that finds the stored ones.
 - [Releases](./index.md): what changed in each version.

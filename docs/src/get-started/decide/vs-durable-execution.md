@@ -26,7 +26,7 @@ The category is wide. Airflow schedules DAGs across a cluster; [Restate](https:/
 | Unit of work | A run, with an id, resumable | One request or one scheduled occurrence |
 | How you write the logic | Handlers or DAGs in TypeScript, Java, Python or Go | JSON, posted to a running server |
 | Where state lives | In the engine's journal, which *is* the product | In the run's data context while it lasts; nothing after it unless you wrote it to a datastore |
-| How a change ships | Deploy the code, register the new version | One API call, hot-reloaded, no restart |
+| How a change ships | Deploy the code, register the new version | One deployment, hot-reloaded, no restart |
 | Typical latency | Milliseconds to days, by design | Milliseconds, bounded by the channel timeout |
 | What it needs to run | The engine plus your deployed workers | [One binary](../install.md) |
 
@@ -41,7 +41,7 @@ The category is wide. Airflow schedules DAGs across a cluster; [Restate](https:/
 ## What Orion does instead
 
 - Answers the request now, and stores the [execution trace](../../operate/run/traces.md) rather than a resumable journal.
-- Takes the logic as JSON over an API, so a change is [a version and a rollout](../../guides/author/versioning.md), not a deploy.
+- Takes the logic as JSON over an API, so a change is [a new deployment revision](../../reference/admin-api/deployments.md), not a rebuild.
 - Carries the ingress concerns itself: [rate limits, auth, validation, dedup and backpressure](../../reference/channel-config/index.md) per channel, with nothing to write.
 - Composes in-process: [`channel_call`](../../reference/functions/channel_call.md) runs another channel's workflow with no network hop.
 
@@ -66,7 +66,7 @@ The overlap ends at *where* it runs again. Orion starts the workflow over from t
 - The work finishes inside one request or one record, in milliseconds.
 - You want the endpoint and its logic in the same place, with no service to build around them.
 - The logic changes often, and you want each change versioned, rolled out by percentage, and reversible with one call.
-- An assistant is authoring the logic and you want [draft-before-activate](../../concepts/lifecycle.md) around it.
+- An assistant is authoring the logic and you want [a reviewed plan before every apply](../../reference/admin-api/deployments.md#plan-and-apply) around it.
 
 ## Running both
 
@@ -87,5 +87,5 @@ They compose cleanly in either direction, and this is the common production shap
 
 - [Is Orion right for you?](./is-orion-right-for-you.md): the chart, and the other neighbours.
 - [Traces and async processing](../../operate/run/traces.md): what Orion stores instead of a journal.
-- [The entity lifecycle](../../concepts/lifecycle.md): draft, active, archived, and hot reload.
+- [Deployment endpoints](../../reference/admin-api/deployments.md): plan, apply, rollback and convergence.
 - [Timeouts, retries and circuit breakers](../../operate/run/failure-handling.md): what Orion re-drives, and what it deliberately does not.

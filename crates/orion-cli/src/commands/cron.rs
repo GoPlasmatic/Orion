@@ -16,7 +16,8 @@ use orion_client::paths;
         'did last night's job run?' is a question with an answer, whatever\n\
         the trace-storage settings are.\n\n\
         'status' is the overview: what is scheduled and when it next fires.\n\
-        'list' is the history. 'retry' re-attempts one that failed.\n\
+        'list' is the history. 'trigger' runs a channel now.\n\
+        'retry' re-attempts one that failed.\n\
         'cancel' stops one that has not finished, and frees its singleton\n\
         slot: the way to release the slots of a node that died mid-run.")]
 pub struct CronCmd {
@@ -53,10 +54,20 @@ enum CronSubcommand {
     ///
     /// Keeps the occurrence's identity and its scheduled time — it is another
     /// attempt at the work that was due then, not a new piece of work. To run
-    /// a schedule again now, use `orion-cli channels trigger` instead.
+    /// a schedule again now, use `orion-cli cron trigger` instead.
     Retry {
         /// Occurrence id
         id: String,
+    },
+    /// Run a deployed cron channel now, without waiting for its schedule
+    ///
+    /// Creates an occurrence at the current instant and returns immediately.
+    /// It goes through the same claim, concurrency and execution path a
+    /// scheduled run does — so on a `forbid` channel whose scheduled run is
+    /// already in flight, it is recorded as skipped rather than run alongside.
+    Trigger {
+        /// Channel ID of a deployed cron channel
+        channel: String,
     },
     /// Stop an occurrence that has not finished, and free its singleton slot
     ///
@@ -140,6 +151,7 @@ impl CronCmd {
                 list(client, format, quiet, &qs).await
             }
             CronSubcommand::Get { id } => get(client, format, quiet, id).await,
+            CronSubcommand::Trigger { channel } => trigger(client, format, quiet, channel).await,
             CronSubcommand::Retry { id } => retry(client, format, quiet, id).await,
             CronSubcommand::Cancel { id } => cancel(client, format, quiet, id).await,
         }
@@ -261,6 +273,38 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
     if let Some(error) = occurrence["error_message"].as_str() {
         println!("  Error:         {}", error.red());
     }
+    Ok(0)
+}
+
+async fn trigger(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    channel: &str,
+) -> Result<i32> {
+    let resp: Value = client
+        .post(&paths::channel_trigger(channel), &Value::Null)
+        .await?;
+    let occurrence = &resp["data"];
+    if quiet {
+        println!("{}", text(occurrence, "id"));
+        return Ok(0);
+    }
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+    println!(
+        "{} Occurrence {} created for '{}'",
+        "✓".green(),
+        text(occurrence, "id"),
+        occurrence["channel_name"].as_str().unwrap_or(channel)
+    );
+    println!(
+        "  {} orion-cli cron get {}",
+        "Follow it with:".dimmed(),
+        text(occurrence, "id")
+    );
     Ok(0)
 }
 

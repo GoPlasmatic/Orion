@@ -23,32 +23,6 @@ pub struct Caches {
     pub provider_pools: crate::extensions::ResourcePoolRegistry,
 }
 
-impl Caches {
-    /// Evict every cached connection pool — blanket, no connector name.
-    ///
-    /// The cluster resync path (`runtime::reload::resync_from_db`) reloads
-    /// every connector and so must drop every pool built from a config it has
-    /// not re-checked. It cannot narrow by name — it does not know which
-    /// connectors moved — so it evicts all of them.
-    ///
-    /// Routed through an exhaustive match on `PoolSlot::ALL` for the same
-    /// reason the per-connector `evict_connector_pools` is: a cache added
-    /// later is a new `PoolSlot` variant and a new variant is a compile error
-    /// here, where a hand-written list could silently omit one and leave a
-    /// node serving through a stale pool after a peer changed its connector.
-    /// Also evicts all dynamically registered [`crate::extensions::ConnectionPoolCache`]
-    /// instances in `provider_pools`.
-    pub async fn evict_all_pools(&self) {
-        use crate::connector::PoolSlot;
-        for slot in PoolSlot::ALL {
-            match slot {
-                PoolSlot::Sql => self.sql_pool_cache.evict_all().await,
-            }
-        }
-        self.provider_pools.evict_all().await;
-    }
-}
-
 /// Owned fields shared across all route handlers.
 ///
 /// Wrapped in an `Arc` (via the [`AppState`] type alias) so the per-request
@@ -67,17 +41,15 @@ pub struct AppStateInner {
     /// Builds the channel half of a generation. A reload's tool, not a
     /// request's: a request reads the estate off `runtime`.
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
-    /// Serialises [`crate::runtime::reload_engine`] end to end.
+    /// Serialises a deployment revision's build end to end.
     ///
-    /// A reload is a read-modify-write over the published generation: it reads
-    /// the active channels and workflows from the database, builds the new
-    /// engine from the *current* one (`with_new_workflows` carries the handler
-    /// registry across), builds the channel estate beside it, and publishes
-    /// both. Two callers can start one concurrently — the admin mutations
-    /// (`audit_and_reload`) and the cluster epoch watcher — and without this
-    /// they interleave: both read the same pre-mutation rows, and whichever
+    /// A build is a read-modify-write over the published generation: it reads
+    /// the revision's members, builds the new engine, builds the channel
+    /// estate beside it from the *current* one, and publishes both. Two
+    /// callers can start one concurrently (a deployment on this node and the
+    /// cluster reconciler), and without this they interleave: whichever
     /// publishes last wins. That is the *older* build often enough to matter,
-    /// which leaves a just-activated channel invisible until the next reload.
+    /// which leaves a just-deployed channel invisible until the next build.
     ///
     /// This is now the *only* lock in the sequence. `ChannelLoader` used to
     /// keep one of its own, which guarded its half alone and could not span
@@ -153,15 +125,14 @@ pub struct AppStateInner {
     pub rate_limit_state: Option<Arc<RateLimitState>>,
     /// Startup readiness flag — set to true after engine is fully loaded.
     pub ready: Arc<AtomicBool>,
-    /// Whether the last engine reload attempt failed — the `engine_reload`
+    /// Whether the last deployment build failed — the `engine_reload`
     /// component of `/health`.
     ///
-    /// Set and cleared by [`crate::runtime::reload_engine`], so every
-    /// caller is covered: the admin mutations, `POST /engine/reload`, and the
-    /// cluster epoch watcher. Deliberately **not** on `/readyz`: a node whose
-    /// reload failed is still serving the previous generation correctly, and
-    /// taking it out of rotation would replace a stale-config problem with an
-    /// availability one. The same argument `config_propagation` makes.
+    /// Set and cleared by the build itself, so every caller is covered: an
+    /// apply, a rollback, and the cluster reconciler. Deliberately **not** on
+    /// `/readyz`: a node whose build failed is still serving the previous
+    /// generation correctly, and taking it out of rotation would replace a
+    /// stale-config problem with an availability one.
     pub reload_degraded: Arc<AtomicBool>,
     /// Background queue for trace-storage writes. A no-op handle in sync/off modes.
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,

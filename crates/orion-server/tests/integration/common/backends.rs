@@ -30,13 +30,20 @@ pub enum Backend {
 
 impl Backend {
     /// Short stable name for this backend, used to build unique per-backend
-    /// connector and channel names. (It used to be written into the connector
-    /// config as `driver`, a field removed in 1.0 — the backend comes from the
-    /// connection-string scheme.)
+    /// connector and channel names.
     pub fn label(&self) -> &'static str {
         match self {
             Backend::Sqlite => "sqlite",
             Backend::Postgres => "postgres",
+            Backend::Mysql => "mysql",
+        }
+    }
+
+    /// The `driver` a db connector in a definition set names.
+    pub fn driver(&self) -> &'static str {
+        match self {
+            Backend::Sqlite => "sqlite",
+            Backend::Postgres => "postgresql",
             Backend::Mysql => "mysql",
         }
     }
@@ -60,7 +67,34 @@ pub struct BackendHarness {
     pub backend: Backend,
     pub connector_name: String,
     pub connection_string: String,
+    /// What the connector config carries in place of `connection_string`:
+    /// the string itself for SQLite, an `env://` reference for a container,
+    /// whose URL carries credentials a connection's public config refuses.
+    pub connection_reference: String,
     _container: RunningContainer,
+}
+
+/// Publish `url` as an environment variable unique to this container and
+/// answer the `env://` reference that reads it.
+///
+/// The fixed fixtures elsewhere in this binary are set pre-main, the one point
+/// where `set_var` cannot race a reader. A container's port is only known once
+/// it runs, so this one is set at runtime. std serialises its own environment
+/// reads and writes, and `env://` resolution reads through std; the residual
+/// risk is a libc `getenv` on another thread, which only the container-gated
+/// modules that call this take on.
+fn env_reference(name: &str, port: u16, url: &str) -> String {
+    let var = format!(
+        "ORION_SECRET_TEST_DB_{}_{port}",
+        name.to_uppercase().replace(['-', '.'], "_")
+    );
+    // SAFETY: see above; the name is unique to this container, so no reader
+    // can observe this variable changing.
+    #[allow(unsafe_code)]
+    unsafe {
+        std::env::set_var(&var, url)
+    };
+    format!("env://{var}")
 }
 
 impl BackendHarness {
@@ -73,7 +107,8 @@ impl BackendHarness {
             "connector_type": "db",
             "config": {
                 "type": "db",
-                "connection_string": self.connection_string,
+                "driver": self.backend.driver(),
+                "connection_string": self.connection_reference,
                 "max_connections": 2,
                 "query_timeout_ms": 10000,
                 // Testcontainers publish on localhost, which the S6 endpoint
@@ -170,27 +205,30 @@ pub async fn start(backend: Backend, name: &str) -> BackendHarness {
             backend,
             connector_name: name.to_string(),
             connection_string: format!("sqlite:file:{name}?mode=memory&cache=shared"),
+            connection_reference: format!("sqlite:file:{name}?mode=memory&cache=shared"),
             _container: RunningContainer::None,
         },
         Backend::Postgres => {
             let container = Postgres::default().start().await.unwrap();
             let port = container.get_host_port_ipv4(5432).await.unwrap();
+            let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
             BackendHarness {
                 backend,
                 connector_name: name.to_string(),
-                connection_string: format!(
-                    "postgres://postgres:postgres@127.0.0.1:{port}/postgres"
-                ),
+                connection_reference: env_reference(name, port, &url),
+                connection_string: url,
                 _container: RunningContainer::Postgres(container),
             }
         }
         Backend::Mysql => {
             let container = Mysql::default().start().await.unwrap();
             let port = container.get_host_port_ipv4(3306).await.unwrap();
+            let url = format!("mysql://root@127.0.0.1:{port}/test");
             BackendHarness {
                 backend,
                 connector_name: name.to_string(),
-                connection_string: format!("mysql://root@127.0.0.1:{port}/test"),
+                connection_reference: env_reference(name, port, &url),
+                connection_string: url,
                 _container: RunningContainer::Mysql(container),
             }
         }

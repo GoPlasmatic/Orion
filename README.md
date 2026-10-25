@@ -17,15 +17,15 @@
 
 Orion is a declarative services runtime. An Orion service consists of a
 **workflow** and a **channel**, with optional **connectors** to external systems.
-Post those definitions, activate them, and the service is live—without writing
+Deploy those definitions and the service is live, without writing
 an application server, building a container for each service, or restarting the
 runtime.
 
 Orion consistently handles the surrounding infrastructure: routing, ingress
 guards, rate limits, timeouts, retries, circuit breakers, connection pooling,
-version rollout, rollback, metrics, and tracing. Definitions can be written by
-a developer or proposed by an AI assistant; they follow the same draft, test,
-activation, and audit path.
+immutable deployments, rollback, metrics, and tracing. Definitions can be
+written by a developer or proposed by an AI assistant; they follow the same
+lint, test, deploy, and audit path.
 
 > [!NOTE]
 > Orion is designed for request- and event-shaped work expressible as ordered
@@ -35,7 +35,7 @@ activation, and audit path.
 
 ## Quickstart
 
-This tested path uses Docker, `curl`, and a POSIX-compatible shell. It starts a
+This tested path uses Docker, `curl`, `jq`, and a POSIX-compatible shell. It starts a
 local Orion instance, deploys an order-processing workflow and channel, and
 calls the resulting API.
 
@@ -49,19 +49,47 @@ curl --retry 10 --retry-delay 1 --retry-connrefused \
   http://localhost:8080/healthz
 ```
 
-### 2. Inspect and deploy the example
+### 2. Deploy a workflow and a channel
+
+Upload each definition, then deploy both as revision 1:
 
 ```bash
-curl -fsSLo /tmp/orion-quickstart.sh \
-  https://raw.githubusercontent.com/GoPlasmatic/Orion/main/examples/quickstart.sh
-less /tmp/orion-quickstart.sh
-bash /tmp/orion-quickstart.sh
+A=http://localhost:8080/api/v2/admin
+
+WF=$(curl -fsS -X POST $A/definitions -H 'Content-Type: application/json' -d '{
+  "kind": "workflow",
+  "definition": {
+    "name": "High-Value Order",
+    "tasks": [
+      { "id": "parse", "function": { "name": "parse_json",
+          "input": { "source": "payload", "target": "order" } } },
+      { "id": "flag", "condition": { ">": [{ "var": "data.order.total" }, 10000] },
+        "function": { "name": "map", "input": { "mappings": [
+          { "path": "data.order.flagged", "logic": true } ] } } }
+    ]
+  }
+}' | jq -r .digest)
+
+CH=$(curl -fsS -X POST $A/definitions -H 'Content-Type: application/json' -d '{
+  "kind": "channel",
+  "definition": { "name": "orders", "channel_type": "sync", "protocol": "rest",
+                  "route_pattern": "/orders", "methods": ["POST"] }
+}' | jq -r .digest)
+
+jq -n --arg wf "$WF" --arg ch "$CH" '{
+  idempotency_key: "quickstart-1", base_revision: 0, reason: "quickstart",
+  manifest: { schema_version: 2, providers: [], members: [
+    { entity: { kind: "channel", id: "orders", revision: 1 }, definition_digest: $ch,
+      requires: [{ kind: "workflow", id: "quickstart-orders", revision: 1 }] },
+    { entity: { kind: "workflow", id: "quickstart-orders", revision: 1 }, definition_digest: $wf }
+  ] }
+}' | curl -fsS -X POST $A/deployments -H 'Content-Type: application/json' --data @-
 ```
 
-The script makes four administration calls: it creates and activates a
-workflow, then creates and activates its channel. It finishes with a test
-request and is safe to run again. From a cloned repository, run
-`./examples/quickstart.sh` instead.
+Each upload answers the definition's digest. The deployment names both digests
+and commits them as the node's first revision. With a definition set on disk,
+`orion-server compile` and `orion-cli deployments apply -d` do these steps for
+you.
 
 ### 3. Call your service
 
@@ -73,11 +101,11 @@ curl -fsS -X POST http://localhost:8080/api/v2/data/orders \
 
 The response contains the parsed order with `"flagged": true`. The workflow
 holds the business logic; the channel exposes it at `POST /orders`. Routing,
-validation, tracing, and lifecycle management are supplied by Orion.
+validation, tracing, and deployment are supplied by Orion.
 
 For expected output, troubleshooting, Windows-friendly installation paths, and
 cleanup instructions, follow the
-[complete quickstart](https://docs.goplasmatic.io/getting-started/quickstart.html).
+[complete quickstart](https://docs.goplasmatic.io/get-started/quickstart.html).
 
 ## The core model
 
@@ -96,9 +124,9 @@ flowchart LR
 | **Workflow** | Runs the business logic as an ordered task pipeline | Parse → validate → enrich → respond |
 | **Connector** | Provides a reusable connection to an external system | PostgreSQL, a REST API, a cache |
 
-The definitions belonging to one service can be shipped together as a
-**package**. One Orion instance can run many packages side by side, each with
-its own lifecycle and rollout.
+A node serves one **deployment**: a manifest naming every channel, workflow,
+connection and plugin it runs. Each change commits a new immutable revision, so
+rolling back is committing an earlier one again.
 
 [How Orion works](https://docs.goplasmatic.io/concepts/how-orion-works.html)
 explains request execution, composition, deployment topology, and extension
@@ -111,7 +139,7 @@ boundaries in one page.
 - **Webhook and data-ingestion services:** normalize incoming payloads and
   read or write external systems through governed connectors.
 - **AI-agent tools:** expose governed HTTP operations that an assistant can
-  draft, dry-run, activate, and roll back using the Orion CLI and agent skill.
+  author, dry-run, deploy, and roll back using the Orion CLI and agent skill.
 - **Scheduled jobs:** run a workflow on a cron expression instead of on a
   request, with every scheduled instant recorded as a durable occurrence.
 - **Composable services:** call another channel in-process with `channel_call`,
@@ -128,7 +156,7 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 | **Traffic** | REST, plain HTTP, synchronous and asynchronous channels, cron schedules |
 | **Safety** | Payload validation, API-key/HMAC/JWT channel auth, rate limiting, backpressure, CORS controls |
 | **Resilience** | Timeouts, retries, circuit breakers, idempotency, response caching, dead-letter handling |
-| **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins |
+| **Delivery** | Offline lint and dry-runs, immutable deployment revisions, plan and apply, rollback, WebAssembly plugins |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
 | **Data** | PostgreSQL, MySQL, SQLite, HTTP, an in-process cache |
 | **Operations** | Embedded SQLite for one node; one shared PostgreSQL/MySQL for clustered replicas |
@@ -143,15 +171,15 @@ exposing an instance, work through the
 
 ```mermaid
 flowchart LR
-    Author --> Draft --> Validate --> DryRun["Dry-run"] --> Activate --> Rollout --> Observe
+    Author --> Lint --> DryRun["Dry-run"] --> Plan --> Apply --> Observe
     Observe -->|problem| Rollback
 ```
 
-Workflow, channel, and connector definitions use the same governed lifecycle
-regardless of who authored them. A draft serves no traffic. You can validate
-and dry-run it, approve the exact version, activate it without restarting the
-server, roll traffic out by percentage, and return to a previous immutable
-version. Administrative changes are recorded in the audit log.
+Workflow, channel, and connector definitions take the same governed path
+regardless of who authored them. You lint and dry-run them offline, plan the
+deployment to see exactly what changes, and apply it without restarting the
+server. Each apply is an immutable revision, and a rollback commits an earlier
+one again. Administrative changes are recorded in the audit log.
 
 For AI-assisted authoring, install the [Orion agent
 skill](https://docs.goplasmatic.io/ai/skills.html) or use the self-contained
@@ -215,8 +243,8 @@ orion-server lint workflow.json
 orion-server clippy ./definitions
 orion-server dry-run -w workflow.json -i input.json
 orion-server test examples/workflow-tests
-orion-server compile ./definitions -o package.json
-orion-server package apply -s http://localhost:8080 -f package.json
+orion-server compile ./definitions -o dist/deployment
+orion-cli deployments apply -d dist/deployment
 ```
 
 The [server command
@@ -265,8 +293,8 @@ for its structure and editorial conventions.
 
 - [Orion UI](https://github.com/GoPlasmatic/Orion-ui) provides the browser-based
   operations console.
-- [`orion-cli`](crates/orion-cli/) manages workflows, channels, connectors,
-  plugins and schedules from a terminal.
+- [`orion-cli`](crates/orion-cli/) deploys definition sets and inspects
+  traces, schedules and health from a terminal.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) covers development setup, tests, and pull
   requests.
 - Use [GitHub Discussions](https://github.com/GoPlasmatic/Orion/discussions) for

@@ -1,6 +1,6 @@
 use crate::connector::{ConnectorConfig, ConnectorType};
 use crate::errors::OrionError;
-use crate::storage::repositories::connectors::{CreateConnectorRequest, UpdateConnectorRequest};
+use crate::storage::models::CreateConnectorRequest;
 
 use super::common::{validate_id, validate_name};
 
@@ -495,20 +495,6 @@ pub fn reject_masked_values(config: &serde_json::Value) -> Result<(), OrionError
     Ok(())
 }
 
-/// Validate the parts of an update that need no database read.
-///
-/// The config is **not** validated here. It has to be checked after the
-/// handler has restored masked fields from the stored row (F34) and resolved
-/// the effective type — which for a config-only update is the stored one (R4).
-/// Validating a config that still reads `"url": "******"` would reject a legal
-/// edit, so the handler owns that step.
-pub fn validate_update_connector(req: &UpdateConnectorRequest) -> Result<(), OrionError> {
-    if let Some(ref name) = req.name {
-        validate_name(name, "connector.name")?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -828,92 +814,6 @@ mod tests {
         };
         assert!(validate_create_connector(&req).is_err());
     }
-
-    #[test]
-    fn test_validate_update_connector_with_name() {
-        let req = UpdateConnectorRequest {
-            tags: None,
-            name: Some("Updated Name".to_string()),
-            connector_type: None,
-            config: None,
-            enabled: None,
-        };
-        assert!(validate_update_connector(&req).is_ok());
-    }
-
-    #[test]
-    fn test_validate_update_connector_invalid_name() {
-        let req = UpdateConnectorRequest {
-            tags: None,
-            name: Some("   ".to_string()),
-            connector_type: None,
-            config: None,
-            enabled: None,
-        };
-        assert!(validate_update_connector(&req).is_err());
-    }
-
-    #[test]
-    fn test_validate_update_connector_type_only() {
-        let req = UpdateConnectorRequest {
-            tags: None,
-            name: None,
-            connector_type: Some(ConnectorType::Http),
-            config: None,
-            enabled: None,
-        };
-        assert!(validate_update_connector(&req).is_ok());
-    }
-
-    #[test]
-    fn test_validate_update_connector_type_and_config() {
-        let req = UpdateConnectorRequest {
-            tags: None,
-            name: None,
-            connector_type: Some(ConnectorType::Http),
-            config: Some(json!({"url": "https://example.com"})),
-            enabled: None,
-        };
-        assert!(validate_update_connector(&req).is_ok());
-    }
-
-    /// The config is no longer checked here: the handler validates it after
-    /// restoring masked fields from the stored row (F34), because a config
-    /// that still reads `"url": "******"` is not the config being persisted.
-    /// The rejection itself is covered end-to-end by
-    /// `admin_connectors_test::test_update_connector_type_and_invalid_config_rejected`.
-    #[test]
-    fn test_validate_update_connector_defers_config_to_the_handler() {
-        let req = UpdateConnectorRequest {
-            tags: None,
-            name: None,
-            connector_type: Some(ConnectorType::Http),
-            config: Some(json!("not an object")),
-            enabled: None,
-        };
-        assert!(validate_update_connector(&req).is_ok());
-        // …and the check the handler runs is the one that rejects it.
-        assert!(
-            validate_connector_config(ConnectorType::Http, &json!("not an object")).is_err(),
-            "the handler's post-unmask validation must still reject this"
-        );
-    }
-
-    #[test]
-    fn test_validate_update_connector_no_fields() {
-        let req = UpdateConnectorRequest {
-            tags: None,
-            name: None,
-            connector_type: None,
-            config: None,
-            enabled: None,
-        };
-        assert!(validate_update_connector(&req).is_ok());
-    }
-
-    // R4: config-without-type passes `validate_update_connector` (the stored
-    // type is not available here) — the update handler validates it against
-    // the stored connector's type via `validate_connector_config`.
 
     #[test]
     fn a_db_driver_is_one_of_three_and_agrees_with_a_visible_scheme() {

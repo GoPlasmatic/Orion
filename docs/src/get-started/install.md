@@ -75,7 +75,7 @@ Both arguments matter. The repository is a workspace with two binary crates, so 
 
 ## Install the CLI
 
-`orion-cli` drives the same admin API from the terminal. It is what an AI assistant uses through the [agent skill](../guides/ai/agent-skill.md), and it is optional: every step in the tutorials also has a `curl` form.
+`orion-cli` drives the same admin API from the terminal. It is what an AI assistant uses through the [agent skill](../guides/ai/agent-skill.md), and the tutorials deploy with it. The [quickstart](./quickstart.md) shows the same deployment as plain `curl` calls.
 
 The CLI ships in the same release as the server. Use matching versions so their wire formats agree. Every method is the server's with `orion-server` swapped for `orion-cli`:
 

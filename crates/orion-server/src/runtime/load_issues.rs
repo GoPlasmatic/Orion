@@ -1,6 +1,6 @@
 //! What a runtime generation could not load, in the wire shape
 //! [`orion_api::EngineLoadIssues`] — the one collector behind `/health`, the
-//! `POST /engine/reload` answer and `GET /engine/status`, so the three
+//! deployment apply answer and `GET /engine/status`, so the three
 //! cannot disagree about what is quarantined.
 //!
 //! Two of the three lists live on the generation; connectors do not — the

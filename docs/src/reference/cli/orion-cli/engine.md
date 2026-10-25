@@ -1,15 +1,15 @@
-<!-- description: orion-cli engine shows the running engine's status and hot-reloads it from the database, which is how deferred activations are batched into one reload. -->
+<!-- description: orion-cli engine status shows what the engine on this node serves: version, uptime, workflow and channel counts. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
 # `orion-cli engine`
 
-Controls the engine. Alias: `eng`.
+Shows what the engine on this node serves. Alias: `eng`.
 
 ## Synopsis
 
 ```bash
-orion-cli engine <status|reload>
+orion-cli engine status
 ```
 
 ## Subcommands
@@ -17,17 +17,15 @@ orion-cli engine <status|reload>
 | Subcommand | Description |
 |------------|-------------|
 | `status` | Show engine status: version, uptime, workflow and channel counts. |
-| `reload` | Hot-reload the engine from the database. |
 
 ## Examples
 
 ```bash
-orion-cli engine reload
+orion-cli engine status
 ```
 
 ## Related
 
-- [The entity lifecycle](../../../concepts/lifecycle.md): what a reload publishes.
-- [Admin API › Engine](../../admin-api/engine.md): the endpoints behind the subcommands.
-- [`orion-cli workflows`](./workflows.md): the `--defer-reload` flag a reload completes.
+- [Admin API › Engine](../../admin-api/engine.md): the endpoint behind the subcommand.
+- [Deployment endpoints](../../admin-api/deployments.md): how a node is told what to serve.
 - [`orion-cli` commands](./index.md): every `orion-cli` subcommand.

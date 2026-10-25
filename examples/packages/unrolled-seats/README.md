@@ -31,8 +31,8 @@ four ordinary steps the admin API accepts.
 ## Deploy it
 
 ```bash
-orion-server compile examples/packages/unrolled-seats --name unrolled-seats --version content -o unrolled-seats.json
-orion-server package apply -s http://localhost:8080 -f unrolled-seats.json
+orion-server compile examples/packages/unrolled-seats -o dist/unrolled-seats
+orion-cli deployments apply -d dist/unrolled-seats
 ```
 
 ## Try it
@@ -48,5 +48,5 @@ The answer carries `data.scores`:
 To see the expanded workflow without a server:
 
 ```bash
-orion-server compile examples/packages/unrolled-seats --format dir -o /tmp/unrolled
+orion-server compile examples/packages/unrolled-seats -o /tmp/unrolled
 ```

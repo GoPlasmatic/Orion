@@ -30,7 +30,8 @@ fn set(
     std::fs::write(
         defs.join("connector.json"),
         serde_json::json!({"name": name, "connector_type": "db", "config": {
-            "type": "db", "connection_string": url, "allow_private_urls": true}})
+            "type": "db", "driver": if url.starts_with("mysql") { "mysql" } else { "postgresql" },
+            "connection_string": url, "allow_private_urls": true}})
         .to_string(),
     )
     .unwrap();

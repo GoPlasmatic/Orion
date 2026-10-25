@@ -4,7 +4,7 @@
 
 # Connect a database or API
 
-A connector is how a workflow reaches anything outside the process. You create one through the admin API, and every workflow references it by name. This guide creates one, keeps its credential out of the database, bounds what it may do, and uses it from a task.
+A connector is how a workflow reaches anything outside the process. You declare one beside your workflows, deploy it as a connection, and every workflow references it by name. This guide declares one, keeps its credential out of the deployment, bounds what it may do, and uses it from a task.
 
 ## Before you start
 
@@ -12,23 +12,24 @@ You need a server on `http://localhost:8080` and a reachable external system to 
 
 ## Create one
 
-Post the definition. It is live at once. Connectors have no draft step and no activation, the registry reloads on every change, and an update replaces the stored config rather than versioning it:
+Write the definition as a file in your definition set, beside the workflows that use it:
 
-```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/connectors \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "name": "orders-db",
-    "connector_type": "db",
-    "config": {
-      "type": "db",
-      "connection_string": "env://ORDERS_DB_URL",
-      "max_connections": 5,
-      "allow_private_urls": true,
-      "operations": { "delete": false, "raw_write": false }
-    }
-  }'
+```json
+{
+  "name": "orders-db",
+  "connector_type": "db",
+  "config": {
+    "type": "db",
+    "driver": "postgresql",
+    "connection_string": "env://ORDERS_DB_URL",
+    "max_connections": 5,
+    "allow_private_urls": true,
+    "operations": { "delete": false, "raw_write": false }
+  }
+}
 ```
+
+[`orion-server compile`](../../reference/cli/orion-server/compile.md#deployment-directories) turns it into a connection revision, and `orion-cli deployments apply -d` deploys it with the workflows. A changed connector becomes a new connection revision, never an edit of the old one.
 
 ## Never write a credential into one
 
@@ -38,13 +39,13 @@ Reference the server's environment instead:
 { "connection_string": "env://ORDERS_DB_URL" }
 ```
 
-The reference resolves from the server's environment each time the connector loads, so the stored row holds a variable name. Three things follow:
+The reference resolves from the server's environment when the connection is used, so the deployment holds a variable name. Three things follow:
 
 - The database never holds the credential, so a dump is not a leak.
 - The same JSON works in dev, QA and production; only the variable's value differs.
-- The connector survives `export` and `import`. A literal credential exports as `"******"` and is refused on import, so it cannot be promoted at all.
+- The connector compiles into a deployment. `compile` moves each reference to the connection's `secret_locators`, and refuses a literal credential, so one cannot be deployed at all.
 
-`vault://<api-path>#<field>` reads HashiCorp Vault. `${VAR}` and `${VAR:-default}` shell-style substitution also works, which is what the shipped `postgres-orders` example uses.
+`vault://<api-path>#<field>` reads HashiCorp Vault. `${VAR}` and `${VAR:-default}` shell-style substitution also works.
 
 If an API wants its credentials in the query string, do not put them in the connector `url`. Use [`query_params`](../../reference/connectors/request-layering.md#query-parameter-precedence), which keeps the resolved value out of the URL, and therefore out of traces, logs and error messages.
 
@@ -109,17 +110,17 @@ Use the portable dialect by default. Reach for raw SQL only when the dialect can
 
 ## Verify
 
-Test the connector from the API:
+Probe the deployed connection:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v2/admin/connectors/orders-db/test
+orion-cli connections probe orders-db
 ```
 
-For a `db` connector this opens a real connection, and for `cache` it reads its in-memory store. For `http` it issues a real GET with real credentials, which is the point: a wrong bearer token is invisible until traffic hits it. A `401` or `403` is reported as *not* reachable. Before the server is running at all, `orion-server test-connectivity` probes the configured database.
+The probe reaches the real backend with the real credentials, which is the point: a wrong password is invisible until traffic hits it. Every probe is audited. Before the server is running at all, `orion-server test-connectivity` probes the configured database.
 
 ## Keep it healthy
 
-Each connector has its own circuit breaker and, for HTTP, its own retry policy. Turn breakers on globally with `engine.circuit_breaker.enabled = true`; they are off by default. Inspect and reset them at `/api/v2/admin/connectors/circuit-breakers`. See [Timeouts, retries and circuit breakers](../../operate/run/failure-handling.md).
+Each connector has its own circuit breaker and, for HTTP, its own retry policy. Turn breakers on globally with `engine.circuit_breaker.enabled = true`; they are off by default. Inspect and reset them through the [circuit breaker endpoints](../../reference/admin-api/circuit-breakers.md). See [Timeouts, retries and circuit breakers](../../operate/run/failure-handling.md).
 
 ## Next steps
 

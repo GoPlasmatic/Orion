@@ -8,7 +8,7 @@ A cron channel binds a schedule to a workflow the way a REST channel binds a rou
 
 ## Before you start
 
-You need a running Orion server with `cron.enabled` (the default), and an active workflow to run. Anything that works behind a REST channel works here unchanged.
+You need a running Orion server with `cron.enabled` (the default), and a workflow to run. Anything that works behind a REST channel works here unchanged.
 
 ## 1. Write the schedule
 
@@ -32,11 +32,11 @@ A cron channel declares its schedule in `transport_config`. Nothing else about i
 
 `0 15 2 * * *` is 02:15 every day, read in Kolkata. The expression always has six fields: second, minute, hour, day-of-month, month, day-of-week. Five-field expressions are refused rather than guessed at. The same text means something different under each reading, and no author could tell from the stored document which they got.
 
-Create and activate it like any other channel:
+Save it beside its workflow in your definition set, and deploy both like any other channel:
 
 ```bash
-orion-cli channels create -f nightly-rollup.json
-orion-cli channels activate nightly-order-rollup
+orion-server compile ./definitions -o dist/deployment
+orion-cli deployments apply -d dist/deployment
 ```
 
 ## 2. Read the payload in the workflow
@@ -108,7 +108,7 @@ At most four runs of `invoice-worker` are admitted at a time, and a fifth is rec
 `orion-cli cron status` shows the slots held as `held/slots`. On SQLite the bound is per node. Nodes sharing PostgreSQL or MySQL share it across the cluster.
 
 > [!WARNING]
-> Upgrade every node before activating a channel that sets `slots`. An older node refuses the unknown field and quarantines the channel. Any occurrence of it that the node claims fails as `channel_unavailable`. To roll back, remove `slots` first.
+> Upgrade every node before deploying a channel that sets `slots`. An older node refuses the unknown field and quarantines the channel. Any occurrence of it that the node claims fails as `channel_unavailable`. To roll back, remove `slots` first.
 
 > [!NOTE]
 > Non-overlap is not exactly once. A worker that loses its lease cancels, but it cannot recall a connector call already in flight. Scheduled work that must not be applied twice needs an idempotent destination or an idempotency key. `metadata.trigger.scheduled_for` is a good one, because every attempt at an occurrence agrees on it.
@@ -118,7 +118,7 @@ At most four runs of `invoice-worker` are admitted at a time, and a fifth is rec
 Testing a schedule by waiting for it is miserable. Trigger it:
 
 ```bash
-orion-cli channels trigger nightly-order-rollup
+curl -s -X POST http://localhost:8080/api/v2/admin/channels/nightly-order-rollup/trigger
 ```
 
 That creates an occurrence at the current instant and returns at once. It is not a bypass. It takes the same singleton, applies the same guards and writes the same kind of trace, so what you observe is what the schedule does.

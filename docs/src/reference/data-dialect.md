@@ -206,7 +206,7 @@ These rules are normative. The renderer implements them, and the cross-backend p
 
 ## Write envelope (`data_write`)
 
-The envelope is nested under `write`, mirroring `data_query`'s `query`. The handler's own keys (`connector`, `schema`, `params`, `numeric_as`, `binary_as`, `output`) stay at the top level. `write` is required: a task without it is refused at create, update, import, `POST /admin/workflows/validate`, and `orion-server lint`.
+The envelope is nested under `write`, mirroring `data_query`'s `query`. The handler's own keys (`connector`, `schema`, `params`, `numeric_as`, `binary_as`, `output`) stay at the top level. `write` is required: a task without it is refused at upload and by `orion-server lint`.
 
 | Field | Used by | Description |
 |-------|---------|-------------|

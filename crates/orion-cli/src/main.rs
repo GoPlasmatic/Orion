@@ -117,10 +117,6 @@ async fn main() {
 
 async fn run(cli: Cli) -> anyhow::Result<i32> {
     match &cli.command {
-        Commands::Benchmark(cmd) => {
-            let client = build_client(&cli)?;
-            cmd.run(&client, &cli.output, cli.quiet).await
-        }
         Commands::Config(cmd) => {
             cmd.run().await?;
             Ok(0)
@@ -128,19 +124,6 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         Commands::Health => {
             let client = build_client(&cli)?;
             commands::health::run(&client, &cli.output, cli.quiet).await
-        }
-        Commands::Workflows(cmd) => {
-            let client = build_client(&cli)?;
-            cmd.run(&client, &cli.output, cli.quiet, cli.verbose, cli.yes)
-                .await
-        }
-        Commands::Channels(cmd) => {
-            let client = build_client(&cli)?;
-            cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
-        }
-        Commands::Connectors(cmd) => {
-            let client = build_client(&cli)?;
-            cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
         Commands::Send(cmd) => {
             let client = build_client(&cli)?;
@@ -152,7 +135,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         }
         Commands::Engine(cmd) => {
             let client = build_client(&cli)?;
-            cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
+            cmd.run(&client, &cli.output, cli.quiet).await
         }
         Commands::Functions(cmd) => {
             let client = build_client(&cli)?;
@@ -173,11 +156,6 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         Commands::Cache(cmd) => {
             let client = build_client(&cli)?;
             cmd.run(&client, &cli.output, cli.quiet).await
-        }
-        Commands::Plugins(cmd) => {
-            let client = build_client(&cli)?;
-            cmd.run(&client, &cli.output, cli.quiet, cli.verbose, cli.yes)
-                .await
         }
         Commands::Dlq(cmd) => {
             let client = build_client(&cli)?;

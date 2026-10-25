@@ -38,16 +38,16 @@ Put a token here rather than in an `Authorization` header: `"Bearer env://API_TO
 |-------|------|:--------:|---------|-------------|
 | `grant` | string | yes | — | `client_credentials` (server-to-server; tokens re-acquired on expiry), `refresh_token` (rotating service apps), or `account_credentials` (Zoom Server-to-Server OAuth) |
 | `token_url` | string | yes | — | The IdP's token endpoint. Gets the same SSRF validation as the connector's own URL (`allow_private_urls` opts out) |
-| `client_id` / `client_secret` | string | yes | — | The OAuth client. `client_secret` is masked on reads |
+| `client_id` / `client_secret` | string | yes | — | The OAuth client. `client_secret` is a secret reference: a deployment refuses a literal |
 | `client_auth` | string | no | `basic` | How the client authenticates to the token endpoint (RFC 6749 §2.3.1): `basic` (HTTP Basic) or `body` (form parameters) |
-| `refresh_token` | string | conditional | — | The bootstrap **seed** — required by the `refresh_token` grant, refused by the other grants. Masked on reads |
+| `refresh_token` | string | conditional | — | The bootstrap **seed** — required by the `refresh_token` grant, refused by the other grants. A secret reference, like `client_secret` |
 | `scopes` | array | no | — | Space-joined into the `scope` parameter |
 | `audience` / `resource` | string | no | — | The corresponding token-request parameters (Auth0- / RFC 8707-style IdPs) |
-| `account_id` | string | conditional | — | The Zoom account. **Required** by `account_credentials`, refused by every other grant. A tenant identifier rather than a credential, so it stays readable on admin reads and in package diffs |
-| `extra_params` | object | no | — | Extra form parameters for provider quirks. Reserved names (`grant_type`, `client_id`, …) are refused; values are masked on reads (use `env://` refs if they must round-trip an export) |
+| `account_id` | string | conditional | — | The Zoom account. **Required** by `account_credentials`, refused by every other grant. A tenant identifier rather than a credential, so it may be a literal in `public_config` |
+| `extra_params` | object | no | — | Extra form parameters for provider quirks. Reserved names (`grant_type`, `client_id`, …) are refused; write a secret value as an `env://` or `vault://` reference |
 | `refresh_margin_secs` | integer | no | `60` | Refresh this many seconds before expiry (max 3600) |
 
-**Lifecycle.** Tokens are acquired lazily, cached in memory, and refreshed behind the margin. The refresh is single-flight, so concurrent requests wait on the in-flight one instead of racing it. Under rotation that race would invalidate the winner's new token. One acquisition serves every request in the cache window; a 401 from the API drops the cached token so the next call refetches. Token-endpoint outcomes land in the [`orion_oauth_token_requests_total`](../metrics.md) counter, and `POST /api/v2/admin/connectors/{id}/test` acquires a **real token**, validating the whole setup before any workflow depends on it.
+**Lifecycle.** Tokens are acquired lazily, cached in memory, and refreshed behind the margin. The refresh is single-flight, so concurrent requests wait on the in-flight one instead of racing it. Under rotation that race would invalidate the winner's new token. One acquisition serves every request in the cache window; a 401 from the API drops the cached token so the next call refetches. Token-endpoint outcomes land in the [`orion_oauth_token_requests_total`](../metrics.md) counter.
 
 **Rotation persistence.** A refresh response may carry a new refresh token. Orion persists it, with the access token and its expiry, to the `connector_oauth_state` table. The row is encrypted when `storage.connector_encryption_key` is set. The connector's own config is never mutated: it stays the declarative seed. The state row is stamped with a fingerprint of the `auth` block, so **editing the connector discards stale state**. That is also the recovery story for a burned token: update the connector with a fresh seed, and the seed wins. In cluster mode a refresh takes a job lease and other nodes adopt the persisted token instead of rotating against each other.
 

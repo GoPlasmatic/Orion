@@ -10,8 +10,8 @@ Orion reads the process environment five ways, and which one applies is decided 
 |---|---|---|---|
 | Setting override | `ORION_SECTION__KEY` | the environment itself | once, at startup |
 | Text substitution | `${VAR}`, `${VAR:-default}`, `${VAR:?message}`, `$$` | the config file, a connector `config` *(deprecated)* | before the text is parsed |
-| Secret reference | `env://VAR`, `vault://…` | selected parsed string fields | at every load and reload |
-| Var reference | `var://name` | a stored connector or channel config | at every load and reload |
+| Secret reference | `env://VAR`, `vault://…` | selected parsed string fields | at every load |
+| Var reference | `var://name` | a stored connector or channel config | at every load |
 | Declared value | `[vars]` / `[secrets]` | the config file, read by name from a workflow | once, at startup |
 
 The first belongs to [Server configuration](./configuration/index.md): every setting has an override, and that page names them all. The rest are this page's subject. They are not interchangeable. `${VAR}` rewrites *text* before it is parsed; `env://` rewrites a *parsed value* after. That is why both reach a connector and only one reaches a config file.
@@ -26,7 +26,7 @@ The last is different in kind: it does not rewrite anything. The operator declar
 
 The two are not equivalent, and the differences all favour `env://`:
 
-- **`${VAR}` is invisible to masking.** The policy that lets a reference survive an API read recognises `env://VAR` as a *name* and passes it through, while masking a literal as `"******"`. `${VAR}` is neither. It is an ordinary string, so it exports as itself while the credential beside it is masked.
+- **`${VAR}` is not a locator.** `compile` moves an `env://VAR` reference into the connection's `secret_locators`, so the stored revision holds a name. `${VAR}` is an ordinary string, so it stays in `public_config` as itself.
 - **`${VAR}` substitutes text, not a value.** It runs before the JSON is parsed, so a variable holding `", "admin": true` edits the document's *structure*. `env://` replaces one already-parsed string with one string.
 - **`${VAR}` has no offline reading.** `lint`, `clippy` and `dry-run` have no process environment standing in for the deployment's, so a placeholder is opaque to them. `env://` is inventoried by the reference scan.
 
@@ -51,7 +51,7 @@ Rewriting is mechanical: `"${DB_URL}"` becomes `"env://DB_URL"`. One caveat: `${
 
 ² A workflow reads a declared value *by name* instead: `{"var": "metadata.vars.name"}` for a var, `{"secret": "name"}` for a secret. A stored config has no message to read from, which is why it needs a reference form and a workflow does not.
 
-A workflow carrying one anywhere else is **refused**. `POST /workflows`, `POST /workflows/validate` and `orion-server lint` all report `UNRESOLVED_SECRET_REF` naming the field. `env://` at the head of a string has no reading in which it is data. Before that check existed the reference was a plain string. A task with `"path": "env://API_BASE"` requested a URL spelled `env://API_BASE` and failed with whatever the backend made of it.
+A workflow carrying one anywhere else is **refused**. `POST /api/v2/admin/definitions`, `orion-server lint` and `compile` all report `UNRESOLVED_SECRET_REF` naming the field. `env://` at the head of a string has no reading in which it is data. Before that check existed the reference was a plain string. A task with `"path": "env://API_BASE"` requested a URL spelled `env://API_BASE` and failed with whatever the backend made of it.
 
 > [!WARNING]
 > `${VAR}` has no such guard, because `${…}` is ordinary text in a query or a template. A workflow embedding `${TENANT}` sends those nine characters to the backend. Nothing substitutes them.
@@ -62,7 +62,7 @@ The three workflow entries are exceptions with a reason: a signing key has nowhe
 
 ## Parameterising a stored config
 
-A connector and a channel live in the **database**, not in the config file, so `${VAR}` never reaches them. Promoting a package from staging to production would otherwise carry staging's TTLs, rate limits and hostnames with it. `var://name` is how one stored config reads a value the instance declares:
+A connector and a channel are deployed, not written in the config file, so the config file's `${VAR}` substitution never reaches them. Deploying one definition set to staging and production would otherwise carry staging's TTLs, rate limits and hostnames with it. `var://name` is how one stored config reads a value the instance declares:
 
 ```toml
 [vars]
@@ -144,9 +144,9 @@ Offline, there is no config file to read either section from. `orion-server dry-
 { "config": { "auth": { "mode": "hmac", "secret": "env://STRIPE_WEBHOOK_SECRET" } } }
 ```
 
-The stored row holds a variable name, so a database dump is not a leak and one document deploys everywhere. A **literal** credential is worse than untidy. API reads mask it as `"******"`, and an import carrying `"******"` is refused. A connector authored with a literal therefore cannot be promoted between instances at all. The table of what survives an export is in [Promote between environments](../operate/maintain/promotion.md#secrets-survive-the-trip-if-authored-as-references).
+The stored revision holds a variable name, so a database dump is not a leak and one document deploys everywhere. A **literal** credential is refused outright: a connection's `public_config` does not accept one, so a connector authored with a literal does not compile ([Secret masking](./connectors/masking.md)).
 
-For the three workflow fields there is a second reason. Connector configs can be encrypted at rest with `storage.connector_encryption_key`; **workflow documents cannot**. A literal key in a `crypto` or `jwt_sign` task sits in the `workflows` table in clear, and every version of that workflow keeps it.
+For the three workflow fields there is a second reason. Connector configs can be encrypted at rest with `storage.connector_encryption_key`; **workflow documents cannot**. A literal key in a `crypto` or `jwt_sign` task sits in the stored definition in clear, and every revision that uses it keeps it.
 
 Two habits close the gap that references alone leave open:
 
@@ -163,7 +163,7 @@ Every credential Orion checks on the way in accepts more than one value, so rota
 | Channel `hmac` | `auth.secret` plus `auth.secrets` — each tried in constant time | `env://` |
 | Admin API | `admin_auth.api_keys` | `${VAR}` in the config file, or the whole list through `ORION_ADMIN_AUTH__API_KEYS` |
 
-A `vault://` reference is re-read on every reload, so a renewed token applies without a restart. An `env://` value is read from the process environment, which a running process cannot change — rotating one means restarting or redeploying the server.
+A `vault://` reference is re-read on every rebuild, so a renewed token applies without a restart. An `env://` value is read from the process environment, which a running process cannot change — rotating one means restarting or redeploying the server.
 
 ## Naming the variables
 
@@ -177,14 +177,14 @@ Name them anything, with one restriction. Orion refuses to start on an `ORION_*`
 | Config file, `${VAR:-default}` | The default is used. An empty default is legal. |
 | Config file, `${VAR:?message}` | Startup fails, quoting the message, the file and the position. An empty value fails the same way. |
 | Config file, `[secrets]` | **Startup fails**, naming the entry and never its value. The alternative is an instance that runs and fails at the remote system with nothing pointing back here. |
-| Connector `config` | That connector is **skipped at load**. The server still starts and every other connector serves; `/health` reports `components.connectors: degraded`, and the connector's row in `GET /api/v2/admin/connectors` carries `load_status: "failed"` with a `load_error`. Every task using it fails. |
+| Connector `config` | That connector is **skipped at load**. The server still starts and every other connector serves; `/health` reports `components.connectors: degraded` and lists the failure. Every task using it fails. |
 | Channel `auth` | The channel is **quarantined** — refused at every ingress rather than served with the guard missing. `/health` reports `components.channels: degraded`. |
 | Workflow `crypto` / `jwt_sign` / `jwt_verify` | The task fails when it runs, with a validation error naming the field. Nothing catches it earlier: the value is read at execution. |
-| A workflow field that resolves nothing | Refused at create, update and `lint` with `UNRESOLVED_SECRET_REF` — the variable is never consulted, because the reference would never have been resolved. |
+| A workflow field that resolves nothing | Refused at upload and by `lint` with `UNRESOLVED_SECRET_REF` — the variable is never consulted, because the reference would never have been resolved. |
 | A workflow naming an undeclared `{"secret": …}` | The engine refuses the workflow, and the channel is **quarantined** rather than served with the key resolving to `null`. |
 | A reserved scheme | Refused wherever it is resolved, so an unresolvable reference never reaches the remote system as its own text. |
 
-Creating or updating a connector does **not** resolve its references. `POST /connectors` checks the config's shape, not this host's environment. A connector authored on a laptop is accepted there and reveals the missing variable at load. `POST /connectors/validate` reports an unresolvable reference as a *warning* for the same reason. A CI runner holds no production secrets and must still be able to check a bundle. Neither `/health` line is a 503. Both are the degraded-but-serving state described in [Troubleshooting](../operate/maintain/troubleshooting.md#health-says-degraded-but-returns-http-200).
+Creating a connection revision does **not** resolve its references. `POST /api/v2/admin/connections` checks the config's shape, not this host's environment. A connection created from a laptop is accepted there and reveals the missing variable at load. `lint` and `compile` do not resolve references either, for the same reason. A CI runner holds no production secrets and must still be able to check a set. Neither `/health` line is a 503. Both are the degraded-but-serving state described in [Troubleshooting](../operate/maintain/troubleshooting.md#health-says-degraded-but-returns-http-200).
 
 ## Inventory what a set needs
 
@@ -214,12 +214,12 @@ extraEnvFrom:
   - secretRef: { name: orion-connector-secrets }
 ```
 
-`orion-server validate-config` prints the merged configuration without starting, which checks the config-file half. Secret-looking keys come back `******` and passwords inside URL-shaped values are struck out in place, so the output is safe to paste into an issue. It says nothing about connectors and channels. Those live in the database and are resolved at load, so `/health` and the connector list are what report them.
+`orion-server validate-config` prints the merged configuration without starting, which checks the config-file half. Secret-looking keys come back `******` and passwords inside URL-shaped values are struck out in place, so the output is safe to paste into an issue. It says nothing about connectors and channels. Those are deployed and resolved at load, so `/health` is what reports them.
 
 ## Related
 
 - [Connectors](../concepts/connectors.md): why credentials live on a connector and not in a workflow.
 - [Secure an instance](../operate/run/security.md#keep-credentials-out-of-the-database): the practices above in their operational context.
 - [Server configuration › Vars and secrets](./configuration/vars-and-secrets.md): the two declaration sections, and every other setting with its default and `ORION_*` override.
-- [Connector types › Secrets by reference](./connectors/secrets.md): the reference forms, the Vault path grammar, and the masking policy that decides what survives a read.
-- [CI/CD with packages](../guides/patterns/ci-cd.md#keep-secrets-out-of-the-artifact): why one artifact reaches staging and production unchanged.
+- [Connector types › Secrets by reference](./connectors/secrets.md): the reference forms, and the Vault path grammar.
+- [CI/CD with deployments](../guides/patterns/ci-cd.md#keep-secrets-out-of-the-deployment): why one deployment directory reaches staging and production unchanged.

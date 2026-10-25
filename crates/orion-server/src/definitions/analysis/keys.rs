@@ -10,7 +10,7 @@ use serde_json::Value;
 pub fn step_key(step: &Value) -> String {
     let mut stripped = step.clone();
     strip_labels(&mut stripped);
-    crate::storage::content::canonical_json(&stripped)
+    crate::canonical::canonical_json(&stripped)
 }
 
 /// A step with only `id` removed, for matching against a fragment whose
@@ -18,7 +18,7 @@ pub fn step_key(step: &Value) -> String {
 pub fn step_key_keeping_names(step: &Value) -> String {
     let mut stripped = step.clone();
     strip_ids(&mut stripped);
-    crate::storage::content::canonical_json(&stripped)
+    crate::canonical::canonical_json(&stripped)
 }
 
 fn strip_labels(step: &mut Value) {
@@ -42,7 +42,7 @@ fn strip_ids(step: &mut Value) {
 
 /// Canonical JSON of any value, for identity of repeated literals.
 pub fn value_key(value: &Value) -> String {
-    crate::storage::content::canonical_json(value)
+    crate::canonical::canonical_json(value)
 }
 
 #[cfg(test)]

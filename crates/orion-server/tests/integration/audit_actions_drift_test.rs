@@ -8,8 +8,8 @@
 //! empty page, which reads exactly like "nothing happened".
 //!
 //! The call sites are the authority. This module walks `src/`, reads the
-//! action and resource type out of every `audit_log` / `audit_log_draft_only` /
-//! `audit_and_reload` / `audited_write` call, and asserts against the table in
+//! action and resource type out of every `audit_log` call, and asserts
+//! against the table in
 //! `operate/run/audit-logs.md`:
 //!
 //! 1. Every emitted `(action, resource_type)` pair is documented.
@@ -36,32 +36,14 @@ const AUDIT_LOGS_MD: &str = concat!(
     "/../../docs/src/operate/run/audit-logs.md"
 );
 
-/// The helpers that write an audit row. Each takes the action as its third
+/// The helper that writes an audit row. It takes the action as its third
 /// argument and the resource type as its fourth.
-///
-/// `audited_write` is the §2.6 path — the active-set mutations, whose audit
-/// row commits inside the transaction that makes the change rather than going
-/// on the queue. It has the same argument shape as the other three because it
-/// records the same row; the difference is only *when* the row is written.
-const WRITERS: [&str; 4] = [
-    "audit_log(",
-    "audit_log_draft_only(",
-    "audit_and_reload(",
-    "audited_write(",
-];
+const WRITERS: [&str; 1] = ["audit_log("];
 
 /// Actions built with `format!`, and the values the interpolation can actually
-/// take.
-///
-/// Only one call site computes its action, and it cannot be resolved by
-/// reading the `format!` alone — the reachable set is decided by a gate
-/// upstream of the call:
-///
-/// * `status_{}` — `StatusAction::parse` accepts only `active` and `archived`
-///   and returns a `400` for `draft`, so a draft transition never reaches the
-///   audit write. Expanding this over all three `EntityStatus` values would
-///   invent `status_draft`, the ghost this module exists to catch.
-const COMPUTED_ACTIONS: [(&str, &[&str]); 1] = [("status_", &["active", "archived"])];
+/// take. No call site computes its action today; one that does must declare
+/// its reachable set here, or [`actions`] refuses it.
+const COMPUTED_ACTIONS: [(&str, &[&str]); 0] = [];
 
 /// One audit row the server can write.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -317,7 +299,12 @@ fn the_extractor_finds_the_audit_call_sites() {
          stopped recognising a writer in WRITERS",
         emitted.len()
     );
-    for expected in ["reload", "update_rollout", "status_active"] {
+    for expected in [
+        "trigger",
+        "reset",
+        "v2_definition_upload",
+        "v2_deployment_apply",
+    ] {
         assert!(
             emitted.iter().any(|e| e.action == expected),
             "the extractor missed the `{expected}` call site"

@@ -17,7 +17,6 @@ use serde_json::Value;
 
 use crate::plugin::PluginSet;
 use crate::storage::models::{Channel, Workflow};
-use crate::storage::repositories::workflows::workflow_json;
 
 /// Filter channels based on include/exclude glob patterns from [`ChannelFilterConfig`].
 ///
@@ -141,7 +140,7 @@ pub fn name_v3_spellings(json: &Value, issues: &mut [Issue]) {
 ///   silently lost.
 ///
 /// Every other Defect, `PAYLOAD_VAR` included, loads: the loader logs it at
-/// `warn`, and `POST /workflows/validate` reports it. Advisories never
+/// `warn`, and `lint` reports it. Advisories never
 /// quarantine. A severity a later dataflow-rs adds quarantines until it is
 /// classified here: only what is known to be harmless passes.
 pub fn quarantines(issue: &Issue) -> bool {
@@ -435,6 +434,75 @@ fn load_channel(
     }
 
     Ok(compiled)
+}
+
+/// The workflow definition `channel` serves `workflow` as: the JSON the
+/// engine reads a stored row through, which `def::parse` takes as it is.
+///
+/// `id` and `status` are the row's own for a workflow taking all of its
+/// channel's traffic, and version-qualified for one version of a rollout;
+/// `rollout` is the half-open bucket range `(start, end)` the version serves,
+/// `None` for a workflow that takes all of its channel's traffic.
+///
+/// The `continue_on_error` column is written as dataflow-rs 4 spells it:
+/// `"on_failure": "continue"` when it is set, and nothing when it is
+/// not, which is the default. A task's own keys, inside `tasks_json`, are the
+/// author's and are left as written.
+///
+/// `http_call`'s destination path used to be rewritten here from Orion's
+/// `output` spelling to the upstream `response_path`, because
+/// `{"name": "http_call"}` deserializes into dataflow-rs's own
+/// `HttpCallConfig` and Orion could not annotate it. No function input has
+/// an alias any more: a row is read as it is stored.
+///
+/// # Errors
+///
+/// A row whose `tasks_json`, `condition_json`, `tags_json` or `loop_json`
+/// is not the JSON it must be.
+pub fn workflow_json(
+    workflow: &crate::storage::models::Workflow,
+    channel: &str,
+    id: &str,
+    status: &str,
+    rollout: Option<(u8, u8)>,
+) -> Result<serde_json::Value, crate::errors::OrionError> {
+    let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
+    let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
+    let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
+    // `null` rather than an omitted key: the engine reads it as no loop,
+    // and being explicit keeps the built JSON's shape the same for every
+    // workflow.
+    let loop_config: serde_json::Value = match workflow.loop_json.as_deref() {
+        Some(json) => serde_json::from_str(json)?,
+        None => serde_json::Value::Null,
+    };
+
+    let mut json = serde_json::json!({
+        "id": id,
+        "name": workflow.name,
+        "description": workflow.description,
+        "channel": channel,
+        "priority": workflow.priority,
+        "version": workflow.version,
+        "status": status,
+        "condition": condition,
+        "tasks": tasks,
+        "tags": tags,
+        "loop": loop_config,
+        "rollout": rollout.map(|(bucket_start, bucket_end)| serde_json::json!({
+            "bucket_start": bucket_start,
+            "bucket_end": bucket_end,
+        })),
+    });
+    if workflow.continue_on_error
+        && let Some(object) = json.as_object_mut()
+    {
+        object.insert(
+            "on_failure".to_string(),
+            serde_json::Value::String("continue".to_string()),
+        );
+    }
+    Ok(json)
 }
 
 #[cfg(test)]
@@ -1394,7 +1462,7 @@ mod tests {
 
     /// A task naming a function no registry holds is refused when the
     /// workflow is compiled, naming the workflow and the task — an offline
-    /// run or `POST /workflows/{id}/test` cannot give a green answer for a
+    /// run or `POST /definitions/test` cannot give a green answer for a
     /// workflow boot would quarantine.
     #[test]
     fn single_engine_refuses_a_function_nothing_dispatches() {
@@ -1429,5 +1497,198 @@ mod tests {
             .is_ok(),
             "`log` is self-contained"
         );
+    }
+}
+
+#[cfg(test)]
+mod workflow_json_tests {
+    use super::workflow_json;
+    use crate::storage::models::{EntityStatus, Workflow};
+
+    /// The strict reader the engine loads every stored definition with (the
+    /// v3 compat reader off). Spelled here rather than borrowed from
+    /// `engine`, which sits above storage.
+    fn strict_parse(json: &serde_json::Value) -> dataflow_rs::def::Parsed {
+        dataflow_rs::def::parse(
+            json,
+            dataflow_rs::def::ParseOptions::default().compat(false),
+        )
+    }
+
+    #[test]
+    fn test_workflow_json_basic() {
+        let workflow = Workflow {
+            workflow_id: "test-workflow".to_string(),
+            name: "Test Workflow".to_string(),
+            description: Some("A test workflow".to_string()),
+            priority: 10,
+            version: 1,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 100,
+            condition_json: "true".to_string(),
+            tasks_json: r#"[{"id":"log_task","name":"Log","function":{"name":"log","input":{"message":"hello"}}}]"#.to_string(),
+            tags_json: "[]".to_string(),
+            loop_json: None,
+            continue_on_error: false,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        };
+
+        let json =
+            workflow_json(&workflow, "default", "test-workflow", "active", None).expect("test");
+        assert_eq!(json["id"], "test-workflow");
+        assert_eq!(json["name"], "Test Workflow");
+        assert_eq!(json["channel"], "default");
+        assert_eq!(json["priority"], 10);
+        let parsed = strict_parse(&json);
+        assert!(parsed.def.is_some(), "{:?}", parsed.issues);
+    }
+
+    #[test]
+    fn test_workflow_json_custom_channel() {
+        let workflow = Workflow {
+            workflow_id: "wf-orders".to_string(),
+            name: "Order Workflow".to_string(),
+            description: None,
+            priority: 5,
+            version: 2,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 100,
+            condition_json: r#"{"==": [{"var": "type"}, "order"]}"#.to_string(),
+            tasks_json: r#"[{"id":"t1","name":"Process","function":{"name":"log","input":{"message":"test"}}}]"#
+                .to_string(),
+            tags_json: r#"["orders"]"#.to_string(),
+            loop_json: None,
+            continue_on_error: true,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        };
+
+        let json = workflow_json(&workflow, "orders", "wf-orders", "active", None).expect("test");
+        assert_eq!(json["channel"], "orders");
+        assert_eq!(json["id"], "wf-orders");
+    }
+
+    #[test]
+    fn test_workflow_json_with_rollout_carries_a_typed_range() {
+        let workflow = Workflow {
+            workflow_id: "rollout-wf".to_string(),
+            name: "Rollout Test".to_string(),
+            description: None,
+            priority: 1,
+            version: 3,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 50,
+            condition_json: "true".to_string(),
+            tasks_json: r#"[{"id":"t1","name":"Noop","function":{"name":"log","input":{"message":"test"}}}]"#
+                .to_string(),
+            tags_json: "[]".to_string(),
+            loop_json: None,
+            continue_on_error: false,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        };
+
+        let json = workflow_json(
+            &workflow,
+            "default",
+            "rollout-wf:v3",
+            "active",
+            Some((0, 50)),
+        )
+        .expect("test");
+        let parsed = strict_parse(&json);
+        let df_workflow = parsed.def.expect("parses");
+        assert_eq!(df_workflow.id(), "rollout-wf:v3");
+        assert_eq!(df_workflow.channel(), "default");
+
+        // The author's condition is passed through untouched. It used to be
+        // wrapped in an `and` with two synthetic bucket comparisons against a
+        // key the ingress injected into `data`; the range is a typed field the
+        // engine gates on before it builds an arena.
+        assert_eq!(json["condition"], serde_json::json!(true));
+        let rollout = df_workflow.rollout().expect("rollout range");
+        assert_eq!((rollout.bucket_start, rollout.bucket_end), (0, 50));
+        assert!(rollout.accepts(0) && rollout.accepts(49));
+        assert!(!rollout.accepts(50) && !rollout.accepts(99));
+    }
+
+    /// The `continue_on_error` column is spelled as dataflow-rs 4
+    /// reads it, `"on_failure": "continue"` when set and absent when not
+    /// (the default). A task's own keys are the author's and are left as
+    /// written.
+    #[test]
+    fn workflow_json_writes_on_failure_from_the_column() {
+        let mut workflow = Workflow {
+            workflow_id: "wf".to_string(),
+            name: "WF".to_string(),
+            description: None,
+            priority: 3,
+            version: 2,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 100,
+            condition_json: "true".to_string(),
+            tasks_json: r#"[{"id":"t","name":"t","on_failure":"continue",
+                "function":{"name":"log","input":{"message":"x"}}}]"#
+                .to_string(),
+            tags_json: r#"["a"]"#.to_string(),
+            loop_json: None,
+            continue_on_error: true,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        };
+
+        let json = workflow_json(&workflow, "orders", "wf", "active", None).expect("test");
+        assert_eq!(json["on_failure"], "continue");
+        assert!(json.get("continue_on_error").is_none(), "{json}");
+        assert_eq!(json["tasks"][0]["on_failure"], "continue");
+        assert_eq!(json["channel"], "orders");
+        assert_eq!(
+            (json["priority"].clone(), json["version"].clone()),
+            (3.into(), 2.into())
+        );
+        assert!(json["rollout"].is_null() && json["loop"].is_null());
+
+        workflow.continue_on_error = false;
+        let json =
+            workflow_json(&workflow, "orders", "wf:v2", "active", Some((20, 70))).expect("test");
+        assert!(json.get("on_failure").is_none(), "{json}");
+        assert_eq!(json["id"], "wf:v2");
+        assert_eq!(
+            json["rollout"],
+            serde_json::json!({"bucket_start": 20, "bucket_end": 70})
+        );
+
+        // The engine reads the row with nothing to report.
+        let parsed = strict_parse(&json);
+        assert!(parsed.def.is_some(), "{:?}", parsed.issues);
+        assert!(parsed.issues.is_empty(), "{:?}", parsed.issues);
+    }
+
+    /// The plain converter must leave `rollout` unset — a workflow with no
+    /// range takes all of its channel's traffic, which is what the single
+    /// version at 100% case means.
+    #[test]
+    fn test_workflow_json_has_no_rollout_range() {
+        let workflow = Workflow {
+            workflow_id: "wf-orders".to_string(),
+            name: "Orders".to_string(),
+            description: None,
+            priority: 1,
+            version: 1,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 100,
+            condition_json: "true".to_string(),
+            tasks_json: r#"[{"id":"t","function":{"name":"log","input":{"message":"x"}}}]"#
+                .to_string(),
+            tags_json: "[]".to_string(),
+            loop_json: None,
+            continue_on_error: false,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        };
+        let json = workflow_json(&workflow, "orders", "wf-orders", "active", None).expect("test");
+        let parsed = strict_parse(&json);
+        assert_eq!(parsed.def.expect("parses").rollout(), None);
     }
 }

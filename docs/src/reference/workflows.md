@@ -1,17 +1,17 @@
-<!-- description: The Orion workflow object in full: fields, tasks, task groups, terminal steps, the shared data context, request metadata, loops, error handling and rollout. -->
+<!-- description: The Orion workflow object in full: fields, tasks, task groups, terminal steps, the shared data context, request metadata, loops, and error handling. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-25 -->
 
 # Workflow definition
 
 
-A workflow is a versioned, JSON-defined pipeline of tasks. A [channel](../concepts/channels.md) links to a workflow by `workflow_id`. When a request arrives, Orion matches an active workflow, runs its tasks in order, and returns the resulting data context.
+A workflow is a JSON-defined pipeline of tasks. A [channel](../concepts/channels.md) links to a workflow by `workflow_id`. When a request arrives, Orion matches a deployed workflow, runs its tasks in order, and returns the resulting data context.
 
 [Workflows](../concepts/workflows.md) is the concept and [Author a workflow](../guides/author/workflows.md) the guide. Per-task `function.input` schemas are in [Task functions](./functions/index.md), and the operator catalogue in [Expression language](./expressions.md).
 
 ## Synopsis
 
-Send this shape to `POST /api/v2/admin/workflows`; `PUT .../{id}` updates the draft. Fields marked *server-managed* are set by Orion and returned in responses; you do not send them on create.
+Write this shape as a file in a definition set. [`orion-server compile`](./cli/orion-server/compile.md) turns it into a workflow definition, and a deployment serves it ([Deployment endpoints](./admin-api/deployments.md#definitions)).
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
@@ -24,18 +24,9 @@ Send this shape to `POST /api/v2/admin/workflows`; `PUT .../{id}` updates the dr
 | `tags` | string[] | no | `[]` | Free-form labels for filtering |
 | `loop` | object | no | — | Run the task list once per sweep instead of once in total (see [Loop](#loop)) |
 | `continue_on_error` | bool | no | `false` | If `true`, a task failure (a handler error or `5xx`) that reaches the workflow ends this workflow without failing the request: the error is recorded and the next matching workflow runs. It does not run this workflow's later tasks; a task's own `on_failure: "continue"` does that — see [Error handling](#error-handling) |
-| `version` | integer | server-managed | `1` | Increments per saved version of a `workflow_id` |
-| `status` | string | server-managed | `draft` | `draft` \| `active` \| `archived` |
-| `rollout_percentage` | integer | server-managed | `100` | Share of traffic when activated (see [Rollout](#rollout)) |
-| `created_at` / `updated_at` | string | server-managed | — | RFC 3339 timestamps |
+`compile` moves `workflow_id` onto the deployment member, so the stored definition holds no identity. The member also supplies the revision.
 
-Responses wrap the resource in a `data` envelope:
-
-```json
-{ "data": { "workflow_id": "high-value-order", "version": 1, "status": "draft", "...": "..." } }
-```
-
-Validation failures return `400` with a field-level error envelope. See
+A definition that would not serve is refused with `400` and a field-level error envelope. See
 [Errors](./errors.md) for the format.
 
 ## Tasks
@@ -417,7 +408,7 @@ Stopping early is a [`filter`](./functions/filter.md) task with `on_reject:
 
 The two bounds do different jobs. `max` is structural: the loop cannot outrun it, whatever the body does. The `filter` is what ends it early, once the real work is done. Reaching `max` is normal completion, not an error, because `max` is always something you wrote.
 
-`max` is capped by [`engine.max_loop_iterations`](./configuration/index.md) (default `10000`), and a workflow exceeding it is refused with `400` at write time rather than at activation. A sweep can call a connector, so an unbounded loop is a request that holds pool connections until the channel timeout fires.
+`max` is capped by [`engine.max_loop_iterations`](./configuration/index.md) (default `10000`), and a workflow exceeding it is refused with `400` when it is uploaded rather than when it would serve. A sweep can call a connector, so an unbounded loop is a request that holds pool connections until the channel timeout fires.
 
 Each sweep's steps appear in the [execution trace](../operate/run/traces.md) tagged with the iteration they belong to. A trace of ten sweeps reads as ten groups rather than one flat list.
 
@@ -449,52 +440,15 @@ By default the pipeline halts on the first task that errors, and the error is re
 For async channels, a task failure routes the trace to the dead letter queue
 for automatic retry.
 
-## Lifecycle and versioning
-
-Each `workflow_id` has one or more **versions**, identified by the composite
-key `(workflow_id, version)`. Status moves in one direction:
-
-```orion-diagram
-{
-  "direction": "LR",
-  "nodes": [
-    { "id": "draft",    "label": "draft",    "type": "infra" },
-    { "id": "active",   "label": "active",   "type": "channel" },
-    { "id": "archived", "label": "archived", "type": "datastore", "shape": "rectangle" }
-  ],
-  "edges": [
-    { "from": "draft",  "to": "active",   "label": "activate" },
-    { "from": "active", "to": "archived", "label": "archive" }
-  ]
-}
-```
-
-- **draft**: editable; not served. Only **one draft per `workflow_id`** may
-  exist at a time. Creating a workflow starts it as a draft.
-- **active**: served; **immutable**. To change an active workflow, create a
-  new draft version, edit it, and activate it.
-- **archived**: retired, and kept. An archived version is a rollback source: its content is what you copy into a new draft and activate. Nothing reactivates an archived version in place. See [Roll back](../guides/author/versioning.md#roll-back).
-
-| Action | Endpoint |
-|--------|----------|
-| Validate without saving | `POST /api/v2/admin/workflows/validate` |
-| Create (as draft) | `POST /api/v2/admin/workflows` |
-| New draft version of an existing id | `POST /api/v2/admin/workflows/{id}/versions` |
-| Dry-run against sample data | `POST /api/v2/admin/workflows/{id}/test` |
-| Change status | `PATCH /api/v2/admin/workflows/{id}/status` |
-| Adjust rollout | `PATCH /api/v2/admin/workflows/{id}/rollout` |
-
-The Admin API owns endpoint semantics: see
-[Lifecycle](./admin-api/lifecycle.md) for the first four rows and
-[Status changes](./admin-api/status-changes.md) for status and rollout.
+## Serving
 
 ### Matching
 
-When a channel resolves its workflows, Orion evaluates active workflows in descending `priority` and runs the first whose `condition` is truthy. Give a catch-all workflow a low priority and specific ones a higher priority to layer behaviour.
+When a channel resolves its workflows, Orion evaluates its deployed workflows in descending `priority` and runs the first whose `condition` is truthy. Give a catch-all workflow a low priority and specific ones a higher priority to layer behaviour.
 
 ### Rollout
 
-`rollout_percentage` (1 to 100) enables canary releases across versions. Activating a new version at `25` directs about 25% of traffic to it; the remainder goes to the previously active version. Traffic is bucketed by a stable hash of the request, so a given caller routes consistently. Promote by raising the percentage to `100`, which archives the older active version. Roll back by putting the previous version's content into a new draft and activating it. Both moves go through the status and rollout endpoints; see [Status changes](./admin-api/status-changes.md).
+A workflow definition carries no rollout. A split of traffic between workflow revisions belongs to the deployment that serves them, not to the workflow.
 
 ## Examples
 
@@ -548,4 +502,4 @@ When a channel resolves its workflows, Orion evaluates active workflows in desce
 - [Author a workflow](../guides/author/workflows.md): the guide that applies it.
 - [Task functions](./functions/index.md): the `input` schema for every built-in function.
 - [Expression language](./expressions.md): every operator conditions and mappings can use, with the silent-failure edges.
-- [Admin API › Lifecycle](./admin-api/lifecycle.md): the endpoints that create, version and activate workflows.
+- [Deployment endpoints](./admin-api/deployments.md): storing a workflow definition, testing it, and deploying it.

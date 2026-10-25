@@ -98,7 +98,7 @@ A constant may reference another constant, use a value fragment or hold an `$eac
 A finding inside an expansion names the trail that produced it, such as `(fragment 'guard' › $each p = 3)`.
 
 > [!NOTE]
-> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v2/admin/workflows` does not accept `$from`, `use`, `$use` or `$each`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already compiled.
+> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v2/admin/definitions` does not accept `$from`, `use`, `$use` or `$each`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept.
 
 ## Statements in `.sql` files
 
@@ -137,12 +137,10 @@ Error: the definition set (definitions/package.json) requires Orion >=1.9.0, <2;
 
 That line replaces the errors a set would otherwise draw from features the binary predates, such as an unknown channel protocol or function. `fmt` formats nothing in that case, because the style tables differ between versions. A pre-release binary is judged as its release, so `1.9.0-rc.1` satisfies `>=1.9.0`.
 
-`compile` carries the range into the artifact's `requires.orion`, where `package plan` and `package apply` check the target. It also uses `name` as the package name when `--name` is not given. The range is not content: changing it moves no hash.
-
 - **One per set.** A second `package` document is an error naming the first.
 - **A closed shape.** `name` and `requires` are the only fields, and `orion` the only requirement, so a typo such as `require` is an error rather than a gate silently switched off.
 - **Not a `$from` namespace.** `{"$from": "package.name"}` resolves nothing.
-- **Told apart from an artifact.** A promotion artifact also has a top-level `package`, with a `content_hash` and `workflows` beside it. An artifact inside a definitions tree is still not part of the set.
+- **Told apart from an old promotion artifact.** A file with a top-level `package` that carries a `content_hash` and `workflows` beside it is not a `package` document, and is not part of the set.
 
 A binary that predates the document skips the file with a note, so the protection starts with the first release that reads it.
 

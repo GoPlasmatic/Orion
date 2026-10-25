@@ -4,7 +4,7 @@
 
 # Cron transport
 
-A `cron` channel is started by a clock instead of a caller. It declares its schedule in `transport_config`, which is ordinary definition content. That makes it versioned with the channel, content-hashed, and promoted inside a package.
+A `cron` channel is started by a clock instead of a caller. It declares its schedule in `transport_config`, which is ordinary definition content. That makes it part of the channel's definition, stored by digest and deployed with the channel.
 
 ## Synopsis
 
@@ -129,7 +129,7 @@ Everything about a caller, because there is not one:
 | `config.cache`, `config.request`, `config.response` | There is no request to shape and no reply to cache. |
 | `config.oauth2_login` | Both legs are browser redirects. |
 
-Each is refused at create, update and import time rather than stored and ignored. What still applies: `timeout_ms`, `validation_logic`, `backpressure` and `tracing`.
+Each is refused at upload rather than stored and ignored. What still applies: `timeout_ms`, `validation_logic`, `backpressure` and `tracing`.
 
 **Secrets are refused in `payload`.** The payload is definition content and is recorded verbatim as every occurrence's trace input. A credential there is a credential at rest in the `traces` table. Read secrets inside the workflow, where the engine resolves them without recording them. `env://`, `vault://`, `secret://` and `var://` strings are refused for the related reason that nothing resolves them here. They would reach the workflow as literal text.
 

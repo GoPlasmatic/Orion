@@ -1,4 +1,4 @@
-<!-- description: The success and error envelopes every admin endpoint returns, how each list endpoint pages and sorts, and the five errors you will meet most. -->
+<!-- description: The success and error envelopes every admin endpoint returns, how each list endpoint pages and sorts, and the four errors you will meet most. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -9,7 +9,7 @@ The shape of an admin success body and an admin error body, and how list endpoin
 Every admin 2xx body puts its payload under a top-level `data` key — one shape, so one unwrapping function works everywhere:
 
 ```json
-{ "data": { "workflow_id": "wf_...", "name": "Order Processing", "...": "..." } }
+{ "data": { "version": "…", "generation": 3, "...": "..." } }
 ```
 
 List endpoints add pagination counters alongside it: `limit` and `offset` always, `total` where the endpoint computes it. The trace list makes `total` opt-in through `?include_total=true`, and adds `next_cursor`:
@@ -29,10 +29,9 @@ Not every list takes the same query parameters. The asymmetry is contract, not a
 
 | Endpoints | `limit` / `offset` | `sort_by` / `sort_order` | Other |
 |---|:---:|:---:|---|
-| `/workflows`, `/channels`, `/connectors` and their `/export` | Yes | Yes | `?tag=`, `?status=` filters |
 | `/traces` | Yes | Yes | `?cursor=` (keyset), `?include_total=true`; the response adds `next_cursor` and omits `total` unless asked |
 | `/audit-logs` | Yes | No | `?start_time=` / `?end_time=` (RFC 3339 or naive), `limit` clamped to 1–1000 |
-| `/trace-dlq`, `/packages`, `/{id}/versions` | Yes | No | — |
+| `/trace-dlq` | Yes | No | — |
 
 `limit` and `offset` are therefore the only two you can rely on everywhere.
 
@@ -42,10 +41,9 @@ Errors follow one structure across both planes. See [Errors & Response Envelopes
 
 | Operation | Status/code | Corrective action |
 |---|---|---|
-| Create or update invalid JSON | `400 VALIDATION_ERROR` | Correct the field paths in `details`, then call `/validate` before writing |
+| Send an invalid definition or body | `400 VALIDATION_ERROR` | Correct the field paths in `details` and send it again |
 | Read an unknown ID | `404 NOT_FOUND` | Verify the resource kind, ID, and target instance |
-| Reuse an ID, channel name, route, or immutable package version | `409 CONFLICT` | Inspect the existing resource; create a new entity version when changing active content |
-| Activate with a missing dependency or invalid transition | `400 VALIDATION_ERROR` | Run the same status request with `?dry_run=true` and resolve every reported error |
+| Apply against a moved head, or reuse an immutable connection revision with new content | `409 CONFLICT` | Read the current head or revision, then plan and apply again |
 | Call without a valid admin credential | `401 UNAUTHORIZED` | Supply the configured header and key format |
 
 See [Errors & Response Envelopes](../errors.md) for the complete registry and response shapes. Branch on `error.code`, not the human-readable message.

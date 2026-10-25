@@ -35,12 +35,13 @@ pub mod auth;
 /// it, but not part of the documented 1.0 API surface.
 #[doc(hidden)]
 pub mod bootstrap;
+#[doc(hidden)]
+pub mod canonical;
 pub mod channel;
 pub mod cluster;
 pub mod config;
 pub mod connector;
 pub mod cron;
-#[doc(hidden)]
 pub mod crypto;
 pub mod definitions;
 pub mod engine;

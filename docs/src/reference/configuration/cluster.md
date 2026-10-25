@@ -17,9 +17,9 @@ instance_id = ""
 
 ## Description
 
-With `cluster.enabled = false` — the default — Orion is a plain single node: no shared backends or job leases. Its configuration watcher still retries committed changes after a failed reload. Enable it and N replicas sharing one PostgreSQL/MySQL database behave as a single logical system. The database is all they share; a cluster needs no coordination service of its own:
+With `cluster.enabled = false` — the default — Orion is a plain single node: no shared backends or job leases. Its reconciler still retries a committed deployment whose first build failed. Enable it and N replicas sharing one PostgreSQL/MySQL database behave as a single logical system. The database is all they share; a cluster needs no coordination service of its own:
 
-- **Config changes propagate.** A published channel, workflow, connector or plugin change commits its epoch notification in the same database transaction; every other node notices within `epoch_poll_interval_ms` and reloads. Without this, an edit only affects the replica that received it.
+- **Deployments propagate.** Every node runs the reconciler, which polls the committed deployment head every `epoch_poll_interval_ms`. A node that sees the head move builds the new revision and reports its convergence. The same loop applies a circuit-breaker reset requested on another node.
 - **Dedup and response caches default to the shared database store**, so idempotency and caching are fleet-wide rather than per-node. A channel whose dedup store would silently degrade to node-local memory refuses to load instead. Expiry is judged on the database's clock, so nodes with skewed clocks agree.
 - **Rate-limit windows are shared**, one-second fixed windows counted in the database, so a channel's limit is the fleet's limit and not N times it. Each limited request costs a short write transaction, so a busy rate-limited channel is database load to plan for.
 - **Background jobs single-flight.** Trace cleanup, audit cleanup, and DLQ retry run on one node at a time behind a lease.
@@ -41,7 +41,7 @@ instance_id = "${HOSTNAME}"
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
 | `cluster.enabled` | `false` | `ORION_CLUSTER__ENABLED` | Turn on whenever more than one Orion process serves the same database. |
-| `cluster.epoch_poll_interval_ms` | `2000` | `ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS` | Lower for faster config propagation, at the cost of more database polling. |
+| `cluster.epoch_poll_interval_ms` | `2000` | `ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS` | Lower for faster deployment propagation, at the cost of more database polling. |
 | `cluster.instance_id` | `""` | `ORION_CLUSTER__INSTANCE_ID` | Set a stable per-replica value (for example the pod name) so lease holders and log lines name the same replica across restarts. Empty generates a UUID per boot. |
 
 ## Related
