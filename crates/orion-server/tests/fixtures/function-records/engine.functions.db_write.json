@@ -1,12 +1,4 @@
 {
-  "a_mongo_connector_is_refused": {
-    "err": {
-      "code": "VALIDATION_ERROR",
-      "message": "Validation error: db_write requires a SQL connector, but 'db' is a MongoDB connector — use mongo_read or data_query for MongoDB",
-      "retryable": false,
-      "detail": null
-    }
-  },
   "a_query_timeout_before_the_run_deadline": {
     "err": {
       "code": "TIMEOUT_ERROR",

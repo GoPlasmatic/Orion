@@ -36,17 +36,8 @@ use crate::validation::ssrf::validate_hostport_not_private;
 /// check because there is no host to judge.
 pub const DB_SQL_SCHEMES: &[&str] = &["postgres", "postgresql", "mysql", "mariadb", "sqlite"];
 
-/// Schemes a `db` connector may use for MongoDB. Both land on the same
-/// [`ConnectorConfig::Db`] variant — the backend is chosen by scheme, which is
-/// why there is deliberately no `driver` field.
-pub const DB_MONGO_SCHEMES: &[&str] = &["mongodb", "mongodb+srv"];
-
 /// Schemes a `cache` connector may use when `backend = "redis"`.
 pub const CACHE_SCHEMES: &[&str] = &["redis", "rediss"];
-
-/// Schemes an `es` connector may use. The ES client is the shared reqwest
-/// client, so this matches the HTTP connector exactly.
-pub const ES_SCHEMES: &[&str] = &["http", "https"];
 
 /// Default port per scheme, for connection strings that omit one. Used only to
 /// build the address the private-IP check judges; the driver applies its own
@@ -56,11 +47,8 @@ fn default_port(scheme: &str) -> Option<u16> {
         "postgres" | "postgresql" => Some(5432),
         "mysql" | "mariadb" => Some(3306),
         "redis" | "rediss" => Some(6379),
-        "mongodb" => Some(27017),
         "http" => Some(80),
         "https" => Some(443),
-        // mongodb+srv carries no port: the SRV record supplies it. Resolution
-        // happens in the driver, and the resulting hosts are checked there.
         _ => None,
     }
 }
@@ -200,17 +188,13 @@ pub fn validate_endpoint_schemes(
             require_scheme("endpoint", &storage.endpoint, &["http", "https"], phase)?;
             Ok(())
         }
-        ConnectorConfig::Es(es) => {
-            require_scheme("URL", &es.url, ES_SCHEMES, phase)?;
-            Ok(())
-        }
         ConnectorConfig::Db(db) => {
-            let allowed: Vec<&str> = DB_SQL_SCHEMES
-                .iter()
-                .chain(DB_MONGO_SCHEMES.iter())
-                .copied()
-                .collect();
-            require_scheme("connection_string", &db.connection_string, &allowed, phase)?;
+            require_scheme(
+                "connection_string",
+                &db.connection_string,
+                DB_SQL_SCHEMES,
+                phase,
+            )?;
             Ok(())
         }
         ConnectorConfig::Cache(cache) => {
@@ -282,11 +266,10 @@ fn parse_broker(broker: &str) -> Result<(String, u16), OrionError> {
 }
 
 /// Host and port to judge for a connection string, or `None` when there is no
-/// network endpoint to check (`sqlite:`, or a `mongodb+srv:` URI whose hosts
-/// only exist after the driver resolves the SRV record).
+/// network endpoint to check (`sqlite:`, which opens a file).
 fn endpoint_of(conn: &str) -> Option<(String, u16)> {
     let scheme = scheme_of(conn)?;
-    if scheme == "sqlite" || scheme == "mongodb+srv" {
+    if scheme == "sqlite" {
         return None;
     }
     let parsed = url::Url::parse(conn).ok()?;
@@ -318,9 +301,7 @@ async fn check_conn_endpoint(
 
 /// Private-address check for a `db` connector, on the pool-open path.
 ///
-/// Skips `sqlite:` (a file, not a socket) and `mongodb+srv:` (the hosts are
-/// not known until the driver resolves the SRV record — `mongo_pool` checks
-/// the resolved list instead, which is the only place they exist).
+/// Skips `sqlite:` (a file, not a socket).
 pub async fn check_db_endpoint(
     connector_name: &str,
     config: &DbConnectorConfig,
@@ -366,26 +347,6 @@ pub async fn check_broker_endpoints(
     Ok(())
 }
 
-/// Private-address check for MongoDB hosts, after the driver has parsed the
-/// URI (and, for `mongodb+srv`, resolved the SRV record). Replica-set URIs
-/// name several hosts and are not parseable as a single URL, which is why
-/// this takes the driver's own host list.
-pub async fn check_mongo_hosts(
-    connector_name: &str,
-    hosts: &[(String, Option<u16>)],
-    allow_private_urls: bool,
-) -> Result<(), OrionError> {
-    if allow_private_urls {
-        return Ok(());
-    }
-    for (host, port) in hosts {
-        validate_hostport_not_private(host, port.unwrap_or(27017))
-            .await
-            .map_err(|msg| refused("mongo", connector_name, &msg))?;
-    }
-    Ok(())
-}
-
 fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
     OrionError::validation(format!(
         "Refusing to connect {kind} connector '{connector_name}': {msg}. \
@@ -397,7 +358,7 @@ fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connector::{CacheConnectorConfig, KafkaConnectorConfig, is_mongo_url};
+    use crate::connector::{CacheConnectorConfig, KafkaConnectorConfig};
 
     fn validate_endpoint_schemes_at_authoring(parsed: &ConnectorConfig) -> Result<(), OrionError> {
         validate_endpoint_schemes(parsed, EndpointPhase::Authoring)
@@ -487,7 +448,6 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
-            aggregate_write_stages: false,
         })
     }
 
@@ -500,8 +460,6 @@ mod tests {
             "mariadb://u:p@db.example.com/orion",
             "sqlite:/app/data/orion.db",
             "sqlite::memory:",
-            "mongodb://m.example.com:27017/orion",
-            "mongodb+srv://cluster.example.com/orion",
         ] {
             let result = validate_endpoint_schemes_at_authoring(&db(conn));
             assert!(result.is_ok(), "{conn} must be accepted: {result:?}");
@@ -551,6 +509,10 @@ mod tests {
             "redis://cache.example.com:6379",
             "gopher://example.com:70/",
             "/app/data/orion.db",
+            // MongoDB is not a Community backend: a `db` connector naming it
+            // is an unsupported scheme like any other.
+            "mongodb://m.example.com:27017/orion",
+            "mongodb+srv://cluster.example.com/orion",
         ] {
             let err = validate_endpoint_schemes_at_authoring(&db(conn))
                 .expect_err(&format!("{conn} must be refused"));
@@ -631,9 +593,8 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_extraction_skips_file_and_srv_backends() {
+    fn endpoint_extraction_skips_file_backends() {
         assert_eq!(endpoint_of("sqlite:/app/data/orion.db"), None);
-        assert_eq!(endpoint_of("mongodb+srv://cluster.example.com/orion"), None);
         assert_eq!(
             endpoint_of("postgres://u:p@db.example.com/orion"),
             Some(("db.example.com".to_string(), 5432))
@@ -660,7 +621,6 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
-            aggregate_write_stages: false,
         };
         assert!(check_db_endpoint("c", &cfg).await.is_err());
         cfg.allow_private_urls = true;
@@ -673,17 +633,6 @@ mod tests {
         );
         assert!(
             check_broker_endpoints("c", &["127.0.0.1:9092".into()], true)
-                .await
-                .is_ok()
-        );
-
-        assert!(
-            check_mongo_hosts("c", &[("10.0.0.5".to_string(), Some(27017))], false)
-                .await
-                .is_err()
-        );
-        assert!(
-            check_mongo_hosts("c", &[("10.0.0.5".to_string(), Some(27017))], true)
                 .await
                 .is_ok()
         );
@@ -700,7 +649,6 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
-            aggregate_write_stages: false,
         };
         let err = check_db_endpoint("meta", &cfg).await.expect_err("test");
         assert!(err.to_string().contains("169.254.169.254"), "{err}");
@@ -727,15 +675,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
-            aggregate_write_stages: false,
         };
         check_db_endpoint("local", &cfg).await.expect("test");
-    }
-
-    #[test]
-    fn mongo_urls_are_recognised_as_mongo() {
-        assert!(is_mongo_url("mongodb://h/db"));
-        assert!(is_mongo_url("mongodb+srv://h/db"));
-        assert!(!is_mongo_url("postgres://h/db"));
     }
 }

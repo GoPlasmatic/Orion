@@ -171,7 +171,6 @@ pub struct ServingComponents {
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
     /// The producer cache the `publish_kafka` handler resolves through —
     /// kept beside the producer so a reload that rebuilds the engine can
@@ -332,9 +331,6 @@ pub async fn build_engine_components(
     let sql_pool_cache = Arc::new(crate::connector::pool_cache::SqlPoolCache::new(
         config.engine.max_pool_cache_entries,
     ));
-    let mongo_pool_cache = Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(
-        config.engine.max_pool_cache_entries,
-    ));
 
     // The model node: the cache directory is created here so a misconfigured
     // path fails the boot rather than the first admission. Before the
@@ -362,8 +358,7 @@ pub async fn build_engine_components(
         ..Default::default()
     };
     let composition = crate::extensions::CompositionRoot::community_with(&foundation)
-        .with_resource_pool(sql_pool_cache.clone())
-        .with_resource_pool(mongo_pool_cache.clone());
+        .with_resource_pool(sql_pool_cache.clone());
     let providers = composition.providers.clone();
 
     // The node's live components, as every function gets them.
@@ -379,7 +374,6 @@ pub async fn build_engine_components(
         cache_pool: cache_pool.clone(),
         channel_loader: channel_loader.clone(),
         sql_pool_cache: sql_pool_cache.clone(),
-        mongo_pool_cache: mongo_pool_cache.clone(),
         models: models.clone(),
         models_config: &config.models,
         providers: providers.clone(),
@@ -416,7 +410,6 @@ pub async fn build_engine_components(
             runtime,
             cache_pool,
             sql_pool_cache,
-            mongo_pool_cache,
             kafka_producer,
             kafka_producers,
             plugins,
@@ -1294,7 +1287,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         runtime,
         cache_pool,
         sql_pool_cache,
-        mongo_pool_cache,
         kafka_producer,
         kafka_producers,
         plugins,
@@ -1326,7 +1318,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         caches: crate::server::state::Caches {
             cache_pool,
             sql_pool_cache,
-            mongo_pool_cache,
             provider_pools,
         },
         trace_queue,

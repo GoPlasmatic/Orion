@@ -7,8 +7,8 @@ use dataflow_rs::{Ctx, Function, Issue, Outcome};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    QueryBudget, QueryFailure, acquire_conn, decode_failure, encode_failure,
-    reject_mongo_connector, require_op_allowed, to_connect_error,
+    QueryBudget, QueryFailure, acquire_conn, decode_failure, encode_failure, require_op_allowed,
+    to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::pool_cache::SqlPoolCache;
@@ -89,15 +89,10 @@ pub(super) fn rendered_row_format(
     read::row_format(numeric.as_ref(), binary.as_ref(), handler)
 }
 
-/// The connector's gates for a read: its `read` operation, and a SQL
-/// backend. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
-/// function.
+/// The connector's gate for a read: its `read` operation. Shared by the
+/// dataflow-rs 3 handler and the dataflow-rs 4 function.
 fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
-    require_op_allowed(&conn.operations, "read", connector)?;
-    // A Mongo connection string in a `db` connector is the right type and
-    // the wrong backend: both are `ConnectorConfig::Db`, and only the
-    // string tells them apart.
-    reject_mongo_connector(NAME, connector, conn)
+    require_op_allowed(&conn.operations, "read", connector)
 }
 
 /// The rows a read returns, as a JSON array, against a resolved and gated
@@ -784,14 +779,10 @@ mod tests {
         }
     }
 
-    /// The connector's kind and backend, as 1.12 refused them: not a `db`
-    /// connector, and a `db` connector that is MongoDB.
+    /// The connector's kind, as 1.12 refused it: not a `db` connector.
     #[tokio::test]
     async fn a_connector_of_another_kind_or_backend_is_refused() {
-        for connector in [
-            json!({"type": "http", "url": "http://127.0.0.1:1"}),
-            json!({"type": "db", "connection_string": "mongodb://127.0.0.1:1"}),
-        ] {
+        for connector in [json!({"type": "http", "url": "http://127.0.0.1:1"})] {
             let input = json!({"connector": "db", "query": "SELECT 1", "output": "data.rows"});
             let pool_cache = Arc::new(SqlPoolCache::new(8));
             let registry = twin::connectors(&[("db", connector.clone())]).await;

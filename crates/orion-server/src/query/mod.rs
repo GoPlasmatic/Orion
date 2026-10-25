@@ -1,6 +1,5 @@
 //! The common query dialect: one backend-neutral query (filter + envelope) that
-//! renders to a real backend — SQL (SQLite/PostgreSQL/MySQL), MongoDB and
-//! Elasticsearch, in identity or schema-mapped mode. The normative semantics
+//! renders to SQL (SQLite/PostgreSQL/MySQL), in identity or schema-mapped mode. The normative semantics
 //! live in `docs/src/reference/data-dialect.md` (published at
 //! <https://docs.goplasmatic.io/reference/data-dialect.html>).
 //!
@@ -10,7 +9,6 @@
 //!   connector's pool).
 
 pub mod backend;
-pub mod bulk;
 pub mod error;
 pub mod ir;
 mod keyset;
@@ -162,12 +160,11 @@ impl GroupKey {
     }
 }
 
-/// The shared prologue of every translation: parse the envelope, resolve the
-/// entity, lower the filter, and resolve the remaining logical names. Returns the
-/// resolved spec, the lowered condition, and the physical table / collection /
-/// index.
+/// The prologue of a translation: parse the envelope, resolve the entity, lower
+/// the filter, and resolve the remaining logical names. Returns the resolved
+/// spec, the lowered condition, and the physical table.
 ///
-/// The order is the point, and it is the same for every backend.
+/// The order is the point.
 ///
 /// F24: the entity gate runs *first*, before the filter is lowered and before
 /// any field or relation is resolved. Every one of those steps also fails on an
@@ -177,7 +174,7 @@ impl GroupKey {
 /// that says how to migrate it, whatever else the query happens to mention.
 ///
 /// W2: projection and sort then go through the same allowlist / rename /
-/// identifier gate as the filter, before any backend sees the spec.
+/// identifier gate as the filter, before the renderer sees the spec.
 fn prepare(
     query: &Json,
     params: &Params,
@@ -229,10 +226,6 @@ pub fn plan_sql(
         // BY …)`), so an unordered include is a request for an arbitrary subset.
         // It used to fetch every child of every parent on the page and truncate
         // in memory — unbounded, and a different subset run to run.
-        //
-        // Checked here rather than in `spec::parse`, which every backend shares:
-        // MongoDB and Elasticsearch cannot answer an include at all, and their
-        // capability error is the useful answer for a caller who wrote one.
         if inc.sort.is_empty() {
             return Err(QueryError::InvalidEnvelope(format!(
                 "include.{} requires a 'sort' — the per-parent page needs a \
@@ -270,32 +263,6 @@ pub fn plan_sql(
         strip,
         count: spec.count,
     })
-}
-
-/// Parse the envelope, lower the filter, and render a MongoDB `find` query
-/// (collection + `$match` filter + projection/sort/skip/limit), enforcing the
-/// configured page bounds.
-pub fn translate_mongo(
-    query: &Json,
-    params: &Params,
-    reg: &EntityRegistry,
-    limits: &QueryConfig,
-) -> Result<backend::mongo::MongoQuery, QueryError> {
-    let (spec, cond, collection) = prepare(query, params, reg)?;
-    backend::mongo::render(&spec, &cond, &collection, limits)
-}
-
-/// Parse the envelope, lower the filter, and render an Elasticsearch search
-/// (index + query DSL body in filter context), enforcing the page bounds and
-/// the deep-pagination cap.
-pub fn translate_es(
-    query: &Json,
-    params: &Params,
-    reg: &EntityRegistry,
-    limits: &QueryConfig,
-) -> Result<backend::es::EsQuery, QueryError> {
-    let (spec, cond, index) = prepare(query, params, reg)?;
-    backend::es::render(&spec, &cond, &index, limits)
 }
 
 #[cfg(test)]

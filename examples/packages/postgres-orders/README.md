@@ -12,8 +12,8 @@ of Orion they can't: a workflow talking to a real database through a
 2. **`data_query`** returns the customer with their order history — a
    declared `has_many` relation hydrated via `include`.
 
-The queries are backend-neutral: point the connector at MongoDB or
-Elasticsearch instead of Postgres and the same workflow JSON runs unchanged.
+The queries are backend-neutral: point the connector at MySQL or SQLite
+instead of Postgres and the same workflow JSON runs unchanged.
 
 ## Run it
 

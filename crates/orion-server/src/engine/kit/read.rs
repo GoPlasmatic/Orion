@@ -6,7 +6,7 @@
 //! or `Expr<i64>` would refuse: `required_str` spells a number or a boolean
 //! out as a key, `optional_i64` reads a `null` result as absent. Running
 //! workflows rely on both, so each reader is its dataflow-rs 3 twin in
-//! `connector_helpers.rs` or `mongo_common.rs`, moved onto the value
+//! `connector_helpers.rs`, moved onto the value
 //! `Ctx::eval` lends: the same coercions, the same `null` handling, the same
 //! message and the same class. The twins stay for the dataflow-rs 3
 //! handlers until those go, and the tests below hold the two to one
@@ -380,38 +380,6 @@ pub fn row_format(
     ))
 }
 
-/// A MongoDB `limit` or `skip`: `mongo_common::resolve_u64`'s reading.
-///
-/// Its `null` rule is not [`optional_u64`]'s: a *literal* `null` is unset,
-/// but an expression that resolves to `null` is refused. So `v` is `None`
-/// when the task leaves the field unset or writes it as `null`, and the
-/// rendered value otherwise.
-///
-/// # Errors
-///
-/// A [`ErrorClass::CallerInput`] error for anything but a non-negative
-/// integer, a resolved `null` included.
-pub fn mongo_u64(
-    v: Option<&OwnedDataValue>,
-    field: &str,
-    handler: &str,
-) -> Result<Option<u64>, HandlerError> {
-    let Some(v) = v else {
-        return Ok(None);
-    };
-    match json(v) {
-        Value::Number(n) => n.as_u64().map(Some).ok_or_else(|| {
-            refused(format!(
-                "{handler} '{field}' must be a non-negative integer"
-            ))
-        }),
-        other => Err(refused(format!(
-            "{handler} '{field}' must resolve to a non-negative integer, got {}",
-            json_type_name(&other)
-        ))),
-    }
-}
-
 /// dataflow-rs 3's `Template::resolve_string`, the reading of every string
 /// parameter of its typed configs (`http_call`'s path, headers and formats,
 /// `publish_kafka`'s topic and key): a string as itself, anything else its
@@ -701,21 +669,5 @@ mod tests {
         assert!(present::<OwnedDataValue>(&None).is_none());
         assert!(present(&compiled(json!("/orders"))).is_some());
         assert!(present(&compiled(json!({"var": "data.missing"}))).is_some());
-    }
-
-    /// `mongo_common::resolve_u64` reads the authored field: a literal `null`
-    /// is unset, which the caller says by passing `None`.
-    #[test]
-    fn mongo_u64_reads_as_1_12_did() {
-        for value in values() {
-            let owned = value.as_ref().map(OwnedDataValue::from);
-            let authored_null = matches!(value, Some(Value::Null));
-            let v4 = mongo_u64(owned.as_ref().filter(|_| !authored_null), "limit", H);
-            twin::pinned(&record(v4), key("mongo_u64", value.as_ref()));
-        }
-        // A path that resolves to `null` is not unset: 1.12 folded the hole
-        // and refused what it found.
-        let v4 = seen(mongo_u64(Some(&OwnedDataValue::Null), "limit", H));
-        assert!(v4.is_err());
     }
 }

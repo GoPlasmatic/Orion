@@ -77,8 +77,8 @@ pub struct FieldSchema {
     ///
     /// **The weaker of the two.** [`Self::template_at`] is the field that says
     /// dataflow-rs *evaluates* this position, which is what a scalar field
-    /// carries now. What is left here is the document-shaped fields — a MongoDB
-    /// `filter`/`update`/`document`/`pipeline`, a dialect `params`, JWT
+    /// carries now. What is left here is the document-shaped fields — a dialect
+    /// `params`, JWT
     /// `claims`, a cached `value` — where evaluating would be a breaking
     /// change rather than a feature: one `$` comes off every key in a template
     /// position, so `{"$set": …}` would emit `{"set": …}` and every stored
@@ -248,40 +248,22 @@ impl RetrySafety {
 
 /// What a connector-bearing function requires of the connector it names.
 ///
-/// Three questions used to be answered by three tables in `handlers.rs` —
-/// `CONNECTOR_FUNCTIONS` (does it take one?), `required_connector_types` (of
-/// which types?) and `requires_mongo_database` (must a MongoDB one be given a
-/// `database`?) — each keyed by function name in a file away from the schema
-/// that declares the `connector` field. A function in one table and not
+/// Two questions used to be answered by two tables in `handlers.rs` —
+/// `CONNECTOR_FUNCTIONS` (does it take one?) and `required_connector_types`
+/// (of which types?) — each keyed by function name in a file away from the
+/// schema that declares the `connector` field. A function in one table and not
 /// another was a check that silently skipped it (F52). One value on the
 /// function's own row cannot be half-filled.
 ///
 /// `types` is non-empty and ordered as it should read in an error message.
-/// `requires_mongo_database` is true only for the functions that speak to
-/// MongoDB, which has no default database in its connection string: the
-/// `mongo_*` trio declares `database` required outright, and the portable
-/// dialect pair cannot — the same task shape is valid against SQL and
-/// Elasticsearch — so for those it is conditional on the connector actually
-/// being Mongo, checked at activation rather than at first request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectorRule {
     pub types: &'static [ConnectorType],
-    pub requires_mongo_database: bool,
 }
 
 impl ConnectorRule {
     const fn of(types: &'static [ConnectorType]) -> Option<Self> {
-        Some(Self {
-            types,
-            requires_mongo_database: false,
-        })
-    }
-
-    const fn mongo(types: &'static [ConnectorType]) -> Option<Self> {
-        Some(Self {
-            types,
-            requires_mongo_database: true,
-        })
+        Some(Self { types })
     }
 }
 
@@ -343,9 +325,6 @@ use super::http_call::HTTP_CALL_FIELDS;
 use super::jwt_sign::JWT_SIGN_FIELDS;
 use super::jwt_verify::JWT_VERIFY_FIELDS;
 use super::model_infer::MODEL_INFER_FIELDS;
-use super::mongo_aggregate::MONGO_AGGREGATE_FIELDS;
-use super::mongo_read::MONGO_READ_FIELDS;
-use super::mongo_write::MONGO_WRITE_FIELDS;
 use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
 use super::storage_head::STORAGE_HEAD_FIELDS;
 use super::storage_presign::STORAGE_PRESIGN_FIELDS;
@@ -419,64 +398,29 @@ const REGISTRY: &[FunctionSchema] = &[
     },
     FunctionSchema {
         name: "data_query",
-        description: "Run a backend-neutral query (filter + envelope) against a SQL, MongoDB, or Elasticsearch connector.",
+        description: "Run a backend-neutral query (filter + envelope) against a SQL connector.",
         category: "connector",
         input_fields: DATA_QUERY_FIELDS,
         writes: WriteShape::OutputPath {
             default_root: Some("data"),
         },
         retry_safety: RetrySafety::Read,
-        connector: ConnectorRule::mongo(&[ConnectorType::Db, ConnectorType::Es]),
+        connector: ConnectorRule::of(&[ConnectorType::Db]),
         deny_unknown: false,
         validate_static: None,
     },
     FunctionSchema {
         name: "data_write",
-        description: "Run a backend-neutral mutation (insert/update/delete/upsert) against a SQL, MongoDB, or Elasticsearch connector.",
+        description: "Run a backend-neutral mutation (insert/update/delete/upsert) against a SQL connector.",
         category: "connector",
         input_fields: DATA_WRITE_FIELDS,
         writes: WriteShape::OutputPath {
             default_root: Some("data"),
         },
         retry_safety: RetrySafety::DependsOn { input: "op" },
-        connector: ConnectorRule::mongo(&[ConnectorType::Db, ConnectorType::Es]),
+        connector: ConnectorRule::of(&[ConnectorType::Db]),
         deny_unknown: false,
         validate_static: None,
-    },
-    FunctionSchema {
-        name: "mongo_read",
-        description: "Run find() against a MongoDB connector, with optional projection/sort/limit/skip.",
-        category: "connector",
-        input_fields: MONGO_READ_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Read,
-        connector: ConnectorRule::mongo(&[ConnectorType::Db]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "mongo_write",
-        description: "Write documents to a MongoDB connector: insert/update/replace/delete, nested documents as extended JSON.",
-        category: "connector",
-        // Strict: a typoed `upsert` or `ordered` silently changes what a
-        // write does — the crypto rationale exactly.
-        input_fields: MONGO_WRITE_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::DependsOn { input: "op" },
-        connector: ConnectorRule::mongo(&[ConnectorType::Db]),
-        deny_unknown: true,
-        validate_static: Some(super::mongo_write::validate_static_input),
-    },
-    FunctionSchema {
-        name: "mongo_aggregate",
-        description: "Run an aggregation pipeline against a MongoDB connector (stage-allowlisted; $out/$merge behind a connector opt-in).",
-        category: "connector",
-        input_fields: MONGO_AGGREGATE_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Read,
-        connector: ConnectorRule::mongo(&[ConnectorType::Db]),
-        deny_unknown: true,
-        validate_static: Some(super::mongo_aggregate::validate_static_input),
     },
     FunctionSchema {
         name: "cache_invalidate",

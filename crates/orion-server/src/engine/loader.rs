@@ -1200,12 +1200,6 @@ mod tests {
     async fn every_named_load_break_quarantines_its_channel() {
         use serde_json::json;
         let engines = Engines::orion_with(exprs_with_a_secret(), Vec::new());
-        let mongo = |extra| {
-            over(
-                json!({"connector": "m", "database": "d", "collection": "c"}),
-                extra,
-            )
-        };
         let hmac = |extra| {
             over(
                 json!({"op": "hmac", "algorithm": "sha256", "data": "x", "key": "k",
@@ -1240,9 +1234,6 @@ mod tests {
             row("I183 (O4)", "db_write", json!({"connector": "db"}), "INPUT_PARSE", ".query"),
             row("I183 (O4)", "data_query", json!({"connector": "db"}), "INPUT_PARSE", ".query"),
             row("I183 (O4)", "data_write", json!({"connector": "db"}), "INPUT_PARSE", ".write"),
-            row("I183 (O5)", "mongo_read", json!({"connector": "m", "database": "d"}), "INPUT_PARSE", ".collection"),
-            row("I183 (O5)", "mongo_write", mongo(json!({})), "INPUT_PARSE", ".op"),
-            row("I183 (O5)", "mongo_aggregate", mongo(json!({})), "INPUT_PARSE", ".pipeline"),
             row("I183 (O6)", "cache_read", json!({"key": "k"}), "INPUT_PARSE", ".connector"),
             row("I183 (O6)", "cache_write", json!({"connector": "c", "value": 1}), "INPUT_PARSE", ".key"),
             row("I183 (O6)", "cache_write", json!({"connector": "c", "key": "k"}), "INPUT_PARSE", ".value"),
@@ -1277,23 +1268,6 @@ mod tests {
             // A literal hole rooted at no context root; one rooted at `payload` is
             // a `PAYLOAD_VAR` Defect, which loads.
             row("O4, a malformed var hole", "db_write", json!({"connector": "db", "query": "q", "params": [{"var": "order.id"}]}), "INVALID_PATH", ".params"),
-            // O5.
-            row("O5, an unknown op", "mongo_write", mongo(json!({"op": "frobnicate", "document": {}})), "INPUT_PARSE", ".op"),
-            row("O5, a document missing for the op", "mongo_write", mongo(json!({"op": "insert_one"})), "INPUT_PARSE", ".document"),
-            row("O5, a filtered op without a filter", "mongo_write", mongo(json!({"op": "delete_many"})), "INPUT_PARSE", ".filter"),
-            row("O5, a field the op does not take", "mongo_write", mongo(json!({"op": "insert_one", "document": {"a": 1}, "update": {"$set": {"a": 1}}})), "INPUT_PARSE", ".update"),
-            row("O5, an empty update", "mongo_write", mongo(json!({"op": "update_one", "filter": {"a": 1}, "update": {}})), "INPUT_PARSE", ".update"),
-            row("O5, a plain-key update", "mongo_write", mongo(json!({"op": "update_one", "filter": {"a": 1}, "update": {"a": 2}})), "INPUT_PARSE", ".update"),
-            row("O5, an operator key in a replacement", "mongo_write", mongo(json!({"op": "replace_one", "filter": {"a": 1}, "document": {"$set": {"a": 2}}})), "INPUT_PARSE", ".document"),
-            row("O5, a pipeline that is not an array", "mongo_aggregate", mongo(json!({"pipeline": {"$match": {}}})), "INPUT_PARSE", ".pipeline"),
-            row("O5, an empty pipeline", "mongo_aggregate", mongo(json!({"pipeline": []})), "INPUT_PARSE", ".pipeline"),
-            row("O5, a stage that is not one $ key", "mongo_aggregate", mongo(json!({"pipeline": [{"match": {}}]})), "INPUT_PARSE", ".pipeline"),
-            row("O5, an unknown stage", "mongo_aggregate", mongo(json!({"pipeline": [{"$frobnicate": {}}]})), "INPUT_PARSE", ".pipeline"),
-            row("O5, a non-string database", "mongo_read", json!({"connector": "m", "database": 5, "collection": "c", "output": "data.r"}), "INPUT_PARSE", ".database"),
-            row("O5, a non-string op", "mongo_write", mongo(json!({"op": 5})), "INPUT_PARSE", ".op"),
-            row("O5, a non-boolean all", "mongo_write", mongo(json!({"op": "delete_many", "all": "yes"})), "INPUT_PARSE", ".all"),
-            row("O5, a secret in a document", "mongo_read", mongo(json!({"output": "data.r", "filter": {"a": {"secret": "s"}}})), "SECRET_IN_DOCUMENT", ".filter"),
-            row("O5, a malformed var hole", "mongo_read", mongo(json!({"output": "data.r", "filter": {"a": {"var": 5}}})), "INVALID_PATH", ".filter"),
             // O6.
             row("O6, both key and keys", "cache_read", json!({"connector": "c", "key": "k", "keys": ["k"], "output": "data.r"}), "INPUT_PARSE", ".keys"),
             row("O6, neither key nor keys", "cache_read", json!({"connector": "c", "output": "data.r"}), "INPUT_PARSE", ".key"),
@@ -1353,8 +1327,6 @@ mod tests {
             // literal root (the default `data` included).
             row("I185, db_read", "db_read", json!({"connector": "db", "query": "q"}), "INPUT_PARSE", ".output"),
             row("I185, data_query reading rows", "data_query", json!({"connector": "db", "query": {"source": "t"}}), "INPUT_PARSE", ".output"),
-            row("I185, mongo_read", "mongo_read", mongo(json!({"output": "data"})), "INPUT_PARSE", ".output"),
-            row("I185, mongo_aggregate", "mongo_aggregate", mongo(json!({"pipeline": [{"$match": {}}]})), "INPUT_PARSE", ".output"),
             row("I185, storage_presign", "storage_presign", json!({"connector": "s3", "key": "k", "expires_in": 60, "output": "temp_data"}), "INPUT_PARSE", ".output"),
             row("I185, crypto", "crypto", hmac(json!({"output": "data"})), "INPUT_PARSE", ".output"),
             row("I185, jwt_sign", "jwt_sign", sign(json!({"output": "data"})), "INPUT_PARSE", ".output"),

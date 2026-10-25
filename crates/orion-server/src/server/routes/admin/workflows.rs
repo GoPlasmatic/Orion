@@ -193,7 +193,7 @@ pub(crate) async fn delete_workflow(
             written and the body is instead the `/validate` envelope \
             (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate \
             the real transition would run: draft existence, connector existence and \
-            type match, MongoDB `database` presence, and rollout arithmetic. \
+            type match, and rollout arithmetic. \
             With `?reload=defer` the row commits but the engine (and every cluster \
             peer) keeps serving the previous active set until \
             `POST /engine/reload`.", body = DataEnvelope<WorkflowResponse>),

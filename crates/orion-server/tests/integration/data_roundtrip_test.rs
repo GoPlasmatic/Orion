@@ -8,9 +8,9 @@
 //! the final response is asserted step by step.
 //!
 //! SQLite runs in-memory and is *not* `#[ignore]` (it needs no Docker), so it
-//! executes in the normal CI coverage job. Postgres / MySQL / MongoDB /
-//! Elasticsearch use testcontainers and are `#[ignore]` so `cargo test` stays
-//! Docker-free by default; the dedicated CI job runs them with `-- --ignored`.
+//! executes in the normal CI coverage job. Postgres / MySQL use testcontainers
+//! and are `#[ignore]` so `cargo test` stays Docker-free by default; the
+//! dedicated CI job runs them with `-- --ignored`.
 
 use crate::common;
 use crate::common::backends::{Backend, BackendHarness};
@@ -21,30 +21,23 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use tower::ServiceExt;
 
-/// A `data_write` task carrying the given envelope; the Mongo `database`
-/// field and the backend's inline schema are layered onto the shared DSL
-/// task shape.
+/// A `data_write` task carrying the given envelope, on the shared DSL task
+/// shape.
 fn dw(h: &BackendHarness, id: &str, mut envelope: Value, out: &str) -> Value {
     envelope["output"] = json!(out);
-    if let Some(schema) = h.schema_json() {
-        envelope["schema"] = schema;
-    }
-    dsl::dw(&h.connector_name, id, h.with_db(envelope))
+    dsl::dw(&h.connector_name, id, envelope)
 }
 
 /// A `data_query` read-back task. Unlike [`dsl::dq`] each read targets its own
-/// output path, and the backend schema / Mongo `database` field are added.
+/// output path.
 fn dq(h: &BackendHarness, id: &str, query: Value, out: &str) -> Value {
-    let mut input = h.with_db(json!({
-        "connector": h.connector_name, "query": query, "output": out
-    }));
-    // F24: the dialect rejects undeclared names, so a backend with no schema of
-    // its own still has to say it wants pass-through — the same one line a 0.x
-    // workflow adds on upgrade. This harness is about cross-backend parity, not
-    // the allowlist.
-    input["schema"] = h
-        .schema_json()
-        .unwrap_or_else(|| json!({ "unmapped": "identity" }));
+    // F24: the dialect rejects undeclared names, so the read has to say it
+    // wants pass-through — the same one line a 0.x workflow adds on upgrade.
+    // This harness is about cross-backend parity, not the allowlist.
+    let input = json!({
+        "connector": h.connector_name, "query": query, "output": out,
+        "schema": { "unmapped": "identity" }
+    });
     json!({ "id": id, "name": id, "function": { "name": "data_query", "input": input } })
 }
 
@@ -76,18 +69,13 @@ async fn assert_crud_roundtrip(backend: Backend) {
     let app = common::test_app().await;
     let name = format!("rt_{}", backend.label());
     let h = common::backends::start(backend, &name).await;
-    h.prepare().await;
     common::create_connector(&app, h.connector_json()).await;
 
     // Build the round-trip as one ordered task pipeline. Each read goes to its
     // own output path so we can assert intermediate state from one response.
     let mut tasks: Vec<Value> = Vec::new();
-    if let Some(sql) = h.ddl_users() {
-        tasks.push(dsl::ddl(&h.connector_name, "ddl_users", &sql));
-    }
-    if let Some(sql) = h.ddl_items() {
-        tasks.push(dsl::ddl(&h.connector_name, "ddl_items", &sql));
-    }
+    tasks.push(dsl::ddl(&h.connector_name, "ddl_users", &h.ddl_users()));
+    tasks.push(dsl::ddl(&h.connector_name, "ddl_items", &h.ddl_items()));
 
     // 1. Insert three users.
     tasks.push(dw(
@@ -171,7 +159,7 @@ async fn assert_crud_roundtrip(backend: Backend) {
     ));
 
     // 6. Auto-increment insert: RETURNING on SQLite/Postgres, last_insert_id on
-    //    MySQL, generated ids on Mongo/ES.
+    //    MySQL.
     let item_env = if h.backend.supports_returning() {
         json!({ "op": "insert", "target": "items", "values": { "name": "Widget" }, "returning": ["id", "name"] })
     } else {
@@ -258,15 +246,6 @@ async fn assert_crud_roundtrip(backend: Backend) {
             ret[0]["id"].as_i64().unwrap_or(0) >= 1,
             "generated id: {w_item}"
         );
-    } else if h.backend.is_doc_store() {
-        assert_eq!(w_item["inserted"].as_u64(), Some(1), "{w_item}");
-        assert!(
-            w_item["ids"]
-                .as_array()
-                .map(|a| !a.is_empty())
-                .unwrap_or(false),
-            "doc-store generated id: {w_item}"
-        );
     } else {
         // MySQL: no RETURNING; the auto-increment id is reported instead.
         assert!(
@@ -291,16 +270,4 @@ async fn roundtrip_postgres() {
 #[ignore]
 async fn roundtrip_mysql() {
     assert_crud_roundtrip(Backend::Mysql).await;
-}
-
-#[tokio::test]
-#[ignore]
-async fn roundtrip_mongo() {
-    assert_crud_roundtrip(Backend::Mongo).await;
-}
-
-#[tokio::test]
-#[ignore]
-async fn roundtrip_es() {
-    assert_crud_roundtrip(Backend::Es).await;
 }

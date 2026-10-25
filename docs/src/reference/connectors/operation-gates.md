@@ -10,9 +10,9 @@ Every connector type carries an `operations` block that limits what workflows ma
 
 | Type | Gate | Blocks |
 |------|------|--------|
-| `db`, `es` | `read` | `data_query`, `db_read`, `mongo_read`, `mongo_aggregate` |
-| `db`, `es` | `insert`, `update`, `delete`, `upsert` | The matching `data_write` operation, and the matching `mongo_write` op (`insert_*` → `insert`, `update_*`/`replace_one` → `update` — or `upsert` when `"upsert": true` — `delete_*` → `delete`) |
-| `db`, `es` | `raw_write` | `db_write` — raw SQL cannot be classified per operation |
+| `db` | `read` | `data_query`, `db_read` |
+| `db` | `insert`, `update`, `delete`, `upsert` | The matching `data_write` operation |
+| `db` | `raw_write` | `db_write` — raw SQL cannot be classified per operation |
 | `cache` | `read` | `cache_read` |
 | `cache` | `write` | `cache_write`, `cache_delete`, `cache_incr`, plus channel stores backed by the connector — see [Cache write covers channel stores](#cache-write-covers-channel-stores) |
 | `kafka` | `publish` | `publish_kafka` |

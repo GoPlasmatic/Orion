@@ -1021,14 +1021,11 @@ impl Rule for UnorderedPage {
                 let Some(input) = step.node.get("function").and_then(|f| f.get("input")) else {
                     continue;
                 };
-                // `data_query` pages inside the envelope; `mongo_read` pages at
-                // the task input. Both spell the two keys the same way.
-                let paged = match step.function.as_deref() {
-                    Some("data_query") => input.get("query").map(|q| ("query.", q)),
-                    Some("mongo_read") => Some(("", input)),
-                    _ => None,
-                };
-                let Some((prefix, envelope)) = paged else {
+                // `data_query` pages inside the envelope.
+                if step.function.as_deref() != Some("data_query") {
+                    continue;
+                }
+                let Some(envelope) = input.get("query") else {
                     continue;
                 };
                 let Some(skip) = envelope.get("skip") else {
@@ -1049,7 +1046,7 @@ impl Rule for UnorderedPage {
                         self,
                         cx,
                         wf,
-                        Some(&format!("{}.function.input.{prefix}skip", step.path)),
+                        Some(&format!("{}.function.input.query.skip", step.path)),
                         format!(
                             "`{}` skips rows without a `sort`, so which rows it skips is \
                              whatever the plan emitted and need not be the same twice",

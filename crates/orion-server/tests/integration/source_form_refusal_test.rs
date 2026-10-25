@@ -35,9 +35,8 @@ fn detail<'a>(body: &'a Value, path: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no detail at '{path}' in {body}"))
 }
 
-/// Before: `tasks[1].function.input.connector REQUIRED` and
-/// `…input.database REQUIRED` — the two fields `constants.db` would have
-/// supplied, and nothing naming `$from`.
+/// Before: `tasks[1].function.input.connector REQUIRED` — the field
+/// `constants.db` would have supplied, and nothing naming `$from`.
 #[tokio::test]
 async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
     let (status, body) = post(
@@ -47,9 +46,9 @@ async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
             "tasks": [
                 {"id": "t1", "name": "T1", "function": {"name": "map",
                   "input": {"mappings": [{"path": "data.out", "logic": {"ok": true}}]}}},
-                {"id": "t2", "name": "T2", "function": {"name": "mongo_read",
-                  "input": {"$from": "constants.db", "collection": "users",
-                            "filter": {}, "output": "temp_data.u"}}}]
+                {"id": "t2", "name": "T2", "function": {"name": "data_query",
+                  "input": {"$from": "constants.db", "query": {"source": "users"},
+                            "output": "temp_data.u"}}}]
         }),
     )
     .await;
@@ -66,7 +65,7 @@ async fn a_from_in_a_task_input_is_named_not_its_missing_fields() {
         message.contains("orion-server compile"),
         "and name the command that resolves it: {message}"
     );
-    // The symptom must not be reported alongside the cause: two errors about
+    // The symptom must not be reported alongside the cause: errors about
     // fields that are not missing is what sent the author looking for a typo.
     let paths: Vec<&str> = body["error"]["details"]
         .as_array()
@@ -202,9 +201,9 @@ async fn validate_agrees_with_create() {
             "/api/v2/admin/workflows/validate",
             Some(json!({
                 "workflow_id": "probe", "name": "Probe",
-                "tasks": [{"id": "t", "name": "T", "function": {"name": "mongo_read",
-                    "input": {"$from": "constants.db", "collection": "u",
-                              "filter": {}, "output": "temp_data.u"}}}]
+                "tasks": [{"id": "t", "name": "T", "function": {"name": "data_query",
+                    "input": {"$from": "constants.db", "query": {"source": "u"},
+                              "output": "temp_data.u"}}}]
             })),
         ))
         .await
@@ -239,8 +238,8 @@ async fn the_update_path_is_gated_too() {
             "PUT",
             "/api/v2/admin/workflows/upd",
             Some(json!({"tasks": [{"id": "t", "name": "T",
-                "function": {"name": "mongo_read", "input": {"$from": "constants.db",
-                    "collection": "u", "filter": {}, "output": "temp_data.u"}}}]})),
+                "function": {"name": "data_query", "input": {"$from": "constants.db",
+                    "query": {"source": "u"}, "output": "temp_data.u"}}}]})),
         ))
         .await
         .unwrap();

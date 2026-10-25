@@ -32,9 +32,8 @@ Two workflows pointing at `payments-api` share one configured connection, one cr
 | Type | Reaches | Used by |
 |---|---|---|
 | `http` | Any HTTP API | `http_call` |
-| `db` | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read`, `mongo_write`, `mongo_aggregate` |
+| `db` | PostgreSQL, MySQL, SQLite | `data_query`, `data_write`, `db_read`, `db_write` |
 | `cache` | Redis, or process memory | `cache_read`, `cache_write` |
-| `es` | Elasticsearch | `data_query`, `data_write` |
 | `kafka` | A Kafka cluster, for producing | `publish_kafka` |
 | `storage` | S3-compatible object storage | `storage_presign`, `storage_head` |
 

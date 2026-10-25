@@ -5,8 +5,7 @@ use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Function, Outcome};
 
 use super::connector_helpers::{
-    QueryBudget, QueryFailure, acquire_conn, encode_failure, reject_mongo_connector,
-    require_op_allowed, to_connect_error,
+    QueryBudget, QueryFailure, acquire_conn, encode_failure, require_op_allowed, to_connect_error,
 };
 use super::db_read::DbRead;
 use super::schema::{FieldKind, FieldSchema};
@@ -18,13 +17,11 @@ use crate::engine::kit;
 /// This handler's name, for the shared write below (F48).
 pub(crate) const NAME: &str = "db_write";
 
-/// The connector's gates for a raw write: its `raw_write` operation, and a
-/// SQL backend. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
-/// function.
+/// The connector's gate for a raw write: its `raw_write` operation. Shared by
+/// the dataflow-rs 3 handler and the dataflow-rs 4 function.
 fn gate(conn: &DbConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     // Raw SQL cannot be classified per-op; it has its own gate.
-    require_op_allowed(&conn.operations, "raw_write", connector)?;
-    reject_mongo_connector(NAME, connector, conn)
+    require_op_allowed(&conn.operations, "raw_write", connector)
 }
 
 /// The write's answer, `{"rows_affected": n}` and, for an insert on a driver
@@ -377,26 +374,6 @@ mod tests {
             assert!(v4.0.is_err(), "{input}");
             assert_eq!(v4.1, json!([[1, "apple"]]), "{input}");
         }
-    }
-
-    #[tokio::test]
-    async fn a_mongo_connector_is_refused() {
-        let connector = json!({"type": "db", "connection_string": "mongodb://127.0.0.1:1"});
-        let input = json!({"connector": "db", "query": "DELETE FROM t", "output": "data.write"});
-        let pool_cache = Arc::new(SqlPoolCache::new(8));
-        let registry = twin::connectors(&[("db", connector)]).await;
-        let v4 = twin::v4(
-            NAME,
-            DbWriteFunction {
-                pool_cache,
-                registry,
-            },
-            input,
-            Value::Null,
-        )
-        .await;
-        twin::pinned(&v4, "a_mongo_connector_is_refused");
-        assert_eq!(v4.expect_err("refused").code, "VALIDATION_ERROR");
     }
 
     fn delete_all() -> Value {

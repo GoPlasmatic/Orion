@@ -38,7 +38,7 @@ fn sugared_set(label: &str) -> ScratchDir {
     std::fs::create_dir_all(dir.join("fragments")).unwrap();
     std::fs::write(
         dir.join("common.json"),
-        r#"{ "constants": { "db": { "connector": "mongo", "database": "app" } },
+        r#"{ "constants": { "db": { "connector": "pg", "schema": { "unmapped": "identity" } } },
              "errors": { "USER_NOT_FOUND": { "status": 404, "body": "User Not Found !" } } }"#,
     )
     .unwrap();
@@ -60,17 +60,17 @@ fn sugared_set(label: &str) -> ScratchDir {
     .unwrap();
     std::fs::write(
         dir.join("conn.json"),
-        r#"{ "name": "mongo", "connector_type": "db",
-             "config": { "connection_string": "mongodb://host/app" } }"#,
+        r#"{ "name": "pg", "connector_type": "db",
+             "config": { "connection_string": "postgres://host/app" } }"#,
     )
     .unwrap();
     std::fs::write(
         dir.join("wf.json"),
         r#"{ "workflow_id": "lookup", "name": "Lookup", "tasks": [
              { "id": "_g", "use": "deny", "with": { "message": "Please sign in." } },
-             { "id": "read", "name": "Read", "function": { "name": "mongo_read",
-               "input": { "$from": "constants.db", "collection": "users",
-                          "filter": {}, "output": "temp_data.u" } } },
+             { "id": "read", "name": "Read", "function": { "name": "data_query",
+               "input": { "$from": "constants.db", "query": { "source": "users" },
+                          "output": "temp_data.u" } } },
              { "id": "err", "name": "Err", "function": { "name": "map",
                "input": { "mappings": [
                  { "path": "data.out", "logic": { "$from": "errors.USER_NOT_FOUND" } } ] } } } ] }"#,
@@ -141,9 +141,12 @@ fn an_artifact_is_fully_compiled_and_passes_package_lint() {
     );
     // The splice merged rather than replaced: the shared fields arrived and
     // the call site's own survived beside them.
-    assert_eq!(tasks[2]["function"]["input"]["connector"], "mongo");
-    assert_eq!(tasks[2]["function"]["input"]["database"], "app");
-    assert_eq!(tasks[2]["function"]["input"]["collection"], "users");
+    assert_eq!(tasks[2]["function"]["input"]["connector"], "pg");
+    assert_eq!(
+        tasks[2]["function"]["input"]["schema"],
+        serde_json::json!({ "unmapped": "identity" })
+    );
+    assert_eq!(tasks[2]["function"]["input"]["query"]["source"], "users");
     // The deep one — inside a mapping's `logic`, where the admin API used to
     // accept it with a 201 and run it verbatim.
     assert_eq!(
@@ -236,7 +239,7 @@ fn bulk_format_writes_one_array_per_kind() {
     ]);
     assert!(ok, "{report}");
     for (file, expected) in [
-        ("connectors.json", "mongo"),
+        ("connectors.json", "pg"),
         ("workflows.json", "Lookup"),
         ("channels.json", "lookup-api"),
     ] {
@@ -258,9 +261,9 @@ fn a_reference_that_does_not_resolve_writes_nothing() {
     std::fs::write(
         dir.join("wf.json"),
         r#"{ "workflow_id": "lookup", "name": "Lookup", "tasks": [
-             { "id": "read", "name": "Read", "function": { "name": "mongo_read",
-               "input": { "$from": "constants.dbb", "collection": "users",
-                          "filter": {}, "output": "temp_data.u" } } } ] }"#,
+             { "id": "read", "name": "Read", "function": { "name": "data_query",
+               "input": { "$from": "constants.dbb", "query": { "source": "users" },
+                          "output": "temp_data.u" } } } ] }"#,
     )
     .unwrap();
     let out = dir.join("dist/broken.json");
@@ -294,9 +297,9 @@ fn the_gate_is_the_linters_own() {
     std::fs::write(
         dir.join("dangling.json"),
         r#"{ "workflow_id": "dangling", "name": "Dangling", "tasks": [
-             { "id": "c", "name": "c", "function": { "name": "mongo_read",
-               "input": { "connector": "no-such-connector", "database": "x",
-                          "collection": "y", "filter": {}, "output": "temp_data.z" } } } ] }"#,
+             { "id": "c", "name": "c", "function": { "name": "data_query",
+               "input": { "connector": "no-such-connector", "query": { "source": "y" },
+                          "output": "temp_data.z" } } } ] }"#,
     )
     .unwrap();
     let out = dir.join("dist/pkg.json");

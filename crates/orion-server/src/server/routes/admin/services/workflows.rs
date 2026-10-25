@@ -35,7 +35,6 @@ pub(crate) async fn ensure_connectors_exist(
                 r.connector.to_string(),
                 crate::engine::ConnectorFacts {
                     connector_type: config.connector_type(),
-                    is_mongo: config.is_mongo(),
                 },
             );
         }
@@ -67,13 +66,6 @@ pub(crate) async fn ensure_connectors_exist(
                     .map(|t| format!("'{t}'"))
                     .collect::<Vec<_>>()
                     .join(" or ")
-            )),
-            crate::engine::RefProblem::MissingMongoDatabase {
-                function,
-                connector,
-            } => problems.push(format!(
-                "task calling '{function}' points at MongoDB connector '{connector}' but \
-                 sets no 'database' — MongoDB connection strings carry no default database"
             )),
         }
     }

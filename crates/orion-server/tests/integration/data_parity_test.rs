@@ -6,8 +6,8 @@
 //! CRUD round-trip exercising `>`, `==`, one sort and one projection
 //! (`data_roundtrip_test.rs`), and the per-backend unit tests are goldens that
 //! assert *shape*, never agreement — so every silent divergence the 1.0 audit
-//! found (null ordering, the `id` → `_id` rewrite, include grouping) was
-//! invisible to the suite by construction.
+//! found (null ordering, include grouping) was invisible to the suite by
+//! construction.
 //!
 //! The shape here is a table:
 //!
@@ -23,18 +23,17 @@
 //! `expected_error` asserts a validation-class refusal, not *which* refusal. The
 //! data plane replaces task-error messages with a generic string (G1) and every
 //! `QueryError` variant maps to the same `VALIDATION_ERROR`, so the
-//! response body carries no discriminator to assert on. Which refusal a backend
-//! gives — `FeatureUnsupportedByTarget` rather than a parse error, say — is
-//! pinned where the error value itself is in hand, in the per-backend renderer
-//! tests (`query::backend::{mongo,es}::tests::test_include_is_capability_error`).
+//! response body carries no discriminator to assert on. Which refusal is given
+//! is pinned where the error value itself is in hand, in the renderer tests
+//! (`query::backend::sql::tests`).
 //!
 //! [`cases`] is also the source of truth for the parity table in
 //! `docs/src/reference/data-dialect.md`: anything not carrying an
 //! `expected_error` is a promise that the two answers are the same.
 //!
 //! SQLite runs in-memory and is not `#[ignore]`d, so the matrix executes in the
-//! normal (Docker-free) test job. Postgres / MySQL / MongoDB / Elasticsearch use
-//! testcontainers and stay `#[ignore]`d behind the existing container gate.
+//! normal (Docker-free) test job. Postgres / MySQL use testcontainers and stay
+//! `#[ignore]`d behind the existing container gate.
 
 use crate::common;
 use crate::common::backends::{Backend, BackendHarness};
@@ -45,17 +44,14 @@ use serde_json::{Value, json};
 
 /// The schema every case is translated through.
 ///
-/// **Relations** are what the capability rows quantify over. `orders` is
-/// declared `referenced` on MongoDB — it *is* a separate collection here, and a
-/// `find` filter cannot join one, so Mongo refuses rather than answering a
-/// different question with `$elemMatch` over an embedded array that does not
-/// exist.
+/// **Relations** are what the relation rows quantify over: `orders` is a
+/// direct relation and `tags` a many-to-many one through `user_tags`.
 ///
 /// **One rename** (`handle` → the physical `nickname`) so that the matrix
 /// exercises schema resolution and not just identity mode. Renaming is the
 /// dialect's most load-bearing schema feature and it is applied in four
 /// separate places — `filter`, `fields`, `sort` and `include` — by four
-/// different code paths, on five backends. The `unmapped` policy is pinned to
+/// different code paths, on three backends. The `unmapped` policy is pinned to
 /// `identity` explicitly — F24 made `reject` the default, and this matrix is
 /// about cross-backend agreement rather than the allowlist, so every other
 /// column keeps passing through by name.
@@ -64,8 +60,7 @@ fn parity_schema() -> Value {
         "columns": { "handle": { "name": "nickname" } },
         "relations": {
             "orders": {
-                "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id",
-                "mongo": "referenced"
+                "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id"
             },
             "tags": {
                 "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
@@ -113,15 +108,7 @@ impl Case {
     }
 }
 
-/// Backends with no `include` / relation-join capability at all.
-const DOC_STORES: &[Backend] = &[Backend::Mongo, Backend::Es];
-const EVERY_BACKEND: &[Backend] = &[
-    Backend::Sqlite,
-    Backend::Postgres,
-    Backend::Mysql,
-    Backend::Mongo,
-    Backend::Es,
-];
+const EVERY_BACKEND: &[Backend] = &[Backend::Sqlite, Backend::Postgres, Backend::Mysql];
 
 /// A `sort` that makes every result set totally ordered, so "the same rows"
 /// and "the same order" are one assertion.
@@ -151,9 +138,7 @@ fn cases() -> Vec<Case> {
                     "filter": { "==": [{ "field": "status" }, "inactive"] } }),
             &["Carol"],
         ),
-        // W10: `id` is an ordinary field on every backend now. MongoDB used to
-        // rewrite it to `_id`, so this envelope silently matched nothing there
-        // while matching Carol everywhere else.
+        // W10: `id` is an ordinary field, with no implicit rewrite.
         Case::new(
             "eq_on_a_plain_id_field",
             json!({ "source": "users", "sort": by_name(),
@@ -278,9 +263,8 @@ fn cases() -> Vec<Case> {
         ),
         // -- W8: null ordering ------------------------------------------------
         // A null sorts as the smallest value: first on `asc`, last on `desc`,
-        // with the secondary key breaking ties inside the null group. Mongo's
-        // `find` used to disagree with SQL and ES on both directions, because
-        // the old rule ("nulls last on asc") is not expressible there.
+        // with the secondary key breaking ties inside the null group.
+        // PostgreSQL sorts nulls the other way natively, so it has to be told.
         Case::new(
             "null_ordering_asc_puts_nulls_first",
             json!({ "source": "users", "sort": [{ "nickname": "asc" }, { "name": "asc" }] }),
@@ -306,11 +290,10 @@ fn cases() -> Vec<Case> {
         // -- schema renames -----------------------------------------------
         // `handle` is the logical name for the physical `nickname` column (see
         // `parity_schema`). The rename has to be applied by `filter`, `fields`
-        // and `sort` alike, on every backend. On SQL an unresolved `fields`
-        // entry is a hard "no such column"; on the document stores it is
-        // silent, which is why the `sort` carries the assertion — ordering on
-        // a name that does not exist yields a different row order, and the row
-        // order is what the matrix compares.
+        // and `sort` alike, on every backend. An unresolved `fields` entry is
+        // a hard "no such column"; the `sort` carries the assertion too —
+        // ordering on a name that did not resolve yields a different row
+        // order, and the row order is what the matrix compares.
         Case::new(
             "a_rename_applies_to_filter",
             json!({ "source": "users", "sort": by_name(),
@@ -323,18 +306,17 @@ fn cases() -> Vec<Case> {
                     "sort": [{ "handle": "desc" }, { "name": "asc" }] }),
             &["Dave", "Carol", "Alice", "Bob"],
         ),
-        // -- capability-gated combinations ------------------------------------
-        // `include` hydration is SQL-only; the document stores refuse it rather
-        // than nesting silently empty children.
+        // -- relations ------------------------------------------------------
+        // `include` hydration nests each parent's children (asserted in
+        // `include_hydration_is_bounded_and_ordered`); here, which parents.
         Case::new(
-            "include_is_sql_only",
+            "include_returns_every_parent",
             json!({ "source": "users", "sort": by_name(), "fields": ["name", "id"],
                     "include": { "orders": {
                         "fields": ["total"], "sort": [{ "total": "desc" }], "limit": 2
                     } } }),
             &["Alice", "Bob", "Carol", "Dave"],
-        )
-        .erroring_on(DOC_STORES),
+        ),
         // The include's `sort` names a column its `fields` does not. The key has
         // to reach the *outer* select — the per-parent page is cut by ranking
         // rows in a sub-select and filtering the rank outside it, so the outer
@@ -351,35 +333,24 @@ fn cases() -> Vec<Case> {
                         "fields": ["total"], "sort": [{ "id": "desc" }], "limit": 2
                     } } }),
             &["Alice", "Bob", "Carol", "Dave"],
-        )
-        .erroring_on(DOC_STORES),
-        // A junction join is not expressible in either document store's filter
-        // language. On SQL the (empty) junction correctly matches nobody.
+        ),
+        // A junction join: the (empty) junction correctly matches nobody.
         Case::new(
-            "many_to_many_quantifier_is_sql_only",
+            "many_to_many_quantifier",
             json!({ "source": "users", "sort": by_name(),
                     "filter": { "some": [{ "field": "tags" },
                                          { "==": [{ "field": "label" }, "vip"] }] } }),
             &[],
-        )
-        .erroring_on(DOC_STORES),
-        // `all` is set-equivalent on SQL; ES cannot express it over nesting and
-        // Mongo cannot join a referenced collection at all.
+        ),
+        // `all` is set-equivalent: Carol and Dave have no orders, so it fails
+        // on the empty set.
         Case::new(
             "all_over_a_referenced_relation",
             json!({ "source": "users", "sort": by_name(),
                     "filter": { "all": [{ "field": "orders" },
                                         { ">": [{ "field": "total" }, 40] }] } }),
             &["Alice"],
-        )
-        .erroring_on(DOC_STORES),
-        // Deep pagination is bounded by ES's result window and by nothing else.
-        Case::new(
-            "deep_pagination_is_rejected_on_es_only",
-            json!({ "source": "users", "sort": by_name(), "skip": 9990, "limit": 100 }),
-            &[],
-        )
-        .erroring_on(&[Backend::Es]),
+        ),
         // The page bounds are shared, so these refuse identically everywhere.
         Case::new(
             "limit_over_the_cap_is_rejected_everywhere",
@@ -404,7 +375,7 @@ fn cases() -> Vec<Case> {
         // The load-bearing row. `nickname` is null for Alice and Bob, and nulls
         // sort last on `desc` (W8), so the page after Dave has to reach them.
         // Without the `OR nickname IS NULL` arm this returns `["Carol"]` — the
-        // *same wrong answer on all five backends*, which is exactly why it
+        // *same wrong answer on every backend*, which is exactly why it
         // belongs in the matrix rather than in a per-backend golden.
         Case::new(
             "after_on_a_descending_key_reaches_the_nulls",
@@ -434,15 +405,6 @@ fn cases() -> Vec<Case> {
             "after_past_the_last_row_is_an_empty_page",
             json!({ "source": "users", "sort": by_name(), "after": { "name": "Dave" } }),
             &[],
-        ),
-        // The counterpart to `deep_pagination_is_rejected_on_es_only`: the same
-        // page size that ES refuses behind a `skip` is answered everywhere
-        // behind a cursor, because a keyset page never sets `from`.
-        Case::new(
-            "after_is_not_deep_pagination_on_es",
-            json!({ "source": "users", "sort": by_name(),
-                    "after": { "name": "Bob" }, "limit": 100 }),
-            &["Carol", "Dave"],
         ),
         // "Refuses identically" is itself a parity claim.
         Case::new(
@@ -479,9 +441,7 @@ fn cases() -> Vec<Case> {
 /// is about the capability, not about the join's contents).
 fn seed_tasks(h: &BackendHarness) -> Vec<Value> {
     let mut tasks = Vec::new();
-    if let Some(sql) = h.ddl_users() {
-        tasks.push(dsl::ddl(&h.connector_name, "ddl_users", &sql));
-    }
+    tasks.push(dsl::ddl(&h.connector_name, "ddl_users", &h.ddl_users()));
     for (i, sql) in h.ddl_relations().iter().enumerate() {
         tasks.push(dsl::ddl(&h.connector_name, &format!("ddl_rel{i}"), sql));
     }
@@ -516,7 +476,7 @@ fn seed_tasks(h: &BackendHarness) -> Vec<Value> {
 }
 
 fn write_task(h: &BackendHarness, id: &str, envelope: Value) -> Value {
-    dsl::dw(&h.connector_name, id, h.with_db(envelope))
+    dsl::dw(&h.connector_name, id, envelope)
 }
 
 /// A single-task `data_query` workflow for one matrix row.
@@ -527,12 +487,12 @@ fn query_task(h: &BackendHarness, case: &Case) -> Value {
 /// [`query_task`] with an explicit task id and output path, so one workflow can
 /// run several envelopes against one seeded fixture.
 fn query_task_as(h: &BackendHarness, id: &str, output: &str, query: Value) -> Value {
-    let input = h.with_db(json!({
+    let input = json!({
         "connector": h.connector_name,
         "query": query,
         "schema": parity_schema(),
         "output": output
-    }));
+    });
     json!({
         "id": id, "name": id,
         "function": { "name": "data_query", "input": input }
@@ -553,7 +513,6 @@ async fn assert_parity(backend: Backend) {
     let app = common::test_app().await;
     let label = backend.label();
     let h = common::backends::start(backend, &format!("pty_{label}")).await;
-    h.prepare().await;
     common::create_connector(&app, h.connector_json()).await;
 
     // Seed once, in its own channel.
@@ -627,14 +586,10 @@ async fn assert_parity(backend: Backend) {
 /// whole assertion is the ordered `name` column — cannot carry one. The claim
 /// is the same, though: one envelope, one number, on every backend.
 ///
-/// The dialect renders these three completely differently — `SELECT COUNT(*)`,
-/// `count_documents`, `POST _count` — which is exactly why the answer has to be
-/// asserted equal rather than assumed.
 async fn assert_count_parity(backend: Backend) {
     let app = common::test_app().await;
     let label = backend.label();
     let h = common::backends::start(backend, &format!("cnt_{label}")).await;
-    h.prepare().await;
     common::create_connector(&app, h.connector_json()).await;
 
     let seed_channel = format!("ch-cnt-{label}-seed");
@@ -666,8 +621,7 @@ async fn assert_count_parity(backend: Backend) {
 
     for (i, (name, query, expected)) in cases.iter().enumerate() {
         let channel = format!("ch-cnt-{label}-{i}");
-        // Through the matrix's own builder, so the Mongo `database` key the
-        // activation gate requires is set exactly as it is for every row case.
+        // Through the matrix's own builder, so the schema is the row cases'.
         let task = query_task_as(&h, "t_count", "data.result", query.clone());
         common::create_and_activate_channel(
             &app,
@@ -694,14 +648,11 @@ async fn assert_count_parity(backend: Backend) {
 /// coverage ran on SQLite. `action: "nothing"` in particular has no other
 /// runtime test.
 ///
-/// SQL only: `users.id` is a primary key here, which is the conflict target,
-/// and the document stores key upserts on `_id` through a different path with
-/// its own coverage.
+/// `users.id` is a primary key here, which is the conflict target.
 async fn assert_upsert_parity(backend: Backend) {
     let app = common::test_app().await;
     let label = backend.label();
     let h = common::backends::start(backend, &format!("ups_{label}")).await;
-    h.prepare().await;
     common::create_connector(&app, h.connector_json()).await;
 
     let mut tasks = seed_tasks(&h);
@@ -801,7 +752,6 @@ async fn assert_keyset_parity(backend: Backend) {
     let app = common::test_app().await;
     let label = backend.label();
     let h = common::backends::start(backend, &format!("seek_{label}")).await;
-    h.prepare().await;
     common::create_connector(&app, h.connector_json()).await;
 
     let seed_channel = format!("ch-seek-{label}-seed");
@@ -834,7 +784,7 @@ async fn assert_keyset_parity(backend: Backend) {
         ),
     ] {
         let channel = format!("ch-seek-{label}-{}", keys[0]);
-        let input = h.with_db(json!({
+        let input = json!({
             "connector": h.connector_name,
             "query": {
                 "source": "users",
@@ -845,7 +795,7 @@ async fn assert_keyset_parity(backend: Backend) {
             "params": { "cursor": { "var": "data.req.cursor" } },
             "schema": parity_schema(),
             "output": "data.result"
-        }));
+        });
         common::create_and_activate_channel(
             &app,
             &channel,
@@ -890,9 +840,8 @@ async fn assert_keyset_parity(backend: Backend) {
             walked.extend(page);
 
             // Build the next position out of the page, exactly as an author
-            // would. `Value::get` answers `None` for a column a document store
-            // omitted rather than stored as null, so the null is restated here —
-            // a cursor carries one value per sort key, always.
+            // would. A cursor carries one value per sort key, always, so a
+            // column missing from the row is restated as null.
             let last = rows
                 .as_array()
                 .and_then(|r| r.last())
@@ -935,18 +884,6 @@ async fn keyset_parity_mysql() {
 }
 
 #[tokio::test]
-#[ignore]
-async fn keyset_parity_mongo() {
-    assert_keyset_parity(Backend::Mongo).await;
-}
-
-#[tokio::test]
-#[ignore]
-async fn keyset_parity_es() {
-    assert_keyset_parity(Backend::Es).await;
-}
-
-#[tokio::test]
 async fn count_parity_sqlite() {
     assert_count_parity(Backend::Sqlite).await;
 }
@@ -963,24 +900,11 @@ async fn count_parity_mysql() {
     assert_count_parity(Backend::Mysql).await;
 }
 
-#[tokio::test]
-#[ignore]
-async fn count_parity_mongo() {
-    assert_count_parity(Backend::Mongo).await;
-}
-
-#[tokio::test]
-#[ignore]
-async fn count_parity_es() {
-    assert_count_parity(Backend::Es).await;
-}
-
-/// The `include` rows of the matrix only assert *which parents* come back,
-/// because the doc stores refuse it outright. The nesting itself — the
-/// per-parent page, cut in SQL and ordered by the requested key (F27) — is
-/// asserted here, on the backend that has it: three selections over one seeded
-/// fixture, covering a projected sort key, a sort key the selection does not
-/// project, and no projection at all.
+/// The `include` rows of the matrix only assert *which parents* come back. The
+/// nesting itself — the per-parent page, cut in SQL and ordered by the
+/// requested key (F27) — is asserted here, on SQLite: three selections over
+/// one seeded fixture, covering a projected sort key, a sort key the selection
+/// does not project, and no projection at all.
 #[tokio::test]
 async fn include_hydration_is_bounded_and_ordered() {
     let app = common::test_app().await;
@@ -1114,16 +1038,4 @@ async fn parity_postgres() {
 #[ignore]
 async fn parity_mysql() {
     assert_parity(Backend::Mysql).await;
-}
-
-#[tokio::test]
-#[ignore]
-async fn parity_mongo() {
-    assert_parity(Backend::Mongo).await;
-}
-
-#[tokio::test]
-#[ignore]
-async fn parity_es() {
-    assert_parity(Backend::Es).await;
 }

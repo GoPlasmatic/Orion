@@ -12,14 +12,6 @@
       ]
     }
   },
-  "a_connector_of_another_kind_or_backend/{\"type\":\"db\",\"connection_string\":\"mongodb://127.0.0.1:1\"}": {
-    "err": {
-      "code": "VALIDATION_ERROR",
-      "message": "Validation error: db_read requires a SQL connector, but 'db' is a MongoDB connector — use mongo_read or data_query for MongoDB",
-      "retryable": false,
-      "detail": null
-    }
-  },
   "a_connector_of_another_kind_or_backend/{\"type\":\"http\",\"url\":\"http://127.0.0.1:1\"}": {
     "err": {
       "code": "connector_detail",

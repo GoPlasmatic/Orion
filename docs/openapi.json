@@ -8336,7 +8336,7 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, connector existence and type match, MongoDB `database` presence, and rollout arithmetic. With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload`.",
+            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, connector existence and type match, and rollout arithmetic. With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9925,13 +9925,12 @@
       },
       "ConnectorType": {
         "type": "string",
-        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"es\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse.\n\n`\"storage\"` was accepted through the whole 0.x line with no handler behind\nit and was removed in 1.0 (proposal F15). It came back in #265 with\n`storage_presign` and `storage_head` behind it — presign and metadata only,\nno data path — so the variant is live again and the removal note applies\nonly to rows stored by a 0.x server.",
+        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"storage\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse.\n\n`\"storage\"` was accepted through the whole 0.x line with no handler behind\nit and was removed in 1.0 (proposal F15). It came back in #265 with\n`storage_presign` and `storage_head` behind it — presign and metadata only,\nno data path — so the variant is live again and the removal note applies\nonly to rows stored by a 0.x server.",
         "enum": [
           "http",
           "kafka",
           "db",
           "cache",
-          "es",
           "storage"
         ]
       },
@@ -15018,7 +15017,7 @@
           },
           "supported": {
             "type": "boolean",
-            "description": "`false` when no probe exists for this connector (`es`, `kafka`,\nor a `db` connector with a `mongodb://` URL) — a permanent capability\ngap, not an outage. Without this field the two were indistinguishable\nin the response shape, and operator tooling read \"not implemented\" as\ndowntime."
+            "description": "`false` when no probe exists for this connector (`kafka`) — a\npermanent capability gap, not an outage. Without this field the two were indistinguishable\nin the response shape, and operator tooling read \"not implemented\" as\ndowntime."
           }
         }
       },

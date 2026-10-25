@@ -106,17 +106,17 @@ cargo test --test integration rest_routing_test
 ## Container-Gated Tests
 
 Tests that need a real external service start their own ephemeral
-[testcontainers](https://rust.testcontainers.org/) (Postgres, MySQL, MongoDB,
-Elasticsearch, Redis, Kafka) — nothing to start manually, only Docker. They
+[testcontainers](https://rust.testcontainers.org/) (Postgres, MySQL, Redis,
+Vault, Kafka) — nothing to start manually, only Docker. They
 are `#[ignore]`d so the default run stays Docker-free:
 
 ```bash
 # Integration binary, split by the backend each module containerises:
 # raw-SQL backends, the column-type matrix and the portable-dialect
-# round-trips on the first line; Mongo/ES connectors, Redis cache/dedup,
-# dynamic inputs and Vault on the second; Kafka channels on its own.
+# round-trips on the first line; Redis cache/dedup and Vault on the
+# second; Kafka channels on its own.
 cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test
-cargo test --test integration -- --ignored mongodb_test es_test connector_redis_test dynamic_inputs_test vault_test
+cargo test --test integration -- --ignored connector_redis_test vault_test
 cargo test --test integration -- --ignored kafka_test
 
 # Orion's own storage on Postgres / MySQL

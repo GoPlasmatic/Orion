@@ -15,7 +15,7 @@ deny[correctness.unknown_input_key] a task input key the function does not decla
 
 ## Description
 
-A key in a task's `function.input` that the named function does not declare. Orion's own connector handlers read freeform JSON rather than a struct: `db_read`, `db_write`, `data_query`, `data_write`, `cache_read`, `cache_write`, `mongo_read` and `channel_call`. An unknown key is therefore not refused at create, not reported at load, and does nothing at run time. `"limit": 10` written beside a `db_read` `query` reads as enforced and enforces nothing. The query envelope already applies this rule one level down, where an unknown key is an error. Its reason: "a key that cannot apply is a filter, a projection or a limit silently not applying". Aliases count as declared, and a close miss is offered as a suggestion.
+A key in a task's `function.input` that the named function does not declare. Orion's own connector handlers read freeform JSON rather than a struct: `db_read`, `db_write`, `data_query`, `data_write`, `cache_read`, `cache_write` and `channel_call`. An unknown key is therefore not refused at create, not reported at load, and does nothing at run time. `"limit": 10` written beside a `db_read` `query` reads as enforced and enforces nothing. The query envelope already applies this rule one level down, where an unknown key is an error. Its reason: "a key that cannot apply is a filter, a projection or a limit silently not applying". Aliases count as declared, and a close miss is offered as a suggestion.
 
 ## Caveats
 

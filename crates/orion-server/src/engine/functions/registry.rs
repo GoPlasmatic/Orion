@@ -946,7 +946,7 @@ mod registry_tests {
     fn suggestion_recovers_common_typos() {
         let registry = FunctionRegistry::builtin();
         for (typo, expected) in [
-            ("mongo_writes", "mongo_write"),
+            ("data_writes", "data_write"),
             ("jwt_verifiy", "jwt_verify"),
             ("cache_readd", "cache_read"),
         ] {
@@ -974,7 +974,7 @@ mod registry_tests {
     #[test]
     fn suggestion_never_names_an_unknown_function() {
         let registry = FunctionRegistry::builtin();
-        for typo in ["mongo_writes", "jwt_verifiy", "cache_readd"] {
+        for typo in ["data_writes", "jwt_verifiy", "cache_readd"] {
             if let Some(candidate) = registry.suggest(typo) {
                 assert!(
                     registry.contains(candidate),
@@ -1009,9 +1009,6 @@ mod registry_tests {
                 "db_read",
                 "db_write",
                 "http_call",
-                "mongo_aggregate",
-                "mongo_read",
-                "mongo_write",
                 "publish_kafka",
                 "storage_head",
                 "storage_presign",
@@ -1035,21 +1032,6 @@ mod registry_tests {
                 );
             }
         }
-        let mongo: Vec<&str> = registry
-            .entries()
-            .filter(|e| e.connector.is_some_and(|r| r.requires_mongo_database))
-            .map(|e| e.name.as_str())
-            .collect();
-        assert_eq!(
-            mongo,
-            [
-                "data_query",
-                "data_write",
-                "mongo_aggregate",
-                "mongo_read",
-                "mongo_write"
-            ]
-        );
     }
 
     /// An engine built-in declares nothing, so nothing folds and nothing is a
@@ -1378,11 +1360,11 @@ mod validate_input_tests {
     }
 
     #[test]
-    fn mongo_read_collects_all_missing_required_at_once() {
-        let errs = validate_input("mongo_read", &json!({"connector": "c"}), "tasks[0]");
+    fn data_query_collects_all_missing_required_at_once() {
+        let errs = validate_input("data_query", &json!({}), "tasks[0]");
         let paths: Vec<&str> = errs.iter().map(|e| e.path.as_str()).collect();
-        assert!(paths.contains(&"tasks[0].function.input.database"));
-        assert!(paths.contains(&"tasks[0].function.input.collection"));
+        assert!(paths.contains(&"tasks[0].function.input.connector"));
+        assert!(paths.contains(&"tasks[0].function.input.query"));
     }
 
     /// One field carries both the literal and the computed spelling, so "name a
@@ -1533,7 +1515,6 @@ mod validate_input_tests {
         assert!(names.contains(&"cache_write"));
         assert!(names.contains(&"db_read"));
         assert!(names.contains(&"db_write"));
-        assert!(names.contains(&"mongo_read"));
         assert!(names.contains(&"channel_call"));
         assert!(names.contains(&"http_call"));
         assert!(names.contains(&"publish_kafka"));

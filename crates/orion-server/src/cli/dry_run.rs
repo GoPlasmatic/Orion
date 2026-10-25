@@ -504,7 +504,7 @@ struct TestCase {
     /// Dotted paths to their expected values, each **rooted** at one of
     /// [`RUN_DOCUMENTS`](orion::engine::functions::stub::RUN_DOCUMENTS):
     /// `data.order.flagged`, `metadata.headers.deviceid`,
-    /// `temp_data.user_id`, `calls.mongo_write[0].input.document.id`,
+    /// `temp_data.user_id`, `calls.http_call[0].input.body.id`,
     /// `audit_trail[1].status`.
     ///
     /// The root is required. Every other path in Orion — a `{"var": ..}` node,

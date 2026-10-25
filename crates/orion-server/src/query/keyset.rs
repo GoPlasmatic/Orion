@@ -133,10 +133,8 @@ pub(crate) fn seek(sort: &[SortKey], values: &[Value], filter: Cond) -> Cond {
     );
     let seek = seek_cond(&plan_sort(sort), values);
     match filter {
-        // `And([True, seek])` renders `WHERE 1 = 1 AND …` on SQL, an empty
-        // document inside Mongo's `$and`, and a `match_all` inside ES's
-        // `bool.filter`. A filterless page must render exactly as it did before
-        // `after` existed.
+        // `And([True, seek])` renders `WHERE 1 = 1 AND …`. A filterless page
+        // must render exactly as it did before `after` existed.
         Cond::True => seek,
         other => Cond::And(vec![other, seek]),
     }
@@ -440,8 +438,7 @@ mod tests {
     }
 
     /// A filterless page must render exactly as it did before `after` existed:
-    /// `And([True, seek])` becomes `WHERE 1 = 1 AND …` on SQL, `{}` inside
-    /// Mongo's `$and` and a `match_all` inside ES's `bool.filter`.
+    /// `And([True, seek])` becomes `WHERE 1 = 1 AND …`.
     #[test]
     fn the_seek_replaces_a_vacuous_filter_rather_than_and_ing_it() {
         let bare = seek(&asc("id"), &[Value::Int(1)], Cond::True);
@@ -508,11 +505,11 @@ mod tests {
     fn a_cursor_value_spells_the_same_as_a_filter_value() {
         let spec = spec_with(
             asc("created_at"),
-            Some(json!({ "created_at": {"$date": 1_700_000_000_000_i64} })),
+            Some(json!({ "created_at": 1_700_000_000_000_i64 })),
         );
         assert_eq!(
             pair(&spec, &Params::new()).expect("pairs"),
-            vec![Value::DateTime(1_700_000_000_000)]
+            vec![Value::Int(1_700_000_000_000)]
         );
 
         let spec = spec_with(asc("id"), Some(json!({ "id": {"param": "c"} })));

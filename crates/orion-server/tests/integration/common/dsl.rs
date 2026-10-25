@@ -32,7 +32,7 @@ pub fn ddl(conn: &str, id: &str, sql: &str) -> Value {
 
 /// Handler-level `data_write` keys — everything that is *not* part of the
 /// mutation envelope. `connector` is supplied by [`dw`] itself.
-const DW_HANDLER_KEYS: [&str; 4] = ["schema", "params", "database", "output"];
+const DW_HANDLER_KEYS: [&str; 3] = ["schema", "params", "output"];
 
 /// A `data_write` task; `input` carries the envelope (op/target/values/…)
 /// plus any handler keys. The builder splits the two so tasks use 1.0's

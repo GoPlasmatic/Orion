@@ -5,8 +5,6 @@ use std::sync::Arc;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
 use dataflow_rs::{Ctx, Function, Issue, Outcome};
-use futures::TryStreamExt;
-use mongodb::bson::Document;
 use serde_json::{Map, Value};
 // sqlx 0.9 refuses a non-`'static` query string unless it is wrapped, so that
 // building SQL by concatenation has to be an explicit, greppable decision. Every
@@ -19,14 +17,13 @@ use sqlx::AssertSqlSafe;
 
 use super::connector_helpers::{
     QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure, encode_failure,
-    es_request, is_mongo, require_op_allowed, to_connect_error, to_exec_error,
+    require_op_allowed, to_connect_error, to_exec_error,
 };
 use super::db_read::rendered_row_format;
 use super::schema::{FieldKind, FieldSchema};
-use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
-use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
+use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::query::{self, GroupKey, SqlDialect};
@@ -50,11 +47,6 @@ const MAX_INCLUDE_KEYS_PER_QUERY: usize = 1000;
 /// A portable query, read from the task with only its `params` folded against
 /// the message.
 ///
-/// `database` is optional here and required only on the Mongo path: the same
-/// task shape is valid against SQL and Elasticsearch, which have a database in
-/// the connector, so which answer is right is not known until the connector is
-/// resolved.
-///
 /// Owned by the dataflow-rs 3 handler, which reads it off the authored input
 /// per call; the literals borrowed from the compiled config by the
 /// dataflow-rs 4 function.
@@ -62,18 +54,14 @@ pub struct DataQuery<'a> {
     query: Cow<'a, Value>,
     params: Map<String, Value>,
     schema: Option<Cow<'a, Value>>,
-    /// How a decimal and a binary column render. SQL backends only;
-    /// Elasticsearch and MongoDB carry their own JSON types.
+    /// How a decimal and a binary column render.
     format: RowFormat,
-    database: Option<Cow<'a, str>>,
 }
 
-/// What a portable query reaches its backends through: the handler's or the
+/// What a portable query reaches its backend through: the handler's or the
 /// function's dependencies, borrowed.
 struct Backends<'a> {
     pool_cache: &'a SqlPoolCache,
-    mongo_pool_cache: &'a MongoPoolCache,
-    http_client: &'a reqwest::Client,
     limits: &'a crate::config::QueryConfig,
 }
 
@@ -87,11 +75,11 @@ fn gate(conn: &ConnectorConfig, connector: &str) -> Result<(), HandlerError> {
     Ok(())
 }
 
-/// The query's answer, rows or a count, against a resolved and gated `db` or
-/// `es` connector. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
+/// The query's answer, rows or a count, against a resolved and gated `db`
+/// connector. Shared by the dataflow-rs 3 handler and the dataflow-rs 4
 /// function. `run_deadline` is the deadline of the run the call belongs to,
-/// which bounds every SQL and MongoDB leg with the connector's
-/// `query_timeout_ms` ([`QueryBudget::within`]).
+/// which bounds every SQL leg with the connector's `query_timeout_ms`
+/// ([`QueryBudget::within`]).
 async fn run_query(
     backends: Backends<'_>,
     parsed: &DataQuery<'_>,
@@ -107,85 +95,6 @@ async fn run_query(
     let limits = backends.limits;
 
     let result = match conn {
-        ConnectorConfig::Es(es) => {
-            // Elasticsearch: render a search body and POST it via HTTP.
-            let eq = query::translate_es(query, params, &registry, limits)
-                .map_err(HandlerError::from)?;
-            if eq.count {
-                run_es_count(backends.http_client, es, &eq).await?
-            } else {
-                run_es_search(backends.http_client, es, &eq).await?
-            }
-        }
-        ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-            // MongoDB: render a `find` and execute it via the Mongo pool.
-            // The database is required here and nowhere else — a MongoDB
-            // connection string carries no default one.
-            let database = parsed.database.as_deref().ok_or_else(|| {
-                HandlerError::new(
-                    ErrorClass::CallerInput,
-                    format!("{NAME} requires 'database' field"),
-                )
-            })?;
-            let mq = query::translate_mongo(query, params, &registry, limits)
-                .map_err(HandlerError::from)?;
-            let client = backends
-                .mongo_pool_cache
-                .get_client(connector, db)
-                .await
-                .map_err(to_connect_error)?;
-            let coll = client
-                .database(database)
-                .collection::<Document>(&mq.collection);
-            // F11: DbConnectorConfig.query_timeout_ms never applied to
-            // Mongo — an unresponsive server hung the request for the
-            // channel timeout, which is itself optional.
-            if mq.count {
-                let n = QueryBudget::within(db.query_timeout_ms, run_deadline)
-                    .run(NAME, async {
-                        coll.count_documents(mq.filter)
-                            .await
-                            .map_err(|e| e.to_string())
-                    })
-                    .await?;
-                return Ok(count_result(n));
-            }
-            let docs: Vec<Document> = QueryBudget::within(db.query_timeout_ms, run_deadline)
-                .run(NAME, async {
-                    let mut find = coll.find(mq.filter);
-                    if let Some(p) = mq.projection {
-                        find = find.projection(p);
-                    }
-                    if let Some(s) = mq.sort {
-                        find = find.sort(s);
-                    }
-                    if let Some(sk) = mq.skip {
-                        find = find.skip(sk);
-                    }
-                    find = find.limit(mq.limit as i64);
-                    let cursor = find.await.map_err(|e| e.to_string())?;
-                    cursor.try_collect().await.map_err(|e| e.to_string())
-                })
-                .await?;
-            // Shared with `mongo_read`/`mongo_aggregate`, so an
-            // unserializable document is the same named error on every
-            // MongoDB read path rather than a silently shorter array here.
-            let json_docs = super::mongo_common::docs_to_json(&docs, NAME)?;
-            if limits.max_result_bytes > 0
-                && crate::connector::sql_decode::approx_json_value_bytes(&json_docs)
-                    > limits.max_result_bytes
-            {
-                return Err(HandlerError::new(
-                    ErrorClass::CallerInput,
-                    format!(
-                        "{NAME} result exceeds query.max_result_bytes ({} bytes) \
-                     — select fewer fields, reduce limit, or raise the cap",
-                        limits.max_result_bytes
-                    ),
-                ));
-            }
-            json_docs
-        }
         ConnectorConfig::Db(db) => {
             // SQL: dialect from the connection-string scheme, the same
             // source the pool is built from, so the rendered SQL always
@@ -214,9 +123,9 @@ async fn run_query(
             )
             .await?
         }
-        // `DataBackend` admits `db` and `es` and nothing else, and it
-        // produced the "is not a db or es connector" refusal — the one this
-        // handler used to write itself, here, after resolving.
+        // `DataBackend` admits `db` and nothing else, and it produced the
+        // wrong-type refusal — the one this handler used to write itself,
+        // here, after resolving.
         other => unreachable!(
             "DataBackend admitted a '{}' connector",
             other.connector_type()
@@ -241,11 +150,10 @@ const ROOT_OUTPUT: &str = "`data_query` writes an array of rows, and a context r
 /// The connector and the envelope are required at load (I183). The envelope
 /// and the schema are literal documents, `{"param": …}` holes and all, for
 /// Orion's own dialect to fold; `params` and the rendering choices are
-/// documents of `var` holes, as 1.12 folded them. `database` keeps 1.12's
-/// reading: a string names the database, anything else is none.
+/// documents of `var` holes, as 1.12 folded them.
 #[derive(Debug, FunctionConfig)]
 pub struct DataQueryConfig {
-    /// The `db` or `es` connector queried.
+    /// The `db` connector queried.
     connector: String,
     /// The backend-neutral query envelope.
     query: Value,
@@ -253,8 +161,6 @@ pub struct DataQueryConfig {
     params: Option<Interpolated>,
     /// The inline entity schema.
     schema: Option<Value>,
-    /// The MongoDB database, read only when it is a string.
-    database: Option<Value>,
     /// How a decimal column renders. SQL backends only.
     numeric_as: Option<Interpolated>,
     /// How a binary column renders. SQL backends only.
@@ -268,8 +174,6 @@ pub struct DataQueryConfig {
 /// runs, read in the same order.
 pub struct DataQueryFunction {
     pub pool_cache: Arc<SqlPoolCache>,
-    pub mongo_pool_cache: Arc<MongoPoolCache>,
-    pub http_client: reqwest::Client,
     pub registry: Arc<ConnectorRegistry>,
     /// Page bounds (`default_limit` / `max_limit` / `max_skip`) from `[query]`.
     pub limits: crate::config::QueryConfig,
@@ -313,11 +217,6 @@ impl Function for DataQueryFunction {
                 NAME,
             )?,
             schema: cfg.schema.as_ref().map(Cow::Borrowed),
-            database: cfg
-                .database
-                .as_ref()
-                .and_then(Value::as_str)
-                .map(Cow::Borrowed),
         };
         let run_deadline = ctx.deadline();
         let mut answer = None;
@@ -328,8 +227,6 @@ impl Function for DataQueryFunction {
             gate(conn, &cfg.connector)?;
             let backends = Backends {
                 pool_cache: &self.pool_cache,
-                mongo_pool_cache: &self.mongo_pool_cache,
-                http_client: &self.http_client,
                 limits: &self.limits,
             };
             answer = Some(run_query(backends, &parsed, conn, &cfg.connector, run_deadline).await?);
@@ -346,10 +243,7 @@ impl Function for DataQueryFunction {
     }
 }
 
-/// The shape every backend answers a `"count": true` envelope with.
-///
-/// One object, one key, whatever the backend counted with — the point of the
-/// portable dialect is that the caller cannot tell which one ran.
+/// The shape a `"count": true` envelope is answered with: one object, one key.
 fn count_result(n: u64) -> Value {
     serde_json::json!({ "count": n })
 }
@@ -407,86 +301,6 @@ async fn run_sql_count(
             )
         })?;
     Ok(count_result(n))
-}
-
-/// Execute an Elasticsearch count: POST the rendered query to
-/// `{url}/{index}/_count` and read the `count` it answers with.
-async fn run_es_count(
-    client: &reqwest::Client,
-    es: &EsConnectorConfig,
-    eq: &query::backend::es::EsQuery,
-) -> Result<Value, HandlerError> {
-    let url = format!("{}/{}/_count", es.url.trim_end_matches('/'), eq.index);
-    let req = es_request(client, es, reqwest::Method::POST, &url)
-        .await?
-        .json(&eq.body);
-
-    let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
-    if !status.is_success() {
-        let preview = super::connector_helpers::format_upstream_error_preview(&body);
-        return Err(HandlerError::new(
-            ErrorClass::Backend,
-            format!("Elasticsearch count failed ({status}): {preview}"),
-        ));
-    }
-    let n = body.get("count").and_then(Value::as_u64).ok_or_else(|| {
-        let preview = super::connector_helpers::format_upstream_error_preview(&body);
-        HandlerError::new(
-            ErrorClass::Backend,
-            format!("Elasticsearch count returned no count: {preview}"),
-        )
-    })?;
-    Ok(count_result(n))
-}
-
-/// Execute an Elasticsearch search: POST the rendered body to
-/// `{url}/{index}/_search` and return the `_source` of each hit as a JSON array.
-///
-/// When the projection named the document key, `_id` is lifted out of the hit
-/// and into the returned document. It has to be: ES keeps `_id` *outside*
-/// `_source`, so a schema declaring the `id` → `_id` rename — the spelling the
-/// write path requires — asked for `"_source": ["_id"]` and got `{}` back for
-/// every hit. The write path already lifts a physical `_id` the other way, into
-/// the bulk action; this is the read half of the same rename.
-async fn run_es_search(
-    client: &reqwest::Client,
-    es: &EsConnectorConfig,
-    eq: &query::backend::es::EsQuery,
-) -> Result<Value, HandlerError> {
-    let url = format!("{}/{}/_search", es.url.trim_end_matches('/'), eq.index);
-    let req = es_request(client, es, reqwest::Method::POST, &url)
-        .await?
-        .json(&eq.body);
-
-    let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
-    if !status.is_success() {
-        let preview = super::connector_helpers::format_upstream_error_preview(&body);
-        return Err(HandlerError::new(
-            ErrorClass::Backend,
-            format!("Elasticsearch search failed ({status}): {preview}"),
-        ));
-    }
-
-    let docs: Vec<Value> = body
-        .get("hits")
-        .and_then(|h| h.get("hits"))
-        .and_then(|h| h.as_array())
-        .map(|hits| {
-            hits.iter()
-                .map(|h| {
-                    let mut source = h.get("_source").cloned().unwrap_or(Value::Null);
-                    if eq.include_id
-                        && let Some(id) = h.get(query::backend::es::ES_DOCUMENT_KEY)
-                        && let Value::Object(map) = &mut source
-                    {
-                        map.insert(query::backend::es::ES_DOCUMENT_KEY.to_string(), id.clone());
-                    }
-                    source
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(Value::Array(docs))
 }
 
 /// Execute the main SQL query, then hydrate each `include` with a per-relation
@@ -687,7 +501,7 @@ async fn run_sql_with_includes(
 pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "connector",
-        description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to query.",
+        description: "Name of the db (SQL) connector to query.",
         kind: FieldKind::String,
         required: true,
         ..FieldSchema::DEFAULT
@@ -720,15 +534,6 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
                       rejected, so a query without one reaches nothing; pass \
                       {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
         kind: FieldKind::Object,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "database",
-        description: "MongoDB database name. Optional here because the same task shape is \
-                      valid against SQL and Elasticsearch, which need no database key; \
-                      required — and checked at workflow activation — once the referenced \
-                      connector is a MongoDB one (F52).",
-        kind: FieldKind::String,
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -777,8 +582,6 @@ mod tests {
     ) -> DataQueryFunction {
         DataQueryFunction {
             pool_cache,
-            mongo_pool_cache: Arc::new(MongoPoolCache::new(8)),
-            http_client: reqwest::Client::new(),
             registry,
             limits: crate::config::QueryConfig::default(),
         }
@@ -812,8 +615,8 @@ mod tests {
     /// schema are literal documents, `{"param": …}` holes, `var` nodes and
     /// `$` keys as authored, for Orion's dialect to read; `params` is a
     /// document of `var` holes, its `$` keys kept; `connector` and `query`
-    /// are required (I183); `database` keeps 1.12's reading, so a
-    /// non-string loads; an unknown key is refused (break 2a).
+    /// are required (I183); an unknown key is refused (break 2a), the
+    /// removed `database` field included.
     #[test]
     fn the_config_is_the_field_table() {
         let fields: Vec<&str> = DataQueryConfig::fields().iter().map(|f| &*f.name).collect();
@@ -831,7 +634,7 @@ mod tests {
             &kit::test_exprs(),
             json!({
                 "connector": "db", "query": envelope.clone(), "params": params.clone(),
-                "schema": schema.clone(), "database": 5, "numeric_as": "string"
+                "schema": schema.clone(), "numeric_as": "string"
             }),
         )
         .expect("compiles");
@@ -841,7 +644,6 @@ mod tests {
         assert_eq!(doc.raw(), &params);
         let holes: Vec<String> = doc.holes().map(ToString::to_string).collect();
         assert_eq!(holes, ["data.min", "data.raw"]);
-        assert_eq!(cfg.database, Some(json!(5)));
         let output = cfg.output.constant().map(ToString::to_string);
         assert_eq!(output.as_deref(), Some("data"));
 
@@ -853,9 +655,13 @@ mod tests {
             rejected(json!({"query": {"source": "users"}})),
             [("connector".to_string(), IssueCode::InputParse)]
         );
-        let issues = rejected(json!({"connector": "db", "query": {}, "collection": "c"}));
-        assert_eq!(issues.len(), 1, "{issues:?}");
-        assert_eq!(issues[0].0, "collection");
+        for key in ["collection", "database"] {
+            let mut input = json!({"connector": "db", "query": {}});
+            input[key] = json!("c");
+            let issues = rejected(input);
+            assert_eq!(issues.len(), 1, "{issues:?}");
+            assert_eq!(issues[0].0, key);
+        }
     }
 
     /// I185: a row read's result is an array, so a literal root `output`,
@@ -952,10 +758,9 @@ mod tests {
     }
 
     /// `numeric_as` and `binary_as` fold their holes and are read as 1.12
-    /// read them; a non-string `database` is no database, as 1.12 read it,
-    /// which a SQL connector never asks for.
+    /// read them.
     #[tokio::test]
-    async fn numeric_as_binary_as_and_database_read_as_1_12_did() {
+    async fn numeric_as_and_binary_as_read_as_1_12_did() {
         let data = json!({"hex": "hex", "b64": "base64", "bad": "money"});
         for (numeric, binary, ok) in [
             (json!("string"), json!({"var": "data.hex"}), true),
@@ -969,7 +774,6 @@ mod tests {
             );
             input["numeric_as"] = numeric.clone();
             input["binary_as"] = binary.clone();
-            input["database"] = json!(5);
             let v4 = run(input, data.clone(), json!({})).await;
             twin::pinned(&v4, format!("numeric_as_binary_as/{numeric} {binary}"));
             assert_eq!(v4.is_ok(), ok, "{numeric} {binary}: {v4:?}");
@@ -1015,33 +819,6 @@ mod tests {
         let v4 = twin::v4(NAME, function(pool_cache, registry), input, Value::Null).await;
         twin::pinned(&v4, "a_connector_of_another_kind_is_refused");
         assert!(v4.is_err());
-    }
-
-    /// An Elasticsearch search over a mock node: the hits' `_source`s, at
-    /// `output`, as 1.12 read them.
-    #[tokio::test]
-    async fn an_elasticsearch_search_reads_as_1_12_did() {
-        let app = axum::Router::new().fallback(|| async {
-            axum::Json(json!({"hits": {"hits": [
-                {"_id": "1", "_source": {"name": "Alice"}},
-                {"_id": "2", "_source": {"name": "Bob"}}
-            ]}}))
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
-        let connector = json!({
-            "type": "es", "url": format!("http://{addr}"), "allow_private_urls": true
-        });
-        let input = query(json!({"source": "users", "fields": ["name"]}));
-        let pool_cache = Arc::new(SqlPoolCache::new(8));
-        let registry = twin::connectors(&[("db", connector)]).await;
-        let v4 = twin::v4(NAME, function(pool_cache, registry), input, Value::Null).await;
-        twin::pinned(&v4, "an_elasticsearch_search");
-        let rows = v4.expect("searched");
-        assert_eq!(rows["rows"], json!([{"name": "Alice"}, {"name": "Bob"}]));
     }
 
     /// `QueryBudget` within the run's deadline (E10), the one connection held

@@ -44,7 +44,6 @@ pub struct HandlerDeps<'a> {
     /// response cache can resolve to, the cluster's shared one included.
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     /// The node's model runtime — the loaded-session cache, the inference
     /// slots, the runtimes — for `model_infer`. `None` with
     /// `models.enabled = false`, which the handler answers as `unavailable`
@@ -63,8 +62,8 @@ pub struct HandlerDeps<'a> {
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::{
         cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, channel_call, crypto,
-        data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify,
-        mongo_aggregate, mongo_read, mongo_write, publish_kafka, storage_head, storage_presign,
+        data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify, publish_kafka,
+        storage_head, storage_presign,
     };
 
     let HandlerDeps {
@@ -79,7 +78,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         cache_pool,
         channel_loader,
         sql_pool_cache,
-        mongo_pool_cache,
         models,
         models_config,
         providers,
@@ -168,8 +166,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         data_query::NAME,
         data_query::DataQueryFunction {
             pool_cache: sql_pool_cache.clone(),
-            mongo_pool_cache: mongo_pool_cache.clone(),
-            http_client: client.clone(),
             registry: connectors.clone(),
             limits: query_config.clone(),
         },
@@ -178,8 +174,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         data_write::NAME,
         data_write::DataWriteFunction {
             pool_cache: sql_pool_cache,
-            mongo_pool_cache: mongo_pool_cache.clone(),
-            http_client: client,
             registry: connectors.clone(),
             write_config: write_config.clone(),
             max_returning: query_config.max_limit as usize,
@@ -219,30 +213,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
             channel_loader,
             registry: connectors.clone(),
             cache_pool,
-        },
-    );
-    registry.register(
-        mongo_read::NAME,
-        mongo_read::MongoReadFunction {
-            pool_cache: mongo_pool_cache.clone(),
-            registry: connectors.clone(),
-            limits: query_config.clone(),
-        },
-    );
-    registry.register(
-        mongo_write::NAME,
-        mongo_write::MongoWriteFunction {
-            pool_cache: mongo_pool_cache.clone(),
-            registry: connectors.clone(),
-            write_config: write_config.clone(),
-        },
-    );
-    registry.register(
-        mongo_aggregate::NAME,
-        mongo_aggregate::MongoAggregateFunction {
-            pool_cache: mongo_pool_cache,
-            registry: connectors.clone(),
-            limits: query_config.clone(),
         },
     );
     functions::connector_call::register_connector_call(registry, providers, connectors);

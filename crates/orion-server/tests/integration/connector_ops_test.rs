@@ -554,11 +554,6 @@ async fn test_unknown_operation_gate_key_is_refused_for_every_type() {
             }),
             "raw_writes",
         ),
-        (
-            "es",
-            json!({ "type": "es", "url": "http://localhost:9200", "operations": { "publish": false } }),
-            "publish",
-        ),
     ];
 
     let app = common::test_app().await;
@@ -625,13 +620,6 @@ async fn test_every_real_operation_gate_key_is_accepted() {
                     "read": true, "insert": false, "update": false,
                     "delete": false, "upsert": false, "raw_write": false
                 }
-            }),
-        ),
-        (
-            "es",
-            json!({
-                "type": "es", "url": "http://localhost:9200",
-                "operations": { "read": true, "insert": false }
             }),
         ),
     ] {

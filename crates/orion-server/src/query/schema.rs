@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 
 use crate::query::error::QueryError;
-use crate::query::ir::{EsStorage, FieldRef, JunctionRef, MongoStorage, RelRef};
+use crate::query::ir::{FieldRef, JunctionRef, RelRef};
 
 /// The set of entities queryable through the dialect, plus the unmapped policy.
 ///
@@ -126,12 +126,6 @@ pub struct Relation {
     /// Junction table for a many-to-many relation.
     #[serde(default)]
     pub through: Option<Junction>,
-    /// Mongo storage hint (used by the Mongo renderer in later phases).
-    #[serde(default)]
-    pub mongo: MongoStorage,
-    /// ES storage hint (used by the ES renderer in later phases).
-    #[serde(default)]
-    pub es: EsStorage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -275,8 +269,7 @@ impl EntityRegistry {
     ///
     /// F24, the column half of the same hole. Bounding entities left the column
     /// allowlist bypassable, because a field-less read never resolves a field:
-    /// `fields: []` renders `SELECT *` (and no `_source` on ES, no projection
-    /// document on Mongo), and [`crate::query::spec::QuerySpec::resolve_names`]
+    /// `fields: []` renders `SELECT *`, and [`crate::query::spec::QuerySpec::resolve_names`]
     /// only walks the columns a caller actually named. So with
     /// `{"password_hash": {"queryable": false}}` declared, `{"source":
     /// "users"}` still returned it — `queryable` meant "you may not *name* this
@@ -458,8 +451,6 @@ impl EntityRegistry {
                 local: self.structural_column(entity, &rel.local, at)?,
                 foreign: self.structural_column(&rel.to, &rel.foreign, at)?,
                 through,
-                mongo: rel.mongo,
-                es: rel.es,
             },
             rel.to.clone(),
         ))
@@ -470,12 +461,10 @@ impl EntityRegistry {
 ///
 /// The read and write paths validated differently — `lower.rs` rejected empty
 /// and dotted names, `resolve_write_column` checked nothing — and **neither
-/// rejected a leading `$`**. Three concrete consequences, all silent:
+/// rejected a leading `$`**. Concrete consequences, all silent:
 ///
-/// - `{"field": "$where"}` in identity mode reached MongoDB as a raw document
-///   key, where `$`-prefixed keys are operators, not field names.
-/// - `values: {"a.b": 1}` wrote a *nested path* on MongoDB and a *literal
-///   column named `a.b`* on SQL — the same envelope, two different meanings.
+/// - `values: {"a.b": 1}` wrote a *literal column named `a.b`*, which reads
+///   as a qualified `table.column` name everywhere else.
 /// - `values: {"": 1}` emitted `INSERT INTO "users" ("")`.
 ///
 /// Applied in `resolve_field`, `resolve_write_column` and `physical_table`, so
@@ -491,11 +480,11 @@ pub(crate) fn validate_identifier(name: &str, at: &str) -> Result<(), QueryError
     if name.is_empty() {
         return Err(reject());
     }
-    // MongoDB reads a leading `$` as an operator sigil.
+    // A leading `$` is not a plain identifier; refused rather than quoted.
     if name.starts_with('$') {
         return Err(reject());
     }
-    // A dot is a nested path to MongoDB and a literal character to SQL.
+    // A dot reads as a qualified name (`table.column`), not one identifier.
     if name.contains('.') {
         return Err(reject());
     }
@@ -578,11 +567,9 @@ mod tests {
     fn identity_mode_rejects_names_that_are_not_plain_identifiers() {
         let reg = identity();
         for bad in [
-            // MongoDB reads a leading `$` as an operator sigil, so this
-            // reached `mongo.rs` as a raw document key.
+            // A leading `$` is not a plain identifier.
             "$where", "$ne",
-            // Nested path on Mongo, literal column on SQL — one envelope,
-            // two meanings.
+            // A qualified name, not one identifier.
             "a.b", // `INSERT INTO "users" ("")`.
             "",
             // Quoting lives in a transitive dependency (F25); nothing that

@@ -49,8 +49,7 @@ pub struct IncludeSpec {
     /// Ordering of the children within each parent. Required by the SQL planner
     /// (F27): the per-parent page is cut in SQL, so without an order key "the
     /// first `n` children" is whatever the plan happened to emit. Left empty
-    /// here rather than refused, so a document store — which cannot answer an
-    /// include at all — reaches its capability gate first.
+    /// here; [`crate::query::plan_sql`] refuses it.
     pub sort: Vec<SortKey>,
     /// Max related rows per parent. Absent means `query.default_limit`, and a
     /// value above `query.max_limit` is rejected — the same policy the
@@ -273,13 +272,9 @@ fn parse_include(v: Option<&Json>) -> Result<Vec<IncludeSpec>, QueryError> {
         };
         let sort = parse_sort(sel.get("sort"), &format!("include.{relation}.sort"))?;
         let limit = parse_u64(sel.get("limit"), &format!("include.{relation}.limit"))?;
-        // The "an include must state a sort" rule (F27) is *not* checked here.
-        // It is a property of the SQL renderer — the per-parent page is cut with
-        // `ROW_NUMBER() OVER (PARTITION BY …)`, which needs an order key — and
-        // this function runs for every backend. Enforcing it at parse time made
-        // a MongoDB or Elasticsearch caller fail with "include.orders requires a
-        // 'sort'" instead of the capability error that tells them the real
-        // answer (include is SQL-only). See `query::plan_sql`.
+        // The "an include must state a sort" rule (F27) is checked by
+        // `query::plan_sql`, beside the per-parent page it exists for (cut with
+        // `ROW_NUMBER() OVER (PARTITION BY …)`, which needs an order key).
         out.push(IncludeSpec {
             relation: relation.clone(),
             fields,
@@ -352,7 +347,7 @@ impl QuerySpec {
     /// and sort silently for the same reason.
     ///
     /// A read that names *no* fields is resolved too (F24): an empty `fields`
-    /// renders `SELECT *` — no projection at all on Mongo/ES — which walked
+    /// renders `SELECT *`, which walked
     /// past the column allowlist entirely, because the caller named nothing to
     /// check. It is replaced by the entity's declared queryable columns; see
     /// [`EntityRegistry::default_projection`](crate::query::EntityRegistry::default_projection)

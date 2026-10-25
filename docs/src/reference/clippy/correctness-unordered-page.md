@@ -15,7 +15,7 @@ deny[correctness.unordered_page] a read that skips rows without ordering them, s
 
 ## Description
 
-A `data_query` or `mongo_read` whose `skip` is not accompanied by a `sort`. `skip` names a position in an order. Without one the rows come back in whatever the query plan emitted, so "skip the first 20" names no particular set. Two calls need not agree, with no writes in between and no error anywhere. The dialect already refuses this one level in: an `include` must state a `sort`. The per-parent page is cut in the database, and "the first 10 orders" otherwise has no defined answer. The root page has the same problem and keeps accepting it, so the finding is here.
+A `data_query` whose `skip` is not accompanied by a `sort`. `skip` names a position in an order. Without one the rows come back in whatever the query plan emitted, so "skip the first 20" names no particular set. Two calls need not agree, with no writes in between and no error anywhere. The dialect already refuses this one level in: an `include` must state a `sort`. The per-parent page is cut in the database, and "the first 10 orders" otherwise has no defined answer. The root page has the same problem and keeps accepting it, so the finding is here.
 
 ## Caveats
 

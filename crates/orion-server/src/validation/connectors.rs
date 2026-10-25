@@ -84,7 +84,6 @@ pub fn validate_connector_config(
     match &parsed {
         ConnectorConfig::Http(c) => validate_http(c)?,
         ConnectorConfig::Cache(c) => validate_cache(c)?,
-        ConnectorConfig::Es(c) => validate_es(c)?,
         // Nothing beyond the shared gate/retry/query checks and the endpoint
         // scheme allow-list above. Kafka's brokers are shape-checked by
         // `parse_broker`, a db connector is its connection string, and a
@@ -134,20 +133,6 @@ fn validate_http(http_config: &crate::connector::HttpConnectorConfig) -> Result<
                 crate::connector::VALID_HTTP_METHODS.join(", ")
             )));
         }
-    }
-    Ok(())
-}
-
-/// Elasticsearch: managed OAuth2 is refused outright.
-///
-/// The lifecycle machinery is surface-agnostic, but the es request path does
-/// not resolve managed tokens (ES deployments authenticate with API keys in
-/// practice) — extending it is a deliberate step, not a default.
-fn validate_es(es: &crate::connector::EsConnectorConfig) -> Result<(), OrionError> {
-    if matches!(&es.auth, Some(crate::connector::AuthConfig::OAuth2(_))) {
-        return Err(OrionError::validation(
-            "auth type 'oauth2' is supported on http connectors only".to_string(),
-        ));
     }
     Ok(())
 }
@@ -675,15 +660,6 @@ mod tests {
                 "auth {auth} expected '{needle}' in: {err}"
             );
         }
-
-        // The es surface does not resolve managed tokens: refused outright.
-        let es = json!({
-            "url": "https://es:9200",
-            "auth": { "type": "oauth2", "grant": "client_credentials",
-                "token_url": "https://idp/t", "client_id": "c", "client_secret": "s" }
-        });
-        let err = validate_connector_config(ConnectorType::Es, &es).expect_err("es must refuse");
-        assert!(err.to_string().contains("http connectors only"), "{err}");
     }
 
     /// F60: a misspelled retry key deserialized into the default policy and

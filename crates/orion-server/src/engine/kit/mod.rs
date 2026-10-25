@@ -377,7 +377,6 @@ pub struct OfflineDeps {
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     channel_loader: Arc<crate::channel::ChannelLoader>,
     sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     models_config: crate::config::ModelsConfig,
     providers: crate::extensions::ProviderRegistry,
 }
@@ -408,7 +407,6 @@ impl OfflineDeps {
             )),
             channel_loader: Arc::new(crate::channel::ChannelLoader::new()),
             sql_pool_cache: Arc::new(crate::connector::pool_cache::SqlPoolCache::new(entries)),
-            mongo_pool_cache: Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(entries)),
             models_config: crate::config::ModelsConfig::default(),
             providers: crate::extensions::CompositionRoot::community().providers,
             client,
@@ -431,7 +429,6 @@ impl OfflineDeps {
             cache_pool: Arc::clone(&self.cache_pool),
             channel_loader: Arc::clone(&self.channel_loader),
             sql_pool_cache: Arc::clone(&self.sql_pool_cache),
-            mongo_pool_cache: Arc::clone(&self.mongo_pool_cache),
             models: None,
             models_config: &self.models_config,
             providers: self.providers.clone(),
@@ -670,16 +667,13 @@ mod tests {
             )
         );
 
-        let es = ConnectorConfig::Es(crate::connector::EsConnectorConfig {
-            max_response_size: 1024,
-            url: "http://127.0.0.1:9200".to_string(),
-            auth: None,
-            request_timeout_ms: None,
+        let kafka = ConnectorConfig::Kafka(crate::connector::KafkaConnectorConfig {
+            brokers: vec!["localhost:9092".to_string()],
+            topic: "orders".to_string(),
             allow_private_urls: false,
-            operations: crate::connector::OperationGates::default(),
-            dialect: crate::connector::DialectGuards::default(),
+            operations: Default::default(),
         });
-        let kit = require_connector::<crate::connector::kind::Db>(&es, "search")
+        let kit = require_connector::<crate::connector::kind::Db>(&kafka, "search")
             .expect_err("not a database");
         assert_eq!(
             facts(&kit.into()),
@@ -693,7 +687,7 @@ mod tests {
                 ))
             )
         );
-        assert!(require_connector::<crate::connector::kind::Es>(&es, "search").is_ok());
+        assert!(require_connector::<crate::connector::kind::Kafka>(&kafka, "search").is_ok());
     }
 
     /// A probe with the fields a sample is attributed by.
@@ -912,9 +906,6 @@ mod tests {
         "cache_delete",
         "cache_incr",
         "cache_invalidate",
-        "mongo_read",
-        "mongo_write",
-        "mongo_aggregate",
         "connector_call",
     ];
 

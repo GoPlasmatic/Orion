@@ -163,8 +163,8 @@ pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
 
 /// Refuse a `host:port` that resolves to a private/internal address, for
 /// callers that already hold a split host and port rather than a URL (S6):
-/// MongoDB's driver-parsed `ServerAddress` list, and Kafka's bare
-/// `host:port` broker entries, neither of which is a parseable URL.
+/// a connection string's host and port, and Kafka's bare `host:port` broker
+/// entries, which are not a parseable URL.
 ///
 /// No pinning: [`PinnedDnsResolver`] is consulted only by the shared reqwest
 /// client, and a database or broker driver re-resolves through the system

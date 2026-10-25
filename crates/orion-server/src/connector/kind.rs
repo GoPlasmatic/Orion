@@ -21,8 +21,8 @@
 //! the blanket sweep it replaced.
 
 use super::config::{
-    CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig, EsConnectorConfig,
-    HttpConnectorConfig, KafkaConnectorConfig, StorageConnectorConfig,
+    CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig, HttpConnectorConfig,
+    KafkaConnectorConfig, StorageConnectorConfig,
 };
 
 /// A connection-pool cache a connector's config can be cached in.
@@ -33,9 +33,6 @@ use super::config::{
 pub enum PoolSlot {
     /// `caches.sql_pool_cache` — sqlx pools for SQL `db` connectors.
     Sql,
-    /// `caches.mongo_pool_cache` — MongoDB clients for `db` connectors whose
-    /// connection string names the Mongo scheme.
-    Mongo,
     /// `caches.cache_pool` — Redis/in-memory backends for `cache` connectors.
     Cache,
 }
@@ -43,7 +40,7 @@ pub enum PoolSlot {
 impl PoolSlot {
     /// Every slot. The eviction sweep and the drift guard both read this, so a
     /// cache that exists but is evicted by nothing cannot pass unnoticed.
-    pub const ALL: &'static [PoolSlot] = &[PoolSlot::Sql, PoolSlot::Mongo, PoolSlot::Cache];
+    pub const ALL: &'static [PoolSlot] = &[PoolSlot::Sql, PoolSlot::Cache];
 }
 
 /// What a handler names when it asks for a connector.
@@ -52,12 +49,12 @@ impl PoolSlot {
 /// table: a handler asks for the target it needs and gets that config back, so
 /// `require::<Db>(…)` cannot compile into an HTTP accessor.
 ///
-/// Separate from [`ConnectorKind`] because two handlers do not target a single
-/// type: `data_query` and `data_write` speak the portable dialect, which is
-/// valid against `db` *or* `es` and dispatches on the resolved variant. They
-/// used to take the whole `ConnectorConfig` and produce their own "is not a db
-/// or es connector" refusal after resolution; [`DataBackend`] makes it the same
-/// refusal, from the same place, as every other wrong-type message.
+/// Separate from [`ConnectorKind`] because one target is not a kind:
+/// `data_query` and `data_write` speak the portable dialect and read the whole
+/// `ConnectorConfig` (its operation gates and dialect guards). They used to
+/// produce their own wrong-type refusal after resolution; [`DataBackend`]
+/// makes it the same refusal, from the same place, as every other wrong-type
+/// message.
 pub trait ConnectorTarget {
     /// The typed config a handler binds once the connector is acceptable.
     type Config;
@@ -112,51 +109,40 @@ kinds! {
     Kafka   => Kafka,   KafkaConnectorConfig,   "a Kafka connector";
     Db      => Db,      DbConnectorConfig,      "a database connector";
     Cache   => Cache,   CacheConnectorConfig,   "a cache connector";
-    Es      => Es,      EsConnectorConfig,      "an Elasticsearch connector";
     Storage => Storage, StorageConnectorConfig, "a storage connector";
 }
 
-/// The portable data dialect's target: `db` or `es`.
+/// The portable data dialect's target: a `db` connector.
 ///
-/// Its `Config` is the whole [`ConnectorConfig`] because the handler dispatches
-/// on the variant — SQL, MongoDB (a `db` connector whose connection string says
-/// so) and Elasticsearch are three different query translations, and which one
-/// applies is not knowable before the connector is resolved.
+/// Its `Config` is the whole [`ConnectorConfig`] because the dialect reads the
+/// connector through the variant-neutral accessors —
+/// [`ConnectorConfig::operation_gates`] and [`ConnectorConfig::dialect_guards`].
 pub struct DataBackend;
 
 impl ConnectorTarget for DataBackend {
     type Config = ConnectorConfig;
 
     fn extract(config: &ConnectorConfig) -> Option<&Self::Config> {
-        matches!(config, ConnectorConfig::Db(_) | ConnectorConfig::Es(_)).then_some(config)
+        matches!(config, ConnectorConfig::Db(_)).then_some(config)
     }
 
     fn noun() -> &'static str {
-        "a db or es connector"
+        "a database connector"
     }
 }
 
 impl ConnectorType {
     /// The pool caches a connector of this type may have entries in.
     ///
-    /// `Db` claims two: the SQL and Mongo caches both key on connector name,
-    /// and which one a given `db` connector lands in is a property of its
-    /// connection string, not of its type — so a changed `db` connector has to
-    /// evict from both.
-    ///
-    /// The four types with no pool return an empty slice rather than being
+    /// The three types with no pool return an empty slice rather than being
     /// omitted, because being pool-less is an answer this match has to give.
     pub fn pool_slots(self) -> &'static [PoolSlot] {
         match self {
-            ConnectorType::Db => &[PoolSlot::Sql, PoolSlot::Mongo],
+            ConnectorType::Db => &[PoolSlot::Sql],
             ConnectorType::Cache => &[PoolSlot::Cache],
-            // Stateless per call: HTTP and Elasticsearch go through the shared
-            // reqwest client, Kafka through the producer, storage presigns
-            // locally.
-            ConnectorType::Http
-            | ConnectorType::Kafka
-            | ConnectorType::Es
-            | ConnectorType::Storage => &[],
+            // Stateless per call: HTTP goes through the shared reqwest client,
+            // Kafka through the producer, storage presigns locally.
+            ConnectorType::Http | ConnectorType::Kafka | ConnectorType::Storage => &[],
         }
     }
 }
@@ -210,11 +196,11 @@ mod tests {
         assert_eq!(Db::noun(), "a database connector");
     }
 
-    /// The one target that is not a kind: it accepts two variants and refuses
-    /// the rest, which is the refusal `data_query` used to produce by hand
-    /// after resolving the connector itself.
+    /// The one target that is not a kind: it accepts `db` and refuses the
+    /// rest, which is the refusal `data_query` used to produce by hand after
+    /// resolving the connector itself.
     #[test]
-    fn the_data_backend_target_accepts_db_and_es_and_nothing_else() {
+    fn the_data_backend_target_accepts_db_and_nothing_else() {
         let db = ConnectorConfig::Db(DbConnectorConfig {
             connection_string: "sqlite::memory:".to_string(),
             max_connections: None,
@@ -223,7 +209,6 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
-            aggregate_write_stages: false,
         });
         let kafka = ConnectorConfig::Kafka(KafkaConnectorConfig {
             brokers: vec!["localhost:9092".to_string()],
@@ -236,17 +221,12 @@ mod tests {
             DataBackend::extract(&kafka).is_none(),
             "the portable dialect does not speak Kafka"
         );
-        assert_eq!(DataBackend::noun(), "a db or es connector");
+        assert_eq!(DataBackend::noun(), "a database connector");
     }
 
-    /// The `db` variant covers both backends, so both caches must be evicted
-    /// for it — the connection string, not the type, decides which one has the
-    /// entry.
+    /// A changed `db` connector evicts its sqlx pool.
     #[test]
-    fn a_db_connector_evicts_both_sql_and_mongo_pools() {
-        assert_eq!(
-            ConnectorType::Db.pool_slots(),
-            &[PoolSlot::Sql, PoolSlot::Mongo]
-        );
+    fn a_db_connector_evicts_the_sql_pool() {
+        assert_eq!(ConnectorType::Db.pool_slots(), &[PoolSlot::Sql]);
     }
 }

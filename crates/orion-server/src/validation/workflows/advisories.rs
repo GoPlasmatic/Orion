@@ -218,7 +218,7 @@ pub enum TensorKeyScope {
 /// Conditions are not walked: they are compiled strictly, so a tensor-named
 /// key there raised "Invalid operator" before 1.8 and could not have been
 /// serving. Nor is a field the registry folds rather than evaluates (a
-/// MongoDB `filter`, a cached `value`): a literal there is stored or sent as
+/// dialect `params`, a cached `value`): a literal there is stored or sent as
 /// written, tensor-named key and all. Unlike the escaped-key walk above, this
 /// one does not defer built-in functions to the engine — the engine has
 /// nothing to say about a key that is, to it, simply an operator — so
@@ -424,9 +424,9 @@ pub(super) fn is_accidental_escape(path: &str) -> bool {
 ///
 /// A `resolvable` field folds `{"var": ..}` nodes and **nothing else** — the
 /// house rule for every connector handler. Any other operator node is a literal
-/// from the handler's point of view: `mongo_write` stores `{"if": […]}` in the
-/// document as a BSON object, a `filter` carrying one matches no rows, and a
-/// stubbed test of either stays green. There is no error at write time and,
+/// from the handler's point of view: `cache_write` stores `{"if": […]}` in the
+/// cached value as an object, a `db_read` param carrying one binds as a
+/// literal, and a stubbed test of either stays green. There is no error at write time and,
 /// until the call log, nothing a test could assert on.
 ///
 /// **A warning, never an error, and deliberately so.** The operator vocabulary

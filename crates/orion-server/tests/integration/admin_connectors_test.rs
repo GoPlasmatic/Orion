@@ -1234,6 +1234,9 @@ async fn s6_db_connector_rejects_schemes_that_are_not_databases() {
         ("s6-db-redis", "redis://cache.example.com:6379"),
         ("s6-db-gopher", "gopher://example.com:70/"),
         ("s6-db-bare", "/var/lib/orion/orion.db"),
+        // MongoDB is not a Community backend.
+        ("s6-db-mongo", "mongodb://m.example.com:27017/orion"),
+        ("s6-db-srv", "mongodb+srv://cluster.example.com/orion"),
     ] {
         let (status, body) =
             create_connector_status(&app, id, "db", json!({"connection_string": conn})).await;
@@ -1261,8 +1264,6 @@ async fn s6_db_connector_accepts_every_real_backend_scheme() {
         ("s6-ok-pgsql", "postgresql://u:p@db.example.com/orion"),
         ("s6-ok-mysql", "mysql://u:p@db.example.com/orion"),
         ("s6-ok-sqlite", "sqlite::memory:"),
-        ("s6-ok-mongo", "mongodb://m.example.com:27017/orion"),
-        ("s6-ok-srv", "mongodb+srv://cluster.example.com/orion"),
     ] {
         let (status, body) =
             create_connector_status(&app, id, "db", json!({"connection_string": conn})).await;

@@ -18,7 +18,6 @@ pub enum ConnectorConfig {
     Kafka(KafkaConnectorConfig),
     Db(DbConnectorConfig),
     Cache(CacheConnectorConfig),
-    Es(EsConnectorConfig),
     Storage(StorageConnectorConfig),
 }
 
@@ -57,7 +56,6 @@ impl ConnectorConfig {
             ConnectorType::Kafka => Self::Kafka(parser.parse(value)?),
             ConnectorType::Db => Self::Db(parser.parse(value)?),
             ConnectorType::Cache => Self::Cache(parser.parse(value)?),
-            ConnectorType::Es => Self::Es(parser.parse(value)?),
             ConnectorType::Storage => Self::Storage(parser.parse(value)?),
         })
     }
@@ -72,19 +70,11 @@ impl ConnectorConfig {
             ConnectorConfig::Kafka(_) => ConnectorType::Kafka,
             ConnectorConfig::Db(_) => ConnectorType::Db,
             ConnectorConfig::Cache(_) => ConnectorType::Cache,
-            ConnectorConfig::Es(_) => ConnectorType::Es,
             ConnectorConfig::Storage(_) => ConnectorType::Storage,
         }
     }
 
-    /// Whether this is a MongoDB connector, i.e. a `db` connector whose
-    /// connection string names the Mongo scheme. Both backends share the `Db`
-    /// variant, so the type alone does not tell them apart.
-    pub fn is_mongo(&self) -> bool {
-        matches!(self, ConnectorConfig::Db(c) if is_mongo_url(&c.connection_string))
-    }
-
-    /// The db/es operation gates. The other three connector types carry gates
+    /// The db operation gates. The other three connector types carry gates
     /// of their own shape — [`CacheOperationGates`], [`KafkaOperationGates`]
     /// and [`HttpOperationGates`] — reached through their typed configs,
     /// because a `publish` flag on a database or a `raw_write` flag on a cache
@@ -92,16 +82,14 @@ impl ConnectorConfig {
     pub fn operation_gates(&self) -> Option<&OperationGates> {
         match self {
             ConnectorConfig::Db(c) => Some(&c.operations),
-            ConnectorConfig::Es(c) => Some(&c.operations),
             _ => None,
         }
     }
 
-    /// The portable-dialect guards for connectors that carry them (db, es).
+    /// The portable-dialect guards for connectors that carry them (db).
     pub fn dialect_guards(&self) -> Option<&DialectGuards> {
         match self {
             ConnectorConfig::Db(c) => Some(&c.dialect),
-            ConnectorConfig::Es(c) => Some(&c.dialect),
             _ => None,
         }
     }
@@ -156,7 +144,7 @@ impl DialectGuards {
 /// error, so a connector can be made read-only (or insert-only, …) in its
 /// config without touching workflows.
 ///
-/// - `read` gates `data_query`, `db_read`, and `mongo_read`.
+/// - `read` gates `data_query` and `db_read`.
 /// - `insert` / `update` / `delete` / `upsert` gate the matching `data_write` op.
 /// - `raw_write` gates the raw-SQL `db_write` escape hatch, which cannot be
 ///   classified per-op (hand-written SQL may contain any statement).
@@ -518,9 +506,8 @@ pub struct KafkaConnectorConfig {
     pub operations: KafkaOperationGates,
 }
 
-/// SQL or MongoDB connector. The backend is selected by the
-/// `connection_string` scheme (`postgres://`, `mysql://`, `sqlite:`,
-/// `mongodb://`) — there is deliberately no `driver` field, because one
+/// SQL connector. The backend is selected by the `connection_string` scheme
+/// (`postgres://`, `mysql://`, `sqlite:`) — there is deliberately no `driver` field, because one
 /// existed until 1.0, was never read, and made `driver: "mysql"` with a
 /// `postgres://` URL look meaningful when it silently connected to Postgres
 /// (proposal F22). Credentials belong in the connection string, which is why
@@ -543,8 +530,7 @@ pub struct DbConnectorConfig {
     #[serde(default)]
     pub query_timeout_ms: Option<u64>,
     /// Allow connecting to private/internal IP addresses. Default false
-    /// (SSRF protection) — the same opt-out the HTTP and ES connectors
-    /// carry. A database on a private network is the normal case, so this is
+    /// (SSRF protection) — the same opt-out the HTTP connector carries. A database on a private network is the normal case, so this is
     /// the field most deployments will set; it exists so that reaching
     /// `169.254.169.254` or a neighbouring service is a deliberate act rather
     /// than the default. Ignored for `sqlite:`, which opens a file.
@@ -556,13 +542,6 @@ pub struct DbConnectorConfig {
     /// Which tables the portable dialect may reach through this connector.
     #[serde(default)]
     pub dialect: DialectGuards,
-    /// Permit the aggregation write stages (`$out`/`$merge`) in
-    /// `mongo_aggregate` pipelines (#263). Default **false** — the one
-    /// deliberate default-deny among the gates, because "aggregation" reads as
-    /// a read operation and must not silently write. MongoDB connectors only;
-    /// a SQL connector never reaches the aggregate handler.
-    #[serde(default)]
-    pub aggregate_write_stages: bool,
 }
 
 /// Cache connector. `default_ttl_secs`, `max_connections`, `auth` and `retry`
@@ -586,36 +565,6 @@ pub struct CacheConnectorConfig {
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: CacheOperationGates,
-}
-
-/// Elasticsearch connector: a REST endpoint queried by the `data_query` handler
-/// (executed via the shared HTTP client — no dedicated ES driver).
-///
-/// `retry` was accepted here until 1.0 and never read (proposal F7). The
-/// dialect drives `_bulk` / `_update_by_query` / `_delete_by_query` through
-/// this connector as well as `_search`, and none of those are safe to re-send
-/// blind on a timeout — see the note on [`DbConnectorConfig`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EsConnectorConfig {
-    /// Base URL, e.g. `http://localhost:9200`.
-    pub url: String,
-    pub auth: Option<AuthConfig>,
-    #[serde(default)]
-    pub request_timeout_ms: Option<u64>,
-    /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
-    #[serde(default)]
-    pub allow_private_urls: bool,
-    /// Maximum response body size in bytes, same default as the HTTP
-    /// connector — an unbounded ES response was the one egress read left
-    /// without a cap.
-    #[serde(default = "default_max_response_size")]
-    pub max_response_size: usize,
-    /// Which operations workflows may run through this connector.
-    #[serde(default)]
-    pub operations: OperationGates,
-    /// Which indices the portable dialect may reach through this connector.
-    #[serde(default)]
-    pub dialect: DialectGuards,
 }
 
 /// Object-storage connector (#265): a scoped, zero-data-path surface —
@@ -732,21 +681,14 @@ impl Default for StorageOperationGates {
     }
 }
 
-/// A connection string targets MongoDB when it uses a `mongodb` scheme;
-/// otherwise it is a SQL connector (dialect from the URL scheme). The `db`
-/// connector type covers both, so this is the only thing that separates them.
-pub fn is_mongo_url(connection_string: &str) -> bool {
-    connection_string.starts_with("mongodb://") || connection_string.starts_with("mongodb+srv://")
-}
-
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "es", "storage"];
+pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "storage"];
 
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 
 /// Typed enum for the connector `type` field on create/update requests.
-/// Wire format is lowercase ("http", "kafka", "db", "cache", "es");
+/// Wire format is lowercase ("http", "kafka", "db", "cache", "storage");
 /// deserialization is case-insensitive so "HTTP" or "Kafka" also parse.
 ///
 /// `"storage"` was accepted through the whole 0.x line with no handler behind
@@ -761,7 +703,6 @@ pub enum ConnectorType {
     Kafka,
     Db,
     Cache,
-    Es,
     Storage,
 }
 
@@ -781,7 +722,6 @@ impl ConnectorType {
         ConnectorType::Kafka,
         ConnectorType::Db,
         ConnectorType::Cache,
-        ConnectorType::Es,
         ConnectorType::Storage,
     ];
 
@@ -791,7 +731,6 @@ impl ConnectorType {
             Self::Kafka => "kafka",
             Self::Db => "db",
             Self::Cache => "cache",
-            Self::Es => "es",
             Self::Storage => "storage",
         }
     }
@@ -811,7 +750,7 @@ impl ConnectorType {
     /// already loads stops loading.
     pub fn operation_gate_keys(self) -> &'static [&'static str] {
         match self {
-            Self::Db | Self::Es => &["read", "insert", "update", "delete", "upsert", "raw_write"],
+            Self::Db => &["read", "insert", "update", "delete", "upsert", "raw_write"],
             Self::Cache => &["read", "write"],
             Self::Kafka => &["publish"],
             Self::Http => &["methods"],
@@ -882,7 +821,7 @@ mod tests {
         // gate struct behind it (#265) — was never checked at all.
         for &connector_type in ConnectorType::ALL {
             let struct_fields = match connector_type {
-                ConnectorType::Db | ConnectorType::Es => fields(&OperationGates::default()),
+                ConnectorType::Db => fields(&OperationGates::default()),
                 ConnectorType::Cache => fields(&CacheOperationGates::default()),
                 ConnectorType::Kafka => fields(&KafkaOperationGates::default()),
                 ConnectorType::Http => fields(&HttpOperationGates::default()),
@@ -1042,17 +981,9 @@ mod tests {
             ConnectorConfig::Kafka(k) => assert_eq!(k.topic, "t"),
             _ => unreachable!("Expected Kafka config"),
         }
-
-        let es = r#"{"type":"es","url":"http://localhost:9200",
-                     "retry":{"max_retries":9,"retry_delay_ms":100}}"#;
-        match serde_json::from_str::<ConnectorConfig>(es).expect("0.3.x es config must still load")
-        {
-            ConnectorConfig::Es(es) => assert_eq!(es.url, "http://localhost:9200"),
-            _ => unreachable!("Expected Es config"),
-        }
     }
 
-    /// `retry` on a db/es connector was declared, validated and documented
+    /// `retry` on a db connector was declared, validated and documented
     /// while the only reader of a `RetryConfig` is `http_call`. An operator who
     /// set `max_retries: 5` on their Postgres connector got exactly nothing.
     /// It now belongs to the HTTP connector alone, and the round-trip is where
@@ -1069,10 +1000,6 @@ mod tests {
             !rendered(r#"{"type":"db","connection_string":"sqlite::memory:"}"#)["retry"]
                 .is_object(),
             "a db connector must not advertise a retry policy nothing applies"
-        );
-        assert!(
-            !rendered(r#"{"type":"es","url":"http://localhost:9200"}"#)["retry"].is_object(),
-            "an es connector must not advertise a retry policy nothing applies"
         );
         assert!(
             !rendered(r#"{"type":"cache","backend":"memory"}"#)["retry"].is_object(),
@@ -1119,26 +1046,12 @@ mod tests {
     }
 
     #[test]
-    fn test_connector_config_deserialization_es() {
-        let json = r#"{"type":"es","url":"http://localhost:9200"}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
-        match config {
-            ConnectorConfig::Es(es) => {
-                assert_eq!(es.url, "http://localhost:9200");
-                assert!(es.auth.is_none());
-                assert!(!es.allow_private_urls);
-            }
-            _ => unreachable!("Expected Es config"),
-        }
-    }
-
-    #[test]
     fn test_valid_connector_types_expanded() {
         assert!(VALID_CONNECTOR_TYPES.contains(&"http"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"kafka"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"db"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"cache"));
-        assert!(VALID_CONNECTOR_TYPES.contains(&"es"));
+        assert!(!VALID_CONNECTOR_TYPES.contains(&"es"));
         assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
     }
 
@@ -1167,15 +1080,6 @@ mod tests {
         assert!(gates.allows("upsert"));
     }
 
-    #[test]
-    fn test_operation_gates_on_es() {
-        let json = r#"{"type":"es","url":"http://localhost:9200","operations":{"update":false}}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
-        let gates = config.operation_gates().expect("es has gates");
-        assert!(!gates.allows("update"));
-        assert!(gates.allows("insert"));
-    }
-
     // -----------------------------------------------------------------
     // F24: connector-level dialect guards
     // -----------------------------------------------------------------
@@ -1183,16 +1087,12 @@ mod tests {
     /// Both guards are opt-in: the 1.0 `unmapped: reject` default is what makes
     /// the safe mode the default one, and these only add restrictions on top.
     #[test]
-    fn dialect_guards_default_to_off_on_db_and_es() {
-        for json in [
-            r#"{"type":"db","connection_string":"sqlite::memory:"}"#,
-            r#"{"type":"es","url":"http://localhost:9200"}"#,
-        ] {
-            let config: ConnectorConfig = serde_json::from_str(json).expect("test");
-            let guards = config.dialect_guards().expect("db/es carry dialect guards");
-            assert!(!guards.require_schema, "{json}");
-            assert!(guards.allowed_entities.is_empty(), "{json}");
-        }
+    fn dialect_guards_default_to_off_on_db() {
+        let json = r#"{"type":"db","connection_string":"sqlite::memory:"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        let guards = config.dialect_guards().expect("db carries dialect guards");
+        assert!(!guards.require_schema, "{json}");
+        assert!(guards.allowed_entities.is_empty(), "{json}");
         let http: ConnectorConfig =
             serde_json::from_str(r#"{"type":"http","url":"https://example.com"}"#).expect("test");
         assert!(http.dialect_guards().is_none(), "http has no dialect");
@@ -1248,7 +1148,7 @@ mod tests {
                 "dialect":{"requireSchema":true}}"#,
             r#"{"type":"db","connection_string":"sqlite::memory:",
                 "dialect":{"allowed_entites":["users"]}}"#,
-            r#"{"type":"es","url":"http://localhost:9200",
+            r#"{"type":"db","connection_string":"sqlite::memory:",
                 "dialect":{"require_schemas":true}}"#,
         ] {
             let err = serde_json::from_str::<ConnectorConfig>(bad)
@@ -1257,7 +1157,7 @@ mod tests {
         }
     }
 
-    /// The db/es gate struct stays db/es-only: the other three types carry
+    /// The db gate struct stays db-only: the other types carry
     /// gates of their own shape, so `operation_gates()` must not start
     /// answering for them (a `raw_write` flag on a cache reads as meaningful
     /// and is not — the F22 defect).

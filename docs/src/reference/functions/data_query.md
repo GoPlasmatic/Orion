@@ -1,10 +1,10 @@
-<!-- description: The data_query task function: one backend-neutral query envelope run against a SQL, MongoDB or Elasticsearch connector through the portable dialect. -->
+<!-- description: The data_query task function: one backend-neutral query envelope run against a SQL connector through the portable dialect. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
 # `data_query`
 
-Runs one **backend-neutral query** against a SQL (PostgreSQL, MySQL, SQLite), MongoDB, or Elasticsearch connector. The connector decides the rendering: parameterized SQL through sea-query, a Mongo `find`, or an ES `_search` body. The full envelope, operator vocabulary, schema registry, and relation support are in the [Portable data dialect](../data-dialect.md) reference.
+Runs one **backend-neutral query** against a SQL (PostgreSQL, MySQL, SQLite) connector. The connector's connection string decides the dialect the query is rendered in, as parameterized SQL through sea-query. The full envelope, operator vocabulary, schema registry, and relation support are in the [Portable data dialect](../data-dialect.md) reference.
 
 ## Synopsis
 
@@ -20,7 +20,6 @@ Runs one **backend-neutral query** against a SQL (PostgreSQL, MySQL, SQLite), Mo
       }
     },
     "schema": {},
-    "database": "…",
     "numeric_as": "number",
     "binary_as": "auto",
     "output": "data.orders"
@@ -38,13 +37,12 @@ Runs one **backend-neutral query** against a SQL (PostgreSQL, MySQL, SQLite), Mo
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `connector` | string | yes | — | Name of a `db` or `es` connector |
+| `connector` | string | yes | — | Name of a `db` connector |
 | `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `after`, `include`, `count` — see the [query envelope](../data-dialect.md#query-envelope-data_query) |
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
 | `schema` | object | yes | — | Inline entity schema: renames, types, allowlist, relations. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones |
-| `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
-| `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](./db_read.md#decimal-columns). SQL backends only |
-| `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](./db_read.md#binary-columns). SQL backends only |
+| `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](./db_read.md#decimal-columns) |
+| `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](./db_read.md#binary-columns) |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
 
 > [!NOTE]

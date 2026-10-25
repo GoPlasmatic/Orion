@@ -324,7 +324,7 @@ fn rel_subquery(
 
 fn compare_expr(field: &FieldRef, op: CmpOp, value: &Value) -> Result<SimpleExpr, QueryError> {
     let col = col_expr(field);
-    let v = to_sea_value(value)?;
+    let v = to_sea_value(value);
     Ok(match op {
         CmpOp::Eq => col.eq(v),
         CmpOp::Ne => col.ne(v),
@@ -337,7 +337,7 @@ fn compare_expr(field: &FieldRef, op: CmpOp, value: &Value) -> Result<SimpleExpr
 
 fn in_expr(field: &FieldRef, values: &[Value], negated: bool) -> Result<SimpleExpr, QueryError> {
     let col = col_expr(field);
-    let vals: Vec<SeaValue> = values.iter().map(to_sea_value).collect::<Result<_, _>>()?;
+    let vals: Vec<SeaValue> = values.iter().map(to_sea_value).collect();
     Ok(if negated {
         col.is_not_in(vals)
     } else {
@@ -353,8 +353,8 @@ fn between_expr(
     high_incl: bool,
     negated: bool,
 ) -> Result<SimpleExpr, QueryError> {
-    let lo = to_sea_value(low)?;
-    let hi = to_sea_value(high)?;
+    let lo = to_sea_value(low);
+    let hi = to_sea_value(high);
     // Native BETWEEN is inclusive-only; use it only when both bounds are
     // inclusive, else render explicit per-bound comparisons (the
     // chained-range rule).
@@ -385,9 +385,7 @@ fn text_expr(field: &FieldRef, op: TextOp, pattern: &str) -> SimpleExpr {
     };
     // W13: `LIKE` with `\` as the escape character. Case sensitivity is the one
     // thing the dialect does **not** normalise: it is a property of the stored
-    // data (a SQL collation, an ES analyzer), not of the query, and no query-time
-    // flag can restore case-sensitive matching against an Elasticsearch `text`
-    // field whose analyzer already folded the tokens. So the per-backend truth is
+    // data (a column's collation), not of the query. So the per-backend truth is
     // stated in the parity table of `docs/src/reference/data-dialect.md`
     // ("Text-match case sensitivity") rather than papered over here: PostgreSQL
     // `LIKE` is case-sensitive, SQLite's folds ASCII, MySQL's follows the
@@ -439,11 +437,9 @@ fn col_expr(field: &FieldRef) -> Expr {
 
 /// Convert an IR value to a `sea_query::Value`, restricted to the variants the
 /// `sqlx-any` binder accepts (Bool/BigInt/Double/String) — never Decimal/Json,
-/// which panic under `AnyArguments`. The tagged BSON values (#263) have no SQL
-/// binding and refuse with the dialect's standard capability error —
-/// parity-or-error, never a bind that compares differently than on MongoDB.
-fn to_sea_value(v: &Value) -> Result<SeaValue, QueryError> {
-    Ok(match v {
+/// which panic under `AnyArguments`.
+fn to_sea_value(v: &Value) -> SeaValue {
+    match v {
         // A scalar null is already lowered to `IsNull`; this placeholder only
         // arises for an explicit null inside a list, binding as SQL NULL.
         Value::Null => SeaValue::String(None),
@@ -451,17 +447,6 @@ fn to_sea_value(v: &Value) -> Result<SeaValue, QueryError> {
         Value::Int(i) => (*i).into(),
         Value::Float(f) => (*f).into(),
         Value::Str(s) => s.clone().into(),
-        Value::ObjectId(_) => return Err(sql_unsupported("an ObjectId ($oid) value")),
-        Value::DateTime(_) => return Err(sql_unsupported("a typed date ($date) value")),
-    })
-}
-
-/// The capability error for a construct no SQL dialect can bind (all three
-/// refuse identically, so the target is the backend family).
-fn sql_unsupported(feature: &str) -> QueryError {
-    QueryError::FeatureUnsupportedByTarget {
-        feature: feature.to_string(),
-        target: "sql".to_string(),
     }
 }
 
@@ -642,7 +627,7 @@ fn render_delete(
 
 /// An IR value as a bound `SimpleExpr` (a NULL binds as SQL NULL).
 fn value_expr(v: &Value) -> Result<SimpleExpr, QueryError> {
-    Ok(Expr::val(to_sea_value(v)?))
+    Ok(Expr::val(to_sea_value(v)))
 }
 
 /// Dialect-specific `(sql, values)` for any write statement (Insert/Update/Delete).
@@ -690,30 +675,6 @@ mod tests {
 
     fn sqlite(query: Json) -> String {
         sql_for(query, SqlDialect::Sqlite)
-    }
-
-    /// #263: the tagged BSON values (`$oid`/`$date`) have no SQL binding and
-    /// refuse with the standard capability error on every dialect —
-    /// parity-or-error, never a bind that compares differently than on Mongo.
-    #[test]
-    fn tagged_values_are_a_capability_error_on_every_sql_dialect() {
-        for dialect in [SqlDialect::Sqlite, SqlDialect::Postgres, SqlDialect::Mysql] {
-            let err = plan_stmt(
-                &json!({
-                    "source": "t",
-                    "filter": { "==": [{"field": "ref"}, { "$oid": "665f1f77bcf86cd799439011" }] }
-                }),
-                &EntityRegistry::identity(),
-                dialect,
-                &limits(),
-            )
-            .expect_err("no SQL binding for an ObjectId");
-            assert!(
-                matches!(&err, QueryError::FeatureUnsupportedByTarget { target, .. } if target == "sql"),
-                "{err:?}"
-            );
-            assert!(err.to_string().contains("$oid"), "{err}");
-        }
     }
 
     /// users→orders (has_many) and users↔tags (many-to-many via user_tags).

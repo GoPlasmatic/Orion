@@ -226,8 +226,7 @@ utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 # never attempts a live GitHub download.
 utoipa-swagger-ui = { version = "10", features = ["axum"] }
 
-# External DB connectors
-mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
+# External connectors
 # connection-manager: reconnecting handle — a plain MultiplexedConnection is
 # dead for the process lifetime after one Redis restart (proposal D15).
 # `script`: EVALSHA-cached Lua for the shared rate-limit window, whose second
@@ -237,7 +236,7 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support. `rustls` is a direct dependency only so `server::tls` can install
 # a process-level CryptoProvider: the graph enables both `rustls/aws-lc-rs`
-# (axum-server, reqwest) and `rustls/ring` (mongodb, sqlx), which makes rustls
+# (axum-server, reqwest) and `rustls/ring` (sqlx), which makes rustls
 # refuse to pick one on its own.
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
@@ -274,7 +273,7 @@ rdkafka = { version = "0.39", default-features = false, features = ["cmake-build
 tokio = { version = "1", features = ["test-util"] }
 # testcontainers-modules 0.15 uses 0.27; 0.28's bollard conflicts with it.
 testcontainers = "0.27.3"
-testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search", "redis"] }
+testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "redis"] }
 # Already a runtime dependency; listed here so integration tests can build a
 # connection for direct backend tests (RedisRateLimitBackend takes a
 # ConnectionManager). Same version req as the runtime dep, so no extra crate.

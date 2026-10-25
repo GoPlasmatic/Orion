@@ -55,7 +55,6 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str, slots: &[
     for slot in slots {
         match slot {
             PoolSlot::Sql => state.caches.sql_pool_cache.evict(connector_name).await,
-            PoolSlot::Mongo => state.caches.mongo_pool_cache.evict(connector_name).await,
             PoolSlot::Cache => state.caches.cache_pool.evict_pool(connector_name).await,
         }
     }
@@ -748,9 +747,8 @@ pub(crate) async fn validate_connector(
 pub(crate) struct ProbeResult {
     /// `true` when the backend answered.
     reachable: bool,
-    /// `false` when no probe exists for this connector (`es`, `kafka`,
-    /// or a `db` connector with a `mongodb://` URL) — a permanent capability
-    /// gap, not an outage. Without this field the two were indistinguishable
+    /// `false` when no probe exists for this connector (`kafka`) — a
+    /// permanent capability gap, not an outage. Without this field the two were indistinguishable
     /// in the response shape, and operator tooling read "not implemented" as
     /// downtime.
     supported: bool,
@@ -802,7 +800,7 @@ pub(crate) async fn test_connector(
     // have a probe — so the two cannot drift; the early exits (secret
     // resolution, config parse) fire before a config exists to ask, and
     // judge it by the connector type alone.
-    let type_supported = !matches!(connector.connector_type.as_str(), "es" | "kafka");
+    let type_supported = connector.connector_type != "kafka";
     let result = |probe: &'static str, supported: bool, outcome: Result<(), String>| {
         Json(ProbeEnvelope {
             data: ProbeResult {
@@ -923,14 +921,6 @@ async fn probe_connector(
     use crate::connector::ConnectorConfig;
 
     match config {
-        // R29: a `db` connector pointing at MongoDB has no probe — the SQL
-        // pool below cannot dial `mongodb://`, so routing it to `probe_db`
-        // reported a permanent capability gap as an outage on every call.
-        ConnectorConfig::Db(db) if crate::connector::is_mongo_url(&db.connection_string) => (
-            "not implemented for this connector type",
-            false,
-            Err("connectivity probing is not implemented for MongoDB connectors yet".to_string()),
-        ),
         ConnectorConfig::Db(db) => ("SELECT 1", true, probe_db(state, name, db).await),
         ConnectorConfig::Cache(cache) => (
             "cache read of a probe key",
@@ -950,7 +940,7 @@ async fn probe_connector(
             true,
             probe_storage(state, storage).await,
         ),
-        ConnectorConfig::Es(_) | ConnectorConfig::Kafka(_) => (
+        ConnectorConfig::Kafka(_) => (
             "not implemented for this connector type",
             false,
             Err(format!(

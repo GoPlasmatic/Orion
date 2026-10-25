@@ -79,8 +79,9 @@ fn lint_invalid_workflow_exits_nonzero_with_field_path() {
 /// `cache_read.key` composed with `cat` was impossible before dataflow-rs 3.9:
 /// the field folded `{"var": …}` and stored every other node as the literal
 /// object it was, so a per-tenant key had to be built in a `map` task first.
-/// `mongo_read.filter` still folds, and must, because one `$` comes off every
-/// key in a position the engine evaluates and a filter is where `$oid` lives.
+/// `cache_write.value` still folds, and must, because one `$` comes off every
+/// key in a position the engine evaluates and a stored document may carry `$`
+/// keys of its own.
 #[test]
 fn scalar_connector_fields_evaluate_and_documents_still_fold() {
     let wf = write_temp(
@@ -95,18 +96,17 @@ fn scalar_connector_fields_evaluate_and_documents_still_fold() {
                 "connector":"redis",
                 "key":{"cat":["tenant:",{"var":"data.tenant"},":order:",{"var":"data.id"}]},
                 "output":"data.hit"}}},
-            {"id":"m","name":"m","function":{"name":"mongo_read","input":{
-                "connector":"mongo","database":"d","collection":"orders",
-                "filter":{"tenant":{"var":"data.tenant"}},
-                "limit":{"var":"data.page"},
-                "output":"data.orders"}}}
+            {"id":"m","name":"m","function":{"name":"cache_write","input":{
+                "connector":"redis","key":"orders",
+                "value":{"tenant":{"var":"data.tenant"},"$set":{"page":1}},
+                "ttl_secs":{"var":"data.page"}}}}
         ]
     }"#,
         "two-tier-wf",
     );
     let input = write_temp(r#"{}"#, "two-tier-input");
     let stubs = write_temp(
-        r#"{"cache_read":{"*":{"cached":true}},"mongo_read":{"*":[]}}"#,
+        r#"{"cache_read":{"*":{"cached":true}},"cache_write":{"*":{"ok":true}}}"#,
         "two-tier-stubs",
     );
     let out = Command::new(orion_bin())
@@ -124,15 +124,16 @@ fn scalar_connector_fields_evaluate_and_documents_still_fold() {
         serde_json::json!("tenant:acme:order:42"),
         "{stdout}"
     );
-    // A bound is a document: its `var` hole folds.
+    // A scalar bound is evaluated too.
     assert_eq!(
-        parsed["calls"]["mongo_read"][0]["input"]["limit"], 5,
+        parsed["calls"]["cache_write"][0]["input"]["ttl_secs"], 5,
         "{stdout}"
     );
-    // The document field: `{"var": …}` folded, everything else left alone.
+    // The document field: `{"var": …}` folded, everything else — the `$` key
+    // included — left alone.
     assert_eq!(
-        parsed["calls"]["mongo_read"][0]["input"]["filter"],
-        serde_json::json!({"tenant": "acme"}),
+        parsed["calls"]["cache_write"][0]["input"]["value"],
+        serde_json::json!({"tenant": "acme", "$set": {"page": 1}}),
         "{stdout}"
     );
 
@@ -1077,12 +1078,10 @@ const VERBATIM_LOGIC_WORKFLOW: &str = r#"{
                 {"path":"data.done","logic":true}
             ]}}},
         {"id":"persist","name":"Persist","function":{
-            "name":"mongo_write","input":{
-                "connector":"sessions","database":"app","collection":"sessions",
-                "op":"update_one",
-                "output":"data.write_result",
-                "filter":{"_id":{"var":"temp_data.sid"}},
-                "update":{"$set":{"generation":{"if":[true,2,1]},"revokedAt":null}}}}}
+            "name":"cache_write","input":{
+                "connector":"sessions","key":"session",
+                "value":{"_id":{"var":"temp_data.sid"},
+                         "generation":{"if":[true,2,1]},"revokedAt":null}}}}
     ]
 }"#;
 
@@ -1170,14 +1169,14 @@ fn expect_reaches_metadata_temp_data_calls_and_the_audit_trail() {
             "workflow": "wf.json",
             "metadata": {"channel": "rotate"},
             "input": {},
-            "stubs": {"mongo_write": {"sessions": {"modified": 1}}},
+            "stubs": {"cache_write": {"sessions": {"ok": true}}},
             "expect": {
                 "data.done": true,
                 "metadata.channel": "rotate",
                 "temp_data.sid": "sess-1",
-                "calls.mongo_write[0].stub_target": "sessions",
-                "calls.mongo_write[0].input.filter._id": "sess-1",
-                "calls.mongo_write[0].task_id": "persist",
+                "calls.cache_write[0].stub_target": "sessions",
+                "calls.cache_write[0].input.value._id": "sess-1",
+                "calls.cache_write[0].task_id": "persist",
                 "audit_trail[1].task_id": "persist"
             }
         }"#,
@@ -1189,7 +1188,7 @@ fn expect_reaches_metadata_temp_data_calls_and_the_audit_trail() {
 }
 
 /// The regression #283 is about. The workflow writes `{"if": [...]}` verbatim
-/// because `mongo_write` folds `{"var": ..}` and nothing else; a case asserting
+/// because `cache_write` folds `{"var": ..}` and nothing else; a case asserting
 /// the intended number now fails where a stubbed run used to stay green.
 #[test]
 fn expect_calls_catches_jsonlogic_written_verbatim() {
@@ -1200,11 +1199,11 @@ fn expect_calls_catches_jsonlogic_written_verbatim() {
         r#"{
             "workflow": "wf.json",
             "input": {},
-            "stubs": {"mongo_write": {"sessions": {"modified": 1}}},
+            "stubs": {"cache_write": {"sessions": {"ok": true}}},
             "expect_calls": {
-                "mongo_write": [
-                    {"collection": "sessions",
-                     "update": {"$set": {"generation": 2, "revokedAt": null}}}
+                "cache_write": [
+                    {"key": "session",
+                     "value": {"generation": 2, "revokedAt": null}}
                 ]
             }
         }"#,
@@ -1232,9 +1231,9 @@ fn expect_calls_treats_a_null_expectation_as_written_not_absent() {
         r#"{
             "workflow": "wf.json",
             "input": {},
-            "stubs": {"mongo_write": {"sessions": {"modified": 1}}},
+            "stubs": {"cache_write": {"sessions": {"ok": true}}},
             "expect_calls": {
-                "mongo_write": [{"update": {"$set": {"neverWritten": null}}}]
+                "cache_write": [{"value": {"neverWritten": null}}]
             }
         }"#,
     )
@@ -1256,8 +1255,8 @@ fn expect_calls_checks_the_call_count() {
         r#"{
             "workflow": "wf.json",
             "input": {},
-            "stubs": {"mongo_write": {"sessions": {"modified": 1}}},
-            "expect_calls": {"mongo_write": [], "publish_kafka": []}
+            "stubs": {"cache_write": {"sessions": {"ok": true}}},
+            "expect_calls": {"cache_write": [], "publish_kafka": []}
         }"#,
     )
     .unwrap();
@@ -1284,7 +1283,7 @@ fn expect_tasks_asserts_which_tasks_ran() {
         r#"{
             "workflow": "wf.json",
             "input": {},
-            "stubs": {"mongo_write": {"sessions": {"modified": 1}}},
+            "stubs": {"cache_write": {"sessions": {"ok": true}}},
             "expect_tasks": ["seed", "persist"]
         }"#,
     )
@@ -1294,7 +1293,7 @@ fn expect_tasks_asserts_which_tasks_ran() {
         r#"{
             "workflow": "wf.json",
             "input": {},
-            "stubs": {"mongo_write": {"sessions": {"modified": 1}}},
+            "stubs": {"cache_write": {"sessions": {"ok": true}}},
             "expect_tasks": ["seed"]
         }"#,
     )
@@ -1352,7 +1351,7 @@ fn dry_run_prints_the_call_log_and_the_context_documents() {
     let wf = write_temp(VERBATIM_LOGIC_WORKFLOW, "dryrun-calls");
     let input = write_temp("{}", "dryrun-calls-in");
     let stubs = write_temp(
-        r#"{"mongo_write":{"sessions":{"modified":1}}}"#,
+        r#"{"cache_write":{"sessions":{"ok":true}}}"#,
         "dryrun-stubs",
     );
     let metadata = write_temp(r#"{"channel":"rotate"}"#, "dryrun-meta");
@@ -1380,13 +1379,13 @@ fn dry_run_prints_the_call_log_and_the_context_documents() {
     // Grouped by function, the same shape a case's `calls.<fn>[i]` addresses —
     // one shape on both surfaces, so a path lifted from here works in a case.
     // Global ordering is not lost to the grouping: each record carries `seq`.
-    assert_eq!(parsed["calls"]["mongo_write"][0]["function"], "mongo_write");
-    assert_eq!(parsed["calls"]["mongo_write"][0]["task_id"], "persist");
-    assert_eq!(parsed["calls"]["mongo_write"][0]["seq"], 0);
+    assert_eq!(parsed["calls"]["cache_write"][0]["function"], "cache_write");
+    assert_eq!(parsed["calls"]["cache_write"][0]["task_id"], "persist");
+    assert_eq!(parsed["calls"]["cache_write"][0]["seq"], 0);
     assert_eq!(
-        parsed["calls"]["mongo_write"][0]["input"]["update"]["$set"]["generation"],
+        parsed["calls"]["cache_write"][0]["input"]["value"]["generation"],
         serde_json::json!({"if": [true, 2, 1]}),
-        "the log shows the node Mongo would have stored"
+        "the log shows the node the cache would have stored"
     );
     assert!(parsed["audit_trail"].is_array());
 
@@ -1459,9 +1458,9 @@ fn set_mode_catches_references_a_single_file_lint_cannot_see() {
     std::fs::write(
         dir.join("probe.json"),
         r#"{"workflow_id":"probe","name":"probe","tasks":[
-            {"id":"c","name":"c","function":{"name":"mongo_read","input":{
-              "connector":"does-not-exist","database":"x","collection":"y",
-              "filter":{},"output":"temp_data.z"}}},
+            {"id":"c","name":"c","function":{"name":"data_query","input":{
+              "connector":"does-not-exist","query":{"source":"y"},
+              "output":"temp_data.z"}}},
             {"id":"d","name":"d","function":{"name":"channel_call","input":{
               "channel":"no-such-channel","data":{},"output":"temp_data.q"}}}]}"#,
     )
@@ -1605,85 +1604,6 @@ fn a_connector_of_the_wrong_type_is_an_error() {
     );
 }
 
-/// A MongoDB connector reached by a task that names no `database`.
-///
-/// The handler refuses this at its first request — a MongoDB connection string
-/// carries no default database — and the admin API has refused it at activation
-/// since the gate existed. Set mode did not: it knew the missing-connector and
-/// wrong-type rules and not this one, because it had its own copy of the walk
-/// rather than the gate's rules. Sharing the predicate is what closed it.
-#[test]
-fn a_mongo_task_without_a_database_is_an_error() {
-    let scratch = temp_defs();
-    let dir = scratch.path();
-    std::fs::write(
-        dir.join("conn.json"),
-        r#"{"name":"docs","connector_type":"db",
-            "config":{"connection_string":"mongodb://h:27017"}}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("wf.json"),
-        r#"{"workflow_id":"w","name":"w","tasks":[
-            {"id":"t","name":"t","function":{"name":"mongo_read","input":{
-              "connector":"docs","collection":"orders","output":"data.r"}}}]}"#,
-    )
-    .unwrap();
-    let (ok, report) = lint_dir(dir, &[]);
-    assert!(!ok, "{report}");
-    assert!(report.contains("type.mongo_database"), "{report}");
-    assert!(
-        report.contains("no default database"),
-        "the message must say why: {report}"
-    );
-}
-
-/// The same connector and the same function, with the `database` the rule asks
-/// for: no finding. A rule that fires on the correct shape is worse than none.
-#[test]
-fn a_mongo_task_with_a_database_is_clean() {
-    let scratch = temp_defs();
-    let dir = scratch.path();
-    std::fs::write(
-        dir.join("conn.json"),
-        r#"{"name":"docs","connector_type":"db",
-            "config":{"connection_string":"mongodb://h:27017"}}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("wf.json"),
-        r#"{"workflow_id":"w","name":"w","tasks":[
-            {"id":"t","name":"t","function":{"name":"mongo_read","input":{
-              "connector":"docs","database":"app","collection":"orders","output":"data.r"}}}]}"#,
-    )
-    .unwrap();
-    let (ok, report) = lint_dir(dir, &[]);
-    assert!(ok, "{report}");
-}
-
-/// A **SQL** `db` connector is not subject to the database rule: the database
-/// is in its connection string, and `db_read` names none.
-#[test]
-fn a_sql_task_without_a_database_is_clean() {
-    let scratch = temp_defs();
-    let dir = scratch.path();
-    std::fs::write(
-        dir.join("conn.json"),
-        r#"{"name":"pg","connector_type":"db",
-            "config":{"connection_string":"postgres://h/d"}}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("wf.json"),
-        r#"{"workflow_id":"w","name":"w","tasks":[
-            {"id":"t","name":"t","function":{"name":"db_read","input":{
-              "connector":"pg","query":"SELECT 1","output":"data.r"}}}]}"#,
-    )
-    .unwrap();
-    let (ok, report) = lint_dir(dir, &[]);
-    assert!(ok, "{report}");
-}
-
 /// Warnings do not fail set mode, and `--deny-warnings` promotes them — the
 /// same flag and the same meaning it already has for a single file.
 #[test]
@@ -1693,15 +1613,14 @@ fn set_mode_warnings_gate_only_under_deny_warnings() {
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
-            {"id":"t","name":"t","function":{"name":"mongo_write","input":{
-              "connector":"m","database":"d","collection":"c","op":"insert_one",
-              "output":"data.r",
-              "document":{"at":{"cat":["a","b"]}}}}}]}"#,
+            {"id":"t","name":"t","function":{"name":"cache_write","input":{
+              "connector":"m","key":"k",
+              "value":{"at":{"cat":["a","b"]}}}}}]}"#,
     )
     .unwrap();
     std::fs::write(
         dir.join("conn.json"),
-        r#"{"name":"m","connector_type":"db","config":{"connection_string":"mongodb://h/d"}}"#,
+        r#"{"name":"m","connector_type":"cache","config":{"backend":"memory"}}"#,
     )
     .unwrap();
 
@@ -1826,7 +1745,7 @@ fn temp_defs_with_shared() -> ScratchDir {
     std::fs::create_dir_all(dir.join("fragments")).unwrap();
     std::fs::write(
         dir.join("common.json"),
-        r#"{ "constants": { "db": { "connector": "mongo", "database": "app" } },
+        r#"{ "constants": { "db": { "connector": "pg", "schema": { "unmapped": "identity" } } },
              "errors": { "USER_NOT_FOUND": {
                 "status": 400, "code": "NOT_FOUND", "body": "User Not Found !" } } }"#,
     )
@@ -1920,8 +1839,8 @@ fn an_unresolvable_reference_fails_the_set_lint() {
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
-            {"id":"r","name":"r","function":{"name":"mongo_read","input":{
-               "$from":"constants.dbb","collection":"users","filter":{},
+            {"id":"r","name":"r","function":{"name":"data_query","input":{
+               "$from":"constants.dbb","query":{"source":"users"},
                "output":"temp_data.u"}}}]}"#,
     )
     .unwrap();
@@ -1932,23 +1851,23 @@ fn an_unresolvable_reference_fails_the_set_lint() {
 }
 
 /// In set mode the catalog is found without a flag, and the splice satisfies
-/// the schema — `connector` and `database` come from the shared value, so a
-/// failure to splice would surface as a REQUIRED error.
+/// the schema — `connector` comes from the shared value, so a failure to
+/// splice would surface as a REQUIRED error.
 #[test]
 fn set_mode_resolves_the_catalog_without_a_flag() {
     let scratch = temp_defs_with_shared();
     let dir = scratch.path();
     std::fs::write(
         dir.join("conn.json"),
-        r#"{"name":"mongo","connector_type":"db",
-            "config":{"connection_string":"mongodb://h/app"}}"#,
+        r#"{"name":"pg","connector_type":"db",
+            "config":{"connection_string":"postgres://h/app"}}"#,
     )
     .unwrap();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
-            {"id":"r","name":"r","function":{"name":"mongo_read","input":{
-               "$from":"constants.db","collection":"users","filter":{},
+            {"id":"r","name":"r","function":{"name":"data_query","input":{
+               "$from":"constants.db","query":{"source":"users"},
                "output":"temp_data.u"}}}]}"#,
     )
     .unwrap();
@@ -1993,7 +1912,7 @@ fn a_call_site_can_override_one_field_of_a_shared_value() {
         serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("JSON");
     assert_eq!(parsed["data"]["x"]["database"], "other", "sibling wins");
     assert_eq!(
-        parsed["data"]["x"]["connector"], "mongo",
+        parsed["data"]["x"]["connector"], "pg",
         "the rest is spliced"
     );
     let _ = std::fs::remove_file(&input);
@@ -2046,7 +1965,7 @@ fn tasks_inside_a_group_are_validated_with_nested_paths() {
     let wf = write_temp(
         r#"{"name":"w","tasks":[
             {"id":"g","condition":true,"tasks":[
-               {"id":"bad","name":"bad","function":{"name":"mongo_writes","input":{}}}]}]}"#,
+               {"id":"bad","name":"bad","function":{"name":"data_writes","input":{}}}]}]}"#,
         "group-validate",
     );
     let out = Command::new(orion_bin())
@@ -2060,7 +1979,7 @@ fn tasks_inside_a_group_are_validated_with_nested_paths() {
         "the path must address the nested task: {stderr}"
     );
     assert!(
-        stderr.contains("did you mean 'mongo_write'?"),
+        stderr.contains("did you mean 'data_write'?"),
         "and the suggestion must still fire inside a group: {stderr}"
     );
     let _ = std::fs::remove_file(&wf);
@@ -2076,9 +1995,9 @@ fn closure_checking_reaches_inside_a_group() {
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
             {"id":"g","condition":true,"tasks":[
-               {"id":"r","name":"r","function":{"name":"mongo_read","input":{
-                  "connector":"nowhere","database":"d","collection":"c",
-                  "filter":{},"output":"temp_data.z"}}}]}]}"#,
+               {"id":"r","name":"r","function":{"name":"data_query","input":{
+                  "connector":"nowhere","query":{"source":"c"},
+                  "output":"temp_data.z"}}}]}]}"#,
     )
     .unwrap();
     let (ok, report) = lint_dir(dir, &[]);

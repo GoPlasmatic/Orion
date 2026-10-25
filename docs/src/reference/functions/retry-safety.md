@@ -39,8 +39,6 @@ happens, what does it cost?**
 | [`cache_read`](./cache_read.md) | `read` | |
 | [`db_read`](./db_read.md) | `read` | |
 | [`data_query`](./data_query.md) | `read` | |
-| [`mongo_read`](./mongo_read.md) | `read` | |
-| [`mongo_aggregate`](./mongo_aggregate.md) | `read` | Aggregation pipelines with `$out`/`$merge` are refused by the stage allowlist, so this stays a read. |
 | [`storage_head`](./storage_head.md) | `read` | Metadata only. |
 | [`jwt_verify`](./jwt_verify.md) | `read` | May fetch a JWKS document; the cache usually answers. |
 | [`cache_write`](./cache_write.md) | `idempotent_write` | The same key and value land the same entry. A `ttl` restarts from the retry. |
@@ -51,7 +49,6 @@ happens, what does it cost?**
 | [`http_call`](./http_call.md) | `depends_on` `method` | `GET`/`HEAD` are safe; `POST`/`PATCH` may already have been applied. This is what the connector's `retry_non_idempotent` flag is about — off by default. |
 | [`db_write`](./db_write.md) | `depends_on` `sql` | Raw SQL: an `UPDATE … SET x = 1` is idempotent, an `INSERT` is not. |
 | [`data_write`](./data_write.md) | `depends_on` `op` | `upsert` and `delete` are idempotent; `insert` is not; `update` depends on the expression. |
-| [`mongo_write`](./mongo_write.md) | `depends_on` `op` | Same split: an upsert repeats safely, an insert does not. |
 | [`connector_call`](./connector_call.md) | `depends_on` `operation` | Read operations (`cache.get`, `sql.query`) repeat safely; write operations depend on provider idempotency and `idempotency_key`. |
 | [`channel_call`](./channel_call.md) | `depends_on` `channel` | The answer is whatever the target channel's workflow does. |
 

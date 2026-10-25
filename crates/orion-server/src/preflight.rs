@@ -401,9 +401,9 @@ pub fn check_workflow_tasks(
     //
     // The escaped key is a break: the workflow keeps serving and the document
     // it composes silently changes shape. A `{"$set": …}` update built in a
-    // `map` task emits `{"set": …}` from dataflow-rs 3.9 on, so the write goes
-    // to Mongo with no `$set` operator in it and replaces the document instead
-    // of updating it. Nothing logs, nothing 500s — the sharpest kind of
+    // `map` task emits `{"set": …}` from dataflow-rs 3.9 on, so whatever the
+    // document is sent to receives it with no `$set` operator in it — a
+    // MongoDB update replaces the document instead of updating it. Nothing logs, nothing 500s — the sharpest kind of
     // upgrade break this command exists to find.
     //
     // The other two are advisories, and that is load-bearing rather than a

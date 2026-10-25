@@ -4,25 +4,19 @@ use std::sync::Arc;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Function, Outcome};
-use mongodb::bson::Document;
 use serde_json::{Map, Value, json};
 
 use super::connector_helpers::{
     QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure, encode_failure,
-    es_request, es_write_error, is_mongo, require_op_allowed, send_es, to_connect_error,
-    to_exec_error,
+    require_op_allowed, to_connect_error, to_exec_error,
 };
 use super::db_read::rendered_row_format;
-use super::mongo_common::{delete_envelope, empty_insert_envelope, update_envelope};
 use super::schema::{FieldKind, FieldSchema};
-use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
-use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
+use crate::connector::{ConnectorConfig, ConnectorRegistry};
+use crate::engine::HandlerError;
 use crate::engine::kit::{self, read};
-use crate::engine::{ErrorClass, HandlerError};
-use crate::query::backend::es::{EsWrite, bulk_ndjson};
-use crate::query::backend::mongo::MongoWrite;
 use crate::query::write::{ResolvedWrite, WriteOp};
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
@@ -30,12 +24,6 @@ use crate::storage::detect_backend;
 /// This handler's name, for the helpers that take it as an argument — a
 /// reference to the one place it is written (F48).
 pub(crate) const NAME: &str = "data_write";
-
-/// Audit status for a bulk write that applied some but not all of its items
-/// (F28) — HTTP 207 Multi-Status, the code that exists for exactly this. Below
-/// 400, so the workflow continues; not 200, so the trace shows it happened.
-/// Shared with `mongo_write` (#263), whose bulk inserts classify identically.
-pub(super) const PARTIAL_STATUS: u16 = 207;
 
 /// The mutation as the task states it, with `params` folded against the
 /// message.
@@ -52,24 +40,20 @@ pub struct DataWrite<'a> {
     format: RowFormat,
     schema: Option<Cow<'a, Value>>,
     envelope: Cow<'a, Value>,
-    database: Option<Cow<'a, str>>,
 }
 
-/// What a portable write reaches its backends through, and the bounds it is
+/// What a portable write reaches its backend through, and the bounds it is
 /// held to: the handler's or the function's, borrowed.
 struct Backends<'a> {
     pool_cache: &'a SqlPoolCache,
-    mongo_pool_cache: &'a MongoPoolCache,
-    http_client: &'a reqwest::Client,
     write_config: &'a crate::config::WriteConfig,
     max_returning: usize,
 }
 
-/// The write's answer and its outcome, `Success` or F28's partial 207,
-/// against a resolved `db` or `es` connector: the envelope resolved, its
-/// operation gated, then written. `run_deadline` is the deadline of the run the
-/// call belongs to, which bounds every SQL and MongoDB leg with the
-/// connector's `query_timeout_ms` ([`QueryBudget::within`]).
+/// The write's answer and its outcome against a resolved `db` connector: the
+/// envelope resolved, its operation gated, then written. `run_deadline` is the
+/// deadline of the run the call belongs to, which bounds every SQL leg with
+/// the connector's `query_timeout_ms` ([`QueryBudget::within`]).
 async fn run_write(
     backends: Backends<'_>,
     parsed: &DataWrite<'_>,
@@ -99,30 +83,6 @@ async fn run_write(
     }
 
     Ok(match conn {
-        ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-            // A MongoDB connection string carries no default database, so
-            // this is the one branch that requires the task to name one.
-            let database = parsed.database.as_deref().ok_or_else(|| {
-                HandlerError::new(
-                    ErrorClass::CallerInput,
-                    format!("{NAME} requires 'database' field"),
-                )
-            })?;
-            let mw = query::backend::mongo::render_write(&resolved).map_err(HandlerError::from)?;
-            let client = backends
-                .mongo_pool_cache
-                .get_client(connector, db)
-                .await
-                .map_err(to_connect_error)?;
-            // F11: bound the write like the SQL branches bound theirs.
-            // The error passes through as itself (`QueryFailure::Classified`):
-            // `execute_mongo` has already decided between a partial-bulk
-            // 207, a duplicate-key 409 and a backend failure, and
-            // stringifying it here threw all three away.
-            QueryBudget::within(db.query_timeout_ms, run_deadline)
-                .run(NAME, execute_mongo(&client, database, mw))
-                .await?
-        }
         ConnectorConfig::Db(db) => {
             let dialect: SqlDialect = detect_backend(&db.connection_string)
                 .map_err(to_exec_error)?
@@ -145,12 +105,8 @@ async fn run_write(
             )
             .await?
         }
-        ConnectorConfig::Es(es) => {
-            let ew = query::backend::es::render_write(&resolved).map_err(HandlerError::from)?;
-            run_es_write(backends.http_client, es, ew).await?
-        }
-        // `DataBackend` admits `db` and `es` and nothing else; the
-        // wrong-type refusal this arm used to write is the wrapper's now.
+        // `DataBackend` admits `db` and nothing else; the wrong-type
+        // refusal this arm used to write is the wrapper's now.
         other => unreachable!(
             "DataBackend admitted a '{}' connector",
             other.connector_type()
@@ -162,11 +118,10 @@ async fn run_write(
 /// The connector and the envelope are required at load (I183). The envelope
 /// and the schema are literal documents, `{"param": …}` holes and all, for
 /// Orion's own dialect to fold; `params` and the rendering choices are
-/// documents of `var` holes, as 1.12 folded them. `database` keeps 1.12's
-/// reading: a string names the database, anything else is none.
+/// documents of `var` holes, as 1.12 folded them.
 #[derive(Debug, FunctionConfig)]
 pub struct DataWriteConfig {
-    /// The `db` or `es` connector written through.
+    /// The `db` connector written through.
     connector: String,
     /// The backend-neutral mutation envelope.
     write: Value,
@@ -174,8 +129,6 @@ pub struct DataWriteConfig {
     params: Option<Interpolated>,
     /// The inline entity schema.
     schema: Option<Value>,
-    /// The MongoDB database, read only when it is a string.
-    database: Option<Value>,
     /// How a decimal column in a `returning` row renders. SQL backends only.
     numeric_as: Option<Interpolated>,
     /// How a binary column in a `returning` row renders. SQL backends only.
@@ -186,12 +139,9 @@ pub struct DataWriteConfig {
 }
 
 /// `data_write` as a dataflow-rs 4 function: the write `DataWriteHandler`
-/// makes, read in the same order, a partially applied bulk write answering
-/// `Outcome::Status(207)`.
+/// makes, read in the same order.
 pub struct DataWriteFunction {
     pub pool_cache: Arc<SqlPoolCache>,
-    pub mongo_pool_cache: Arc<MongoPoolCache>,
-    pub http_client: reqwest::Client,
     pub registry: Arc<ConnectorRegistry>,
     /// Safety bounds (`max_rows` / `allow_unfiltered`) from `[write]`.
     pub write_config: crate::config::WriteConfig,
@@ -227,11 +177,6 @@ impl Function for DataWriteFunction {
             )?,
             schema: cfg.schema.as_ref().map(Cow::Borrowed),
             envelope: Cow::Borrowed(&cfg.write),
-            database: cfg
-                .database
-                .as_ref()
-                .and_then(Value::as_str)
-                .map(Cow::Borrowed),
         };
         let run_deadline = ctx.deadline();
         let mut answer = None;
@@ -241,8 +186,6 @@ impl Function for DataWriteFunction {
                 kit::require_connector::<crate::connector::DataBackend>(&config, &cfg.connector)?;
             let backends = Backends {
                 pool_cache: &self.pool_cache,
-                mongo_pool_cache: &self.mongo_pool_cache,
-                http_client: &self.http_client,
                 write_config: &self.write_config,
                 max_returning: self.max_returning,
             };
@@ -258,7 +201,6 @@ impl Function for DataWriteFunction {
                 dataflow_rs::datavalue::OwnedDataValue::from(&answer),
             )?;
         }
-        // F28: a partially applied bulk write is a 207, not a success.
         Ok(done)
     }
 }
@@ -351,8 +293,8 @@ async fn execute_sql(
             }
         }
     );
-    // SQL is the atomic member of the three write models, so its status is
-    // never `partial`; it carries the key so one check works on every backend.
+    // SQL writes are atomic, so the status is always `ok`; the key is part
+    // of the result's documented shape.
     out["status"] = json!("ok");
     Ok((out, Outcome::Ok))
 }
@@ -453,300 +395,6 @@ where
     }
 }
 
-/// Execute a rendered MongoDB write and normalise its result to a small object.
-async fn execute_mongo(
-    client: &mongodb::Client,
-    database: &str,
-    mw: MongoWrite,
-) -> Result<(Value, Outcome), HandlerError> {
-    let db = client.database(database);
-    match mw {
-        MongoWrite::Insert { collection, docs } => {
-            if docs.is_empty() {
-                return Ok((empty_insert_envelope(), Outcome::Ok));
-            }
-            let sent = docs.len();
-            let coll = db.collection::<Document>(&collection);
-            match coll.insert_many(docs).await {
-                Ok(res) => {
-                    // `inserted_ids` is keyed by input index; return in index order.
-                    let mut pairs: Vec<(usize, mongodb::bson::Bson)> =
-                        res.inserted_ids.into_iter().collect();
-                    pairs.sort_by_key(|(i, _)| *i);
-                    let ids: Vec<Option<Value>> = pairs
-                        .into_iter()
-                        .map(|(_, b)| serde_json::to_value(b).ok())
-                        .collect();
-                    // Through `bulk_result` like every other bulk answer —
-                    // the all-ok case produced the same JSON either way, but
-                    // by a second path.
-                    bulk_result(query::bulk::BulkOutcome::all_ok(ids), "MongoDB insert")
-                }
-                // F28: the ordered default means a mid-array failure has
-                // already committed everything before it. Recover the indices
-                // from the driver's error rather than reporting one opaque
-                // message over a half-written collection.
-                Err(e) => match mongo_write_errors(&e) {
-                    Some(failed) => {
-                        let outcome = query::backend::mongo::insert_outcome(sent, &failed);
-                        // #297: nothing landed and every item hit a unique
-                        // index — the condition SQL answers with 409. A bulk
-                        // that partly applied stays a 207, because the envelope
-                        // says more there than a status can.
-                        if outcome.nothing_applied()
-                            && let Some(err) =
-                                super::mongo_common::all_duplicate_key(&failed, "MongoDB insert")
-                        {
-                            return Err(err);
-                        }
-                        bulk_result(outcome, "MongoDB insert")
-                    }
-                    None => Err(super::mongo_common::mongo_error(e)),
-                },
-            }
-        }
-        MongoWrite::Update {
-            collection,
-            filter,
-            update,
-            upsert,
-            multi,
-        } => {
-            let coll = db.collection::<Document>(&collection);
-            let res = if multi {
-                coll.update_many(filter, update)
-                    .await
-                    .map_err(super::mongo_common::mongo_error)?
-            } else {
-                coll.update_one(filter, update)
-                    .upsert(upsert)
-                    .await
-                    .map_err(super::mongo_common::mongo_error)?
-            };
-            Ok((update_envelope(&res), Outcome::Ok))
-        }
-        MongoWrite::Delete { collection, filter } => {
-            let coll = db.collection::<Document>(&collection);
-            let res = coll
-                .delete_many(filter)
-                .await
-                .map_err(super::mongo_common::mongo_error)?;
-            Ok((delete_envelope(res.deleted_count), Outcome::Ok))
-        }
-    }
-}
-
-/// Extract `(index, detail)` pairs from an ordered `insert_many` failure.
-///
-/// `None` when the error is not a per-item write failure at all — a dropped
-/// connection, an auth refusal or a write-concern failure says nothing about
-/// which documents landed, so it stays a plain execution error. An *empty*
-/// list counts as `None` for the same reason: reporting no failed item for a
-/// call that failed would turn the error into a success.
-pub(super) fn mongo_write_errors(e: &mongodb::error::Error) -> Option<Vec<(usize, Value)>> {
-    let mongodb::error::ErrorKind::InsertMany(bulk) = e.kind.as_ref() else {
-        return None;
-    };
-    let errors = bulk.write_errors.as_ref().filter(|w| !w.is_empty())?;
-    Some(
-        errors
-            .iter()
-            .map(|we| {
-                (
-                    we.index,
-                    json!({ "code": we.code, "message": we.message.clone() }),
-                )
-            })
-            .collect(),
-    )
-}
-
-/// Turn a bulk outcome into the handler's `(result, outcome)` pair (F28).
-///
-/// A partial bulk is reported as multi-status, not as an error: failing the
-/// task would abort the workflow while leaving the applied prefix unnamed,
-/// which is precisely the defect. `207` keeps the applied/failed detail on the
-/// output path and stamps the audit trail with something other than `200`, so
-/// a partial write is visible in traces without being fatal.
-///
-/// Nothing applied is still a hard error — there is no partial state to
-/// describe, and a silent no-op would be worse than a failed workflow.
-pub(super) fn bulk_result(
-    outcome: query::bulk::BulkOutcome,
-    what: &str,
-) -> Result<(Value, Outcome), HandlerError> {
-    if outcome.nothing_applied() {
-        let first = outcome.first_error().cloned().unwrap_or(Value::Null);
-        return Err(HandlerError::new(
-            ErrorClass::Backend,
-            format!("{what} failed, no documents were written: {first}"),
-        ));
-    }
-    let task = if outcome.is_partial() {
-        Outcome::Status(PARTIAL_STATUS)
-    } else {
-        Outcome::Ok
-    };
-    Ok((outcome.to_json(), task))
-}
-
-/// Build `{base}/{segments...}?{query...}` with percent-encoded path segments
-/// (the document `_id` travels in the path).
-fn es_url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Result<String, HandlerError> {
-    let mut url = url::Url::parse(base).map_err(to_exec_error)?;
-    url.path_segments_mut()
-        .map_err(|_| {
-            HandlerError::new(
-                ErrorClass::CallerInput,
-                "es connector url cannot be a base".to_string(),
-            )
-        })?
-        .pop_if_empty()
-        .extend(segments);
-    for (k, v) in query {
-        url.query_pairs_mut().append_pair(k, v);
-    }
-    Ok(url.into())
-}
-
-/// Execute a rendered Elasticsearch write and normalise its result to the same
-/// small object the Mongo path returns.
-///
-/// Every write requests a refresh (`wait_for` doc-level; `true` on the by-query
-/// endpoints, which don't support `wait_for`) so a `data_query` later in the same
-/// pipeline reads its own writes — parity with SQL/Mongo visibility, at a
-/// throughput cost. A per-envelope knob is future work.
-async fn run_es_write(
-    client: &reqwest::Client,
-    es: &EsConnectorConfig,
-    ew: EsWrite,
-) -> Result<(Value, Outcome), HandlerError> {
-    match ew {
-        EsWrite::BulkInsert { index, docs } => {
-            if docs.is_empty() {
-                return Ok((
-                    json!({ "status": "ok", "inserted": 0, "ids": [] }),
-                    Outcome::Ok,
-                ));
-            }
-            let sent = docs.len();
-            let url = es_url(&es.url, &[&index, "_bulk"], &[("refresh", "wait_for")])?;
-            let req = es_request(client, es, reqwest::Method::POST, &url)
-                .await?
-                .header("Content-Type", "application/x-ndjson")
-                .body(bulk_ndjson(&docs));
-            let (status, body) = send_es(req, es.max_response_size).await?;
-            if !status.is_success() {
-                return Err(es_write_error(status, &body));
-            }
-            // F28: `_bulk` attempts every item independently, so any subset can
-            // have landed. Report all of them rather than the first error.
-            bulk_result(
-                query::backend::es::bulk_outcome(&body, sent),
-                "Elasticsearch bulk insert",
-            )
-        }
-        EsWrite::UpdateByQuery { index, body } => {
-            let resp = run_by_query(client, es, &index, "_update_by_query", &body).await?;
-            Ok((
-                json!({ "status": "ok", "matched": resp["total"], "modified": resp["updated"] }),
-                Outcome::Ok,
-            ))
-        }
-        EsWrite::DeleteByQuery { index, body } => {
-            let resp = run_by_query(client, es, &index, "_delete_by_query", &body).await?;
-            Ok((
-                json!({ "status": "ok", "deleted": resp["deleted"] }),
-                Outcome::Ok,
-            ))
-        }
-        EsWrite::UpdateDoc { index, id, body } => {
-            let url = es_url(
-                &es.url,
-                &[&index, "_update", &id],
-                &[("refresh", "wait_for")],
-            )?;
-            let req = es_request(client, es, reqwest::Method::POST, &url)
-                .await?
-                .json(&body);
-            let (status, resp) = send_es(req, es.max_response_size).await?;
-            if !status.is_success() {
-                return Err(es_write_error(status, &resp));
-            }
-            let out = match resp.get("result").and_then(|r| r.as_str()) {
-                Some("created") => {
-                    json!({ "status": "ok", "matched": 0, "modified": 0, "upserted_id": id })
-                }
-                Some("noop") => json!({ "status": "ok", "matched": 1, "modified": 0 }),
-                _ => json!({ "status": "ok", "matched": 1, "modified": 1 }),
-            };
-            Ok((out, Outcome::Ok))
-        }
-        EsWrite::CreateDoc { index, id, doc } => {
-            let url = es_url(
-                &es.url,
-                &[&index, "_doc", &id],
-                &[("op_type", "create"), ("refresh", "wait_for")],
-            )?;
-            let req = es_request(client, es, reqwest::Method::PUT, &url)
-                .await?
-                .json(&doc);
-            let (status, resp) = send_es(req, es.max_response_size).await?;
-            if status == reqwest::StatusCode::CONFLICT {
-                // The document exists — `action: "nothing"` semantics.
-                return Ok((
-                    json!({ "status": "ok", "matched": 1, "modified": 0 }),
-                    Outcome::Ok,
-                ));
-            }
-            if !status.is_success() {
-                return Err(es_write_error(status, &resp));
-            }
-            Ok((
-                json!({ "status": "ok", "matched": 0, "modified": 0, "upserted_id": id }),
-                Outcome::Ok,
-            ))
-        }
-    }
-}
-
-/// POST an `_update_by_query` / `_delete_by_query` body (with `refresh=true`) and
-/// surface failures/version conflicts as errors — the endpoints run with the
-/// default `conflicts=abort`, matching parity-or-error.
-async fn run_by_query(
-    client: &reqwest::Client,
-    es: &EsConnectorConfig,
-    index: &str,
-    endpoint: &str,
-    body: &Value,
-) -> Result<Value, HandlerError> {
-    let url = es_url(&es.url, &[index, endpoint], &[("refresh", "true")])?;
-    let req = es_request(client, es, reqwest::Method::POST, &url)
-        .await?
-        .json(body);
-    let (status, resp) = send_es(req, es.max_response_size).await?;
-    if !status.is_success() {
-        return Err(es_write_error(status, &resp));
-    }
-    let failed = resp
-        .get("failures")
-        .and_then(|f| f.as_array())
-        .is_some_and(|f| !f.is_empty())
-        || resp
-            .get("version_conflicts")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            > 0;
-    if failed {
-        let preview = super::connector_helpers::format_upstream_error_preview(&resp);
-        return Err(HandlerError::new(
-            ErrorClass::Backend,
-            format!("Elasticsearch {endpoint} had failures: {preview}"),
-        ));
-    }
-    Ok(resp)
-}
-
 // -- Input schema (F53) --
 //
 // The table describing this handler's `function.input` lives next to the
@@ -758,7 +406,7 @@ async fn run_by_query(
 pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "connector",
-        description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to write to.",
+        description: "Name of the db (SQL) connector to write to.",
         kind: FieldKind::String,
         required: true,
         ..FieldSchema::DEFAULT
@@ -789,15 +437,6 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
                       entities and columns are rejected, so a write without one reaches \
                       nothing; pass {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
         kind: FieldKind::Object,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "database",
-        description: "MongoDB database name. Optional here because the same task shape is \
-                      valid against SQL and Elasticsearch, which need no database key; \
-                      required — and checked at workflow activation — once the referenced \
-                      connector is a MongoDB one (F52).",
-        kind: FieldKind::String,
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -833,7 +472,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "target",
-        description: "Logical entity to write to (schema-resolved to a table/collection).",
+        description: "Logical entity to write to (schema-resolved to a table).",
         kind: FieldKind::String,
         required: true,
         ..FieldSchema::DEFAULT
@@ -880,72 +519,6 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::bulk::{BulkOutcome, ItemOutcome};
-
-    /// The three-way classification F28 turns a doc-store bulk into. It is the
-    /// most consequential behaviour change in the wave — a partial write no
-    /// longer aborts the workflow — and it is a pure function over
-    /// `BulkOutcome`, so it is checked here rather than only through a
-    /// container.
-    #[test]
-    fn a_clean_bulk_is_a_plain_success() {
-        let (out, task) = bulk_result(
-            BulkOutcome::all_ok(vec![Some(json!("a")), Some(json!("b"))]),
-            "MongoDB insert",
-        )
-        .expect("a clean bulk is not an error");
-        assert_eq!(task, Outcome::Ok);
-        assert_eq!(out["status"], "ok", "{out}");
-        assert_eq!(out["inserted"], 2, "{out}");
-    }
-
-    /// A partial write reports 207 and keeps going: erroring would abort the
-    /// workflow while leaving the applied prefix unnamed, which is the defect.
-    #[test]
-    fn a_partial_bulk_is_multi_status_not_an_error() {
-        let (out, task) = bulk_result(
-            BulkOutcome {
-                items: vec![
-                    ItemOutcome::ok(0, Some(json!("a"))),
-                    ItemOutcome::error(1, json!({ "code": 11000 })),
-                    ItemOutcome::skipped(2),
-                ],
-            },
-            "MongoDB insert",
-        )
-        .expect("a partial write must not fail the task");
-        assert_eq!(
-            task,
-            Outcome::Status(PARTIAL_STATUS),
-            "a partial write must be visible in the audit trail as 207"
-        );
-        assert_eq!(out["status"], "partial", "{out}");
-        assert_eq!(out["items"][1]["index"], 1, "{out}");
-    }
-
-    /// Nothing landed, so there is no partial state to describe — and a
-    /// silent no-op would be worse than a failed workflow. The message names
-    /// the first failure so the trace says *why*.
-    #[test]
-    fn a_bulk_that_applied_nothing_is_a_hard_error() {
-        let err = bulk_result(
-            BulkOutcome {
-                items: vec![
-                    ItemOutcome::error(0, json!({ "message": "duplicate key" })),
-                    ItemOutcome::skipped(1),
-                ],
-            },
-            "MongoDB insert",
-        )
-        .expect_err("a bulk that wrote nothing is a failure");
-        let msg = err.to_string();
-        assert!(msg.contains("MongoDB insert"), "{msg}");
-        assert!(msg.contains("duplicate key"), "must name why: {msg}");
-    }
-
-    // -- the config, and calls over in-memory SQLite and a mock
-    // Elasticsearch node, against 1.12's records --
-
     use std::time::Duration;
 
     use crate::engine::functions::twin::{self, Seen};
@@ -964,8 +537,6 @@ mod tests {
     ) -> DataWriteFunction {
         DataWriteFunction {
             pool_cache,
-            mongo_pool_cache: Arc::new(MongoPoolCache::new(8)),
-            http_client: reqwest::Client::new(),
             registry,
             write_config: crate::config::WriteConfig::default(),
             max_returning: 1000,
@@ -1027,8 +598,7 @@ mod tests {
         let params = json!({"s": {"var": "data.status"}, "id": {"var": "data.who"}});
         let cfg = testing::config_with::<DataWriteConfig>(
             &crate::engine::kit::test_exprs(),
-            json!({"connector": "db", "write": envelope.clone(), "params": params.clone(),
-                   "database": ["not", "a", "string"]}),
+            json!({"connector": "db", "write": envelope.clone(), "params": params.clone()}),
         )
         .expect("compiles");
         assert_eq!(cfg.write, envelope, "the envelope is literal");
@@ -1137,81 +707,6 @@ mod tests {
             pinned(&v4, &key);
             assert!(v4.0.is_err(), "{input}");
             assert_eq!(v4.1, json!([["u1", "active"]]), "{input}");
-        }
-    }
-
-    /// A mock Elasticsearch node answering `_bulk` with `items`, counting
-    /// the requests it sees.
-    async fn es_node(items: Value) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let seen = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&seen);
-        let app = axum::Router::new().fallback(move || {
-            let counter = Arc::clone(&counter);
-            let items = items.clone();
-            async move {
-                counter.fetch_add(1, Ordering::SeqCst);
-                axum::Json(json!({"took": 1, "errors": true, "items": items}))
-            }
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
-        (addr, seen)
-    }
-
-    /// F28: a bulk insert that applied some of its items
-    /// answers `Outcome::Status(207)` with the applied and failed items at
-    /// `output`, where 1.12 recorded status 207; one that applied all is a
-    /// plain success, and one that applied none a hard error, as on 1.12.
-    #[tokio::test]
-    async fn a_partial_bulk_write_is_outcome_status_207() {
-        let ok = |id: &str| json!({"index": {"_id": id, "status": 201, "result": "created"}});
-        let failed = json!({"index": {"_id": "b", "status": 400,
-                             "error": {"type": "mapper_parsing_exception", "reason": "bad"}}});
-        let input = write(json!({"op": "insert", "target": "events", "values": [
-            {"id": "a", "n": 1}, {"id": "b", "n": "x"}
-        ]}));
-        for (label, items, outcome) in [
-            (
-                "partial",
-                json!([ok("a"), failed.clone()]),
-                Some(Outcome::Status(207)),
-            ),
-            ("all", json!([ok("a"), ok("b")]), Some(Outcome::Ok)),
-            ("none", json!([failed.clone(), failed]), None),
-        ] {
-            let (addr, requests) = es_node(items.clone()).await;
-            let connector = json!({
-                "type": "es", "url": format!("http://{addr}"), "allow_private_urls": true
-            });
-            let registry = twin::connectors(&[("db", connector)]).await;
-            let pool_cache = Arc::new(SqlPoolCache::new(8));
-            let called = testing::call(function(pool_cache, registry), input.clone())
-                .exprs(crate::engine::kit::test_exprs())
-                .name(NAME)
-                .await;
-            // The outcome is the status 1.12's audit entry recorded: 207 for
-            // a partial write, 200 for a whole one.
-            let done = called.outcome.as_ref().ok().copied();
-            assert_eq!(done, outcome, "{items}");
-            let v4 = twin::seen(&called);
-            twin::pinned(&v4, format!("a_partial_bulk_write/{label}"));
-            assert_eq!(
-                requests.load(std::sync::atomic::Ordering::SeqCst),
-                1,
-                "one bulk request"
-            );
-            match outcome {
-                Some(Outcome::Status(207)) => {
-                    let answer = v4.clone().expect("a partial write is not an error");
-                    assert_eq!(answer["w"]["status"], "partial", "{answer}");
-                }
-                Some(_) => assert_eq!(v4.clone().expect("written")["w"]["status"], "ok"),
-                None => assert!(v4.is_err(), "nothing applied"),
-            }
         }
     }
 

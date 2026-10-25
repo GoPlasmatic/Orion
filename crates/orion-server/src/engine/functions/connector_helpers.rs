@@ -4,9 +4,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::connector::ConnectorTarget;
-use crate::connector::{
-    ConnectorConfig, ConnectorRegistry, EsConnectorConfig, HttpOperationGates, OperationGates,
-};
+use crate::connector::{ConnectorConfig, ConnectorRegistry, HttpOperationGates, OperationGates};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::query::EntityRegistry;
 
@@ -57,7 +55,7 @@ pub fn require_op_allowed(
     require_op(gates.allows(op), op, connector_name)
 }
 
-/// [`require_op_allowed`] for the gates that are not the db/es set: the cache
+/// [`require_op_allowed`] for the gates that are not the db set: the cache
 /// (`read` / `write`) and Kafka (`publish`) gates each have their own struct,
 /// because a `raw_write` flag on a cache would be a field nothing reads (F22e).
 /// The refusal is worded identically whatever the connector type.
@@ -88,126 +86,6 @@ pub fn require_method_allowed(
     Ok(())
 }
 
-/// Build an Elasticsearch HTTP request with the connector's auth and timeout
-/// applied. Shared by the `data_query` search path and the `data_write` write
-/// path. Enforces the same SSRF pre-check as `execute_request` unless the
-/// connector opts out via `allow_private_urls`.
-pub async fn es_request(
-    client: &reqwest::Client,
-    es: &EsConnectorConfig,
-    method: reqwest::Method,
-    url: &str,
-) -> Result<reqwest::RequestBuilder, HandlerError> {
-    if !es.allow_private_urls
-        && let Err(msg) = crate::validation::validate_url_not_private(url).await
-    {
-        return Err(to_exec_error(format!("SSRF protection: {msg}")));
-    }
-
-    let mut req = client.request(method, url);
-    if let Some(auth) = &es.auth {
-        req = super::http_common::apply_auth(req, auth);
-    }
-    if let Some(ms) = es.request_timeout_ms {
-        req = req.timeout(Duration::from_millis(ms));
-    }
-    Ok(req)
-}
-
-/// Read an ES response body as JSON, enforcing the connector's
-/// `max_response_size` (F12) — the same guard `execute_request` applies to
-/// `http_call` responses. Without it a large `_search` result was buffered
-/// wholesale.
-pub async fn read_es_body(resp: reqwest::Response, max_size: usize) -> Result<Value, HandlerError> {
-    // Bounded *while streaming* (`http_body`): a `_search` that answers with
-    // no `Content-Length` used to be buffered whole and measured afterwards,
-    // so the cap bounded what the workflow received and not what the node
-    // held. `max_size` is per connector, so the exposure scaled with the
-    // largest configured limit times the in-flight ES calls.
-    let bytes = crate::http_body::read_bounded(resp, max_size)
-        .await
-        .map_err(|e| to_exec_error(format!("Elasticsearch response {e}")))?;
-    serde_json::from_slice(&bytes).map_err(to_exec_error)
-}
-
-/// Send an ES request and parse its JSON body. Returns the status alongside so
-/// callers can treat specific non-2xx statuses as semantic (`op_type=create`
-/// treats 409 as the "conflict → do nothing" no-op).
-pub async fn send_es(
-    req: reqwest::RequestBuilder,
-    max_response_size: usize,
-) -> Result<(reqwest::StatusCode, Value), HandlerError> {
-    // A send that fails never reached Elasticsearch: retryable, and what the
-    // breaker counts, as a SQL, Redis or MongoDB connect failure is (F42).
-    // `without_url`: a transport failure's `Display` carries the endpoint it
-    // was given, and an ES connector URL can hold credentials in userinfo or
-    // the query (#281). The connector name is the diagnostic here.
-    let resp = req.send().await.map_err(|e| {
-        if e.is_timeout() {
-            HandlerError::new(ErrorClass::Timeout, e.without_url())
-        } else {
-            to_connect_error(e.without_url())
-        }
-    })?;
-    let status = resp.status();
-    let body: Value = read_es_body(resp, max_response_size).await?;
-    Ok((status, body))
-}
-
-/// Redact secret-bearing keys and URL credentials/query secrets from an
-/// upstream JSON error body and format a bounded preview capped at
-/// `http_body::ERROR_BODY_PREVIEW_LIMIT` (512 bytes) (`TD-12`).
-pub fn format_upstream_error_preview(body: &Value) -> String {
-    let redacted = redact_error_json(body, 0);
-    let raw = redacted.to_string();
-    truncate_error_preview(&raw, crate::http_body::ERROR_BODY_PREVIEW_LIMIT)
-}
-
-fn redact_error_json(val: &Value, depth: usize) -> Value {
-    if depth > 16 {
-        return Value::String("...(nested)...".to_string());
-    }
-    match val {
-        Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len());
-            for (k, v) in map {
-                if crate::connector::is_secret_key(k) {
-                    out.insert(k.clone(), Value::String(crate::connector::MASK.to_string()));
-                } else {
-                    out.insert(k.clone(), redact_error_json(v, depth + 1));
-                }
-            }
-            Value::Object(out)
-        }
-        Value::Array(items) => Value::Array(
-            items
-                .iter()
-                .take(32)
-                .map(|v| redact_error_json(v, depth + 1))
-                .collect(),
-        ),
-        Value::String(s) => Value::String(crate::connector::redact_url_secrets_or_raw(s)),
-        other => other.clone(),
-    }
-}
-
-fn truncate_error_preview(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}... (truncated)", &s[..end])
-}
-
-/// Uniform error for a non-2xx Elasticsearch write response.
-pub fn es_write_error(status: reqwest::StatusCode, body: &Value) -> HandlerError {
-    let preview = format_upstream_error_preview(body);
-    to_exec_error(format!("Elasticsearch write failed ({status}): {preview}"))
-}
-
 /// The backend was reached and the operation failed.
 ///
 /// Kept as a named constructor because `.map_err(to_exec_error)` reads better
@@ -221,7 +99,7 @@ pub fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
 ///
 /// [`ErrorClass::Connector`] rather than [`ErrorClass::Backend`] because the
 /// first is retryable and the second is not. Before F42 every non-HTTP connector failure went through
-/// [`to_exec_error`], so a dead Postgres, Redis or MongoDB was a non-retryable
+/// [`to_exec_error`], so a dead Postgres or Redis was a non-retryable
 /// 500 while the *identical* HTTP outage was a retryable `Io` — DLQ retry
 /// policy diverged by backend for no principled reason.
 ///
@@ -277,14 +155,13 @@ pub enum QueryFailure {
     /// The operation classified the failure itself and handed back a
     /// finished [`HandlerError`].
     ///
-    /// Some operations are not one driver call: `data_write`'s MongoDB branch
-    /// decides between a partial-bulk 207, a duplicate-key 409 and a plain
-    /// backend failure *before* the timeout wrapper ever sees a result. Those
-    /// used to be flattened with `.map_err(|e| e.to_string())` on the way in,
-    /// which routed them through [`From<String>`] — unconditionally
-    /// [`Self::Backend`] — so the classification was built and then discarded
-    /// one line later, and the caller got a double-prefixed message with the
-    /// wrong status. Passing the error through is the whole variant.
+    /// Some operations are not one driver call: `data_write` classifies a
+    /// parameter that will not bind (a 400 naming the placeholder) *before*
+    /// the timeout wrapper ever sees a result. Flattened with
+    /// `.map_err(|e| e.to_string())` on the way in, it would route through
+    /// [`From<String>`] — unconditionally [`Self::Backend`] — so the
+    /// classification would be built and then discarded one line later.
+    /// Passing the error through is the whole variant.
     Classified(HandlerError),
 }
 
@@ -344,33 +221,6 @@ impl std::fmt::Display for QueryFailure {
             Self::Classified(e) => write!(f, "{e}"),
         }
     }
-}
-
-/// A connector targets MongoDB when its connection string uses a `mongodb`
-/// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
-pub use crate::connector::is_mongo_url as is_mongo;
-
-/// Refuse a MongoDB connector for a handler that speaks SQL.
-///
-/// `require_db_connector` only checks the `ConnectorConfig` variant, and both
-/// SQL and MongoDB connectors are `Db`. Without this, a `mongodb://` string
-/// reached `AnyPool` and surfaced as an opaque driver error rather than a
-/// validation one — the mirror of the `mongo_read` gap (proposal F29).
-pub fn reject_mongo_connector(
-    function: &str,
-    connector_name: &str,
-    db_config: &crate::connector::DbConnectorConfig,
-) -> Result<(), HandlerError> {
-    if is_mongo(&db_config.connection_string) {
-        return Err(HandlerError::new(
-            ErrorClass::CallerInput,
-            format!(
-                "{function} requires a SQL connector, but '{connector_name}' is a MongoDB \
-             connector — use mongo_read or data_query for MongoDB"
-            ),
-        ));
-    }
-    Ok(())
 }
 
 /// Looks up a connector by name in the registry, returning a function-execution
@@ -615,104 +465,13 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::connector::DialectGuards;
-
-    /// An Elasticsearch node that streams a `_search` result without
-    /// declaring a length cannot make this buffer past `max_response_size`.
-    ///
-    /// The cap used to run after `bytes()` had read the body to its end, so a
-    /// hit set larger than the limit was held in full before being refused —
-    /// and `max_response_size` is per connector, so the exposure was that
-    /// number times the ES calls in flight.
-    #[tokio::test]
-    async fn a_flooding_es_response_is_cut_off_at_the_cap() {
-        const CHUNK: usize = 64 * 1024;
-        const CHUNKS: usize = 128; // 8 MiB against the 4 KiB cap below
-        let (url, server) = crate::http_body::flood_server(CHUNK, CHUNKS).await;
-
-        let response = reqwest::Client::new()
-            .get(url)
-            .send()
-            .await
-            .expect("response head");
-        let err = read_es_body(response, 4096)
-            .await
-            .expect_err("must refuse an oversized hit set");
-
-        let msg = err.to_string();
-        assert!(
-            msg.contains("Elasticsearch response") && msg.contains("4096"),
-            "the refusal must name the connector's limit: {msg}"
-        );
-        crate::http_body::assert_stopped_early(
-            server.await.expect("test server"),
-            CHUNK * CHUNKS,
-            "read_es_body",
-        );
-    }
-
-    fn es_config(allow_private_urls: bool) -> EsConnectorConfig {
-        EsConnectorConfig {
-            max_response_size: 10 * 1024 * 1024,
-            url: "http://127.0.0.1:9200".to_string(),
-            auth: None,
-            request_timeout_ms: None,
-            allow_private_urls,
-            operations: OperationGates::default(),
-            dialect: DialectGuards::default(),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_es_request_blocks_private_url() {
-        let client = reqwest::Client::new();
-        let result = es_request(
-            &client,
-            &es_config(false),
-            reqwest::Method::POST,
-            "http://127.0.0.1:9200/idx/_search",
-        )
-        .await;
-
-        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(err.contains("SSRF protection"), "unexpected error: {err}");
-    }
-
-    #[tokio::test]
-    async fn test_es_request_allows_private_url_when_opted_in() {
-        let client = reqwest::Client::new();
-        let result = es_request(
-            &client,
-            &es_config(true),
-            reqwest::Method::POST,
-            "http://127.0.0.1:9200/idx/_search",
-        )
-        .await;
-
-        assert!(result.is_ok());
-    }
-}
-
-#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod error_taxonomy_tests {
     use super::*;
 
-    /// An Elasticsearch outage is retryable, as every other connector's is.
-    #[tokio::test]
-    async fn an_unreachable_elasticsearch_is_retryable() {
-        let client = reqwest::Client::new();
-        let err = send_es(client.get("http://127.0.0.1:1/_search"), 1024)
-            .await
-            .expect_err("nothing listens on port 1");
-        assert!(dataflow_rs::Error::from(err).is_retryable());
-    }
-
     type DataflowError = dataflow_rs::Error;
 
-    /// F42: a dead Postgres/Redis/Mongo used to be a **non-retryable** 500
+    /// F42: a dead Postgres/Redis used to be a **non-retryable** 500
     /// while the identical HTTP outage was a retryable `Io`, so DLQ retry
     /// policy diverged by backend for no principled reason.
     ///
@@ -884,48 +643,6 @@ mod error_taxonomy_tests {
             back.message(),
             "The request conflicts with an existing record",
             "Display is the caller-safe half and must not carry the driver text"
-        );
-    }
-
-    #[test]
-    fn upstream_error_preview_redacts_secrets_and_truncates_to_512_bytes() {
-        let long_reason = "x".repeat(1000);
-        let body = serde_json::json!({
-            "error": {
-                "type": "mapper_parsing_exception",
-                "reason": long_reason,
-                "api_key": "super-secret-api-key",
-                "authorization": "Bearer secret-jwt-token",
-                "endpoint": "https://admin:hunter2@es.internal:9200/orders/_doc?token=my-secret"
-            }
-        });
-        let preview = format_upstream_error_preview(&body);
-        assert!(
-            !preview.contains("super-secret-api-key"),
-            "secret key value must be redacted: {preview}"
-        );
-        assert!(
-            !preview.contains("secret-jwt-token"),
-            "authorization value must be redacted: {preview}"
-        );
-        assert!(
-            !preview.contains("hunter2"),
-            "URL userinfo password must be redacted: {preview}"
-        );
-        assert!(
-            !preview.contains("my-secret"),
-            "URL query secret must be redacted: {preview}"
-        );
-        assert!(
-            preview.ends_with("... (truncated)"),
-            "oversized body must be truncated: {preview}"
-        );
-        let prefix = preview.strip_suffix("... (truncated)").unwrap();
-        assert!(
-            prefix.len() <= crate::http_body::ERROR_BODY_PREVIEW_LIMIT,
-            "preview prefix length {} exceeds limit {}",
-            prefix.len(),
-            crate::http_body::ERROR_BODY_PREVIEW_LIMIT
         );
     }
 }

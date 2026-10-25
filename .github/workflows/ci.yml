@@ -857,8 +857,8 @@ jobs:
       matrix:
         include:
           # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins
-          # up ephemeral Postgres / MySQL / MongoDB / Elasticsearch / Redis /
-          # Kafka containers on demand. Filters are substring matches on the
+          # up ephemeral Postgres / MySQL / Redis / Vault / Kafka containers
+          # on demand. Filters are substring matches on the
           # full module::test path — every module with #[ignore] tests must
           # appear on one of these lines by module name, or its tests never
           # run anywhere.
@@ -867,17 +867,16 @@ jobs:
           # critical path: 462s as one leg,
           # against 258s for the next longest. Divided by the backend each
           # module starts a container for, which is what the time is actually
-          # spent on — Postgres/MySQL on one, MongoDB/Elasticsearch/Redis/
-          # Vault on the other. Every test brings up its own container, so the
+          # spent on — Postgres/MySQL on one, Redis/Vault on the other. Every test brings up its own container, so the
           # grouping is free to change; keep the two legs balanced.
           - name: data-sql
             run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test sql_check_test
 
           - name: data-nosql
-            run: cargo test --test integration -- --ignored mongodb_test es_test connector_redis_test dynamic_inputs_test vault_test
+            run: cargo test --test integration -- --ignored connector_redis_test vault_test
 
           # Kafka gets its own leg: each test starts its own broker container,
-          # and sharing one invocation with the Postgres/MySQL/Mongo/ES
+          # and sharing one invocation with the Postgres/MySQL
           # containers starves them — producers fail with MessageTimedOut
           # while brokers fight for CPU. Measured on the pre-existing suite
           # (no changes): 4 Kafka failures in the combined run, 13/13 green

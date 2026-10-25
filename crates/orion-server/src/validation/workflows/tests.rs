@@ -375,27 +375,28 @@ fn unknown_loop_and_for_each_keys_are_refused_with_a_suggestion() {
     );
 }
 
-/// Build a one-task workflow's `tasks` array around a `mongo_write` input.
-fn mongo_write_tasks(input: serde_json::Value) -> serde_json::Value {
+/// Build a one-task workflow's `tasks` array around a `cache_write` whose
+/// resolvable `value` is `value`.
+fn cache_write_tasks(value: serde_json::Value) -> serde_json::Value {
     serde_json::json!([{
         "id": "w", "name": "Write",
-        "function": {"name": "mongo_write", "input": input}
+        "function": {"name": "cache_write", "input": {
+            "connector": "cache", "key": "k", "value": value
+        }}
     }])
 }
 
 /// The bug the check exists for: an expression in a resolvable field is
-/// stored as a literal BSON object, with no error at write time.
+/// stored as a literal object, with no error at write time.
 #[test]
 fn an_expression_in_a_resolvable_field_is_reported() {
-    let warnings = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
-        "connector": "db", "database": "app", "collection": "sessions",
-        "op": "update_one",
-        "filter": {"_id": {"var": "data.id"}},
-        "update": {"$set": {"expiresAt": {"cat": ["2026-", {"var": "data.month"}]}}}
+    let warnings = unresolvable_logic_warnings(&cache_write_tasks(serde_json::json!({
+        "id": {"var": "data.id"},
+        "session": {"expiresAt": {"cat": ["2026-", {"var": "data.month"}]}}
     })));
     assert_eq!(warnings.len(), 1, "one finding: {warnings:?}");
     assert_eq!(
-        warnings[0].0, "tasks[0].function.input.update.$set.expiresAt",
+        warnings[0].0, "tasks[0].function.input.value.session.expiresAt",
         "the path must point at the node, not the field"
     );
     assert!(warnings[0].1.contains("'cat'"), "{}", warnings[0].1);
@@ -405,10 +406,8 @@ fn an_expression_in_a_resolvable_field_is_reported() {
 /// folds to nothing here — so it gets its own message naming the fix.
 #[test]
 fn a_val_node_is_reported_with_the_var_spelling() {
-    let warnings = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
-        "connector": "db", "database": "app", "collection": "s",
-        "op": "insert_one",
-        "document": {"id": {"val": "data.id"}}
+    let warnings = unresolvable_logic_warnings(&cache_write_tasks(serde_json::json!({
+        "id": {"val": "data.id"}
     })));
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
@@ -418,18 +417,16 @@ fn a_val_node_is_reported_with_the_var_spelling() {
     );
 }
 
-/// Nested inside an extended-JSON wrapper, which is where this bug is most
-/// often written: `{"$date": {"now": []}}` looks like it computes a time.
+/// Nested inside a `$`-keyed wrapper, which is where this bug is most often
+/// written: `{"$date": {"now": []}}` looks like it computes a time.
 #[test]
-fn an_expression_nested_under_extended_json_is_reported() {
-    let warnings = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
-        "connector": "db", "database": "app", "collection": "s",
-        "op": "insert_one",
-        "document": {"createdAt": {"$date": {"now": []}}}
+fn an_expression_nested_under_a_dollar_wrapper_is_reported() {
+    let warnings = unresolvable_logic_warnings(&cache_write_tasks(serde_json::json!({
+        "createdAt": {"$date": {"now": []}}
     })));
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(
-        warnings[0].0.ends_with("document.createdAt.$date"),
+        warnings[0].0.ends_with("value.createdAt.$date"),
         "path: {}",
         warnings[0].0
     );
@@ -437,13 +434,11 @@ fn an_expression_nested_under_extended_json_is_reported() {
 
 /// The false positives that make this a warning rather than an error must
 /// at least not be *reported*. Operator names overlap real field names, and
-/// BSON operators are not JSONLogic at all.
+/// `$`-keyed operators are not JSONLogic at all.
 #[test]
 fn data_that_merely_looks_like_an_operator_is_not_reported() {
-    let clean = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
-        "connector": "db", "database": "app", "collection": "s",
-        "op": "update_one",
-        // `$set`/`$and`/`$lt` are BSON, `{"var": ..}` is folded, and
+    let clean = unresolvable_logic_warnings(&cache_write_tasks(serde_json::json!({
+        // `$set`/`$and`/`$lt` are not JSONLogic, `{"var": ..}` is folded, and
         // `{"length": 120}` is a plain field whose argument is not an array.
         "filter": {"$and": [{"_id": {"var": "data.id"}}, {"n": {"$lt": 5}}]},
         "update": {"$set": {"video": {"length": 120}, "type": "clip"}}
@@ -460,7 +455,7 @@ fn data_that_merely_looks_like_an_operator_is_not_reported() {
 /// binds as one — a `jsonb` document on a JSON column, a type error on any
 /// other, and never the value that was meant. The walk descends into arrays
 /// for exactly this; without that it would report the same mistake in a
-/// `mongo_write` `document` and miss it here.
+/// `cache_write` `value` and miss it here.
 #[test]
 fn an_operator_in_an_array_element_of_a_resolvable_field_is_reported() {
     let warnings = unresolvable_logic_warnings(&serde_json::json!([{

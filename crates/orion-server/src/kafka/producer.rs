@@ -26,7 +26,7 @@ pub struct KafkaProducerCache {
     global: std::sync::Arc<KafkaProducer>,
     auth: KafkaAuthConfig,
     extra_config: HashMap<String, String>,
-    /// The same bounded LRU cache the SQL / Mongo / Redis pool caches use, so
+    /// The same bounded LRU cache the SQL and Redis pool caches use, so
     /// per-cluster producers share their lazy-create, race-resolution and
     /// capacity behaviour.
     cache: LruCache<std::sync::Arc<KafkaProducer>>,

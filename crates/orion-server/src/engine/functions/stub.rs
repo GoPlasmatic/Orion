@@ -174,7 +174,7 @@ pub const RUN_DOCUMENTS: [&str; 5] = ["data", "metadata", "temp_data", "calls", 
 /// Whether a dotted path names one of [`RUN_DOCUMENTS`].
 ///
 /// Reads the first segment, stopping at a `.` or a `[` so `calls[0]` and
-/// `calls.mongo_write` are both rooted at `calls`.
+/// `calls.db_write` are both rooted at `calls`.
 pub fn is_rooted(path: &str) -> bool {
     RUN_DOCUMENTS.contains(&path_root(path))
 }
@@ -498,7 +498,7 @@ mod tests {
     fn the_layer_stubs_every_connector_backed_function_and_only_those() {
         let layer = StubLayer::new(StubTable::new(), Arc::new(CallLog::new()), true);
         let stubbable: Vec<&str> = stubbable_functions().collect();
-        assert_eq!(stubbable.len(), 22, "every Orion function is stubbable");
+        assert_eq!(stubbable.len(), 19, "every Orion function is stubbable");
         for name in &stubbable {
             assert_eq!(
                 layer.stubbed.contains(name),

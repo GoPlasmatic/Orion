@@ -4,7 +4,7 @@
       "code": "connector_detail",
       "message": "Request validation failed",
       "retryable": false,
-      "detail": "Connector 'db' is not a db or es connector"
+      "detail": "Connector 'db' is not a database connector"
     }
   },
   "a_query_timeout_before_the_run_deadline/{\"source\":\"users\",\"count\":true}": {
@@ -21,18 +21,6 @@
       "message": "Timeout error: data_query query timed out after 150ms",
       "retryable": true,
       "detail": null
-    }
-  },
-  "an_elasticsearch_search": {
-    "ok": {
-      "rows": [
-        {
-          "name": "Alice"
-        },
-        {
-          "name": "Bob"
-        }
-      ]
     }
   },
   "numeric_as_binary_as/\"number\" {\"var\":\"data.bad\"}": {

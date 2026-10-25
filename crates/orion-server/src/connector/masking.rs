@@ -152,7 +152,6 @@ const READABLE_KEYS: &[&str] = &[
     "max_connections",
     "connect_timeout_ms",
     "query_timeout_ms",
-    "request_timeout_ms",
     "max_response_size",
     "default_ttl_secs",
     "max_retries",
@@ -169,7 +168,6 @@ const READABLE_KEYS: &[&str] = &[
     "write",
     "publish",
     "methods",
-    "aggregate_write_stages",
     // dialect guards
     "require_schema",
     "allowed_entities",
@@ -839,7 +837,7 @@ mod tests {
 
     #[test]
     fn url_userinfo_password_is_redacted() {
-        let config = r#"{"type":"es","url":"https://elastic:s3cret@es.internal:9200"}"#;
+        let config = r#"{"type":"http","url":"https://elastic:s3cret@es.internal:9200"}"#;
         let masked = mask_connector_secrets(config);
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["url"], "https://elastic:******@es.internal:9200");
@@ -889,8 +887,8 @@ mod tests {
 
     /// A credential bundle's children are not individually secret-looking;
     /// under the allowlist they mask by default — as does any key the
-    /// connector structs do not define (`database` is a mongo_read *task*
-    /// input, not a connector field).
+    /// connector structs do not define (`database` is not a connector
+    /// field).
     #[test]
     fn credential_bundles_mask_every_child() {
         let config = r#"{"type":"db","credentials":{"id":"AKIAEXAMPLE","value":"wJalrXUtn"},"database":"assets"}"#;
@@ -1630,7 +1628,6 @@ mod tests {
             r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#,
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,
-            r#"{"type":"es","url":"https://es:9200"}"#,
             r#"{"type":"storage","endpoint":"https://s3.example.test","region":"r","bucket":"b","access_key":"AK","secret_key":"SK","session_token":"st"}"#,
         ] {
             let parsed: crate::connector::ConnectorConfig =

@@ -1,7 +1,7 @@
 //! The dialect IR — a backend-neutral condition tree (`Cond`) plus its operands.
 //!
 //! A workflow's `filter` (JSONLogic-shaped) is lowered into this tree by
-//! [`crate::query::lower`], and each backend renderer walks it into native query
+//! [`crate::query::lower`], and the SQL renderer walks it into native query
 //! form. The IR is deliberately small and evaluation-free: it exists only to be
 //! translated. The token model and its normative semantics are documented in
 //! `docs/src/reference/data-dialect.md`.
@@ -113,23 +113,9 @@ pub enum Quant {
 
 /// A relation resolved to physical join keys, ready to render. Populated during
 /// lowering from the schema so the renderer never needs the registry.
-///
-/// It deliberately carries every backend's binding hints side by side: lowering
-/// is backend-neutral (the same lowered [`Cond`] must render on whichever
-/// backend the connector turns out to be), so the render target is unknown
-/// here. Today the SQL renderer consumes the join keys and the document stores
-/// consume `name` + their storage hint, but the join keys are not SQL-specific
-/// — a referenced Mongo relation (`$lookup`, currently capability-gated) would
-/// join on exactly the same columns. A storage enum would force lowering to
-/// know the render target, forking the one backend-neutral IR into per-backend
-/// IRs; and grouping the join keys as an "SQL" sub-struct would mislead. The
-/// struct is built in one place and each renderer reads an obvious subset; no
-/// invariant is re-validated and no unreachable state exists, so a type change
-/// prevents nothing (W17, restructure declined).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelRef {
-    /// Logical relation name (Mongo embedded-array field / ES nested path or
-    /// child type / `$lookup` alias).
+    /// Logical relation name, as the filter or `include` wrote it.
     pub name: String,
     /// Physical table of the related entity.
     pub target_table: String,
@@ -140,28 +126,6 @@ pub struct RelRef {
     pub foreign: String,
     /// Junction table for a many-to-many relation.
     pub through: Option<JunctionRef>,
-    /// How the relation is stored in MongoDB (find `$elemMatch` vs `$lookup`).
-    pub mongo: MongoStorage,
-    /// How the relation is stored in Elasticsearch (nested vs child).
-    pub es: EsStorage,
-}
-
-/// How a relation is stored in MongoDB.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MongoStorage {
-    #[default]
-    Embedded,
-    Referenced,
-}
-
-/// How a relation is stored in Elasticsearch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EsStorage {
-    #[default]
-    Nested,
-    Child,
 }
 
 /// The junction table of a many-to-many relation, resolved to physical names.
@@ -229,18 +193,13 @@ impl FieldRef {
 }
 
 /// A literal operand value — always a scalar. Only these variants ever become
-/// bound parameters. The first five map to a driver-portable
-/// `sea_query::Value` (never Decimal/Json/Uuid, which panic under the
-/// `sqlx-any` binder); the two tagged variants (#263) are validated during
-/// lowering, render natively on MongoDB, and are a
-/// [`crate::query::error::QueryError::FeatureUnsupportedByTarget`] on SQL and
-/// Elasticsearch — parity-or-error, never a silently different comparison.
+/// bound parameters, and each maps to a driver-portable `sea_query::Value`
+/// (never Decimal/Json/Uuid, which panic under the `sqlx-any` binder).
 ///
 /// Lists are deliberately not representable here: the only place the dialect
 /// accepts one is the `in` haystack, which lowering carries as `Cond::In`'s
 /// `values` — a flat `Vec<Value>` — so a nested list cannot survive past
-/// lowering and every backend refuses it identically, at the real filter
-/// location.
+/// lowering and is refused at the real filter location.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -248,12 +207,4 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(String),
-    /// A BSON ObjectId, accepted from the `{"$oid": "<24 hex>"}` wrapper.
-    /// Stored as the raw 12 bytes so rendering is infallible — the hex is
-    /// validated where the error can be located, during lowering.
-    ObjectId([u8; 12]),
-    /// An instant, accepted from `{"$date": …}` (RFC 3339 string, epoch
-    /// milliseconds, or canonical `{"$numberLong": "…"}`), normalised to epoch
-    /// milliseconds during lowering.
-    DateTime(i64),
 }

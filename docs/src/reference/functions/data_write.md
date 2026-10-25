@@ -1,12 +1,12 @@
-<!-- description: The data_write task function: a backend-neutral insert, update, delete or upsert rendered natively for SQL, MongoDB or Elasticsearch connectors. -->
+<!-- description: The data_write task function: a backend-neutral insert, update, delete or upsert rendered natively for SQL connectors. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
 # `data_write`
 
 The write counterpart of `data_query`: one **backend-neutral mutation** —
-`insert`, `update`, `delete`, or `upsert` — rendered natively for SQL, MongoDB,
-or Elasticsearch. The `filter` of an update/delete is the query dialect's
+`insert`, `update`, `delete`, or `upsert` — rendered natively for PostgreSQL,
+MySQL or SQLite. The `filter` of an update/delete is the query dialect's
 filter, unchanged. See the [Portable Data Dialect](../data-dialect.md) reference
 for the full envelope, backend mapping, and safety rules.
 
@@ -24,7 +24,6 @@ for the full envelope, backend mapping, and safety rules.
       }
     },
     "schema": {},
-    "database": "…",
     "numeric_as": "number",
     "binary_as": "auto",
     "output": "data.write_result"
@@ -42,13 +41,12 @@ for the full envelope, backend mapping, and safety rules.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `connector` | string | yes | — | Name of a `db` or `es` connector |
+| `connector` | string | yes | — | Name of a `db` connector |
 | `write` | object | yes | — | The mutation envelope — fields below |
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside `values`, `set`, and `filter`; each value is JSONLogic resolved against the context |
 | `schema` | object | yes | — | Inline entity schema: renames, allowlist, `writable` flags. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones. Enforced at run time, like `data_query`'s |
-| `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
-| `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](./db_read.md#decimal-columns). SQL backends only |
-| `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](./db_read.md#binary-columns). SQL backends only |
+| `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](./db_read.md#decimal-columns) |
+| `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](./db_read.md#binary-columns) |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the write result is written |
 
 Inside `write`:
@@ -56,7 +54,7 @@ Inside `write`:
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `op` | string | yes | — | `insert` \| `update` \| `delete` \| `upsert` |
-| `target` | string | yes | — | Logical entity → table / collection / index |
+| `target` | string | yes | — | Logical entity → table |
 | `values` | object \| array | conditional | — | The row object or objects to insert; required for `insert` and `upsert` |
 | `set` | object | conditional | — | Column → value/param assignments; required for `update`, optional overrides on `upsert` conflict |
 | `filter` | JSONLogic | conditional | — | Row selection for `update`/`delete` (same operators as `data_query`); required unless the unfiltered opt-in below is used |
@@ -92,7 +90,7 @@ Inside `write`:
 }
 ```
 
-Safety guards: unfiltered mutations are rejected unless `"all": true` **and** `write.allow_unfiltered` are both set, and bulk inserts over `write.max_rows` are rejected. A connector's [operation gates](../data-dialect.md#connector-operation-gates) can disable individual ops entirely. Results are normalized per backend. SQL returns `{ "status": "ok", "rows_affected": n }`, plus `returning` / `last_insert_id` where supported. MongoDB and Elasticsearch return doc-store counts (`inserted`/`ids`, `matched`/`modified`, `deleted`). Every result carries a `status`; a bulk insert that applied only some of its rows reports `"partial"` with a per-item array. See [Bulk writes](../data-dialect.md#bulk-writes).
+Safety guards: unfiltered mutations are rejected unless `"all": true` **and** `write.allow_unfiltered` are both set, and bulk inserts over `write.max_rows` are rejected. A connector's [operation gates](../data-dialect.md#connector-operation-gates) can disable individual ops entirely. A write returns `{ "status": "ok", "rows_affected": n }`, plus `returning` / `last_insert_id` where supported. A bulk insert is atomic: every row or none. See [Bulk writes](../data-dialect.md#bulk-writes).
 
 ## Related
 

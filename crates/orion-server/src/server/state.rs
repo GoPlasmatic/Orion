@@ -43,8 +43,6 @@ pub struct Caches {
     pub cache_pool: Arc<CachePool>,
     /// External SQL connection pool cache — shared so admin routes can evict stale pools.
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    /// External MongoDB connection pool cache — shared so admin routes can evict stale pools.
-    pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     /// Extensible provider-owned connection-pool caches (`V2-11.1`, `V2-05.4`).
     pub provider_pools: crate::extensions::ResourcePoolRegistry,
 }
@@ -69,7 +67,6 @@ impl Caches {
         for slot in PoolSlot::ALL {
             match slot {
                 PoolSlot::Sql => self.sql_pool_cache.evict_all().await,
-                PoolSlot::Mongo => self.mongo_pool_cache.evict_all().await,
                 PoolSlot::Cache => self.cache_pool.evict_all_pools().await,
             }
         }
@@ -154,7 +151,7 @@ pub struct AppStateInner {
     /// shutdown, so a mutation accepted moments before SIGTERM still lands.
     pub audit_queue: crate::queue::audit_queue::AuditQueue,
     pub connector_registry: Arc<ConnectorRegistry>,
-    /// Cache backends plus the external SQL/MongoDB connection-pool caches.
+    /// Cache backends plus the external SQL connection-pool cache.
     pub caches: Caches,
     pub trace_queue: TraceQueue,
     /// The startup pool. **Route handlers should not reach for this** — go

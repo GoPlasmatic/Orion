@@ -117,7 +117,7 @@ async fn validate_endpoint_returns_schema_errors_in_errors_array() {
                 "tasks": [{
                     "id": "t1",
                     "name": "broken",
-                    "function": { "name": "mongo_read", "input": {} }
+                    "function": { "name": "data_query", "input": {} }
                 }]
             })),
         ))
@@ -132,8 +132,7 @@ async fn validate_endpoint_returns_schema_errors_in_errors_array() {
         .map(|e| e["field"].as_str().unwrap_or(""))
         .collect();
     assert!(paths.contains(&"tasks[0].function.input.connector"));
-    assert!(paths.contains(&"tasks[0].function.input.database"));
-    assert!(paths.contains(&"tasks[0].function.input.collection"));
+    assert!(paths.contains(&"tasks[0].function.input.query"));
 }
 
 /// The endpoint is a catalogue of every name a workflow may use, not just the

@@ -354,16 +354,6 @@ fn check_connectors(
             req.name.clone(),
             crate::engine::ConnectorFacts {
                 connector_type: req.connector_type,
-                // Read from the definition's own connection string. A string
-                // still holding a `${VAR}` or an `env://` reference reads as
-                // not-Mongo, so the rules that turn on it stay silent rather
-                // than firing on a value this pass cannot see — the same
-                // stance the rest of the offline checks take.
-                is_mongo: req
-                    .config
-                    .get("connection_string")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(crate::connector::is_mongo_url),
             },
         );
     }
@@ -826,17 +816,6 @@ fn check_closure(
                         ),
                     ));
                 }
-                crate::engine::RefProblem::MissingMongoDatabase {
-                    function,
-                    connector,
-                } => findings.push(Diagnostic::error(
-                    "type.mongo_database",
-                    &entity,
-                    format!(
-                        "'{function}' points at MongoDB connector '{connector}' but sets no \
-                         'database' — MongoDB connection strings carry no default database"
-                    ),
-                )),
             }
         }
 

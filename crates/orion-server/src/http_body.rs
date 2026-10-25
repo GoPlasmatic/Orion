@@ -1,8 +1,9 @@
 //! Reading an outbound HTTP response body under a byte cap — while streaming.
 //!
 //! Every egress path in Orion caps the response it will accept: `http_call`
-//! and Elasticsearch by the connector's `max_response_size`, JWKS at 256 KiB,
-//! an OAuth2 token response at 64 KiB. Three of the four enforced that cap by
+//! (and, until it left Community, Elasticsearch) by the connector's
+//! `max_response_size`, JWKS at 256 KiB, an OAuth2 token response at 64 KiB.
+//! Three of the four enforced that cap by
 //! calling `Response::bytes()` and *then* measuring what came back, which
 //! enforces nothing a peer has to respect: `bytes()` reads to end of body
 //! first, so a chunked response — or one with a missing or dishonest
@@ -188,10 +189,6 @@ where
     }
     Ok(total)
 }
-
-/// Maximum byte length of an upstream error body preview included in
-/// execution error messages (`TD-12`).
-pub(crate) const ERROR_BODY_PREVIEW_LIMIT: usize = 512;
 
 /// As much of a body as fits in `limit`, for putting in an error message.
 ///
