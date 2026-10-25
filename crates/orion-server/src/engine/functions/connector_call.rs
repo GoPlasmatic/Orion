@@ -859,7 +859,7 @@ mod tests {
         );
 
         let offline = crate::engine::kit::OfflineDeps::new();
-        let serving_reg = crate::engine::serving_registry(offline.deps(), None);
+        let serving_reg = crate::engine::serving_registry(offline.deps());
         assert!(serving_reg.catalogue().any(|i| i.name == NAME));
 
         assert!(

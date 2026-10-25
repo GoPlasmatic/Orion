@@ -403,8 +403,8 @@ impl CompiledJwt {
             // quoted-value and loose-whitespace defects the inline version
             // had. `HeaderLookup` yields a single value, so a jar split across
             // several `cookie` headers is still only searched in the first —
-            // the transports behind this abstraction (Kafka, channel_call) have
-            // no multi-valued headers to justify widening it.
+            // the transport behind this abstraction (channel_call) has no
+            // multi-valued headers to justify widening it.
             JwtSource::Cookie { cookie } => header("cookie")
                 .and_then(|jar| super::cookies::lookup([jar.as_str()], cookie.as_str())),
         };

@@ -75,7 +75,7 @@ impl DedupClaim {
 ///
 /// `header` is a lookup view over the transport's headers (the idempotency
 /// header name is per-channel config); `key_fallback` is the key a transport
-/// carries out of band — Kafka's record key — consulted only when that header
+/// carries out of band, consulted only when that header
 /// is absent. Returns `Err(Conflict)` when the key is held by an earlier
 /// delivery, and otherwise the [`DedupClaim`] the caller must settle.
 ///
@@ -83,13 +83,13 @@ impl DedupClaim {
 /// message runs, because that is the only moment at which the check is
 /// atomic against a concurrent delivery. On a transport that redelivers,
 /// that alone loses messages: attempt 0 registers the key, the attempt fails
-/// without committing its offset, and the redelivery reads the key its own
-/// previous attempt wrote — a `409` that the Kafka ingress translates into
-/// "already handled", commits, and drops. So each delivery claims under an
+/// without acknowledging the message, and the redelivery reads the key its
+/// own previous attempt wrote — a `409` the transport reads as "already
+/// handled", and drops. So each delivery claims under an
 /// owner token, and `owner` is that token:
 ///
 /// * A transport that can redeliver the same physical message passes a
-///   *stable* token for it (Kafka: `topic/partition/offset`). A replay finds
+///   *stable* token for it. A replay finds
 ///   its own token and proceeds — it is the same delivery, not a second one.
 /// * Every other transport passes `None` and gets a fresh token per call, so
 ///   any second delivery sees a token that is not its own and is refused.

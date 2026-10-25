@@ -23,7 +23,7 @@ Rules:
 - A request whose `Origin` header is present and unlisted is refused `403` before the workflow runs.
 - A request with no `Origin` header is not checked at all.
 - Omitting the key checks nothing. `origin_allow_list` is the only accepted spelling.
-- The check applies to the HTTP ingresses only — a Kafka record and a `channel_call` have no origin to check.
+- The check applies to the HTTP ingresses only — a `channel_call` and a cron occurrence have no origin to check.
 
 **This is not CORS.** It performs no handshake, sets no `Access-Control-Allow-Origin`, and takes no part in a preflight. The browser handshake is the platform [`[cors]`](../configuration/cors.md) layer's job. The division of labor:
 

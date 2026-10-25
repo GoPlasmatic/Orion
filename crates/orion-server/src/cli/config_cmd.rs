@@ -60,8 +60,8 @@ pub(crate) fn handle_validate_config(
 /// The tree goes through `toml::Value` first so unset `Option` fields drop
 /// out the way an authored config file omits them (TOML has no null).
 /// Masking reuses the connector policy (`orion::connector::mask_secrets`):
-/// values under secret-looking keys (`kafka.auth.sasl_password`,
-/// `admin_auth.api_keys`) are replaced wholesale, and URL userinfo passwords
+/// values under secret-looking keys (`admin_auth.api_keys`) are replaced
+/// wholesale, and URL userinfo passwords
 /// (`storage.url`, `cluster.redis_url`) are redacted in place.
 fn masked_effective_config(
     config: &config::AppConfig,
@@ -162,15 +162,6 @@ fn print_config_summary(config: &config::AppConfig) {
         "  cluster:         {}",
         if config.cluster.enabled {
             format!("enabled (instance_id={})", config.cluster.instance_id)
-        } else {
-            "disabled".to_string()
-        }
-    );
-    println!(
-        "  kafka:           {}",
-        if config.kafka.enabled {
-            let brokers: Vec<String> = config.kafka.brokers.iter().map(|b| redacted(b)).collect();
-            format!("enabled (brokers={})", brokers.join(","))
         } else {
             "disabled".to_string()
         }

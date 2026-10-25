@@ -12,7 +12,7 @@ The `config` blocks that admit or refuse a request before its workflow runs.
 | [`rate_limit`](./rate_limit.md) | the token bucket, the key_logic context and key_headers, cross-ingress semantics, and cluster-wide enforcement. |
 | [`principal_rate_limit`](./principal_rate_limit.md) | a quota keyed on the verified JWT claims, applied after authentication on top of the address-keyed rate_limit. |
 | [`backpressure`](./backpressure.md) | a per-node concurrency permit shared by every ingress, with excess shed as 503 rather than queued. |
-| [`deduplication`](./deduplication.md) | idempotency-key replay protection within a window, the backing store, and how Kafka and cluster mode behave. |
+| [`deduplication`](./deduplication.md) | idempotency-key replay protection within a window, the backing store, and how cluster mode behaves. |
 | [`validation_logic`](./validation_logic.md) | a JSONLogic predicate over data and metadata that rejects a request with 400 before its workflow runs. |
 | [`origin_allow_list`](./origin_allow_list.md) | a server-side Origin header check on the HTTP ingresses, and how it differs from the platform CORS layer. |
 

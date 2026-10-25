@@ -5,7 +5,7 @@
 //! and run against each backend — only the connector / connection string
 //! differs. SQLite runs in-memory (no container); Postgres and MySQL spin up an
 //! ephemeral testcontainer with a random host port, torn down when the
-//! [`BackendHarness`] is dropped (RAII, mirroring `kafka_test.rs`).
+//! [`BackendHarness`] is dropped (RAII).
 //!
 //! The dialect-specific quirks the harness encodes:
 //! - DDL: the portable dialect has no DDL, so each backend needs a raw

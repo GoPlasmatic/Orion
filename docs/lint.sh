@@ -425,7 +425,7 @@ paths = [
     'get-started/tutorials/examples.md',
     'get-started/tutorials/orders-api.md',
     'guides/patterns/console.md', 'guides/ai/worked-examples.md',
-    'guides/patterns/kafka-channels.md', 'guides/patterns/ci-cd.md',
+    'guides/patterns/ci-cd.md',
     'guides/ai/claude-code.md',
 ]
 for rel in paths:

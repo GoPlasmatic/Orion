@@ -1,4 +1,4 @@
-Connectors configure external service connections used by workflow tasks (http_call, publish_kafka).
+Connectors configure external service connections used by workflow tasks (http_call, db_read, cache_read, ...).
 
 HTTP Connector:
   {
@@ -10,18 +10,6 @@ HTTP Connector:
       "headers": {"Content-Type": "application/json"},
       "auth": {"type": "bearer", "token": "your-token"},
       "retry": {"max_retries": 3, "retry_delay_ms": 1000}
-    }
-  }
-
-Kafka Connector:
-  {
-    "name": "kafka_prod",
-    "connector_type": "kafka",
-    "config": {
-      "type": "kafka",
-      "brokers": ["localhost:9092"],
-      "topic": "events",
-      "group_id": "orion-consumer"
     }
   }
 

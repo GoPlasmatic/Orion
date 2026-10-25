@@ -22,7 +22,7 @@
 
 use super::config::{
     CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig, HttpConnectorConfig,
-    KafkaConnectorConfig, StorageConnectorConfig,
+    StorageConnectorConfig,
 };
 
 /// A connection-pool cache a connector's config can be cached in.
@@ -106,7 +106,6 @@ macro_rules! kinds {
 
 kinds! {
     Http    => Http,    HttpConnectorConfig,    "an HTTP connector";
-    Kafka   => Kafka,   KafkaConnectorConfig,   "a Kafka connector";
     Db      => Db,      DbConnectorConfig,      "a database connector";
     Cache   => Cache,   CacheConnectorConfig,   "a cache connector";
     Storage => Storage, StorageConnectorConfig, "a storage connector";
@@ -134,15 +133,15 @@ impl ConnectorTarget for DataBackend {
 impl ConnectorType {
     /// The pool caches a connector of this type may have entries in.
     ///
-    /// The three types with no pool return an empty slice rather than being
+    /// The types with no pool return an empty slice rather than being
     /// omitted, because being pool-less is an answer this match has to give.
     pub fn pool_slots(self) -> &'static [PoolSlot] {
         match self {
             ConnectorType::Db => &[PoolSlot::Sql],
             ConnectorType::Cache => &[PoolSlot::Cache],
             // Stateless per call: HTTP goes through the shared reqwest client,
-            // Kafka through the producer, storage presigns locally.
-            ConnectorType::Http | ConnectorType::Kafka | ConnectorType::Storage => &[],
+            // storage presigns locally.
+            ConnectorType::Http | ConnectorType::Storage => &[],
         }
     }
 }
@@ -182,16 +181,12 @@ mod tests {
     /// `None` into the message a workflow author reads.
     #[test]
     fn a_kind_extracts_only_its_own_variant() {
-        let cfg = ConnectorConfig::Kafka(KafkaConnectorConfig {
-            brokers: vec!["localhost:9092".to_string()],
-            topic: "orders".to_string(),
-            allow_private_urls: false,
-            operations: Default::default(),
-        });
-        assert!(Kafka::extract(&cfg).is_some());
+        let cfg: ConnectorConfig =
+            serde_json::from_str(r#"{"type":"cache","backend":"memory"}"#).expect("cache config");
+        assert!(Cache::extract(&cfg).is_some());
         assert!(
             Db::extract(&cfg).is_none(),
-            "a kafka connector is not a db one"
+            "a cache connector is not a db one"
         );
         assert_eq!(Db::noun(), "a database connector");
     }
@@ -210,16 +205,12 @@ mod tests {
             operations: Default::default(),
             dialect: Default::default(),
         });
-        let kafka = ConnectorConfig::Kafka(KafkaConnectorConfig {
-            brokers: vec!["localhost:9092".to_string()],
-            topic: "orders".to_string(),
-            allow_private_urls: false,
-            operations: Default::default(),
-        });
+        let cache: ConnectorConfig =
+            serde_json::from_str(r#"{"type":"cache","backend":"memory"}"#).expect("cache config");
         assert!(DataBackend::extract(&db).is_some());
         assert!(
-            DataBackend::extract(&kafka).is_none(),
-            "the portable dialect does not speak Kafka"
+            DataBackend::extract(&cache).is_none(),
+            "the portable dialect does not speak to a cache"
         );
         assert_eq!(DataBackend::noun(), "a database connector");
     }

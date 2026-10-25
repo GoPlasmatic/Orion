@@ -34,7 +34,7 @@ Every other `[queue]` key keeps its name under `[trace_queue]`, and every `[trac
 ### One key was removed outright
 
 That key is `kafka.max_inflight` (and
-`ORION_KAFKA__MAX_INFLIGHT`). It was configured, validated and logged, and it did nothing. The consumer acquired a permit and then awaited each message inline, so concurrency was always exactly 1 whatever the value said. That sequential behaviour is load-bearing for the [at-least-once contract](./kafka-delivery.md). Committing an offset implicitly commits every earlier offset on the partition. In-consumer concurrency would therefore let a fast later message commit past a failed earlier one, and lose it. Rather than ship a knob that lies, 1.0 removes it. Nothing about runtime behaviour changes; delete the key and the variable. To increase throughput, run more Orion instances in the same consumer group (`kafka.group_id`) — Kafka spreads the partitions across them.
+`ORION_KAFKA__MAX_INFLIGHT`). It was configured, validated and logged, and it did nothing. The consumer acquired a permit and then awaited each message inline, so concurrency was always exactly 1 whatever the value said. That sequential behaviour is load-bearing for the at-least-once contract. Committing an offset implicitly commits every earlier offset on the partition. In-consumer concurrency would therefore let a fast later message commit past a failed earlier one, and lose it. Rather than ship a knob that lies, 1.0 removes it. Nothing about runtime behaviour changes; delete the key and the variable. To increase throughput, run more Orion instances in the same consumer group (`kafka.group_id`) — Kafka spreads the partitions across them.
 
 **How you'll notice.** Both halves fail loudly:
 

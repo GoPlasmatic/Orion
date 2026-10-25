@@ -23,9 +23,9 @@
 #   entrant/model.json     a model the workflows call    (optional)
 #   request.json           a sample request              (optional)
 #
-# A package whose primary channel has no route_pattern — a Kafka or a cron
-# channel — is deployed the same way; the script prints the topic it now
-# consumes, or the schedule, instead of sending a request. A package that
+# A package whose primary channel has no route_pattern — a cron channel — is
+# deployed the same way; the script prints the schedule instead of sending a
+# request. A package that
 # ships a model entrant is deployed whole, but its sample request is not
 # sent: the model's bytes have to be in a bucket and admitted first, which is
 # an organiser's step (the script prints it).
@@ -215,12 +215,12 @@ while IFS= read -r ch; do
 done < <(channel_files)
 
 ROUTE=$(json_field "$CH_FILE" route_pattern)
-TOPIC=$(json_field "$CH_FILE" topic)
 
 if [[ -z "$ROUTE" ]]; then
-  # A Kafka channel has no HTTP route; produce to its topic to exercise it.
-  echo "==> Deployed. '$(json_field "$CH_FILE" channel_id)' consumes topic '${TOPIC:-?}'"
-  echo "    Produce a record to that topic to run the workflow."
+  # A cron channel has no HTTP route; its schedule is what runs the workflow.
+  SCHEDULE=$(python3 -c 'import json,sys
+print(json.load(open(sys.argv[1])).get("transport_config", {}).get("schedule", "?"))' "$CH_FILE")
+  echo "==> Deployed. '$(json_field "$CH_FILE" channel_id)' runs on schedule '$SCHEDULE'"
   exit 0
 fi
 

@@ -67,7 +67,6 @@ crates/orion-server/
   engine/              # Dataflow engine & custom function handlers (functions/)
   errors.rs            # OrionError enum -> HTTP response mapping
   jwt/                 # Shared JWT core: verify, sign, JWKS cache
-  kafka/               # Kafka producer & consumer
   metrics.rs           # Prometheus metrics collection
   plugin/              # WebAssembly plugins: Wasmtime sandbox, manifest, handler, limits
   query/               # Portable data dialect (data_query / data_write -> SQL/Mongo/ES)
@@ -211,8 +210,8 @@ Add unit tests inline in the relevant module using `#[cfg(test)]` blocks. See `s
 
 ### Container-gated tests
 
-Tests that need a real backend (PostgreSQL, MySQL, MongoDB, Elasticsearch,
-Kafka, Redis, or a multi-node cluster) are `#[ignore]`d, so `cargo test` skips
+Tests that need a real backend (PostgreSQL, MySQL, Redis, Vault, or a
+multi-node cluster) are `#[ignore]`d, so `cargo test` skips
 them locally. CI runs every one of them; run them yourself with Docker up
 ([`tests/README.md`](crates/orion-server/tests/README.md) explains the six-binary layout, why the
 backend is pinned per process, and how the CI filters are kept drift-free):

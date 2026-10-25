@@ -36,8 +36,8 @@ Then work through this list. Each row links to the section with the detail.
 | 1 | [Set `rate_limit.trusted_proxies`](./rate-limiting.md) | You run behind a proxy, LB, or ingress — **whether or not** `rate_limit.enabled` is set, if any channel declares a `rate_limit` block |
 | 2 | [Update dashboards and alerts](./metrics.md) | You scrape `/metrics` — three families changed name or labels, and `/metrics` now answers 404 when metrics are off |
 | 3 | [Audit stored channel configs](./stored-channel-config.md), and [remove unknown keys](./api-and-response-shape.md#unknown-keys-in-a-channel-config-are-now-refused) from them | Always — this one silently stops individual channels serving, without failing a boot or an admin call. Unknown keys include the pre-1.0 `cors` and `backpressure.max_concurrent` spellings, `queue_depth`, and typos that were silently ignored before |
-| 4 | [Enable the Kafka DLQ](./kafka-delivery.md) | `kafka.enabled = true` |
-| 5 | [Size every ingress against the channel's guards](./kafka-delivery.md#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic**. Also: the platform `[rate_limit]` budget now [stacks on the channel's own limit](./kafka-delivery.md#the-platform-limiter-and-the-channels-now-stack) instead of being bypassed by it |
+| 4 | Enable the Kafka DLQ | `kafka.enabled = true` |
+| 5 | Size every ingress against the channel's guards | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic**. Also: the platform `[rate_limit]` budget now stacks on the channel's own limit instead of being bypassed by it |
 | 6 | [Supply admin API keys](./deployment-defaults.md) | You deploy through the Helm chart or `docker-compose.ha.yml` |
 | 7 | [Back up before migrating](./database-migrations.md), and [re-point anything reading `workflows.tags` or `channels.methods`](./database-migrations.md#two-json-columns-were-renamed) | You are on PostgreSQL, or you query Orion's tables directly — dashboards, ETL, reporting views, hand-maintained restores |
 | 8 | [Stop migrating at boot in a production cluster](./database-migrations.md#a-production-cluster-may-not-migrate-at-boot) | `environment` starts `prod` **and** `cluster.enabled = true` **and** `storage.auto_migrate = true` — refused at startup now |
@@ -111,7 +111,7 @@ Two consequences to plan for:
 **Enable admin auth** if you have not. It is what guards `/metrics`, the trace
 endpoints, and therefore the full-detail error payloads.
 
-**Enable the Kafka DLQ**. See [section 4](./kafka-delivery.md).
+**Enable the Kafka DLQ** (row 4).
 
 **Set `storage.auto_migrate = false`** in any multi-replica deployment and run
 `orion-server migrate` as a deploy step. In a *production* cluster this is no longer advice. See [A production cluster may not migrate at boot](./database-migrations.md#a-production-cluster-may-not-migrate-at-boot).
@@ -147,7 +147,7 @@ key_path  = "/etc/orion/tls/server.key"
 | [Rate limiting behind a proxy](./rate-limiting.md) | the limiter keys on the direct peer unless `rate_limit.trusted_proxies` names your proxy. |
 | [Metrics: dashboards and alerts](./metrics.md) | three metric families changed name or labels, and `/metrics` answers 404 when metrics are off. |
 | [Stored channel config](./stored-channel-config.md) | a channel whose stored config no longer parses is refused at every ingress, not served with a guard missing. |
-| [Kafka delivery and ingress guards](./kafka-delivery.md) | Kafka delivery is at-least-once, and every ingress applies the channel's guards. |
+| Kafka delivery and ingress guards | Kafka delivery is at-least-once, and every ingress applies the channel's guards. |
 | [Deployment defaults](./deployment-defaults.md) | the Helm chart and `docker-compose.ha.yml` require admin keys, and the pod defaults are hardened. |
 | [Database migrations](./database-migrations.md) | what the migrations do per backend, the two renamed JSON columns, and migrating at boot in a cluster. |
 | [Config keys](./config-keys.md) | four sections renamed, a misspelled `ORION_` override stops the boot, and `allow_private_urls`. |

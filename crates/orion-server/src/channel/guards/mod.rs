@@ -1,47 +1,42 @@
 //! Transport-neutral per-channel ingress guards.
 //!
 //! Four ingresses dispatch a message to a channel — synchronous HTTP, HTTP
-//! `/async` submission, Kafka ingest, and in-process `channel_call` — and a
-//! channel's declared contract must hold whichever one the message arrived
-//! on. [`apply_guards`] is the one function that enforces it, and the
-//! per-transport [`GuardSet`] returned by [`Transport::guards`] decides which
-//! guards run, so the deliberate exclusions are **data** rather than a
-//! comment repeated at four call sites.
+//! `/async` submission, in-process `channel_call`, and a cron channel's
+//! claimed occurrence — and a channel's declared contract must hold whichever
+//! one the message arrived on. [`apply_guards`] is the one function that
+//! enforces it, and the per-transport [`GuardSet`] returned by
+//! [`Transport::guards`] decides which guards run, so the deliberate
+//! exclusions are **data** rather than a comment repeated at four call sites.
 //!
-//! | Guard | HTTP sync | HTTP `/async` | Kafka | `channel_call` |
+//! | Guard | HTTP sync | HTTP `/async` | `channel_call` | cron |
 //! |---|---|---|---|---|
-//! | rate limit | ✅ | ✅ | ✅ | ✅ |
+//! | rate limit | ✅ | ✅ | ✅ | ❌ |
 //! | channel `auth` | ✅ | ✅ | ❌ | ❌ |
 //! | origin allow-list | ✅ | ✅ | ❌ | ❌ |
 //! | `validation_logic` | ✅ | ✅ | ✅ | ✅ |
-//! | deduplication | ✅ | ✅ | ✅ | ❌ |
+//! | deduplication | ✅ | ✅ | ❌ | ❌ |
 //! | response cache | ✅ | ❌ | ❌ | ❌ |
 //! | backpressure | ✅ | ✅ | ✅ | ✅ |
-//! | channel `timeout_ms` | ✅ | ✅ | ✅¹ | ✅ |
+//! | channel `timeout_ms` | ✅ | ✅¹ | ✅ | ✅ |
 //!
-//! ¹ clamped to the transport's ceiling — see [`effective_timeout_ms`]. Kafka
-//! and the async worker cap the channel value at `kafka.processing_timeout_ms`
-//! and `trace_queue.processing_timeout_ms` respectively, because on those
-//! paths the deadline protects a shared resource (the consumer's poll loop, a
-//! queue worker) rather than one caller's patience. A channel can shorten its
+//! ¹ clamped to the transport's ceiling — see [`effective_timeout_ms`]. The
+//! async worker caps the channel value at `trace_queue.processing_timeout_ms`,
+//! because on that path the deadline protects a shared resource (a queue
+//! worker) rather than one caller's patience. A channel can shorten its
 //! deadline everywhere; it can only lengthen it where nothing else depends on
 //! it.
 //!
-//! N16: three of those cells used to be `❌` by omission rather than by
-//! decision. Kafka — the highest-volume ingress — applied neither
-//! backpressure nor a rate limit nor deduplication, so `max_concurrent_per_node`
-//! bounded every path except the one that needed it most and an at-least-once
-//! redelivery ran the workflow twice; `channel_call` applied no rate limit;
-//! and a channel's `timeout_ms` was honoured on two paths of four, so the
-//! same channel timed out at its configured value over HTTP and at the global
-//! `trace_queue.processing_timeout_ms` over Kafka and `/async`. Every `❌` cell
-//! that remains is deliberate, and each is justified on
-//! [`Transport::guards`].
+//! N16: some of those cells used to be `❌` by omission rather than by
+//! decision. `channel_call` applied no rate limit, and a channel's
+//! `timeout_ms` was honoured on two paths of four, so the same channel timed
+//! out at its configured value over HTTP and at the global
+//! `trace_queue.processing_timeout_ms` over `/async`. Every `❌` cell that
+//! remains is deliberate, and each is justified on [`Transport::guards`].
 //!
 //! A ✅ in the rate-limit row means *the same limiter is consulted*, not that
-//! the four ingresses share one bucket. The bucket key defaults to whatever
-//! caller identity the transport has — client IP over HTTP, topic on Kafka,
-//! calling channel for `channel_call` — so a channel's
+//! the ingresses share one bucket. The bucket key defaults to whatever
+//! caller identity the transport has — client IP over HTTP, calling channel
+//! for `channel_call` — so a channel's
 //! `requests_per_second` is a per-identity rate on each ingress, and only a
 //! `rate_limit.key_logic` that returns a transport-independent value makes it
 //! one shared throughput cap.
@@ -95,8 +90,6 @@ pub enum Transport {
     HttpSync,
     /// `POST /api/v2/data/{channel}/async` — HTTP submission to the trace queue.
     HttpAsync,
-    /// Kafka ingest (`kafka.topics`, or a channel's own `topic`).
-    Kafka,
     /// In-process `channel_call` from another channel's workflow.
     ChannelCall,
     /// One occurrence of a cron channel's schedule, claimed from the durable
@@ -137,50 +130,41 @@ impl Transport {
     /// Every `false` cell, each for a reason that is a property of the
     /// transport rather than an oversight:
     ///
-    /// * **origin allow-list off Kafka and `channel_call`.** The check reads
-    ///   an HTTP `Origin` header. A Kafka record and an in-process call have
-    ///   no browsing context and no origin to check; a channel that lists
-    ///   origins is constraining its *HTTP* surface.
+    /// * **origin allow-list off `channel_call`.** The check reads an HTTP
+    ///   `Origin` header. An in-process call has no browsing context and no
+    ///   origin to check; a channel that lists origins is constraining its
+    ///   *HTTP* surface.
     /// * **deduplication off `channel_call`.** Deduplication suppresses a
     ///   redelivery of the same *ingress* event. A `channel_call` is a step
     ///   inside a request that was already deduplicated at its own ingress,
     ///   and it carries no key of its own — the child would inherit the
     ///   parent's, so a workflow that fans out to the same channel twice
     ///   (one call per line item) would see its second call rejected as a
-    ///   duplicate. Kafka is the opposite case and does dedupe: the
-    ///   transport is at-least-once by design, and the record key is a
-    ///   natural idempotency key.
-    /// * **response cache off `/async`, Kafka and `channel_call`.** An
-    ///   `/async` submission answers `202` with a trace id and never has a
-    ///   body to serve or to store; a Kafka record has no response at all.
-    ///   `channel_call` returns its result into the caller's message, and
+    ///   duplicate.
+    /// * **response cache off `/async` and `channel_call`.** An `/async`
+    ///   submission answers `202` with a trace id and never has a body to
+    ///   serve or to store. `channel_call` returns its result into the caller's message, and
     ///   caching that would pin one workflow run's output across callers
     ///   with none of the request identity (method, path, query) the cache
     ///   key is built from.
-    /// * **authentication off Kafka and `channel_call`.** Both carry a
-    ///   credential the channel's `auth` config cannot describe, and both are
-    ///   already authenticated by the layer that delivered them. A Kafka
-    ///   record's authentication is the broker's (SASL/mTLS on the consumer
-    ///   connection); it has no HTTP headers, and no signature over a body the
-    ///   producer never signed. A `channel_call` is a step *inside* a request
-    ///   that authenticated at its own ingress, and the calling workflow holds
-    ///   no credential to present — enforcing here would make composition
-    ///   impossible rather than make it safer, the same reasoning that leaves
-    ///   deduplication off that transport. A channel that is reachable both
-    ///   over HTTP and from a Kafka topic is therefore authenticated on the
-    ///   HTTP path and broker-authenticated on the Kafka one.
+    /// * **authentication off `channel_call`.** It is already authenticated
+    ///   by the layer that delivered it: a `channel_call` is a step *inside* a
+    ///   request that authenticated at its own ingress, and the calling
+    ///   workflow holds no credential to present — enforcing here would make
+    ///   composition impossible rather than make it safer, the same reasoning
+    ///   that leaves deduplication off that transport.
     /// * **`oauth2_login` on `HttpSync` alone.** Both legs are browser
     ///   redirects. The first *is* a `302`, which `/async` (which answers
-    ///   `202` with a trace id), Kafka (which answers nothing) and
-    ///   `channel_call` (whose caller is a workflow, not a user agent) have no
-    ///   way to express. The callback leg is off those three for the stronger
+    ///   `202` with a trace id), `channel_call` (whose caller is a workflow,
+    ///   not a user agent) and cron (which has no caller) have no way to
+    ///   express. The callback leg is off those three for the stronger
     ///   reason that admitting it there would run the channel's workflow with
     ///   no grant at `metadata.oauth` — a sign-in that appears to succeed and
     ///   established nothing. The data route refuses `…/callback/async`
     ///   outright rather than letting it through as a grant-less run.
     /// * **almost everything off `Cron`.** This transport has no caller at all,
-    ///   which is a stronger statement than Kafka's "the caller authenticated
-    ///   elsewhere". There is nobody to authenticate, no origin, no response to
+    ///   which is a stronger statement than `channel_call`'s "the caller
+    ///   authenticated elsewhere". There is nobody to authenticate, no origin, no response to
     ///   cache or shape, and no redirect to follow. Rate limiting is off for a
     ///   different reason than the rest: a limit would be a second, contradictory
     ///   answer to the question the cron expression already answers, and the
@@ -219,16 +203,6 @@ impl Transport {
                 backpressure: true,
                 oauth2_login: false,
             },
-            Transport::Kafka => GuardSet {
-                auth: false,
-                origin_allow_list: false,
-                rate_limit: true,
-                validation: true,
-                deduplication: true,
-                response_cache: false,
-                backpressure: true,
-                oauth2_login: false,
-            },
             Transport::ChannelCall => GuardSet {
                 auth: false,
                 origin_allow_list: false,
@@ -255,8 +229,8 @@ impl Transport {
 
 /// A named lookup over the transport's headers.
 ///
-/// HTTP passes a view over the `HeaderMap`; Kafka a view over the record
-/// headers; `channel_call` a view over the inherited `metadata.headers`.
+/// HTTP passes a view over the `HeaderMap`; `channel_call` a view over the
+/// inherited `metadata.headers`.
 /// Used by deduplication (the idempotency header is per-channel config) and
 /// by `rate_limit.key_logic`.
 pub type HeaderLookup<'a> = &'a (dyn Fn(&str) -> Option<String> + Send + Sync);
@@ -281,16 +255,16 @@ pub struct GuardRequest<'a> {
     /// `Origin` header value, when the transport carries one.
     pub origin: Option<&'a str>,
     /// Default rate-limit bucket key, used when the channel declares no
-    /// `key_logic`: the client IP over HTTP, the topic for Kafka, the
-    /// calling channel for `channel_call`.
+    /// `key_logic`: the client IP over HTTP, the calling channel for
+    /// `channel_call`.
     pub caller_identity: &'a str,
     /// Named header lookup (see [`HeaderLookup`]).
     pub header: HeaderLookup<'a>,
     /// Failed-credential budget for `auth.mode = "api_key"` / `"hmac"` (S12).
-    /// `None` for the transports that present no credential — Kafka
-    /// authenticates at the broker connection, and an in-process
-    /// `channel_call` authenticated at the edge — so there is nothing to
-    /// count and no client to count it against.
+    /// `None` for the transports that present no credential — an in-process
+    /// `channel_call` authenticated at the edge, and a cron occurrence has no
+    /// caller — so there is nothing to count and no client to count it
+    /// against.
     pub auth_backoff: Option<&'a crate::auth::FailedAuthTracker>,
     /// The request body exactly as received, for `auth.mode = "hmac"`.
     ///
@@ -301,19 +275,20 @@ pub struct GuardRequest<'a> {
     /// the two that supply it.
     pub raw_body: Option<&'a [u8]>,
     /// Idempotency key the transport carries out of band, used when the
-    /// configured dedup header is absent. Kafka passes the record key.
+    /// configured dedup header is absent. No built-in transport carries one;
+    /// every call site passes `None`.
     pub dedup_key_fallback: Option<&'a str>,
     /// Stable identity of *this physical delivery*, for transports that can
-    /// redeliver the same message. Kafka passes `topic/partition/offset`;
-    /// every other transport passes `None` and gets a one-shot token minted
-    /// per call. See `check_deduplication` for why the distinction matters.
+    /// redeliver the same message. No built-in transport redelivers, so every
+    /// call site passes `None` and gets a one-shot token minted per call. See
+    /// `check_deduplication` for why the distinction matters.
     pub dedup_owner: Option<&'a str>,
     /// Timeout applied when the channel declares no `timeout_ms` of its own.
     ///
     /// Per call site: `None` for synchronous HTTP (which has no deadline
     /// beyond the channel's) and for the `/async` submission (the worker
-    /// re-resolves at dequeue time), `kafka.processing_timeout_ms` for Kafka,
-    /// and `engine.default_channel_call_timeout_ms` for `channel_call`. The
+    /// re-resolves at dequeue time), and
+    /// `engine.default_channel_call_timeout_ms` for `channel_call`. The
     /// async worker calls [`effective_timeout_ms`] directly with
     /// `trace_queue.processing_timeout_ms`.
     pub default_timeout_ms: Option<u64>,
@@ -321,11 +296,8 @@ pub struct GuardRequest<'a> {
     /// shorten a message's deadline below this, never lengthen it past.
     ///
     /// `Some(…)` only where the transport's deadline is a *safety* property
-    /// rather than a default. Kafka passes `kafka.processing_timeout_ms`
-    /// because the consumer blocks its poll loop for the whole dispatch and
-    /// must return before librdkafka's `max.poll.interval.ms` evicts it from
-    /// the group; the async worker passes `trace_queue.processing_timeout_ms`
-    /// because that setting is the operator's cap on how long one queue
+    /// rather than a default. The async worker passes
+    /// `trace_queue.processing_timeout_ms` because that setting is the operator's cap on how long one queue
     /// worker may be occupied. Synchronous HTTP and `channel_call` pass
     /// `None` — neither has a ceiling to protect, and a `channel_call` task's
     /// own `timeout_ms` outranks everything anyway.
@@ -530,7 +502,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     // same reason that one does: a caller over its quota must not reach the
     // dedup store or the response cache.
     // Gated on `auth`, not on `rate_limit`: the principal only exists where
-    // authentication ran. Kafka and `channel_call` carry no credential, so a
+    // authentication ran. `channel_call` and cron carry no credential, so a
     // quota keyed on claims there could never compute a key and would refuse
     // every message — the transport matrix answers this, not the config.
     if set.auth {
@@ -590,9 +562,8 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     // Every guard below runs with the idempotency key claimed. A refusal from
     // any of them means nothing ran, so the key goes back — once, here, for
     // every refusal, so a new refusal cannot forget to: held, it would answer
-    // the caller's retry (or, on Kafka, the redelivery of an offset that was
-    // never committed) `409` for the rest of the window instead of judging it
-    // on its merits. An answer — a cache hit, the sign-in redirect — leaves it
+    // the caller's retry `409` for the rest of the window instead of judging
+    // it on its merits. An answer — a cache hit, the sign-in redirect — leaves it
     // standing: a replay of the key is a duplicate of a delivery that
     // succeeded.
     match after_dedup(&req, set, guard_metadata, auth_claims).await {
@@ -784,16 +755,15 @@ pub fn merge_auth_claims(
 /// N16: a channel's `timeout_ms` used to be read only by the synchronous
 /// HTTP path and `channel_call`, so the same channel timed out at its
 /// configured value over HTTP and at the global
-/// `trace_queue.processing_timeout_ms` over `/async` and Kafka. Both the
+/// `trace_queue.processing_timeout_ms` over `/async`. Both the
 /// guard chain and the async worker (which re-resolves at dequeue time, when
 /// the config may have moved on) call this.
 ///
 /// The clamp is what keeps that unification from turning an operator's
 /// transport ceiling into a mere default. Channel `timeout_ms` is
-/// unvalidated and unbounded upward; on Kafka the dispatch blocks the poll
-/// loop, so a channel asking for ten minutes would get the consumer evicted
-/// from its group mid-message, and on the async path it would occupy a queue
-/// worker past `trace_queue.processing_timeout_ms`. A channel can therefore
+/// unvalidated and unbounded upward; on the async path a channel asking for
+/// ten minutes would occupy a queue worker past
+/// `trace_queue.processing_timeout_ms`. A channel can therefore
 /// shorten its deadline below the transport's, never lengthen it past.
 pub fn effective_timeout_ms(
     runtime: &Option<Arc<ChannelRuntimeConfig>>,
@@ -1388,39 +1358,32 @@ mod tests {
     async fn the_guard_matrix_is_what_the_docs_claim() {
         let sync = Transport::HttpSync.guards();
         let submit = Transport::HttpAsync.guards();
-        let kafka = Transport::Kafka.guards();
         let call = Transport::ChannelCall.guards();
         let cron = Transport::Cron.guards();
 
-        // Universal guards: every transport, no exceptions. Kafka lacked the
-        // rate limit, dedup and backpressure; channel_call lacked the rate
-        // limit (N16).
-        for set in [sync, submit, kafka, call, cron] {
+        // Universal guards: every transport, no exceptions. channel_call
+        // lacked the rate limit (N16).
+        for set in [sync, submit, call, cron] {
             assert!(set.validation);
             assert!(set.backpressure);
         }
         // Rate limiting is universal among the transports that have a *caller*.
         // Cron is the exception, and the only one: its schedule already fixes
         // how often it runs.
-        for set in [sync, submit, kafka, call] {
+        for set in [sync, submit, call] {
             assert!(set.rate_limit);
         }
         assert!(!cron.rate_limit);
 
         // Deliberate exclusions.
         assert!(sync.origin_allow_list && submit.origin_allow_list);
-        assert!(!kafka.origin_allow_list && !call.origin_allow_list && !cron.origin_allow_list);
-        assert!(sync.deduplication && submit.deduplication && kafka.deduplication);
+        assert!(!call.origin_allow_list && !cron.origin_allow_list);
+        assert!(sync.deduplication && submit.deduplication);
         assert!(!call.deduplication && !cron.deduplication);
         assert!(sync.response_cache);
-        assert!(
-            !submit.response_cache
-                && !kafka.response_cache
-                && !call.response_cache
-                && !cron.response_cache
-        );
+        assert!(!submit.response_cache && !call.response_cache && !cron.response_cache);
         assert!(sync.auth && submit.auth);
-        assert!(!kafka.auth && !call.auth && !cron.auth);
+        assert!(!call.auth && !cron.auth);
         assert!(sync.oauth2_login);
         assert!(!cron.oauth2_login);
     }
@@ -1493,17 +1456,17 @@ mod tests {
     }
 
     /// The transports whose row leaves `auth` off carry no credential to
-    /// present. Kafka and `channel_call` are authenticated by the layer that
-    /// delivered them — the broker, and the originating ingress; a cron
-    /// occurrence has no caller in the first place. Enforcing here would break
-    /// composition rather than tighten anything.
+    /// present. `channel_call` is authenticated by the layer that delivered
+    /// it — the originating ingress; a cron occurrence has no caller in the
+    /// first place. Enforcing here would break composition rather than tighten
+    /// anything.
     #[tokio::test]
-    async fn authentication_does_not_apply_to_kafka_or_channel_call() {
+    async fn authentication_does_not_apply_to_channel_call_or_cron() {
         let dl = engine();
         let data = json!({});
         let metadata = json!({});
 
-        for transport in [Transport::Kafka, Transport::ChannelCall, Transport::Cron] {
+        for transport in [Transport::ChannelCall, Transport::Cron] {
             let runtime = Runtime::new().api_key("s3cret").await.build();
             let req = request(transport, &runtime, &dl, &data, &metadata);
             assert!(
@@ -1556,8 +1519,8 @@ mod tests {
     }
 
     /// The channel's `timeout_ms` wins on every transport; the transport's
-    /// default only fills in when the channel declares none (N16 — Kafka and
-    /// `/async` used to ignore the channel value entirely).
+    /// default only fills in when the channel declares none (N16 — `/async`
+    /// used to ignore the channel value entirely).
     #[tokio::test]
     async fn the_channel_timeout_outranks_the_transport_default() {
         let with_timeout = Runtime::new().timeout_ms(2_000).build();
@@ -1579,12 +1542,10 @@ mod tests {
     }
 
     /// A channel may shorten the transport's deadline; it may not lengthen
-    /// it. On Kafka the dispatch blocks the poll loop and an over-long one
-    /// gets the consumer evicted from its group mid-message; on the async
-    /// path it holds one of a fixed number of queue workers past the
-    /// operator's ceiling. `timeout_ms` is unvalidated and unbounded upward,
-    /// so the clamp is the only thing standing between a channel config and
-    /// those two failures.
+    /// it. On the async path an over-long one holds one of a fixed number of
+    /// queue workers past the operator's ceiling. `timeout_ms` is unvalidated
+    /// and unbounded upward, so the clamp is the only thing standing between a
+    /// channel config and that failure.
     #[tokio::test]
     async fn a_transport_ceiling_clamps_an_over_long_channel_timeout() {
         let over = Runtime::new().timeout_ms(600_000).build();
@@ -1622,8 +1583,8 @@ mod tests {
         for transport in [
             Transport::HttpSync,
             Transport::HttpAsync,
-            Transport::Kafka,
             Transport::ChannelCall,
+            Transport::Cron,
         ] {
             let mut req = request(transport, &runtime, &dl, &data, &meta);
             req.default_timeout_ms = Some(60_000);
@@ -1649,7 +1610,6 @@ mod tests {
         for transport in [
             Transport::HttpSync,
             Transport::HttpAsync,
-            Transport::Kafka,
             Transport::ChannelCall,
         ] {
             // A fresh 1-rps/1-burst limiter per transport: the first call
@@ -1671,11 +1631,11 @@ mod tests {
     }
 
     /// …but "the same limiter" is not "one bucket". Without `key_logic` the
-    /// key is the transport's caller identity — client IP, topic, calling
-    /// channel — so a `requests_per_second` is a per-identity rate on each
-    /// ingress and not a channel-wide throughput cap. Stating that here keeps
-    /// the test above from being read as the stronger claim it does not make
-    /// (it passes the same identity for all four transports).
+    /// key is the transport's caller identity — client IP, calling channel —
+    /// so a `requests_per_second` is a per-identity rate on each ingress and
+    /// not a channel-wide throughput cap. Stating that here keeps the test
+    /// above from being read as the stronger claim it does not make (it
+    /// passes the same identity for every transport).
     #[tokio::test]
     async fn the_default_bucket_key_is_the_transports_own_caller_identity() {
         let dl = engine();
@@ -1698,13 +1658,13 @@ mod tests {
             Err(OrionError::RateLimited(_))
         ));
 
-        // ...while the Kafka topic's bucket is untouched, because the
+        // ...while the calling channel's bucket is untouched, because the
         // identity — and therefore the key — is different.
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
-        req.caller_identity = "orders-topic";
+        let mut req = request(Transport::ChannelCall, &runtime, &dl, &data, &meta);
+        req.caller_identity = "checkout";
         assert!(
             apply_guards(req).await.is_ok(),
-            "a Kafka record meters under its topic, not the HTTP client's bucket"
+            "a channel_call meters under its calling channel, not the HTTP client's bucket"
         );
 
         // A `key_logic` returning a transport-independent value is what makes
@@ -1719,8 +1679,8 @@ mod tests {
         let mut req = request(Transport::HttpSync, &shared, &dl, &data, &meta);
         req.caller_identity = "203.0.113.7";
         assert!(apply_guards(req).await.is_ok());
-        let mut req = request(Transport::Kafka, &shared, &dl, &data, &meta);
-        req.caller_identity = "orders-topic";
+        let mut req = request(Transport::ChannelCall, &shared, &dl, &data, &meta);
+        req.caller_identity = "checkout";
         assert!(
             matches!(apply_guards(req).await, Err(OrionError::RateLimited(_))),
             "a channel-keyed limit is spent by whichever ingress gets there first"
@@ -1733,9 +1693,8 @@ mod tests {
     ///
     /// It rejects with its own variant, because the condition is not "over a
     /// limit": the expression fails on this message and will fail on every
-    /// copy of it. Over HTTP both answer `429`; on Kafka only this one is
-    /// terminal, so a record whose key cannot be computed is dead-lettered
-    /// instead of retried forever at the head of its partition.
+    /// copy of it. Over HTTP both answer `429`; a transport that retries can
+    /// tell from the variant that this one is terminal.
     #[tokio::test]
     async fn an_unevaluable_rate_limit_key_rejects_as_its_own_condition() {
         let dl = engine();
@@ -1769,13 +1728,14 @@ mod tests {
         let allow = Runtime::new()
             .limiter(Arc::new(FailingLimiter), BackendErrorPolicy::Allow)
             .build();
-        let verdict = apply_guards(request(Transport::Kafka, &allow, &dl, &data, &meta)).await;
+        let verdict =
+            apply_guards(request(Transport::ChannelCall, &allow, &dl, &data, &meta)).await;
         assert!(verdict.is_ok(), "allow must fail open");
 
         let deny = Runtime::new()
             .limiter(Arc::new(FailingLimiter), BackendErrorPolicy::Deny)
             .build();
-        let verdict = apply_guards(request(Transport::Kafka, &deny, &dl, &data, &meta)).await;
+        let verdict = apply_guards(request(Transport::ChannelCall, &deny, &dl, &data, &meta)).await;
         assert!(
             matches!(verdict, Err(OrionError::ServiceUnavailable { .. })),
             "deny must refuse with 503, not 429"
@@ -1798,17 +1758,17 @@ mod tests {
         let acme = |name: &str| (name == "x-tenant-id").then(|| "acme".to_string());
         let globex = |name: &str| (name == "x-tenant-id").then(|| "globex".to_string());
 
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        let mut req = request(Transport::ChannelCall, &runtime, &dl, &data, &meta);
         req.header = &acme;
         assert!(apply_guards(req).await.is_ok());
 
         // A different tenant has its own bucket, so it is not refused...
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        let mut req = request(Transport::ChannelCall, &runtime, &dl, &data, &meta);
         req.header = &globex;
         assert!(apply_guards(req).await.is_ok());
 
         // ...while the first tenant's bucket is now empty.
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        let mut req = request(Transport::ChannelCall, &runtime, &dl, &data, &meta);
         req.header = &acme;
         assert!(matches!(
             apply_guards(req).await,
@@ -2013,7 +1973,11 @@ mod tests {
     /// was previously inexpressible.
     #[tokio::test]
     async fn a_declared_custom_header_is_visible_to_key_logic() {
-        for transport in [Transport::HttpSync, Transport::HttpAsync, Transport::Kafka] {
+        for transport in [
+            Transport::HttpSync,
+            Transport::HttpAsync,
+            Transport::ChannelCall,
+        ] {
             let dl = engine();
             let runtime = Runtime::new()
                 .limiter(
@@ -2147,10 +2111,8 @@ mod tests {
 
     // ---- Backpressure, on every transport ----
 
-    /// The permit is per channel, not per transport: Kafka work counts
-    /// against the same `max_concurrent_per_node` as HTTP work (N16 — Kafka
-    /// took no permit at all, so the bound applied to everything except the
-    /// highest-volume path).
+    /// The permit is per channel, not per transport: `channel_call` and cron
+    /// work count against the same `max_concurrent_per_node` as HTTP work.
     #[tokio::test]
     async fn backpressure_permits_are_shared_across_transports() {
         let dl = engine();
@@ -2166,8 +2128,8 @@ mod tests {
         .expect("an admission, not a cache hit");
         assert!(held.backpressure_permit.is_some());
 
-        // ...so a Kafka record and a channel_call are both shed.
-        for transport in [Transport::Kafka, Transport::ChannelCall] {
+        // ...so a channel_call and a cron occurrence are both shed.
+        for transport in [Transport::ChannelCall, Transport::Cron] {
             let verdict = apply_guards(request(transport, &runtime, &dl, &data, &meta)).await;
             assert!(
                 matches!(verdict, Err(OrionError::ServiceUnavailable { .. })),
@@ -2178,7 +2140,7 @@ mod tests {
         // Releasing it re-admits them.
         drop(held);
         assert!(
-            apply_guards(request(Transport::Kafka, &runtime, &dl, &data, &meta))
+            apply_guards(request(Transport::ChannelCall, &runtime, &dl, &data, &meta))
                 .await
                 .is_ok()
         );
@@ -2200,9 +2162,9 @@ mod tests {
                 "{transport:?} must refuse an unlisted origin"
             );
         }
-        // A Kafka record has no browsing context; an origin the caller
-        // asserts there means nothing and is not checked.
-        for transport in [Transport::Kafka, Transport::ChannelCall] {
+        // An in-process call has no browsing context; an origin asserted
+        // there means nothing and is not checked.
+        for transport in [Transport::ChannelCall, Transport::Cron] {
             let mut req = request(transport, &runtime, &dl, &data, &meta);
             req.origin = Some("https://evil.example");
             assert!(
@@ -2259,8 +2221,8 @@ mod tests {
         for transport in [
             Transport::HttpSync,
             Transport::HttpAsync,
-            Transport::Kafka,
             Transport::ChannelCall,
+            Transport::Cron,
         ] {
             assert!(
                 matches!(
@@ -2347,11 +2309,12 @@ mod tests {
         assert_eq!(keys.as_slice(), ["dedup:orders:token-1"]);
     }
 
-    /// N16: on Kafka the record key is the idempotency key when the record
-    /// carries no header of the configured name — at-least-once redelivery
-    /// of the same key must not run the workflow twice.
+    /// N16: a key the transport carries out of band is the idempotency key
+    /// when the message carries no header of the configured name — an
+    /// at-least-once redelivery of the same key must not run the workflow
+    /// twice.
     #[tokio::test]
-    async fn the_kafka_record_key_is_the_fallback_idempotency_key() {
+    async fn an_out_of_band_key_is_the_fallback_idempotency_key() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cfg = Runtime::new()
             .dedup(
@@ -2367,7 +2330,7 @@ mod tests {
             ["dedup:orders:ORD-77"]
         );
 
-        // An explicit header still wins over the record key.
+        // An explicit header still wins over the out-of-band key.
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let cfg = Runtime::new()
             .dedup(
@@ -2408,8 +2371,8 @@ mod tests {
             "channel_call must not consult the dedup store"
         );
 
-        // The same store refuses the same key over HTTP and Kafka.
-        for transport in [Transport::HttpSync, Transport::HttpAsync, Transport::Kafka] {
+        // The same store refuses the same key over HTTP.
+        for transport in [Transport::HttpSync, Transport::HttpAsync] {
             let mut req = request(transport, &runtime, &dl, &data, &meta);
             req.header = IDEMPOTENCY;
             assert!(
@@ -2425,11 +2388,10 @@ mod tests {
     /// never revisiting it destroys every message a redelivering transport
     /// has to retry: attempt 0 registers the key, the attempt fails without
     /// committing, and the redelivery reads the key its own previous attempt
-    /// wrote. The Kafka ingress translates that `409` into "already handled",
-    /// commits the offset, and the record is gone — never processed, never
-    /// dead-lettered.
+    /// wrote. A transport that reads that `409` as "already handled" drops
+    /// the message — never processed, never dead-lettered.
     #[tokio::test]
-    async fn a_kafka_redelivery_recognises_its_own_unsettled_claim() {
+    async fn a_redelivery_recognises_its_own_unsettled_claim() {
         let dl = engine();
         let store = Arc::new(InMemoryDedupBackend::default());
         let runtime = Runtime::new()
@@ -2437,13 +2399,13 @@ mod tests {
             .build();
         let (data, meta) = (json!({}), json!({}));
 
-        // Attempt 0 of the record at offset 7 claims the key...
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        // Attempt 0 of delivery 7 claims the key...
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
         req.dedup_key_fallback = Some("ORD-77");
-        req.dedup_owner = Some("kafka:orders/0/7");
+        req.dedup_owner = Some("delivery-7");
         let admission = admitted(apply_guards(req).await.expect("first attempt admitted"))
             .expect("an admission");
-        // ...and fails, so the offset is not committed and the claim is
+        // ...and fails, so the delivery is not acknowledged and the claim is
         // handed back.
         admission
             .dedup_claim
@@ -2451,21 +2413,21 @@ mod tests {
             .release()
             .await;
 
-        // The retry is the same record, so it must run.
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        // The retry is the same delivery, so it must run.
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
         req.dedup_key_fallback = Some("ORD-77");
-        req.dedup_owner = Some("kafka:orders/0/7");
+        req.dedup_owner = Some("delivery-7");
         assert!(
             apply_guards(req).await.is_ok(),
-            "a redelivery of an uncommitted offset must be processed, not committed as a duplicate"
+            "a redelivery of an unacknowledged message must be processed, not dropped as a duplicate"
         );
     }
 
-    /// The same, without the release: a consumer killed mid-dispatch never
+    /// The same, without the release: a process killed mid-dispatch never
     /// runs `release`, and the claim it left behind is still in the store
-    /// when the record comes back. It must recognise the claim as its own.
+    /// when the message comes back. It must recognise the claim as its own.
     #[tokio::test]
-    async fn a_claim_left_behind_by_a_dead_attempt_does_not_suppress_the_record() {
+    async fn a_claim_left_behind_by_a_dead_attempt_does_not_suppress_the_message() {
         let dl = engine();
         let store = Arc::new(InMemoryDedupBackend::default());
         let runtime = Runtime::new()
@@ -2474,9 +2436,9 @@ mod tests {
         let (data, meta) = (json!({}), json!({}));
 
         for _ in 0..3 {
-            let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+            let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
             req.dedup_key_fallback = Some("ORD-77");
-            req.dedup_owner = Some("kafka:orders/0/7");
+            req.dedup_owner = Some("delivery-7");
             let admission = admitted(apply_guards(req).await.expect("admitted"))
                 .expect("an admission, not a cache hit");
             // Claim dropped, never settled — the process died here.
@@ -2484,10 +2446,11 @@ mod tests {
         }
     }
 
-    /// Confirming is what makes the guard useful on Kafka: once a record's
-    /// offset is committed, a *later* record carrying the same key — a
-    /// producer retry, a mirrored partition, or this record replayed because
-    /// its commit was lost — is the duplicate the channel asked to suppress.
+    /// Confirming is what makes the guard useful on a redelivering transport:
+    /// once a delivery is acknowledged, a *later* message carrying the same
+    /// key — a producer retry, or this message replayed because its
+    /// acknowledgement was lost — is the duplicate the channel asked to
+    /// suppress.
     #[tokio::test]
     async fn a_confirmed_claim_suppresses_every_later_delivery() {
         let dl = engine();
@@ -2497,9 +2460,9 @@ mod tests {
             .build();
         let (data, meta) = (json!({}), json!({}));
 
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
         req.dedup_key_fallback = Some("ORD-77");
-        req.dedup_owner = Some("kafka:orders/0/7");
+        req.dedup_owner = Some("delivery-7");
         let admission = admitted(apply_guards(req).await.expect("admitted")).expect("an admission");
         admission
             .dedup_claim
@@ -2507,23 +2470,24 @@ mod tests {
             .confirm()
             .await;
 
-        // The producer re-sends the same key at a later offset.
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        // The producer re-sends the same key as a later delivery.
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
         req.dedup_key_fallback = Some("ORD-77");
-        req.dedup_owner = Some("kafka:orders/0/12");
+        req.dedup_owner = Some("delivery-12");
         assert!(
             matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
-            "a settled key must refuse a later record carrying it"
+            "a settled key must refuse a later message carrying it"
         );
 
-        // And so is a replay of the original record whose commit was lost:
+        // And so is a replay of the original delivery whose acknowledgement
+        // was lost:
         // "settled" belongs to no owner, so nobody reclaims it.
-        let mut req = request(Transport::Kafka, &runtime, &dl, &data, &meta);
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
         req.dedup_key_fallback = Some("ORD-77");
-        req.dedup_owner = Some("kafka:orders/0/7");
+        req.dedup_owner = Some("delivery-7");
         assert!(
             matches!(apply_guards(req).await, Err(OrionError::Conflict(_))),
-            "a settled key must refuse a replay of the record that settled it"
+            "a settled key must refuse a replay of the delivery that settled it"
         );
     }
 
@@ -2554,8 +2518,7 @@ mod tests {
 
     /// Backpressure is the one guard that can refuse *after* the key is
     /// claimed. A shed request ran nothing, so it must not burn the key: the
-    /// caller's retry (or, on Kafka, the redelivery of the offset it never
-    /// committed) has to be judged on its own merits.
+    /// caller's retry has to be judged on its own merits.
     #[tokio::test]
     async fn a_shed_request_releases_the_key_it_claimed() {
         let dl = engine();
@@ -2617,8 +2580,8 @@ mod tests {
 
         for transport in [
             Transport::HttpAsync,
-            Transport::Kafka,
             Transport::ChannelCall,
+            Transport::Cron,
         ] {
             let verdict = apply_guards(request(transport, &runtime, &dl, &data, &meta))
                 .await

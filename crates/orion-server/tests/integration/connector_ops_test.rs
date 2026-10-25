@@ -367,47 +367,6 @@ async fn test_ungated_cache_connector_is_fully_open() {
     }
 }
 
-fn gated_kafka(name: &str, ops: Value) -> Value {
-    json!({
-        "id": name, "name": name, "connector_type": "kafka",
-        "config": {
-            "type": "kafka", "brokers": ["localhost:9092"], "topic": "t",
-            "operations": ops
-        }
-    })
-}
-
-fn publish_task(conn: &str) -> Value {
-    json!({
-        "id": "t_pk", "name": "t_pk",
-        "function": { "name": "publish_kafka", "input": { "connector": conn, "topic": "t" } }
-    })
-}
-
-/// The gate is checked before producer availability, so the refusal is the
-/// same whether or not the deployment has Kafka enabled — and the open case
-/// is distinguishable, because it gets past the gate and fails on the
-/// disabled producer instead.
-#[tokio::test]
-async fn test_kafka_connector_can_be_made_publish_proof() {
-    let app = common::test_app().await;
-    common::create_connector(&app, gated_kafka("kafka-ro", json!({ "publish": false }))).await;
-    common::create_connector(&app, gated_kafka("kafka-open", json!({}))).await;
-
-    let (status, body) = run_task(&app, "ch-kafka-ro", publish_task("kafka-ro")).await;
-    assert!(
-        is_gate_rejection(status, &body),
-        "disabled publish must gate publish_kafka: status={status} body={body}"
-    );
-
-    let (status, body) = run_task(&app, "ch-kafka-open", publish_task("kafka-open")).await;
-    assert!(
-        !is_gate_rejection(status, &body),
-        "an open gate must let the call through to the producer, which is \
-         disabled in this test app: status={status} body={body}"
-    );
-}
-
 /// Mock upstream answering both methods, so the only thing that can refuse a
 /// POST is the connector's allow-list.
 async fn start_echo_server() -> std::net::SocketAddr {
@@ -531,14 +490,6 @@ async fn test_unknown_operation_gate_key_is_refused_for_every_type() {
             "writes",
         ),
         (
-            "kafka",
-            json!({
-                "type": "kafka", "brokers": ["b:9092"], "topic": "t",
-                "operations": { "publlish": false }
-            }),
-            "publlish",
-        ),
-        (
             "http",
             json!({
                 "type": "http", "url": "https://example.com",
@@ -596,13 +547,6 @@ async fn test_every_real_operation_gate_key_is_accepted() {
             json!({
                 "type": "cache", "backend": "memory",
                 "operations": { "read": true, "write": false }
-            }),
-        ),
-        (
-            "kafka",
-            json!({
-                "type": "kafka", "brokers": ["b:9092"], "topic": "t",
-                "operations": { "publish": false }
             }),
         ),
         (

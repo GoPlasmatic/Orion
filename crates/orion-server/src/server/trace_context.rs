@@ -1,9 +1,9 @@
 //! The HTTP half of trace-context propagation: the axum middleware that reads
 //! `traceparent` off an inbound request.
 //!
-//! The transport-neutral map helpers — what Kafka, the async trace queue and
+//! The transport-neutral map helpers — what the async trace queue and
 //! `http_call` use — are in [`crate::trace_context`]. They moved down because
-//! three of the four callers are not the HTTP layer, and a workflow function
+//! most of their callers are not the HTTP layer, and a workflow function
 //! handler reaching up into `server` to propagate a header was the giveaway.
 
 use axum::body::Body;

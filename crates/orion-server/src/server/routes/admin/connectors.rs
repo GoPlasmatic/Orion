@@ -747,8 +747,9 @@ pub(crate) async fn validate_connector(
 pub(crate) struct ProbeResult {
     /// `true` when the backend answered.
     reachable: bool,
-    /// `false` when no probe exists for this connector (`kafka`) — a
-    /// permanent capability gap, not an outage. Without this field the two were indistinguishable
+    /// `false` when no probe exists for this connector — a stored row whose
+    /// type this build does not ship — a permanent capability gap, not an
+    /// outage. Without this field the two were indistinguishable
     /// in the response shape, and operator tooling read "not implemented" as
     /// downtime.
     supported: bool,
@@ -800,7 +801,8 @@ pub(crate) async fn test_connector(
     // have a probe — so the two cannot drift; the early exits (secret
     // resolution, config parse) fire before a config exists to ask, and
     // judge it by the connector type alone.
-    let type_supported = connector.connector_type != "kafka";
+    let type_supported =
+        crate::connector::ConnectorType::from_stored(&connector.connector_type).is_some();
     let result = |probe: &'static str, supported: bool, outcome: Result<(), String>| {
         Json(ProbeEnvelope {
             data: ProbeResult {
@@ -939,15 +941,6 @@ async fn probe_connector(
             "signed HEAD of the bucket",
             true,
             probe_storage(state, storage).await,
-        ),
-        ConnectorConfig::Kafka(_) => (
-            "not implemented for this connector type",
-            false,
-            Err(format!(
-                "connectivity probing is not implemented for '{}' connectors yet; \
-                 Kafka brokers are covered by `orion-server test-connectivity`",
-                config.connector_type()
-            )),
         ),
     }
 }

@@ -291,43 +291,6 @@ impl ChannelDriver for SourceChannelDriver {
     }
 }
 
-/// Native `"kafka"` channel driver adapter.
-///
-/// [`ChannelDriverRegistry::community`] is the sole default registry and
-/// contains only the foundational Community drivers (`rest`, `http`, `cron`,
-/// `source`). Enterprise composition roots and callers that exercise Kafka
-/// channel validation register [`KafkaChannelDriver`] explicitly via
-/// [`CompositionRoot::with_channel_driver`](super::CompositionRoot::with_channel_driver)
-/// or [`ChannelDriverRegistry::register`].
-pub struct KafkaChannelDriver;
-
-impl ChannelDriver for KafkaChannelDriver {
-    fn protocol_id(&self) -> &'static str {
-        "kafka"
-    }
-
-    fn capabilities(&self) -> ChannelDriverCapabilities {
-        ChannelDriverCapabilities {
-            supports_sync: false,
-            supports_async: true,
-            registers_http_routes: false,
-            supports_oauth2_login: false,
-        }
-    }
-
-    fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
-        let mut out = Vec::new();
-        if fields.topic.is_none_or(|t| t.trim().is_empty()) {
-            out.push(FieldError::new(
-                "channel.topic",
-                "REQUIRED_FOR_PROTOCOL",
-                "Kafka channels must specify a topic",
-            ));
-        }
-        out
-    }
-}
-
 /// Open registry of native Rust [`ChannelDriver`] implementations (`V2-11.1`).
 #[derive(Clone, Default)]
 pub struct ChannelDriverRegistry {

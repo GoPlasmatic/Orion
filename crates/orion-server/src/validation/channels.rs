@@ -452,11 +452,7 @@ pub(crate) fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldErro
 /// implementations rather than a closed match in core validation.
 fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionError> {
     static REGISTRY: std::sync::LazyLock<crate::extensions::ChannelDriverRegistry> =
-        std::sync::LazyLock::new(|| {
-            let registry = crate::extensions::ChannelDriverRegistry::community();
-            registry.register(std::sync::Arc::new(crate::extensions::KafkaChannelDriver));
-            registry
-        });
+        std::sync::LazyLock::new(crate::extensions::ChannelDriverRegistry::community);
 
     let driver_fields = crate::extensions::ChannelProtocolFields {
         protocol: fields.protocol.as_str(),
@@ -473,7 +469,7 @@ fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionEr
     // D29: the varchar(255) caps are deliberately outside the protocol match —
     // all three fields are optional on the request and persist whatever the
     // protocol says, so an over-long `topic` on a REST channel (or
-    // `route_pattern` on a Kafka one) would still store on SQLite/Postgres
+    // `route_pattern` on a cron one) would still store on SQLite/Postgres
     // and fail on MySQL if only the owning protocol's arm checked it.
     for (path, value) in [
         ("channel.route_pattern", fields.route_pattern),
@@ -1048,22 +1044,6 @@ mod tests {
         assert!(check_varchar_len("channel.topic", &"é".repeat(255)).is_none());
         assert!(check_varchar_len("channel.topic", &"é".repeat(256)).is_some());
 
-        let kafka_req = |topic: String, consumer_group: Option<String>| CreateChannelRequest {
-            tags: vec![],
-            channel_id: None,
-            name: "kafka-ch".to_string(),
-            description: None,
-            channel_type: crate::storage::models::ChannelType::Async,
-            protocol: ChannelProtocol::Kafka,
-            methods: None,
-            route_pattern: None,
-            topic: Some(topic),
-            consumer_group,
-            transport_config: json!({}),
-            workflow_id: None,
-            config: json!({}),
-            priority: 0,
-        };
         let rest_req = |route_pattern: String, topic: Option<String>| CreateChannelRequest {
             tags: vec![],
             channel_id: None,
@@ -1085,34 +1065,26 @@ mod tests {
             "at-limit route_pattern accepted"
         );
         assert!(
-            validate_create_channel(&rest_req(over.clone(), None)).is_err(),
+            validate_create_channel(&rest_req(over, None)).is_err(),
             "long route_pattern refused"
         );
+        let with_group = |group: String| CreateChannelRequest {
+            consumer_group: Some(group),
+            ..rest_req("/orders".to_string(), None)
+        };
         assert!(
-            validate_create_channel(&kafka_req("t".repeat(256), None)).is_err(),
-            "long topic refused"
-        );
-        assert!(
-            validate_create_channel(&kafka_req("orders".to_string(), Some("g".repeat(256))))
-                .is_err(),
+            validate_create_channel(&with_group("g".repeat(256))).is_err(),
             "long consumer_group refused"
         );
         assert!(
-            validate_create_channel(&kafka_req("orders".to_string(), Some("g".repeat(255))))
-                .is_ok(),
+            validate_create_channel(&with_group("g".repeat(255))).is_ok(),
             "at-limit consumer_group accepted"
         );
 
-        // The caps are protocol-independent: both fields persist whatever the
-        // protocol says, so the over-long value must be refused on the
-        // "wrong" protocol too — it would otherwise store on SQLite/Postgres
-        // and fail on MySQL, the exact break D29 closes.
-        let mut kafka_with_route = kafka_req("orders".to_string(), None);
-        kafka_with_route.route_pattern = Some(over);
-        assert!(
-            validate_create_channel(&kafka_with_route).is_err(),
-            "long route_pattern on a Kafka channel refused"
-        );
+        // The caps are protocol-independent: the columns persist whatever the
+        // protocol says, so the over-long value must be refused on a protocol
+        // that does not read it too — it would otherwise store on
+        // SQLite/Postgres and fail on MySQL, the exact break D29 closes.
         assert!(
             validate_create_channel(&rest_req("/orders".to_string(), Some("t".repeat(256))))
                 .is_err(),
@@ -1237,53 +1209,11 @@ mod tests {
             name: "Orders Async".to_string(),
             description: None,
             channel_type: crate::storage::models::ChannelType::Async,
-            protocol: ChannelProtocol::Kafka,
-            methods: None,
-            route_pattern: None,
-            topic: Some("orders-topic".to_string()),
-            consumer_group: None,
-            transport_config: json!({}),
-            workflow_id: None,
-            config: json!({}),
-            priority: 0,
-        };
-        assert!(validate_create_channel(&req).is_ok());
-    }
-
-    #[test]
-    fn test_validate_create_channel_async_missing_topic() {
-        let req = CreateChannelRequest {
-            tags: vec![],
-            channel_id: None,
-            name: "Bad Async".to_string(),
-            description: None,
-            channel_type: crate::storage::models::ChannelType::Async,
-            protocol: ChannelProtocol::Kafka,
-            methods: None,
-            route_pattern: None,
+            protocol: ChannelProtocol::Rest,
+            methods: Some(vec!["POST".to_string()]),
+            route_pattern: Some("/orders".to_string()),
             topic: None,
             consumer_group: None,
-            transport_config: json!({}),
-            workflow_id: None,
-            config: json!({}),
-            priority: 0,
-        };
-        assert!(validate_create_channel(&req).is_err());
-    }
-
-    #[test]
-    fn test_validate_create_channel_kafka_valid() {
-        let req = CreateChannelRequest {
-            tags: vec![],
-            channel_id: None,
-            name: "Kafka Channel".to_string(),
-            description: None,
-            channel_type: crate::storage::models::ChannelType::Async,
-            protocol: ChannelProtocol::Kafka,
-            methods: None,
-            route_pattern: None,
-            topic: Some("kafka-topic".to_string()),
-            consumer_group: Some("my-group".to_string()),
             transport_config: json!({}),
             workflow_id: None,
             config: json!({}),
@@ -1445,24 +1375,6 @@ mod tests {
             ..empty_update()
         };
         assert!(validate_update_channel(&stored, &req).is_err());
-    }
-
-    #[test]
-    fn test_update_emptying_topic_rejected_for_kafka() {
-        let stored = Channel {
-            protocol: "kafka".to_string(),
-            methods_json: None,
-            route_pattern: None,
-            topic: Some("orders-topic".to_string()),
-            ..stored_rest_channel()
-        };
-        let req = UpdateChannelRequest {
-            topic: Some("  ".to_string()),
-            ..empty_update()
-        };
-        assert!(validate_update_channel(&stored, &req).is_err());
-        // Omitting topic keeps the stored one
-        assert!(validate_update_channel(&stored, &empty_update()).is_ok());
     }
 
     #[test]

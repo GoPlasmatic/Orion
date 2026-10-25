@@ -118,7 +118,7 @@ pub struct FieldSchema {
     ///
     /// `&[]` (the default) means nowhere: the field is read as the literal it
     /// was authored as. `&[""]` means the field's *own* value is a `Template`
-    /// — `http_call.path`, `publish_kafka.topic`. `&["*"]` means each member's
+    /// — `http_call.path`. `&["*"]` means each member's
     /// value is one and the field itself is not: `http_call.headers` is a map
     /// of templates, so the map must still be an object while any value in it
     /// may be an expression.
@@ -199,8 +199,8 @@ pub enum WriteShape {
 /// *error* was transient. This asks what a retry costs when the answer is yes:
 /// a `db_read` re-run is free, a `db_write` insert re-run is a second row. Orion
 /// retries tasks in more places than an author necessarily has in mind — the
-/// DLQ retry loop, a Kafka redelivery of an uncommitted offset, `http_call`'s
-/// own transport retry — and nothing told them which functions those retries
+/// DLQ retry loop, a cron occurrence's retry, `http_call`'s own transport
+/// retry — and nothing told them which functions those retries
 /// are safe over.
 ///
 /// The connector layer already knows this shape for one case:
@@ -289,7 +289,7 @@ pub struct FunctionSchema {
     /// Whether a key outside `input_fields` is an error rather than ignored.
     ///
     /// True for the functions dataflow-rs owns the config struct for
-    /// (`http_call`, `publish_kafka`), whose structs are `deny_unknown_fields`
+    /// (`http_call`), whose struct is `deny_unknown_fields`
     /// as of 3.1: a misspelled key there fails `Workflow::from_json`, which for
     /// Orion means the channel is quarantined at load. Catching it at authoring
     /// time turns that into a 400 naming the field. Orion's own handlers take
@@ -325,7 +325,6 @@ use super::http_call::HTTP_CALL_FIELDS;
 use super::jwt_sign::JWT_SIGN_FIELDS;
 use super::jwt_verify::JWT_VERIFY_FIELDS;
 use super::model_infer::MODEL_INFER_FIELDS;
-use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
 use super::storage_head::STORAGE_HEAD_FIELDS;
 use super::storage_presign::STORAGE_PRESIGN_FIELDS;
 
@@ -528,17 +527,6 @@ const REGISTRY: &[FunctionSchema] = &[
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Read,
         connector: ConnectorRule::of(&[ConnectorType::Storage]),
-        deny_unknown: true,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "publish_kafka",
-        description: "Publish a message to a Kafka topic via a Kafka connector.",
-        category: "connector",
-        input_fields: PUBLISH_KAFKA_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::UnsafeWrite,
-        connector: ConnectorRule::of(&[ConnectorType::Kafka]),
         deny_unknown: true,
         validate_static: None,
     },

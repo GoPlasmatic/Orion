@@ -95,7 +95,7 @@ fn canonical_segments(segments: &[RouteSegment]) -> String {
 
 /// A channel's declared route, as the route table would see it: the canonical
 /// match shape plus the methods it claims. Empty for channels that register
-/// no route (Kafka, or no `route_pattern`).
+/// no route (cron, or no `route_pattern`).
 ///
 /// [`declared_route_parts`] over a stored row — so the activation gate
 /// (`ensure_route_is_unclaimed`, in the admin channel routes) and
@@ -634,7 +634,8 @@ mod tests {
     fn a_channel_that_serves_no_route_declares_none_in_either_view() {
         let methods = parts(&["POST"]);
         for (protocol, pattern) in [
-            // Kafka registers no HTTP route at all.
+            // A protocol this build does not serve — a stored `kafka` row —
+            // registers no HTTP route at all.
             ("kafka", Some("/orders")),
             // Nor does cron: it is started by its schedule, and a route would
             // make it reachable by request.

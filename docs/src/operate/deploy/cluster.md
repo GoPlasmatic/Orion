@@ -48,7 +48,7 @@ url = "postgres://orion:orion@postgres:5432/orion"
 auto_migrate = false               # run `orion-server migrate` as a deploy step
 ```
 
-`instance_id` doubles as the Kafka `group.instance.id`. Give each replica a stable one if you want rolling restarts to rejoin without a full consumer-group rebalance.
+`instance_id` names this node as a lease holder and in log lines. Give each replica a stable one if you want those to survive a rolling restart.
 
 ## What the cluster shares
 

@@ -1,16 +1,14 @@
-# T21: the apt line for rdkafka's system deps was pasted verbatim into seven
+# T21: the apt line for the system build deps was pasted verbatim into seven
 # ci.yml jobs; a new system dependency had to land seven times or CI would
 # fail in whichever job was missed. One composite action, one place to edit.
 #
-# P14: the list mirrors the Dockerfile's builder stage — librdkafka builds
-# via its native configure on unix (cmake is only exercised on Windows, but
-# stays here so a cmake-probing build script never falls over), and the
-# vendored OpenSSL build needs perl. GitHub runners preinstall g++/perl/
-# pkg-config; installing explicitly keeps this action correct on stripped
-# runner images too. Keep in step with [dist.dependencies.apt] in
-# dist-workspace.toml.
+# P14: the list mirrors the Dockerfile's builder stage — cmake for aws-lc-sys
+# (the rustls crypto provider), which can build through it, and pkg-config for
+# the -sys crates that probe with it. GitHub runners preinstall both;
+# installing explicitly keeps this action correct on stripped runner images
+# too. Keep in step with [dist.dependencies.apt] in dist-workspace.toml.
 name: Install system build dependencies
-description: rdkafka-sys system deps (librdkafka native configure; vendored OpenSSL needs perl)
+description: System build deps for the -sys crates (cmake, pkg-config)
 runs:
   using: composite
   steps:
@@ -37,4 +35,4 @@ runs:
           | sudo xargs -r rm -f
     - name: Install system dependencies
       shell: bash
-      run: sudo apt-get update && sudo apt-get install -y pkg-config cmake g++ libcurl4-openssl-dev perl
+      run: sudo apt-get update && sudo apt-get install -y pkg-config cmake

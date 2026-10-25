@@ -133,8 +133,7 @@ pub struct ClusterRuntime {
     pub enabled: bool,
     /// This node's identity: `cluster.instance_id` or a boot-time UUID.
     /// Ephemeral by design (D4) — nothing registers or depends on a stable
-    /// node list; it names lease holders, DLQ claimants, Kafka static
-    /// membership, and log lines.
+    /// node list; it names lease holders, DLQ claimants and log lines.
     pub instance_id: String,
     /// Shared Redis handle from `cluster.redis_url` (None when disabled).
     ///
@@ -218,8 +217,8 @@ pub async fn init_cluster_runtime(
     config: &ClusterConfig,
     pool: &DbPool,
 ) -> Result<Arc<ClusterRuntime>, OrionError> {
-    // main.rs pre-resolves the id into the config so tracing/Kafka agree
-    // with the runtime; test harnesses may leave it empty (fresh UUID).
+    // main.rs pre-resolves the id into the config so tracing agrees with
+    // the runtime; test harnesses may leave it empty (fresh UUID).
     let instance_id = config.effective_instance_id();
 
     let (redis, default_cache) = if config.enabled {

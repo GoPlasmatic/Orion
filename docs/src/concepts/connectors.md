@@ -34,7 +34,6 @@ Two workflows pointing at `payments-api` share one configured connection, one cr
 | `http` | Any HTTP API | `http_call` |
 | `db` | PostgreSQL, MySQL, SQLite | `data_query`, `data_write`, `db_read`, `db_write` |
 | `cache` | Redis, or process memory | `cache_read`, `cache_write` |
-| `kafka` | A Kafka cluster, for producing | `publish_kafka` |
 | `storage` | S3-compatible object storage | `storage_presign`, `storage_head` |
 
 One `db` type covers both SQL and MongoDB; the connection-string scheme selects the backend. Connectors are unversioned. Unlike channels and workflows, an update replaces the stored config and the registry reloads at once. There is no draft step and no activation.

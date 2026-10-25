@@ -42,7 +42,7 @@ pub enum Commands {
     #[command(alias = "ch")]
     Channels(channels::ChannelsCmd),
 
-    /// Manage connectors -- external service connections (HTTP, Kafka) used by tasks
+    /// Manage connectors -- external service connections (HTTP, databases) used by tasks
     #[command(alias = "conn")]
     Connectors(connectors::ConnectorsCmd),
 

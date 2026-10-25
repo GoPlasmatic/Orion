@@ -2,8 +2,8 @@
 //!
 //! `channel::guards::apply_guards` is the single enforcement point for
 //! ingress, and everything after it used to be copied per transport: the sync
-//! HTTP route, the async trace queue, the Kafka consume loop and the
-//! in-process `channel_call` handler each built a `Message`, loaded the engine
+//! HTTP route, the async trace queue, the Kafka consume loop (since removed)
+//! and the in-process `channel_call` handler each built a `Message`, loaded the engine
 //! snapshot, ran it, re-derived the "engine returned Ok
 //! but the message carries task errors" rule, and mapped a timeout — **four
 //! different ways**: an `OrionError::Timeout`, a synthesised engine timeout,
@@ -19,8 +19,8 @@
 //! [`execute_admitted_on_generation`] is that step, once. What stays with each transport is
 //! what genuinely differs: persistence, response shaping, and what a
 //! [`RunOutcome`] *means* to it — an HTTP caller gets the errors in its
-//! envelope, the async path routes them to the DLQ, Kafka rewinds or
-//! dead-letters.
+//! envelope, the async path routes them to the DLQ, a cron occurrence
+//! settles as failed.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,7 +52,7 @@ impl RunOutcome {
     ///
     /// One derivation, so the counter means the same thing on every transport.
     /// It did not: the sync route counted [`Self::WorkflowErrors`] as `ok`
-    /// while the Kafka and async paths counted it as `error`, so a channel
+    /// while the async path counted it as `error`, so a channel
     /// whose workflow failed every synchronous request reported a 100% success
     /// rate. `error` is the answer the metric's own documentation implies —
     /// "messages processed, by outcome" — and a workflow that failed its tasks
@@ -60,9 +60,7 @@ impl RunOutcome {
     ///
     /// The label is derived here; *emitting* it stays with the transport,
     /// because whether an execution should be counted at all is knowledge only
-    /// the transport has. Kafka suppresses the counter on an in-place retry
-    /// (K10 — one poison record otherwise inflated the error rate once a
-    /// minute forever), and `channel_call` emits nothing because the request
+    /// the transport has: `channel_call` emits nothing because the request
     /// that triggered it was already counted at its own ingress.
     pub fn status_label(&self) -> &'static str {
         NormalizedRunOutcome::from(self).status_label()
@@ -121,11 +119,8 @@ pub struct ExecOpts<'a> {
     /// [`crate::engine::utils::rollout_bucket_for_identity`].
     ///
     /// `None` means "admitted by every workflow, rollout or not", and is
-    /// deliberate on two transports: a Kafka record has no sticky caller
-    /// identity and no forwarded address, so a random bucket per record would
-    /// split one topic's traffic across canary versions non-deterministically;
-    /// an in-process `channel_call` is already running inside its caller's
-    /// bucket.
+    /// deliberate on `channel_call`: an in-process call is already running
+    /// inside its caller's bucket.
     pub routing_bucket: Option<u8>,
     /// The per-request profile scope, when one is in flight.
     pub profile: Option<&'a Arc<super::profile::ProfileCollector>>,

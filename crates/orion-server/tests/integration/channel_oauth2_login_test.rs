@@ -1071,11 +1071,11 @@ async fn a_non_rest_channel_cannot_declare_a_sign_in() {
             "POST",
             "/api/v2/admin/channels",
             Some(json!({
-                "name": "kafka-signin",
-                "channel_type": "async",
-                "protocol": "kafka",
-                "topic": "signin",
-                "consumer_group": "orion",
+                "name": "http-signin",
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["GET"],
+                "route_pattern": "/signin",
                 "config": { "oauth2_login": login_config("https://idp.example.com") },
             })),
         ))

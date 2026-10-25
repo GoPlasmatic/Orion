@@ -58,8 +58,7 @@ pub use admission::{
 };
 pub use channel_driver::{
     ChannelDriver, ChannelDriverCapabilities, ChannelDriverRegistry, ChannelProtocolFields,
-    CronChannelDriver, HttpChannelDriver, KafkaChannelDriver, RestChannelDriver,
-    SourceChannelDriver,
+    CronChannelDriver, HttpChannelDriver, RestChannelDriver, SourceChannelDriver,
 };
 pub use community_assembly::{
     BoundaryViolation, COMMUNITY_CHANNEL_PROTOCOLS, CommunityAssemblyReport,

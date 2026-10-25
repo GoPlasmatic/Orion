@@ -1276,7 +1276,7 @@ async fn s6_db_connector_accepts_every_real_backend_scheme() {
 }
 
 #[tokio::test]
-async fn s6_cache_and_kafka_endpoints_are_shape_checked() {
+async fn s6_cache_endpoints_are_shape_checked() {
     let app = common::test_app().await;
 
     // A redis cache pointed at an HTTP endpoint.
@@ -1295,26 +1295,6 @@ async fn s6_cache_and_kafka_endpoints_are_shape_checked() {
         "s6-cache-tls",
         "cache",
         json!({"backend": "redis", "url": "rediss://cache.example.com:6379"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-
-    // Kafka brokers are host:port, never URLs — a scheme here is a mistake
-    // librdkafka would only report much later.
-    let (status, body) = create_connector_status(
-        &app,
-        "s6-kafka-url",
-        "kafka",
-        json!({"brokers": ["http://b:9092"], "topic": "t"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-
-    let (status, body) = create_connector_status(
-        &app,
-        "s6-kafka-ok",
-        "kafka",
-        json!({"brokers": ["b1.example.com:9092", "b2.example.com:9092"], "topic": "t"}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -1443,7 +1423,7 @@ async fn s6_allow_private_urls_lets_a_loopback_db_through() {
 
 /// A working database connector reports reachable.
 ///
-/// `test-connectivity` probes the *configured* storage and Kafka only; a saved
+/// `test-connectivity` probes the *configured* storage only; a saved
 /// connector could not be checked at all, so bad credentials surfaced at the
 /// first real request instead of when the operator saved them.
 #[tokio::test]

@@ -263,7 +263,7 @@ async fn test_redis_dedup_rejects_a_replayed_idempotency_key() {
 /// that Redis implements the contract the claim depends on. That contract is
 /// no longer "is this key new?" — a bare boolean cannot distinguish a second
 /// delivery from a redelivery of the *same* one, and treating the latter as a
-/// duplicate is how a Kafka record gets committed without ever running. So
+/// duplicate is how a redelivered message gets dropped without ever running. So
 /// `claim_dedup_key` reports **who** holds the key, and `remove` hands it
 /// back; `SET NX EX` + `GET` and `DEL` are what implement that here.
 #[tokio::test]
@@ -284,7 +284,7 @@ async fn test_redis_dedup_claim_reports_the_holder_and_can_be_released() {
     // A free key is claimed, and the claim is silent about any holder.
     assert_eq!(
         backend
-            .claim_dedup_key(key, "kafka:orders/0/7", 300)
+            .claim_dedup_key(key, "delivery-7", 300)
             .await
             .expect("claim"),
         None
@@ -294,21 +294,21 @@ async fn test_redis_dedup_claim_reports_the_holder_and_can_be_released() {
     // the guard can see the holder is not itself and refuse with 409.
     assert_eq!(
         backend
-            .claim_dedup_key(key, "kafka:orders/0/12", 300)
+            .claim_dedup_key(key, "delivery-12", 300)
             .await
             .expect("claim"),
-        Some("kafka:orders/0/7".to_string()),
+        Some("delivery-7".to_string()),
         "a held key must name its holder, not merely report 'taken'"
     );
 
     // The *same* delivery coming back — an in-place retry, or a redelivery of
-    // an offset that was never committed — reads its own token and proceeds.
+    // a message that was never acknowledged — reads its own token and proceeds.
     assert_eq!(
         backend
-            .claim_dedup_key(key, "kafka:orders/0/7", 300)
+            .claim_dedup_key(key, "delivery-7", 300)
             .await
             .expect("claim"),
-        Some("kafka:orders/0/7".to_string()),
+        Some("delivery-7".to_string()),
         "a redelivery must be able to recognise its own unsettled claim"
     );
 
@@ -316,7 +316,7 @@ async fn test_redis_dedup_claim_reports_the_holder_and_can_be_released() {
     backend.remove(key).await.expect("release");
     assert_eq!(
         backend
-            .claim_dedup_key(key, "kafka:orders/0/12", 300)
+            .claim_dedup_key(key, "delivery-12", 300)
             .await
             .expect("claim"),
         None,

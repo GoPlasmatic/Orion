@@ -1,4 +1,4 @@
-<!-- description: The deduplication block of a channel: idempotency-key replay protection within a window, the backing store, and how Kafka and cluster mode behave. -->
+<!-- description: The deduplication block of a channel: idempotency-key replay protection within a window, the backing store, and how cluster mode behaves. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -33,8 +33,6 @@ Rules:
 - The key is claimed before the workflow runs and settled once the outcome is durable. A delivery that fails without settling is re-processed on retry, not refused as a duplicate of itself. The full claim/settle argument is in [Availability](../../concepts/lifecycle.md).
 - `deny` on payment-style workloads trades availability for the guarantee that a duplicate can never slip through an outage.
 
-**Kafka.** Kafka ingest deduplicates too, and needs it most: at-least-once delivery replays records the workflow already ran. The key is the record header named by `header` when the producer sets one, else the record key. A recognized duplicate is skipped and its offset committed — nothing is dead-lettered, because nothing failed. Set the key per logical event, not per entity. Deduplication narrows at-least-once; it does not make Kafka exactly once.
-
 **`channel_call` is exempt.** An in-process call is a step inside a request already deduplicated at its own ingress and carries no key of its own. It would inherit the parent's, so a workflow calling one channel once per line item would see its second call refused.
 
 **Cluster mode.** A channel whose dedup connector is missing, broken, or explicitly in-memory refuses to load instead of silently degrading to per-node state. On a single node, an unusable connector falls back to process memory with a warning.
@@ -42,7 +40,6 @@ Rules:
 ## Related
 
 - [The entity lifecycle](../../concepts/lifecycle.md): the claim-and-settle argument.
-- [Kafka channels](../../guides/patterns/kafka-channels.md): deduplicating at-least-once delivery.
 - [Connector types › Cache](../connectors/cache.md): the connector that backs the store.
 - [Deploy a cluster](../../operate/deploy/cluster.md): the shared store a cluster requires.
 - [Channel configuration](./index.md): every key, with its page.

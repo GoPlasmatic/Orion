@@ -268,7 +268,7 @@ pub(crate) struct FunctionSchemaItem {
     ///
     /// A different question from whether an *error* was transient: this is
     /// what a retry costs when it is. Orion retries tasks in several places —
-    /// the trace DLQ, a Kafka redelivery, `http_call`'s transport retry — and
+    /// the trace DLQ, a cron occurrence's retry, `http_call`'s transport retry — and
     /// this is how an author or a tool knows which of those are safe over a
     /// given function.
     retry_safety: Value,
@@ -283,8 +283,8 @@ pub(crate) struct HealthStatus {
     version: String,
     uptime_seconds: i64,
     /// Per-subsystem state: `database`, `engine`, `connectors`, `channels`,
-    /// plus `kafka` when `kafka.enabled`, `cluster_redis` in
-    /// cluster mode, and `packages` when `[packages] apply` names artifacts.
+    /// plus `cluster_redis` in cluster mode, and `packages` when
+    /// `[packages] apply` names artifacts.
     components: Value,
     /// Build provenance and detail, served only to an admin caller.
     #[serde(skip_serializing_if = "Option::is_none")]

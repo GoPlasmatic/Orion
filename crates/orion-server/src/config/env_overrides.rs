@@ -85,8 +85,7 @@ pub(super) fn apply_env_overrides(
 /// [`env_key`], so an override cannot silently read the wrong variable and
 /// the docs drift test can predict the full set from the config structs.
 /// Only shapes the naming rule cannot express are written out by hand: enum
-/// fields with their own error wording, list fields, and the `topic:channel`
-/// pair grammar of `ORION_KAFKA__TOPICS`.
+/// fields with their own error wording.
 pub(super) fn apply_env_overrides_with<F>(
     config: &mut AppConfig,
     env_var: F,
@@ -388,47 +387,6 @@ where
     ov_opt!(rate_limit.endpoints.data_rps: u32);
     ov_list!(rate_limit.trusted_proxies);
 
-    // Kafka
-    ov!(kafka.enabled: bool);
-    ov!(kafka.group_id: String);
-    ov!(kafka.processing_timeout_ms: u64);
-    ov!(kafka.lag_poll_interval_secs: u64);
-    ov!(kafka.session_timeout_ms: u64);
-    ov!(kafka.dlq.enabled: bool);
-    ov!(kafka.dlq.topic: String);
-    ov_opt_str!(kafka.auth.security_protocol);
-    ov_opt_str!(kafka.auth.sasl_mechanism);
-    ov_opt_str!(kafka.auth.sasl_username);
-    ov_opt_str!(kafka.auth.sasl_password);
-    ov_opt_str!(kafka.auth.ssl_ca_location);
-    // Brokers keep their historical shape: trimmed, empties preserved.
-    if let Ok(v) = env_var("ORION_KAFKA__BROKERS") {
-        config.kafka.brokers = v.split(',').map(|s| s.trim().to_string()).collect();
-    }
-    if let Ok(v) = env_var("ORION_KAFKA__TOPICS") {
-        let mut topics = Vec::new();
-        for entry in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            match entry.split_once(':') {
-                Some((topic, channel))
-                    if !topic.trim().is_empty() && !channel.trim().is_empty() =>
-                {
-                    topics.push(crate::config::TopicMapping {
-                        topic: topic.trim().to_string(),
-                        channel: channel.trim().to_string(),
-                    });
-                }
-                _ => {
-                    return Err(OrionError::Config {
-                        message: format!(
-                            "ORION_KAFKA__TOPICS entry '{entry}' is not 'topic:channel'"
-                        ),
-                    });
-                }
-            }
-        }
-        config.kafka.topics = topics;
-    }
-
     // CORS
     ov_list!(cors.allowed_origins);
     ov_list!(cors.additional_allowed_headers);
@@ -484,14 +442,12 @@ mod tests {
             "ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD",
             // `ov_opt!` / `ov_opt_str!` / `ov_list!`.
             "ORION_SERVER__DOCS__ENABLED",
-            "ORION_KAFKA__AUTH__SASL_PASSWORD",
+            "ORION_METRICS__BIND_ADDR",
             "ORION_CORS__ALLOWED_ORIGINS",
-            // Hand-written: enum, enum, list, pair grammar.
+            // Hand-written: the enums.
             "ORION_LOGGING__FORMAT",
             "ORION_TRACE_STORAGE__MODE",
             "ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW",
-            "ORION_KAFKA__BROKERS",
-            "ORION_KAFKA__TOPICS",
         ] {
             assert!(keys.contains(expected), "{expected} is not in the key set");
         }
@@ -584,7 +540,6 @@ mod tests {
         env.insert("ORION_STORAGE__BACKUP_RETENTION_COUNT", "12");
         env.insert("ORION_STORAGE__AUTO_MIGRATE", "false");
         env.insert("ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS", "45");
-        env.insert("ORION_KAFKA__SESSION_TIMEOUT_MS", "30000");
         env.insert("ORION_CLUSTER__ENABLED", "true");
         env.insert("ORION_CLUSTER__REDIS_URL", "redis://cluster-redis:6379");
         env.insert("ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS", "500");
@@ -605,12 +560,6 @@ mod tests {
         env.insert("ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS", "500");
         env.insert("ORION_SERVER__COMPRESSION__ENABLED", "true");
         env.insert("ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS", "15");
-        env.insert("ORION_KAFKA__ENABLED", "true");
-        env.insert("ORION_KAFKA__BROKERS", "broker1:9092,broker2:9092");
-        env.insert("ORION_KAFKA__GROUP_ID", "my-group");
-        env.insert("ORION_KAFKA__TOPICS", "orders:order-ch, events:event-ch");
-        env.insert("ORION_KAFKA__DLQ__ENABLED", "true");
-        env.insert("ORION_KAFKA__DLQ__TOPIC", "my-dlq");
         env.insert(
             "ORION_CORS__ALLOWED_ORIGINS",
             "https://a.example, https://b.example",
@@ -651,7 +600,6 @@ mod tests {
         assert_eq!(config.storage.backup_retention_count, Some(12));
         assert!(!config.storage.auto_migrate);
         assert_eq!(config.server.shutdown_force_timeout_secs, 45);
-        assert_eq!(config.kafka.session_timeout_ms, 30000);
         assert!(config.cluster.enabled);
         assert_eq!(config.cluster.redis_url, "redis://cluster-redis:6379");
         assert_eq!(config.cluster.epoch_poll_interval_ms, 500);
@@ -672,16 +620,6 @@ mod tests {
         assert_eq!(config.rate_limit.endpoints.data_rps, Some(500));
         assert!(config.server.compression.enabled);
         assert_eq!(config.engine.cache_cleanup_interval_secs, 15);
-        assert!(config.kafka.enabled);
-        assert_eq!(config.kafka.brokers, vec!["broker1:9092", "broker2:9092"]);
-        assert_eq!(config.kafka.group_id, "my-group");
-        assert_eq!(config.kafka.topics.len(), 2);
-        assert_eq!(config.kafka.topics[0].topic, "orders");
-        assert_eq!(config.kafka.topics[0].channel, "order-ch");
-        assert_eq!(config.kafka.topics[1].topic, "events");
-        assert_eq!(config.kafka.topics[1].channel, "event-ch");
-        assert!(config.kafka.dlq.enabled);
-        assert_eq!(config.kafka.dlq.topic, "my-dlq");
         assert_eq!(
             config.cors.allowed_origins,
             vec![
@@ -754,16 +692,6 @@ mod tests {
             err.to_string()
                 .contains("ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS")
         );
-    }
-
-    #[test]
-    fn test_env_override_kafka_topics_rejects_malformed_entry() {
-        let mut env = HashMap::new();
-        env.insert("ORION_KAFKA__TOPICS", "orders:order-ch,missing-channel");
-        let mut config = AppConfig::default();
-        let err = apply_env_overrides_with(&mut config, make_env_reader(&env))
-            .expect_err("malformed mapping must be rejected");
-        assert!(err.to_string().contains("missing-channel"));
     }
 
     #[test]
@@ -840,37 +768,6 @@ mod tests {
         assert_eq!(
             config.rate_limit.trusted_proxies,
             vec!["10.0.0.0/8", "192.168.1.1"]
-        );
-    }
-
-    #[test]
-    fn test_env_override_kafka_auth() {
-        let mut env = HashMap::new();
-        env.insert("ORION_KAFKA__AUTH__SECURITY_PROTOCOL", "sasl_ssl");
-        env.insert("ORION_KAFKA__AUTH__SASL_MECHANISM", "SCRAM-SHA-256");
-        env.insert("ORION_KAFKA__AUTH__SASL_USERNAME", "svc-orion");
-        env.insert("ORION_KAFKA__AUTH__SASL_PASSWORD", "s3cret");
-        env.insert("ORION_KAFKA__AUTH__SSL_CA_LOCATION", "/etc/kafka/ca.pem");
-
-        let mut config = AppConfig::default();
-        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
-
-        assert_eq!(
-            config.kafka.auth.security_protocol.as_deref(),
-            Some("sasl_ssl")
-        );
-        assert_eq!(
-            config.kafka.auth.sasl_mechanism.as_deref(),
-            Some("SCRAM-SHA-256")
-        );
-        assert_eq!(
-            config.kafka.auth.sasl_username.as_deref(),
-            Some("svc-orion")
-        );
-        assert_eq!(config.kafka.auth.sasl_password.as_deref(), Some("s3cret"));
-        assert_eq!(
-            config.kafka.auth.ssl_ca_location.as_deref(),
-            Some("/etc/kafka/ca.pem")
         );
     }
 

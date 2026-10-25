@@ -3,7 +3,6 @@ use std::sync::atomic::AtomicBool;
 
 use dataflow_rs::expr::ExprEngine;
 use metrics_exporter_prometheus::PrometheusHandle;
-use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
 use crate::connector::ConnectorRegistry;
@@ -12,29 +11,6 @@ use crate::queue::TraceQueue;
 use crate::server::rate_limit::RateLimitState;
 use crate::storage::DbPool;
 use crate::storage::repositories::Repositories;
-
-/// Kafka runtime handles, grouped (R26).
-pub struct Kafka {
-    /// Kafka producer — needed to restart consumer with DLQ support. `None`
-    /// when Kafka is disabled or no brokers are configured.
-    pub producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
-    /// The per-connector producer cache the `publish_kafka` handler resolves
-    /// through, kept so a reload that rebuilds the engine can register the
-    /// same publisher boot did. `None` whenever `producer` is.
-    pub producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
-    /// Kafka consumer handle — stored here so engine reload can restart the
-    /// consumer when async channel topic mappings change.
-    pub consumer_handle: Arc<Mutex<Option<crate::kafka::consumer::ConsumerHandle>>>,
-    /// Kafka ingest health (K7): set degraded when a consumer (re)start
-    /// fails, cleared once a consumer runs again. Reported as the `kafka`
-    /// component of `/health` and `/readyz` (O10).
-    pub ingest_status: Arc<crate::kafka::KafkaIngestStatus>,
-    /// Consumers whose graceful shutdown timed out, bounded in number so a
-    /// sustained broker outage across repeated reloads cannot pile up rdkafka
-    /// clients. A reload parks the old consumer here when it does not stop in
-    /// time; see [`crate::kafka::consumer::KafkaStragglers`].
-    pub stragglers: Arc<crate::kafka::consumer::KafkaStragglers>,
-}
 
 /// Shared cache and external connection-pool caches, grouped (R26).
 pub struct Caches {
@@ -81,7 +57,7 @@ impl Caches {
 /// rather than one per `Arc` field (~20+).
 ///
 /// R26: the coherent clusters are grouped — [`Repositories`] (`repos`),
-/// [`Kafka`] (`kafka`), [`Caches`] (`caches`); everything genuinely
+/// [`Caches`] (`caches`); everything genuinely
 /// runtime-singular stays a flat field.
 pub struct AppStateInner {
     /// The live serving generation — engine and channel estate, published as
@@ -92,7 +68,7 @@ pub struct AppStateInner {
     /// Builds the channel half of a generation. A reload's tool, not a
     /// request's: a request reads the estate off `runtime`.
     pub channel_loader: Arc<crate::channel::ChannelLoader>,
-    /// Serialises [`crate::runtime::reload_engine_with_opts`] end to end.
+    /// Serialises [`crate::runtime::reload_engine`] end to end.
     ///
     /// A reload is a read-modify-write over the published generation: it reads
     /// the active channels and workflows from the database, builds the new
@@ -108,11 +84,6 @@ pub struct AppStateInner {
     /// keep one of its own, which guarded its half alone and could not span
     /// the engine store — the asymmetry that let the two halves be published a
     /// moment apart.
-    ///
-    /// Held across the Kafka consumer restart too, which is the one part that
-    /// can sleep (up to 5 s of epoch jitter). A concurrent reload waiting that
-    /// long is the correct outcome — the alternative is publishing an engine
-    /// built from rows it re-read while the first reload was still running.
     pub reload_lock: tokio::sync::Mutex<()>,
     /// Serialises `POST /admin/backups` end to end: choosing the destination
     /// filename, running `VACUUM INTO`, and pruning to the retention count.
@@ -168,8 +139,7 @@ pub struct AppStateInner {
     pub http_client: reqwest::Client,
     /// The process's one expression engine (I188): Orion's ten operators,
     /// `[secrets]` and `engine.ops_budget`, built at boot and kept across
-    /// every reload. The channel guards, channel auth, the Kafka consumer, cron
-    /// and `/validate` compile and evaluate on it. Cheap to clone: a clone
+    /// every reload. The channel guards, channel auth, cron and `/validate` compile and evaluate on it. Cheap to clone: a clone
     /// shares the engine.
     pub exprs: ExprEngine,
     /// The instance's JWKS cache, built on `http_client` — the client with
@@ -187,15 +157,13 @@ pub struct AppStateInner {
     /// Whether the last engine reload attempt failed — the `engine_reload`
     /// component of `/health`.
     ///
-    /// Set and cleared by [`crate::runtime::reload_engine_with_opts`], so every
+    /// Set and cleared by [`crate::runtime::reload_engine`], so every
     /// caller is covered: the admin mutations, `POST /engine/reload`, and the
     /// cluster epoch watcher. Deliberately **not** on `/readyz`: a node whose
     /// reload failed is still serving the previous generation correctly, and
     /// taking it out of rotation would replace a stale-config problem with an
     /// availability one. The same argument `config_propagation` makes.
     pub reload_degraded: Arc<AtomicBool>,
-    /// Kafka producer, consumer handle and ingest health.
-    pub kafka: Kafka,
     /// Background queue for trace-storage writes. A no-op handle in sync/off modes.
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
     /// Multi-instance coordination runtime. Inert when `cluster.enabled = false`.

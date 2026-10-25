@@ -94,42 +94,6 @@ pub fn init_metrics_handle(
 /// `AppStateInner`); re-exported here so bootstrap callers keep their path.
 pub use crate::storage::repositories::Repositories;
 
-/// Construct the Kafka producer and the per-connector cache the
-/// `publish_kafka` function resolves through. Returns `None` when Kafka is
-/// disabled or no brokers are configured.
-fn setup_kafka_producer(
-    kafka_config: &config::KafkaIngestConfig,
-    max_pool_cache_entries: usize,
-) -> Result<KafkaProducers, Box<dyn std::error::Error>> {
-    if !kafka_config.enabled || kafka_config.brokers.is_empty() {
-        return Ok((None, None));
-    }
-    let producer = Arc::new(crate::kafka::producer::KafkaProducer::new(
-        &kafka_config.brokers.join(","),
-        &kafka_config.auth,
-        &kafka_config.extra_config,
-    )?);
-    // F13: per-connector producers resolve through this cache; the global
-    // brokers map back to the producer created here.
-    let producers = Arc::new(crate::kafka::producer::KafkaProducerCache::new(
-        kafka_config.brokers.join(","),
-        producer.clone(),
-        kafka_config.auth.clone(),
-        kafka_config.extra_config.clone(),
-        max_pool_cache_entries,
-    ));
-    tracing::info!("Kafka producer initialized");
-    Ok((Some(producer), Some(producers)))
-}
-
-/// What [`setup_kafka_producer`] yields: the producer the DLQ writes through
-/// and the per-connector cache the `publish_kafka` handler resolves through,
-/// both `None` when Kafka is off.
-type KafkaProducers = (
-    Option<Arc<crate::kafka::producer::KafkaProducer>>,
-    Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
-);
-
 /// The long-lived half of [`EngineComponents`] — everything that outlives
 /// engine construction and goes on to back `AppState`.
 ///
@@ -157,8 +121,8 @@ pub struct ServingComponents {
     pub secrets: Arc<crate::engine::ResolvedSecrets>,
     /// `[vars]` as one JSON object, or `None` when the instance declares none.
     ///
-    /// Derived once, here, and cloned to every consumer — `AppState`, the
-    /// Kafka consumer, and the consumer restart on reload. The "`None` strips
+    /// Derived once, here, and cloned to every consumer — `AppState` and the
+    /// cron scheduler. The "`None` strips
     /// the key rather than stamping `{}`" convention that makes `metadata.vars`
     /// unforgeable lives in `VarsConfig::to_json`, and re-deriving it per
     /// consumer is how two ingresses come to disagree about what a workflow
@@ -171,11 +135,6 @@ pub struct ServingComponents {
     pub runtime: Arc<crate::runtime::RuntimeHandle>,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
-    /// The producer cache the `publish_kafka` handler resolves through —
-    /// kept beside the producer so a reload that rebuilds the engine can
-    /// register the same publisher boot did.
-    pub kafka_producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
     /// The plugin sandbox, when `plugins.enabled`: one engine per process,
     /// sized from the ceilings before the first generation loads anything
     /// into it. `None` makes every stored plugin a load issue on this node.
@@ -190,12 +149,11 @@ pub struct ServingComponents {
 /// The engine's serving components, built in one pass by
 /// [`build_engine_components`]: connector registry (with the F16 fail-fast
 /// check), shared HTTP client, expression engine, the pre-created engine
-/// lock, cache + external connector pool caches, the custom function
-/// handlers, and the Kafka producer.
+/// lock, cache + external connector pool caches, and the custom function
+/// handlers.
 pub struct EngineComponents {
     pub serving: ServingComponents,
-    /// Orion's functions, the real `publish_kafka` and the profile layer
-    /// included ([`crate::engine::serving_registry`]): what the first
+    /// Orion's functions and the profile layer included ([`crate::engine::serving_registry`]): what the first
     /// generation compiles every stored workflow on, its plugins added. Its
     /// verdict decides which rows load (I182).
     pub registry: dataflow_rs::Registry,
@@ -204,7 +162,7 @@ pub struct EngineComponents {
 /// Build the [`EngineComponents`]: load the connector registry, create the
 /// shared HTTP client, the expression engine, the runtime handle (pre-created
 /// so the `channel_call` handler can reference it), the cache + external pool
-/// caches, the custom function handlers, and the Kafka producer.
+/// caches, and the custom function handlers.
 pub async fn build_engine_components(
     config: &config::AppConfig,
     repos: &Repositories,
@@ -292,7 +250,7 @@ pub async fn build_engine_components(
     // secret store resolved above and the operation budget. The channel loader
     // compiles every channel expression on it (`validation_logic`,
     // `authorization_logic`, the rate-limit and cache `key_logic`), and the
-    // guards, the Kafka consumer, cron and `/validate` evaluate on it. Nothing
+    // guards, cron and `/validate` evaluate on it. Nothing
     // rebuilds it: every reload keeps it.
     //
     // Secrets are start-time config, resolved above, so there is no ordering
@@ -378,13 +336,7 @@ pub async fn build_engine_components(
         models_config: &config.models,
         providers: providers.clone(),
     };
-    let (kafka_producer, kafka_producers) =
-        setup_kafka_producer(&config.kafka, config.engine.max_pool_cache_entries)?;
-    let mut composition = composition;
-    if let Some(ref kp) = kafka_producers {
-        composition = composition.with_resource_pool(kp.clone());
-    }
-    let registry = crate::engine::serving_registry(handler_deps(), kafka_producers.clone());
+    let registry = crate::engine::serving_registry(handler_deps());
 
     let plugins = if config.plugins.enabled {
         Some(
@@ -410,8 +362,6 @@ pub async fn build_engine_components(
             runtime,
             cache_pool,
             sql_pool_cache,
-            kafka_producer,
-            kafka_producers,
             plugins,
             models,
             composition,
@@ -425,9 +375,8 @@ impl EngineComponents {
     /// build the channel estate (quarantining channels that fail to load),
     /// and publish the two as generation 1 through the pre-created runtime
     /// handle. Returns the
-    /// [`ServingComponents`] `AppState` is assembled from, the loaded channels
-    /// (the Kafka topic merge needs them) and the active-workflow count (for
-    /// the gauge).
+    /// [`ServingComponents`] `AppState` is assembled from and the
+    /// active-workflow count (for the gauge).
     ///
     /// F55: takes `self` by value. This step *consumes* the custom-function
     /// handlers, so when it took `&mut self` the map was left as an empty hole
@@ -440,14 +389,7 @@ impl EngineComponents {
         config: &config::AppConfig,
         repos: &Repositories,
         channel_loader: &crate::channel::ChannelLoader,
-    ) -> Result<
-        (
-            ServingComponents,
-            Vec<crate::storage::models::Channel>,
-            usize,
-        ),
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<(ServingComponents, usize), Box<dyn std::error::Error>> {
         let EngineComponents {
             serving,
             mut registry,
@@ -613,101 +555,8 @@ impl EngineComponents {
             &active_workflows,
         );
 
-        Ok((serving, channels, active_workflows.len()))
+        Ok((serving, active_workflows.len()))
     }
-}
-
-/// What the Kafka ingest needs from the running instance.
-///
-/// Named fields rather than a positional list because three of the six are
-/// `Option` and the boot, test-harness and reload-restart paths all build the
-/// same set — `state.runtime`, `state.exprs`, `state.vars`,
-/// `state.kafka.producer` on the reload side, and the matching
-/// [`ServingComponents`] fields on the boot side. A bare `None` in the fifth
-/// position tells a reader nothing about which dependency is absent.
-pub struct IngestDeps {
-    pub runtime: Arc<crate::runtime::RuntimeHandle>,
-    /// The process's expression engine, which the guards evaluate on.
-    pub exprs: dataflow_rs::expr::ExprEngine,
-    /// `[vars]` as one JSON object, stamped into every ingested message's
-    /// `metadata.vars`. `None` when the instance declares none.
-    pub vars: Option<Arc<serde_json::Value>>,
-    /// The producer the DLQ writes through, when `kafka.dlq.enabled`.
-    pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
-    /// Cluster mode's static group membership id; `None` on a single node.
-    pub instance_id: Option<String>,
-    /// Where a completed Kafka message's trace row is written, and the cap on
-    /// its serialized result. Kafka messages went untraced until the
-    /// trace-plan/serialize/route sequence became one shared function
-    /// (`queue::trace_record`).
-    pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceSink>,
-    pub persistence_queue: crate::queue::TracePersistenceQueue,
-    pub max_result_size_bytes: usize,
-}
-
-/// Start the Kafka consumer in a background task. Merges config-file topic
-/// mappings with DB-driven async-channel topics. Returns `None` when Kafka
-/// is disabled or the merged topic list is empty.
-pub fn start_kafka_ingest(
-    kafka_config: &config::KafkaIngestConfig,
-    channels: &[crate::storage::models::Channel],
-    deps: IngestDeps,
-) -> Result<Option<crate::kafka::consumer::ConsumerHandle>, Box<dyn std::error::Error>> {
-    if !kafka_config.enabled {
-        return Ok(None);
-    }
-
-    let all_topics = crate::kafka::merge_kafka_topics(kafka_config, channels);
-
-    if all_topics.is_empty() {
-        return Ok(None);
-    }
-
-    let merged_config = crate::config::KafkaIngestConfig {
-        topics: all_topics,
-        ..kafka_config.clone()
-    };
-
-    let IngestDeps {
-        runtime,
-        exprs,
-        vars,
-        kafka_producer,
-        instance_id,
-        trace_repo,
-        persistence_queue,
-        max_result_size_bytes,
-    } = deps;
-    let (dlq_producer, dlq_topic) = if kafka_config.dlq.enabled {
-        (kafka_producer, Some(kafka_config.dlq.topic.clone()))
-    } else {
-        (None, None)
-    };
-
-    let handle = crate::kafka::consumer::start_consumer(
-        &merged_config,
-        crate::kafka::consumer::ConsumerDeps {
-            runtime,
-            exprs,
-            vars,
-            dlq_producer,
-            dlq_topic,
-            instance_id,
-            trace_repo,
-            persistence_queue,
-            max_result_size_bytes,
-        },
-    )?;
-
-    tracing::info!(
-        config_topics = kafka_config.topics.len(),
-        db_topics = merged_config.topics.len() - kafka_config.topics.len(),
-        total_topics = merged_config.topics.len(),
-        group_id = %kafka_config.group_id,
-        "Kafka consumer started"
-    );
-
-    Ok(Some(handle))
 }
 
 /// O12: optional dedicated metrics listener. Bound *before* the main
@@ -955,8 +804,7 @@ pub fn start_background_tasks(
         );
     }
 
-    // The scheduler, after the queues it writes traces through and before the
-    // Kafka consumer, for the same reason the consumer comes last: both produce
+    // The scheduler, after the queues it writes traces through: it produces
     // work that lands in the trace pipeline, so the pipeline has to exist first.
     crate::cron::start(
         tasks,
@@ -1027,7 +875,6 @@ pub struct AppStateParams {
     pub rate_limit_state: Option<Arc<crate::server::rate_limit::RateLimitState>>,
     pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
     pub ready: Arc<std::sync::atomic::AtomicBool>,
-    pub kafka_consumer_handle: Option<crate::kafka::consumer::ConsumerHandle>,
     pub cluster: Arc<crate::cluster::ClusterRuntime>,
     /// The supervisor the background tasks registered with, so the probes can
     /// read their liveness.
@@ -1049,7 +896,7 @@ pub struct AppStateParams {
 ///
 /// Everything else — the cluster runtime, the repositories, the channel
 /// loader, the OAuth2 runtime (with its cluster lease derived from the config),
-/// the plugin epoch ticker and the Kafka consumer — `assemble` builds the one
+/// and the plugin epoch ticker — `assemble` builds the one
 /// way both paths must agree on. `config` is already shared.
 pub struct AssembleParams {
     pub config: Arc<config::AppConfig>,
@@ -1068,7 +915,7 @@ pub struct Assembled {
 /// The ordered startup sequence from an open pool to a wired `AppState`:
 /// cluster runtime, repositories, channel loader, engine components, the
 /// managed-OAuth2 runtime, the first published generation, the background
-/// tasks, the plugin ticker and the Kafka consumer. `main.rs` and the
+/// tasks and the plugin ticker. `main.rs` and the
 /// integration-test harness (`tests/integration/common`) both call this so a
 /// step added here reaches both — the sequence used to be spelled twice and a
 /// step added to one ran untested in the other.
@@ -1104,8 +951,8 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         crate::channel::ChannelLoader::new()
     });
 
-    // Connector registry, shared HTTP client, runtime handle, cache pools,
-    // custom function handlers, and the Kafka producer.
+    // Connector registry, shared HTTP client, runtime handle, cache pools and
+    // custom function handlers.
     let components = build_engine_components(&config, &repos, &channel_loader).await?;
 
     // #268: hand the managed-OAuth2 token manager its runtime — the shared
@@ -1136,7 +983,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     // generation, and publish it through the pre-created runtime handle.
     // Consumes `components`: the handler map goes into the engine, and what
     // comes back is the half that backs `AppState` (F55).
-    let (components, channels, active_workflow_count) = components
+    let (components, active_workflow_count) = components
         .load_channels_and_build_engine(&config, &repos, &channel_loader)
         .await?;
 
@@ -1170,24 +1017,6 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         crate::plugin::ticker::start(&tasks, sandbox.clone());
     }
 
-    // Kafka ingest starts after the background tasks: the consumer writes a
-    // `traces` row per message, so it needs the persistence queue that
-    // `start_background_tasks` returns.
-    let kafka_consumer_handle = start_kafka_ingest(
-        &config.kafka,
-        &channels,
-        IngestDeps {
-            runtime: components.runtime.clone(),
-            exprs: components.exprs.clone(),
-            vars: components.vars.clone(),
-            kafka_producer: components.kafka_producer.clone(),
-            instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
-            trace_repo: repos.traces.clone(),
-            persistence_queue: trace_persistence_queue.clone(),
-            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
-        },
-    )?;
-
     // Initial active-workflows gauge. After the recorder is installed (the
     // caller did that before `assemble`), or the write lands nowhere.
     crate::metrics::set_active_workflows(active_workflow_count as f64);
@@ -1206,7 +1035,6 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         rate_limit_state,
         metrics_handle,
         ready: ready.clone(),
-        kafka_consumer_handle,
         cluster,
         tasks,
         cron_status,
@@ -1271,7 +1099,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         rate_limit_state,
         metrics_handle,
         ready,
-        kafka_consumer_handle,
         cluster,
         tasks,
         cron_status,
@@ -1287,8 +1114,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         runtime,
         cache_pool,
         sql_pool_cache,
-        kafka_producer,
-        kafka_producers,
         plugins,
         models,
         composition,
@@ -1332,15 +1157,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         rate_limit_state,
         ready,
         reload_degraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        kafka: crate::server::state::Kafka {
-            producer: kafka_producer,
-            producers: kafka_producers,
-            consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
-            ingest_status: Arc::new(crate::kafka::KafkaIngestStatus::new()),
-            stragglers: crate::kafka::consumer::KafkaStragglers::new(
-                crate::kafka::consumer::MAX_PARKED_STRAGGLERS,
-            ),
-        },
         trace_persistence_queue,
         cluster,
         tasks,

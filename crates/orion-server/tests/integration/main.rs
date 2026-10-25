@@ -86,7 +86,6 @@ mod ingress_guards_test;
 mod integrity_errors_test;
 mod json_front_end_test;
 mod jsonlogic_operators_test;
-mod kafka_test;
 mod mdbook_pin_drift_test;
 mod metrics_docs_drift_test;
 mod metrics_endpoint_test;

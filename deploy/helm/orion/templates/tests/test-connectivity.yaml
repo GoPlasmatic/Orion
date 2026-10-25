@@ -1,8 +1,7 @@
 {{- if .Values.tests.enabled }}
 # `helm test` hook: runs the binary's own `test-connectivity` subcommand,
-# which opens the storage pool, counts pending migrations, and probes the
-# Kafka brokers when kafka.enabled. Reads the same storage Secret the
-# replicas do, so it also proves the Secret wiring is right.
+# which opens the storage pool and counts pending migrations. Reads the same
+# storage Secret the replicas do, so it also proves the Secret wiring is right.
 apiVersion: v1
 kind: Pod
 metadata:

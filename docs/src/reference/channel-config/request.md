@@ -4,7 +4,7 @@
 
 # `request`
 
-`request` controls how the HTTP request body becomes `data` and `metadata`, on HTTP ingresses only. Kafka parses the whole payload as `data` and builds metadata separately. `channel_call` inherits the parent's metadata with `data` from the task input, so neither is affected.
+`request` controls how the HTTP request body becomes `data` and `metadata`, on HTTP ingresses only. `channel_call` inherits the parent's metadata with `data` from the task input, so it is not affected.
 
 
 ## Fields

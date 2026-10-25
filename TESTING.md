@@ -138,7 +138,7 @@ just test-containers    # all of the below, in CI's exact invocations
 
 | Suite | Covers |
 |-------|--------|
-| `integration -- --ignored <filters>` | Portable-dialect parity/round-trips on Postgres/MySQL/Mongo/ES, raw-SQL backends, Redis cache/dedup, column-type matrix, dynamic inputs, Kafka channels |
+| `integration -- --ignored <filters>` | Portable-dialect parity/round-trips on Postgres/MySQL/Mongo/ES, raw-SQL backends, Redis cache/dedup, column-type matrix, dynamic inputs |
 | `integration -- --ignored sql_check_test` | `sql check` against PostgreSQL 16 (grants proven), an older PostgreSQL (schema only), a rolled-back `--schema`, and MySQL |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |
@@ -147,7 +147,7 @@ just test-containers    # all of the below, in CI's exact invocations
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.
 
-*Needs Docker. CI: `integration-containers` job, a seven-leg matrix (one
+*Needs Docker. CI: `integration-containers` job, a six-leg matrix (one
 runner per invocation) — kept drift-free by `ci_filter_drift_test`.*
 
 ## Layer 4 — end-to-end suite (`tests/e2e/`)
@@ -232,7 +232,7 @@ each release's record is committed under `crates/orion-server/tests/benchmark/re
 ## CI at a glance
 
 Push/PR: `changes`, `fmt`, `lint`, `msrv`, `test`, `cli-e2e`, `examples`,
-`integration-containers` (a seven-leg matrix, one runner per container suite),
+`integration-containers` (a six-leg matrix, one runner per container suite),
 `coverage`, `deny`, `package`, `book`, `helm`, `docker-build` — plus
 `mutants` on PRs, `plugin-sdk` and `ha-drill`/`cross-os-build` when their
 paths change.
@@ -263,7 +263,7 @@ recompiled from cold.
 - **The e2e suite runs SQLite only.** Backend variance is covered at the
   integration layer (layer 3); duplicating the shell suite per backend was
   judged not worth the CI cost.
-- **TLS, admin auth, and Kafka channels are integration-tested but not
+- **TLS and admin auth are integration-tested but not
   e2e-tested** — the shell suite runs a plain-HTTP, no-auth server.
 - **Benchmarks are manual** by design (see layer 8).
 - **Mutation testing is scoped**, not tree-wide: full-tree `cargo mutants`

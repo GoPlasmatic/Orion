@@ -108,7 +108,7 @@ Rules:
 - **Auth configs are validated structurally at create/update/validate/import**: a missing `secret`, an unknown preset, a malformed template, or half a replay guard is a `400` naming the problem — not a channel quarantined at the next reload.
 - **`env://` references resolve at channel load.** An `auth` block that cannot be built — an unset `env://` secret, for example — quarantines the channel rather than serving it unauthenticated.
 - **`auth.keys`, `auth.secret`/`auth.secrets`, and `auth.jwt_keys[].key` are masked** as `"******"` in every API read. A masked value sent back on update is restored from the stored config; a sentinel with nothing to restore from is refused.
-- **Kafka and `channel_call` are exempt by design.** A Kafka record carries no header and no signature; its authentication is the broker connection's (SASL/mTLS). A `channel_call` is a step inside a request that already authenticated at its own ingress and holds no credential to present.
+- **`channel_call` and cron are exempt by design.** A cron occurrence has no caller to authenticate. A `channel_call` is a step inside a request that already authenticated at its own ingress and holds no credential to present.
 - Inbound OAuth2/OIDC sign-in — the redirect, PKCE, `id_token` verification and OIDC discovery — is the [`oauth2_login`](./oauth2_login.md) block's job. The `jwt` mode is not an IdP; it verifies tokens. mTLS termination stays out of scope. See [Secure an Instance](../../operate/run/security.md).
 
 ## The scheme

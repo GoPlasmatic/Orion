@@ -19,7 +19,7 @@ Every Prometheus series Orion exports, one row per metric, asserted against the 
 | `orion_messages_total` | Counter | `channel`, `status` | Messages processed, by outcome: `ok`, `error`, `timeout`, or `duplicate`. A run that finished with task errors is `error` on every transport, including the synchronous one that answers `200` with those errors in its envelope. |
 | `orion_message_duration_seconds` | Histogram | `channel` | Message processing latency. |
 | `orion_active_workflows` | Gauge | — | Workflows loaded in the engine. |
-| `orion_errors_total` | Counter | `reason` | Errors by cause: `engine`, `timeout`, `panic`, `kafka_retry`, and other reason codes. |
+| `orion_errors_total` | Counter | `reason` | Errors by cause: `engine`, `timeout`, `panic`, and other reason codes. |
 | `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin requests: `missing_or_malformed`, `invalid_key`, `locked_out`, or `read_only_write` (a read-only key attempting a mutation — a 403, not a bad credential). |
 | `orion_trace_token_query_reads_total` | Counter | — | Trace reads authorised by the deprecated `?token=` query parameter. Counted only when the token was valid, so this is usage rather than guessing. A sustained zero means the parameter can be removed. |
 | `orion_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served. `path` is the route template (`unmatched` for a request no route matched), and `method` is a standard method or `OTHER`, so neither can grow without bound. |
@@ -42,10 +42,10 @@ Every Prometheus series Orion exports, one row per metric, asserted against the 
 | `orion_response_cache_misses_total` | Counter | `channel` | Response-cache misses. |
 | `orion_response_cache_coalesced_total` | Counter | `channel` | Requests that waited for a concurrent miss's run (`cache.coalesce_misses`) and were served the entry it stored. |
 | `orion_response_cache_invalidations_total` | Counter | `source` | Response-cache namespaces invalidated, by `cache_invalidate` (`workflow`) or the admin route (`admin`). |
-| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `kafka_lag`, `cron_reconcile`, `cron_cleanup`. |
+| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `cron_reconcile`, `cron_cleanup`. |
 
 > [!NOTE]
-> `orion_errors_total{reason="channel_quarantined"}` fires only on the Kafka and async-queue delivery paths. A synchronous call to a quarantined channel returns an error but increments no counter.
+> `orion_errors_total{reason="channel_quarantined"}` fires only on the async-queue delivery path. A synchronous call to a quarantined channel returns an error but increments no counter.
 
 ## Plugins
 
@@ -118,15 +118,6 @@ Cron channels: what the reconciler and the workers are doing. See [Cron transpor
 | `orion_admin_audit_events_total` | Counter | `action`, `resource_type` | Admin mutations recorded. |
 | `orion_audit_queue_depth` | Gauge | — | Audit rows accepted but not yet written. |
 | `orion_audit_events_dropped_total` | Counter | `reason` | Admin actions that were not recorded: `queue_full`, `write_failed`, `drain_timeout`, or `writer_stopped`. |
-
-## Kafka ingest
-
-These series exist only when `kafka.enabled = true`.
-
-| Name | Type | Labels | Description |
-|------|------|--------|-------------|
-| `orion_kafka_consumer_lag_messages` | Gauge | `topic`, `partition` | Consumer lag in messages; polled every `kafka.lag_poll_interval_secs`. |
-| `orion_kafka_ingest_degraded` | Gauge | — | `1` while ingestion is down; mirrors the `kafka` component of `/readyz`. |
 
 ## Caveats
 

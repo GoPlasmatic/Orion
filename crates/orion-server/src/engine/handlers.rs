@@ -55,15 +55,11 @@ pub struct HandlerDeps<'a> {
 }
 
 /// Register Orion's functions, each under its 1.12 name (F48).
-///
-/// `publish_kafka` is registered with no producer: the producer is swapped
-/// in once Kafka is initialised, by [`register_kafka_function`]
-/// (`Registry::register` replaces a name).
 pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDeps<'_>) {
     use functions::{
         cache_delete, cache_incr, cache_invalidate, cache_read, cache_write, channel_call, crypto,
-        data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify, publish_kafka,
-        storage_head, storage_presign,
+        data_query, data_write, db_read, db_write, http_call, jwt_sign, jwt_verify, storage_head,
+        storage_presign,
     };
 
     let HandlerDeps {
@@ -140,13 +136,6 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
         },
     );
     registry.register(
-        publish_kafka::NAME,
-        publish_kafka::PublishKafkaFunction {
-            registry: connectors.clone(),
-            producers: None,
-        },
-    );
-    registry.register(
         db_read::NAME,
         db_read::DbReadFunction {
             pool_cache: sql_pool_cache.clone(),
@@ -220,42 +209,18 @@ pub fn register_functions(registry: &mut dataflow_rs::Registry, deps: HandlerDep
 
 /// The dataflow-rs 4 `Registry` a generation compiles and runs on, before
 /// its plugins: every Orion function ([`register_functions`]), on the
-/// process's expression engine (I188, `deps.exprs`), with the real
-/// `publish_kafka` when Kafka is initialised ([`register_kafka_function`]),
-/// and the per-request profile as its one call layer
+/// process's expression engine (I188, `deps.exprs`), with the per-request
+/// profile as its one call layer
 /// ([`kit::ProfileLayer`](crate::engine::kit::ProfileLayer), I189).
 ///
 /// Boot and every reload assemble it. The generation's plugin functions join it
 /// ([`register_plugin_functions`]) before anything compiles, since a
 /// workflow links only under the registry it compiled under.
-pub fn serving_registry(
-    deps: HandlerDeps<'_>,
-    producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
-) -> dataflow_rs::Registry {
+pub fn serving_registry(deps: HandlerDeps<'_>) -> dataflow_rs::Registry {
     let mut registry = dataflow_rs::Registry::new(deps.exprs.clone());
-    let connectors = deps.registry.clone();
     register_functions(&mut registry, deps);
-    if let Some(producers) = producers {
-        register_kafka_function(&mut registry, connectors, producers);
-    }
     registry.layer(crate::engine::kit::ProfileLayer);
     registry
-}
-
-/// Register the real Kafka-backed `publish_kafka` on a `Registry`, replacing
-/// the stub [`register_functions`] registers (`Registry::register` replaces a name).
-pub fn register_kafka_function(
-    registry: &mut dataflow_rs::Registry,
-    connectors: Arc<ConnectorRegistry>,
-    producers: Arc<crate::kafka::producer::KafkaProducerCache>,
-) {
-    registry.register(
-        functions::publish_kafka::NAME,
-        functions::publish_kafka::PublishKafkaFunction {
-            registry: connectors,
-            producers: Some(producers),
-        },
-    );
 }
 
 /// Register plugin functions on `registry`, each under the name its

@@ -28,8 +28,8 @@ jobs:
       security-events: write
       actions: read
     steps:
-      # rdkafka (cmake-build feature) and the full dependency graph are heavy;
-      # reclaim space WITHOUT deleting the CodeQL toolcache.
+      # The full dependency graph is heavy; reclaim space WITHOUT deleting the
+      # CodeQL toolcache.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
@@ -48,8 +48,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The Rust extractor is buildless, but it still runs build scripts and
-      # compiles proc-macros while resolving the crate graph. The rdkafka
-      # system deps let the kafka/queue path resolve instead of extracting
+      # compiles proc-macros while resolving the crate graph. The system build
+      # deps let the -sys crates' build scripts run instead of extracting
       # only partially (P14: one list, in the composite action).
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps

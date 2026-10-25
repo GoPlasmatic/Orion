@@ -1,15 +1,14 @@
 //! Turning a finished run into a `traces` row.
 //!
 //! This lived in `server::routes::data::sync` and served only the HTTP sync
-//! path. The Kafka consumer shares admission (`channel::guards::admit`) and
-//! dispatch (`engine::execute_admitted`) with HTTP but wrote no trace at all,
-//! so a Kafka-ingested message was invisible to `GET /api/v2/data/traces` and
-//! to DLQ retry — a silent data loss in the one subsystem whose job is to
-//! record what happened.
+//! path. A transport that shared admission (`channel::guards::admit`) and
+//! dispatch (`engine::execute_admitted`) with HTTP but wrote no trace left its
+//! messages invisible to `GET /api/v2/data/traces` and to DLQ retry — a silent
+//! data loss in the one subsystem whose job is to record what happened.
 //!
-//! It lives here, and not under `server/`, because `kafka` may not reach into
-//! `crate::server::` — the layering guard forbids it, and rightly: the
-//! consumer is not an HTTP concern.
+//! It lives here, and not under `server/`, because the non-HTTP transports
+//! (cron) may not reach into `crate::server::` — the layering guard forbids
+//! it, and rightly: a scheduler is not an HTTP concern.
 
 use crate::channel::registry::EffectiveTraceConfig;
 use crate::config::TraceStorageMode;
@@ -23,7 +22,7 @@ use super::{TracePersistenceQueue, TracePersistenceTask};
 /// Passed as a single borrow rather than six positional arguments, which is
 /// what it was for when it served only the sync path.
 pub(crate) struct CompletedTrace<'a> {
-    /// `"sync"`, `"async"` or `"kafka"` — how the message reached the runtime.
+    /// `"sync"`, `"async"` or `"cron"` — how the message reached the runtime.
     /// Stored on the row and offered as a filter by `GET /data/traces`.
     pub(crate) mode: &'a str,
     pub(crate) channel: &'a str,

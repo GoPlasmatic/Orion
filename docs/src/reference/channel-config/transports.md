@@ -8,7 +8,7 @@ Which guard runs on which ingress, and how a request reaches a channel. Also the
 
 | Page | Holds |
 |---|---|
-| [Guards by ingress](./guards-by-ingress.md) | Which channel guard runs on which of the five ingresses (HTTP sync, /async, Kafka, channel_call, cron), and the fixed order the guards apply in. |
+| [Guards by ingress](./guards-by-ingress.md) | Which channel guard runs on which of the four ingresses (HTTP sync, /async, channel_call, cron), and the fixed order the guards apply in. |
 | [Routing and protocol](./routing.md) | channel_type, protocol, methods, route_pattern, topic, consumer_group and priority. |
 | [Cron transport](./cron.md) | the six-field schedule, time zone and DST rules, payload, misfire policies, concurrency, and what it may not declare. |
 | [`oauth2_login`](./oauth2_login.md) | a channel as the relying party in a browser OAuth2 authorization-code grant, with PKCE, the state cookie, id_token checks and return_to. |

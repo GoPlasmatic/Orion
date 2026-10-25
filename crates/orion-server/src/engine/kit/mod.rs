@@ -52,8 +52,7 @@ pub fn channel<'r>(ctx: &Ctx<'r>) -> &'r str {
     ctx.info().channel.unwrap_or("unknown")
 }
 
-/// The `data` root: the default `output` of the connector functions, and
-/// what `publish_kafka` sends when no `value` is set.
+/// The `data` root: the default `output` of the connector functions.
 pub static DATA: LazyLock<Path> = LazyLock::new(|| "data".parse().expect("`data` is a path"));
 
 /// Where a call's result goes, resolved before the call does any work, as
@@ -667,13 +666,9 @@ mod tests {
             )
         );
 
-        let kafka = ConnectorConfig::Kafka(crate::connector::KafkaConnectorConfig {
-            brokers: vec!["localhost:9092".to_string()],
-            topic: "orders".to_string(),
-            allow_private_urls: false,
-            operations: Default::default(),
-        });
-        let kit = require_connector::<crate::connector::kind::Db>(&kafka, "search")
+        let cache: ConnectorConfig =
+            serde_json::from_str(r#"{"type":"cache","backend":"memory"}"#).expect("cache config");
+        let kit = require_connector::<crate::connector::kind::Db>(&cache, "search")
             .expect_err("not a database");
         assert_eq!(
             facts(&kit.into()),
@@ -687,7 +682,7 @@ mod tests {
                 ))
             )
         );
-        assert!(require_connector::<crate::connector::kind::Kafka>(&kafka, "search").is_ok());
+        assert!(require_connector::<crate::connector::kind::Cache>(&cache, "search").is_ok());
     }
 
     /// A probe with the fields a sample is attributed by.
@@ -896,7 +891,6 @@ mod tests {
         "jwt_verify",
         "storage_presign",
         "storage_head",
-        "publish_kafka",
         "db_read",
         "db_write",
         "data_query",

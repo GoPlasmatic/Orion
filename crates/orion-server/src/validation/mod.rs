@@ -23,7 +23,7 @@ pub use connectors::{
     reject_masked_values, validate_connector_config, validate_create_connector,
     validate_update_connector,
 };
-pub use endpoints::{check_broker_endpoints, check_cache_endpoint, check_db_endpoint};
+pub use endpoints::{check_cache_endpoint, check_db_endpoint};
 pub use packages::{
     MAX_PACKAGE_HASH_LEN, MAX_PACKAGE_NAME_LEN, MAX_PACKAGE_VERSION_LEN, package_key,
 };

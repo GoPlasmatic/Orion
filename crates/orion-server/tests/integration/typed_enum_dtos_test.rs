@@ -1,8 +1,8 @@
 //! A4 (Tier-1 ergonomics): typed-enum DTOs for channel_type / protocol / connector_type.
 //!
 //! Verifies that:
-//!   - v0.1.1 lowercase wire values ("sync", "rest", "kafka", "http") still create
-//!   - the deserializer is case-insensitive (e.g. "SYNC", "Rest", "Kafka")
+//!   - v0.1.1 lowercase wire values ("sync", "rest", "http") still create
+//!   - the deserializer is case-insensitive (e.g. "SYNC", "Rest")
 //!   - bad enum values fail with 400 (v0.1 status preserved by OrionJson extractor)
 //!   - the response field shape is unchanged (still lowercase strings)
 
@@ -107,7 +107,7 @@ async fn invalid_channel_protocol_is_rejected_at_deserialization_with_400() {
     let body = body_json(resp).await;
     let msg = body["error"]["message"].as_str().unwrap_or("");
     assert!(
-        msg.contains("rest") || msg.contains("kafka"),
+        msg.contains("rest") && msg.contains("cron"),
         "message should list allowed protocols, got {msg}"
     );
 }

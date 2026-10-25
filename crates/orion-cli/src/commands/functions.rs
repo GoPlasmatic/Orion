@@ -12,7 +12,7 @@ use orion_client::paths;
 #[derive(Args)]
 #[command(
     long_about = "Inspect the workflow task functions registered in the Orion engine.\n\n\
-        Functions (e.g. http_call, cache_write, publish_kafka) are the building blocks of a \
+        Functions (e.g. http_call, cache_write, db_read) are the building blocks of a \
         workflow's task sequence. Each exposes an input JSON Schema describing the fields it accepts.\n\n\
         Use --output json to see the full input schema for every function."
 )]

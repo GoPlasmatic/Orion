@@ -645,8 +645,8 @@ impl CustomOperator for OrionOperator {
 }
 
 /// The one expression engine the process evaluates with outside a workflow
-/// (I188): channel guards, channel auth, the Kafka consumer and the admin
-/// `/validate` endpoint compile and evaluate on it. Built once at boot, held on
+/// (I188): channel guards, channel auth, cron and the admin `/validate`
+/// endpoint compile and evaluate on it. Built once at boot, held on
 /// `AppState`, and kept across every reload.
 ///
 /// Every workflow engine compiles on the same set (`serving_registry`), so an
@@ -713,7 +713,7 @@ pub(crate) fn result_json(value: &OwnedDataValue) -> serde_json::Value {
 /// **This is not how the serving instance builds its expression engine.**
 /// Secrets are start-time config, resolved before any channel loads, so there
 /// is no reason a `validation_logic` should see fewer of them than a workflow
-/// does: the guards, auth, the Kafka consumer and `/validate` run on
+/// does: the guards, auth, cron and `/validate` run on
 /// [`orion_exprs`], whose `secret` is dataflow-rs's own operator over the real
 /// store. One implementation, so the surfaces cannot disagree about what a
 /// secret name resolves to.

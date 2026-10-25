@@ -49,7 +49,7 @@ The category is wide. Airflow schedules DAGs across a cluster; [Restate](https:/
 
 Both run ordered steps against external systems, with retries and timeouts around each one. For work that finishes inside a single request, that overlap is real, and Orion is the smaller thing to operate.
 
-Orion is not defenceless about failure. A [Kafka channel](../../guides/patterns/kafka-channels.md) carries an at-least-once guarantee. The offset is committed only once the record has been processed, so a node that dies mid-record redelivers it. A [cron channel](../../guides/patterns/scheduled-workflows.md) records every scheduled instant as a durable occurrence, so a missed run is visible rather than absent.
+Orion is not defenceless about failure. A [cron channel](../../guides/patterns/scheduled-workflows.md) records every scheduled instant as a durable occurrence, so a missed run is visible rather than absent.
 
 The overlap ends at *where* it runs again. Orion starts the workflow over from the first task, because there is no journal to resume from. A sync HTTP request gets no guarantee at all: it is answered, or it is lost.
 

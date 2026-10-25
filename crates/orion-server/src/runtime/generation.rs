@@ -191,7 +191,7 @@ impl RuntimeHandle {
     /// A snapshot of the live generation. Wait-free; the returned `Arc` stays
     /// valid across a concurrent [`Self::publish`].
     ///
-    /// **Load once per unit of work** — one HTTP request, one Kafka record,
+    /// **Load once per unit of work** — one HTTP request, one cron occurrence,
     /// one queued trace, one `channel_call` — and pass the generation down.
     /// Two loads in one request can straddle a reload, which is the same class
     /// of bug as two published values, moved to the reader.

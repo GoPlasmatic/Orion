@@ -922,7 +922,6 @@ mod tests {
         for (function, alias) in [
             ("http_call", "response_path"),
             ("http_call", "path_logic"),
-            ("publish_kafka", "key_logic"),
             ("channel_call", "channel_logic"),
         ] {
             let json = task(
@@ -1229,7 +1228,6 @@ mod tests {
             row("I183 (O3)", "storage_presign", json!({"connector": "s3", "expires_in": 60}), "INPUT_PARSE", ".key"),
             row("I183 (O3)", "storage_presign", json!({"connector": "s3", "key": "k"}), "INPUT_PARSE", ".expires_in"),
             row("I183 (O3)", "storage_head", json!({"connector": "s3"}), "INPUT_PARSE", ".key"),
-            row("I183 (O3)", "publish_kafka", json!({"connector": "k"}), "INPUT_PARSE", ".topic"),
             row("I183 (O4)", "db_read", json!({"connector": "db"}), "INPUT_PARSE", ".query"),
             row("I183 (O4)", "db_write", json!({"connector": "db"}), "INPUT_PARSE", ".query"),
             row("I183 (O4)", "data_query", json!({"connector": "db"}), "INPUT_PARSE", ".query"),

@@ -895,7 +895,7 @@ mod tests {
         let filter = ChannelFilter {
             status: Some(EntityStatus::Draft.as_str().to_string()),
             channel_type: Some("async".to_string()),
-            protocol: Some("kafka".to_string()),
+            protocol: Some("cron".to_string()),
             limit: Some(10),
             offset: Some(0),
             ..Default::default()

@@ -116,12 +116,8 @@ const READABLE_KEYS: &[&str] = &[
     "method",
     "username",
     "header",
-    "sasl_mechanism",
-    "sasl_username",
     // endpoints (URL-shaped values still get in-band redaction)
     "url",
-    "brokers",
-    "topic",
     "timeout_ms",
     // storage structure (#265) — both credential fields and the session
     // token are caught by the secret vocabulary
@@ -166,7 +162,6 @@ const READABLE_KEYS: &[&str] = &[
     "upsert",
     "raw_write",
     "write",
-    "publish",
     "methods",
     // dialect guards
     "require_schema",
@@ -179,15 +174,15 @@ fn is_readable_key(key: &str) -> bool {
 
 /// The connector policy: allowlist walk (see the module doc). Objects recurse
 /// (a container's own name carries no verdict — its leaves answer for
-/// themselves), arrays inherit the parent key so `brokers: [...]` entries are
-/// judged as `brokers`, and every scalar is masked unless its key is
+/// themselves), arrays inherit the parent key so `scopes: [...]` entries are
+/// judged as `scopes`, and every scalar is masked unless its key is
 /// allowlisted — with references surviving and readable URLs redacted.
 /// Containers whose *every* descendant masks, whatever its own key is called.
 ///
 /// The allowlist is flat and keyed by leaf name, so without this a parameter
 /// whose name collides with a structural key is served readable: `username`,
-/// `method`, `from`, `host`, `port`, `url`, `type`, `region`, `bucket`,
-/// `topic`, `resource` and `audience` are all on `READABLE_KEYS`. These three
+/// `method`, `url`, `type`, `region`, `bucket`, `resource` and `audience` are
+/// all on `READABLE_KEYS`. These three
 /// containers hold operator-chosen names carrying operator-chosen values —
 /// there is no name to judge, so the container decides.
 ///
@@ -311,10 +306,9 @@ pub fn unmask_channel_config(incoming: &mut Value, stored: &Value) {
 /// maskable position is. `None` from [`split_url`] means the string is not
 /// URL-shaped and none of them apply.
 ///
-/// Hand-rolled rather than parsed with the `url` crate: schemes such as
-/// `SASL_SSL://` are not valid URL schemes but do appear in Kafka broker
-/// lists, and re-serialising a parsed URL rewrites strings that had nothing
-/// to hide (`https://h` → `https://h/`).
+/// Hand-rolled rather than parsed with the `url` crate: re-serialising a
+/// parsed URL rewrites strings that had nothing to hide (`https://h` →
+/// `https://h/`).
 struct SplitUrl<'a> {
     scheme: &'a str,
     /// Userinfo username — present exactly when the authority carries a
@@ -562,8 +556,8 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
                 mask_in_place(v, Some(k.as_str()), secret);
             }
         }
-        // Arrays inherit the parent key so `brokers: [...]` is still evaluated
-        // against the name `brokers`.
+        // Arrays inherit the parent key so `api_keys: [...]` is still evaluated
+        // against the name `api_keys`.
         Value::Array(items) => {
             for item in items.iter_mut() {
                 mask_in_place(item, key, secret);
@@ -607,8 +601,7 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
 /// /api/v2/admin/connectors` uses the allowlist walk in
 /// `mask_connector_secrets` instead (H3), so the denylist here is kept as
 /// one list of secret-key patterns rather than a drifting copy (O15) —
-/// `kafka.auth.sasl_password` and `admin_auth.api_keys` mask by key,
-/// `storage.url` and `cluster.redis_url` by URL shape.
+/// `admin_auth.api_keys` masks by key, `storage.url` and `cluster.redis_url` by URL shape.
 pub fn mask_secrets(value: &mut Value) {
     mask_in_place(value, None, false);
 }
@@ -853,17 +846,6 @@ mod tests {
         assert_eq!(val["backend"], "redis");
     }
 
-    #[test]
-    fn broker_list_entries_are_redacted() {
-        let config = r#"{"type":"kafka","brokers":["sasl_ssl://svc:tok3n@b1.example:9093","b2.example:9092"],"topic":"orders"}"#;
-        let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
-        assert_eq!(val["brokers"][0], "sasl_ssl://svc:******@b1.example:9093");
-        // A plain host:port entry has nothing to hide.
-        assert_eq!(val["brokers"][1], "b2.example:9092");
-        assert_eq!(val["topic"], "orders");
-    }
-
     /// H3 inversion: every header *value* is masked, whatever the name — a
     /// header value is exactly where callers put bearer tokens, and no name
     /// list can anticipate which custom header carries one. Header *names*
@@ -905,10 +887,9 @@ mod tests {
     /// The allowlist is flat and keyed by leaf name, so a parameter whose name
     /// collides with a structural key was served readable — `headers: {"from":
     /// "x"}` is a **pre-existing** leak this closes, despite the module doc
-    /// claiming header values "are all masked". `username`, `method`, `host`,
-    /// `port`, `url`, `type`, `region`, `bucket`, `topic`, `resource` and
-    /// `audience` are all on READABLE_KEYS and would have collided the same
-    /// way.
+    /// claiming header values "are all masked". `username`, `method`, `url`,
+    /// `type`, `region`, `bucket`, `resource` and `audience` are all on
+    /// READABLE_KEYS and would have collided the same way.
     #[test]
     fn operator_named_container_values_mask_whatever_they_are_called() {
         let config = r#"{"type":"http","url":"https://api.example.com",
@@ -1007,17 +988,6 @@ mod tests {
         let masked = mask_connector_secrets(config);
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["auth"]["extra_params"]["tenant_hint"], MASK);
-    }
-
-    #[test]
-    fn kafka_sasl_password_shape_is_masked() {
-        // Mirrors the `[kafka.auth]` shape added in Phase 4.
-        let config = r#"{"type":"kafka","brokers":["b:9092"],"topic":"t","auth":{"sasl_mechanism":"PLAIN","sasl_username":"svc","sasl_password":"p@ss"}}"#;
-        let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
-        assert_eq!(val["auth"]["sasl_password"], "******");
-        assert_eq!(val["auth"]["sasl_username"], "svc");
-        assert_eq!(val["auth"]["sasl_mechanism"], "PLAIN");
     }
 
     /// The structural vocabulary stays readable: types, limits, gates. A key
@@ -1298,20 +1268,22 @@ mod tests {
         assert_eq!(incoming["url"], "redis://admin:hunter2@redis:6379");
     }
 
-    /// Masking is index-preserving, so a broker list round-trips per element.
+    /// Masking is index-preserving, so a list of secrets round-trips per
+    /// element.
     #[test]
     fn test_unmask_restores_array_elements() {
         let stored: Value = serde_json::from_str(
-            r#"{"type":"kafka","brokers":["SASL_SSL://u:p1@b1:9093","plaintext://b2:9092"]}"#,
+            r#"{"type":"http","url":"https://x","extra":{"tokens":["t1","t2"]}}"#,
         )
         .expect("test");
         let mut incoming: Value =
             serde_json::from_str(&mask_connector_secrets(&stored.to_string())).expect("test");
+        assert_eq!(incoming["extra"]["tokens"][0], MASK);
 
         unmask_config(&mut incoming, &stored);
 
-        assert_eq!(incoming["brokers"][0], "SASL_SSL://u:p1@b1:9093");
-        assert_eq!(incoming["brokers"][1], "plaintext://b2:9092");
+        assert_eq!(incoming["extra"]["tokens"][0], "t1");
+        assert_eq!(incoming["extra"]["tokens"][1], "t2");
     }
 
     /// A real edit must survive: only values that still equal the mask are
@@ -1625,7 +1597,6 @@ mod tests {
             // `skip_serializing_if`, so it never appears in the row above and
             // this guard would NOT have caught a masked-by-accident field.
             r#"{"type":"http","url":"https://x","auth":{"type":"oauth2","grant":"account_credentials","token_url":"https://idp/t","client_id":"c","client_secret":"s","account_id":"acct-1"}}"#,
-            r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#,
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,
             r#"{"type":"storage","endpoint":"https://s3.example.test","region":"r","bucket":"b","access_key":"AK","secret_key":"SK","session_token":"st"}"#,

@@ -238,10 +238,6 @@ fn o14_renames_are_in_place() {
         "orion_errors_total is labelled `reason`, not `type`"
     );
     assert!(
-        emitted.contains_key("orion_kafka_consumer_lag_messages"),
-        "the Kafka lag gauge is orion_kafka_consumer_lag_messages (prefix + unit)"
-    );
-    assert!(
         emitted.contains_key("orion_messages_total"),
         "orion_messages_total is the surviving per-channel counter"
     );

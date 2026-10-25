@@ -97,9 +97,9 @@ pub trait CacheBackend: Send + Sync {
     ///
     /// Returning the holder rather than a bare "is duplicate" boolean is what
     /// lets a redelivering transport tell *its own unfinished claim* from a
-    /// genuinely earlier delivery: a Kafka record replayed because its offset
-    /// never committed claims with the same owner token it used last time,
-    /// and must be processed, not skipped (see `check_deduplication` in
+    /// genuinely earlier delivery: a message replayed because it was never
+    /// acknowledged claims with the same owner token it used last time, and
+    /// must be processed, not skipped (see `check_deduplication` in
     /// [`crate::channel::guards`]).
     async fn claim_dedup_key(
         &self,

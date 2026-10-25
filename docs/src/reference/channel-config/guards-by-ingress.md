@@ -1,4 +1,4 @@
-<!-- description: Which channel guard runs on which of the five ingresses (HTTP sync, /async, Kafka, channel_call, cron), and the fixed order the guards apply in. -->
+<!-- description: Which channel guard runs on which of the four ingresses (HTTP sync, /async, channel_call, cron), and the fixed order the guards apply in. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -8,22 +8,22 @@ Which of a channel's guards run on which ingress, and the order they apply in. A
 
 ## Description
 
-| Guard | HTTP sync | HTTP `/async` | Kafka | `channel_call` | Cron |
-|---|---|---|---|---|---|
-| `rate_limit` | Yes | Yes | Yes | Yes | No |
-| `principal_rate_limit` | Yes | Yes | No | No | No |
-| `auth` | Yes | Yes | No | No | No |
-| `origin_allow_list` | Yes | Yes | No | No | No |
-| `validation_logic` | Yes | Yes | Yes | Yes | Yes |
-| `deduplication` | Yes | Yes | Yes | No | No |
-| `cache` | Yes | No | No | No | No |
-| `backpressure` | Yes | Yes | Yes | Yes | Yes |
-| `oauth2_login` | Yes | No | No | No | No |
-| `timeout_ms` | Yes | Yes | Yes¹ | Yes | Yes |
+| Guard | HTTP sync | HTTP `/async` | `channel_call` | Cron |
+|---|---|---|---|---|
+| `rate_limit` | Yes | Yes | Yes | No |
+| `principal_rate_limit` | Yes | Yes | No | No |
+| `auth` | Yes | Yes | No | No |
+| `origin_allow_list` | Yes | Yes | No | No |
+| `validation_logic` | Yes | Yes | Yes | Yes |
+| `deduplication` | Yes | Yes | No | No |
+| `cache` | Yes | No | No | No |
+| `backpressure` | Yes | Yes | Yes | Yes |
+| `oauth2_login` | Yes | No | No | No |
+| `timeout_ms` | Yes | Yes¹ | Yes | Yes |
 
 ¹ Clamped to a transport ceiling. See [Timeouts](./timeout_ms.md). Every No cell is deliberate; the owning section below states why.
 
-The Cron column is mostly No because that ingress has no caller at all, which is a stronger statement than Kafka's "the caller authenticated elsewhere". A cron channel is refused these keys at authoring time rather than storing them and ignoring them — see [Cron transport](./cron.md).
+The Cron column is mostly No because that ingress has no caller at all, which is a stronger statement than `channel_call`'s "the caller authenticated elsewhere". A cron channel is refused these keys at authoring time rather than storing them and ignoring them — see [Cron transport](./cron.md).
 
 ## Order of application
 

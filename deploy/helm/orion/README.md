@@ -161,7 +161,7 @@ helm test orion
 ```
 
 Runs two hooks: `test-connectivity` (the binary's own subcommand — opens the
-storage pool, counts pending migrations, probes Kafka when enabled) and
+storage pool, counts pending migrations) and
 `test-api` (checks `/health` and `/readyz`, and that the metrics port serves
 Prometheus exposition text without a credential).
 

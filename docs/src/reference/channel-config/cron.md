@@ -113,7 +113,7 @@ Lowering `slots` affects new runs only. A run already holding a higher slot fini
 
 **The scope is the database.** On SQLite each node has its own slots. Nodes sharing PostgreSQL or MySQL share them, so the bound holds across the cluster.
 
-**Non-overlap is not exactly once.** A worker that loses its lease cancels, but it cannot prove that a connector call it already made did not land. Scheduled work that must not be applied twice needs an idempotent destination or an idempotency key, exactly as Kafka ingest does.
+**Non-overlap is not exactly once.** A worker that loses its lease cancels, but it cannot prove that a connector call it already made did not land. Scheduled work that must not be applied twice needs an idempotent destination or an idempotency key.
 
 ### What a cron channel may not declare
 

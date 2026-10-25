@@ -7242,7 +7242,7 @@
           {
             "name": "mode",
             "in": "query",
-            "description": "Filter by mode: `sync`, `async` or `kafka` — the transport the\nmessage arrived on.",
+            "description": "Filter by mode: `sync`, `async` or `cron` — the transport the\nmessage arrived on.",
             "required": false,
             "schema": {
               "type": "string"
@@ -9092,7 +9092,7 @@
           "Operational"
         ],
         "summary": "Readiness probe",
-        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. The `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. `components.packages` is present only when `[packages] apply` names artifacts: `applying` (not ready) until every one is applied and serving, then `ok`; `failed` while a node whose package failed to apply shuts down. Unauthenticated, so probes work without provisioning an admin key.",
+        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running, and — in cluster mode — the shared Redis answers `PING`. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. The Redis check matters because that degradation is otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing — all while the data plane keeps returning 200s.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. The `components.cluster_redis` field is present only in cluster mode. `components.packages` is present only when `[packages] apply` names artifacts: `applying` (not ready) until every one is applied and serving, then `ok`; `failed` while a node whose package failed to apply shuts down. Unauthenticated, so probes work without provisioning an admin key.",
         "operationId": "readiness_probe",
         "responses": {
           "200": {
@@ -9412,7 +9412,6 @@
         "enum": [
           "rest",
           "http",
-          "kafka",
           "cron"
         ]
       },
@@ -9925,10 +9924,9 @@
       },
       "ConnectorType": {
         "type": "string",
-        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"storage\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse.\n\n`\"storage\"` was accepted through the whole 0.x line with no handler behind\nit and was removed in 1.0 (proposal F15). It came back in #265 with\n`storage_presign` and `storage_head` behind it — presign and metadata only,\nno data path — so the variant is live again and the removal note applies\nonly to rows stored by a 0.x server.",
+        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"db\", \"cache\", \"storage\");\ndeserialization is case-insensitive so \"HTTP\" or \"Cache\" also parse.\n\n`\"storage\"` was accepted through the whole 0.x line with no handler behind\nit and was removed in 1.0 (proposal F15). It came back in #265 with\n`storage_presign` and `storage_head` behind it — presign and metadata only,\nno data path — so the variant is live again and the removal note applies\nonly to rows stored by a 0.x server.",
         "enum": [
           "http",
-          "kafka",
           "db",
           "cache",
           "storage"
@@ -12058,7 +12056,7 @@
                   "type": "string"
                 },
                 "retry_safety": {
-                  "description": "What a second run of this function does, as\n`{\"kind\": \"...\"}` — `pure`, `read`, `idempotent_write`, `unsafe_write`,\nor `depends_on` with the `input` that decides it (`http_call` on its\n`method`, `data_write` on its `op`).\n\nA different question from whether an *error* was transient: this is\nwhat a retry costs when it is. Orion retries tasks in several places —\nthe trace DLQ, a Kafka redelivery, `http_call`'s transport retry — and\nthis is how an author or a tool knows which of those are safe over a\ngiven function."
+                  "description": "What a second run of this function does, as\n`{\"kind\": \"...\"}` — `pure`, `read`, `idempotent_write`, `unsafe_write`,\nor `depends_on` with the `input` that decides it (`http_call` on its\n`method`, `data_write` on its `op`).\n\nA different question from whether an *error* was transient: this is\nwhat a retry costs when it is. Orion retries tasks in several places —\nthe trace DLQ, a cron occurrence's retry, `http_call`'s transport retry — and\nthis is how an author or a tool knows which of those are safe over a\ngiven function."
                 },
                 "source": {
                   "type": "string",
@@ -13018,7 +13016,7 @@
             "type": "string"
           },
           "retry_safety": {
-            "description": "What a second run of this function does, as\n`{\"kind\": \"...\"}` — `pure`, `read`, `idempotent_write`, `unsafe_write`,\nor `depends_on` with the `input` that decides it (`http_call` on its\n`method`, `data_write` on its `op`).\n\nA different question from whether an *error* was transient: this is\nwhat a retry costs when it is. Orion retries tasks in several places —\nthe trace DLQ, a Kafka redelivery, `http_call`'s transport retry — and\nthis is how an author or a tool knows which of those are safe over a\ngiven function."
+            "description": "What a second run of this function does, as\n`{\"kind\": \"...\"}` — `pure`, `read`, `idempotent_write`, `unsafe_write`,\nor `depends_on` with the `input` that decides it (`http_call` on its\n`method`, `data_write` on its `op`).\n\nA different question from whether an *error* was transient: this is\nwhat a retry costs when it is. Orion retries tasks in several places —\nthe trace DLQ, a cron occurrence's retry, `http_call`'s transport retry — and\nthis is how an author or a tool knows which of those are safe over a\ngiven function."
           },
           "source": {
             "type": "string",
@@ -13037,7 +13035,7 @@
         ],
         "properties": {
           "components": {
-            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled`, `cluster_redis` in\ncluster mode, and `packages` when `[packages] apply` names artifacts."
+            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `cluster_redis` in cluster mode, and `packages` when\n`[packages] apply` names artifacts."
           },
           "git_hash": {
             "type": [
@@ -15017,7 +15015,7 @@
           },
           "supported": {
             "type": "boolean",
-            "description": "`false` when no probe exists for this connector (`kafka`) — a\npermanent capability gap, not an outage. Without this field the two were indistinguishable\nin the response shape, and operator tooling read \"not implemented\" as\ndowntime."
+            "description": "`false` when no probe exists for this connector — a stored row whose\ntype this build does not ship — a permanent capability gap, not an\noutage. Without this field the two were indistinguishable\nin the response shape, and operator tooling read \"not implemented\" as\ndowntime."
           }
         }
       },

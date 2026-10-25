@@ -31,7 +31,7 @@ static VERSIONED: utils::VersionedEntityKind = utils::VersionedEntityKind {
 #[derive(Args)]
 #[command(
     long_about = "Manage channels -- service endpoints that receive data and route it to a workflow.\n\n\
-        Channels define how data enters the system (REST routes, HTTP endpoints, Kafka topics).\n\
+        Channels define how data enters the system (REST routes, HTTP endpoints, cron schedules).\n\
         Each channel links to a workflow that processes the incoming data.\n\
         Lifecycle: draft -> activate -> live (activation reloads the engine automatically)\n\n\
         With --quiet, list prints one ID per line, mutating commands print the resource ID."
@@ -54,7 +54,7 @@ enum ChannelsSubcommand {
         /// Filter by channel type (sync, async)
         #[arg(long)]
         channel_type: Option<String>,
-        /// Filter by protocol (http, rest, kafka)
+        /// Filter by protocol (http, rest, cron)
         #[arg(long)]
         protocol: Option<String>,
         /// Filter by tag
@@ -181,7 +181,7 @@ enum ChannelsSubcommand {
         /// Filter by channel type (sync, async)
         #[arg(long)]
         channel_type: Option<String>,
-        /// Filter by protocol (http, rest, kafka)
+        /// Filter by protocol (http, rest, cron)
         #[arg(long)]
         protocol: Option<String>,
     },

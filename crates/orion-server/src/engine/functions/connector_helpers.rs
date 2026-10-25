@@ -56,7 +56,8 @@ pub fn require_op_allowed(
 }
 
 /// [`require_op_allowed`] for the gates that are not the db set: the cache
-/// (`read` / `write`) and Kafka (`publish`) gates each have their own struct,
+/// (`read` / `write`) and storage (`presign_get` / `presign_put` / `head`)
+/// gates each have their own struct,
 /// because a `raw_write` flag on a cache would be a field nothing reads (F22e).
 /// The refusal is worded identically whatever the connector type.
 pub fn require_op(allowed: bool, op: &str, connector_name: &str) -> Result<(), HandlerError> {

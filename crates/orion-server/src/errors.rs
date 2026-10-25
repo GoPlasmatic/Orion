@@ -107,10 +107,9 @@ pub enum OrionError {
     /// actionable to disclose about a channel's own logic. It is a separate
     /// variant because the *condition* is not the same: being over a limit is
     /// transient and clears with time, while a key expression that fails on
-    /// this payload will fail on every redelivery of it. The Kafka ingress
-    /// reads that difference — an over-limit record is retried, an
-    /// unevaluable-key record is dead-lettered instead of blocking its
-    /// partition forever.
+    /// this payload will fail on every redelivery of it. A transport that
+    /// retries can read that difference — retry the first, give up on the
+    /// second.
     #[error("Rate limit key unavailable: {0}")]
     RateLimitKeyUnavailable(String),
 
@@ -1417,7 +1416,7 @@ mod tests {
             message: "bad enum".to_string(),
             details: vec![
                 FieldError::new("channel.protocol", "ENUM_MISMATCH", "unknown protocol")
-                    .with_expected(serde_json::json!(["rest", "http", "kafka"]))
+                    .with_expected(serde_json::json!(["rest", "http", "cron"]))
                     .with_got(Value::String("REST".to_string())),
             ],
         };
@@ -1426,7 +1425,7 @@ mod tests {
         let detail = &body["error"]["details"][0];
         assert_eq!(
             detail["expected"],
-            serde_json::json!(["rest", "http", "kafka"])
+            serde_json::json!(["rest", "http", "cron"])
         );
         assert_eq!(detail["got"], "REST");
     }

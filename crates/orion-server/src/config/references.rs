@@ -8,8 +8,8 @@
 //!
 //! This closes that asymmetry for every value in the file rather than for
 //! `storage.url` alone. A per-field allowlist would have made
-//! `kafka.auth.sasl_password`, `cluster.redis_url` and
-//! `storage.connector_encryption_key` each their own request.
+//! `cluster.redis_url` and `storage.connector_encryption_key` each their own
+//! request.
 //!
 //! ## Why `env://` only, and why this is synchronous
 //!

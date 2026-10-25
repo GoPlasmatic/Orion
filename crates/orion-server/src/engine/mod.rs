@@ -34,8 +34,8 @@
 ///
 /// **The prefix is a convention, not an enforced namespace.** A caller can put
 /// `_orion_call_depth` in an envelope today and nothing strips it, so this key
-/// is force-cleared at every ingress — see `build_request_metadata` and the
-/// Kafka ingress builder — and reset on `channel_call`, where the child would
+/// is force-cleared at every ingress — see `build_request_metadata` — and
+/// reset on `channel_call`, where the child would
 /// otherwise inherit and report the parent's failures as its own.
 ///
 /// Records carry `{workflow_id, task_id, code, status}` and **never a
@@ -162,7 +162,7 @@ pub const VARS_KEY: &str = "vars";
 ///
 /// A non-object `metadata` is replaced by an object rather than skipped when
 /// there are vars to stamp. Every ingress builds metadata differently — the
-/// HTTP route normalises the caller's value first, Kafka builds its own, and
+/// HTTP route normalises the caller's value first, cron builds its own, and
 /// the admin test endpoint's field defaults to `null` when the caller omits it
 /// — so a helper that silently did nothing for `null` made "which ingress?"
 /// decide whether `metadata.vars` exists. It reads as absent either way to a
@@ -213,8 +213,8 @@ pub use functions::registry::{
 };
 pub use functions::schema::ConnectorRule;
 pub use handlers::{
-    HandlerDeps, is_reserved_function_name, register_functions, register_kafka_function,
-    register_plugin_functions, serving_registry,
+    HandlerDeps, is_reserved_function_name, register_functions, register_plugin_functions,
+    serving_registry,
 };
 pub use loader::{
     EngineLoad, LoadedWorkflows, build_engine_workflows, compile_row, filter_channels,

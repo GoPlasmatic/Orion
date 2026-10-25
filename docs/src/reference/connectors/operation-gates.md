@@ -15,7 +15,6 @@ Every connector type carries an `operations` block that limits what workflows ma
 | `db` | `raw_write` | `db_write` — raw SQL cannot be classified per operation |
 | `cache` | `read` | `cache_read` |
 | `cache` | `write` | `cache_write`, `cache_delete`, `cache_incr`, plus channel stores backed by the connector — see [Cache write covers channel stores](#cache-write-covers-channel-stores) |
-| `kafka` | `publish` | `publish_kafka` |
 | `http` | `methods` | Any method not on the allow-list — see [http gates by method](#http-gates-by-method) |
 | `storage` | `presign_get`, `presign_put`, `head` | The matching storage function/method |
 

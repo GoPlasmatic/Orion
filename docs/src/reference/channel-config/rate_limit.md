@@ -20,7 +20,7 @@
 The limit applies on every ingress, whether or not the platform limiter ([`[rate_limit]`](../configuration/rate-limit.md)) is enabled.
 
 > [!WARNING]
-> Without `key_logic`, the bucket key is the caller identity each transport has: the client IP over HTTP, the topic for Kafka, the calling channel for `channel_call`. `requests_per_second: 100` therefore admits 100/s **per HTTP client**, plus 100/s from the channel's Kafka topic, plus 100/s per calling channel — a per-caller rate, not a throughput cap. For one shared bucket, give `key_logic` an expression that returns the same value on every ingress:
+> Without `key_logic`, the bucket key is the caller identity each transport has: the client IP over HTTP, the calling channel for `channel_call`. `requests_per_second: 100` therefore admits 100/s **per HTTP client**, plus 100/s per calling channel — a per-caller rate, not a throughput cap. For one shared bucket, give `key_logic` an expression that returns the same value on every ingress:
 
 ```json
 {
@@ -62,8 +62,6 @@ The key is part of the control, not a hint:
 - A `key_logic` that does not compile quarantines the channel at load.
 - A request whose key cannot be evaluated is rejected with `429`. Nothing falls back to `client_ip` — that would silently re-dimension a per-tenant limit into a per-IP one.
 - A request whose key evaluates to `null` or an empty string is rejected the same way. A missing path resolves to `null`, so a `key_logic` naming a header outside the set above would otherwise make the bucket key the literal string `"null"` for **every** caller — one shared bucket, and a limit that reads as enforced while enforcing nothing. Orion warns at channel load when an expression statically reads a header the context does not carry, so a typo surfaces at boot rather than as unexplained throttling.
-
-**Cross-ingress semantics.** A Kafka record refused by the limit is not dead-lettered: its offset stays uncommitted and the consumer's capped retry backoff becomes the throttle. The exception is a `key_logic` that cannot be evaluated against the record. That fails identically on every redelivery, so the record is dead-lettered instead of blocking its partition.
 
 **Cluster mode.** Per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across all replicas combined. Platform-level limits stay per node. See [Cluster Mode](../../operate/deploy/cluster.md).
 

@@ -228,8 +228,7 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
         &Some(runtime.clone()),
         Some(deps.config.default_timeout_ms),
         // A default, not a ceiling: a cron worker occupies only its own slot,
-        // unlike a Kafka consumer blocking a poll loop or an async worker
-        // holding one of a fixed pool. A channel that genuinely needs six hours
+        // unlike an async worker holding one of a fixed pool. A channel that genuinely needs six hours
         // may say so.
         None,
     )
@@ -474,8 +473,7 @@ async fn execute(
     let admission = match admission {
         Ok(admission) => admission,
         Err(e) => {
-            // Two dispositions, drawn the way the Kafka consumer draws them.
-            // Backpressure is transient — the node is busy — so the occurrence
+            // Two dispositions. Backpressure is transient — the node is busy — so the occurrence
             // goes back to `pending` and is claimed again. Everything else is a
             // property of the definition and the payload, which are fixed, so
             // it would fail identically on every retry.

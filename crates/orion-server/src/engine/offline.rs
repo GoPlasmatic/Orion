@@ -55,7 +55,7 @@ pub fn offline_compiler(
     let offline = super::kit::OfflineDeps::new();
     let mut deps = offline.deps();
     deps.exprs = exprs;
-    let mut registry = super::serving_registry(deps, None);
+    let mut registry = super::serving_registry(deps);
     if let Some(model) = model {
         registry.register(crate::model::handler::NAME, model);
     }

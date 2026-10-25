@@ -85,10 +85,9 @@ pub fn validate_connector_config(
         ConnectorConfig::Http(c) => validate_http(c)?,
         ConnectorConfig::Cache(c) => validate_cache(c)?,
         // Nothing beyond the shared gate/retry/query checks and the endpoint
-        // scheme allow-list above. Kafka's brokers are shape-checked by
-        // `parse_broker`, a db connector is its connection string, and a
-        // storage connector's endpoint is scheme-checked.
-        ConnectorConfig::Kafka(_) | ConnectorConfig::Db(_) | ConnectorConfig::Storage(_) => {}
+        // scheme allow-list above. A db connector is its connection string,
+        // and a storage connector's endpoint is scheme-checked.
+        ConnectorConfig::Db(_) | ConnectorConfig::Storage(_) => {}
     }
 
     Ok(())

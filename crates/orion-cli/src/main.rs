@@ -30,7 +30,7 @@ use output::OutputFormat;
         Core concepts:\n  \
         Workflows   Processing pipelines with condition + task sequences\n  \
         Channels    Service endpoints that receive data and route it to a workflow\n  \
-        Connectors  External service connections (HTTP APIs, Kafka) used by tasks\n  \
+        Connectors  External service connections (HTTP APIs, databases) used by tasks\n  \
         Engine      Runs active workflows -- reload after changes to apply them\n\n\
         Config precedence: CLI flags > environment variables > ~/.orion/config.toml",
     after_help = help::GETTING_STARTED,

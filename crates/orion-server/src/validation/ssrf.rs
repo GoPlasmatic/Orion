@@ -163,11 +163,10 @@ pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
 
 /// Refuse a `host:port` that resolves to a private/internal address, for
 /// callers that already hold a split host and port rather than a URL (S6):
-/// a connection string's host and port, and Kafka's bare `host:port` broker
-/// entries, which are not a parseable URL.
+/// a connection string's host and port.
 ///
 /// No pinning: [`PinnedDnsResolver`] is consulted only by the shared reqwest
-/// client, and a database or broker driver re-resolves through the system
+/// client, and a database driver re-resolves through the system
 /// resolver regardless. The gap between this check and the driver's own
 /// connect is therefore a genuine TOCTOU that pinning cannot close from here
 /// — it is narrowed, not eliminated, which is why the private-IP check is a

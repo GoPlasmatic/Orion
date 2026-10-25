@@ -144,7 +144,7 @@
 # redis_url = ""                  # Required when enabled, e.g. "redis://redis:6379"
 # epoch_poll_interval_ms = 2000   # How often each node polls for config changes made elsewhere
 # instance_id = ""                # Auto-generated UUID when empty; max 64 chars because it
-                                  # doubles as the Kafka group.instance.id
+                                  # is written as the job-lease holder
 
 [ingest]
 # max_payload_size = 1048576   # Max request body in bytes (1 MB) for the data plane.
@@ -293,69 +293,6 @@
 # max_rows = 1000                    # Hard cap on rows per bulk insert/upsert
 # allow_unfiltered = false           # Permit unfiltered update/delete (still needs "all": true
                                      # on the call itself)
-
-[kafka]                              # Consumer + producer, compiled into every binary
-# Messages are processed strictly sequentially per consumer — the
-# at-least-once commit contract requires it (an offset commit covers every
-# earlier offset). Scale throughput by running more instances in the same
-# consumer group.
-# enabled = false
-# brokers = ["localhost:9092"]
-# group_id = "orion"
-# topics = []                        # Topic-to-channel mappings; see [[kafka.topics]] below
-# processing_timeout_ms = 60000      # Per-message processing timeout
-# lag_poll_interval_secs = 30        # Consumer lag metric poll interval (0 disables)
-# session_timeout_ms = 45000         # Consumer group session timeout; always applied. In cluster
-                                     # mode it pairs with static group membership so rolling
-                                     # restarts rejoin without a full rebalance
-
-# [[kafka.topics]]                   # Repeat this block per mapping. Channels with a Kafka
-# topic = "incoming-orders"          # protocol also contribute topics from the database;
-# channel = "orders"                 # the two sets are merged at startup.
-
-# [kafka.dlq]
-# Failed messages are published here instead of being dropped. Delivery is
-# at-least-once: an offset only advances on success or a confirmed DLQ write,
-# so with the DLQ disabled a failing message is retried in place rather than
-# lost. Enable it to stop poison messages blocking a partition.
-# enabled = false
-# topic = "orion-dlq"
-
-# [kafka.auth]
-# Broker authentication and TLS, applied to every Kafka client Orion creates
-# (ingest consumer, publish_kafka producer, DLQ producer). This is what makes
-# Confluent Cloud, MSK, and Aiven reachable. Each field maps 1:1 to a
-# librdkafka property; leave a field unset to keep librdkafka's default.
-# GSSAPI and OAUTHBEARER are not available — librdkafka is built without
-# libsasl2.
-# security_protocol = "sasl_ssl"     # plaintext | ssl | sasl_plaintext | sasl_ssl
-# sasl_mechanism = "SCRAM-SHA-256"   # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
-# sasl_username = "orion"
-# sasl_password = "change-me"        # Prefer ORION_KAFKA__AUTH__SASL_PASSWORD or ${KAFKA_PASSWORD}
-# ssl_ca_location = ""               # CA bundle for broker verification, e.g. "/etc/kafka/ca.pem";
-                                     # unset uses the system trust store
-#
-# Worked example — Confluent Cloud (API key as username, secret as password):
-#   [kafka]
-#   enabled = true
-#   brokers = ["pkc-abc12.us-east-1.aws.confluent.cloud:9092"]
-#   group_id = "orion-prod"
-#   [kafka.auth]
-#   security_protocol = "sasl_ssl"
-#   sasl_mechanism = "PLAIN"
-#   sasl_username = "${CONFLUENT_API_KEY}"
-#   sasl_password = "${CONFLUENT_API_SECRET}"
-#
-# AWS MSK with IAM is not supported; use MSK's SCRAM-SHA-512 credentials:
-#   security_protocol = "sasl_ssl"
-#   sasl_mechanism = "SCRAM-SHA-512"
-
-# [kafka.extra_config]
-# Raw librdkafka properties, applied after everything Orion sets, so entries
-# here override even [kafka.auth]. Free-form maps do not fit the
-# ORION_SECTION__KEY scheme, so there is no env-var equivalent — TOML only.
-#   "client.id" = "orion-prod-1"
-#   "socket.keepalive.enable" = "true"
 
 [rate_limit]
 # Platform-level limits. Per-channel limits are separate and live in the
@@ -649,7 +586,7 @@
 # an operator asking "which topic did this run publish to?" is asking to see
 # them. Values keep the type they are written as, and must be literals —
 # nothing resolves a secret reference on its way into metadata.
-#   kafka_topic_prefix = "${KAFKA_TOPIC_PREFIX:-dev}"
+#   region_code = "${REGION_CODE:-dev}"
 #   partner_base_url = "https://sandbox.partner.example"
 #   max_retries = 3
 

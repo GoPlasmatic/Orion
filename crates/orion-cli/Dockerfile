@@ -2,8 +2,8 @@
 #   docker build -f crates/orion-cli/Dockerfile .
 # The workspace manifest set must be complete for cargo metadata to resolve,
 # so the whole crates/ tree rides in — but every cargo invocation is scoped
-# with -p/--package orion-cli, so the server's heavy native deps (librdkafka,
-# vendored OpenSSL) are never compiled here.
+# with -p/--package orion-cli, so the server's heavy deps (Wasmtime, tract)
+# are never compiled here.
 #
 # Digest-pinned to the same base images as the server Dockerfile so a rebuild
 # months from now resolves the same layers; dependabot bumps the tag+digest.

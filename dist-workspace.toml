@@ -20,9 +20,9 @@ publish-jobs = ["homebrew"]
 # Mac audience is sunsetting (Apple ended Intel support with macOS 26).
 # Revisit only on demand, via dist's github-custom-runners cross-compiling
 # from macos-latest rather than the macos-13 pool. Musl (static Linux) is
-# deliberately NOT here yet: rdkafka's build is the risk, and
-# cross-os-build.yml compiles x86_64-unknown-linux-musl on every relevant
-# PR — promote it into this list once that job has a green history.
+# deliberately NOT here yet: cross-os-build.yml compiles
+# x86_64-unknown-linux-musl on every relevant PR — promote it into this list
+# once that job has a green history.
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Homebrew tap repository
 tap = "GoPlasmatic/homebrew-tap"
@@ -32,20 +32,17 @@ tap = "GoPlasmatic/homebrew-tap"
 # preserves them.
 github-attestations = true
 
-# System dependencies for rdkafka-sys. P14: librdkafka builds via its native
-# configure on unix (cmake stays Windows-only, see Cargo.toml), and the
-# vendored OpenSSL build needs perl — GitHub's runner images preinstall all
-# of these, so this list matters exactly when a dist build runs in a
-# container, where nothing is preinstalled. Keep it in step with the
-# Dockerfile's builder-stage apt line and .github/actions/apt-build-deps.
+# System build dependencies: cmake for aws-lc-sys (the rustls crypto
+# provider), which can build through it, and pkg-config for the -sys crates
+# that probe with it. GitHub's runner images preinstall both, so this list
+# matters exactly when a dist build runs in a container, where nothing is
+# preinstalled. Keep it in step with the Dockerfile's builder-stage apt line
+# and .github/actions/apt-build-deps.
 [dist.dependencies.apt]
 cmake = "*"
-"g++" = "*"
 pkg-config = "*"
-libcurl4-openssl-dev = "*"
-perl = "*"
 
 # macOS runners preinstall the whole toolchain; kept for a hypothetical
-# cmake-less runner image rather than because the configure path needs it.
+# cmake-less runner image.
 [dist.dependencies.homebrew]
 cmake = "*"

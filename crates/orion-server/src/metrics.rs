@@ -178,10 +178,10 @@ pub fn record_response_drop(channel: &str, kind: String) {
 ///
 /// `sum by (channel) (orion_messages_total)` is the replacement, and it is a
 /// **superset**, not an identity: the deleted counter had two call sites, both
-/// on the HTTP path, and never saw the Kafka ingest or DLQ paths that also
-/// record messages. Expect the per-channel rate to be higher than the old
-/// series on any deployment that consumes from Kafka — that is the blind spot
-/// closing, not double counting.
+/// on the synchronous HTTP path, and never saw the async queue, DLQ or cron
+/// paths that also record messages. Expect the per-channel rate to be higher
+/// than the old series on any deployment that uses them — that is the blind
+/// spot closing, not double counting.
 pub fn record_message(channel: &str, status: &'static str) {
     if !is_enabled() {
         return;
@@ -226,7 +226,7 @@ pub fn record_build_info() {
 ///
 /// Separate from `errors_total{reason="auth_failure"}`, which it replaces for
 /// this purpose: that counter is shared with ~15 unrelated `record_error` call
-/// sites (`panic`, `dedup_backend`, `kafka_retry`, …), so alerting on
+/// sites (`panic`, `dedup_backend`, …), so alerting on
 /// credential guessing meant a filter that also matched all of them
 /// (proposal O11).
 ///
@@ -815,7 +815,7 @@ pub fn record_cache_miss(channel: &str) {
 /// unix time, in seconds.
 ///
 /// The periodic jobs — trace cleanup, audit-log cleanup, DLQ retry, the
-/// cluster epoch watcher, and the Kafka lag poller — deliberately swallow
+/// and the cluster epoch watcher — deliberately swallow
 /// per-tick errors and keep looping, because a transient DB blip must not
 /// kill the loop. That left a *sustained* failure with no alertable signal:
 /// the task was still running, but had not done its job in hours, and
@@ -823,7 +823,7 @@ pub fn record_cache_miss(channel: &str) {
 /// `time() - orion_job_last_success_timestamp_seconds{job="…"} > threshold`.
 ///
 /// `job` is one of `trace_cleanup`, `audit_cleanup`, `dlq_retry`,
-/// `epoch_watcher`, `kafka_lag`, `cron_reconcile`, `cron_cleanup`. Called once per fully successful tick;
+/// `epoch_watcher`, `cron_reconcile`, `cron_cleanup`. Called once per fully successful tick;
 /// a tick skipped because another node holds the job lease does not count —
 /// on that node the gauge honestly goes stale, and the holder keeps it fresh.
 pub fn record_job_success(job: &'static str) {
@@ -1039,39 +1039,6 @@ pub fn record_workflow_duration(workflow: &str, secs: f64) {
     }
     histogram!("orion_workflow_duration_seconds", "workflow" => static_label(workflow))
         .record(secs);
-}
-
-// ---------------------------------------------------------------------------
-// Kafka consumer lag gauge
-// ---------------------------------------------------------------------------
-
-/// Set the consumer lag, in messages, for a specific topic-partition.
-///
-/// O14: this was the one family in the process that carried neither the
-/// `orion_` prefix (so it could collide with any other exporter's
-/// `kafka_consumer_lag` in a shared registry — the exact collision the prefix
-/// convention exists to prevent) nor a unit suffix.
-pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
-    if !is_enabled() {
-        return;
-    }
-    gauge!(
-        "orion_kafka_consumer_lag_messages",
-        "topic" => topic.to_owned(),
-        "partition" => partition.to_string()
-    )
-    .set(lag);
-}
-
-/// `1` while Kafka ingestion is down — a consumer (re)start failed and the
-/// supervisor has not recovered it yet — and `0` otherwise. Mirrors the
-/// `kafka` component of `/readyz` so the outage is alertable from a scrape
-/// as well as from the probe (K7).
-pub fn set_kafka_ingest_degraded(degraded: bool) {
-    if !is_enabled() {
-        return;
-    }
-    gauge!("orion_kafka_ingest_degraded").set(if degraded { 1.0 } else { 0.0 });
 }
 
 // ---------------------------------------------------------------------------
@@ -1372,24 +1339,6 @@ mod tests {
         assert!(
             !out.contains("channel_executions_total"),
             "the redundant second counter must stay gone:\n{out}"
-        );
-    }
-
-    /// The Kafka lag gauge carries the `orion_` prefix (no collisions in a
-    /// shared registry) and its unit. It used to be a bare
-    /// `kafka_consumer_lag`.
-    #[test]
-    fn kafka_lag_gauge_is_prefixed_and_carries_its_unit() {
-        let out = render_local(|| set_kafka_consumer_lag("orders", 3, 42.0));
-        assert!(
-            out.contains(r#"orion_kafka_consumer_lag_messages{"#),
-            "the lag gauge must be prefixed and unit-suffixed:\n{out}"
-        );
-        assert!(out.contains(r#"topic="orders""#), "{out}");
-        assert!(out.contains(r#"partition="3""#), "{out}");
-        assert!(
-            !out.contains("# TYPE kafka_consumer_lag gauge"),
-            "the unprefixed family must stay gone:\n{out}"
         );
     }
 

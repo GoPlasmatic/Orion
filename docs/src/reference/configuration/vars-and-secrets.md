@@ -19,7 +19,7 @@ Neither section has an environment-variable override: the names are the operator
 
 ```toml
 [vars]
-kafka_topic_prefix = "${KAFKA_TOPIC_PREFIX:-dev}"
+region_code = "${REGION_CODE:-dev}"
 partner_base_url = "https://sandbox.partner.example"
 max_retries = 3
 
@@ -27,7 +27,7 @@ max_retries = 3
 partner_hmac = "env://PARTNER_HMAC_KEY"
 ```
 
-**Vars** are stamped into every message's `metadata.vars` at ingress, HTTP and Kafka alike, overwriting whatever the caller sent. An envelope-mode request therefore cannot name its own topic prefix. They keep the type they were written as: `max_retries` compares against `3`, not `"3"`. And they *are* recorded, on purpose: an operator asking "which topic did this run publish to?" is asking to see them.
+**Vars** are stamped into every message's `metadata.vars` at ingress, HTTP and cron alike, overwriting whatever the caller sent. An envelope-mode request therefore cannot name its own region code. They keep the type they were written as: `max_retries` compares against `3`, not `"3"`. And they *are* recorded, on purpose: an operator asking "which region did this run call?" is asking to see them.
 
 **Secrets** are held by the engine rather than by the message. That is what makes the guarantee structural instead of a policy. A secret is not part of a message, so it cannot reach a trace snapshot, a `map` mapping clone or a response body. There is nothing to strip. A workflow that reads one somewhere the engine would record the result is refused when the engine is built. So is one naming a secret the instance does not declare.
 

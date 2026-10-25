@@ -4,8 +4,8 @@
 # binaries, but every CI job runs on ubuntu — so before this workflow, those
 # two targets were compiled for the FIRST time when the release tag was
 # pushed (`release.yml` gates `build-local-artifacts` off pull requests and
-# no `pr-run-mode` is set). A platform-specific compile error — rdkafka's
-# cmake + vendored-OpenSSL build and path handling are the usual suspects —
+# no `pr-run-mode` is set). A platform-specific compile error — a -sys
+# crate's native build and path handling are the usual suspects —
 # surfaced mid-release, after the tag existed, with the Homebrew formula
 # depending on the macOS build succeeding.
 #
@@ -76,8 +76,7 @@ jobs:
       matrix:
         # macos-latest is Apple Silicon (aarch64-apple-darwin);
         # windows-latest matches x86_64-pc-windows-msvc (cmake preinstalled,
-        # which the Windows-only cmake-build needs); vendored OpenSSL needs
-        # no system package on either. macos-13 (Intel) was removed together
+        # for aws-lc-sys). macos-13 (Intel) was removed together
         # with the x86_64-apple-darwin dist target — its GitHub runners
         # queue near-indefinitely (see dist-workspace.toml).
         os: [macos-latest, windows-latest]
@@ -104,9 +103,9 @@ jobs:
         run: cargo build --locked --workspace
 
   # The static-Linux proof (P13). Musl is the audience of the "single binary,
-  # no runtime dependencies" pitch (Alpine/distroless/scratch), and rdkafka's
-  # cmake + vendored-OpenSSL build is exactly the part with a history of
-  # fighting musl — so the target earns its place in dist-workspace.toml by
+  # no runtime dependencies" pitch (Alpine/distroless/scratch), and the
+  # native -sys builds are exactly the part with a history of fighting musl
+  # — so the target earns its place in dist-workspace.toml by
   # holding this job green, not by assertion. Promote it there once it has.
   musl:
     name: Build (x86_64-unknown-linux-musl)
@@ -125,11 +124,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # musl-tools ships only a C compiler, and rdkafka's cmake configure also
-      # demands a musl g++ — librdkafka's project() declares CXX even though
-      # only the C library is ever linked — so the job needs a full musl cross
-      # toolchain. Bootlin's carries both compilers; musl.cc, the usual
-      # suggestion, times out from GitHub runners. Cached so the 79MB tarball
+      # A full musl cross toolchain for the -sys crates' C builds (aws-lc-sys,
+      # ring, libsqlite3-sys). Bootlin's carries both a C and a C++ compiler;
+      # musl.cc, the usual suggestion, times out from GitHub runners. Cached so the 79MB tarball
       # is fetched only when the pinned version changes.
       - name: Cache musl cross toolchain
         id: musl-tc-cache
@@ -154,10 +151,9 @@ jobs:
 
       - name: Build
         env:
-          # Plain CC as well as the cc-crate names: librdkafka's configure
-          # build (the unix path — see rdkafka's entry in Cargo.toml) reads
-          # the plain variable, while openssl-sys and friends read the
-          # target-scoped ones.
+          # Plain CC as well as the cc-crate names: a build script that shells
+          # out to a configure or cmake build reads the plain variable, while
+          # the cc crate reads the target-scoped ones.
           CC: x86_64-buildroot-linux-musl-gcc
           CC_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-gcc
           CXX_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-g++

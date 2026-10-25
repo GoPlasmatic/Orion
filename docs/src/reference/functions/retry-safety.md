@@ -5,7 +5,7 @@
 # Retry safety
 
 Orion retries a task in more places than a workflow author has in mind. The [trace DLQ](../admin-api/trace-dlq.md) replays a failed async delivery,
-a Kafka redelivery re-runs everything after an uncommitted offset, and
+a retried cron occurrence re-runs the whole workflow, and
 `http_call` retries its own transport failures. Whether that is harmless
 depends on the function.
 
@@ -45,7 +45,6 @@ happens, what does it cost?**
 | [`cache_invalidate`](./cache_invalidate.md) | `idempotent_write` | A second bump retires nothing more; each namespaced channel misses once more. |
 | [`cache_delete`](./cache_delete.md) | `idempotent_write` | A second delete of the same keys leaves them deleted; only the reported count differs. |
 | [`cache_incr`](./cache_incr.md) | `unsafe_write` | A retry adds `by` again. Harmless for a generation counter (one extra miss); wrong for a count someone reads. |
-| [`publish_kafka`](./publish_kafka.md) | `unsafe_write` | A retry publishes a second record. Consumers that need exactly once delivery should dedupe on a key the workflow sets. |
 | [`http_call`](./http_call.md) | `depends_on` `method` | `GET`/`HEAD` are safe; `POST`/`PATCH` may already have been applied. This is what the connector's `retry_non_idempotent` flag is about — off by default. |
 | [`db_write`](./db_write.md) | `depends_on` `sql` | Raw SQL: an `UPDATE … SET x = 1` is idempotent, an `INSERT` is not. |
 | [`data_write`](./data_write.md) | `depends_on` `op` | `upsert` and `delete` are idempotent; `insert` is not; `update` depends on the expression. |
@@ -62,4 +61,3 @@ sense above.
 - [Task functions](./index.md): every function, with its page.
 - [Timeouts, retries and circuit breakers](../../operate/run/failure-handling.md): where Orion retries, and what it deliberately does not re-drive.
 - [Traces and async processing](../../operate/run/traces.md): the trace DLQ replay that re-runs a delivery.
-- [Kafka channels](../../guides/patterns/kafka-channels.md): the redelivery a consumer must expect.

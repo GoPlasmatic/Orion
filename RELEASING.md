@@ -320,9 +320,9 @@ produces numbers worse than none.
 ## Musl promotion checkpoint (P13)
 
 `x86_64-unknown-linux-musl` compiles on every relevant PR
-(`cross-os-build.yml`) but is deliberately not in the dist targets —
-rdkafka's cmake + vendored-OpenSSL build is the risk, and promotion must be
-earned by a green history, not asserted. At each rc/release checkpoint:
+(`cross-os-build.yml`) but is deliberately not in the dist targets — the
+native -sys builds are the risk, and promotion must be earned by a green
+history, not asserted. At each rc/release checkpoint:
 review the musl job's run history; once it has accumulated a meaningful
 green streak, add the target to `dist-workspace.toml`, regenerate
 `release.yml` with `dist init`, and update the deployability page's platform

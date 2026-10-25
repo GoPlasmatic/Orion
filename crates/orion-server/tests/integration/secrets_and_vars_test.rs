@@ -361,9 +361,9 @@ async fn the_admin_test_endpoint_stamps_the_same_vars() {
     );
 }
 
-/// The stamping helper itself, in isolation. The Kafka ingress reaches vars
-/// through this same function, and its own end-to-end path is container-gated
-/// — so the contract both transports share is pinned where it always runs.
+/// The stamping helper itself, in isolation. The cron ingress reaches vars
+/// through this same function, so the contract every transport shares is
+/// pinned here, beside the HTTP path's end-to-end test.
 #[test]
 fn the_stamp_replaces_or_removes_but_never_merges() {
     let declared = json!({ "topic_prefix": "eu-west" });

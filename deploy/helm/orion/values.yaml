@@ -250,7 +250,7 @@ podDisruptionBudget:
 
 # NetworkPolicy for the Orion pods (P8). Off by default: it requires a CNI
 # that enforces NetworkPolicy, and useful egress rules depend on where YOUR
-# databases, Redis, Kafka and upstream APIs live. When enabled with no egress
+# databases, Redis and upstream APIs live. When enabled with no egress
 # rules, the pod can resolve DNS and reach nothing else — fail-closed on
 # purpose, so an unconfigured policy is loud rather than silently open.
 # Orion makes outbound calls wherever its connectors point (it is
@@ -266,7 +266,7 @@ networkPolicy:
     # Always allow DNS (port 53), without which nothing else can be named.
     allowDns: true
     # NetworkPolicyEgressRule list, verbatim — point these at your database,
-    # Redis, Kafka and the upstreams your connectors call.
+    # Redis and the upstreams your connectors call.
     rules: []
 
 podAnnotations: {}
@@ -286,7 +286,7 @@ affinity: {}
 #       app.kubernetes.io/name: orion
 topologySpreadConstraints: []
 
-# `helm test` hooks: a DB/Kafka probe via the binary's own test-connectivity
+# `helm test` hooks: a DB probe via the binary's own test-connectivity
 # subcommand, and a live check of /health, /readyz and (when enabled) the
 # unauthenticated metrics port. Inert until `helm test` is run.
 tests:

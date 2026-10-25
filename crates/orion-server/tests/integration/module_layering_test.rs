@@ -6,7 +6,7 @@
 //! rather than the right one:
 //!
 //! - `engine` reached into `server::state` for `AppState` and `bootstrap` for
-//!   `start_kafka_ingest`, because engine *reload* lived in `engine`;
+//!   the ingest starter, because engine *reload* lived in `engine`;
 //! - `connector::sigv4`, `channel::auth` and `jwt` reached into
 //!   `engine::operators` for HMAC and the base64/hex table, because the
 //!   JSONLogic operator module was where those primitives were first written;
@@ -37,7 +37,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("engine", &["crate::server::", "crate::bootstrap::"]),
     ("channel", &["crate::server::", "crate::bootstrap::"]),
     ("connector", &["crate::server::", "crate::bootstrap::"]),
-    ("kafka", &["crate::server::", "crate::bootstrap::"]),
     ("queue", &["crate::server::", "crate::bootstrap::"]),
     ("jwt", &["crate::server::", "crate::bootstrap::"]),
     // The plugin sandbox produces registry entries and handlers for a
@@ -50,7 +49,7 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("model", &["crate::server::", "crate::bootstrap::"]),
     ("model", &["crate::plugin::"]),
     ("plugin", &["crate::model::"]),
-    // The cron scheduler sits beside `queue` and `kafka`: it consumes the
+    // The cron scheduler sits beside `queue`: it consumes the
     // engine, the channel estate and the storage layer, and nothing below it
     // may name it back. `engine` reaching up here is how `TRIGGER_KEY` briefly
     // ended up in the wrong module.
@@ -136,7 +135,7 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // `runtime::generation` are deliberately *not* on this list: both are
     // leaves that depend on nothing above them, and both are injected
     // downward as a parameter or a field — `queue`, `cluster` and the
-    // retention jobs take a `&TaskRegistry`; `engine`, `channel`, `kafka` and
+    // retention jobs take a `&TaskRegistry`; `engine`, `channel`, `cron` and
     // `queue` are handed an `Arc<RuntimeHandle>` and read the generation they
     // were given. That is the same shape as `metrics`. Forbidding all of
     // `runtime::` would refuse it.
@@ -166,7 +165,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("engine", &["crate::package::"]),
     ("channel", &["crate::package::"]),
     ("connector", &["crate::package::"]),
-    ("kafka", &["crate::package::"]),
     ("queue", &["crate::package::"]),
     ("jwt", &["crate::package::"]),
     ("plugin", &["crate::package::"]),
@@ -185,7 +183,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
             "crate::package::",
             "crate::cron::",
             "crate::queue::",
-            "crate::kafka::",
         ],
     ),
 ];

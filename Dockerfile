@@ -19,8 +19,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Builder stage: cache dependencies, then build
 FROM chef AS builder
 
-# perl is required by rdkafka's vendored OpenSSL build (kafka.auth TLS/SASL)
-RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev perl && rm -rf /var/lib/apt/lists/*
+# cmake is kept for aws-lc-sys (the rustls crypto provider), which can build
+# through it; pkg-config for the -sys crates that probe with it.
+RUN apt-get update && apt-get install -y pkg-config cmake && rm -rf /var/lib/apt/lists/*
 
 # Codegen knobs for the `dist` profile, defaulted to exactly what
 # [profile.dist] in the workspace Cargo.toml already says (release's
@@ -75,7 +76,7 @@ FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc401
 # dynamic pair (version, revision) still comes from CI; these are the static
 # facts.
 LABEL org.opencontainers.image.title="Orion" \
-      org.opencontainers.image.description="Declarative services runtime: channels + workflows over REST/Kafka, single binary" \
+      org.opencontainers.image.description="Declarative services runtime: channels + workflows over REST, single binary" \
       org.opencontainers.image.source="https://github.com/GoPlasmatic/Orion" \
       org.opencontainers.image.documentation="https://docs.goplasmatic.io/" \
       org.opencontainers.image.vendor="Plasmatic" \

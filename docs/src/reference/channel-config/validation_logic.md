@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | `validation_logic` | JSONLogic | no | none | Predicate over `{data, metadata}`. See the [Expression Language](../expressions.md). |
 
-**Context.** The expression evaluates against exactly `{ "data": …, "metadata": … }`. `data` is the request payload as submitted. The guard runs before any workflow task, so `data.order_id` resolves here even though the workflow itself reads the payload only after `parse_json`. `metadata` has the same shape the workflow's data context carries (headers, query, path params, channel name; transport-dependent). See the [Workflow Schema](../workflows.md). On Kafka, `metadata` carries the record coordinates and no headers.
+**Context.** The expression evaluates against exactly `{ "data": …, "metadata": … }`. `data` is the request payload as submitted. The guard runs before any workflow task, so `data.order_id` resolves here even though the workflow itself reads the payload only after `parse_json`. `metadata` has the same shape the workflow's data context carries (headers, query, path params, channel name; transport-dependent). See the [Workflow Schema](../workflows.md).
 
 Rules:
 

@@ -242,14 +242,14 @@ mod tests {
     #[test]
     fn field_errors_serialize_with_optional_expected_got() {
         let f = FieldError::new("channel.protocol", "ENUM_MISMATCH", "unknown protocol")
-            .with_expected(serde_json::json!(["rest", "http", "kafka"]))
+            .with_expected(serde_json::json!(["rest", "http", "cron"]))
             .with_got("REST");
         let value = serde_json::to_value(&f).expect("test");
         assert_eq!(value["path"], "channel.protocol");
         assert_eq!(value["code"], "ENUM_MISMATCH");
         assert_eq!(
             value["expected"],
-            serde_json::json!(["rest", "http", "kafka"])
+            serde_json::json!(["rest", "http", "cron"])
         );
         assert_eq!(value["got"], "REST");
 

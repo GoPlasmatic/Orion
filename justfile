@@ -26,7 +26,6 @@ openapi:
 test-containers:
     cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test sql_check_test
     cargo test --test integration -- --ignored connector_redis_test vault_test
-    cargo test --test integration -- --ignored kafka_test
     cargo test --test storage_postgres -- --ignored
     cargo test --test storage_mysql -- --ignored
     cargo test --test schema_parity -- --ignored

@@ -18,9 +18,9 @@
 |---|---|---|---|---|
 | `max_concurrent_per_node` | integer | yes | — | Maximum concurrent requests for this channel on this node. |
 
-The permit is per channel, not per ingress: synchronous requests, queued `/async` work, Kafka records, and `channel_call`s all draw from the same semaphore. Each channel's semaphore is independent, so a spike on one channel does not shed another's traffic.
+The permit is per channel, not per ingress: synchronous requests, queued `/async` work, `channel_call`s and cron occurrences all draw from the same semaphore. Each channel's semaphore is independent, so a spike on one channel does not shed another's traffic.
 
-**Cross-ingress semantics.** A Kafka record that cannot get a permit is left uncommitted for redelivery rather than shed. The transport can wait; an HTTP caller cannot be told to.
+**Cross-ingress semantics.** A cron occurrence that cannot get a permit goes back to `pending` and is claimed again rather than shed. The scheduler can wait; an HTTP caller cannot be told to.
 
 The semaphore is per process, as the name states: N replicas admit up to N × `max_concurrent_per_node` in flight in total.
 

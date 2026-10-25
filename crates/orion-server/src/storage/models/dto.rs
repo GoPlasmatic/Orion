@@ -620,14 +620,15 @@ mod tests {
     fn test_channel_response_try_from_async() {
         let mut channel = sample_channel();
         channel.channel_type = CHANNEL_TYPE_ASYNC.to_string();
-        channel.protocol = ChannelProtocol::Kafka.as_str().to_string();
+        // A row stored by a release that shipped Kafka still renders.
+        channel.protocol = "kafka".to_string();
         channel.methods_json = None;
         channel.route_pattern = None;
         channel.topic = Some("order.placed".to_string());
         channel.consumer_group = Some("orion".to_string());
         let response = ChannelResponse::try_from(&channel).expect("test");
         assert_eq!(response.channel_type, CHANNEL_TYPE_ASYNC);
-        assert_eq!(response.protocol, ChannelProtocol::Kafka.as_str());
+        assert_eq!(response.protocol, "kafka");
         assert!(response.methods.is_none());
         assert_eq!(response.topic, Some("order.placed".to_string()));
     }

@@ -498,7 +498,7 @@ mod tests {
     fn the_layer_stubs_every_connector_backed_function_and_only_those() {
         let layer = StubLayer::new(StubTable::new(), Arc::new(CallLog::new()), true);
         let stubbable: Vec<&str> = stubbable_functions().collect();
-        assert_eq!(stubbable.len(), 19, "every Orion function is stubbable");
+        assert_eq!(stubbable.len(), 18, "every Orion function is stubbable");
         for name in &stubbable {
             assert_eq!(
                 layer.stubbed.contains(name),

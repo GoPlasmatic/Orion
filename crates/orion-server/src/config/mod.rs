@@ -5,7 +5,6 @@ mod engine;
 mod env_overrides;
 pub(crate) mod env_substitute;
 mod jwt;
-mod kafka;
 mod logging;
 mod models;
 mod oauth2_login;
@@ -31,7 +30,6 @@ pub use cron::CronConfig;
 pub use engine::EngineConfig;
 pub use env_overrides::known_env_override_keys;
 pub use jwt::JwtConfig;
-pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
 pub use models::{ModelOverride, ModelPreload, ModelRuntimeConfig, ModelTrustConfig, ModelsConfig};
 pub use oauth2_login::{InstanceProviderConfig, OAuth2LoginConfig};
@@ -78,7 +76,6 @@ pub struct AppConfig {
     pub trace_queue: TraceQueueConfig,
     pub query: QueryConfig,
     pub write: WriteConfig,
-    pub kafka: KafkaIngestConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
     pub cors: CorsConfig,
@@ -129,7 +126,6 @@ impl Default for AppConfig {
             trace_queue: TraceQueueConfig::default(),
             query: QueryConfig::default(),
             write: WriteConfig::default(),
-            kafka: KafkaIngestConfig::default(),
             logging: LoggingConfig::default(),
             metrics: MetricsConfig::default(),
             cors: CorsConfig::default(),
@@ -236,8 +232,8 @@ impl Default for AuditConfig {
 impl AuditConfig {
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
         validation::require_nonzero(self.max_pending as u64, "audit.max_pending")?;
-        // Elsewhere 0 is a "disabled" sentinel (`server.shutdown_force_timeout_secs`,
-        // `kafka.lag_poll_interval_secs`), so an operator could reasonably read
+        // Elsewhere 0 is a "disabled" sentinel (`server.shutdown_force_timeout_secs`),
+        // so an operator could reasonably read
         // it as "wait forever". It is the opposite: `tokio::time::timeout`
         // elapses on the first poll, so the drain is skipped and every clean
         // shutdown logs a drain failure with `lost = 0`.
@@ -635,17 +631,6 @@ data_rps = 500
     fn test_cors_config_default() {
         let config = CorsConfig::default();
         assert_eq!(config.allowed_origins, vec!["*"]);
-    }
-
-    #[test]
-    fn test_kafka_ingest_config_default() {
-        let config = KafkaIngestConfig::default();
-        assert!(!config.enabled);
-        assert_eq!(config.brokers, vec!["localhost:9092"]);
-        assert_eq!(config.group_id, "orion");
-        assert!(config.topics.is_empty());
-        assert!(!config.dlq.enabled);
-        assert_eq!(config.dlq.topic, "orion-dlq");
     }
 
     #[test]

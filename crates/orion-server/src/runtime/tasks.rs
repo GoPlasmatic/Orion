@@ -41,8 +41,7 @@
 //!
 //! # Shutdown
 //!
-//! One `watch` channel, the same cooperative shape the Kafka consume loop
-//! already uses. A supervised body takes a [`Shutdown`] and is expected to
+//! One `watch` channel. A supervised body takes a [`Shutdown`] and is expected to
 //! return when it fires; [`TaskRegistry::shutdown`] signals, then joins under
 //! one deadline for the set it owns and names anything that outlived it. That
 //! replaces `JoinHandle::abort()`, which could cut a retention job between its
@@ -61,10 +60,6 @@ pub const INITIAL_BACKOFF_MS: u64 = 1_000;
 pub const MAX_BACKOFF_MS: u64 = 60_000;
 
 /// Double a retry delay, capped at [`MAX_BACKOFF_MS`].
-///
-/// The Kafka consume loop's own retry uses the identical curve and constants
-/// (`kafka::consumer::next_backoff_ms`); they are separate because that one is
-/// per-*message* and reads `max.poll.interval.ms`, while this one is per-task.
 pub fn next_backoff_ms(current_ms: u64) -> u64 {
     current_ms.saturating_mul(2).min(MAX_BACKOFF_MS)
 }
@@ -176,8 +171,7 @@ impl Slot {
 
 /// The shutdown signal handed to a supervised task body.
 ///
-/// A loop should treat it the way the Kafka consume loop treats its own: check
-/// it between units of work, and race it against any sleep, so shutdown is
+/// A loop should check it between units of work, and race it against any sleep, so shutdown is
 /// bounded by one unit rather than by one poll interval.
 #[derive(Clone)]
 pub struct Shutdown(watch::Receiver<bool>);
@@ -236,7 +230,7 @@ impl TaskRegistry {
     }
 
     /// A receiver for the shutdown signal, for a task that manages its own
-    /// spawn (the Kafka consumer's restart supervisor) but still wants to stop
+    /// spawn but still wants to stop
     /// when the node does.
     pub fn shutdown_signal(&self) -> Shutdown {
         Shutdown(self.shutdown_tx.subscribe())

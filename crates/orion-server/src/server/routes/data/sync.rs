@@ -639,7 +639,7 @@ pub(super) async fn process_sync_for_channel(
         // One derivation of the label, shared with every other transport. The
         // change this made here: a run that finished with task errors used to be
         // counted `ok`, so a channel failing every request reported a 100% success
-        // rate while the Kafka and async paths counted the same runs as `error`.
+        // rate while the async path counted the same runs as `error`.
         metrics::record_message(channel, outcome.status_label());
         metrics::record_message_duration(channel, engine_duration.as_secs_f64());
 
@@ -659,7 +659,7 @@ pub(super) async fn process_sync_for_channel(
             // a 200 — the response carries the whole story, and a workflow that
             // partially succeeded still has data worth returning. Only the metric
             // label changed with the shared step: `orion_messages_total` counts
-            // this as `error` now, as the Kafka and async paths always did.
+            // this as `error` now, as the async path always did.
             crate::engine::RunOutcome::Ok | crate::engine::RunOutcome::WorkflowErrors(_) => {
                 // The *request's* duration — guards, execution, and the response
                 // build below. `execute_admitted` already recorded the engine

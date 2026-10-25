@@ -113,7 +113,7 @@ pub(crate) fn cron_routing_errors(
                 orion_api::error::field_codes::INVALID,
                 format!(
                     "a cron channel must not declare {name}: it is started by its \
-                     schedule and registers no HTTP route and no Kafka subscription"
+                     schedule and registers no HTTP route"
                 ),
             )
         })
@@ -121,8 +121,8 @@ pub(crate) fn cron_routing_errors(
 
     // Not a style rule. A cron channel answers nobody, so `sync` would promise
     // a caller a result there is no caller to receive — and `channel_type` is
-    // read by the route table, the Kafka topic merge and the trace policy, each
-    // of which would draw a different conclusion from it.
+    // read by the route table and the trace policy, each of which would draw
+    // a different conclusion from it.
     if let Some(channel_type) = channel_type
         && !channel_type.eq_ignore_ascii_case(crate::storage::models::CHANNEL_TYPE_ASYNC)
     {

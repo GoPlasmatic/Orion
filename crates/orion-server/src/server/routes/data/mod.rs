@@ -276,7 +276,7 @@ pub(crate) async fn dynamic_handler(
     // that never existed or were just archived (the ingress-side twin of the
     // channel_call missing-target bug).
     // The `Option` binding stays because `guards::GuardRequest` takes it by
-    // reference and is shared with the Kafka and channel_call ingresses; the
+    // reference and is shared with the cron and channel_call ingresses; the
     // clone below is the `Arc` every path past the gate is entitled to.
     let Some(channel_config) = channel_runtime.clone() else {
         return Err(OrionError::NotFound(format!(

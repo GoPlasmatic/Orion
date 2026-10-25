@@ -381,8 +381,8 @@ pub fn row_format(
 }
 
 /// dataflow-rs 3's `Template::resolve_string`, the reading of every string
-/// parameter of its typed configs (`http_call`'s path, headers and formats,
-/// `publish_kafka`'s topic and key): a string as itself, anything else its
+/// parameter of its typed configs (`http_call`'s path, headers and
+/// formats): a string as itself, anything else its
 /// compact JSON, so `7` is `"7"` and `null` is `"null"`. Never refused, as it
 /// never was; a string is lent.
 pub fn plain_str(v: &OwnedDataValue) -> Cow<'_, str> {
@@ -417,8 +417,8 @@ pub fn template_u64(v: &OwnedDataValue, label: &str) -> Result<u64, HandlerError
 }
 
 /// A parameter dataflow-rs 3's typed configs declared `Option<Template>`
-/// (`http_call`'s `path`, `body`, `body_format` and `response_format`,
-/// `publish_kafka`'s `key` and `value`), as serde read it: an explicit
+/// (`http_call`'s `path`, `body`, `body_format` and `response_format`), as
+/// serde read it: an explicit
 /// `null` is the parameter left unset. dataflow-rs 4 compiles a `null` as a
 /// constant expression, so the caller asks here first.
 pub fn present<T: FromValue>(field: &Option<Expr<T>>) -> Option<&Expr<T>> {

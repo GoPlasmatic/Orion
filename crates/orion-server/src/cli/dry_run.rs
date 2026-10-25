@@ -526,8 +526,8 @@ struct TestCase {
     /// resolved `input`, so a case names the fields it cares about and ignores
     /// the rest — but the number of entries must equal the number of recorded
     /// calls for that function, so an unexpected extra write fails. Only the
-    /// functions named here are constrained; `"publish_kafka": []` asserts that
-    /// nothing was published.
+    /// functions named here are constrained; `"db_write": []` asserts that
+    /// nothing was written.
     ///
     /// Unlike `expect`, presence is **strict**: a key in the expected object
     /// must be present in the record, so `"revokedAt": null` asserts *written

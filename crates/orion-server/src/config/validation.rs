@@ -66,7 +66,6 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.query.validate()?;
     config.write.validate()?;
     config.rate_limit.validate()?;
-    config.kafka.validate()?;
     config.cluster.validate()?;
     config.cron.validate()?;
     config.vars.validate()?;
@@ -121,7 +120,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdminAuthConfig, CorsConfig, TopicMapping};
+    use crate::config::{AdminAuthConfig, CorsConfig};
 
     #[test]
     fn test_validate_config_invalid_port() {
@@ -155,14 +154,6 @@ mod tests {
     fn test_validate_config_invalid_log_level() {
         let mut config = AppConfig::default();
         config.logging.level = "invalid".to_string();
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn test_validate_config_kafka_enabled_no_brokers() {
-        let mut config = AppConfig::default();
-        config.kafka.enabled = true;
-        config.kafka.brokers = vec![];
         assert!(validate_config(&config).is_err());
     }
 
@@ -259,49 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_config_kafka_empty_group_id() {
-        let mut config = AppConfig::default();
-        config.kafka.enabled = true;
-        config.kafka.group_id = String::new();
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn test_validate_config_kafka_duplicate_topics() {
-        let mut config = AppConfig::default();
-        config.kafka.enabled = true;
-        config.kafka.topics = vec![
-            TopicMapping {
-                topic: "dup".into(),
-                channel: "ch1".into(),
-            },
-            TopicMapping {
-                topic: "dup".into(),
-                channel: "ch2".into(),
-            },
-        ];
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn test_validate_config_kafka_duplicate_channels() {
-        let mut config = AppConfig::default();
-        config.kafka.enabled = true;
-        config.kafka.topics = vec![
-            TopicMapping {
-                topic: "t1".into(),
-                channel: "same".into(),
-            },
-            TopicMapping {
-                topic: "t2".into(),
-                channel: "same".into(),
-            },
-        ];
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn test_validate_config_kafka_processing_timeout_zero() {
+    fn test_validate_config_trace_queue_processing_timeout_zero() {
         let mut config = AppConfig::default();
         config.trace_queue.processing_timeout_ms = 0;
         assert!(validate_config(&config).is_err());

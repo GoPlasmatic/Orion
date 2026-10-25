@@ -76,8 +76,8 @@ pub struct CronConfig {
 
     /// The deadline for an occurrence whose channel declares no `timeout_ms`.
     ///
-    /// A *default*, not a ceiling — unlike Kafka's and the trace queue's, which
-    /// protect a shared poll loop and a shared worker pool. A cron worker holds
+    /// A *default*, not a ceiling — unlike the trace queue's, which protects a
+    /// shared worker pool. A cron worker holds
     /// nothing but its own slot, so a channel that genuinely needs six hours
     /// may say so. The default is finite because a run holds its singleton
     /// slot for as long as it runs: an untimed workflow that never returned

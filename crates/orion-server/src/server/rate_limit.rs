@@ -3,7 +3,7 @@
 //! S15/N16: the **per-channel** limiter used to live here too, which is why
 //! it applied to HTTP ingress and nothing else — this middleware pulls
 //! `AppState` and resolves the target channel from the URI, neither of which
-//! a Kafka record or an in-process `channel_call` has. It moved to
+//! an in-process `channel_call` or a cron occurrence has. It moved to
 //! `channel::guards`, where [`crate::channel::guards::apply_guards`] runs it
 //! on every transport. What is left here is the platform budget
 //! (`[rate_limit]`), keyed by client IP and applied per route group.

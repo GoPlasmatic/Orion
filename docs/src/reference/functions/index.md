@@ -29,7 +29,6 @@ Some functions are contributed by the [dataflow-rs](https://github.com/GoPlasmat
 | [`cache_write`](./cache_write.md) | Connector | Cache | Write a value to cache with optional TTL |
 | [`cache_delete`](./cache_delete.md) | Connector | Cache | Delete exact keys, so a write can drop what it made stale |
 | [`cache_incr`](./cache_incr.md) | Connector | Cache | Atomically increment an integer — a generation counter |
-| [`publish_kafka`](./publish_kafka.md) | Connector | Kafka | Publish a message to a Kafka topic |
 | [`storage_presign`](./storage_presign.md) | Connector | Storage | Compute a time-limited presigned object URL — no data path |
 | [`storage_head`](./storage_head.md) | Connector | Storage | Object metadata (exists/size/etag) |
 | [`connector_call`](./connector_call.md) | Connector | — | Invoke a v2 connector provider operation under an owned RunContext |

@@ -95,14 +95,14 @@ A reference resolves in five workflow fields and a channel's `auth` block. Every
 
 ```toml
 [vars]
-kafka_topic_prefix = "${KAFKA_TOPIC_PREFIX:-dev}"
+region_code = "${REGION_CODE:-dev}"
 
 [secrets]
 partner_hmac = "env://PARTNER_HMAC_KEY"
 ```
 
 ```json
-{ "topic": { "cat": [{ "var": "metadata.vars.kafka_topic_prefix" }, "order.placed"] } }
+{ "path": { "cat": ["/", { "var": "metadata.vars.region_code" }, "/orders"] } }
 ```
 
 ```json
@@ -121,7 +121,7 @@ The two are the same declaration model with opposite trace contracts, and that i
 | A channel guard reads it | yes | yes |
 | A stored connector or channel config reads it | yes, as `var://<name>` | no — put the credential on a connector, or in `auth` |
 
-**Vars are recorded on purpose.** An operator asking "which topic did this run publish to?" is asking to see them. A deployment constant hidden from the trace makes that question unanswerable. They are stamped at every ingress, HTTP and Kafka alike, over whatever the caller sent. An envelope-mode request therefore cannot name its own topic prefix, and vars keep the type they were written as.
+**Vars are recorded on purpose.** An operator asking "which region did this run call?" is asking to see them. A deployment constant hidden from the trace makes that question unanswerable. They are stamped at every ingress, HTTP and cron alike, over whatever the caller sent. An envelope-mode request therefore cannot name its own region code, and vars keep the type they were written as.
 
 **Secrets are unrecordable rather than redacted.** The store belongs to the engine, not to the message. A secret cannot appear in a trace snapshot, a `map` mapping clone or a response body, so there is nothing to strip. The engine enforces the two ways that could go wrong. A workflow that reads a secret where the result would be recorded (a `map` mapping, a `log` field) is refused when the engine is built. So is one naming a secret the instance does not declare. Both surface as a quarantined channel naming the reason.
 

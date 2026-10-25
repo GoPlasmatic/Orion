@@ -107,17 +107,16 @@ cargo test --test integration rest_routing_test
 
 Tests that need a real external service start their own ephemeral
 [testcontainers](https://rust.testcontainers.org/) (Postgres, MySQL, Redis,
-Vault, Kafka) — nothing to start manually, only Docker. They
+Vault) — nothing to start manually, only Docker. They
 are `#[ignore]`d so the default run stays Docker-free:
 
 ```bash
 # Integration binary, split by the backend each module containerises:
 # raw-SQL backends, the column-type matrix and the portable-dialect
 # round-trips on the first line; Redis cache/dedup and Vault on the
-# second; Kafka channels on its own.
+# second.
 cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test
 cargo test --test integration -- --ignored connector_redis_test vault_test
-cargo test --test integration -- --ignored kafka_test
 
 # Orion's own storage on Postgres / MySQL
 cargo test --test storage_postgres -- --ignored
@@ -132,10 +131,9 @@ cargo test --test cluster -- --ignored --test-threads=1
 
 CI runs exactly these invocations in the `integration-containers` job
 (`.github/workflows/ci.yml`), one runner per invocation: the job is a
-`fail-fast: false` matrix whose `run:` values are the seven commands above, in
-this order. Kafka has a leg of its own because sharing one invocation with
-the other containers starves the brokers. Running them as separate legs
-rather than sequential steps is also what keeps a flaky broker from hiding a
+`fail-fast: false` matrix whose `run:` values are the six commands above, in
+this order. Running them as separate legs rather than sequential steps is
+what keeps a flaky container from hiding a
 real Postgres or schema-parity failure — the property the old steps got from
 `if: !cancelled()` — and it costs the wall clock of the slowest leg instead
 of the sum of them all (20.6 minutes, measured 2026-08-29).

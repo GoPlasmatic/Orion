@@ -14,9 +14,8 @@
 //!      and an admin API that blocks on resolution is an admin API that hangs
 //!      when the target is down.
 //!   2. **Private-address check on the pool-open paths**
-//!      ([`check_db_endpoint`], [`check_cache_endpoint`],
-//!      [`check_broker_endpoints`]), with the same `allow_private_urls`
-//!      opt-out the HTTP and ES connectors already had.
+//!      ([`check_db_endpoint`], [`check_cache_endpoint`]), with the same
+//!      `allow_private_urls` opt-out the HTTP and ES connectors already had.
 //!
 //! **Why not just call `validate_url_not_private`.** S7 made an
 //! `{http, https}` gate the *first* statement of that function, so calling it
@@ -208,61 +207,7 @@ pub fn validate_endpoint_schemes(
             }
             Ok(())
         }
-        ConnectorConfig::Kafka(kafka) => {
-            for broker in &kafka.brokers {
-                parse_broker(broker)?;
-            }
-            Ok(())
-        }
     }
-}
-
-/// Split a Kafka broker entry into host and port.
-///
-/// Brokers are bare `host:port`, not URLs, so `Url::parse` cannot be used and
-/// a scheme allow-list has nothing to check. The shape is what gets validated:
-/// a broker carrying a scheme (`http://b:9092`) is a configuration mistake
-/// that librdkafka would report far from here.
-fn parse_broker(broker: &str) -> Result<(String, u16), OrionError> {
-    let broker = broker.trim();
-    if broker.is_empty() {
-        return Err(OrionError::validation(
-            "Kafka broker entry is empty".to_string(),
-        ));
-    }
-    if broker.contains("://") {
-        return Err(OrionError::validation(format!(
-            "Kafka broker '{broker}' must be host:port, not a URL"
-        )));
-    }
-    // IPv6 literals are bracketed: [::1]:9092.
-    let (host, port) = if let Some(rest) = broker.strip_prefix('[') {
-        let (host, tail) = rest.split_once(']').ok_or_else(|| {
-            OrionError::validation(format!(
-                "Kafka broker '{broker}' has an unterminated IPv6 literal"
-            ))
-        })?;
-        let port = tail.strip_prefix(':').unwrap_or("");
-        (host.to_string(), port)
-    } else {
-        match broker.split_once(':') {
-            Some((h, p)) => (h.to_string(), p),
-            None => (broker.to_string(), ""),
-        }
-    };
-    if host.is_empty() {
-        return Err(OrionError::validation(format!(
-            "Kafka broker '{broker}' has no host"
-        )));
-    }
-    let port: u16 = if port.is_empty() {
-        9092
-    } else {
-        port.parse().map_err(|_| {
-            OrionError::validation(format!("Kafka broker '{broker}' has an invalid port"))
-        })?
-    };
-    Ok((host, port))
 }
 
 /// Host and port to judge for a connection string, or `None` when there is no
@@ -329,24 +274,6 @@ pub async fn check_cache_endpoint(
     check_conn_endpoint("cache", connector_name, url, config.allow_private_urls).await
 }
 
-/// Private-address check for Kafka brokers.
-pub async fn check_broker_endpoints(
-    connector_name: &str,
-    brokers: &[String],
-    allow_private_urls: bool,
-) -> Result<(), OrionError> {
-    if allow_private_urls {
-        return Ok(());
-    }
-    for broker in brokers {
-        let (host, port) = parse_broker(broker)?;
-        validate_hostport_not_private(&host, port)
-            .await
-            .map_err(|msg| refused("kafka", connector_name, &msg))?;
-    }
-    Ok(())
-}
-
 fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
     OrionError::validation(format!(
         "Refusing to connect {kind} connector '{connector_name}': {msg}. \
@@ -358,7 +285,7 @@ fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connector::{CacheConnectorConfig, KafkaConnectorConfig};
+    use crate::connector::CacheConnectorConfig;
 
     fn validate_endpoint_schemes_at_authoring(parsed: &ConnectorConfig) -> Result<(), OrionError> {
         validate_endpoint_schemes(parsed, EndpointPhase::Authoring)
@@ -553,46 +480,6 @@ mod tests {
     }
 
     #[test]
-    fn kafka_brokers_must_be_host_port() {
-        let kafka = |brokers: Vec<&str>| {
-            ConnectorConfig::Kafka(KafkaConnectorConfig {
-                brokers: brokers.into_iter().map(str::to_string).collect(),
-                topic: "t".to_string(),
-                allow_private_urls: false,
-                operations: Default::default(),
-            })
-        };
-        validate_endpoint_schemes_at_authoring(&kafka(vec![
-            "b1.example.com:9092",
-            "b2.example.com:9092",
-        ]))
-        .expect("test");
-        validate_endpoint_schemes_at_authoring(&kafka(vec!["b.example.com"]))
-            .expect("bare host defaults to 9092");
-        validate_endpoint_schemes_at_authoring(&kafka(vec!["[2600::1]:9092"]))
-            .expect("bracketed ipv6");
-        assert!(validate_endpoint_schemes_at_authoring(&kafka(vec!["http://b:9092"])).is_err());
-        assert!(validate_endpoint_schemes_at_authoring(&kafka(vec!["b:not-a-port"])).is_err());
-        assert!(validate_endpoint_schemes_at_authoring(&kafka(vec![""])).is_err());
-    }
-
-    #[test]
-    fn broker_parsing_covers_ipv6_and_defaults() {
-        assert_eq!(
-            parse_broker("[::1]:9093").expect("test"),
-            ("::1".to_string(), 9093)
-        );
-        assert_eq!(
-            parse_broker("[2600::1]").expect("test"),
-            ("2600::1".to_string(), 9092)
-        );
-        assert_eq!(
-            parse_broker("host.example:1234").expect("test"),
-            ("host.example".to_string(), 1234)
-        );
-    }
-
-    #[test]
     fn endpoint_extraction_skips_file_backends() {
         assert_eq!(endpoint_of("sqlite:/app/data/orion.db"), None);
         assert_eq!(
@@ -626,16 +513,15 @@ mod tests {
         cfg.allow_private_urls = true;
         assert!(check_db_endpoint("c", &cfg).await.is_ok());
 
-        assert!(
-            check_broker_endpoints("c", &["127.0.0.1:9092".into()], false)
-                .await
-                .is_err()
-        );
-        assert!(
-            check_broker_endpoints("c", &["127.0.0.1:9092".into()], true)
-                .await
-                .is_ok()
-        );
+        let mut cache = CacheConnectorConfig {
+            backend: "redis".to_string(),
+            url: Some("redis://127.0.0.1:6379".to_string()),
+            allow_private_urls: false,
+            operations: Default::default(),
+        };
+        assert!(check_cache_endpoint("c", &cache).await.is_err());
+        cache.allow_private_urls = true;
+        assert!(check_cache_endpoint("c", &cache).await.is_ok());
     }
 
     /// The metadata endpoint the whole guard exists for.

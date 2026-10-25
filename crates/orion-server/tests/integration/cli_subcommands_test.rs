@@ -573,7 +573,6 @@ fn test_connectivity_accepts_wait() {
     let out = Command::new(orion_bin())
         .args(["test-connectivity", "--wait", "5s"])
         .env("ORION_STORAGE__URL", &url)
-        .env("ORION_KAFKA__ENABLED", "false")
         .output()
         .expect("invoke orion-server test-connectivity");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1256,7 +1255,7 @@ fn expect_calls_checks_the_call_count() {
             "workflow": "wf.json",
             "input": {},
             "stubs": {"cache_write": {"sessions": {"ok": true}}},
-            "expect_calls": {"cache_write": [], "publish_kafka": []}
+            "expect_calls": {"cache_write": [], "db_write": []}
         }"#,
     )
     .unwrap();
@@ -2238,20 +2237,6 @@ fn route_collisions_are_judged_the_way_the_route_table_judges_them() {
     ]);
     let (ok, report) = lint_dir(scratch.path(), &[]);
     assert!(ok, "disjoint methods do not collide: {report}");
-}
-
-/// A Kafka channel registers no HTTP route, so a stray `route_pattern` on one
-/// is not a claim on anything and must not collide.
-#[test]
-fn a_non_rest_channel_claims_no_route() {
-    let scratch = defs_with_channels(&[
-        r#"{"channel_id":"c0","name":"a","channel_type":"async","protocol":"kafka",
-            "topic":"t0","route_pattern":"/users","workflow_id":"w"}"#,
-        r#"{"channel_id":"c1","name":"b","channel_type":"sync","protocol":"rest",
-            "route_pattern":"/users","methods":["GET"],"workflow_id":"w"}"#,
-    ]);
-    let (ok, report) = lint_dir(scratch.path(), &[]);
-    assert!(ok, "a kafka channel serves no route: {report}");
 }
 
 /// #294: a fragment's ids are namespaced by the call site so it "cannot

@@ -29,8 +29,8 @@ static KIND: utils::EntityKind = utils::EntityKind {
 
 #[derive(Args)]
 #[command(
-    long_about = "Manage connectors -- external service connections (HTTP APIs, Kafka) used by workflow tasks.\n\n\
-        Connectors are referenced by name in http_call and publish_kafka tasks within workflows.\n\
+    long_about = "Manage connectors -- external service connections (HTTP APIs, databases, caches) used by workflow tasks.\n\n\
+        Connectors are referenced by name in http_call, db_read and cache_read tasks within workflows.\n\
         They can be enabled/disabled without deletion. Circuit breakers protect against failing connectors.\n\n\
         With --quiet, list prints one ID per line, mutating commands print the resource ID."
 )]

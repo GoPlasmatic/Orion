@@ -524,7 +524,7 @@ impl FunctionEntry {
 
         // A connector must be named, not computed.
         //
-        // dataflow-rs 3.9 made `http_call`/`publish_kafka`'s `connector` a
+        // dataflow-rs 3.9 made `http_call`'s `connector` a
         // `Template` like every other parameter, so the kind check above no
         // longer refuses an object there — a template field's kind describes
         // what it evaluates to. Orion needs this one to fold to a name it can
@@ -886,7 +886,6 @@ mod registry_tests {
     fn a_function_without_a_handler_is_refused() {
         let registry = FunctionRegistry::builtin();
         assert!(registry.contains("http_call"));
-        assert!(registry.contains("publish_kafka"));
         assert!(
             !registry.contains("enrich"),
             "Orion registers no `enrich` handler, so the name must be refused \
@@ -1009,7 +1008,6 @@ mod registry_tests {
                 "db_read",
                 "db_write",
                 "http_call",
-                "publish_kafka",
                 "storage_head",
                 "storage_presign",
             ]
@@ -1517,6 +1515,5 @@ mod validate_input_tests {
         assert!(names.contains(&"db_write"));
         assert!(names.contains(&"channel_call"));
         assert!(names.contains(&"http_call"));
-        assert!(names.contains(&"publish_kafka"));
     }
 }

@@ -18,8 +18,8 @@ use crate::metrics;
 ///
 /// S15: this used to live in `server::rate_limit`, which pulls `AppState`
 /// and resolves the target channel from the URI — so the limiter a channel
-/// declared applied to HTTP ingress and to nothing else. Kafka and
-/// `channel_call` reached the workflow with the limit unenforced. Lifting it
+/// declared applied to HTTP ingress and to nothing else. `channel_call`
+/// reached the workflow with the limit unenforced. Lifting it
 /// here is what lets [`apply_guards`] run it on every transport.
 ///
 /// `Err(RateLimited)` = over limit; `Err(ServiceUnavailable)` = the backend
@@ -57,9 +57,8 @@ pub(super) async fn check_rate_limit(
         // Its own variant, not `RateLimited`: over-limit is transient and
         // worth retrying, while a key expression that cannot be evaluated
         // against this message will fail against every copy of it. Both
-        // answer `429` over HTTP; only this one is terminal on Kafka, so
-        // the record is dead-lettered instead of head-of-line blocking
-        // its partition for as long as the channel keeps the expression.
+        // answer `429` over HTTP; a transport that retries can tell from the
+        // variant that only this one is terminal.
         let unavailable = |reason: &str| {
             tracing::warn!(
                 channel = %channel,
@@ -171,8 +170,8 @@ pub(crate) const COMMON_KEY_HEADERS: &[&str] = &[
 
 /// Build the context object `rate_limit.key_logic` is evaluated against.
 ///
-/// `client_ip` is the transport's caller identity — the HTTP client IP, the
-/// Kafka topic, or the calling channel — and keeps its historical name so
+/// `client_ip` is the transport's caller identity — the HTTP client IP or
+/// the calling channel — and keeps its historical name so
 /// stored `key_logic` expressions keep resolving. Headers are limited to
 /// [`COMMON_KEY_HEADERS`] plus whatever the channel declared, so a request does
 /// not pay an allocation per header for a key that references two of them.

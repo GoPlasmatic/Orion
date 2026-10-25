@@ -15,7 +15,6 @@ use std::collections::{BTreeMap, HashMap};
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ConnectorConfig {
     Http(HttpConnectorConfig),
-    Kafka(KafkaConnectorConfig),
     Db(DbConnectorConfig),
     Cache(CacheConnectorConfig),
     Storage(StorageConnectorConfig),
@@ -53,7 +52,6 @@ impl ConnectorConfig {
         let value = &untagged;
         Ok(match connector_type {
             ConnectorType::Http => Self::Http(parser.parse(value)?),
-            ConnectorType::Kafka => Self::Kafka(parser.parse(value)?),
             ConnectorType::Db => Self::Db(parser.parse(value)?),
             ConnectorType::Cache => Self::Cache(parser.parse(value)?),
             ConnectorType::Storage => Self::Storage(parser.parse(value)?),
@@ -67,17 +65,16 @@ impl ConnectorConfig {
     pub fn connector_type(&self) -> ConnectorType {
         match self {
             ConnectorConfig::Http(_) => ConnectorType::Http,
-            ConnectorConfig::Kafka(_) => ConnectorType::Kafka,
             ConnectorConfig::Db(_) => ConnectorType::Db,
             ConnectorConfig::Cache(_) => ConnectorType::Cache,
             ConnectorConfig::Storage(_) => ConnectorType::Storage,
         }
     }
 
-    /// The db operation gates. The other three connector types carry gates
-    /// of their own shape — [`CacheOperationGates`], [`KafkaOperationGates`]
-    /// and [`HttpOperationGates`] — reached through their typed configs,
-    /// because a `publish` flag on a database or a `raw_write` flag on a cache
+    /// The db operation gates. The other connector types carry gates of their
+    /// own shape — [`CacheOperationGates`], [`HttpOperationGates`] and
+    /// [`StorageOperationGates`] — reached through their typed configs,
+    /// because a `methods` list on a database or a `raw_write` flag on a cache
     /// would be a field nothing reads (the defect F22 closed).
     pub fn operation_gates(&self) -> Option<&OperationGates> {
         match self {
@@ -213,21 +210,6 @@ impl Default for CacheOperationGates {
             read: true,
             write: true,
         }
-    }
-}
-
-/// Kafka-connector operation gates. The connector is producer-only, so
-/// `publish` — gating `publish_kafka` — is the whole surface. Ingest consumers
-/// are configured under `[kafka]` in the server config, not here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct KafkaOperationGates {
-    pub publish: bool,
-}
-
-impl Default for KafkaOperationGates {
-    fn default() -> Self {
-        Self { publish: true }
     }
 }
 
@@ -489,23 +471,6 @@ impl Default for RetryConfig {
     }
 }
 
-/// Kafka connector. Producer-only: `publish_kafka` writes to `topic`.
-/// Ingest consumers are configured under `[kafka]` in the server config, not
-/// here — which is why there is no `group_id` (proposal F22).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KafkaConnectorConfig {
-    pub brokers: Vec<String>,
-    pub topic: String,
-    /// Allow brokers on private/internal IP addresses. Default false (SSRF
-    /// protection). Brokers are bare `host:port` rather than URLs, so
-    /// they are checked as host/port pairs rather than parsed as a URL.
-    #[serde(default)]
-    pub allow_private_urls: bool,
-    /// Whether workflows may publish through this connector.
-    #[serde(default)]
-    pub operations: KafkaOperationGates,
-}
-
 /// SQL connector. The backend is selected by the `connection_string` scheme
 /// (`postgres://`, `mysql://`, `sqlite:`) — there is deliberately no `driver` field, because one
 /// existed until 1.0, was never read, and made `driver: "mysql"` with a
@@ -682,14 +647,14 @@ impl Default for StorageOperationGates {
 }
 
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "storage"];
+pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "db", "cache", "storage"];
 
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 
 /// Typed enum for the connector `type` field on create/update requests.
-/// Wire format is lowercase ("http", "kafka", "db", "cache", "storage");
-/// deserialization is case-insensitive so "HTTP" or "Kafka" also parse.
+/// Wire format is lowercase ("http", "db", "cache", "storage");
+/// deserialization is case-insensitive so "HTTP" or "Cache" also parse.
 ///
 /// `"storage"` was accepted through the whole 0.x line with no handler behind
 /// it and was removed in 1.0 (proposal F15). It came back in #265 with
@@ -700,7 +665,6 @@ pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 #[serde(rename_all = "lowercase")]
 pub enum ConnectorType {
     Http,
-    Kafka,
     Db,
     Cache,
     Storage,
@@ -719,7 +683,6 @@ impl ConnectorType {
     /// silently stops covering it.
     pub const ALL: &'static [ConnectorType] = &[
         ConnectorType::Http,
-        ConnectorType::Kafka,
         ConnectorType::Db,
         ConnectorType::Cache,
         ConnectorType::Storage,
@@ -728,7 +691,6 @@ impl ConnectorType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Http => "http",
-            Self::Kafka => "kafka",
             Self::Db => "db",
             Self::Cache => "cache",
             Self::Storage => "storage",
@@ -752,7 +714,6 @@ impl ConnectorType {
         match self {
             Self::Db => &["read", "insert", "update", "delete", "upsert", "raw_write"],
             Self::Cache => &["read", "write"],
-            Self::Kafka => &["publish"],
             Self::Http => &["methods"],
             Self::Storage => &["presign_get", "presign_put", "head"],
         }
@@ -823,7 +784,6 @@ mod tests {
             let struct_fields = match connector_type {
                 ConnectorType::Db => fields(&OperationGates::default()),
                 ConnectorType::Cache => fields(&CacheOperationGates::default()),
-                ConnectorType::Kafka => fields(&KafkaOperationGates::default()),
                 ConnectorType::Http => fields(&HttpOperationGates::default()),
                 ConnectorType::Storage => fields(&StorageOperationGates::default()),
             };
@@ -867,7 +827,6 @@ mod tests {
     #[test]
     fn test_valid_connector_types() {
         assert!(VALID_CONNECTOR_TYPES.contains(&"http"));
-        assert!(VALID_CONNECTOR_TYPES.contains(&"kafka"));
         assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
     }
 
@@ -890,19 +849,6 @@ mod tests {
                 assert_eq!(http.max_response_size, 10 * 1024 * 1024);
             }
             _ => unreachable!("Expected Http config"),
-        }
-    }
-
-    #[test]
-    fn test_connector_config_deserialization_kafka() {
-        let json = r#"{"type":"kafka","brokers":["localhost:9092"],"topic":"test-topic","group_id":"test-group"}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
-        match config {
-            ConnectorConfig::Kafka(kafka) => {
-                assert_eq!(kafka.brokers, vec!["localhost:9092"]);
-                assert_eq!(kafka.topic, "test-topic");
-            }
-            _ => unreachable!("Expected Kafka config"),
         }
     }
 
@@ -973,14 +919,6 @@ mod tests {
             ConnectorConfig::Cache(c) => assert_eq!(c.backend, "redis"),
             _ => unreachable!("Expected Cache config"),
         }
-
-        let kafka = r#"{"type":"kafka","brokers":["b:9092"],"topic":"t","group_id":"g"}"#;
-        match serde_json::from_str::<ConnectorConfig>(kafka)
-            .expect("0.3.x kafka config must still load")
-        {
-            ConnectorConfig::Kafka(k) => assert_eq!(k.topic, "t"),
-            _ => unreachable!("Expected Kafka config"),
-        }
     }
 
     /// `retry` on a db connector was declared, validated and documented
@@ -1048,10 +986,10 @@ mod tests {
     #[test]
     fn test_valid_connector_types_expanded() {
         assert!(VALID_CONNECTOR_TYPES.contains(&"http"));
-        assert!(VALID_CONNECTOR_TYPES.contains(&"kafka"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"db"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"cache"));
         assert!(!VALID_CONNECTOR_TYPES.contains(&"es"));
+        assert!(!VALID_CONNECTOR_TYPES.contains(&"kafka"));
         assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
     }
 
@@ -1168,7 +1106,7 @@ mod tests {
         assert!(config.operation_gates().is_none());
     }
 
-    // ---- F22e: gates on the other three connector types ----
+    // ---- F22e: gates on the other connector types ----
 
     /// Additive with an all-allowed default: every connector authored before
     /// the gates existed keeps behaving exactly as it did.
@@ -1182,16 +1120,6 @@ mod tests {
                 assert!(c.operations.write);
             }
             _ => unreachable!("Expected Cache config"),
-        }
-
-        let kafka: ConnectorConfig =
-            serde_json::from_str(r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#)
-                .expect("test");
-        match kafka {
-            ConnectorConfig::Kafka(k) => {
-                assert!(k.operations.publish);
-            }
-            _ => unreachable!("Expected Kafka config"),
         }
 
         let http: ConnectorConfig =
@@ -1219,17 +1147,6 @@ mod tests {
                 assert!(c.operations.read);
             }
             _ => unreachable!("Expected Cache config"),
-        }
-    }
-
-    #[test]
-    fn a_kafka_connector_can_be_made_publish_proof() {
-        let json =
-            r#"{"type":"kafka","brokers":["b:9092"],"topic":"t","operations":{"publish":false}}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
-        match config {
-            ConnectorConfig::Kafka(k) => assert!(!k.operations.publish),
-            _ => unreachable!("Expected Kafka config"),
         }
     }
 

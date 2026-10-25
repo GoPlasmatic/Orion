@@ -12,9 +12,9 @@ JSON Structure (required fields: name, channel_type, protocol, workflow_id):
   }
 
 Channel Types: sync (blocking response), async (returns trace ID)
-Protocols: http, rest, kafka
+Protocols: http, rest, cron
 
-Optional fields: description, methods, route_pattern, topic, consumer_group,
+Optional fields: description, methods, route_pattern, transport_config,
   priority, config (rate_limit, timeout_ms, origin_allow_list, backpressure,
   validation_logic, deduplication, cache, response, auth, tracing)
 

@@ -881,7 +881,7 @@ mod tests {
         let mut v = json!({
             "connection_string": "postgres://user:pass@db.internal:5432/app",
             "url": "redis://cache.internal:6379",
-            "brokers": ["kafka.internal:9092"]
+            "endpoint": "https://s3.internal:9000"
         });
         resolve_in_place(&mut v, default_resolvers(), "test")
             .await
@@ -891,7 +891,7 @@ mod tests {
             "postgres://user:pass@db.internal:5432/app"
         );
         assert_eq!(v["url"], "redis://cache.internal:6379");
-        assert_eq!(v["brokers"][0], "kafka.internal:9092");
+        assert_eq!(v["endpoint"], "https://s3.internal:9000");
     }
 
     #[tokio::test]

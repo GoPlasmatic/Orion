@@ -25,7 +25,7 @@ With `cluster.enabled = false` — the default — Orion is a plain single node:
 - **Rate-limit windows are shared**, so a channel's limit is the fleet's limit and not N times it.
 - **Background jobs single-flight.** Trace cleanup, audit cleanup, and DLQ retry run on one node at a time behind a lease.
 
-Cluster mode requires `postgres://` or `mysql://` storage — SQLite is single-host by construction and is rejected at startup. `instance_id` is capped at 64 characters because it doubles as the Kafka `group.instance.id`.
+Cluster mode requires `postgres://` or `mysql://` storage — SQLite is single-host by construction and is rejected at startup. `instance_id` is capped at 64 characters because it is written as the holder of every job lease it takes.
 
 ```toml
 [storage]
@@ -45,7 +45,7 @@ instance_id = "${HOSTNAME}"
 | `cluster.enabled` | `false` | `ORION_CLUSTER__ENABLED` | Turn on whenever more than one Orion process serves the same database. |
 | `cluster.redis_url` | `""` | `ORION_CLUSTER__REDIS_URL` | Required when enabled, for example `redis://cache:6379`. |
 | `cluster.epoch_poll_interval_ms` | `2000` | `ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS` | Lower for faster config propagation, at the cost of more database polling. |
-| `cluster.instance_id` | `""` | `ORION_CLUSTER__INSTANCE_ID` | Set a stable per-replica value (for example the pod name) so Kafka static membership survives restarts. Empty generates a UUID per boot. |
+| `cluster.instance_id` | `""` | `ORION_CLUSTER__INSTANCE_ID` | Set a stable per-replica value (for example the pod name) so lease holders and log lines name the same replica across restarts. Empty generates a UUID per boot. |
 
 ## Related
 

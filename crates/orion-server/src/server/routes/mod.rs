@@ -209,11 +209,7 @@ pub(crate) async fn health_check(
     let quarantined_channels = &issues.channels;
     let plugin_issues = &issues.plugins;
 
-    // O10/K7: dead Kafka ingestion is otherwise silent — HTTP keeps serving
-    // 200s while no message is consumed. Absent entirely when Kafka is off.
-    let kafka_state = kafka_component(&state);
-
-    // The same class of silence for schedules: a node whose reconciler errors
+    // Dead scheduling is otherwise silent: a node whose reconciler errors
     // on every pass is alive, restarts nothing, and simply stops firing. The
     // supervisor cannot see it, because nothing crashed.
     let cron_state = cron_component(&state, &generation);
@@ -246,7 +242,6 @@ pub(crate) async fn health_check(
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
         && packages_state.is_none_or(|p| p == "ok")
-        && kafka_state != Some("error")
         && cron_state != Some("degraded")
         && tasks_state == "ok"
         && !reload_degraded
@@ -301,9 +296,6 @@ pub(crate) async fn health_check(
             "models": models_state,
         },
     });
-    if let Some(kafka) = kafka_state {
-        body["components"]["kafka"] = json!(kafka);
-    }
     if let Some(cron) = cron_state {
         body["components"]["cron"] = json!(cron);
     }
@@ -503,31 +495,6 @@ fn workflows_loaded(generation: &crate::runtime::RuntimeGeneration) -> usize {
     generation.workflows().len()
 }
 
-/// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:
-/// `None` when Kafka is disabled, so non-Kafka deployments carry no `kafka`
-/// component at all.
-///
-/// `"ok"` covers both a running consumer and one intentionally not started
-/// (no topics to consume). `"error"` means ingestion should be running and
-/// is not: the K7 degraded flag is set (a consumer restart failed and the
-/// supervisor has not recovered it yet), or the consume loop itself died.
-fn kafka_component(state: &AppState) -> Option<&'static str> {
-    if !state.config.kafka.enabled {
-        return None;
-    }
-    if state.kafka.ingest_status.is_degraded() {
-        return Some("error");
-    }
-    let consumer_dead = match state.kafka.consumer_handle.try_lock() {
-        Ok(guard) => guard.as_ref().is_some_and(|h| h.is_finished()),
-        // A reload holds the lock mid-restart. The degraded flag above is
-        // the authoritative down signal and it said healthy — a probe must
-        // not block on (or fail during) a routine restart.
-        Err(_) => false,
-    };
-    Some(if consumer_dead { "error" } else { "ok" })
-}
-
 /// Coarse state of the cron scheduler, or `None` when this node has nothing to
 /// say about schedules.
 ///
@@ -630,8 +597,8 @@ fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskR
     (component, report)
 }
 
-/// Readiness probe — checks DB, engine, cluster Redis, Kafka ingestion,
-/// background tasks, and startup readiness. Use for Kubernetes
+/// Readiness probe — checks DB, engine, cluster Redis, background tasks, and
+/// startup readiness. Use for Kubernetes
 /// `readinessProbe`.
 #[utoipa::path(
     get,
@@ -642,22 +609,20 @@ fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskR
     description = "\
 Readiness probe. Reports `ready` only when the database responds, startup \
 has completed, every background task the node cannot work without is still \
-running, — in cluster mode — the shared Redis answers `PING`, and — \
-with Kafka enabled — the ingest consumer is not degraded. The \
+running, and — in cluster mode — the shared Redis answers `PING`. The \
 `components.engine` field is a constant `\"ok\"` kept for response-shape \
 stability: the engine snapshot is lock-free and cannot be unavailable once \
-the process serves. Both conditional checks matter because those degradations are \
+the process serves. The Redis check matters because that degradation is \
 otherwise silent: without Redis, deduplication fails open, the shared \
-response cache misses, and cluster rate limiting stops enforcing; with the \
-consumer down, no message is ingested — all while the data plane keeps \
-returning 200s.
+response cache misses, and cluster rate limiting stops enforcing — all while \
+the data plane keeps returning 200s.
 
 The `components.background_tasks` is `error` when a required task — the trace \
 dispatcher, the persistence workers, the audit writer, the DLQ retry \
 consumer, the cluster epoch watcher — has stopped for good; each of those \
 fails silently otherwise, dropping traces or audit rows while the data plane \
 keeps answering 200s. The `components.cluster_redis` field is present only in \
-cluster mode, and `components.kafka` only when `kafka.enabled` is true. \
+cluster mode. \
 `components.packages` is present only when `[packages] apply` names artifacts: \
 `applying` (not ready) until every one is applied and serving, then `ok`; \
 `failed` while a node whose package failed to apply shuts down. \
@@ -678,7 +643,6 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     // actual degradation.
     let (db_ping, redis_healthy) = tokio::join!(state.ping_db(), cluster_redis_healthy(&state));
     let db_healthy = db_ping.is_ok();
-    let kafka_state = kafka_component(&state);
     let (tasks_state, _) = tasks_component(&state);
     // A startup condition: a node is not capacity until the packages it was
     // told to apply are serving.
@@ -687,7 +651,6 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     let all_ready = db_healthy
         && initialized
         && redis_healthy.unwrap_or(true)
-        && kafka_state != Some("error")
         && tasks_state != "error"
         && packages_state.is_none_or(|p| p == "ok");
     let http_status = if all_ready {
@@ -705,9 +668,6 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     });
     if let Some(healthy) = redis_healthy {
         components["cluster_redis"] = json!(if healthy { "ok" } else { "error" });
-    }
-    if let Some(kafka) = kafka_state {
-        components["kafka"] = json!(kafka);
     }
     if let Some(packages) = packages_state {
         components["packages"] = json!(packages);

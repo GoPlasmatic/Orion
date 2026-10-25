@@ -18,5 +18,5 @@ The guides sit in four groups. [Author a service](./author/index.md) is the sequ
 | Add a function Orion does not have | [Build a plugin](./extend/plugins.md) |
 | Run a trained model on the hot path | [Serve a model](./extend/models.md) |
 | Let an assistant do the authoring | [Build a service with Claude Code](./ai/claude-code.md) |
-| Consume a topic, or run on a clock | [Consume from Kafka](./patterns/kafka-channels.md), [Run work on a schedule](./patterns/scheduled-workflows.md) |
+| Run on a clock | [Run work on a schedule](./patterns/scheduled-workflows.md) |
 | Promote through a pipeline | [CI/CD with packages](./patterns/ci-cd.md) |

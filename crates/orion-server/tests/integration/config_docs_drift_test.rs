@@ -60,12 +60,6 @@ const NO_DEFAULT: &[&str] = &[
     "server.verbose_errors",
     // Option<String>: unset keeps /metrics on the main listener (O12).
     "metrics.bind_addr",
-    // Option<String>: unset leaves the librdkafka default untouched.
-    "kafka.auth.security_protocol",
-    "kafka.auth.sasl_mechanism",
-    "kafka.auth.sasl_username",
-    "kafka.auth.sasl_password",
-    "kafka.auth.ssl_ca_location",
     // Option<u32>: unset means the route group has no limit of its own.
     "rate_limit.endpoints.admin_rps",
     "rate_limit.endpoints.data_rps",
@@ -76,10 +70,6 @@ const NO_DEFAULT: &[&str] = &[
     "cors.max_age_secs",
     // Option<String>: unset attaches no signatures to a startup apply.
     "packages.signatures_dir",
-    // Free-form map, and the fields of the `[[kafka.topics]]` array of tables.
-    "kafka.extra_config",
-    "kafka.topics.topic",
-    "kafka.topics.channel",
     // Free-form map keyed by an arbitrary provider slug (#355): deployment-supplied
     // identity providers, documented with an illustrative entry.
     "oauth2_login.providers",
@@ -121,9 +111,7 @@ const SERDE_DEFAULT_DIFFERS: &[&str] = &[];
 const NONE_MARKER: &str = "—";
 
 fn is_no_default(path: &str) -> bool {
-    NO_DEFAULT.contains(&path)
-        || path.starts_with("kafka.extra_config.")
-        || path.starts_with("oauth2_login.providers.")
+    NO_DEFAULT.contains(&path) || path.starts_with("oauth2_login.providers.")
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +121,7 @@ fn is_no_default(path: &str) -> bool {
 /// The value each setting takes when a config file declares its section and
 /// omits the key — which is what a config reference documents — flattened to
 /// `dotted.path -> value`. Tables recurse; arrays are leaves (so
-/// `kafka.topics = []` is one entry, not zero). Fields that are `None` are
+/// `cors.allowed_origins = []` is one entry, not zero). Fields that are `None` are
 /// absent, which is exactly the set `NO_DEFAULT` enumerates.
 ///
 /// This is `AppConfig::default()` for every field except the two in

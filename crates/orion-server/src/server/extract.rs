@@ -89,7 +89,7 @@ fn map_rejection(rej: JsonRejection) -> OrionError {
         JsonRejection::JsonDataError(e) => {
             let msg = e.body_text();
             // serde error messages typically look like
-            //   "unknown variant `grpc`, expected one of `http`, `kafka`, ..."
+            //   "unknown variant `grpc`, expected one of `http`, `rest`, ..."
             // or "missing field `name`". Extract a coarse path when we can.
             let path = extract_path_from_serde_message(&msg).unwrap_or_else(|| "body".to_string());
             OrionError::invalid_field(path, "INVALID", msg)

@@ -162,7 +162,6 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::extensions::channel_driver::KafkaChannelDriver;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use crate::extensions::contract::{
         ConnectionReference, ConnectorResult, EffectiveConnectionIdentity, ProviderReference,
@@ -205,9 +204,36 @@ mod tests {
         assert_eq!(report.resource_pool_count, 3);
     }
 
+    /// An Enterprise-only protocol, standing in for the native driver the
+    /// Enterprise composition root registers.
+    struct EnterpriseKafkaDriver;
+
+    impl crate::extensions::ChannelDriver for EnterpriseKafkaDriver {
+        fn protocol_id(&self) -> &'static str {
+            "kafka"
+        }
+
+        fn capabilities(&self) -> crate::extensions::ChannelDriverCapabilities {
+            crate::extensions::ChannelDriverCapabilities {
+                supports_sync: false,
+                supports_async: true,
+                registers_http_routes: false,
+                supports_oauth2_login: false,
+            }
+        }
+
+        fn validate_fields(
+            &self,
+            _fields: &crate::extensions::ChannelProtocolFields<'_>,
+        ) -> Vec<crate::errors::FieldError> {
+            Vec::new()
+        }
+    }
+
     #[test]
     fn detects_enterprise_channel_leak_in_community_audit() {
-        let root = CompositionRoot::community().with_channel_driver(Arc::new(KafkaChannelDriver));
+        let root =
+            CompositionRoot::community().with_channel_driver(Arc::new(EnterpriseKafkaDriver));
         let report = verify_community_assembly(&root);
         assert!(!report.is_compliant());
         assert!(report.violations.iter().any(|v| v.code

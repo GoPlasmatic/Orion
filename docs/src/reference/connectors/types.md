@@ -9,7 +9,6 @@ The seven types a connector may be, and the `config` each one takes.
 | Type | Backs | Task functions |
 |------|-------|----------------|
 | [`http`](./http.md) | REST APIs and webhooks | `http_call` |
-| [`kafka`](./kafka.md) | Kafka topics (produce only) | `publish_kafka` |
 | [`db`](./db.md) | PostgreSQL, MySQL, SQLite | `data_query`, `data_write`, `db_read`, `db_write` |
 | [`cache`](./cache.md) | Redis or in-process memory | `cache_read`, `cache_write` |
 | [`storage`](./storage.md) | S3-compatible object storage (presign + metadata only) | `storage_presign`, `storage_head` |

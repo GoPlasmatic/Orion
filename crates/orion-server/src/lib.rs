@@ -50,7 +50,6 @@ pub mod extensions;
 pub mod http_body;
 #[doc(hidden)]
 pub mod jwt;
-pub mod kafka;
 pub mod metrics;
 pub mod model;
 pub mod package;

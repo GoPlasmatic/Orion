@@ -1,15 +1,14 @@
 //! W3C Trace Context propagation over plain string maps.
 //!
 //! Distributed tracing crosses every transport Orion has: an inbound HTTP
-//! request carries a `traceparent`, an outbound `http_call` must pass it on, a
-//! Kafka record carries it in its headers, and an async trace queue carries it
-//! from the submitting request to the worker that runs the workflow. So the
-//! four modules that need it — `server`, `engine::functions`, `kafka` and
-//! `queue` — sit at four different layers.
+//! request carries a `traceparent`, an outbound `http_call` must pass it on,
+//! and an async trace queue carries it from the submitting request to the
+//! worker that runs the workflow. So the three modules that need it —
+//! `server`, `engine::functions` and `queue` — sit at three different layers.
 //!
 //! It used to live entirely in `server::trace_context`, which made a workflow
 //! function handler reach up into the HTTP layer to propagate a trace header.
-//! The map helpers are here, below all four; the axum middleware that reads a
+//! The map helpers are here, below all three; the axum middleware that reads a
 //! request's headers stays in [`crate::server::trace_context`], because that
 //! one really is about HTTP.
 
@@ -27,7 +26,7 @@ pub(crate) static PROPAGATOR: LazyLock<TraceContextPropagator> =
     LazyLock::new(TraceContextPropagator::new);
 
 /// [`opentelemetry::propagation::Extractor`] over a plain string map — the
-/// shape Kafka headers and queued trace headers arrive in.
+/// shape queued trace headers arrive in.
 struct MapExtractor<'a>(&'a HashMap<String, String>);
 
 impl opentelemetry::propagation::Extractor for MapExtractor<'_> {
@@ -42,8 +41,8 @@ impl opentelemetry::propagation::Extractor for MapExtractor<'_> {
 
 /// Extract a W3C trace context from a string header map and attach it as the
 /// parent of the current tracing span. Returns the propagated context so the
-/// caller can keep it in scope. Shared by the Kafka consumer and the async
-/// trace queue; uses the cached `PROPAGATOR` instead of building one per
+/// caller can keep it in scope. Used by the async trace queue; uses the
+/// cached `PROPAGATOR` instead of building one per
 /// message.
 pub fn set_parent_from_map(headers: &HashMap<String, String>) -> opentelemetry::Context {
     let cx = PROPAGATOR.extract(&MapExtractor(headers));
@@ -53,7 +52,7 @@ pub fn set_parent_from_map(headers: &HashMap<String, String>) -> opentelemetry::
 
 /// Inject the current span's trace context into a header map.
 ///
-/// Call this from any code that makes outbound requests (HTTP, Kafka, trace queue)
+/// Call this from any code that makes outbound requests (HTTP, trace queue)
 /// to propagate the trace to downstream services or background processing.
 pub fn inject_trace_context(headers: &mut HashMap<String, String>) {
     struct MapInjector<'a> {

@@ -54,8 +54,10 @@ async fn create_channel_missing_route_pattern_returns_field_pathed_details() {
     );
 }
 
+/// Kafka left Community: `protocol: "kafka"` is refused like any protocol this
+/// build does not know, before any per-protocol rule runs.
 #[tokio::test]
-async fn create_channel_missing_topic_for_kafka_returns_field_details() {
+async fn create_channel_with_the_kafka_protocol_is_refused_as_unknown() {
     let app = test_app().await;
     let resp = app
         .oneshot(json_request(
@@ -65,17 +67,19 @@ async fn create_channel_missing_topic_for_kafka_returns_field_details() {
                 "name": "needs-topic",
                 "channel_type": "async",
                 "protocol": "kafka",
+                "topic": "orders",
             })),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = body_json(resp).await;
-    let details = body["error"]["details"]
-        .as_array()
-        .expect("details required");
-    assert_eq!(details[0]["path"], "channel.topic");
-    assert_eq!(details[0]["code"], "REQUIRED_FOR_PROTOCOL");
+    let detail = &body["error"]["details"][0];
+    let msg = detail["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("unknown variant `kafka`"),
+        "kafka must be an unknown protocol, got {body}"
+    );
 }
 
 #[tokio::test]
@@ -109,7 +113,7 @@ async fn invalid_connector_type_returns_field_pathed_error_with_allowed_values_i
     let msg = detail["message"].as_str().unwrap_or("");
     assert!(msg.contains("grpc"), "message should name the bad value");
     assert!(
-        msg.contains("http") && msg.contains("kafka"),
+        msg.contains("http") && msg.contains("storage"),
         "message should list allowed variants, got {msg}"
     );
 }

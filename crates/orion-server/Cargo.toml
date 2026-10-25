@@ -3,7 +3,7 @@ name = "orion-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Turn business logic into live REST/Kafka services, declared as JSON"
+description = "Turn business logic into live REST services, declared as JSON"
 license.workspace = true
 repository.workspace = true
 homepage = "https://goplasmatic.io/orion"
@@ -28,11 +28,6 @@ include = [
     "/config.toml.example",
 ]
 
-# P15: docs.rs must compile the crate — librdkafka's native configure plus
-# vendored OpenSSL — inside its sandbox (the crates-build-env image ships
-# perl and the C toolchain, so the build is expected to pass). One target
-# only: the extra tier-1 targets would repeat that native build for zero
-# documentation difference.
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
@@ -157,7 +152,7 @@ ipnet = "2"
 sha2 = "0.11"
 # Optional encryption at rest for connectors.config_json (H3):
 # storage.connector_encryption_key turns it on. AES-256-GCM from RustCrypto —
-# pure Rust, no linkage to the system OpenSSL rdkafka vendors.
+# pure Rust, no linkage to the system OpenSSL.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "getrandom"] }
 # Channel `auth.mode = "hmac"`: webhook signature verification over the raw
 # request body. 0.13 tracks `digest` 0.11, the same major `sha2` 0.11 uses —
@@ -207,18 +202,6 @@ tract = { version = "0.23.9", default-features = false, features = ["onnx", "met
 # which skips every field the subset leaves out. Already in the tree at 0.14,
 # so this adds no crate.
 prost = "0.14"
-# ssl-vendored statically links OpenSSL into librdkafka so TLS / SASL_SSL /
-# SCRAM work without a system OpenSSL at runtime (kafka.auth support).
-#
-# Deliberately NOT cmake-build on unix: librdkafka 2.12's cmake packaging
-# generates `#define WITH_OAUTHBEARER_OIDC 0` behind an `#ifdef` guard, so
-# `curl/curl.h` is included even with curl disabled — fatal on any sysroot
-# without curl headers (musl; rust-rdkafka#827, librdkafka#5204, guard fixed
-# on librdkafka master). The native configure build defines only what is
-# enabled, so the guard behaves. cmake-build returns below for Windows only,
-# where the configure build cannot run; fold it back into one line once
-# rdkafka-sys bundles librdkafka >= 2.13.
-rdkafka = { version = "0.39", default-features = false, features = ["tokio", "ssl-vendored"] }
 utoipa = { version = "6", features = ["axum_extras", "chrono"] }
 # The workspace patches this to upstream's unpublished ZIP 9 security fix.
 # For air-gapped / offline builds (`TD-35`), point `SWAGGER_UI_DOWNLOAD_URL` at
@@ -261,19 +244,13 @@ bcrypt = "0.19.3"
 jsonwebtoken = { version = "11.1.0", features = ["aws_lc_rs"] }
 similar = "3"
 
-# Windows cannot run librdkafka's configure build, so it keeps cmake-build —
-# features unify additively with the base rdkafka entry above, per target.
-# See that entry for why unix deliberately avoids cmake-build.
-[target.'cfg(windows)'.dependencies]
-rdkafka = { version = "0.39", default-features = false, features = ["cmake-build"] }
-
 [dev-dependencies]
 # test-util (paused clocks, time::advance) is test-only; feature unification
 # gives the in-crate #[cfg(test)] modules access without shipping it in release.
 tokio = { version = "1", features = ["test-util"] }
 # testcontainers-modules 0.15 uses 0.27; 0.28's bollard conflicts with it.
 testcontainers = "0.27.3"
-testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "redis"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "mysql", "redis"] }
 # Already a runtime dependency; listed here so integration tests can build a
 # connection for direct backend tests (RedisRateLimitBackend takes a
 # ConnectionManager). Same version req as the runtime dep, so no extra crate.

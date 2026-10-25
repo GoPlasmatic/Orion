@@ -64,7 +64,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
 /// multi-node harnesses (tests/cluster) can hold the state itself — e.g. to
 /// spawn cluster tasks or inspect the channel registry directly.
 pub async fn test_state_with_config(config: AppConfig) -> AppState {
-    test_state_inner(config, None).await.0
+    test_state_inner(config).await.0
 }
 
 /// Like [`test_state_with_config`], but also hands back the pool the state was
@@ -74,7 +74,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
 /// reload path deliberately quarantines an unusable workflow or channel rather
 /// than erroring, so the database is what is left.
 pub async fn test_state_and_pool(config: AppConfig) -> (AppState, orion::storage::DbPool) {
-    let (state, _handles, pool) = test_state_inner(config, None).await;
+    let (state, _handles, pool) = test_state_inner(config).await;
     (state, pool)
 }
 
@@ -84,14 +84,8 @@ pub async fn test_state_and_pool(config: AppConfig) -> (AppState, orion::storage
 pub async fn test_state_with_handles(
     config: AppConfig,
 ) -> (AppState, orion::bootstrap::TaskHandles) {
-    let (state, handles, _pool) = test_state_inner(config, None).await;
+    let (state, handles, _pool) = test_state_inner(config).await;
     (state, handles)
-}
-
-/// `test_state_with_config` with the Kafka publisher registered against
-/// `brokers`, so `publish_kafka` can be driven through a workflow (T3).
-pub async fn test_state_with_kafka(config: AppConfig, brokers: &str) -> AppState {
-    test_state_inner(config, Some(brokers.to_string())).await.0
 }
 
 /// Build `AppState` through the REAL boot path — `orion::bootstrap::assemble`,
@@ -123,7 +117,6 @@ pub async fn test_state_with_kafka(config: AppConfig, brokers: &str) -> AppState
 /// `boot_packages_test` drives `package::boot::run` directly.
 async fn test_state_inner(
     mut config: AppConfig,
-    kafka_brokers: Option<String>,
 ) -> (
     AppState,
     orion::bootstrap::TaskHandles,
@@ -148,14 +141,6 @@ async fn test_state_inner(
 
     // Divergence 3: no harness-owned DLQ retry loop.
     config.trace_queue.dlq_retry_enabled = false;
-
-    // Kafka: map the harness broker override onto the config so
-    // bootstrap::setup_kafka_producer registers the publisher through the
-    // same path as production.
-    if let Some(brokers) = kafka_brokers {
-        config.kafka.enabled = true;
-        config.kafka.brokers = vec![brokers];
-    }
 
     // Divergence 2: process-global metrics recorder (see doc comment).
     //

@@ -18,7 +18,7 @@ The fourth, [`oauth2`](#managed-oauth2), is **managed**: Orion acquires, caches,
 
 Put a token here rather than in an `Authorization` header: `"Bearer env://API_TOKEN"` in `headers` is sent as written, because a reference must be the whole value. See [A reference is the whole value](./secrets.md#a-reference-is-the-whole-value).
 
-`db` and `cache` connectors carry credentials inside their connection URL instead. The `kafka` connector has no credential field; broker authentication is server configuration ([Kafka settings](../configuration/kafka.md)).
+`db` and `cache` connectors carry credentials inside their connection URL instead.
 
 ## Managed OAuth2
 

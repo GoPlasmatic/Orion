@@ -23,7 +23,7 @@ use orion::bootstrap;
     about = "Orion — Declarative Services Runtime",
     long_about = "Orion — Declarative Services Runtime\n\n\
         A workflow engine that processes data through configurable channels \
-        and workflows. Supports REST, HTTP, Kafka, and async processing modes.\n\
+        and workflows. Supports REST, HTTP, cron, and async processing modes.\n\
         Ships as a single binary with an embedded SQLite database.",
     after_help = "\
 EXAMPLES:\n    \
@@ -38,7 +38,7 @@ EXAMPLES:\n    \
     orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
     orion-server dry-run -w wf.json -i x.json --stubs s.json   ... with canned connector replies\n    \
     orion-server test examples/workflow-tests Run a directory of workflow test cases\n    \
-    orion-server test-connectivity            Probe DB (and Kafka if enabled)\n    \
+    orion-server test-connectivity            Probe the database\n    \
     orion-server preflight                    Scan stored channels/workflows before upgrading\n    \
     orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n    \
     orion-server package export -s <url> --tag payments --name payments --version 1.0.0 -o pkg.json\n                                              \
@@ -320,9 +320,9 @@ enum Command {
     /// and runs a no-op query. Catches "DB credentials wrong / file
     /// unreadable" before the server tries to start.
     TestConnectivity {
-        /// Keep retrying until the state database (and Kafka, when enabled)
-        /// accept connections, for at most this long in total (`60`, `30s`,
-        /// `5m`). Only connection failures are retried.
+        /// Keep retrying until the state database accepts connections, for
+        /// at most this long in total (`60`, `30s`, `5m`). Only connection
+        /// failures are retried.
         #[arg(long, value_name = "DURATION", value_parser = cli::parse_wait)]
         wait: Option<std::time::Duration>,
     },
@@ -676,8 +676,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration
     let mut config = config::load_config(cli.config.as_deref())?;
-    // Resolve the instance identity once, up front, so the tracing resource,
-    // cluster runtime, and Kafka static membership all agree on it.
+    // Resolve the instance identity once, up front, so the tracing resource
+    // and the cluster runtime agree on it.
     config.cluster.instance_id = config.cluster.effective_instance_id();
     let config = config;
 
@@ -984,7 +984,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // The ordered startup sequence from the open pool to a wired `AppState`
     // — cluster runtime, repositories, engine components, the managed-OAuth2
     // runtime, the first published generation, the background tasks, the
-    // plugin ticker and the Kafka consumer. The integration-test harness calls
+    // plugin ticker. The integration-test harness calls
     // the same `assemble`, so a step added there cannot silently skip either.
     let config = Arc::new(config);
     let bootstrap::Assembled {
@@ -1068,15 +1068,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     bootstrap::join_metrics_listener(metrics_server).await;
 
-    // Graceful shutdown. The process is exiting, so a timed-out consumer needs
-    // no parking — the returned handle is dropped with everything else.
-    if let Some(handle) = state.kafka.consumer_handle.lock().await.take() {
-        tracing::info!("Shutting down Kafka consumer...");
-        let _ = handle.shutdown().await;
-    }
-
-    // Stop the supervised tasks first: the retention jobs, the DLQ retry
-    // consumer and the epoch watcher all hold an `AppState` clone, and the
+    // Graceful shutdown. Stop the supervised tasks first: the retention jobs,
+    // the DLQ retry consumer and the epoch watcher all hold an `AppState` clone, and the
     // drain below cannot start until the last trace-queue sender is gone.
     // Cooperative, so a job in the middle of a DELETE finishes it — this
     // used to be `JoinHandle::abort()`.

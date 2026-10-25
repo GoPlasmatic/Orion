@@ -22,8 +22,8 @@ pub struct ClusterConfig {
     /// other nodes, in milliseconds.
     pub epoch_poll_interval_ms: u64,
     /// Stable identity for this instance. Auto-generated UUID when empty.
-    /// Also used as the Kafka `group.instance.id` (static membership), which
-    /// caps its length at 64 characters.
+    /// Also written as the `holder` of every job lease and cron slot it takes,
+    /// a 64-character column, which caps its length.
     pub instance_id: String,
 }
 
@@ -61,7 +61,7 @@ impl ClusterConfig {
         if self.instance_id.len() > 64 {
             return Err(OrionError::Config {
                 message: "cluster.instance_id must be at most 64 characters \
-                          (it doubles as the Kafka group.instance.id)"
+                          (it is written as the job-lease holder)"
                     .to_string(),
             });
         }
