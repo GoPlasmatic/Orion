@@ -101,7 +101,7 @@ Three endpoints answer three different questions:
 | Endpoint | Question | Behaviour |
 |----------|----------|-----------|
 | `GET /healthz` | Is the process alive? | Always `200` while the process runs. Liveness probe. |
-| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, no required background task has died, and, when enabled, cluster Redis answers and Kafka ingestion is not degraded. With `[packages] apply`, also once every configured package serves. Readiness probe. |
+| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, no required background task has died, and, when enabled, Kafka ingestion is not degraded. In a cluster the database check also covers the shared dedup, cache and rate-limit store, which lives in the same database. With `[packages] apply`, also once every configured package serves. Readiness probe. |
 | `GET /health` | What is the state of each part? | Component-level status with degradation detail. |
 
 Wire the first two into your orchestrator:

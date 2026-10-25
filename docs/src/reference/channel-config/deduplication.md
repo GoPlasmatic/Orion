@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | `header` | string | yes | — | Header carrying the idempotency key. |
 | `window_secs` | integer | no | `300` | Seconds a key is remembered. |
-| `connector` | string | no | in-memory store | Name of a [cache connector](../connectors/index.md) backing the dedup store. In cluster mode the default is the shared cluster Redis. |
+| `connector` | string | no | in-memory store | Name of a [cache connector](../connectors/index.md) backing the dedup store. In cluster mode the default is the cluster's shared database. |
 | `on_backend_error` | string | no | `"allow"` | `allow` proceeds without the check when the store cannot answer; `deny` refuses with `503` — never `409`, because the key is unverifiable, not a known duplicate. |
 
 Rules:
@@ -35,7 +35,7 @@ Rules:
 
 **`channel_call` is exempt.** An in-process call is a step inside a request already deduplicated at its own ingress and carries no key of its own. It would inherit the parent's, so a workflow calling one channel once per line item would see its second call refused.
 
-**Cluster mode.** A channel whose dedup connector is missing, broken, or explicitly in-memory refuses to load instead of silently degrading to per-node state. On a single node, an unusable connector falls back to process memory with a warning.
+**Cluster mode.** With no `connector`, a key claimed on one node is a duplicate on every node. The window runs on the database's clock. A channel whose dedup connector is missing, broken, or explicitly in-memory refuses to load instead of silently degrading to per-node state. On a single node, an unusable connector falls back to process memory with a warning.
 
 ## Related
 

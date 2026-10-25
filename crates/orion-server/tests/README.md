@@ -23,7 +23,7 @@ per-test-process runner rather than on its own.
 | Binary | Location | Backend | Docker |
 |--------|----------|---------|--------|
 | `integration` | `tests/integration/` | in-memory SQLite | only for the `#[ignore]` tests |
-| `cluster` | `tests/cluster/` | Postgres + Redis testcontainers | required (all `#[ignore]`) |
+| `cluster` | `tests/cluster/` | Postgres testcontainer | required (all `#[ignore]`) |
 | `storage_postgres` | `tests/storage_postgres.rs` | Postgres testcontainer | required (all `#[ignore]`) |
 | `storage_mysql` | `tests/storage_mysql.rs` | MySQL testcontainer | required (all `#[ignore]`) |
 | `schema_parity` | `tests/schema_parity.rs` | all three | only for the cross-backend test |
@@ -125,7 +125,7 @@ cargo test --test storage_mysql -- --ignored
 # Cross-backend schema parity (all three migration sets)
 cargo test --test schema_parity -- --ignored
 
-# Multi-node cluster mode (two AppStates over shared Postgres + Redis)
+# Multi-node cluster mode (two AppStates over one shared Postgres)
 cargo test --test cluster -- --ignored --test-threads=1
 ```
 

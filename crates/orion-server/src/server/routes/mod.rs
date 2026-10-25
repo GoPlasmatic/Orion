@@ -452,43 +452,14 @@ pub(crate) async fn liveness_check() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
 }
 
-/// PING the shared cluster Redis. `None` outside cluster mode (there is no
-/// shared Redis to check); `Some(false)` when this node cannot reach it.
-///
-/// Readiness has to cover it because the degradation is silent: dedup fails
-/// open, the shared response cache misses, and cluster rate limiting stops
-/// enforcing — all with 200s on the data plane. A node in that state must
-/// leave the load-balancer rotation.
-async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
-    let mut conn = state.cluster.redis.clone()?;
-    let ping = async move {
-        let pong: redis::RedisResult<String> = redis::cmd("PING").query_async(&mut conn).await;
-        match pong {
-            Ok(_) => true,
-            Err(e) => {
-                tracing::warn!(error = %e, "Cluster Redis ping failed; reporting not ready");
-                false
-            }
-        }
-    };
-    Some(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
-            ping,
-        )
-        .await
-        .unwrap_or(false),
-    )
-}
-
 /// How many workflows the running engine holds.
 ///
 /// This used to acquire the engine read lock under
 /// `engine.health_check_timeout_secs` and report `None` on timeout — a real
 /// check in the `RwLock` era. The engine is an `ArcSwap` now: `load()` is
 /// lock-free and infallible, so the probe cannot fail and there is nothing
-/// for the timeout to bound (`health_check_timeout_secs` still bounds the
-/// cluster-Redis ping above). Both probes keep serving a constant
+/// for the timeout to bound (`health_check_timeout_secs` bounds the database
+/// ping instead). Both probes keep serving a constant
 /// `"engine": "ok"` component for response-shape stability — monitors key on
 /// the field — not because anything is checked.
 fn workflows_loaded(generation: &crate::runtime::RuntimeGeneration) -> usize {
@@ -609,20 +580,17 @@ fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskR
     description = "\
 Readiness probe. Reports `ready` only when the database responds, startup \
 has completed, every background task the node cannot work without is still \
-running, and — in cluster mode — the shared Redis answers `PING`. The \
+running. In cluster mode the shared dedup store, response cache and rate \
+limits live in that same database, so its check covers them. The \
 `components.engine` field is a constant `\"ok\"` kept for response-shape \
 stability: the engine snapshot is lock-free and cannot be unavailable once \
-the process serves. The Redis check matters because that degradation is \
-otherwise silent: without Redis, deduplication fails open, the shared \
-response cache misses, and cluster rate limiting stops enforcing — all while \
-the data plane keeps returning 200s.
+the process serves.
 
 The `components.background_tasks` is `error` when a required task — the trace \
 dispatcher, the persistence workers, the audit writer, the DLQ retry \
 consumer, the cluster epoch watcher — has stopped for good; each of those \
 fails silently otherwise, dropping traces or audit rows while the data plane \
-keeps answering 200s. The `components.cluster_redis` field is present only in \
-cluster mode. \
+keeps answering 200s. \
 `components.packages` is present only when `[packages] apply` names artifacts: \
 `applying` (not ready) until every one is applied and serving, then `ok`; \
 `failed` while a node whose package failed to apply shuts down. \
@@ -636,12 +604,7 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     use std::sync::atomic::Ordering;
 
     let initialized = state.ready.load(Ordering::Acquire);
-    // The dependency probes share no state and each carries its own
-    // `health_check_timeout_secs` window, so running them sequentially made a
-    // probe's worst case the *sum* of those windows — long past a typical
-    // `timeoutSeconds: 1`, reporting not-ready for a reason that is not the
-    // actual degradation.
-    let (db_ping, redis_healthy) = tokio::join!(state.ping_db(), cluster_redis_healthy(&state));
+    let db_ping = state.ping_db().await;
     let db_healthy = db_ping.is_ok();
     let (tasks_state, _) = tasks_component(&state);
     // A startup condition: a node is not capacity until the packages it was
@@ -650,7 +613,6 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
 
     let all_ready = db_healthy
         && initialized
-        && redis_healthy.unwrap_or(true)
         && tasks_state != "error"
         && packages_state.is_none_or(|p| p == "ok");
     let http_status = if all_ready {
@@ -666,9 +628,6 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
         "initialized": initialized,
         "background_tasks": tasks_state,
     });
-    if let Some(healthy) = redis_healthy {
-        components["cluster_redis"] = json!(if healthy { "ok" } else { "error" });
-    }
     if let Some(packages) = packages_state {
         components["packages"] = json!(packages);
     }

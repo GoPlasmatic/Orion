@@ -123,7 +123,7 @@ Click a node in the capability map to expand it, and click a capability to open 
         { "name": "Rollback", "link": "guides/author/versioning.html#roll-back",
           "children": ["Rollout to 0", "Or archive the version", "Nothing to redeploy"] },
         { "name": "Response caching", "link": "reference/channel-config/cache.html",
-          "children": ["Keyed from the request", "Memory or Redis", "Never reaches the workflow"] },
+          "children": ["Keyed from the request", "Memory, shared database or Redis", "Never reaches the workflow"] },
         { "name": "Connection pooling", "link": "reference/connectors/db.html",
           "children": ["Pools cached per connector", "Reused across requests"] }
       ]
@@ -192,7 +192,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 | [Backpressure](../reference/channel-config/backpressure.md) | A per-channel semaphore bounds in-flight work. When permits run out the channel sheds load with `503` immediately rather than queueing. |
 | [Deduplication](../reference/channel-config/deduplication.md) | Idempotency keys refused within a window, on HTTP and on Kafka, backed by a shared store when clustered. |
 | [Async processing](../operate/run/traces.md#run-an-async-channel) | `/async` returns a trace id at once and a bounded worker queue drains the work, with the DLQ behind it. |
-| [Cluster mode](../operate/deploy/cluster.md#what-the-cluster-shares) | N replicas as one logical system: rate limits, deduplication and caches shared through Redis, config changes propagated by epoch, scheduled jobs leased to one node. |
+| [Cluster mode](../operate/deploy/cluster.md#what-the-cluster-shares) | N replicas as one logical system: rate limits, deduplication and caches shared through the database, config changes propagated by epoch, scheduled jobs leased to one node. |
 | [Database backends](../reference/configuration/storage.md) | SQLite embedded for a single node; PostgreSQL or MySQL when replicas share state. The scheme in `storage.url` picks one — nothing else changes. |
 
 ## Deployability
@@ -228,7 +228,7 @@ Click a node in the capability map to expand it, and click a capability to open 
 | [Immutable versions](./lifecycle.md#why-immutability-is-the-load-bearing-rule) | An active version cannot be edited. Every change is a new version, so what ran yesterday is still there to compare against and return to. |
 | [Canary rollout](../guides/author/versioning.md#roll-out-gradually) | A percentage of traffic on the new version, sticky per caller by header, moved up or back with one call. |
 | [Rollback](../guides/author/versioning.md#roll-back) | Setting the rollout to `0` or archiving the new version restores the previous one at once — no rebuild, and nothing to redeploy. |
-| [Response caching](../reference/channel-config/cache.md) | Per channel, keyed from the request, in memory or in Redis, so repeated reads never reach the workflow. |
+| [Response caching](../reference/channel-config/cache.md) | Per channel, keyed from the request, in memory, in a cache connector or, in cluster mode, in the shared database, so repeated reads never reach the workflow. |
 | [Connection pooling](../reference/connectors/db.md) | Pools are cached per connector and reused across requests instead of being opened per call. |
 
 ## Maintainability

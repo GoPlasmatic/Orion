@@ -7,6 +7,7 @@ pub mod helpers;
 pub mod models;
 pub mod packages;
 pub mod plugins;
+pub mod shared_state;
 pub mod trace_dlq;
 pub mod traces;
 pub(crate) mod versioned;

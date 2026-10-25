@@ -137,7 +137,7 @@ Two things existed only to describe that wait and have been removed:
 - **`orion_engine_lock_wait_seconds`**: the histogram of that wait. It could
   now only ever report zero.
 
-The `_orion.profile` debug output loses its `engine_lock_wait` phase and `engine_lock_wait_ms` field for the same reason. `engine.health_check_timeout_secs` stays — it still bounds the `/readyz` cluster-Redis ping.
+The `_orion.profile` debug output loses its `engine_lock_wait` phase and `engine_lock_wait_ms` field for the same reason. `engine.health_check_timeout_secs` stays — it bounds the probes' database ping.
 
 **How you'll notice.** Setting `ORION_ENGINE__RELOAD_TIMEOUT_SECS` now **stops
 the boot** with a message naming it as removed, rather than being silently ignored. A `reload_timeout_secs` line in a config file is rejected by `deny_unknown_fields` the same way.

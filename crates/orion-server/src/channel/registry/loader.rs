@@ -57,7 +57,7 @@ pub(super) struct RuntimeDeps<'a> {
         &'a std::collections::BTreeMap<String, crate::config::InstanceProviderConfig>,
     pub(super) oidc_discovery: &'a std::sync::Arc<crate::channel::oidc_discovery::DiscoveryCache>,
     pub(super) global_trace_storage: &'a TraceStorageConfig,
-    pub(super) cluster_redis: Option<redis::aio::ConnectionManager>,
+    pub(super) cluster_shared: Option<crate::storage::repositories::shared_state::SqlSharedState>,
     pub(super) cron_enabled: bool,
 }
 
@@ -160,7 +160,7 @@ impl ChannelLoader {
     /// |                | connector named               | no connector           |
     /// |----------------|-------------------------------|------------------------|
     /// | single node    | resolve, warn + memory on any failure | process memory |
-    /// | cluster mode   | resolve; failure/memory = load error  | shared Redis (else memory) |
+    /// | cluster mode   | resolve; failure/memory = load error  | shared store (else memory) |
     async fn resolve_backend(
         &self,
         connector_registry: &ConnectorRegistry,
@@ -376,9 +376,9 @@ impl ChannelLoader {
                 return prev.clone();
             }
             let burst = rl.burst.unwrap_or(rl.requests_per_second / 2 + 1);
-            match deps.cluster_redis.clone() {
-                Some(conn) => Arc::new(RedisRateLimitBackend::new(
-                    conn,
+            match deps.cluster_shared.clone() {
+                Some(store) => Arc::new(SharedRateLimitBackend::new(
+                    store,
                     channel.name.clone(),
                     rl.requests_per_second,
                     burst,
@@ -801,7 +801,7 @@ impl ChannelLoader {
             instance_oauth_providers,
             oidc_discovery,
             global_trace_storage,
-            cluster_redis: self.cluster.as_ref().and_then(|c| c.redis.clone()),
+            cluster_shared: self.cluster.as_ref().and_then(|c| c.shared.clone()),
             cron_enabled,
         };
         let fingerprint = DepsFingerprint {

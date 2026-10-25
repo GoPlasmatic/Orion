@@ -142,7 +142,7 @@ just test-containers    # all of the below, in CI's exact invocations
 | `integration -- --ignored sql_check_test` | `sql check` against PostgreSQL 16 (grants proven), an older PostgreSQL (schema only), a rolled-back `--schema`, and MySQL |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |
-| `cluster` | Multi-node contracts: two AppStates over shared Postgres + Redis, epoch watching, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes — and model propagation: one admission on node A, node B carrying the model on that verdict without re-probing, and B fetching the artifact for itself into its own cache (`--test-threads=1`) |
+| `cluster` | Multi-node contracts: two AppStates over one shared Postgres, epoch watching, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes — and model propagation: one admission on node A, node B carrying the model on that verdict without re-probing, and B fetching the artifact for itself into its own cache (`--test-threads=1`) |
 
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.

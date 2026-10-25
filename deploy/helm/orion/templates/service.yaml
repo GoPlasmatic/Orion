@@ -4,8 +4,8 @@ metadata:
   name: {{ include "orion.fullname" . }}
   labels:
     {{- include "orion.labels" . | nindent 4 }}
-    # Distinguishes this Service from the devStack postgres/redis Services,
-    # which carry the same base labels. The ServiceMonitor selects on it.
+    # Distinguishes this Service from the devStack postgres Service, which
+    # carries the same base labels. The ServiceMonitor selects on it.
     app.kubernetes.io/component: server
 spec:
   type: {{ .Values.service.type }}
@@ -22,6 +22,6 @@ spec:
     {{- end }}
   selector:
     {{- include "orion.selectorLabels" . | nindent 4 }}
-    # Excludes the devStack postgres/redis pods, which share the base
-    # selector labels with their own component values.
+    # Excludes the devStack postgres pod, which shares the base selector
+    # labels with a component value of its own.
     app.kubernetes.io/component: server

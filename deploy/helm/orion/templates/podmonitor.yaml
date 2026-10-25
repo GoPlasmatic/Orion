@@ -26,7 +26,7 @@ spec:
   selector:
     matchLabels:
       {{- include "orion.selectorLabels" . | nindent 6 }}
-      # Excludes the devStack postgres/redis pods, which share the base labels.
+      # Excludes the devStack postgres pod, which shares the base labels.
       app.kubernetes.io/component: server
   podMetricsEndpoints:
     - port: metrics

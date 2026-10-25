@@ -573,11 +573,11 @@ jobs:
           vale sync
           vale --output=line src
 
-  # The chart's guards — two `{{- fail }}`s, two `required`s and
+  # The chart's guards — its `{{- fail }}`s, the `required` storage.url and
   # values.schema.json — only fire at render time, so before this job a typo
   # shipped undetected until a user's `helm install` (proposal T13). Lint and
-  # template need a values file: the chart's defaults deliberately `required`-
-  # fail without storage.url/redisUrl, so each documented install shape is
+  # template need a values file: the chart's defaults deliberately fail
+  # without storage.url and admin keys, so each documented install shape is
   # rendered explicitly — devStack, production, and production with the
   # Prometheus Operator ServiceMonitor. `helm template` also renders
   # `templates/tests/`, which nothing else in CI touches. kubeconform then
@@ -892,9 +892,8 @@ jobs:
           - name: schema-parity
             run: cargo test --test schema_parity -- --ignored
 
-          # Multi-node cluster-mode tests: two AppStates over one Postgres +
-          # one Redis container per test. Serial — each test runs its own
-          # containers.
+          # Multi-node cluster-mode tests: two AppStates over one Postgres
+          # container per test. Serial — each test runs its own container.
           - name: cluster
             run: cargo test --test cluster -- --ignored --test-threads=1
     steps:

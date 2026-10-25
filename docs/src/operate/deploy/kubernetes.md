@@ -1,22 +1,22 @@
-<!-- description: Deploy Orion on Kubernetes with the official Helm chart — cluster topology, shared PostgreSQL and Redis, health probes and rolling upgrades in one command. -->
+<!-- description: Deploy Orion on Kubernetes with the official Helm chart — cluster topology, one shared PostgreSQL, health probes and rolling upgrades in one command. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-14 -->
 
 # Deploy on Kubernetes
 
-Orion ships an official Helm chart that deploys the [cluster topology](./cluster.md) in one command. You get N stateless replicas in cluster mode behind a Service, with one shared PostgreSQL or MySQL and one shared Redis. A pre-upgrade migration Job runs first, and rolling deploys surge rather than dip.
+Orion ships an official Helm chart that deploys the [cluster topology](./cluster.md) in one command. You get N stateless replicas in cluster mode behind a Service, with one shared PostgreSQL or MySQL, the only dependency the replicas share. A pre-upgrade migration Job runs first, and rolling deploys surge rather than dip.
 
 Every release publishes the chart to GHCR as an OCI artifact, so there is no chart repository to add.
 
 ## Before you start
 
-You need a Kubernetes cluster, Helm 3, `kubectl`, and access to GHCR. A production install also needs reachable PostgreSQL or MySQL and Redis services, an admin API key, and permission to create workloads, Services, Jobs and Secrets. The commands below pin chart `1.0.0`, matching the chart version in this checkout. Choose the chart version that matches the Orion release you intend to deploy.
+You need a Kubernetes cluster, Helm 3, `kubectl`, and access to GHCR. A production install also needs a reachable PostgreSQL or MySQL database, an admin API key, and permission to create workloads, Services, Jobs and Secrets. The commands below pin chart `1.0.0`, matching the chart version in this checkout. Choose the chart version that matches the Orion release you intend to deploy.
 
 The chart installs with `ORION_ENVIRONMENT=production` by default, which enforces admin auth and refuses permissive CORS at boot. A bare `helm install` does not come up until you provide admin API keys, or opt into the dev stack. The failure is loud at install time rather than silent in production.
 
 ## Try it with the dev stack
 
-For a throwaway install, `devStack.enabled=true` runs a single-replica in-namespace PostgreSQL and Redis with no persistence guarantees, and wires Orion to them. Dev-stack installs run as `development`, so no admin keys are required:
+For a throwaway install, `devStack.enabled=true` runs a single-replica in-namespace PostgreSQL with no persistence guarantees, and wires Orion to it. Dev-stack installs run as `development`, so no admin keys are required:
 
 ```bash
 helm install orion oci://ghcr.io/goplasmatic/charts/orion \
@@ -25,16 +25,15 @@ kubectl port-forward svc/orion 8080:8080
 open http://localhost:8080/docs
 ```
 
-Never use the dev stack in production. The bundled PostgreSQL and Redis are disposable.
+Never use the dev stack in production. The bundled PostgreSQL is disposable.
 
 ## Install for production
 
-A production install requires three inputs: a database URL, a Redis URL, and at least one admin API key. Inline is quickest:
+A production install requires two inputs: a database URL and at least one admin API key. Inline is quickest:
 
 ```bash
 helm install orion oci://ghcr.io/goplasmatic/charts/orion --version 1.0.0 \
   --set storage.url="postgres://orion:secret@my-postgres:5432/orion" \
-  --set cluster.redisUrl="redis://my-redis:6379" \
   --set adminAuth.apiKeys="{$(openssl rand -hex 32)}"
 ```
 
@@ -52,8 +51,6 @@ Then a minimal `values.yaml`:
 ```yaml
 storage:
   existingSecret: orion-storage      # Secret key: storage-url
-cluster:
-  redisUrl: redis://my-redis:6379    # shared dedup / response cache / rate limits
 adminAuth:
   existingSecret: orion-admin-auth   # Secret key: api-keys (comma-separated)
 
@@ -105,8 +102,7 @@ The important subset. The chart's [`values.yaml`](https://github.com/GoPlasmatic
 | `env` | `production` | Orion environment; any `prod*` value enforces admin auth and refuses a CORS wildcard |
 | `storage.url` / `storage.existingSecret` | — | Database URL (required unless devStack); the Secret's `storage-url` key wins over the inline URL |
 | `storage.autoMigrate` | `false` | Replicas never migrate at boot; refused as `true` on a production cluster install |
-| `cluster.enabled` | `true` | Multi-instance coordination (dedup, response cache, rate limits through Redis) |
-| `cluster.redisUrl` | — | Shared Redis (required when `cluster.enabled` unless devStack) |
+| `cluster.enabled` | `true` | Multi-instance coordination; dedup, response cache and rate limits are shared through the database |
 | `adminAuth.apiKeys` / `adminAuth.existingSecret` | — | Admin API keys (required unless devStack); Secret key `api-keys`, comma-separated |
 | `cors.allowedOrigins` | `[]` | Browser origins for the admin API (empty = deny) |
 | `migrateJob.enabled` | `true` | Pre-install/pre-upgrade `orion-server migrate` Job (`backoffLimit: 3`) |
@@ -125,7 +121,7 @@ The important subset. The chart's [`values.yaml`](https://github.com/GoPlasmatic
 | `strategy` | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` | Deploys never drop below `replicaCount` Ready replicas |
 | `persistence.enabled` | `false` | PVC at `/app/data` for single-node SQLite installs |
 | `extraEnv` | `[]` | Additional `ORION_*` overrides (see [Server configuration](../../reference/configuration/index.md)) |
-| `devStack.enabled` | `false` | Throwaway in-namespace PostgreSQL + Redis; dev/demo only |
+| `devStack.enabled` | `false` | Throwaway in-namespace PostgreSQL; dev/demo only |
 | `tests.enabled` | `true` | Render the `helm test` hooks |
 
 Misspelled values fail the render. The chart enforces `values.schema.json` on every `install`, `upgrade` and `template`, with unknown keys rejected. Every required value on this chart is a string, so without the schema a typo like `--set cluster.enabld=true` would silently no-op; instead it fails at once.
@@ -196,7 +192,7 @@ curl -s http://localhost:8080/health     # component detail (database, engine)
 
 ### A pod is not Ready and has not restarted
 
-Boot is still in progress. The startup probe budgets up to 5 minutes before liveness kicks in. That covers the pending-migration check, the cluster Redis connect, connector loading and the engine build. `kubectl logs` shows which stage it is in.
+Boot is still in progress. The startup probe budgets up to 5 minutes before liveness kicks in. That covers the pending-migration check, connector loading and the engine build. `kubectl logs` shows which stage it is in.
 
 ### A pod crash-loops right after install
 
@@ -205,6 +201,10 @@ Most often a missing required input. With `env=production`, the default, Orion r
 ### Replicas refuse to start after `helm upgrade`
 
 A pending migration. Check the `<release>-migrate` Job's logs with `kubectl logs job/orion-migrate`.
+
+### `helm upgrade` refuses `cluster.redisUrl`
+
+The chart has no `cluster.redisUrl` value, and `values.schema.json` refuses keys it does not read. A cluster shares only its database. Delete the key from your values file, or drop the `--set`, and run the upgrade again.
 
 ### Nothing is scraping metrics
 

@@ -433,10 +433,9 @@ mod tests {
             },
             ..AppConfig::default()
         };
-        // Cluster mode requires a networked backend and shared Redis.
+        // Cluster mode requires a networked backend.
         config.storage.url = "postgres://orion:orion@db:5432/orion".to_string();
         config.cluster.enabled = true;
-        config.cluster.redis_url = "redis://redis:6379".to_string();
         config.storage.auto_migrate = auto_migrate;
         config
     }

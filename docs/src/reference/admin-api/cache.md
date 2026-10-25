@@ -21,7 +21,7 @@ curl -X POST http://localhost:8080/api/v2/admin/cache/namespaces/ladder/invalida
 { "data": { "namespace": "ladder", "stores": 2 } }
 ```
 
-`stores` counts what the bump reached: the default response-cache store, each in-memory store on the node that answered, and each Redis cache connector. On a cluster the default store is the shared Redis, so one call reaches every node. A name outside `a-z 0-9 _ - . :`, or longer than 64 characters, is a `400`. The call writes an `invalidate` / `cache_namespace` [audit row](../../operate/run/audit-logs.md).
+`stores` counts what the bump reached: the default response-cache store, each in-memory store on the node that answered, and each Redis cache connector. On a cluster the default store is the shared database, so one call reaches every node. A name outside `a-z 0-9 _ - . :`, or longer than 64 characters, is a `400`. The call writes an `invalidate` / `cache_namespace` [audit row](../../operate/run/audit-logs.md).
 
 ## Related
 

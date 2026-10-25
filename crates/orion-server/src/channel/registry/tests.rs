@@ -332,10 +332,10 @@ fn test_discovery() -> std::sync::Arc<crate::channel::oidc_discovery::DiscoveryC
 
 fn cluster_backends() -> ClusterBackends {
     ClusterBackends {
-        // Stands in for the shared cluster Redis, which serves both
+        // Stands in for the cluster's shared store, which serves both
         // internal purposes (their keys are structurally prefixed).
         default_cache: Some(CachePool::new(4, 60, 1000).default_memory(CachePurpose::Dedup)),
-        redis: None,
+        shared: None,
     }
 }
 

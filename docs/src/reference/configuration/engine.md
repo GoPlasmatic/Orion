@@ -41,7 +41,7 @@ Breakers are keyed per channel and connector, so one noisy channel does not trip
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `engine.health_check_timeout_secs` | `2` | `ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS` | Rarely — it bounds the `/readyz` cluster-Redis `PING` (the engine itself is lock-free and needs no health window). |
+| `engine.health_check_timeout_secs` | `2` | `ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS` | Rarely — it bounds the `/health` and `/readyz` database ping, so a hung database fails the probe instead of hanging it. |
 | `engine.max_channel_call_depth` | `10` | `ORION_ENGINE__MAX_CHANNEL_CALL_DEPTH` | Lower it to catch accidental recursion between channels sooner. |
 | `engine.default_channel_call_timeout_ms` | `30000` | `ORION_ENGINE__DEFAULT_CHANNEL_CALL_TIMEOUT_MS` | Default deadline for `channel_call` when the task sets none. |
 | `engine.max_loop_iterations` | `10000` | `ORION_ENGINE__MAX_LOOP_ITERATIONS` | Ceiling on a workflow [`loop`](../workflows.md#loop)'s `max`, refused at write time. Raise it for a workload that genuinely needs more sweeps; `0` removes the ceiling. |

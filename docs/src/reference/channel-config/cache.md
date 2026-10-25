@@ -26,7 +26,7 @@
 | `ttl_secs` | integer | no | `300` | Seconds an entry lives. |
 | `cache_key_fields` | array of strings | no | whole payload | Payload fields that form the cache key. |
 | `key_logic` | JSONLogic | no | — | Computes the cache key over `{data, metadata}`. Takes precedence over `cache_key_fields`. |
-| `connector` | string | no | in-memory | Name of a [cache connector](../connectors/index.md) backing the cache. In cluster mode the default is the shared cluster Redis. |
+| `connector` | string | no | in-memory | Name of a [cache connector](../connectors/index.md) backing the cache. In cluster mode the default is the cluster's shared database. |
 | `namespaces` | array of strings | no | — | 1 to 8 [invalidation namespaces](#invalidation) the channel's entries belong to. Each name is 1–64 of `a-z 0-9 _ - . :`. |
 | `coalesce_misses` | boolean | no | `false` | [Coalesce concurrent misses](#coalescing-misses) for one key on this node, so an expiry under load costs one workflow run. |
 
@@ -93,11 +93,11 @@ When an entry expires under load, every request that arrives before the refill m
 - A waiting request holds no [backpressure](./backpressure.md) permit, because it does no work.
 - The wait is bounded by the channel's `timeout_ms`, capped at 5 seconds. A request that waits that long runs the workflow itself.
 - A first run that stores nothing, because its workflow failed or its response carried task errors, releases the waiting requests at once, and each runs the workflow itself.
-- Coalescing is per node. Replicas sharing a Redis cache each run one workflow per key, not one between them.
+- Coalescing is per node. Replicas sharing a cache store each run one workflow per key, not one between them.
 
 It combines with `namespaces`: a request waiting on a run that an invalidation overtook finds that run's entry already stale, and runs the workflow itself.
 
-**Cluster mode.** With the shared cluster Redis, hits are shared across replicas. A channel whose cache connector is missing, broken, or explicitly in-memory refuses to load. On a single node it falls back to process memory with a warning.
+**Cluster mode.** With no `connector`, entries live in the cluster's shared database, so hits are shared across replicas. A channel whose cache connector is missing, broken, or explicitly in-memory refuses to load. On a single node it falls back to process memory with a warning.
 
 ## Related
 

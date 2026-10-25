@@ -27,7 +27,43 @@ pub fn start_cluster_tasks(state: &AppState) {
             move |shutdown| run_epoch_watcher(watcher_state.clone(), shutdown),
         );
     }
+    if let Some(store) = state.cluster.shared.clone()
+        && !state.tasks.is_registered("shared_state_sweeper")
+    {
+        // Optional: an unswept table still answers every read correctly (an
+        // expired row reads as absent); it only grows.
+        state.tasks.supervise(
+            "shared_state_sweeper",
+            crate::runtime::Criticality::Optional,
+            move |shutdown| run_shared_state_sweeper(store.clone(), shutdown),
+        );
+    }
     start_v2_reconciler(state);
+}
+
+/// How often each node deletes the shared store's expired keys and finished
+/// rate-limit windows.
+const SHARED_STATE_SWEEP_SECS: u64 = 30;
+
+/// Delete what the shared store no longer serves. Every node runs it; each
+/// statement removes only rows already dead to every reader, so concurrent
+/// sweeps are harmless.
+async fn run_shared_state_sweeper(
+    store: crate::storage::repositories::shared_state::SqlSharedState,
+    mut shutdown: crate::runtime::Shutdown,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(SHARED_STATE_SWEEP_SECS));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = shutdown.signalled() => return,
+        }
+        if let Err(e) = store.sweep().await {
+            crate::metrics::record_error("shared_state_sweep");
+            tracing::warn!(error = %e, "Shared state sweep failed");
+        }
+    }
 }
 
 /// Register the supervised v2 state reconciliation loop (`V2-06`, `TD-18`).

@@ -15,7 +15,7 @@
 | `burst` | integer | no | `requests_per_second / 2 + 1` | Allowance above the steady rate. |
 | `key_logic` | JSONLogic | no | caller identity | Expression computing the bucket key. See the context below. |
 | `key_headers` | array of strings | no | — | Extra request headers `key_logic` may read, **merged with** the built-in set below. |
-| `on_backend_error` | string | no | `"allow"` | `allow` fails open, `deny` refuses with `503`, when the shared cluster Redis cannot answer. Irrelevant on a single node — the in-process limiter cannot fail. |
+| `on_backend_error` | string | no | `"allow"` | `allow` fails open, `deny` refuses with `503`, when the cluster's shared database cannot answer. Irrelevant on a single node — the in-process limiter cannot fail. |
 
 The limit applies on every ingress, whether or not the platform limiter ([`[rate_limit]`](../configuration/rate-limit.md)) is enabled.
 
@@ -63,7 +63,7 @@ The key is part of the control, not a hint:
 - A request whose key cannot be evaluated is rejected with `429`. Nothing falls back to `client_ip` — that would silently re-dimension a per-tenant limit into a per-IP one.
 - A request whose key evaluates to `null` or an empty string is rejected the same way. A missing path resolves to `null`, so a `key_logic` naming a header outside the set above would otherwise make the bucket key the literal string `"null"` for **every** caller — one shared bucket, and a limit that reads as enforced while enforcing nothing. Orion warns at channel load when an expression statically reads a header the context does not carry, so a typo surfaces at boot rather than as unexplained throttling.
 
-**Cluster mode.** Per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across all replicas combined. Platform-level limits stay per node. See [Cluster Mode](../../operate/deploy/cluster.md).
+**Cluster mode.** Per-channel limits enforce as a shared one-second fixed window in the cluster's database. The window runs on the database's clock, so the configured rate holds across all replicas combined. Each limited request costs a short write transaction. A fixed window can admit up to twice the rate across a window boundary; `burst` absorbs it in practice. Platform-level limits stay per node. See [Cluster Mode](../../operate/deploy/cluster.md).
 
 Limiter state survives engine reloads: a channel whose `requests_per_second`, `burst`, `key_logic`, and `key_headers` are unchanged keeps its limiter, and consumed burst is not refilled. Editing any of them re-dimensions the buckets, so the limiter is rebuilt. Behind a proxy, set [`rate_limit.trusted_proxies`](../configuration/rate-limit.md) in the server config. Without it, every client behind the proxy keys on the proxy's address and collapses into one bucket.
 

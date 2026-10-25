@@ -222,7 +222,6 @@ where
     ov!(packages.apply_timeout_secs: u64);
 
     ov!(cluster.enabled: bool);
-    ov!(cluster.redis_url: String);
     ov!(cluster.epoch_poll_interval_ms: u64);
     ov!(cluster.instance_id: String);
 
@@ -541,7 +540,6 @@ mod tests {
         env.insert("ORION_STORAGE__AUTO_MIGRATE", "false");
         env.insert("ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS", "45");
         env.insert("ORION_CLUSTER__ENABLED", "true");
-        env.insert("ORION_CLUSTER__REDIS_URL", "redis://cluster-redis:6379");
         env.insert("ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS", "500");
         env.insert("ORION_CLUSTER__INSTANCE_ID", "node-a");
         env.insert("ORION_METRICS__ENABLED", "true");
@@ -601,7 +599,6 @@ mod tests {
         assert!(!config.storage.auto_migrate);
         assert_eq!(config.server.shutdown_force_timeout_secs, 45);
         assert!(config.cluster.enabled);
-        assert_eq!(config.cluster.redis_url, "redis://cluster-redis:6379");
         assert_eq!(config.cluster.epoch_poll_interval_ms, 500);
         assert_eq!(config.cluster.instance_id, "node-a");
         assert!(config.metrics.enabled);

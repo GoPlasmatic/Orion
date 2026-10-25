@@ -148,6 +148,25 @@ pub enum JobLeases {
     ExpiresAt,
 }
 
+/// Cluster state shared through the database (`cluster_shared_state`): the
+/// default dedup store, response cache and namespace counters.
+#[derive(Iden)]
+pub enum ClusterKv {
+    Table,
+    KeyHash,
+    Value,
+    ExpiresAt,
+}
+
+/// Fleet-wide fixed rate-limit windows, one row per (limiter key, second).
+#[derive(Iden)]
+pub enum ClusterRateWindows {
+    Table,
+    LimiterKey,
+    WindowStart,
+    Hits,
+}
+
 // ============================================================
 // Audit Logs table
 // ============================================================

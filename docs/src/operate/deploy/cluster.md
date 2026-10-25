@@ -1,4 +1,4 @@
-<!-- description: Run Orion as a multi-node cluster: what replicas share, epoch-based engine reload, job leases, and the shared Redis that backs rate limits and dedup stores. -->
+<!-- description: Run Orion as a multi-node cluster: what replicas share, epoch-based reload, job leases, and the one database behind rate limits, dedup and caches. -->
 <!-- type: guide -->
 <!-- last_verified: 2026-09-14 -->
 
@@ -8,10 +8,9 @@
 
 ## Before you start
 
-Cluster mode needs two shared backends, and refuses to start without them:
+Cluster mode needs one shared backend: **PostgreSQL or MySQL**. Startup refuses `sqlite:`, because a file is single-host by construction.
 
-- **PostgreSQL or MySQL.** Startup refuses `sqlite:`, because a file is single-host by construction.
-- **A shared Redis.** This is where dedup, response caches and per-channel rate limits live.
+That database is all the replicas share. Config epochs, job leases and the cron ledger live in it, and so do dedup claims, response caches and per-channel rate-limit windows. A cluster needs no Redis or other coordination service.
 
 | Backend | Single instance | Cluster mode | Notes |
 |---------|:-:|:-:|-------|
@@ -34,12 +33,11 @@ Throughput is usually the weakest reason. In the published Orion 1.0.0 test, a s
 
 ## Turn it on
 
-Point every replica at the shared backends:
+Point every replica at the shared database:
 
 ```toml
 [cluster]
 enabled = true
-redis_url = "redis://redis:6379"   # required
 epoch_poll_interval_ms = 2000      # how often nodes poll for config changes
 instance_id = ""                   # auto-generated UUID when empty; max 64 chars
 
@@ -55,12 +53,14 @@ auto_migrate = false               # run `orion-server migrate` as a deploy step
 | Concern | How it works |
 |---|---|
 | **Config changes** | Every admin mutation advances a shared config epoch in the database, recording *what* it changed. Each replica polls it every `epoch_poll_interval_ms` and resyncs the parts that moved. See [How a change reaches every node](#how-a-change-reaches-every-node). |
-| **Deduplication** | On the shared Redis: the same idempotency key on two nodes gets exactly one execution and a `409` for the replay. |
-| **Response caching** | Shared, so a second node serves a warm cache instead of warming its own. |
-| **Per-channel rate limits** | A shared fixed window; the configured rate holds across all replicas combined. |
+| **Deduplication** | In the shared database: the same idempotency key on two nodes gets exactly one execution and a `409` for the replay. Expiry is judged on the database's clock, so nodes with skewed clocks agree. |
+| **Response caching** | In the shared database, so a second node serves a warm cache instead of warming its own. |
+| **Per-channel rate limits** | A one-second fixed window counted in the shared database; the configured rate holds across all replicas combined. Each limited request costs a short write transaction, so a busy rate-limited channel is database load to size for. |
 | **Background jobs** | Trace cleanup and DLQ retry take a per-tick lease, so one node runs each job. DLQ rows are row-leased too, so each entry is retried once. |
 | **Kafka consumers** | Static group membership keyed by `instance_id`; rolling restarts rejoin without a full rebalance. |
 | **Circuit-breaker resets** | `POST /circuit-breakers/{key}` fans out over the epoch bus; one call resets the key everywhere. |
+
+Every node also runs a sweeper that deletes expired dedup, cache and rate-limit rows from the shared tables every 30 seconds. Concurrent sweeps are harmless. An expired row already reads as absent, so a sweeper that stops leaves every answer correct and only lets the tables grow.
 
 ### How a change reaches every node
 
@@ -146,7 +146,7 @@ curl -s http://node-b:8080/health | jq '{status, config_propagation: .components
 
 ## Backups change shape in a cluster
 
-`POST /api/v2/admin/backups` returns `400` in cluster mode. The file would land on one arbitrary replica, and cluster storage is PostgreSQL or MySQL, which the SQLite backup mechanism cannot copy anyway. Use your database's own tooling: automated snapshots plus point-in-time recovery on a managed service, or `pg_dump` and `mysqldump` self-managed. Redis needs no backup; everything in it is reconstructible ephemeral state. See [Back up and restore](../maintain/backup-restore.md).
+`POST /api/v2/admin/backups` returns `400` in cluster mode. The file would land on one arbitrary replica, and cluster storage is PostgreSQL or MySQL, which the SQLite backup mechanism cannot copy anyway. Use your database's own tooling: automated snapshots plus point-in-time recovery on a managed service, or `pg_dump` and `mysqldump` self-managed. The shared-state tables, `cluster_kv` and `cluster_rate_windows`, need no special care. Everything in them is short-lived dedup, cache and rate-limit state that expires on its own. See [Back up and restore](../maintain/backup-restore.md).
 
 ## Shard channels across pools
 

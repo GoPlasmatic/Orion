@@ -1,11 +1,11 @@
 # Default values for the Orion chart.
 #
-# The defaults deploy a 2-replica HA cluster and REQUIRE two inputs:
+# The defaults deploy a 2-replica HA cluster and REQUIRE one input:
 #   storage.url   — a postgres:// (or mysql://) URL
-#   cluster.redisUrl — a redis:// URL
+# The replicas share that database for everything they coordinate on.
 # For a self-contained dev/demo install, set devStack.enabled=true instead:
-# it runs a throwaway single-replica Postgres + Redis in the same namespace
-# and wires Orion to them automatically.
+# it runs a throwaway single-replica Postgres in the same namespace and
+# wires Orion to it automatically.
 
 replicaCount: 2
 
@@ -57,12 +57,11 @@ cors:
   # Access-Control-Max-Age in seconds. Empty omits the header. Max 86400.
   maxAgeSecs: ""
 
-# Orion cluster-mode coordination (multi-instance HA).
+# Orion cluster-mode coordination (multi-instance HA). Fleet-wide rate
+# limits, dedup and the response cache live in the shared database
+# (storage.url); a cluster needs nothing else.
 cluster:
   enabled: true
-  # Shared Redis URL for dedup / response cache / rate limits.
-  # Required when cluster.enabled and devStack.enabled=false.
-  redisUrl: ""
   epochPollIntervalMs: 2000
 
 storage:
@@ -208,10 +207,10 @@ securityContext:
     drop:
       - ALL
 
-# Boot can be slow (pending-migration check, cluster Redis connect,
-# connector loading, engine build over a large channel set). The startup
-# probe holds liveness off for up to periodSeconds * failureThreshold
-# (default 5 minutes) so a slow boot does not CrashLoop.
+# Boot can be slow (pending-migration check, connector loading, engine
+# build over a large channel set). The startup probe holds liveness off
+# for up to periodSeconds * failureThreshold (default 5 minutes) so a slow
+# boot does not CrashLoop.
 startupProbe:
   httpGet:
     path: /healthz
@@ -250,7 +249,7 @@ podDisruptionBudget:
 
 # NetworkPolicy for the Orion pods (P8). Off by default: it requires a CNI
 # that enforces NetworkPolicy, and useful egress rules depend on where YOUR
-# databases, Redis and upstream APIs live. When enabled with no egress
+# database, caches and upstream APIs live. When enabled with no egress
 # rules, the pod can resolve DNS and reach nothing else — fail-closed on
 # purpose, so an unconfigured policy is loud rather than silently open.
 # Orion makes outbound calls wherever its connectors point (it is
@@ -265,8 +264,8 @@ networkPolicy:
   egress:
     # Always allow DNS (port 53), without which nothing else can be named.
     allowDns: true
-    # NetworkPolicyEgressRule list, verbatim — point these at your database,
-    # Redis and the upstreams your connectors call.
+    # NetworkPolicyEgressRule list, verbatim — point these at your database
+    # and the upstreams your connectors call.
     rules: []
 
 podAnnotations: {}
@@ -292,7 +291,7 @@ topologySpreadConstraints: []
 tests:
   enabled: true
 
-# Throwaway in-namespace Postgres + Redis for dev/demo installs ONLY.
+# Throwaway in-namespace Postgres for dev/demo installs ONLY.
 # No persistence tuning, no HA, no backups — never use in production.
 devStack:
   enabled: false
@@ -301,5 +300,3 @@ devStack:
     user: orion
     password: orion
     database: orion
-  redis:
-    image: redis:8-alpine

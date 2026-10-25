@@ -19,8 +19,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
       interval: 5s
@@ -31,7 +29,6 @@ services:
       ORION_STORAGE__URL: "postgres://orion:orion@postgres:5432/orion"
       ORION_STORAGE__AUTO_MIGRATE: "false"
       ORION_CLUSTER__ENABLED: "true"
-      ORION_CLUSTER__REDIS_URL: "redis://redis:6379"
       ORION_SERVER__SHUTDOWN_DRAIN_SECS: "10"
       ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS: "20"
       ORION_LOGGING__FORMAT: "json"

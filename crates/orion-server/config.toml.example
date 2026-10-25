@@ -134,14 +134,14 @@
 [cluster]
 # Multi-instance (HA) coordination. With enabled = false (the default) Orion is
 # a plain single node: no epoch watcher, no shared backends, no job leases.
-# When enabled, N replicas sharing one Postgres/MySQL and one Redis behave as
-# one logical system — config changes made through any node propagate to all,
-# dedup and response caches default to the shared Redis, and background jobs
-# (trace cleanup, audit cleanup, DLQ retry) single-flight behind a lease.
+# When enabled, N replicas sharing one Postgres/MySQL behave as one logical
+# system — config changes made through any node propagate to all, dedup, the
+# response cache and rate limits are shared through that database, and
+# background jobs (trace cleanup, audit cleanup, DLQ retry) single-flight
+# behind a lease. The database is all the replicas share.
 # Requires postgres:// or mysql:// storage; SQLite is rejected at startup.
 # Prefer auto_migrate = false above, so replicas don't race migrations at boot.
 # enabled = false
-# redis_url = ""                  # Required when enabled, e.g. "redis://redis:6379"
 # epoch_poll_interval_ms = 2000   # How often each node polls for config changes made elsewhere
 # instance_id = ""                # Auto-generated UUID when empty; max 64 chars because it
                                   # is written as the job-lease holder
@@ -151,7 +151,7 @@
                                # The admin API has its own: server.max_admin_body_size
 
 [engine]
-# health_check_timeout_secs = 2            # Timeout for the /readyz cluster-Redis ping
+# health_check_timeout_secs = 2            # Timeout for the probes' database ping
 # max_channel_call_depth = 10              # Recursion limit for channel_call
 # default_channel_call_timeout_ms = 30000  # Default channel_call timeout
 # max_loop_iterations = 10000              # Ceiling on a workflow loop's `max`, refused at

@@ -89,8 +89,8 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          # Holds liveness off while boot does its migration check, cluster
-          # Redis connect and engine build — a slow boot must not CrashLoop.
+          # Holds liveness off while boot does its migration check, connector
+          # loading and engine build — a slow boot must not CrashLoop.
           {{- with .Values.startupProbe }}
           startupProbe:
             {{- toYaml . | nindent 12 }}

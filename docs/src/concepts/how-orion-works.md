@@ -88,7 +88,7 @@ The same binary serves both planes. Only the configuration and the backends chan
 | **Control plane** | Admin API, driven by the CLI or the Console | Admin API, driven by a CI/CD pipeline |
 | **Data plane** | Local HTTP test traffic | Load-balanced HTTP and Kafka traffic |
 | **Datastore** | Embedded SQLite, no external dependency | PostgreSQL or MySQL, highly available |
-| **Clustering** | One process, no coordination | Replicas coordinated through the shared database and Redis |
+| **Clustering** | One process, no coordination | Replicas coordinated through the shared database |
 | **Schema migrations** | Applied at startup | A deploy step; replicas never migrate at boot |
 | **Scaling** | One local instance | Replicas behind a load balancer |
 | **Hot reload** | On activation, at once | Propagated to every replica with no request downtime |

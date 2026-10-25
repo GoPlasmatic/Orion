@@ -92,7 +92,7 @@ curl -s http://localhost:8080/health | jq '{status, workflows_loaded}'
 
 ## The reference HA topology
 
-`docker-compose.ha.yml` in the repository root is the production shape as a compose file. It runs nginx, two Orion nodes in cluster mode, shared PostgreSQL and Redis, and a one-shot `migrate` service that completes before either node boots:
+`docker-compose.ha.yml` in the repository root is the production shape as a compose file. It runs nginx, two Orion nodes in cluster mode, one shared PostgreSQL, and a one-shot `migrate` service that completes before either node boots:
 
 ```bash
 export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"

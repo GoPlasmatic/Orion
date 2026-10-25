@@ -601,7 +601,7 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
 /// /api/v2/admin/connectors` uses the allowlist walk in
 /// `mask_connector_secrets` instead (H3), so the denylist here is kept as
 /// one list of secret-key patterns rather than a drifting copy (O15) —
-/// `admin_auth.api_keys` masks by key, `storage.url` and `cluster.redis_url` by URL shape.
+/// `admin_auth.api_keys` masks by key, `storage.url` by URL shape.
 pub fn mask_secrets(value: &mut Value) {
     mask_in_place(value, None, false);
 }

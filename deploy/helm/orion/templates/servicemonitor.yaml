@@ -27,8 +27,8 @@ spec:
   selector:
     matchLabels:
       {{- include "orion.selectorLabels" . | nindent 6 }}
-      # Without this the selector would also match the devStack postgres and
-      # redis Services, which carry the same name/instance labels.
+      # Without this the selector would also match the devStack postgres
+      # Service, which carries the same name/instance labels.
       app.kubernetes.io/component: server
   endpoints:
     # The dedicated listener is plain HTTP and unauthenticated by design:

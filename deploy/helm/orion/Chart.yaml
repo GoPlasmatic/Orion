@@ -2,8 +2,8 @@ apiVersion: v2
 name: orion
 description: >-
   Orion — declarative services runtime. Deploys N replicas in cluster mode
-  against a shared Postgres/MySQL and Redis, with a pre-upgrade migration
-  Job, graceful rolling deploys, HPA, and PDB.
+  against one shared Postgres/MySQL, with a pre-upgrade migration Job,
+  graceful rolling deploys, HPA, and PDB.
 type: application
 version: 1.0.0
 appVersion: "1.0.0"

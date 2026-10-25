@@ -240,8 +240,15 @@ impl AppStateInner {
     /// Database connectivity check for the health probes (D22 — this was
     /// `WorkflowRepository::ping`, which only existed because the probes
     /// needed a pool).
+    /// Ping the state database, bounded by `engine.health_check_timeout_secs`
+    /// so a hung database fails a probe instead of hanging it. In cluster
+    /// mode this also answers for the shared dedup store, response cache and
+    /// rate limits, which live in the same database.
     pub async fn ping_db(&self) -> Result<(), sqlx::Error> {
-        self.db_pool.ping().await
+        let timeout = std::time::Duration::from_secs(self.config.engine.health_check_timeout_secs);
+        tokio::time::timeout(timeout, self.db_pool.ping())
+            .await
+            .unwrap_or(Err(sqlx::Error::PoolTimedOut))
     }
 
     /// Copy the database to `path` via SQLite's `VACUUM INTO` (R26).

@@ -69,7 +69,7 @@ The shape is the same, with your database's tooling in the middle:
 3. **Run `orion-server migrate`** if `storage.auto_migrate = false`, which it should be in a cluster.
 4. **Start the replicas.**
 
-Redis needs no backup. Everything in it, such as dedup windows, response caches and rate-limit windows, is ephemeral state that rebuilds itself.
+The cluster's shared-state tables, `cluster_kv` and `cluster_rate_windows`, come back with the snapshot and need no step of their own. Everything in them, such as dedup windows, response caches and rate-limit windows, is short-lived state that expires on its own.
 
 ## Verify
 

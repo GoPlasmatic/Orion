@@ -57,7 +57,6 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
-        "redisUrl": { "type": ["string", "null"] },
         "epochPollIntervalMs": { "type": "integer", "minimum": 1 }
       }
     },
@@ -252,13 +251,6 @@
             "user": { "type": "string", "minLength": 1 },
             "password": { "type": "string", "minLength": 1 },
             "database": { "type": "string", "minLength": 1 }
-          }
-        },
-        "redis": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "image": { "type": "string", "minLength": 1 }
           }
         }
       }

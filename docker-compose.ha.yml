@@ -1,5 +1,5 @@
 # Orion HA reference topology (multi-instance-ha B4):
-# nginx load balancer → 2× orion (cluster mode) → shared Postgres + Redis.
+# nginx load balancer → 2× orion (cluster mode) → one shared Postgres.
 #
 #   export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"
 #   docker compose -f docker-compose.ha.yml up -d --wait
@@ -14,8 +14,8 @@
 #   - storage.auto_migrate=false on the replicas; a one-shot `migrate`
 #     service applies migrations before either node boots (A10)
 #   - cluster mode on: config changes made through either node propagate,
-#     dedup/response-cache/rate-limits are shared via Redis, background
-#     jobs single-flight
+#     dedup/response-cache/rate-limits are shared through the same Postgres,
+#     background jobs single-flight
 #   - stop_grace_period > drain + force timeout, so SIGTERM triggers the
 #     graceful sequence (readyz → 503, keep serving, then stop) instead of
 #     being cut short by SIGKILL (A9)
@@ -35,8 +35,6 @@ x-orion-common: &orion-common
   depends_on:
     migrate:
       condition: service_completed_successfully
-    redis:
-      condition: service_healthy
   healthcheck:
     test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
     interval: 5s
@@ -48,7 +46,6 @@ x-orion-env: &orion-env
   ORION_STORAGE__URL: "postgres://orion:orion@postgres:5432/orion"
   ORION_STORAGE__AUTO_MIGRATE: "false"
   ORION_CLUSTER__ENABLED: "true"
-  ORION_CLUSTER__REDIS_URL: "redis://redis:6379"
   ORION_SERVER__SHUTDOWN_DRAIN_SECS: "10"
   ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS: "20"
   ORION_LOGGING__FORMAT: "json"
@@ -82,14 +79,6 @@ services:
       - orion-pg-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U orion -d orion"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-
-  redis:
-    image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 3s
       retries: 10

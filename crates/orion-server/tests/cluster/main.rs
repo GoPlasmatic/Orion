@@ -1,7 +1,7 @@
 //! Multi-node (cluster mode) integration tests — multi-instance-ha M2.
 //!
 //! Each test builds N full `AppState`s (nodes) sharing one Postgres
-//! testcontainer and one Redis testcontainer, with cluster mode on and a
+//! testcontainer, with cluster mode on and a
 //! fast epoch poll. This binary is separate from `tests/integration`, though
 //! no longer forced to be: the backend used to be a process-global `OnceLock`
 //! that the integration binary pinned to SQLite, and it is now carried on
@@ -31,7 +31,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::{postgres::Postgres, redis::Redis};
+use testcontainers_modules::postgres::Postgres;
 use tower::ServiceExt;
 
 use common::{body_json, json_request, post_with_idempotency_key};
@@ -52,9 +52,6 @@ struct Node {
 struct ClusterHarness {
     /// The outage tests pause/unpause this.
     pg: testcontainers::ContainerAsync<Postgres>,
-    /// Kept live for the test's duration; D15's tests also pause/unpause it.
-    redis: testcontainers::ContainerAsync<Redis>,
-    redis_url: String,
     nodes: Vec<Node>,
     /// The FASTEST epoch poll interval any node runs at.
     poll: Duration,
@@ -80,8 +77,7 @@ impl Drop for ClusterHarness {
 }
 
 /// Back-compat wrapper for the original two-node tests: named accessors over
-/// `ClusterHarness` (which `Deref` exposes for `redis` / `redis_url` / `poll`
-/// / `pg` access).
+/// `ClusterHarness` (which `Deref` exposes for `poll` / `pg` access).
 struct TwoNodeHarness {
     cluster: ClusterHarness,
     state_a: AppState,
@@ -135,7 +131,8 @@ async fn eventually_n(
     false
 }
 
-/// Build an N-node cluster over one Postgres + one Redis container.
+/// Build an N-node cluster over one Postgres container, which is all a
+/// cluster shares.
 /// `shared` customizes the config every node gets; `per_node(i, cfg)` runs
 /// after it for node-specific overrides (e.g. a slow epoch poll).
 async fn cluster_nodes_with(
@@ -145,15 +142,11 @@ async fn cluster_nodes_with(
 ) -> ClusterHarness {
     let pg = Postgres::default().start().await.expect("start postgres");
     let pg_port = pg.get_host_port_ipv4(5432).await.expect("pg port");
-    let redis = Redis::default().start().await.expect("start redis");
-    let redis_port = redis.get_host_port_ipv4(6379).await.expect("redis port");
 
     let poll = Duration::from_millis(200);
-    let redis_url = format!("redis://127.0.0.1:{redis_port}");
     let mut config = orion::config::AppConfig::default();
     config.storage.url = format!("postgres://postgres:postgres@127.0.0.1:{pg_port}/postgres");
     config.cluster.enabled = true;
-    config.cluster.redis_url = redis_url.clone();
     config.cluster.epoch_poll_interval_ms = poll.as_millis() as u64;
     shared(&mut config);
 
@@ -171,13 +164,7 @@ async fn cluster_nodes_with(
         });
     }
 
-    ClusterHarness {
-        pg,
-        redis,
-        redis_url,
-        nodes,
-        poll,
-    }
+    ClusterHarness { pg, nodes, poll }
 }
 
 /// A plugin activated through node A is compiled and served by node B within
@@ -396,7 +383,7 @@ async fn epoch_propagates_channel_activation_across_nodes() {
     );
 }
 
-/// A6: with no cache connector named, dedup uses the shared cluster Redis —
+/// A6: with no cache connector named, dedup uses the cluster's shared store —
 /// the same idempotency key on node A then node B is a duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
@@ -522,7 +509,7 @@ async fn dlq_row_claimed_by_exactly_one_node() {
 }
 
 /// A4: a per-channel limit of 10 rps holds at ~10 rps across BOTH nodes
-/// combined (shared Redis fixed window), not 10 per node.
+/// combined (a fixed window in the shared database), not 10 per node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn rate_limit_holds_across_nodes_combined() {
@@ -590,130 +577,6 @@ async fn rate_limit_holds_across_nodes_combined() {
     assert!(
         limited >= 20,
         "both nodes must see shared 429s (got {limited})"
-    );
-}
-
-/// D15: the shared Redis handle must re-establish itself. A dropped
-/// connection used to be permanent — shared dedup (failing open, so
-/// duplicates flow silently), the shared response cache, and cluster rate
-/// limiting stayed broken on every node until the pods restarted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
-async fn cluster_redis_recovers_after_connection_drop() {
-    let h = two_nodes().await;
-
-    common::create_and_activate_channel_with_config(
-        &h.node_a,
-        "reconnect-ch",
-        common::simple_log_workflow("Reconnect WF"),
-        json!({"deduplication": {"header": "Idempotency-Key", "window_secs": 300}}),
-    )
-    .await;
-
-    let payload = json!({"data": {"k": "v"}});
-    let first_ok = eventually(h.poll, async || {
-        let resp = h
-            .node_a
-            .clone()
-            .oneshot(post_with_idempotency_key(
-                "/api/v2/data/reconnect-ch",
-                "reconnect-token",
-                payload.clone(),
-            ))
-            .await
-            .unwrap();
-        resp.status() == StatusCode::OK
-    })
-    .await;
-    assert!(first_ok, "node A must serve the channel");
-
-    // Sever every client connection from the server side — the same
-    // observable event as a Redis restart, without the port remapping a
-    // container restart would cause. SKIPME (default) spares this client.
-    let client = redis::Client::open(h.redis_url.as_str()).expect("redis client");
-    let mut killer = client
-        .get_multiplexed_async_connection()
-        .await
-        .expect("killer connection");
-    let _: i64 = redis::cmd("CLIENT")
-        .arg("KILL")
-        .arg("TYPE")
-        .arg("normal")
-        .query_async(&mut killer)
-        .await
-        .expect("client kill");
-
-    // Dedup must come back on its own. A stale handle never recovers, so the
-    // replay would be served as new (dedup fails open) for every poll.
-    let deduped = eventually(h.poll, async || {
-        let resp = h
-            .node_b
-            .clone()
-            .oneshot(post_with_idempotency_key(
-                "/api/v2/data/reconnect-ch",
-                "reconnect-token",
-                payload.clone(),
-            ))
-            .await
-            .unwrap();
-        resp.status() == StatusCode::CONFLICT
-    })
-    .await;
-    assert!(
-        deduped,
-        "shared dedup must recover after the Redis connection is dropped"
-    );
-}
-
-/// D15: a node that cannot reach the cluster Redis must leave the LB
-/// rotation instead of silently serving with dedup and rate limiting off.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
-async fn readyz_reflects_cluster_redis_availability() {
-    let h = two_nodes().await;
-
-    let readyz = async |node: axum::Router| {
-        let resp = node
-            .oneshot(json_request("GET", "/readyz", None))
-            .await
-            .unwrap();
-        let status = resp.status();
-        (status, body_json(resp).await)
-    };
-
-    let (status, body) = readyz(h.node_a.clone()).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["components"]["cluster_redis"], "ok");
-
-    h.redis.pause().await.expect("pause redis");
-    let mut unready = (StatusCode::OK, json!(null));
-    for _ in 0..5 {
-        unready = readyz(h.node_a.clone()).await;
-        if unready.0 == StatusCode::SERVICE_UNAVAILABLE {
-            break;
-        }
-    }
-    assert_eq!(
-        unready.0,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "unreachable cluster Redis must fail readiness: {}",
-        unready.1
-    );
-    assert_eq!(unready.1["components"]["cluster_redis"], "error");
-
-    h.redis.unpause().await.expect("unpause redis");
-    let mut recovered = StatusCode::SERVICE_UNAVAILABLE;
-    for _ in 0..10 {
-        recovered = readyz(h.node_a.clone()).await.0;
-        if recovered == StatusCode::OK {
-            break;
-        }
-        tokio::time::sleep(h.poll).await;
-    }
-    assert_eq!(
-        recovered,
-        StatusCode::OK,
-        "readiness must return once Redis is reachable again"
     );
 }
 
@@ -1012,7 +875,7 @@ async fn concurrent_admin_writes_converge() {
 
 /// N-generality: nothing in src/cluster assumes two nodes (D4 — no node
 /// registry); only the old harness was hard-wired. Three nodes over one
-/// Postgres + Redis, activation via node 0, nodes 1 and 2 both serve.
+/// Postgres, activation via node 0, nodes 1 and 2 both serve.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn three_node_activation_propagates() {
@@ -1239,147 +1102,6 @@ async fn breaker_reset_fans_out_across_nodes() {
     );
 }
 
-/// The Redis degradation window, pinned: while the cluster Redis is down,
-/// dedup and per-channel rate limits FAIL OPEN (availability over strict
-/// idempotency/limits) and `/readyz` withdraws the node so the LB pulls it.
-/// Uses a hard container STOP: the port closes and commands fail fast with
-/// ECONNREFUSED — the error class the guards fail open on. `pause()` would
-/// black-hole instead: the redis `ConnectionManager` has no response
-/// timeout, so a paused Redis HANGS the guard rather than erroring.
-/// (Post-B4 finding, deliberately not fixed here:
-/// `ConnectionManagerConfig::set_response_timeout` would convert the hang
-/// class into the error class.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
-async fn redis_outage_window_fails_open() {
-    let h = two_nodes_with(|config| {
-        // The per-channel limiter only mounts when platform limiting is on;
-        // keep platform limits far above the per-channel limit under test.
-        config.rate_limit.enabled = true;
-        config.rate_limit.default_rps = 10_000;
-        config.rate_limit.default_burst = 10_000;
-    })
-    .await;
-
-    common::create_and_activate_channel_with_config(
-        &h.node_a,
-        "outage-ch",
-        common::simple_log_workflow("Outage WF"),
-        json!({
-            "deduplication": {"header": "Idempotency-Key", "window_secs": 300},
-            "rate_limit": {"requests_per_second": 5, "burst": 0}
-        }),
-    )
-    .await;
-
-    // Baseline: node A consumes the key; node B's replay is a 409 through
-    // the live shared Redis.
-    let payload = json!({"data": {"k": "v"}});
-    let first_ok = eventually(h.poll, async || {
-        h.node_a
-            .clone()
-            .oneshot(post_with_idempotency_key(
-                "/api/v2/data/outage-ch",
-                "outage-token",
-                payload.clone(),
-            ))
-            .await
-            .unwrap()
-            .status()
-            == StatusCode::OK
-    })
-    .await;
-    assert!(first_ok, "node A must serve the channel");
-    let replayed = eventually(h.poll, async || {
-        h.node_b
-            .clone()
-            .oneshot(post_with_idempotency_key(
-                "/api/v2/data/outage-ch",
-                "outage-token",
-                payload.clone(),
-            ))
-            .await
-            .unwrap()
-            .status()
-            == StatusCode::CONFLICT
-    })
-    .await;
-    assert!(
-        replayed,
-        "shared dedup must 409 the replay while Redis is up"
-    );
-
-    h.redis
-        .stop_with_timeout(Some(0))
-        .await
-        .expect("stop redis");
-
-    // PIN 1 — dedup fails open: the duplicate key is accepted on BOTH nodes.
-    for (name, node) in [("node A", &h.node_a), ("node B", &h.node_b)] {
-        let resp = node
-            .clone()
-            .oneshot(post_with_idempotency_key(
-                "/api/v2/data/outage-ch",
-                "outage-token",
-                payload.clone(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "{name}: dedup must fail open during the Redis outage"
-        );
-    }
-
-    // PIN 2 — the 5 rps channel limit is fully bypassed: 30 rapid keyless
-    // requests all pass.
-    for i in 0..30 {
-        let node = if i % 2 == 0 { &h.node_a } else { &h.node_b };
-        let resp = node
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/data/outage-ch",
-                Some(payload.clone()),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "rate limits must fail open during the Redis outage (request {i})"
-        );
-    }
-
-    // PIN 3 — containment: /readyz withdraws the node.
-    let mut status = StatusCode::OK;
-    for _ in 0..5 {
-        status = h
-            .node_a
-            .clone()
-            .oneshot(json_request("GET", "/readyz", None))
-            .await
-            .unwrap()
-            .status();
-        if status == StatusCode::SERVICE_UNAVAILABLE {
-            break;
-        }
-        tokio::time::sleep(h.poll).await;
-    }
-    assert_eq!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "readyz must withdraw while the cluster Redis is down"
-    );
-
-    // No recovery phase on purpose: a container restart can remap the
-    // published port while the ConnectionManager holds the original URL.
-    // Recovery is already pinned by cluster_redis_recovers_after_connection_drop
-    // (CLIENT KILL) and readyz_reflects_cluster_redis_availability
-    // (pause/unpause).
-}
-
 /// The Postgres outage window + stale-node semantics, pinned in one pause
 /// cycle. There is NO fencing anywhere by design (retired HA plan D1): a
 /// node whose resync fails keeps serving its last-applied engine, and the
@@ -1595,8 +1317,8 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
 
 /// T6 — the response cache is a shared store, not per-node memory: a body
 /// cached by node A must be replayed by node B. With no connector named on
-/// the channel, cluster-mode backend resolution rides the shared cluster
-/// Redis (`registry.rs` resolves `cluster.default_cache`; the guardrail
+/// the channel, cluster-mode backend resolution rides the cluster's shared
+/// store (`registry.rs` resolves `cluster.default_cache`; the guardrail
 /// refuses per-node memory stores outright), and the SHA-256 cache key is
 /// process-independent by design, so both nodes agree on the key.
 ///
@@ -1627,7 +1349,7 @@ async fn response_cache_is_shared_across_nodes() {
     // Node A executes and populates the shared cache. No `eventually` needed:
     // activation went through node A, whose local reload precedes the reply.
     // The cache store is awaited on the response path (`persist_trace_and_cache`
-    // runs before the handler returns), so once this 200 is back the Redis
+    // runs before the handler returns), so once this 200 is back the shared
     // entry exists — node B cannot slip in an execute-and-store first.
     let resp = h
         .node_a

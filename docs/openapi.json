@@ -9092,7 +9092,7 @@
           "Operational"
         ],
         "summary": "Readiness probe",
-        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running, and — in cluster mode — the shared Redis answers `PING`. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. The Redis check matters because that degradation is otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing — all while the data plane keeps returning 200s.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. The `components.cluster_redis` field is present only in cluster mode. `components.packages` is present only when `[packages] apply` names artifacts: `applying` (not ready) until every one is applied and serving, then `ok`; `failed` while a node whose package failed to apply shuts down. Unauthenticated, so probes work without provisioning an admin key.",
+        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running. In cluster mode the shared dedup store, response cache and rate limits live in that same database, so its check covers them. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. `components.packages` is present only when `[packages] apply` names artifacts: `applying` (not ready) until every one is applied and serving, then `ok`; `failed` while a node whose package failed to apply shuts down. Unauthenticated, so probes work without provisioning an admin key.",
         "operationId": "readiness_probe",
         "responses": {
           "200": {
@@ -13035,7 +13035,7 @@
         ],
         "properties": {
           "components": {
-            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `cluster_redis` in cluster mode, and `packages` when\n`[packages] apply` names artifacts."
+            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nand `packages` when `[packages] apply` names artifacts."
           },
           "git_hash": {
             "type": [

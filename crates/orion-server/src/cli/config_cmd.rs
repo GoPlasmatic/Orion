@@ -62,7 +62,7 @@ pub(crate) fn handle_validate_config(
 /// Masking reuses the connector policy (`orion::connector::mask_secrets`):
 /// values under secret-looking keys (`admin_auth.api_keys`) are replaced
 /// wholesale, and URL userinfo passwords
-/// (`storage.url`, `cluster.redis_url`) are redacted in place.
+/// (`storage.url`) are redacted in place.
 fn masked_effective_config(
     config: &config::AppConfig,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {

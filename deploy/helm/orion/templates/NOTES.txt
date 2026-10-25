@@ -31,10 +31,9 @@ orion_circuit_breaker_rejections_total) have no scrape target.
 
 {{- if .Values.devStack.enabled }}
 
-WARNING: devStack is enabled — the in-namespace Postgres/Redis are throwaway
-dev services with no persistence guarantees. For production, set:
+WARNING: devStack is enabled — the in-namespace Postgres is a throwaway
+dev service with no persistence guarantees. For production, set:
   storage.url        (or storage.existingSecret)
-  cluster.redisUrl
 and disable devStack.
 {{- else if .Values.migrateJob.enabled }}
 

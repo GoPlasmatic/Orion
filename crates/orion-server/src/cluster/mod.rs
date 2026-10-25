@@ -15,9 +15,11 @@ use crate::connector::cache_backend::CacheBackend;
 use crate::errors::OrionError;
 use crate::storage::DbPool;
 use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
+use crate::storage::repositories::shared_state::SqlSharedState;
 
 pub mod epoch_watcher;
 pub mod job_lease;
+pub mod shared_store;
 
 pub use epoch_watcher::{reconcile_v2_state_once, start_cluster_tasks, start_v2_reconciler};
 pub use job_lease::JobLeaseGate;
@@ -135,16 +137,11 @@ pub struct ClusterRuntime {
     /// Ephemeral by design (D4) — nothing registers or depends on a stable
     /// node list; it names lease holders, DLQ claimants and log lines.
     pub instance_id: String,
-    /// Shared Redis handle from `cluster.redis_url` (None when disabled).
-    ///
-    /// A `ConnectionManager`, not a `MultiplexedConnection`: this handle is
-    /// cloned into the default cache backend and every channel's rate
-    /// limiter, and a multiplexed connection does not re-establish itself, so
-    /// one Redis restart would break shared dedup (failing open), the shared
-    /// response cache, and cluster rate limiting on every node until the pods
-    /// were restarted.
-    pub redis: Option<redis::aio::ConnectionManager>,
-    /// Default shared cache backend (dedup/response-cache) on that Redis.
+    /// The shared state database (`cluster_kv`, `cluster_rate_windows`) the
+    /// fleet's dedup claims, response cache and rate-limit windows live in.
+    /// `None` when disabled: a single node keeps all three in process.
+    pub shared: Option<SqlSharedState>,
+    /// Default shared cache backend (dedup/response-cache) on that store.
     pub default_cache: Option<Arc<dyn CacheBackend>>,
     /// Epoch/lease coordination repository (always present; harmless when
     /// disabled — the epoch tables exist on every backend).
@@ -205,14 +202,14 @@ impl From<&ClusterRuntime> for crate::channel::registry::ClusterBackends {
     fn from(runtime: &ClusterRuntime) -> Self {
         Self {
             default_cache: runtime.default_cache.clone(),
-            redis: runtime.redis.clone(),
+            shared: runtime.shared.clone(),
         }
     }
 }
 
-/// Build the cluster runtime. When enabled, connects the shared Redis and
-/// fails fast on any error (a cluster node without its coordination Redis
-/// must not serve). When disabled, performs no I/O.
+/// Build the cluster runtime. When enabled, the shared stores are built over
+/// `pool`, the state database the node has already connected; disabled, it
+/// has none. Either way it reads the current epochs.
 pub async fn init_cluster_runtime(
     config: &ClusterConfig,
     pool: &DbPool,
@@ -221,24 +218,13 @@ pub async fn init_cluster_runtime(
     // the runtime; test harnesses may leave it empty (fresh UUID).
     let instance_id = config.effective_instance_id();
 
-    let (redis, default_cache) = if config.enabled {
-        let client =
-            redis::Client::open(config.redis_url.as_str()).map_err(|e| OrionError::Config {
-                message: format!("cluster.redis_url is invalid: {e}"),
-            })?;
-        // Eager connect: a cluster node whose coordination Redis is
-        // unreachable at boot must fail fast rather than start degraded.
-        let conn = client
-            .get_connection_manager()
-            .await
-            .map_err(|e| OrionError::Internal {
-                context: "Failed to connect to cluster Redis (cluster.redis_url)".to_string(),
-                source: Some(Box::new(e)),
-            })?;
-        let cache: Arc<dyn CacheBackend> = Arc::new(
-            crate::connector::cache_backend::RedisCacheBackend::new(conn.clone()),
-        );
-        (Some(conn), Some(cache))
+    // The same database every node already shares for epochs and leases, so
+    // a cluster needs no coordination service of its own.
+    let (shared, default_cache) = if config.enabled {
+        let store = SqlSharedState::new(pool.clone());
+        let cache: Arc<dyn CacheBackend> =
+            Arc::new(shared_store::SharedCacheBackend::new(store.clone()));
+        (Some(store), Some(cache))
     } else {
         (None, None)
     };
@@ -255,7 +241,7 @@ pub async fn init_cluster_runtime(
     Ok(Arc::new(ClusterRuntime {
         enabled: config.enabled,
         instance_id,
-        redis,
+        shared,
         default_cache,
         repo,
         last_seen_epoch: AtomicI64::new(epoch),
@@ -392,7 +378,7 @@ mod tests {
             .await
             .expect("disabled runtime never fails");
         assert!(!runtime.enabled);
-        assert!(runtime.redis.is_none());
+        assert!(runtime.shared.is_none());
         assert!(runtime.default_cache.is_none());
         assert_eq!(runtime.instance_id.len(), 36); // generated UUID
     }

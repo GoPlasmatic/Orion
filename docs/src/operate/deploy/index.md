@@ -1,4 +1,4 @@
-<!-- description: Deploy Orion for production: a single instance with Docker, a Helm release on Kubernetes, or a multi-node cluster sharing one database and one Redis. -->
+<!-- description: Deploy Orion for production: a single instance with Docker, a Helm release on Kubernetes, or a multi-node cluster sharing one database. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 

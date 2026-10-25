@@ -13,7 +13,7 @@ Every setting Orion has, with its real default and its environment variable, one
 | Environment-specific values and secrets | [Vars and secrets](./vars-and-secrets.md) |
 | HTTP, TLS, compression, and API docs | [Server settings](./server.md) |
 | SQLite, PostgreSQL, or MySQL | [Storage settings](./storage.md) |
-| Multiple replicas and Redis | [Cluster settings](./cluster.md) |
+| Multiple replicas sharing one database | [Cluster settings](./cluster.md) |
 | Engine reload, connector failure, and the circuit breaker | [Engine settings](./engine.md) |
 | Data-plane body size | [Ingest settings](./ingest.md) |
 | Async traces and the dead-letter queue | [Trace queue settings](./trace-queue.md) |

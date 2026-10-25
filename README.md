@@ -133,7 +133,7 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 | **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins, ONNX models admitted before they serve |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
 | **Data** | PostgreSQL, MySQL, SQLite, MongoDB, Elasticsearch, Redis, Kafka, HTTP, SMTP, S3-compatible storage |
-| **Operations** | Embedded SQLite for one node; PostgreSQL/MySQL and Redis for clustered replicas |
+| **Operations** | Embedded SQLite for one node; one shared PostgreSQL/MySQL for clustered replicas |
 
 Configuration is explicit, and several production controls are permissive or
 disabled for local development. In particular, data channels are open unless

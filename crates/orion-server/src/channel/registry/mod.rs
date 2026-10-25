@@ -7,7 +7,7 @@ use tokio::sync::Semaphore;
 
 use super::config::ChannelConfig;
 use super::config::ChannelRateLimitConfig;
-use super::rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
+use super::rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, SharedRateLimitBackend};
 use super::routing::{RouteMatch, RouteTable};
 
 use crate::config::{TraceStorageConfig, TraceStorageMode};
@@ -233,10 +233,10 @@ pub struct QuarantinedChannel {
 /// in-memory fallbacks) with these as the defaults. Deliberately narrow —
 /// the registry needs these two handles, not the whole cluster runtime.
 pub struct ClusterBackends {
-    /// Default dedup/response-cache backend (the shared cluster Redis).
+    /// Default dedup/response-cache backend (the cluster's shared store).
     pub default_cache: Option<Arc<dyn CacheBackend>>,
-    /// Connection for shared rate-limit windows.
-    pub redis: Option<redis::aio::ConnectionManager>,
+    /// The shared state database, for fleet-wide rate-limit windows.
+    pub shared: Option<crate::storage::repositories::shared_state::SqlSharedState>,
 }
 
 /// The identity of one stored channel row.
@@ -305,7 +305,7 @@ impl ChannelRow {
 ///   actually changed moves the token and forces the rebuild. **An eviction
 ///   that is not paired with a connector load would not.** A
 ///   definitions-scoped resync satisfies the rule by doing neither.
-/// - **`cluster_redis`** — held by the registry itself, fixed at construction.
+/// - **`cluster_shared`** — held by the registry itself, fixed at construction.
 ///
 /// So the obligation this key places on the rest of the process is: keep the
 /// expression engine and the cache pool process-singletons, and never evict a

@@ -28,7 +28,7 @@ pub use cron::{
     MisfirePolicy, PassPlan, SkipSummary,
 };
 pub use oauth2_login::{CompiledOAuth2Login, Leg as OAuthLeg};
-pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
+pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, SharedRateLimitBackend};
 pub use registry::{
     ChannelLoadIssue, ChannelLoader, ChannelRuntimeConfig, ChannelSnapshot, ClusterBackends,
     QuarantinedChannel, ReloadDeps,

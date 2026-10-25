@@ -26,8 +26,8 @@ pub use entities::{
     PluginArtifacts, Plugins, Workflows,
 };
 pub use runtime::{
-    AuditLogs, ConfigEpoch, CronOccurrences, CronScheduleState, CronSingletonSlots, CronSingletons,
-    JobLeases, TraceDlq, Traces,
+    AuditLogs, ClusterKv, ClusterRateWindows, ConfigEpoch, CronOccurrences, CronScheduleState,
+    CronSingletonSlots, CronSingletons, JobLeases, TraceDlq, Traces,
 };
 
 #[cfg(test)]

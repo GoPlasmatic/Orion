@@ -59,15 +59,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
-{{/* Effective Redis URL (devStack overrides). */}}
-{{- define "orion.redisUrl" -}}
-{{- if .Values.devStack.enabled }}
-{{- printf "redis://%s-redis:6379" (include "orion.fullname" .) }}
-{{- else }}
-{{- required "cluster.redisUrl is required when cluster.enabled" .Values.cluster.redisUrl }}
-{{- end }}
-{{- end }}
-
 {{/* Name of the Secret carrying the storage URL. */}}
 {{- define "orion.storageSecretName" -}}
 {{- if .Values.storage.existingSecret }}
@@ -142,8 +133,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if .Values.cluster.enabled }}
 - name: ORION_CLUSTER__ENABLED
   value: "true"
-- name: ORION_CLUSTER__REDIS_URL
-  value: {{ include "orion.redisUrl" . | quote }}
 - name: ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS
   value: {{ .Values.cluster.epochPollIntervalMs | quote }}
 - name: ORION_CLUSTER__INSTANCE_ID

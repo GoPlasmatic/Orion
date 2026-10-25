@@ -1,8 +1,8 @@
 {{- if .Values.networkPolicy.enabled }}
 {{- /*
 P8: Orion is an SSRF-relevant workload by design — workflows make outbound
-HTTP calls wherever their connectors point — and it holds database and Redis
-credentials. Application-level private-IP blocking (allow_private_urls) is a
+HTTP calls wherever their connectors point — and it holds database and
+connector credentials. Application-level private-IP blocking (allow_private_urls) is a
 guard, not a guarantee: the driver re-resolves hostnames when it dials. This
 policy is the network-level half of that pairing.
 
