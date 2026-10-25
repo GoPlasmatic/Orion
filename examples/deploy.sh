@@ -122,30 +122,11 @@ fi
 cli() { "$ORION_CLI" --server "$BASE" --yes --quiet "$@"; }
 
 echo "==> Deploy to $BASE"
-# Plugins first, when they have to be: the server checks an uploaded workflow
-# against the functions it serves now, so a workflow calling a plugin
-# function is refused while the plugin is not yet deployed — even with the
-# plugin in the same deployment. If an apply carrying plugins fails, deploy
-# the plugins alone, then the whole directory again.
 if ! REVISION="$(cli deployments apply -d "$WORK/deployment" 2> "$WORK/apply.log")"; then
-  if grep -q '"kind": "plugin"' "$WORK/deployment/deployment.json"; then
-    echo "==> Deploy the plugins first, then everything"
-    mkdir -p "$WORK/plugins/connections"
-    cp -R "$WORK/deployment/definitions" "$WORK/plugins/"
-    python3 -c 'import json, sys
-d = json.load(open(sys.argv[1]))
-d["members"] = [m for m in d["members"] if m["kind"] == "plugin"]
-json.dump(d, open(sys.argv[2], "w"), indent=2)' \
-      "$WORK/deployment/deployment.json" "$WORK/plugins/deployment.json"
-    cli deployments apply -d "$WORK/plugins" > /dev/null
-    REVISION="$(cli deployments apply -d "$WORK/deployment")"
-  else
-    cat "$WORK/apply.log" >&2
-    exit 1
-  fi
-else
   cat "$WORK/apply.log" >&2
+  exit 1
 fi
+cat "$WORK/apply.log" >&2
 echo "==> Serving deployment revision $REVISION"
 
 # Read a field out of a JSON file with the stdlib (no jq dependency). Prints

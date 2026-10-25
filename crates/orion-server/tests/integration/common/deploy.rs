@@ -198,6 +198,38 @@ pub async fn apply(app: &Router, base: u64, members: Vec<Value>) -> (StatusCode,
     .await
 }
 
+/// Commit `members` over `base` straight into `state`'s deployment store,
+/// past the apply route's build check — the head another node, or a binary
+/// with other plugins or settings, could have committed — answering the
+/// committed revision. Nothing is built.
+pub async fn commit_unchecked(
+    state: &orion::server::state::AppState,
+    base: u64,
+    members: Vec<Value>,
+) -> u64 {
+    static KEYS: AtomicU64 = AtomicU64::new(0);
+    let manifest =
+        serde_json::from_value(json!({"schema_version": 2, "providers": [], "members": members}))
+            .expect("a manifest");
+    let store = &state.composition.deployments;
+    let plan = store
+        .plan_candidate_in_db(&state.db_pool, base, manifest)
+        .await
+        .expect("the store plans the candidate");
+    store
+        .apply_candidate_in_db(
+            &state.db_pool,
+            "test",
+            &format!("unchecked-{}", KEYS.fetch_add(1, Ordering::Relaxed)),
+            &plan,
+            "committed past the build check",
+            state.composition.admission.as_ref(),
+        )
+        .await
+        .expect("the store commits the candidate")
+        .committed_revision
+}
+
 /// Panic unless an apply was accepted and this node converged on it.
 fn assert_converged(status: StatusCode, body: &Value) {
     assert_eq!(status, StatusCode::ACCEPTED, "deployment refused: {body}");

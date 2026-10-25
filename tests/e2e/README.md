@@ -47,12 +47,10 @@ head when a test needs nothing serving. A refused compile or apply leaves
 the same way either way. Each test runs under errexit, so its first failing
 assertion fails it.
 
-A workflow that calls a plugin function is refused at upload while the node
-does not serve that plugin yet, even when the same deployment carries it
-(`POST /definitions` checks against the serving functions). `apply_dist`
-works around it: when an apply carrying plugins fails, it deploys the
-plugins alone, then the whole directory again. `examples/deploy.sh` does the
-same.
+A plugin and the workflows that call it deploy in one apply: upload leaves a
+qualified function name the node does not serve yet to the deployment, whose
+build check compiles the workflow against the plugins it carries. An apply
+whose head would not build is refused before it commits.
 
 ## Layout
 

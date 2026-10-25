@@ -110,10 +110,29 @@ async fn main() {
     match result {
         Ok(code) => process::exit(code),
         Err(e) => {
-            eprintln!("{} {e}", "Error:".red().bold());
+            // `{:#}` prints the whole context chain, so a step that names
+            // what it was doing ("uploading 'x'") still shows why it failed.
+            eprintln!("{} {e:#}", "Error:".red().bold());
+            for detail in error_details(&e) {
+                eprintln!("  {}: {} {}", detail.path, detail.code, detail.message);
+            }
             process::exit(1);
         }
     }
+}
+
+/// The per-field refusals an API error carried, wherever in the chain it is.
+fn error_details(e: &anyhow::Error) -> &[orion_api::FieldError] {
+    e.chain()
+        .find_map(
+            |cause| match cause.downcast_ref::<orion_client::ClientError>() {
+                Some(orion_client::ClientError::Api { error, .. }) => {
+                    Some(error.details.as_slice())
+                }
+                _ => None,
+            },
+        )
+        .unwrap_or_default()
 }
 
 async fn run(cli: Cli) -> anyhow::Result<i32> {

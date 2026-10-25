@@ -250,17 +250,22 @@ async fn a_deployed_plugin_publishes_its_functions_and_its_dependants_hold_it() 
     assert_eq!(body["data"]["result"]["wrapped"]["message"], "hi", "{body}");
     assert_eq!(body["data"]["result"]["len"], 16, "{body}");
 
-    // Dropping the plugin under its dependant does not build.
+    // Dropping the plugin under its dependant would not build, so it is
+    // refused before it commits.
     let (base, mut members) = deploy::head(&app).await;
     members.retain(|m| m["entity"]["kind"] != "plugin");
     let (status, body) = deploy::apply(&app, base, members).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(body["evaluation"]["converged"], false, "{body}");
-    let local_error = body["local_error"].as_str().unwrap_or("");
-    assert!(
-        local_error.contains(&workflow_id) && local_error.contains("test.fixture.wrap"),
-        "the failure names the dependant and the function: {body}"
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["code"], "DEPLOYMENT_WOULD_NOT_BUILD",
+        "{body}"
     );
+    let error = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        error.contains(&workflow_id) && error.contains("test.fixture.wrap"),
+        "the refusal names the dependant and the function: {body}"
+    );
+    assert_eq!(deploy::head(&app).await.0, base, "nothing is committed");
     let (status, body) = post(
         &app,
         &format!("/api/v2/data/{channel}"),
@@ -274,8 +279,16 @@ async fn a_deployed_plugin_publishes_its_functions_and_its_dependants_hold_it() 
     );
     assert!(state.runtime.load().functions.contains("test.fixture.wrap"));
 
-    // With the dependants gone as well, the plugin's functions leave.
-    deploy::remove(&app, &[("channel", &channel), ("workflow", &workflow_id)]).await;
+    // With the dependants gone, the plugin can go, and its functions leave.
+    deploy::remove(
+        &app,
+        &[
+            ("channel", &channel),
+            ("workflow", &workflow_id),
+            ("plugin", "test.fixture"),
+        ],
+    )
+    .await;
     assert!(catalogued(&app, "test.fixture.identity").await.is_none());
     assert!(!state.runtime.load().functions.contains("test.fixture.wrap"));
 }
@@ -296,6 +309,63 @@ async fn a_deployed_plugin_serves_a_deployed_workflow() {
     let (status, body) = post(
         &app,
         &format!("/api/v2/data/{channel}"),
+        json!({"data": {"msg": "hi"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["result"]["wrapped"]["message"], "hi", "{body}");
+}
+
+/// A plugin and the workflow that calls it arrive in one deployment: the
+/// workflow uploads before any generation serves the plugin's functions,
+/// and the deployment's build compiles it against the plugin it carries.
+#[tokio::test]
+async fn a_plugin_and_its_dependant_deploy_together() {
+    let (state, app) = app(true).await;
+    assert!(!state.runtime.load().functions.contains("test.fixture.wrap"));
+
+    let plugin = deploy::upload(&app, plugin_definition(MANIFEST, None)).await;
+    let workflow = deploy::upload(
+        &app,
+        deploy::workflow_definition(&wrap_workflow("Wrap, deployed together")),
+    )
+    .await;
+    let channel = deploy::upload(
+        &app,
+        deploy::channel_definition(&common::sync_http_channel("wrap-together", "wrap-wf")).0,
+    )
+    .await;
+    deploy::deploy(
+        &app,
+        vec![
+            deploy::Upsert {
+                kind: "plugin",
+                id: "test.fixture".to_string(),
+                digest: plugin,
+                revision: None,
+                requires: Vec::new(),
+            },
+            deploy::Upsert {
+                kind: "workflow",
+                id: "wrap-wf".to_string(),
+                digest: workflow,
+                revision: None,
+                requires: Vec::new(),
+            },
+            deploy::Upsert {
+                kind: "channel",
+                id: "wrap-together".to_string(),
+                digest: channel,
+                revision: None,
+                requires: vec![("workflow", "wrap-wf".to_string())],
+            },
+        ],
+    )
+    .await;
+
+    let (status, body) = post(
+        &app,
+        "/api/v2/data/wrap-together",
         json!({"data": {"msg": "hi"}}),
     )
     .await;
@@ -378,15 +448,18 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     );
 
     // A new revision renames the field. Its upload is fine on its own; the
-    // deployment naming it beside the workflow that uses `text` does not
-    // build, naming the workflow and the mismatch.
+    // deployment naming it beside the workflow that uses `text` would not
+    // build, so it is refused, naming the workflow and the mismatch.
     let renamed = MANIFEST.replace("name = \"text\"", "name = \"payload\"");
     assert_ne!(renamed, MANIFEST);
     let digest = deploy::upload(&app, plugin_definition(&renamed, None)).await;
-    let (status, body) = apply_plugin(&app, digest).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(body["evaluation"]["converged"], false, "{body}");
-    let local_error = body["local_error"].as_str().unwrap_or("");
+    let (status, body) = apply_plugin(&app, digest.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["code"], "DEPLOYMENT_WOULD_NOT_BUILD",
+        "{body}"
+    );
+    let local_error = body["error"]["message"].as_str().unwrap_or("");
     assert!(local_error.contains(&workflow_id), "{body}");
     assert!(
         local_error.contains("unknown key `text`"),
@@ -407,8 +480,10 @@ async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["up"]["TEXT"], "HELLO STILL", "{body}");
 
-    // Once the dependant is gone, the new schema serves.
+    // Once the dependant is gone, the new schema deploys and serves.
     deploy::remove(&app, &[("channel", &channel), ("workflow", &workflow_id)]).await;
+    let (status, body) = apply_plugin(&app, digest).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     let entry = catalogued(&app, "test.fixture.upper")
         .await
         .expect("served");

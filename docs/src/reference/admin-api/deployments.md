@@ -43,7 +43,7 @@ curl -s -X POST http://localhost:8080/api/v2/admin/definitions \
 curl -s http://localhost:8080/api/v2/admin/definitions/sha256:3f9c… | jq '.definition.name'
 ```
 
-A definition that would not serve is refused with a `400`, each problem at its field under `definition`.
+A definition that would not serve is refused with a `400`, each problem at its field under `definition`. A workflow may call a plugin function this node does not serve yet (a qualified name such as `acme.iso8583.parse`): its plugin can arrive in the same deployment, so that name is checked when the deployment is planned, not at upload.
 
 ### Test a workflow definition
 
@@ -115,7 +115,7 @@ A workflow, channel or plugin member's `definition_digest` names a stored defini
 
 ## Plan and apply
 
-A plan checks a manifest against a base revision without committing anything. It refuses a member whose definition is not stored and a connection revision that is not there. It answers the added and removed entities and the `reviewed_manifest_digest`.
+A plan checks a manifest against a base revision without committing anything. It refuses a member whose definition is not stored and a connection revision that is not there. It also compiles the manifest the way the node would build it, and refuses one that would not build with `400 DEPLOYMENT_WOULD_NOT_BUILD`, naming why: a workflow calling a function no member serves, two channels claiming one route, a workflow the engine cannot compile. It answers the added and removed entities and the `reviewed_manifest_digest`.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/deployment-plans \
@@ -123,7 +123,7 @@ curl -s -X POST http://localhost:8080/api/v2/admin/deployment-plans \
   -d '{"base_revision": 0, "manifest": '"$(cat manifest.json)"'}'
 ```
 
-Apply commits the manifest as the next revision. It succeeds only while the head is still `base_revision`, so two concurrent applies cannot both win. With `reviewed_manifest_digest`, it also refuses a manifest other than the one you reviewed, with a `409`. The `idempotency_key` makes a retry replay the first answer instead of committing twice. The node then builds the revision, and the answer reports how that went under `evaluation`. When the node could not build it, `local_error` says why. The revision stays committed and the node keeps serving what it had.
+Apply commits the manifest as the next revision. It succeeds only while the head is still `base_revision`, so two concurrent applies cannot both win. With `reviewed_manifest_digest`, it also refuses a manifest other than the one you reviewed, with a `409`. The `idempotency_key` makes a retry replay the first answer instead of committing twice. Apply runs the plan's build check first, so a manifest that would not build is refused before anything is committed. The node then builds the revision, and the answer reports how that went under `evaluation`. Another node can still fail to build a committed revision, for example one with plugins disabled or a different `channel_filter`; `local_error` then says why, the revision stays committed, the node keeps serving what it had, and `/health` reports `engine_reload` as degraded.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/deployments \

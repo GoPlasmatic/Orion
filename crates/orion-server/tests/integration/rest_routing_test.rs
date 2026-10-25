@@ -501,9 +501,12 @@ async fn a_second_channel_cannot_claim_a_route_another_already_serves() {
     )
     .await;
     let (status, body) = deploy::apply(&app, base, members).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(body["evaluation"]["converged"], false, "{body}");
-    let msg = body["local_error"].to_string();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["code"], "DEPLOYMENT_WOULD_NOT_BUILD",
+        "{body}"
+    );
+    let msg = body["error"]["message"].to_string();
     assert!(
         msg.contains("orders.first"),
         "must name the incumbent: {body}"

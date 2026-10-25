@@ -245,13 +245,14 @@ async fn a_failed_reload_degrades_health_without_failing_readiness() {
     assert_eq!(body_json(resp).await["status"], "ready");
 }
 
-/// The other half of a failed rebuild: the deployment has to tell its
-/// caller.
+/// The other half of a failed rebuild: the caller and the fleet both learn
+/// of it.
 ///
-/// A deployment that does not build here is still committed, so it answers
-/// `202` — but a caller gating a rollout on the answer must not read it as
-/// served. The answer says so: `evaluation.converged` is `false` and
-/// `local_error` names why, while the previous generation keeps serving.
+/// A deployment this node cannot build is refused before it commits, naming
+/// why, so a caller gating a rollout never reads it as served. A head the
+/// node did not check can still be committed (by another node, or a binary
+/// with other plugins or settings); building that one fails, publishes
+/// nothing, and raises the degradation `/health` reports.
 ///
 /// Unlike the test above, this one breaks a real build (two channels
 /// claiming one route at one priority) rather than setting the flag, because
@@ -288,20 +289,40 @@ async fn a_deployment_that_does_not_build_is_reported_to_the_caller() {
         }],
     )
     .await;
-    let (status, body) = common::deploy::apply(&app, base, members).await;
+    let (status, body) = common::deploy::apply(&app, base, members.clone()).await;
     assert_eq!(
         status,
-        StatusCode::ACCEPTED,
-        "the revision is committed: {body}"
+        StatusCode::BAD_REQUEST,
+        "the apply is refused: {body}"
     );
     assert_eq!(
-        body["evaluation"]["converged"], false,
-        "a revision this node did not build must not read as converged: {body}"
+        body["error"]["code"], "DEPLOYMENT_WOULD_NOT_BUILD",
+        "{body}"
     );
-    let error = body["local_error"].as_str().unwrap_or_default();
+    let error = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
         error.contains("route-a") && error.contains("route-b"),
-        "the answer names why it did not build: {body}"
+        "the answer names why it would not build: {body}"
+    );
+    assert_eq!(
+        common::deploy::head(&app).await.0,
+        base,
+        "nothing is committed"
+    );
+    assert!(
+        !degraded.load(std::sync::atomic::Ordering::Acquire),
+        "a refused apply leaves the node serving what is committed"
+    );
+
+    // The same head committed past the check: this node's build fails.
+    let revision = common::deploy::commit_unchecked(&state, base, members).await;
+    let error = orion::runtime::reconcile_deployment_revision(&state, revision)
+        .await
+        .expect_err("the committed head does not build here")
+        .to_string();
+    assert!(
+        error.contains("route-a") && error.contains("route-b"),
+        "the build failure names why: {error}"
     );
     assert_eq!(
         state.runtime.load().id,
@@ -309,12 +330,11 @@ async fn a_deployment_that_does_not_build_is_reported_to_the_caller() {
         "a revision that does not build publishes nothing"
     );
 
-    // And the degradation is raised. The two reports are not alternatives:
-    // the pipeline learns from the response, a dashboard watching a fleet
-    // learns from `/health`.
+    // And the degradation is raised: a dashboard watching a fleet learns
+    // from `/health` that this node does not serve what is committed.
     assert!(
         degraded.load(std::sync::atomic::Ordering::Acquire),
-        "the failure must reach /health as well as the caller"
+        "the failure must reach /health"
     );
     let body = body_json(
         app.clone()

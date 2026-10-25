@@ -247,6 +247,23 @@ fn workflow_problems(
     workflow: &WorkflowDefinition,
 ) -> Result<Vec<FieldError>, OrionError> {
     let generation = state.runtime.load();
+    // A qualified name (`acme.iso8583.parse`) the node does not serve names a
+    // plugin function, whose plugin may arrive in the same deployment. Upload
+    // cannot know which plugins that is; the deployment's build check
+    // compiles the workflow against the plugins the manifest carries, so a
+    // name it cannot resolve is refused there.
+    let deferred: std::collections::BTreeSet<&str> =
+        crate::engine::leaf_tasks(&workflow.tasks, workflow.loop_config.as_ref())
+            .into_iter()
+            .filter_map(|task| task.pointer("/function/name").and_then(Value::as_str))
+            .filter(|name| name.contains('.') && !generation.functions.contains(name))
+            .collect();
+    let is_deferred = |e: &FieldError| {
+        e.code == "UNKNOWN_FUNCTION"
+            && deferred
+                .iter()
+                .any(|name| e.message.contains(&format!("'{name}'")))
+    };
     let request = crate::storage::models::CreateWorkflowRequest {
         workflow_id: None,
         name: workflow.name.clone(),
@@ -263,7 +280,16 @@ fn workflow_problems(
         state.config.engine.max_loop_iterations,
         &generation.functions,
     ) {
-        return Ok(refusal_details(&e, "workflow"));
+        let problems: Vec<FieldError> = refusal_details(&e, "workflow")
+            .into_iter()
+            .filter(|d| !is_deferred(d))
+            .collect();
+        if !problems.is_empty() || deferred.is_empty() {
+            return Ok(problems);
+        }
+    }
+    if !deferred.is_empty() {
+        return Ok(Vec::new());
     }
     let mut problems = Vec::new();
     let engine = &generation.engine;

@@ -408,8 +408,8 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
         .expect("boots on an empty store")
         .state;
 
-    // A Workflow member naming a stored *channel* definition: the manifest
-    // commits (the plan checks the definition is stored, not what it is), and
+    // A Workflow member naming a stored *channel* definition: the store's plan
+    // checks the definition is stored, not what it is, so it can commit, and
     // no node can build it.
     let ghost = crate::common::store_definition(
         &state_a,
@@ -432,6 +432,8 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
             rollouts: Vec::new(),
         }],
     };
+    // The apply route refuses it: this node checks a candidate builds before
+    // committing it.
     let app = orion::server::build_router(state_a.clone());
     let resp = tower::ServiceExt::oneshot(
         app,
@@ -452,21 +454,29 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
     )
     .await
     .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+    assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
     let body: Value = serde_json::from_slice(
         &axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(body["committed_revision"], 1);
+    assert_eq!(
+        body["error"]["code"], "DEPLOYMENT_WOULD_NOT_BUILD",
+        "{body}"
+    );
     assert!(
-        body["local_error"]
+        body["error"]["message"]
             .as_str()
             .is_some_and(|e| e.contains("ghost-wf")),
         "{body}"
     );
-    assert_eq!(body["evaluation"]["converged"], false, "{body}");
+
+    // Committed past that check, as another node could have committed it.
+    let members = serde_json::to_value(&manifest.members).expect("members");
+    let members = members.as_array().expect("an array").clone();
+    let revision = crate::common::deploy::commit_unchecked(&state_a, 0, members).await;
+    assert_eq!(revision, 1);
 
     let err = match assemble("replica-b").await {
         Ok(_) => panic!("a node must not boot on a head it cannot build"),

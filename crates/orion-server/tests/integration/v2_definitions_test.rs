@@ -307,9 +307,12 @@ async fn two_channels_claiming_one_route_fail_the_revision() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{applied}");
-    assert_eq!(applied["evaluation"]["converged"], false, "{applied}");
-    let error = applied["local_error"].as_str().unwrap_or_default();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{applied}");
+    assert_eq!(
+        applied["error"]["code"], "DEPLOYMENT_WOULD_NOT_BUILD",
+        "{applied}"
+    );
+    let error = applied["error"]["message"].as_str().unwrap_or_default();
     assert!(
         error.contains("orders.first") && error.contains("orders.second"),
         "{applied}"

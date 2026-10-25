@@ -10,9 +10,9 @@
 //! when the revision builds: a channel whose config does not load is
 //! quarantined — absent from the route table and refused at every ingress —
 //! while a workflow that cannot build fails its revision as a whole: the
-//! node reports it as not converged and the previous generation keeps
-//! serving every channel. Nothing of the failed revision is published, so
-//! nothing of it is quarantined.
+//! deployment is refused before it commits, the head does not move, and the
+//! previous generation keeps serving every channel. Nothing of the refused
+//! revision is published, so nothing of it is quarantined.
 
 use axum::http::StatusCode;
 use serde_json::json;
@@ -34,9 +34,9 @@ async fn serves_ok(app: &axum::Router, channel: &str) -> bool {
 }
 
 /// A deployment adding `upserts` to the head, applied as it is: answering
-/// the apply body, and asserting the node accepted the revision but did not
-/// build it, naming every one of `fragments`, while the generation it served before keeps
-/// serving.
+/// the apply body, and asserting the node refused to commit a revision it
+/// could not build, naming every one of `fragments`, while the head stays
+/// where it was and the generation it served before keeps serving.
 async fn assert_revision_fails_whole(
     state: &orion::server::state::AppState,
     app: &axum::Router,
@@ -47,9 +47,21 @@ async fn assert_revision_fails_whole(
     let before = state.runtime.load().id;
     let (base, members) = common::deploy::merged(app, upserts).await;
     let (status, body) = common::deploy::apply(app, base, members).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "the revision commits: {body}");
-    assert_eq!(body["evaluation"]["converged"], false, "{body}");
-    let error = body["local_error"].as_str().unwrap_or_default();
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the revision is refused: {body}"
+    );
+    assert_eq!(
+        body["error"]["code"], "DEPLOYMENT_WOULD_NOT_BUILD",
+        "{body}"
+    );
+    assert_eq!(
+        common::deploy::head(app).await.0,
+        base,
+        "a refused revision does not move the head"
+    );
+    let error = body["error"]["message"].as_str().unwrap_or_default();
     for fragment in fragments {
         assert!(
             error.contains(fragment),
@@ -249,13 +261,13 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
     )
     .await;
 
-    // The next deployment drops the broken member and adds a channel on the
-    // same workflow — the operation that used to 500.
-    common::deploy::remove(&app, &[("channel", "wedge-ch"), ("workflow", "wedge-wf")]).await;
+    // The refused members never entered the head, so the next deployment —
+    // a channel on the same workflow, the operation that used to 500 — goes
+    // through on its own.
     common::deploy_channel(&app, common::sync_http_channel("new-ch", &keep_wf)).await;
     assert!(
         serves_ok(&app, "new-ch").await,
-        "a channel deployed after a failed revision must serve"
+        "a channel deployed after a refused revision must serve"
     );
 
     // Taking it away again deploys too.

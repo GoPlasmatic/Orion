@@ -27,7 +27,7 @@ pub mod reload;
 pub mod tasks;
 
 pub use generation::{RuntimeGeneration, RuntimeHandle};
-pub use reload::reconcile_deployment_revision;
+pub use reload::{check_candidate, reconcile_deployment_revision};
 pub use tasks::{Criticality, Shutdown, TaskGuard, TaskRegistry, TaskReport, TaskState};
 
 /// Borrow the handler dependencies straight off a live `AppState`.

@@ -82,7 +82,7 @@ struct ManifestDefinitions {
 
 async fn manifest_definitions(
     state: &AppState,
-    target_revision: u64,
+    manifest: &crate::extensions::deployment_store::CanonicalManifest,
 ) -> Result<ManifestDefinitions, crate::errors::OrionError> {
     use std::collections::HashMap;
 
@@ -90,15 +90,6 @@ async fn manifest_definitions(
 
     use crate::errors::OrionError;
     use crate::extensions::deployment_store::{ArtifactState, EntityKind, ManifestMember};
-
-    let rev_row = state
-        .composition
-        .deployments
-        .get_revision(target_revision)
-        .ok_or_else(|| {
-            OrionError::NotFound(format!("Deployment revision {target_revision} not found"))
-        })?;
-    let manifest = &rev_row.manifest;
 
     for p in &manifest.providers {
         let Some(adm) = state.composition.deployments.get_admission(&p.digest) else {
@@ -337,20 +328,11 @@ fn refuse_route_collisions(
 /// `connector_call` and is not here.
 fn manifest_connectors(
     state: &AppState,
-    target_revision: u64,
+    manifest: &crate::extensions::deployment_store::CanonicalManifest,
 ) -> Result<Vec<crate::connector::StoredConnector>, crate::errors::OrionError> {
     use crate::extensions::deployment_store::EntityKind;
-    let revision = state
-        .composition
-        .deployments
-        .get_revision(target_revision)
-        .ok_or_else(|| {
-            crate::errors::OrionError::NotFound(format!(
-                "Deployment revision {target_revision} not found"
-            ))
-        })?;
     let mut connectors = Vec::new();
-    for member in &revision.manifest.members {
+    for member in &manifest.members {
         if member.entity.kind != EntityKind::Connection {
             continue;
         }
@@ -403,126 +385,55 @@ async fn build_and_publish(
     );
 
     let result = async {
+        let manifest = state
+            .composition
+            .deployments
+            .get_revision(revision)
+            .map(|rev| rev.manifest)
+            .ok_or_else(|| {
+                crate::errors::OrionError::NotFound(format!(
+                    "Deployment revision {revision} not found"
+                ))
+            })?;
         // Registry replacement belongs to the same serialized operation as
         // channel construction.
         state
             .connector_registry
-            .load(manifest_connectors(state, revision)?)
+            .load(manifest_connectors(state, &manifest)?)
             .await;
         let ManifestDefinitions {
             channels,
             workflows: active_workflows,
             plugins: plugin_rows,
             plugin_components,
-        } = manifest_definitions(state, revision).await?;
+        } = manifest_definitions(state, &manifest).await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
         refuse_route_collisions(&channels, &state.config.server.data_mounts)?;
         // Each workflow is granted the connections its member requires.
-        let connector_authority = Arc::new(
-            state
-                .composition
-                .deployments
-                .get_revision(revision)
-                .map(|rev| {
-                    super::authority::ConnectorAuthority::from_manifest(
-                        &rev.manifest,
-                        &active_workflows,
-                    )
-                })
-                .unwrap_or_default(),
-        );
+        let connector_authority = Arc::new(super::authority::ConnectorAuthority::from_manifest(
+            &manifest,
+            &active_workflows,
+        ));
         // The outgoing generation, read once: the base the new engine is built
         // from and the reuse cache the new channel estate is built against.
         // Reading it once is what makes those agree.
         let current = state.runtime.load();
 
-        // The plugin half decides how the engine is built. An unchanged
-        // active plugin set compiles on the running engine's compiler and
-        // swaps with `with_program`, which keeps the `Registry` (its
-        // functions, the plugin functions and the profile layer) and the
-        // engine's config. A changed set — an activation, an archive, a new
-        // digest — registers the loaded plugin functions on a registry
-        // assembled afresh and builds a new engine. Either way every row is
-        // compiled first and a workflow the registry cannot run is quarantined
-        // per channel rather than failing the reload, both halves are built
-        // before anything is published, and a failure here leaves the
-        // previous generation serving whole. Back when the channel estate was
-        // published first, this `?` could leave the node *permanently* mixed:
-        // new guards over old workflows, until some later reload happened to
-        // succeed.
-        let plugins_changed =
-            crate::plugin::PluginSet::fingerprint_of(&plugin_rows) != current.plugins.fingerprint();
-        let (new_engine, functions, plugins, engine_issues) = if plugins_changed {
-            let plugins = Arc::new(
-                crate::plugin::load_active(
-                    plugin_rows,
-                    &plugin_components,
-                    state.plugins.as_ref(),
-                    &state.config.plugins,
-                )
-                .await,
-            );
-            let functions = Arc::new(
-                crate::engine::FunctionRegistry::builtin()
-                    .with_entries(plugins.entries())
-                    .map_err(|e| crate::errors::OrionError::Config {
-                        message: format!("plugin function registry: {e}"),
-                    })?,
-            );
-            let compiler = plugin_compiler(state, &plugins);
-            let loaded = crate::engine::build_engine_workflows(
-                &channels,
-                &active_workflows,
-                &crate::engine::EngineLoad {
-                    compiler: &compiler,
-                    plugins: &plugins,
-                },
-            );
-            let engine = crate::engine::serving_engine(compiler.link(loaded.workflows));
-            (engine, functions, plugins, loaded.issues)
-        } else {
-            // The running engine's compiler: its registry, so a reload that
-            // keeps the plugins registers nothing. The boot generation's
-            // engine is empty, with no functions to carry, so its registry is
-            // assembled as for a changed set.
-            let boot = current.id == 0;
-            let compiler = if boot {
-                plugin_compiler(state, &current.plugins)
-            } else {
-                current.engine.compiler()
-            };
-            let loaded = crate::engine::build_engine_workflows(
-                &channels,
-                &active_workflows,
-                &crate::engine::EngineLoad {
-                    compiler: &compiler,
-                    plugins: &current.plugins,
-                },
-            );
-            let program = compiler.link(loaded.workflows);
-            let engine = if boot {
-                crate::engine::serving_engine(program)
-            } else {
-                current.engine.with_program(program)
-            };
-            (
-                engine,
-                current.functions.clone(),
-                current.plugins.clone(),
-                loaded.issues,
-            )
-        };
-
-        if !engine_issues.is_empty() {
-            let details: Vec<String> = engine_issues
-                .iter()
-                .map(|i| format!("channel '{}': {}", i.channel, i.reason))
-                .collect();
-            return Err(crate::errors::OrionError::validation(format!(
-                "Manifest workflow compilation failed: {}",
-                details.join("; ")
-            )));
-        }
+        let EngineHalf {
+            engine: new_engine,
+            functions,
+            plugins,
+            issues: engine_issues,
+        } = compile_engine(
+            state,
+            &current,
+            &channels,
+            &active_workflows,
+            plugin_rows,
+            &plugin_components,
+        )
+        .await?;
+        refuse_engine_issues(&engine_issues)?;
 
         // Channels that fail to load are quarantined — refused at every
         // ingress — and the build proceeds (F35). The quarantine set is
@@ -673,6 +584,157 @@ async fn build_and_publish(
     }
 
     result
+}
+
+/// The engine half of a candidate generation, compiled but not published.
+struct EngineHalf {
+    engine: dataflow_rs::Engine,
+    functions: Arc<crate::engine::FunctionRegistry>,
+    plugins: Arc<crate::plugin::PluginSet>,
+    issues: Vec<crate::channel::ChannelLoadIssue>,
+}
+
+/// Compile `workflows` into the engine a generation following `current`
+/// would serve. Builds nothing `current` holds and publishes nothing.
+async fn compile_engine(
+    state: &AppState,
+    current: &super::RuntimeGeneration,
+    channels: &[crate::storage::models::Channel],
+    workflows: &[crate::storage::models::Workflow],
+    plugin_rows: Vec<crate::storage::models::Plugin>,
+    plugin_components: &std::collections::HashMap<String, Vec<u8>>,
+) -> Result<EngineHalf, crate::errors::OrionError> {
+    // The plugin half decides how the engine is built. An unchanged
+    // active plugin set compiles on the running engine's compiler and
+    // swaps with `with_program`, which keeps the `Registry` (its
+    // functions, the plugin functions and the profile layer) and the
+    // engine's config. A changed set — an activation, an archive, a new
+    // digest — registers the loaded plugin functions on a registry
+    // assembled afresh and builds a new engine. Either way every row is
+    // compiled first and a workflow the registry cannot run is quarantined
+    // per channel rather than failing the reload, both halves are built
+    // before anything is published, and a failure here leaves the
+    // previous generation serving whole. Back when the channel estate was
+    // published first, this `?` could leave the node *permanently* mixed:
+    // new guards over old workflows, until some later reload happened to
+    // succeed.
+    let plugins_changed =
+        crate::plugin::PluginSet::fingerprint_of(&plugin_rows) != current.plugins.fingerprint();
+    let half = if plugins_changed {
+        let plugins = Arc::new(
+            crate::plugin::load_active(
+                plugin_rows,
+                plugin_components,
+                state.plugins.as_ref(),
+                &state.config.plugins,
+            )
+            .await,
+        );
+        let functions = Arc::new(
+            crate::engine::FunctionRegistry::builtin()
+                .with_entries(plugins.entries())
+                .map_err(|e| crate::errors::OrionError::Config {
+                    message: format!("plugin function registry: {e}"),
+                })?,
+        );
+        let compiler = plugin_compiler(state, &plugins);
+        let loaded = crate::engine::build_engine_workflows(
+            channels,
+            workflows,
+            &crate::engine::EngineLoad {
+                compiler: &compiler,
+                plugins: &plugins,
+            },
+        );
+        let engine = crate::engine::serving_engine(compiler.link(loaded.workflows));
+        EngineHalf {
+            engine,
+            functions,
+            plugins,
+            issues: loaded.issues,
+        }
+    } else {
+        // The running engine's compiler: its registry, so a reload that
+        // keeps the plugins registers nothing. The boot generation's
+        // engine is empty, with no functions to carry, so its registry is
+        // assembled as for a changed set.
+        let boot = current.id == 0;
+        let compiler = if boot {
+            plugin_compiler(state, &current.plugins)
+        } else {
+            current.engine.compiler()
+        };
+        let loaded = crate::engine::build_engine_workflows(
+            channels,
+            workflows,
+            &crate::engine::EngineLoad {
+                compiler: &compiler,
+                plugins: &current.plugins,
+            },
+        );
+        let program = compiler.link(loaded.workflows);
+        let engine = if boot {
+            crate::engine::serving_engine(program)
+        } else {
+            current.engine.with_program(program)
+        };
+        EngineHalf {
+            engine,
+            functions: current.functions.clone(),
+            plugins: current.plugins.clone(),
+            issues: loaded.issues,
+        }
+    };
+    Ok(half)
+}
+
+/// A workflow the engine could not compile fails the whole revision.
+fn refuse_engine_issues(
+    issues: &[crate::channel::ChannelLoadIssue],
+) -> Result<(), crate::errors::OrionError> {
+    if issues.is_empty() {
+        return Ok(());
+    }
+    let details: Vec<String> = issues
+        .iter()
+        .map(|i| format!("channel '{}': {}", i.channel, i.reason))
+        .collect();
+    Err(crate::errors::OrionError::validation(format!(
+        "Manifest workflow compilation failed: {}",
+        details.join("; ")
+    )))
+}
+
+/// Whether `manifest` would build on this node: every member read from its
+/// definition, the routes free, and every workflow compiled against the
+/// plugins the manifest carries. What a deployment plan and apply ask before
+/// committing a candidate, so a head the node cannot build is refused rather
+/// than committed and left unconverged. Compiles against the serving
+/// generation and publishes nothing; channel-level quarantines (a guard that
+/// cannot compile) still only quarantine.
+pub async fn check_candidate(
+    state: &AppState,
+    manifest: &crate::extensions::deployment_store::CanonicalManifest,
+) -> Result<(), crate::errors::OrionError> {
+    let ManifestDefinitions {
+        channels,
+        workflows,
+        plugins,
+        plugin_components,
+    } = manifest_definitions(state, manifest).await?;
+    let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
+    refuse_route_collisions(&channels, &state.config.server.data_mounts)?;
+    let current = state.runtime.load();
+    let half = compile_engine(
+        state,
+        &current,
+        &channels,
+        &workflows,
+        plugins,
+        &plugin_components,
+    )
+    .await?;
+    refuse_engine_issues(&half.issues)
 }
 
 /// A dataflow-rs 4 compiler over a registry assembled afresh from this

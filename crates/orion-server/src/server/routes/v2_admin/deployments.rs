@@ -85,12 +85,17 @@ pub(crate) async fn create_deployment_plan(
             ));
         }
     };
-    match state
+    let plan = state
         .composition
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
-        .await
+        .await;
+    if let Ok(ref plan) = plan
+        && let Err(e) = refuse_unbuildable(&state, plan).await
     {
+        return deployment_err_response(e);
+    }
+    match plan {
         Ok(plan) => {
             let added_values: Vec<Value> = plan
                 .added_entities
@@ -201,6 +206,10 @@ pub(crate) async fn apply_deployment(
         Err(e) => return deployment_err_response(e),
     };
 
+    if let Err(e) = refuse_unbuildable(&state, &plan).await {
+        return deployment_err_response(e);
+    }
+
     if let Some(ref expected_digest) = req.reviewed_manifest_digest
         && expected_digest != &plan.candidate_digest
     {
@@ -250,6 +259,19 @@ pub(crate) async fn apply_deployment(
         StatusCode::ACCEPTED,
         Json(serde_json::to_value(resp).unwrap_or(Value::Null)),
     )
+}
+
+/// Refuse a candidate this node could not build, before anything is
+/// committed: a head no node can serve would otherwise be committed, leave
+/// every node on the previous revision and read as up to date to the next
+/// apply.
+async fn refuse_unbuildable(
+    state: &AppState,
+    plan: &crate::extensions::deployment_store::CandidatePlan,
+) -> Result<(), DeploymentError> {
+    crate::runtime::check_candidate(state, &plan.candidate_manifest)
+        .await
+        .map_err(|e| DeploymentError::new("DEPLOYMENT_WOULD_NOT_BUILD", e.to_string()))
 }
 
 /// Build `revision` on this node, and say how that went: the node's

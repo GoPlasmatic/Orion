@@ -204,12 +204,15 @@ async fn upload_validation_reads_the_generations_registry() {
         }]
     });
 
+    // A qualified name no generation serves yet names a plugin function its
+    // deployment may bring, so upload leaves it to the deployment's build
+    // check — while an unqualified one can only be a built-in and is refused.
     let (status, body) = upload(&app, workflow.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let mut unqualified = workflow.clone();
+    unqualified["tasks"][0]["function"]["name"] = json!("echo_identity");
+    let (status, body) = upload(&app, unqualified).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        body.to_string().contains("UNKNOWN_FUNCTION"),
-        "an unregistered name is refused by code: {body}"
-    );
     assert!(
         body["error"]["details"][0]["message"]
             .as_str()

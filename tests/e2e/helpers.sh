@@ -554,27 +554,8 @@ compile_set() {
 
 # apply_dist <dist_dir> — `deployments apply -d`, leaving CLI_OUTPUT,
 # CLI_STDERR and CLI_EXIT for the caller.
-#
-# Plugins first: `POST /definitions` checks a workflow against the functions
-# the node serves *now*, so a workflow calling a plugin function the head
-# does not deploy yet is refused at upload, even though the same deployment
-# carries the plugin. When an apply that carries plugins fails, the plugins
-# are deployed alone (the compiled directory with every other member left
-# out), and the whole directory is applied again. A directory the head
-# already deploys applies nothing, so a re-run never takes this path.
 apply_dist() {
-    local dist="$1"
-    cli deployments apply -d "$dist"
-    if [[ "$CLI_EXIT" -ne 0 ]] && jq -e 'any(.members[]; .kind == "plugin")' "$dist/deployment.json" >/dev/null; then
-        local stage="$dist.plugins"
-        rm -rf "$stage"
-        mkdir -p "$stage/connections"
-        cp -R "$dist/definitions" "$stage/"
-        jq '.members |= map(select(.kind == "plugin"))' "$dist/deployment.json" > "$stage/deployment.json"
-        cli deployments apply -d "$stage"
-        [[ "$CLI_EXIT" -eq 0 ]] || return 0
-        cli deployments apply -d "$dist"
-    fi
+    cli deployments apply -d "$1"
 }
 
 # deploy_set <set_dir> — compile, then apply. On a compile failure CLI_EXIT

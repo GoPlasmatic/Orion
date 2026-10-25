@@ -95,15 +95,13 @@ test_a_workflow_without_its_plugin_is_refused() {
     compile_set "$dir"
     assert_contains "$COMPILE_OUTPUT" "plugin.unverifiable"
 
+    # Upload cannot know which plugins the deployment brings, so the refusal
+    # is the deployment's: the head it would build calls a function nothing
+    # in it serves.
     apply_dist "$dir.dist"
     assert_ne "$CLI_EXIT" 0 "a workflow calling a function no plugin serves must not deploy"
-
-    local response
-    response=$(curl -s -X POST "$ORION_URL/api/v2/admin/definitions" \
-        -H 'content-type: application/json' \
-        -d @"$(grep -l '"workflow"' "$dir.dist"/definitions/*.json)")
-    assert_json_eq "$response" '.error.details[0].code' 'UNKNOWN_FUNCTION'
-    assert_contains "$response" "test.fixture.wrap"
+    assert_contains "$CLI_STDERR" "DEPLOYMENT_WOULD_NOT_BUILD"
+    assert_contains "$CLI_STDERR" "test.fixture.wrap"
 }
 
 test_a_deployment_without_the_plugin_drops_its_functions() {
