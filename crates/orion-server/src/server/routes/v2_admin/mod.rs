@@ -190,10 +190,16 @@ pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> i
             crate::extensions::ImplementationKind::Workflow => workflow_providers.push(id.clone()),
             crate::extensions::ImplementationKind::Wasm => wasm_providers.push(id.clone()),
         }
-        providers.push(json!({
+        // A built-in driver's digest is what a connection revision names
+        // as its provider, so it is reported where a client looks for it.
+        let mut backend = json!({
             "kind": kind.as_str(),
             "driver_id": id,
-        }));
+        });
+        if let Some(digest) = crate::extensions::foundation::builtin_provider_digest(&id) {
+            backend["package_digest"] = json!(digest);
+        }
+        providers.push(backend);
     }
 
     Json(RuntimeCapabilitiesResponse {

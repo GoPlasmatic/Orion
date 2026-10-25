@@ -645,3 +645,55 @@ async fn failed_persistence_never_undoes_committed_in_memory_state() {
     assert_eq!(conns.len(), 1);
     assert_eq!(conns[0].connection_id, "conn-1");
 }
+
+/// A connection's provider must be declared in the manifest, unless it is a
+/// built-in driver, which ships with the binary and has no package.
+#[test]
+fn a_builtin_provider_needs_no_declaration_and_an_uploaded_one_does() {
+    let store = ImmutableDeploymentStore::new("node-builtin");
+    let policy = CommunityAdmissionPolicy::new();
+    let pkg = store
+        .ingest_verified_archive(&sample_archive_entries())
+        .unwrap();
+    store
+        .admit_package(&pkg.package_digest, &policy, None)
+        .unwrap();
+    let builtin =
+        super::super::foundation::builtin_provider_digest(super::super::foundation::DRIVER_HTTP)
+            .expect("a built-in driver");
+    let connection = |id: &str, provider: &str| {
+        let row = store
+            .store_connection_revision(
+                id,
+                1,
+                provider,
+                json!({"url": "https://api.example.com"}),
+                None,
+            )
+            .unwrap();
+        CanonicalManifest {
+            schema_version: 2,
+            providers: Vec::new(),
+            provider_lock_digest: None,
+            members: vec![ManifestMember {
+                entity: EntityRef {
+                    kind: EntityKind::Connection,
+                    id: id.to_string(),
+                    revision: 1,
+                },
+                definition_digest: row.configuration_digest,
+                owning_package: None,
+                requires: Vec::new(),
+                rollouts: Vec::new(),
+            }],
+        }
+    };
+
+    store
+        .plan_candidate(0, connection("builtin-api", &builtin))
+        .expect("a built-in provider plans undeclared");
+    let err = store
+        .plan_candidate(0, connection("uploaded-api", &pkg.package_digest))
+        .expect_err("an undeclared package is refused");
+    assert_eq!(err.code, "CONNECTION_PROVIDER_NOT_DECLARED");
+}

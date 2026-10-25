@@ -1,44 +1,9 @@
 //! `connector_call` under a deployed generation: a workflow may call a
 //! connection its manifest member requires, and nothing else.
 
-use orion::extensions::package_identity::{canonical_bytes, sha256_digest};
-use orion::extensions::{
-    ArchiveEntryInput, CanonicalManifest, EntityKind, EntityRef, ManifestMember, ProviderRef,
-};
+use orion::extensions::package_identity::sha256_digest;
+use orion::extensions::{CanonicalManifest, EntityKind, EntityRef, ManifestMember};
 use serde_json::{Value, json};
-use std::path::PathBuf;
-
-/// The fixture's helper package, which has no dependencies.
-fn helper_package_entries() -> Vec<ArchiveEntryInput> {
-    let fixture_dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v2/package-identity");
-    let bundle: Value =
-        serde_json::from_str(&std::fs::read_to_string(fixture_dir.join("bundle.json")).unwrap())
-            .unwrap();
-    let pkg = &bundle["providers"][1];
-    let mut entries: Vec<ArchiveEntryInput> = pkg["payloads"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(path, text)| {
-            let bytes = text.as_str().unwrap().as_bytes().to_vec();
-            ArchiveEntryInput {
-                path: path.clone(),
-                compressed_size: bytes.len(),
-                bytes,
-                is_symlink: false,
-            }
-        })
-        .collect();
-    let inv_bytes = canonical_bytes(&pkg["inventory"]).unwrap();
-    entries.push(ArchiveEntryInput {
-        path: "inventory.json".to_string(),
-        compressed_size: inv_bytes.len(),
-        bytes: inv_bytes,
-        is_symlink: false,
-    });
-    entries
-}
 
 fn cache_workflow(id: &str) -> orion::storage::repositories::workflows::CreateWorkflowRequest {
     orion::storage::repositories::workflows::CreateWorkflowRequest {
@@ -150,26 +115,19 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
         state.repos.channels.create(&channel(ch, wf)).await.unwrap();
     }
 
+    // The connection names the built-in memory-cache driver by its built-in
+    // digest, so the manifest declares no provider package for it.
     let deployments = &state.composition.deployments;
-    let pkg = deployments
-        .ingest_verified_archive_in_db(&state.db_pool, &helper_package_entries())
-        .await
-        .unwrap();
-    deployments
-        .admit_package_in_db(
-            &state.db_pool,
-            &pkg.package_digest,
-            state.composition.admission.as_ref(),
-            None,
-        )
-        .await
-        .unwrap();
+    let builtin = orion::extensions::foundation::builtin_provider_digest(
+        orion::extensions::foundation::DRIVER_MEMORY_CACHE,
+    )
+    .expect("a built-in driver");
     let conn = deployments
         .store_connection_revision_in_db(
             &state.db_pool,
             "local-cache",
             1,
-            &pkg.package_digest,
+            &builtin,
             json!({}),
             None,
         )
@@ -178,12 +136,7 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
 
     let manifest = CanonicalManifest {
         schema_version: 2,
-        providers: vec![ProviderRef {
-            publisher: pkg.publisher.clone(),
-            provider_id: pkg.provider_id.clone(),
-            version: pkg.version.clone(),
-            digest: pkg.package_digest.clone(),
-        }],
+        providers: Vec::new(),
         provider_lock_digest: None,
         members: vec![
             member(

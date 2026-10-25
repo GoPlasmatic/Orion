@@ -294,20 +294,31 @@ async fn execute_connector_call(
                 package_digest: pkg.package_digest,
             }
         }
-        // A provider built into this binary has no uploaded package: it is
-        // what this build is, at the digest the connection revision names.
-        None if impl_kind == ImplementationKind::Rust => ProviderReference {
-            provider_id: target_id.clone(),
-            version: crate::version::ORION_VERSION.to_string(),
-            package_digest: conn_row.provider_digest.clone(),
+        // A provider built into this binary has no uploaded package: the
+        // revision names it by its built-in digest, which must be the
+        // driver this call targets.
+        None => match crate::extensions::foundation::builtin_driver(&conn_row.provider_digest) {
+            Some(driver) if impl_kind == ImplementationKind::Rust && driver == target_id => {
+                ProviderReference {
+                    provider_id: driver.to_string(),
+                    version: crate::version::ORION_VERSION.to_string(),
+                    package_digest: conn_row.provider_digest.clone(),
+                }
+            }
+            Some(driver) => {
+                return Err(forbidden(format!(
+                    "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names the \
+                     built-in provider '{driver}', not ({impl_kind:?}, '{target_id}')"
+                )));
+            }
+            None => {
+                return Err(forbidden(format!(
+                    "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names provider \
+                     package '{}', which is not uploaded",
+                    conn_row.provider_digest
+                )));
+            }
         },
-        None => {
-            return Err(forbidden(format!(
-                "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names provider \
-                 package '{}', which is not uploaded",
-                conn_row.provider_digest
-            )));
-        }
     };
 
     let effective_conn = EffectiveConnectionIdentity {
@@ -414,7 +425,19 @@ mod tests {
     use serde_json::Value;
     use std::sync::Arc;
 
-    const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    /// The built-in digest of the driver serving a test connection, which
+    /// its revision names as its provider.
+    fn digest_for(connection: &str) -> String {
+        use crate::extensions::foundation::{
+            DRIVER_MEMORY_CACHE, DRIVER_POSTGRESQL, DRIVER_SQLITE, builtin_provider_digest,
+        };
+        let driver = match connection {
+            "dead-db" => DRIVER_POSTGRESQL,
+            "local-db" | "bound-params-db" => DRIVER_SQLITE,
+            _ => DRIVER_MEMORY_CACHE,
+        };
+        builtin_provider_digest(driver).expect("a built-in driver")
+    }
 
     /// Run `call` as a served run would: inside a run context and a
     /// generation granting the harness's workflow (`test`) `grants`, each
@@ -426,9 +449,13 @@ mod tests {
     ) -> testing::Called {
         let mut grant = AuthorityGrant::default();
         for (connection, operation) in grants {
-            let _ =
-                root.deployments
-                    .store_connection_revision(connection, 1, DIGEST, json!({}), None);
+            let _ = root.deployments.store_connection_revision(
+                connection,
+                1,
+                &digest_for(connection),
+                json!({}),
+                None,
+            );
             grant
                 .allowed_operations
                 .entry((*connection).to_string())
@@ -496,7 +523,7 @@ mod tests {
             .store_connection_revision(
                 "dead-db",
                 1,
-                DIGEST,
+                &digest_for("dead-db"),
                 json!({"connection_string": "postgres://127.0.0.1:1/nothing"}),
                 None,
             )
@@ -770,6 +797,45 @@ mod tests {
             rev_err.message().contains("CONNECTOR_CONNECTION_FORBIDDEN"),
             "unexpected error: {}",
             rev_err.message()
+        );
+    }
+
+    /// A connection naming one built-in driver by its digest cannot be
+    /// called as another: the revision says which provider serves it.
+    #[tokio::test]
+    async fn a_connection_is_served_only_by_the_builtin_driver_it_names() {
+        let root = CompositionRoot::community();
+        let func = ConnectorCallFunction {
+            providers: root.providers.clone(),
+            registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
+                Default::default(),
+            )),
+        };
+        let called = served(
+            &root,
+            &[("local-cache", "query")],
+            testing::call(
+                func,
+                json!({
+                    "connection": "local-cache",
+                    "target_id": "org.orion.sqlite",
+                    "operation": "query",
+                    "input": { "sql": "SELECT 1" },
+                    "output": "data.rows"
+                }),
+            )
+            .exprs(crate::engine::kit::test_exprs())
+            .name(NAME),
+        )
+        .await;
+        let err = called.outcome.expect_err("another driver is refused");
+        assert!(
+            err.message().contains("CONNECTOR_CONNECTION_FORBIDDEN")
+                && err
+                    .message()
+                    .contains("built-in provider 'org.orion.memory-cache'"),
+            "{}",
+            err.message()
         );
     }
 

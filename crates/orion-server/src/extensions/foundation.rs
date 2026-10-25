@@ -44,6 +44,36 @@ pub const COMMUNITY_RUST_DRIVERS: &[&str] = &[
     DRIVER_MEMORY_CACHE,
 ];
 
+/// The contract generation the built-in drivers' identities name. It moves
+/// only when a driver's operations change incompatibly, never with the
+/// build, so a connection revision naming a built-in provider stays valid
+/// across upgrades.
+const BUILTIN_PROVIDER_CONTRACT: u32 = 1;
+
+/// The package digest a built-in driver answers to: a connection revision
+/// names a provider by digest, and a built-in driver has no uploaded
+/// package, so this stable digest of its id and contract stands in for one.
+/// `None` for an id this build does not ship.
+pub fn builtin_provider_digest(driver_id: &str) -> Option<String> {
+    COMMUNITY_RUST_DRIVERS
+        .contains(&driver_id)
+        .then(|| builtin_digest_of(driver_id))
+}
+
+/// The built-in driver whose [`builtin_provider_digest`] is `digest`.
+pub fn builtin_driver(digest: &str) -> Option<&'static str> {
+    COMMUNITY_RUST_DRIVERS
+        .iter()
+        .copied()
+        .find(|driver| builtin_digest_of(driver) == digest)
+}
+
+fn builtin_digest_of(driver_id: &str) -> String {
+    super::package_identity::sha256_digest(
+        format!("orion-builtin-provider:{driver_id}@{BUILTIN_PROVIDER_CONTRACT}").as_bytes(),
+    )
+}
+
 /// What the foundation providers are bounded by. Built from the node's
 /// config at boot; [`Default`] is that config's defaults.
 #[derive(Debug, Clone)]
@@ -145,12 +175,26 @@ async fn governed_connection_string(
     let Some(conn) = governed_connection(store, identity) else {
         return Ok(None);
     };
-    let Some(locator) = conn.secret_locator.as_deref() else {
-        return Ok(conn
+    match governed_secret(&conn, identity, driver).await? {
+        Some(secret) => Ok(Some(secret)),
+        None => Ok(conn
             .public_config
             .get("connection_string")
             .and_then(Value::as_str)
-            .map(str::to_string));
+            .map(str::to_string)),
+    }
+}
+
+/// What a governed revision's `secret_locator` resolves to, or `None` when
+/// it has none. The locator must be a reference (`env://`, `vault://`, …):
+/// a literal there would be a credential stored in the clear.
+async fn governed_secret(
+    conn: &super::deployment_store::ConnectionRevisionRow,
+    identity: &EffectiveConnectionIdentity,
+    driver: &str,
+) -> Result<Option<String>, ConnectorError> {
+    let Some(locator) = conn.secret_locator.as_deref() else {
+        return Ok(None);
     };
     let is_reference =
         crate::connector::secrets::parse_reference(locator).is_some_and(|(scheme, _)| {
@@ -415,16 +459,121 @@ impl HttpProviderBackend {
         self.options = options.clone();
         self
     }
+}
 
-    /// The base URL the governed connection revision names.
-    fn resolve_connection_url(&self, identity: &EffectiveConnectionIdentity) -> Option<String> {
-        let conn = governed_connection(self.deployments.as_ref(), identity)?;
-        conn.public_config
-            .get("url")
-            .or_else(|| conn.public_config.get("base_url"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+/// How an HTTP connection presents its credential, from its
+/// `public_config.auth`. The credential itself is never here: it is what
+/// the revision's `secret_locator` resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HttpAuth {
+    /// `{"type": "bearer"}`: `Authorization: Bearer <secret>`.
+    Bearer,
+    /// `{"type": "header", "name": "X-API-Key"}`: the named header carries
+    /// the secret.
+    Header(reqwest::header::HeaderName),
+    /// `{"type": "basic", "username": "svc"}`: HTTP Basic with the secret as
+    /// the password.
+    Basic { username: String },
+}
+
+/// Headers an `auth` of type `header` may not name: the request's framing
+/// and routing are Orion's, not the credential's.
+const RESERVED_AUTH_HEADERS: &[&str] = &[
+    "host",
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+];
+
+/// The `auth` object of an HTTP connection's `public_config`, read strictly:
+/// a known `type`, the fields that type needs, and nothing else.
+fn http_auth(config: &Value) -> Result<Option<HttpAuth>, ConnectorError> {
+    let Some(auth) = config.get("auth") else {
+        return Ok(None);
+    };
+    let invalid = |message: String, pointer: &str| {
+        ConnectorError::invalid_input(message, Some(json!({"pointer": pointer})))
+    };
+    let Some(object) = auth.as_object() else {
+        return Err(invalid(
+            "HTTP 'auth' must be an object".to_string(),
+            "/auth",
+        ));
+    };
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let allowed: &[&str] = match kind {
+        "bearer" => &["type"],
+        "header" => &["type", "name"],
+        "basic" => &["type", "username"],
+        _ => {
+            return Err(invalid(
+                format!("HTTP 'auth.type' must be 'bearer', 'header' or 'basic' (got '{kind}')"),
+                "/auth/type",
+            ));
+        }
+    };
+    if let Some(extra) = object.keys().find(|k| !allowed.contains(&k.as_str())) {
+        return Err(invalid(
+            format!("HTTP 'auth' of type '{kind}' does not take '{extra}'"),
+            &format!("/auth/{extra}"),
+        ));
     }
+    let field = |name: &str| {
+        object
+            .get(name)
+            .and_then(Value::as_str)
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| {
+                invalid(
+                    format!("HTTP 'auth' of type '{kind}' requires a string '{name}'"),
+                    &format!("/auth/{name}"),
+                )
+            })
+    };
+    Ok(Some(match kind {
+        "bearer" => HttpAuth::Bearer,
+        "header" => {
+            let name = field("name")?;
+            let header = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| invalid(format!("'{name}' is not a header name"), "/auth/name"))?;
+            if RESERVED_AUTH_HEADERS.contains(&header.as_str()) {
+                return Err(invalid(
+                    format!("HTTP 'auth' may not carry its secret in '{name}'"),
+                    "/auth/name",
+                ));
+            }
+            HttpAuth::Header(header)
+        }
+        _ => HttpAuth::Basic {
+            username: field("username")?.to_string(),
+        },
+    }))
+}
+
+/// `request` carrying `secret` the way `auth` says, the header marked
+/// sensitive so it never reaches a debug log.
+fn authorize(
+    request: reqwest::RequestBuilder,
+    auth: &HttpAuth,
+    secret: &str,
+) -> Result<reqwest::RequestBuilder, ConnectorError> {
+    Ok(match auth {
+        HttpAuth::Bearer => request.bearer_auth(secret),
+        HttpAuth::Basic { username } => request.basic_auth(username, Some(secret)),
+        HttpAuth::Header(name) => {
+            let mut value = reqwest::header::HeaderValue::from_str(secret).map_err(|_| {
+                ConnectorError::invalid_input(
+                    "HTTP connection secret is not a valid header value",
+                    None,
+                )
+            })?;
+            value.set_sensitive(true);
+            request.header(name.clone(), value)
+        }
+    })
 }
 
 impl ProviderBackend for HttpProviderBackend {
@@ -450,6 +599,7 @@ impl ProviderBackend for HttpProviderBackend {
                 Some(json!({"pointer": "/url"})),
             ));
         }
+        http_auth(config)?;
         if let Some(methods) = config
             .get("operations")
             .and_then(|o| o.get("methods"))
@@ -520,7 +670,15 @@ impl ProviderBackend for HttpProviderBackend {
             }
 
             let identity = ctx.invocation().effective_identity();
-            let Some(url) = self.resolve_connection_url(identity) else {
+            let conn = governed_connection(self.deployments.as_ref(), identity);
+            let url = conn.as_ref().and_then(|conn| {
+                conn.public_config
+                    .get("url")
+                    .or_else(|| conn.public_config.get("base_url"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+            let Some((url, conn)) = url.zip(conn) else {
                 return Err(ConnectorError::invalid_input(
                     format!(
                         "HTTP connector invocation on '{}' requires a connection revision with a 'url'",
@@ -528,6 +686,35 @@ impl ProviderBackend for HttpProviderBackend {
                     ),
                     Some(json!({"pointer": "/url"})),
                 ));
+            };
+
+            // The credential is settled before anything leaves the node: a
+            // revision whose `auth` and `secret_locator` disagree is refused
+            // without a DNS lookup.
+            let credential = match (http_auth(&conn.public_config)?, &conn.secret_locator) {
+                (Some(auth), Some(_)) => governed_secret(&conn, identity, DRIVER_HTTP)
+                    .await?
+                    .map(|secret| (auth, secret)),
+                (None, None) => None,
+                (Some(_), None) => {
+                    return Err(ConnectorError::invalid_input(
+                        format!(
+                            "HTTP connection '{}' declares 'auth' but has no secret_locator",
+                            identity.connection_id
+                        ),
+                        Some(json!({"pointer": "/auth"})),
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(ConnectorError::invalid_input(
+                        format!(
+                            "HTTP connection '{}' has a secret_locator but no 'auth' saying how \
+                             to send it",
+                            identity.connection_id
+                        ),
+                        Some(json!({"pointer": "/auth"})),
+                    ));
+                }
             };
 
             if let Err(ssrf_reason) = crate::validation::ssrf::validate_url_not_private(&url).await
@@ -549,6 +736,9 @@ impl ProviderBackend for HttpProviderBackend {
                 )
             })?;
             let mut req_builder = self.options.http_client.request(req_method, &full_url);
+            if let Some((auth, secret)) = &credential {
+                req_builder = authorize(req_builder, auth, secret)?;
+            }
             if let Some(body_val) = input.get("body")
                 && !body_val.is_null()
             {

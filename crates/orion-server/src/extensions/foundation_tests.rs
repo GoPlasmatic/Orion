@@ -104,6 +104,31 @@ async fn sql_rows_are_capped_and_a_secret_locator_must_be_a_reference() {
     );
 }
 
+/// Each built-in driver answers to one stable digest, which maps back to
+/// it, and an id this build does not ship has none.
+#[test]
+fn a_builtin_driver_has_one_stable_digest() {
+    for driver in COMMUNITY_RUST_DRIVERS {
+        let digest = builtin_provider_digest(driver).expect("a built-in driver");
+        assert!(
+            digest.starts_with("sha256:") && digest.len() == 71,
+            "{digest}"
+        );
+        assert_eq!(builtin_driver(&digest), Some(*driver));
+        assert_eq!(builtin_provider_digest(driver), Some(digest));
+    }
+    let distinct: BTreeSet<String> = COMMUNITY_RUST_DRIVERS
+        .iter()
+        .filter_map(|d| builtin_provider_digest(d))
+        .collect();
+    assert_eq!(distinct.len(), COMMUNITY_RUST_DRIVERS.len());
+    assert_eq!(builtin_provider_digest("com.example.other"), None);
+    assert_eq!(
+        builtin_driver("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        None
+    );
+}
+
 #[test]
 fn sqlite_provider_enforces_approved_root_and_rejects_traversal_and_orion_db() {
     let sqlite = SqliteProviderBackend::new("/var/lib/orion/sqlite", 4);
@@ -459,4 +484,114 @@ async fn sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and
         .await
         .expect_err("zero ttl_ms must fail");
     assert_eq!(ttl_err.code, codes::INVALID_INPUT);
+}
+
+/// An HTTP connection's `auth` is read strictly: a known type, the fields
+/// that type needs, and a header name that is not the request's framing.
+#[test]
+fn http_auth_is_read_strictly() {
+    let auth = |value: Value| http_auth(&json!({"url": "https://x.example", "auth": value}));
+    assert_eq!(
+        auth(json!({"type": "bearer"})).unwrap(),
+        Some(HttpAuth::Bearer)
+    );
+    assert_eq!(
+        auth(json!({"type": "header", "name": "X-API-Key"})).unwrap(),
+        Some(HttpAuth::Header(reqwest::header::HeaderName::from_static(
+            "x-api-key"
+        )))
+    );
+    assert_eq!(
+        auth(json!({"type": "basic", "username": "svc"})).unwrap(),
+        Some(HttpAuth::Basic {
+            username: "svc".to_string()
+        })
+    );
+    assert_eq!(
+        http_auth(&json!({"url": "https://x.example"})).unwrap(),
+        None
+    );
+    for bad in [
+        json!("bearer"),
+        json!({"type": "digest"}),
+        json!({"type": "bearer", "name": "X"}),
+        json!({"type": "header"}),
+        json!({"type": "header", "name": "not a header"}),
+        json!({"type": "header", "name": "Host"}),
+        json!({"type": "basic"}),
+    ] {
+        let err = auth(bad.clone()).expect_err("refused");
+        assert_eq!(err.code, codes::INVALID_INPUT, "{bad}");
+    }
+    // The provider's config check reads it too.
+    assert!(
+        HttpProviderBackend::new()
+            .validate_config(&json!({"url": "https://x.example", "auth": {"type": "digest"}}))
+            .is_err()
+    );
+}
+
+/// The secret goes where `auth` says, and a header carrying it is marked
+/// sensitive.
+#[test]
+fn http_auth_puts_the_secret_where_it_says() {
+    let client = reqwest::Client::new();
+    let built = |auth: &HttpAuth| {
+        authorize(client.get("https://x.example/"), auth, "s3cret")
+            .unwrap()
+            .build()
+            .unwrap()
+    };
+    let bearer = built(&HttpAuth::Bearer);
+    assert_eq!(bearer.headers()["authorization"], "Bearer s3cret");
+    assert!(bearer.headers()["authorization"].is_sensitive());
+
+    let header = built(&HttpAuth::Header(reqwest::header::HeaderName::from_static(
+        "x-api-key",
+    )));
+    assert_eq!(header.headers()["x-api-key"], "s3cret");
+    assert!(header.headers()["x-api-key"].is_sensitive());
+
+    let basic = built(&HttpAuth::Basic {
+        username: "svc".to_string(),
+    });
+    // base64("svc:s3cret")
+    assert_eq!(basic.headers()["authorization"], "Basic c3ZjOnMzY3JldA==");
+}
+
+/// `auth` and `secret_locator` come together or not at all, and a mismatch
+/// is refused before the call leaves the node.
+#[tokio::test]
+async fn http_auth_and_secret_locator_must_agree() {
+    let inv = make_invocation(DRIVER_HTTP, "http-conn", 1, "get");
+    let attempt = inv.next_attempt().unwrap();
+    for (config, locator, says) in [
+        (
+            json!({"url": "https://api.example.com", "auth": {"type": "bearer"}}),
+            None,
+            "has no secret_locator",
+        ),
+        (
+            json!({"url": "https://api.example.com"}),
+            Some("env://ORION_TEST_HTTP_TOKEN"),
+            "no 'auth'",
+        ),
+        (
+            json!({"url": "https://api.example.com", "auth": {"type": "bearer"}}),
+            Some("plain-text-token"),
+            "not a secret reference",
+        ),
+    ] {
+        let http = HttpProviderBackend::with_deployment_store(with_connection(
+            "http-conn",
+            config,
+            locator,
+        ));
+        let err = http
+            .invoke(&attempt, "get", json!({"path": "/"}))
+            .await
+            .expect_err("refused");
+        assert_eq!(err.code, codes::INVALID_INPUT);
+        assert!(err.message.contains(says), "{}", err.message);
+    }
 }

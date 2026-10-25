@@ -32,11 +32,21 @@ Invokes a v2 connector provider operation (`rust`, `workflow`, or `wasm`) under 
 
 A call runs only in a generation built from a deployment manifest, and only when the workflow's manifest member `requires` the connection. The operations granted are the ones the workflow's own `connector_call` tasks name for it. The connection must have a revision in the deployment store: the one the active manifest names, or the latest. Every call of one run shares that run's deadline and budget. Anything else is refused with `CONNECTOR_CONNECTION_FORBIDDEN`: a call outside a served run, a connection the member does not require, a connection with no revision, or a provider package that is not uploaded.
 
+A connection revision names its provider by package digest. The built-in drivers (`org.orion.http`, `org.orion.postgresql`, `org.orion.sqlite`, `org.orion.memory-cache`) have no uploaded package; each answers to a fixed digest instead, listed as `package_digest` under `provider_backends` in `GET /api/v2/admin/runtime-capabilities`. A connection naming one needs no entry in the manifest's `providers`, and can be called only as that driver: a call whose `target_id` is another driver is refused with `CONNECTOR_CONNECTION_FORBIDDEN`.
+
 `kind` must be `rust`, `workflow` or `wasm`. Any other value is refused when the task loads.
 
 ### The foundation SQL and HTTP providers
 
-The Community providers `org.orion.postgresql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP). A credential may live only behind its `secret_locator`, a reference such as `env://ORDERS_DB_URL`, which resolves to the whole connection string.
+The Community providers `org.orion.postgresql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP). A credential may live only behind its `secret_locator`, a reference such as `env://ORDERS_DB_URL`. For SQL it resolves to the whole connection string.
+
+For HTTP, the secret is the credential itself, and `public_config.auth` says how it is sent:
+
+- `{"type": "bearer"}` sends `Authorization: Bearer <secret>`.
+- `{"type": "header", "name": "X-API-Key"}` sends the secret in the named header, which may not be `Host`, `Content-Length`, `Content-Type` or `Transfer-Encoding`.
+- `{"type": "basic", "username": "svc"}` sends HTTP Basic, with the secret as the password.
+
+`auth` and `secret_locator` come together: a revision with one and not the other is refused with `CONNECTOR_INVALID_INPUT` before any request is made, as is an `auth` with an unknown `type` or a field its type does not take.
 
 A SQL statement (`input.sql`, or `source` for a query and `target` for a write) must be a literal string. A task that builds one from the message, such as `{"sql": {"var": "data.q"}}`, is refused when it loads. The message reaches the database only through `input.params`, an array bound to the statement's placeholders (`$1` on PostgreSQL, `?` on SQLite):
 

@@ -1058,7 +1058,11 @@ impl ImmutableDeploymentStore {
                         ),
                     ));
                 }
-                if !declared_provider_digests.contains(conn_row.provider_digest.as_str()) {
+                // A built-in driver ships with the binary: it is always
+                // available and has no package to declare.
+                if !declared_provider_digests.contains(conn_row.provider_digest.as_str())
+                    && super::foundation::builtin_driver(&conn_row.provider_digest).is_none()
+                {
                     return Err(DeploymentError::new(
                         "CONNECTION_PROVIDER_NOT_DECLARED",
                         format!(
