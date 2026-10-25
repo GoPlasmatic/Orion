@@ -484,8 +484,8 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
             .workflow
     };
     let before = state.runtime.load();
-    let compiled = probe(&before.engine.as_ref().expect("an engine4").compiler());
-    let fresh = probe(&before.engine.as_ref().expect("an engine4").compiler());
+    let compiled = probe(&before.engine.compiler());
+    let fresh = probe(&before.engine.compiler());
 
     orion::runtime::reload_engine(&state)
         .await
@@ -493,10 +493,7 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
 
     let after = state.runtime.load();
     assert!(after.id > before.id);
-    let engine4 = after
-        .engine
-        .as_ref()
-        .expect("the reload publishes an engine");
+    let engine4 = &after.engine;
     let program = engine4.compiler().link([compiled]);
     assert_eq!(
         program.workflows().len(),

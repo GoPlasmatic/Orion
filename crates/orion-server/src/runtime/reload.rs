@@ -502,12 +502,14 @@ async fn reload_with_manifest(
             (engine, functions, plugins, loaded.issues)
         } else {
             // The running engine's compiler: its registry, so a reload that
-            // keeps the plugins registers nothing. The boot generation has no
-            // engine to carry, and its registry is assembled as for a changed
-            // set.
-            let compiler = match &current.engine {
-                Some(engine) => engine.compiler(),
-                None => plugin_compiler(state, &current.plugins),
+            // keeps the plugins registers nothing. The boot generation's
+            // engine is empty, with no functions to carry, so its registry is
+            // assembled as for a changed set.
+            let boot = current.id == 0;
+            let compiler = if boot {
+                plugin_compiler(state, &current.plugins)
+            } else {
+                current.engine.compiler()
             };
             let loaded = crate::engine::build_engine_workflows(
                 &channels,
@@ -518,9 +520,10 @@ async fn reload_with_manifest(
                 },
             );
             let program = compiler.link(loaded.workflows);
-            let engine = match &current.engine {
-                Some(engine) => engine.with_program(program),
-                None => crate::engine::serving_engine(program),
+            let engine = if boot {
+                crate::engine::serving_engine(program)
+            } else {
+                current.engine.with_program(program)
             };
             (
                 engine,

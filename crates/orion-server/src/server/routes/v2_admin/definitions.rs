@@ -145,9 +145,7 @@ fn workflow_problems(
     if !problems.is_empty() {
         return Ok(problems);
     }
-    let Some(engine) = generation.engine.as_ref() else {
-        return Ok(problems);
-    };
+    let engine = &generation.engine;
     let row = definitions::workflow_row(workflow, "__definition__", 1)?;
     let json = crate::storage::repositories::workflows::workflow_json(
         &row,

@@ -179,32 +179,20 @@ async fn execute_admitted_on_generation_inner(
     metadata: &Value,
     opts: ExecOpts<'_>,
 ) -> Execution {
-    match &generation.engine {
-        Some(engine) => {
-            let run = connector_run_context(generation, opts.timeout_ms);
-            super::functions::connector_call::ACTIVE_RUN_CONTEXT
-                .scope(
-                    run,
-                    execute_on(
-                        engine,
-                        channel,
-                        data,
-                        metadata,
-                        opts,
-                        generation.run_budget_limits,
-                    ),
-                )
-                .await
-        }
-        // The boot generation, before the first publish, holds no workflow:
-        // nothing matches, and the message is returned as it started.
-        None => Execution {
-            message: serving_message(data, metadata),
-            task_trace: None,
-            outcome: RunOutcome::Ok,
-            duration: Duration::ZERO,
-        },
-    }
+    let run = connector_run_context(generation, opts.timeout_ms);
+    super::functions::connector_call::ACTIVE_RUN_CONTEXT
+        .scope(
+            run,
+            execute_on(
+                &generation.engine,
+                channel,
+                data,
+                metadata,
+                opts,
+                generation.run_budget_limits,
+            ),
+        )
+        .await
 }
 
 /// How far out the deadline of a run with no timeout is put. The run itself

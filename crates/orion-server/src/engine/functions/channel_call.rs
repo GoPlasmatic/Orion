@@ -194,10 +194,7 @@ impl Function for ChannelCallFunction {
         // pinned generation from the parent run under V2-05.3).
         let generation = self.runtime.load_pinned_or_current();
         let target_runtime = Some(serviceable_target(&generation, &target)?);
-        let engine = generation
-            .engine
-            .as_ref()
-            .ok_or_else(|| not_found(&target))?;
+        let engine = &generation.engine;
         // Where the answer goes, before the guards spend anything on the
         // call: an output that names no path (`null` included, which 1.12
         // wrote to a key no response shows) runs nothing.
@@ -1202,7 +1199,7 @@ mod tests {
             .expect("answers");
         // Both runs reported to the engine's observer: the child ran on the
         // generation's engine.
-        assert!(world.runtime.load().engine.is_some());
+        assert!(world.runtime.load().id > 0);
         assert_eq!(world.runs.channels(), ["caller", "target"]);
     }
 

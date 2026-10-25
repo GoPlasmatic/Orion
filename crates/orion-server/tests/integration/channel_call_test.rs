@@ -815,10 +815,7 @@ type Seen = Result<serde_json::Value, (String, String)>;
 /// `channel` run on the generation's engine.
 async fn seen_on(generation: &orion::runtime::RuntimeGeneration, channel: &str) -> Seen {
     use dataflow_rs::datavalue::OwnedDataValue;
-    let engine4 = generation
-        .engine
-        .as_ref()
-        .expect("every published generation carries its engine");
+    let engine4 = &generation.engine;
     let mut message = dataflow_rs::Message::from_parts(
         OwnedDataValue::from(&json!({})),
         OwnedDataValue::Null,

@@ -170,7 +170,7 @@ async fn the_catalogue_matches_what_the_engine_can_dispatch() {
 
     // What the engine dispatches: its registry's catalogue.
     let generation = state.runtime.load();
-    let engine = generation.engine.as_ref().expect("an engine");
+    let engine = &generation.engine;
     let dispatchable: BTreeSet<String> = engine
         .program()
         .registry()
@@ -231,7 +231,7 @@ async fn the_create_time_gate_agrees_with_the_running_engine() {
 
     let state = crate::common::test_state_with_config(orion::config::AppConfig::default()).await;
     let generation = state.runtime.load();
-    let engine = generation.engine.as_ref().expect("an engine");
+    let engine = &generation.engine;
     let catalogue: BTreeSet<&str> = engine
         .program()
         .registry()

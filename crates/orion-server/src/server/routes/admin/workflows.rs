@@ -684,10 +684,7 @@ pub(crate) async fn test_workflow(
     // "test this workflow" used to precede a channel that would not serve.
     // `channel_call` still routes through the serving engine.
     let generation = state.runtime.load();
-    let compiler = match &generation.engine {
-        Some(engine) => engine.compiler(),
-        None => crate::runtime::reload::plugin_compiler(&state, &generation.plugins),
-    };
+    let compiler = generation.engine.compiler();
     let json = workflow_json(
         &workflow,
         TEST_CHANNEL,
@@ -1300,9 +1297,7 @@ fn load_defects(
 ) -> (Vec<ValidationIssue>, Vec<ValidationIssue>) {
     use crate::storage::repositories::workflows::{synthetic_workflow, workflow_json};
 
-    let Some(engine4) = generation.engine.as_ref() else {
-        return (Vec::new(), Vec::new());
-    };
+    let engine4 = &generation.engine;
     let Ok(row) = synthetic_workflow(req, "temp-validate") else {
         return (Vec::new(), Vec::new());
     };

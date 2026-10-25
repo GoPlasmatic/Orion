@@ -484,7 +484,9 @@ mod tests {
         ];
         let generation = RuntimeGeneration {
             id: 1,
-            engine: None,
+            engine: dataflow_rs::Engine::builder()
+                .build()
+                .expect("an empty engine builds"),
             channels: Arc::new(crate::channel::ChannelSnapshot::empty()),
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),
@@ -531,7 +533,9 @@ mod tests {
         ];
         let generation = RuntimeGeneration {
             id: 1,
-            engine: None,
+            engine: dataflow_rs::Engine::builder()
+                .build()
+                .expect("an empty engine builds"),
             channels: Arc::new(crate::channel::ChannelSnapshot::empty()),
             functions: crate::engine::FunctionRegistry::builtin().clone(),
             plugins: Arc::new(crate::plugin::PluginSet::empty()),

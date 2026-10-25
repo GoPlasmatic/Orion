@@ -632,8 +632,6 @@ async fn a_payload_var_defect_loads_and_serves() {
             .runtime
             .load()
             .engine
-            .as_ref()
-            .expect("the generation carries its dataflow-rs 4 engine")
             .program()
             .workflows()
             .iter()

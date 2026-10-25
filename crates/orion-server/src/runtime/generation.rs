@@ -60,9 +60,9 @@ pub struct RuntimeGeneration {
     /// The engine built from the same rows: every row compiled on its
     /// `Registry`, whose verdict decided which channels load (I182).
     /// `channel_call` runs its child on it, and a reload that keeps the
-    /// plugins compiles on its compiler. `None` only on the boot generation,
-    /// before the first publish, which serves nothing.
-    pub engine: Option<dataflow_rs::Engine>,
+    /// plugins compiles on its compiler. Empty on the boot generation, which
+    /// no request sees: generation 1 is published before the node serves.
+    pub engine: dataflow_rs::Engine,
     pub channels: Arc<ChannelSnapshot>,
     /// Every function the engine above dispatches, and what each declares —
     /// what create-time validation and `GET /admin/functions` read, so a
@@ -130,11 +130,9 @@ impl GenerationParts {
 
 impl RuntimeGeneration {
     /// The workflows this generation serves: its program's. Empty on the boot
-    /// generation, which has no program yet.
+    /// generation, whose engine is empty.
     pub fn workflows(&self) -> &[dataflow_rs::program::WorkflowInfo] {
-        self.engine
-            .as_ref()
-            .map_or(&[], |engine| engine.program().workflows())
+        self.engine.program().workflows()
     }
 }
 
@@ -164,6 +162,15 @@ pub struct RuntimeHandle {
     published: AtomicU64,
 }
 
+/// The engine of the boot generation: no workflows and no functions. The
+/// real one needs the runtime handle (`channel_call` holds it), so the handle
+/// is built first, around this.
+fn empty_engine() -> dataflow_rs::Engine {
+    dataflow_rs::Engine::builder()
+        .build()
+        .expect("an engine with nothing in it builds")
+}
+
 impl RuntimeHandle {
     /// The handle a node boots with, around generation 0.
     ///
@@ -175,7 +182,7 @@ impl RuntimeHandle {
         Self {
             current: ArcSwap::from_pointee(RuntimeGeneration {
                 id: 0,
-                engine: None,
+                engine: empty_engine(),
                 channels,
                 functions,
                 plugins: Arc::new(PluginSet::empty()),
@@ -241,7 +248,7 @@ impl RuntimeHandle {
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
         self.current.store(Arc::new(RuntimeGeneration {
             id,
-            engine: Some(engine),
+            engine,
             channels,
             functions,
             plugins,
@@ -317,8 +324,8 @@ mod tests {
     fn a_held_generation_survives_a_publish_whole() {
         let handle = handle();
         assert!(
-            handle.load().engine.is_none(),
-            "the boot generation has none"
+            handle.load().workflows().is_empty(),
+            "the boot generation serves nothing"
         );
 
         publish(&handle, engine("first"));
