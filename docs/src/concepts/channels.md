@@ -29,7 +29,7 @@ A channel names exactly one workflow. That is what makes the channel the unit of
 
 ## Protocols
 
-Three protocols, one per channel:
+A channel's `protocol` names the channel driver that serves it. The driver decides which fields a channel of that protocol needs, whether it claims an HTTP route, and which `channel_type` it accepts; a protocol with no driver on the node is refused at upload. A Community node has three, one per channel:
 
 - **`rest`**: a method and a path pattern, such as `POST /orders` or `GET /orders/{id}`. Path parameters reach the workflow as request metadata.
 - **`http`**: routes identically to `rest`. Both also stay reachable by channel name at `/api/v2/data/{name}`.

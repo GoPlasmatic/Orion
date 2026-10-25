@@ -226,7 +226,7 @@ pub(super) fn routes() -> Router<AppState> {
 async fn validate(state: &AppState, definition: &mut Definition) -> Result<(), OrionError> {
     let details = match definition {
         Definition::Workflow(workflow) => workflow_problems(state, workflow)?,
-        Definition::Channel(channel) => channel_problems(channel),
+        Definition::Channel(channel) => channel_problems(state, channel),
         Definition::Plugin(plugin) => {
             plugin.manifest = super::plugin_definition::check(
                 state,
@@ -333,13 +333,13 @@ fn workflow_advisories(state: &AppState, workflow: &WorkflowDefinition) -> Vec<D
 
 /// A channel is checked as a channel create is, minus its identity and its
 /// workflow, which the manifest supplies.
-fn channel_problems(channel: &ChannelDefinition) -> Vec<FieldError> {
+fn channel_problems(state: &AppState, channel: &ChannelDefinition) -> Vec<FieldError> {
     let request = crate::storage::models::CreateChannelRequest {
         channel_id: None,
         name: channel.name.clone(),
         description: channel.description.clone(),
         channel_type: channel.channel_type,
-        protocol: channel.protocol,
+        protocol: channel.protocol.clone(),
         methods: channel.methods.clone(),
         route_pattern: channel.route_pattern.clone(),
         topic: None,
@@ -350,7 +350,7 @@ fn channel_problems(channel: &ChannelDefinition) -> Vec<FieldError> {
         priority: channel.priority,
         tags: channel.tags.clone(),
     };
-    match crate::validation::validate_create_channel(&request) {
+    match crate::validation::validate_create_channel(&request, &state.composition.channels) {
         Ok(()) => Vec::new(),
         Err(e) => refusal_details(&e, "channel"),
     }

@@ -455,6 +455,9 @@ fn check_channels(
     // not a key lookup.
     let mut routes: Vec<(String, Vec<String>, i64, String)> = Vec::new();
 
+    // Offline, the drivers are the ones this binary's Community composition
+    // registers: what a node built from it serves.
+    let drivers = crate::extensions::ChannelDriverRegistry::community();
     for def in set.iter(Entity::Channel) {
         let req: CreateChannelRequest = match serde_json::from_value(def.doc.clone()) {
             Ok(req) => req,
@@ -467,7 +470,7 @@ fn check_channels(
                 continue;
             }
         };
-        if let Err(e) = crate::validation::validate_create_channel(&req) {
+        if let Err(e) = crate::validation::validate_create_channel(&req, &drivers) {
             findings.extend(schema_diagnostics(
                 "schema.channel",
                 &format!("channel '{}'", req.name),
@@ -519,6 +522,7 @@ fn check_channels(
         // callback that collides is caught here rather than at activation on
         // the target instance.
         for (route, route_methods) in crate::channel::routing::declared_route_parts(
+            &drivers,
             req.protocol.as_str(),
             req.route_pattern.as_deref(),
             req.methods.as_deref().unwrap_or_default(),

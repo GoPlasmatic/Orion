@@ -83,7 +83,7 @@ pub fn channel_row(
         name: definition.name.clone(),
         description: definition.description.clone(),
         channel_type: definition.channel_type.as_str().to_string(),
-        protocol: definition.protocol.as_str().to_string(),
+        protocol: definition.protocol.clone(),
         methods_json: definition
             .methods
             .as_ref()

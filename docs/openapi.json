@@ -3988,7 +3988,8 @@
             "format": "int64"
           },
           "protocol": {
-            "$ref": "#/components/schemas/ChannelProtocol"
+            "type": "string",
+            "description": "The channel driver that serves it (`rest`, `http`, `cron` in\nCommunity), lowercased."
           },
           "route_pattern": {
             "type": [
@@ -4034,14 +4035,6 @@
             "description": "The workflow the channel is bound to, when it names one."
           }
         }
-      },
-      "ChannelProtocol": {
-        "type": "string",
-        "enum": [
-          "rest",
-          "http",
-          "cron"
-        ]
       },
       "ChannelType": {
         "type": "string",

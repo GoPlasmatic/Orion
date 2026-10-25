@@ -35,6 +35,10 @@ pub struct ReloadDeps<'a> {
     /// `[cron] enabled`. A cron channel loaded on a node with the scheduler off
     /// is quarantined rather than served as a schedule that never fires.
     pub cron_enabled: bool,
+    /// The node's channel drivers (its composition root's). A channel whose
+    /// protocol has none is quarantined, and only a driver that registers
+    /// HTTP routes puts a channel in the route table.
+    pub channel_drivers: &'a crate::extensions::ChannelDriverRegistry,
 }
 
 /// Everything [`ChannelLoader::build_runtime`] needs beyond the channel row.
@@ -59,6 +63,7 @@ pub(super) struct RuntimeDeps<'a> {
     pub(super) global_trace_storage: &'a TraceStorageConfig,
     pub(super) cluster_shared: Option<crate::storage::repositories::shared_state::SqlSharedState>,
     pub(super) cron_enabled: bool,
+    pub(super) channel_drivers: &'a crate::extensions::ChannelDriverRegistry,
 }
 
 /// Refuse an object with more than one key anywhere inside a channel
@@ -291,6 +296,22 @@ impl ChannelLoader {
             channel: channel.name.clone(),
             reason,
         };
+
+        // A protocol is served by its driver. One this node has no driver for
+        // — a row written by a build that had it — is refused, not routed by
+        // guesswork and not silently dropped.
+        if deps.channel_drivers.get(&channel.protocol).is_none() {
+            tracing::error!(
+                channel = %channel.name,
+                protocol = %channel.protocol,
+                "Refusing to load channel: no channel driver serves its protocol on this node"
+            );
+            return Err(issue(format!(
+                "protocol '{}' has no channel driver on this node (registered: {})",
+                channel.protocol,
+                deps.channel_drivers.protocol_ids().join(", ")
+            )));
+        }
 
         // Deployment references resolve *before* the config is typed, because
         // what they stand in for is often not a string: a `var://` TTL has to
@@ -761,6 +782,7 @@ impl ChannelLoader {
             oidc_discovery,
             global_trace_storage,
             cron_enabled,
+            channel_drivers,
         } = deps;
         let deps = RuntimeDeps {
             vars,
@@ -775,6 +797,7 @@ impl ChannelLoader {
             global_trace_storage,
             cluster_shared: self.cluster.as_ref().and_then(|c| c.shared.clone()),
             cron_enabled,
+            channel_drivers,
         };
         let fingerprint = DepsFingerprint {
             connectors: connector_registry.config_generation(),
@@ -861,7 +884,10 @@ impl ChannelLoader {
         let route_table = if route_key == previous.route_key {
             previous.route_table.clone()
         } else {
-            Arc::new(RouteTable::build(serviceable.iter().copied()))
+            Arc::new(RouteTable::build(
+                serviceable.iter().copied(),
+                channel_drivers,
+            ))
         };
 
         // Counted off the published maps, not off `issues`: a channel broken

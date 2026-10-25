@@ -86,7 +86,19 @@ impl<'de> Deserialize<'de> for ChannelType {
     }
 }
 
+/// A channel's `protocol`, lowercased: the name of the channel driver that
+/// serves it. Deliberately a string rather than [`ChannelProtocol`] — the set
+/// of protocols is whatever drivers the node's composition root registers, so
+/// an unknown one is refused by validation, by field, naming the registered
+/// ones, not by this parse.
+pub fn deserialize_protocol<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    Ok(String::deserialize(deserializer)?.to_ascii_lowercase())
+}
+
 // -- Channel protocol enum --
+/// The protocols the Community channel drivers serve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]

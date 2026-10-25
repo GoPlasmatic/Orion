@@ -1,12 +1,24 @@
 //! Native Rust channel driver interface and registry (`V2-11.1`).
 //!
-//! In Orion v2, channels remain 100% Native Rust ingress and scheduler drivers
-//! implementing [`ChannelDriver`]:
-//! - **Community Edition** (`ChannelDriverRegistry::community()`) registers the
-//!   foundational drivers: `"rest"`, `"http"`, `"cron"`, and `"source"`.
-//! - **Enterprise Edition** extends the registry at its composition root with
-//!   native Rust drivers such as `"graphql"`, `"kafka"`, and `"sse"` without
-//!   requiring a closed `ChannelProtocol` enum or per-protocol match arms in core.
+//! A channel's `protocol` names a [`ChannelDriver`], and the driver registered
+//! on the node's [`super::CompositionRoot`] under that name is what decides
+//! whether a channel of that protocol is valid and whether it claims an HTTP
+//! route:
+//! - **Validation**: `validation::validate_create_channel` (the definition
+//!   upload and `lint`) asks [`ChannelDriverRegistry::validate_channel`], which
+//!   refuses a protocol no driver serves, runs the driver's field and
+//!   transport checks, and holds `channel_type` to its
+//!   [`ChannelDriverCapabilities`].
+//! - **Routing**: the channel loader quarantines a stored channel whose
+//!   protocol has no driver on this node, and the route table registers a
+//!   route only for a driver that declares `registers_http_routes`.
+//!
+//! Community (`ChannelDriverRegistry::community()`) registers `"rest"`,
+//! `"http"` and `"cron"`. An edition that composes its own root registers more
+//! (`"graphql"`, `"sse"`, …) with [`super::CompositionRoot::with_channel_driver`],
+//! without a closed protocol enum or per-protocol match arms in core. There is
+//! no `"source"` driver: the source runner has no Community source provider to
+//! drive, so a protocol for it would accept channels nothing runs.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -14,7 +26,7 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::errors::{FieldError, OrionError};
+use crate::errors::FieldError;
 
 /// Capabilities declared by a native Rust [`ChannelDriver`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,10 +50,10 @@ pub struct ChannelProtocolFields<'a> {
 
 /// Native Rust channel driver interface (`V2-11.1`).
 ///
-/// Implemented by Community foundation drivers (`rest`, `http`, `cron`, `source`)
-/// and Enterprise native channel drivers (`graphql`, `kafka`, `sse`).
+/// Implemented by the Community drivers (`rest`, `http`, `cron`) and by any
+/// driver an edition registers on its composition root.
 pub trait ChannelDriver: Send + Sync {
-    /// Lowercase wire protocol identifier (e.g. `"rest"`, `"http"`, `"cron"`, `"source"`).
+    /// Lowercase wire protocol identifier (e.g. `"rest"`, `"http"`, `"cron"`).
     fn protocol_id(&self) -> &'static str;
 
     /// Transport and routing capabilities supported by this channel driver.
@@ -50,14 +62,15 @@ pub trait ChannelDriver: Send + Sync {
     /// Validate protocol-conditional fields (`methods`, `route_pattern`, `topic`, etc.).
     fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError>;
 
-    /// Validate protocol-specific `transport_config` and `config` combinations.
+    /// Validate protocol-specific `transport_config` and `config` combinations,
+    /// one [`FieldError`] per problem (paths rooted at `channel.`).
     fn validate_transport(
         &self,
         _transport_config: &Value,
         _config: &Value,
         _channel_id: Option<&str>,
-    ) -> Result<(), OrionError> {
-        Ok(())
+    ) -> Vec<FieldError> {
+        Vec::new()
     }
 }
 
@@ -170,124 +183,20 @@ impl ChannelDriver for CronChannelDriver {
         )
     }
 
+    /// The compiled schedule, and the guards a schedule cannot use: a
+    /// schedule that does not compile would be quarantined at load rather
+    /// than serving, and a guard a cron occurrence never applies would be
+    /// declared and silently ignored.
     fn validate_transport(
         &self,
         transport_config: &Value,
         config: &Value,
         channel_id: Option<&str>,
-    ) -> Result<(), OrionError> {
+    ) -> Vec<FieldError> {
         let mut details =
             crate::validation::cron::cron_transport_errors(transport_config, channel_id);
         details.extend(crate::validation::cron::cron_config_errors(config));
-        if details.is_empty() {
-            return Ok(());
-        }
-        Err(OrionError::Validation {
-            code: "VALIDATION_ERROR",
-            message: format!(
-                "Cron channel has {} problem(s): a schedule that does not compile would \
-                 be quarantined at load rather than serving",
-                details.len()
-            ),
-            details,
-        })
-    }
-}
-
-/// Community `"source"` polling channel driver (`V2-15`, §7.2 of `v2-design.md`).
-///
-/// Drives any connector package (`rust`, `workflow`, or `wasm`) that implements
-/// the `source` facet (`open` / `poll` / `settle` / `close`).
-pub struct SourceChannelDriver;
-
-impl ChannelDriver for SourceChannelDriver {
-    fn protocol_id(&self) -> &'static str {
-        "source"
-    }
-
-    fn capabilities(&self) -> ChannelDriverCapabilities {
-        ChannelDriverCapabilities {
-            supports_sync: false,
-            supports_async: true,
-            registers_http_routes: false,
-            supports_oauth2_login: false,
-        }
-    }
-
-    fn validate_fields(&self, fields: &ChannelProtocolFields<'_>) -> Vec<FieldError> {
-        let mut out = Vec::new();
-        if let Some(ct) = fields.channel_type
-            && !ct.eq_ignore_ascii_case("async")
-        {
-            out.push(FieldError::new(
-                "channel.channel_type",
-                "INVALID",
-                "Source channels must use channel_type 'async'",
-            ));
-        }
-        if fields.route_pattern.is_some_and(|r| !r.trim().is_empty()) {
-            out.push(FieldError::new(
-                "channel.route_pattern",
-                "INVALID",
-                "Source channels do not register HTTP routes",
-            ));
-        }
-        out
-    }
-
-    fn validate_transport(
-        &self,
-        transport_config: &Value,
-        _config: &Value,
-        _channel_id: Option<&str>,
-    ) -> Result<(), OrionError> {
-        let mut details = Vec::new();
-        let source_obj = transport_config.get("source").and_then(Value::as_object);
-        let Some(source) = source_obj else {
-            details.push(FieldError::new(
-                "channel.transport_config.source",
-                "REQUIRED_FOR_PROTOCOL",
-                "Source channels must declare transport_config.source",
-            ));
-            return Err(OrionError::Validation {
-                code: "VALIDATION_ERROR",
-                message: "Invalid source channel transport_config".to_string(),
-                details,
-            });
-        };
-
-        if source
-            .get("connection_id")
-            .and_then(Value::as_str)
-            .is_none_or(|s| s.trim().is_empty())
-        {
-            details.push(FieldError::new(
-                "channel.transport_config.source.connection_id",
-                "REQUIRED_FOR_PROTOCOL",
-                "Source channels must specify transport_config.source.connection_id",
-            ));
-        }
-        if source
-            .get("operation")
-            .and_then(Value::as_str)
-            .is_none_or(|s| s.trim().is_empty())
-        {
-            details.push(FieldError::new(
-                "channel.transport_config.source.operation",
-                "REQUIRED_FOR_PROTOCOL",
-                "Source channels must specify transport_config.source.operation",
-            ));
-        }
-
-        if details.is_empty() {
-            Ok(())
-        } else {
-            Err(OrionError::Validation {
-                code: "VALIDATION_ERROR",
-                message: format!("Source channel has {} problem(s)", details.len()),
-                details,
-            })
-        }
+        details
     }
 }
 
@@ -311,14 +220,13 @@ impl ChannelDriverRegistry {
         Self::default()
     }
 
-    /// Community Edition channel driver registry containing strictly the
-    /// foundational drivers: `"rest"`, `"http"`, `"cron"`, and `"source"`.
+    /// Community Edition channel driver registry: `"rest"`, `"http"` and
+    /// `"cron"`.
     pub fn community() -> Self {
         let registry = Self::new();
         registry.register(Arc::new(RestChannelDriver));
         registry.register(Arc::new(HttpChannelDriver));
         registry.register(Arc::new(CronChannelDriver));
-        registry.register(Arc::new(SourceChannelDriver));
         registry
     }
 
@@ -349,29 +257,78 @@ impl ChannelDriverRegistry {
             .is_some_and(|d| d.capabilities().registers_http_routes)
     }
 
-    /// Validate a channel against the registered [`ChannelDriver`] for `fields.protocol`.
+    /// The driver serving `protocol`, or the field error naming the protocols
+    /// this node does serve.
+    pub fn resolve(&self, protocol: &str) -> Result<Arc<dyn ChannelDriver>, FieldError> {
+        self.get(protocol).ok_or_else(|| {
+            let registered = self.protocol_ids();
+            FieldError::new(
+                "channel.protocol",
+                "INVALID",
+                format!(
+                    "unknown protocol '{protocol}': no channel driver serves it on this node \
+                     (registered: {})",
+                    registered.join(", ")
+                ),
+            )
+            .with_expected(Value::from(registered))
+            .with_got(Value::String(protocol.to_string()))
+        })
+    }
+
+    /// Every problem the driver for `fields.protocol` finds in a channel: an
+    /// unknown protocol, the driver's own field and transport checks, and a
+    /// `channel_type` its [`ChannelDriverCapabilities`] do not serve. Empty
+    /// when the channel is valid for its protocol.
     pub fn validate_channel(
         &self,
         fields: &ChannelProtocolFields<'_>,
         transport_config: &Value,
         config: &Value,
         channel_id: Option<&str>,
-    ) -> Result<Vec<FieldError>, OrionError> {
-        let Some(driver) = self.get(fields.protocol) else {
-            return Err(OrionError::invalid_field(
-                "channel.protocol",
-                "INVALID",
-                format!(
-                    "Channel protocol '{}' is not registered on this node (registered: {})",
-                    fields.protocol,
-                    self.protocol_ids().join(", ")
-                ),
-            ));
+    ) -> Vec<FieldError> {
+        let driver = match self.resolve(fields.protocol) {
+            Ok(driver) => driver,
+            Err(unknown) => return vec![unknown],
         };
-        let field_errors = driver.validate_fields(fields);
-        driver.validate_transport(transport_config, config, channel_id)?;
-        Ok(field_errors)
+        let mut out = driver.validate_fields(fields);
+        // A driver that names `channel_type` itself (cron does) has said it
+        // better than the generic capability check would.
+        if !out.iter().any(|e| e.path == "channel.channel_type")
+            && let Some(problem) = channel_type_problem(driver.as_ref(), fields.channel_type)
+        {
+            out.push(problem);
+        }
+        out.extend(driver.validate_transport(transport_config, config, channel_id));
+        out
     }
+}
+
+/// `channel_type` against what the driver serves: a sync channel on a driver
+/// with no caller to answer, or an async one on a driver that cannot queue.
+fn channel_type_problem(
+    driver: &dyn ChannelDriver,
+    channel_type: Option<&str>,
+) -> Option<FieldError> {
+    let channel_type = channel_type?;
+    let caps = driver.capabilities();
+    let served = if channel_type.eq_ignore_ascii_case("sync") {
+        caps.supports_sync
+    } else if channel_type.eq_ignore_ascii_case("async") {
+        caps.supports_async
+    } else {
+        return None;
+    };
+    (!served).then(|| {
+        FieldError::new(
+            "channel.channel_type",
+            "INVALID",
+            format!(
+                "protocol '{}' does not serve {channel_type} channels",
+                driver.protocol_id()
+            ),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -411,12 +368,23 @@ mod tests {
     #[test]
     fn community_registry_contains_foundation_drivers_only() {
         let reg = ChannelDriverRegistry::community();
-        assert_eq!(reg.protocol_ids(), vec!["cron", "http", "rest", "source"]);
+        assert_eq!(reg.protocol_ids(), vec!["cron", "http", "rest"]);
         assert!(reg.get("kafka").is_none());
+        assert!(reg.get("source").is_none());
         assert!(reg.registers_http_routes("rest"));
         assert!(reg.registers_http_routes("http"));
         assert!(!reg.registers_http_routes("cron"));
-        assert!(!reg.registers_http_routes("source"));
+    }
+
+    fn fields<'a>(protocol: &'a str, channel_type: &'a str) -> ChannelProtocolFields<'a> {
+        ChannelProtocolFields {
+            protocol,
+            channel_type: Some(channel_type),
+            methods: None,
+            route_pattern: None,
+            topic: None,
+            consumer_group: None,
+        }
     }
 
     #[test]
@@ -427,49 +395,56 @@ mod tests {
         assert!(reg.get("graphql").is_some());
         assert!(reg.registers_http_routes("graphql"));
 
-        let missing_route = ChannelProtocolFields {
-            protocol: "graphql",
-            channel_type: Some("sync"),
-            methods: None,
-            route_pattern: None,
-            topic: None,
-            consumer_group: None,
-        };
-        let errs = reg
-            .validate_channel(&missing_route, &json!({}), &json!({}), None)
-            .expect("driver runs");
-        assert_eq!(errs.len(), 1);
+        let errs = reg.validate_channel(&fields("graphql", "sync"), &json!({}), &json!({}), None);
+        assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].path, "channel.route_pattern");
     }
 
     #[test]
-    fn source_channel_driver_validates_transport_config() {
+    fn an_unknown_protocol_is_a_field_error_naming_what_is_served() {
         let reg = ChannelDriverRegistry::community();
-        let fields = ChannelProtocolFields {
-            protocol: "source",
-            channel_type: Some("async"),
-            methods: None,
-            route_pattern: None,
-            topic: None,
-            consumer_group: None,
-        };
+        let errs = reg.validate_channel(&fields("kafka", "async"), &json!({}), &json!({}), None);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].path, "channel.protocol");
+        assert_eq!(errs[0].code, "INVALID");
+        assert_eq!(errs[0].expected, Some(json!(["cron", "http", "rest"])));
+        assert_eq!(errs[0].got, Some(json!("kafka")));
+    }
 
-        // Missing source block fails transport validation.
-        assert!(
-            reg.validate_channel(&fields, &json!({}), &json!({}), None)
-                .is_err()
+    #[test]
+    fn channel_type_is_held_to_the_driver_capabilities() {
+        let reg = ChannelDriverRegistry::community();
+        reg.register(Arc::new(CustomGraphqlDriver));
+        let mut f = fields("graphql", "async");
+        f.route_pattern = Some("/graphql");
+        let errs = reg.validate_channel(&f, &json!({}), &json!({}), None);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].path, "channel.channel_type");
+
+        // Cron reports channel_type itself; the capability check adds nothing.
+        let errs = reg.validate_channel(
+            &fields("cron", "sync"),
+            &json!({"schedule": "0 0 * * * *"}),
+            &json!({}),
+            None,
         );
+        assert_eq!(
+            errs.iter()
+                .filter(|e| e.path == "channel.channel_type")
+                .count(),
+            1,
+            "{errs:?}"
+        );
+    }
 
-        // Valid source block passes.
-        let valid_transport = json!({
-            "source": {
-                "connection_id": "pg-source",
-                "operation": "poll_outbox"
-            }
-        });
-        let field_errs = reg
-            .validate_channel(&fields, &valid_transport, &json!({}), None)
-            .expect("valid source transport");
-        assert!(field_errs.is_empty());
+    #[test]
+    fn the_cron_driver_validates_its_transport() {
+        let reg = ChannelDriverRegistry::community();
+        let errs = reg.validate_channel(&fields("cron", "async"), &json!({}), &json!({}), None);
+        assert!(
+            errs.iter()
+                .any(|e| e.path.starts_with("channel.transport_config")),
+            "a cron channel with no schedule must be refused: {errs:?}"
+        );
     }
 }

@@ -1,11 +1,20 @@
 use crate::errors::OrionError;
-use crate::storage::models::ChannelProtocol;
+use crate::extensions::{ChannelDriver, ChannelDriverRegistry};
 use crate::storage::models::CreateChannelRequest;
 use dataflow_rs::datalogic_rs;
 
 use super::common::{validate_description, validate_id, validate_name};
 
-pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionError> {
+/// Validate a channel as `drivers` — the node's composition root — serves it.
+///
+/// The protocol's [`ChannelDriver`] owns everything protocol-specific: which
+/// fields a channel of that protocol needs, its `transport_config` (a cron
+/// schedule), and the `channel_type`s and sign-in flows its capabilities
+/// allow. A protocol no registered driver serves is refused by field.
+pub fn validate_create_channel(
+    req: &CreateChannelRequest,
+    drivers: &ChannelDriverRegistry,
+) -> Result<(), OrionError> {
     if let Some(ref id) = req.channel_id {
         validate_id(id, "channel.channel_id")?;
     }
@@ -13,73 +22,49 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     if let Some(ref desc) = req.description {
         validate_description(desc, "channel.description")?;
     }
-    // B1: collect all protocol-conditional missing-field errors in one
-    // response (instead of failing on the first). Channel authors get
-    // the full list of what to fix instead of one round-trip per issue.
-    check_protocol_required_fields(&ProtocolFields {
-        protocol: req.protocol,
-        channel_type: Some(req.channel_type.as_str()),
-        methods: req.methods.as_deref(),
-        route_pattern: req.route_pattern.as_deref(),
-        topic: req.topic.as_deref(),
-        consumer_group: req.consumer_group.as_deref(),
-    })?;
+    let driver = drivers
+        .resolve(&req.protocol)
+        .map_err(|unknown| OrionError::Validation {
+            code: "VALIDATION_ERROR",
+            message: unknown.message.clone(),
+            details: vec![unknown],
+        })?;
     // `transport_config` is a free-form blob with no strict parse of its own,
     // so an uncompiled `$from` in it would be stored verbatim and read as a
-    // transport setting at reload. `config` gets the same check inside
-    // `validate_channel_config_blob`, which the update path shares.
+    // transport setting at reload — and handed to the driver's transport
+    // check below as if it were one. `config` gets the same check inside
+    // `validate_channel_config_blob`.
     let transport =
         super::common::uncompiled_source_errors(&req.transport_config, "channel.transport_config");
     if !transport.is_empty() {
         return Err(uncompiled_channel(transport));
     }
+    // B1: every protocol-conditional problem in one response (instead of
+    // failing on the first), so channel authors get the full list of what to
+    // fix instead of one round-trip per issue.
+    check_protocol_fields(
+        drivers,
+        &ProtocolFields {
+            protocol: &req.protocol,
+            channel_type: Some(req.channel_type.as_str()),
+            methods: req.methods.as_deref(),
+            route_pattern: req.route_pattern.as_deref(),
+            topic: req.topic.as_deref(),
+            consumer_group: req.consumer_group.as_deref(),
+        },
+        &req.transport_config,
+        &req.config,
+        req.channel_id.as_deref(),
+    )?;
     // B2: strict-validate the per-channel `config` blob at create time, so
     // authors learn at the CRUD boundary with field-pathed errors, not at
     // first request. The registry applies the same strict parse at reload —
     // a stored config that no longer parses (unknown keys included, per
     // N24/N25) quarantines the channel rather than serving it with a guard
-    // silently absent; `orion-server preflight` names affected channels
-    // before an upgrade.
+    // silently absent.
     validate_channel_config_blob(&req.config)?;
-    validate_oauth2_login_routing(&req.config, req.protocol, req.route_pattern.as_deref())?;
-    check_cron_channel(
-        req.protocol,
-        &req.transport_config,
-        &req.config,
-        req.channel_id.as_deref(),
-    )?;
+    validate_oauth2_login_routing(&req.config, driver.as_ref(), req.route_pattern.as_deref())?;
     Ok(())
-}
-
-/// The cron half of channel validation: the compiled schedule and the guards a
-/// schedule cannot use.
-///
-/// Runs on create and on update alike, against the *effective* documents, so an
-/// update that replaces only `transport_config` is checked against the config
-/// it will actually serve with.
-fn check_cron_channel(
-    protocol: ChannelProtocol,
-    transport_config: &serde_json::Value,
-    config: &serde_json::Value,
-    channel_id: Option<&str>,
-) -> Result<(), OrionError> {
-    if protocol != ChannelProtocol::Cron {
-        return Ok(());
-    }
-    let mut details = super::cron::cron_transport_errors(transport_config, channel_id);
-    details.extend(super::cron::cron_config_errors(config));
-    if details.is_empty() {
-        return Ok(());
-    }
-    Err(OrionError::Validation {
-        code: "VALIDATION_ERROR",
-        message: format!(
-            "Cron channel has {} problem(s): a schedule that does not compile would \
-             be quarantined at load rather than serving",
-            details.len()
-        ),
-        details,
-    })
 }
 
 /// The two things an `oauth2_login` block needs from the channel *around* it
@@ -92,20 +77,21 @@ fn check_cron_channel(
 /// the browser back to.
 fn validate_oauth2_login_routing(
     config: &serde_json::Value,
-    protocol: ChannelProtocol,
+    driver: &dyn ChannelDriver,
     route_pattern: Option<&str>,
 ) -> Result<(), OrionError> {
     let Some(login) = config.get("oauth2_login").filter(|v| !v.is_null()) else {
         return Ok(());
     };
-    if protocol != ChannelProtocol::Rest {
+    if !driver.capabilities().supports_oauth2_login {
         return Err(OrionError::invalid_field(
             "channel.config.oauth2_login",
             "REQUIRED_FOR_PROTOCOL",
             format!(
-                "oauth2_login needs protocol 'rest' — both legs are browser redirects to \
-                 registered paths, and '{}' registers none",
-                protocol.as_str()
+                "oauth2_login needs a protocol whose driver serves a sign-in flow ('rest' in \
+                 Community) — both legs are browser redirects to registered paths, and \
+                 '{}' does not serve them",
+                driver.protocol_id()
             ),
         ));
     }
@@ -169,7 +155,7 @@ fn validate_oauth2_login_routing(
 /// the request itself at create time, the merged stored ⊕ request view at
 /// update time.
 struct ProtocolFields<'a> {
-    protocol: ChannelProtocol,
+    protocol: &'a str,
     /// `None` where the caller has no view of it — the update path, whose
     /// request cannot change it. Only the cron arm reads it.
     channel_type: Option<&'a str>,
@@ -344,34 +330,31 @@ pub(crate) fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldErro
     out
 }
 
-/// Per-protocol required-field check. Emits one `FieldError` per missing
-/// field, all with `code = "REQUIRED_FOR_PROTOCOL"` so clients can
-/// distinguish "this field is conditionally required" from a generic
-/// missing-field error.
-///
-/// Delegated through [`crate::extensions::ChannelDriverRegistry`] (`V2-11.1`)
-/// so protocol-specific rules live on their respective [`crate::extensions::ChannelDriver`]
-/// implementations rather than a closed match in core validation.
-fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionError> {
-    static REGISTRY: std::sync::LazyLock<crate::extensions::ChannelDriverRegistry> =
-        std::sync::LazyLock::new(crate::extensions::ChannelDriverRegistry::community);
-
+/// The protocol's driver over the channel ([`ChannelDriverRegistry::validate_channel`]:
+/// its fields, its transport, its `channel_type` against the driver's
+/// capabilities), plus the column caps every protocol shares. Emits one
+/// `FieldError` per problem; a conditionally required field that is missing
+/// carries `code = "REQUIRED_FOR_PROTOCOL"` so clients can distinguish it
+/// from a generic missing-field error.
+fn check_protocol_fields(
+    drivers: &ChannelDriverRegistry,
+    fields: &ProtocolFields,
+    transport_config: &serde_json::Value,
+    config: &serde_json::Value,
+    channel_id: Option<&str>,
+) -> Result<(), OrionError> {
     let driver_fields = crate::extensions::ChannelProtocolFields {
-        protocol: fields.protocol.as_str(),
+        protocol: fields.protocol,
         channel_type: fields.channel_type,
         methods: fields.methods,
         route_pattern: fields.route_pattern,
         topic: fields.topic,
         consumer_group: fields.consumer_group,
     };
-    let mut out = match REGISTRY.get(driver_fields.protocol) {
-        Some(driver) => driver.validate_fields(&driver_fields),
-        None => Vec::new(),
-    };
-    // The caps are deliberately outside the protocol match: all three fields
-    // are optional and kept whatever the protocol says, so an over-long
-    // `topic` on a REST channel (or `route_pattern` on a cron one) must be
-    // refused too.
+    let mut out = drivers.validate_channel(&driver_fields, transport_config, config, channel_id);
+    // The caps are deliberately outside the driver: all three fields are
+    // optional and kept whatever the protocol says, so an over-long `topic` on
+    // a REST channel (or `route_pattern` on a cron one) must be refused too.
     for (path, value) in [
         ("channel.route_pattern", fields.route_pattern),
         ("channel.topic", fields.topic),
@@ -400,8 +383,9 @@ fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionEr
             )
         } else {
             format!(
-                "Channel with protocol=\"{}\" has {} unusable field(s): a route that \
-                 cannot match is never reached",
+                "Channel with protocol=\"{}\" has {} problem(s): a route that cannot \
+                 match is never reached, and a schedule that does not compile would be \
+                 quarantined at load rather than serving",
                 fields.protocol,
                 out.len()
             )
@@ -801,6 +785,10 @@ pub fn validate_channel_id(id: &str) -> Result<(), OrionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn community() -> ChannelDriverRegistry {
+        ChannelDriverRegistry::community()
+    }
     use crate::validation::common::MAX_ID_LEN;
     use serde_json::json;
 
@@ -920,7 +908,7 @@ mod tests {
             name: "rest-ch".to_string(),
             description: None,
             channel_type: crate::storage::models::ChannelType::Sync,
-            protocol: ChannelProtocol::Rest,
+            protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: Some(route_pattern),
             topic,
@@ -931,11 +919,11 @@ mod tests {
             priority: 0,
         };
         assert!(
-            validate_create_channel(&rest_req(at_limit, None)).is_ok(),
+            validate_create_channel(&rest_req(at_limit, None), &community()).is_ok(),
             "at-limit route_pattern accepted"
         );
         assert!(
-            validate_create_channel(&rest_req(over, None)).is_err(),
+            validate_create_channel(&rest_req(over, None), &community()).is_err(),
             "long route_pattern refused"
         );
         let with_group = |group: String| CreateChannelRequest {
@@ -943,19 +931,22 @@ mod tests {
             ..rest_req("/orders".to_string(), None)
         };
         assert!(
-            validate_create_channel(&with_group("g".repeat(256))).is_err(),
+            validate_create_channel(&with_group("g".repeat(256)), &community()).is_err(),
             "long consumer_group refused"
         );
         assert!(
-            validate_create_channel(&with_group("g".repeat(255))).is_ok(),
+            validate_create_channel(&with_group("g".repeat(255)), &community()).is_ok(),
             "at-limit consumer_group accepted"
         );
 
         // The caps are protocol-independent: the over-long value is refused
         // on a protocol that does not read it too.
         assert!(
-            validate_create_channel(&rest_req("/orders".to_string(), Some("t".repeat(256))))
-                .is_err(),
+            validate_create_channel(
+                &rest_req("/orders".to_string(), Some("t".repeat(256))),
+                &community()
+            )
+            .is_err(),
             "long topic on a REST channel refused"
         );
     }
@@ -968,7 +959,7 @@ mod tests {
             name: "Orders Sync".to_string(),
             description: None,
             channel_type: crate::storage::models::ChannelType::Sync,
-            protocol: ChannelProtocol::Rest,
+            protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: Some("/orders".to_string()),
             topic: None,
@@ -978,7 +969,7 @@ mod tests {
             config: json!({}),
             priority: 0,
         };
-        assert!(validate_create_channel(&req).is_ok());
+        assert!(validate_create_channel(&req, &community()).is_ok());
     }
 
     #[test]
@@ -989,7 +980,7 @@ mod tests {
             name: "Bad Sync".to_string(),
             description: None,
             channel_type: crate::storage::models::ChannelType::Sync,
-            protocol: ChannelProtocol::Rest,
+            protocol: "rest".to_string(),
             methods: None,
             route_pattern: Some("/orders".to_string()),
             topic: None,
@@ -999,7 +990,7 @@ mod tests {
             config: json!({}),
             priority: 0,
         };
-        assert!(validate_create_channel(&req).is_err());
+        assert!(validate_create_channel(&req, &community()).is_err());
     }
 
     #[test]
@@ -1010,7 +1001,7 @@ mod tests {
             name: "Bad Sync".to_string(),
             description: None,
             channel_type: crate::storage::models::ChannelType::Sync,
-            protocol: ChannelProtocol::Rest,
+            protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: None,
             topic: None,
@@ -1020,7 +1011,7 @@ mod tests {
             config: json!({}),
             priority: 0,
         };
-        assert!(validate_create_channel(&req).is_err());
+        assert!(validate_create_channel(&req, &community()).is_err());
     }
 
     #[test]
@@ -1031,7 +1022,7 @@ mod tests {
             name: "Orders Async".to_string(),
             description: None,
             channel_type: crate::storage::models::ChannelType::Async,
-            protocol: ChannelProtocol::Rest,
+            protocol: "rest".to_string(),
             methods: Some(vec!["POST".to_string()]),
             route_pattern: Some("/orders".to_string()),
             topic: None,
@@ -1041,7 +1032,85 @@ mod tests {
             config: json!({}),
             priority: 0,
         };
-        assert!(validate_create_channel(&req).is_ok());
+        assert!(validate_create_channel(&req, &community()).is_ok());
+    }
+
+    /// The protocol is whatever the node's drivers serve: an unknown one is a
+    /// field error naming them, and a driver registered on the registry is
+    /// what makes its protocol valid.
+    #[test]
+    fn the_protocol_is_validated_by_the_registered_driver() {
+        let req = |protocol: &str| CreateChannelRequest {
+            tags: vec![],
+            channel_id: None,
+            name: "events".to_string(),
+            description: None,
+            channel_type: crate::storage::models::ChannelType::Async,
+            protocol: protocol.to_string(),
+            methods: None,
+            route_pattern: None,
+            topic: None,
+            consumer_group: None,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        let err = validate_create_channel(&req("kafka"), &community()).expect_err("unknown");
+        let details = err.field_errors();
+        assert_eq!(details.len(), 1, "{details:?}");
+        assert_eq!(details[0].path, "channel.protocol");
+        assert_eq!(details[0].code, "INVALID");
+
+        struct Kafka;
+        impl ChannelDriver for Kafka {
+            fn protocol_id(&self) -> &'static str {
+                "kafka"
+            }
+            fn capabilities(&self) -> crate::extensions::ChannelDriverCapabilities {
+                crate::extensions::ChannelDriverCapabilities {
+                    supports_sync: false,
+                    supports_async: true,
+                    registers_http_routes: false,
+                    supports_oauth2_login: false,
+                }
+            }
+            fn validate_fields(
+                &self,
+                fields: &crate::extensions::ChannelProtocolFields<'_>,
+            ) -> Vec<crate::errors::FieldError> {
+                fields
+                    .topic
+                    .is_none()
+                    .then(|| {
+                        crate::errors::FieldError::new(
+                            "channel.topic",
+                            "REQUIRED_FOR_PROTOCOL",
+                            "kafka channels name a topic",
+                        )
+                    })
+                    .into_iter()
+                    .collect()
+            }
+        }
+        let drivers = community();
+        drivers.register(std::sync::Arc::new(Kafka));
+        let err = validate_create_channel(&req("KAFKA"), &drivers).expect_err("no topic");
+        assert_eq!(err.field_errors()[0].path, "channel.topic");
+        let mut with_topic = req("kafka");
+        with_topic.topic = Some("orders".to_string());
+        validate_create_channel(&with_topic, &drivers).expect("the driver accepts it");
+
+        // oauth2_login follows the driver's capability, not a protocol name:
+        // refused outright on a driver with no sign-in flow, and on `rest`
+        // held to the route it needs.
+        let login = json!({"oauth2_login": {}});
+        let err = validate_oauth2_login_routing(&login, &Kafka, None).expect_err("no flow");
+        assert_eq!(err.field_errors()[0].path, "channel.config.oauth2_login");
+        let err =
+            validate_oauth2_login_routing(&login, &crate::extensions::RestChannelDriver, None)
+                .expect_err("no route");
+        assert_eq!(err.field_errors()[0].path, "channel.route_pattern");
     }
 
     #[test]

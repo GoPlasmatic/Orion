@@ -2,7 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::errors::OrionError;
-use crate::storage::models::{Channel, ChannelProtocol};
+use crate::extensions::ChannelDriverRegistry;
+use crate::storage::models::Channel;
 
 /// Which of a channel's routes an entry is.
 ///
@@ -101,8 +102,12 @@ fn canonical_segments(segments: &[RouteSegment]) -> String {
 /// (`ensure_route_is_unclaimed`, in the admin channel routes) and
 /// [`RouteTable::build`] read one projection, which is the R7 argument on
 /// [`declared_route_segments`].
-pub(crate) fn declared_route(ch: &Channel) -> Vec<(String, Vec<String>)> {
+pub(crate) fn declared_route(
+    ch: &Channel,
+    drivers: &ChannelDriverRegistry,
+) -> Vec<(String, Vec<String>)> {
     declared_route_parts(
+        drivers,
         &ch.protocol,
         ch.route_pattern.as_deref(),
         &ch.methods().unwrap_or_default(),
@@ -153,6 +158,7 @@ pub(crate) fn oauth_callback_path(ch: &Channel) -> Option<String> {
 /// lint holds a channel *definition* and not a stored row, and gates promotion
 /// on the same question activation asks.
 fn declared_route_segments(
+    drivers: &ChannelDriverRegistry,
     protocol: &str,
     route_pattern: Option<&str>,
     methods: &[String],
@@ -165,7 +171,12 @@ fn declared_route_segments(
     // declared route 404'd forever. `dynamic_handler` strips a trailing
     // `/async` before matching, so an async channel's pattern works at
     // `/{pattern}/async` with no further change.
-    if !serves_a_route(protocol) {
+    //
+    // Whether a protocol claims an HTTP route at all is its driver's
+    // `registers_http_routes`: cron is started by its schedule and a route
+    // would make it reachable by request; a protocol with no driver on this
+    // node serves nothing.
+    if !drivers.registers_http_routes(protocol) {
         return Vec::new();
     }
     let Some(pattern) = route_pattern else {
@@ -196,25 +207,31 @@ fn declared_route_segments(
 ///
 /// The role is dropped: a collision is a collision whichever leg claimed it.
 pub(crate) fn declared_route_parts(
+    drivers: &ChannelDriverRegistry,
     protocol: &str,
     route_pattern: Option<&str>,
     methods: &[String],
     oauth_callback_path: Option<&str>,
 ) -> Vec<(String, Vec<String>)> {
-    declared_route_segments(protocol, route_pattern, methods, oauth_callback_path)
-        .into_iter()
-        .map(|(segments, methods, _role)| (canonical_segments(&segments), methods))
-        .collect()
-}
-
-/// Whether a channel of this protocol registers an HTTP route at all.
-fn serves_a_route(protocol: &str) -> bool {
-    protocol == ChannelProtocol::Rest.as_str() || protocol == ChannelProtocol::Http.as_str()
+    declared_route_segments(
+        drivers,
+        protocol,
+        route_pattern,
+        methods,
+        oauth_callback_path,
+    )
+    .into_iter()
+    .map(|(segments, methods, _role)| (canonical_segments(&segments), methods))
+    .collect()
 }
 
 /// [`declared_route_segments`] over a stored row.
-fn declared_segments(ch: &Channel) -> Vec<(Vec<RouteSegment>, Vec<String>, RouteRole)> {
+fn declared_segments(
+    ch: &Channel,
+    drivers: &ChannelDriverRegistry,
+) -> Vec<(Vec<RouteSegment>, Vec<String>, RouteRole)> {
     declared_route_segments(
+        drivers,
         &ch.protocol,
         ch.route_pattern.as_deref(),
         &ch.methods().unwrap_or_default(),
@@ -366,11 +383,14 @@ pub struct RouteTable {
 }
 
 impl RouteTable {
-    pub(super) fn build<'a>(channels: impl IntoIterator<Item = &'a Channel>) -> Self {
+    pub(super) fn build<'a>(
+        channels: impl IntoIterator<Item = &'a Channel>,
+        drivers: &ChannelDriverRegistry,
+    ) -> Self {
         let mut entries: Vec<RouteEntry> = channels
             .into_iter()
             .flat_map(|ch| {
-                declared_segments(ch)
+                declared_segments(ch, drivers)
                     .into_iter()
                     .map(|(segments, methods, role)| RouteEntry {
                         channel_name: ch.name.clone(),
@@ -603,8 +623,14 @@ mod tests {
     #[test]
     fn a_sign_in_channel_claims_its_route_and_its_callback_in_both_views() {
         let methods = parts(&["post"]);
-        let segments =
-            declared_route_segments("rest", Some("/orders/{id}"), &methods, Some("/cb/{tenant}"));
+        let drivers = ChannelDriverRegistry::community();
+        let segments = declared_route_segments(
+            &drivers,
+            "rest",
+            Some("/orders/{id}"),
+            &methods,
+            Some("/cb/{tenant}"),
+        );
 
         assert_eq!(segments.len(), 2);
         assert_eq!(segments[0].2, RouteRole::Primary);
@@ -617,8 +643,13 @@ mod tests {
         );
         assert_eq!(segments[1].1, parts(&["GET"]));
 
-        let canonical =
-            declared_route_parts("rest", Some("/orders/{id}"), &methods, Some("/cb/{tenant}"));
+        let canonical = declared_route_parts(
+            &drivers,
+            "rest",
+            Some("/orders/{id}"),
+            &methods,
+            Some("/cb/{tenant}"),
+        );
         assert_eq!(
             canonical,
             vec![
@@ -633,6 +664,7 @@ mod tests {
     #[test]
     fn a_channel_that_serves_no_route_declares_none_in_either_view() {
         let methods = parts(&["POST"]);
+        let drivers = ChannelDriverRegistry::community();
         for (protocol, pattern) in [
             // A protocol this build does not serve — a stored `kafka` row —
             // registers no HTTP route at all.
@@ -643,8 +675,13 @@ mod tests {
             // REST with no pattern claims nothing, callback or not.
             ("rest", None),
         ] {
-            assert!(declared_route_segments(protocol, pattern, &methods, Some("/cb")).is_empty());
-            assert!(declared_route_parts(protocol, pattern, &methods, Some("/cb")).is_empty());
+            assert!(
+                declared_route_segments(&drivers, protocol, pattern, &methods, Some("/cb"))
+                    .is_empty()
+            );
+            assert!(
+                declared_route_parts(&drivers, protocol, pattern, &methods, Some("/cb")).is_empty()
+            );
         }
     }
 

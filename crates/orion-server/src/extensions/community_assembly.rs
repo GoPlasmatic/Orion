@@ -3,8 +3,8 @@
 //! The tests below assert that the public Community Edition assembly
 //! ([`CompositionRoot::community`]):
 //!
-//! 1. Registers **only** the 4 foundational native Rust channel drivers
-//!    (`cron`, `http`, `rest`, `source`) and zero Enterprise-only channel
+//! 1. Registers **only** the 3 foundational native Rust channel drivers
+//!    (`cron`, `http`, `rest`) and zero Enterprise-only channel
 //!    drivers (`graphql`, `kafka`, `sse`).
 //! 2. Registers **only** the 5 foundational Direct Rust connector providers
 //!    (`org.orion.http`, `org.orion.memory-cache`, `org.orion.mysql`,
@@ -23,7 +23,7 @@ use super::contract::ImplementationKind;
 use super::foundation::COMMUNITY_RUST_DRIVERS;
 
 /// Canonical Community Edition native Rust channel driver protocol IDs (`DEC-003`).
-pub const COMMUNITY_CHANNEL_PROTOCOLS: [&str; 4] = ["cron", "http", "rest", "source"];
+pub const COMMUNITY_CHANNEL_PROTOCOLS: [&str; 3] = ["cron", "http", "rest"];
 
 /// Boundary violation discovered while auditing a [`CompositionRoot`] against the
 /// Community Edition contract (`V2-11.3`).
@@ -54,7 +54,7 @@ impl CommunityAssemblyReport {
 
 /// Verify that `root` satisfies the strict Community Edition boundary (`V2-11.3`, `DEC-005`).
 ///
-/// - Checks that all 4 Community channel protocols (`cron`, `http`, `rest`, `source`) are
+/// - Checks that all 3 Community channel protocols (`cron`, `http`, `rest`) are
 ///   present and no Enterprise channel protocols (`graphql`, `kafka`, `sse`) are registered.
 /// - Checks that all 5 Community Direct Rust providers (`org.orion.http`,
 ///   `org.orion.memory-cache`, `org.orion.mysql`, `org.orion.postgresql`,
@@ -179,10 +179,7 @@ mod tests {
             "unexpected boundary violations: {:?}",
             report.violations
         );
-        assert_eq!(
-            report.registered_channels,
-            vec!["cron", "http", "rest", "source"]
-        );
+        assert_eq!(report.registered_channels, vec!["cron", "http", "rest"]);
         assert_eq!(
             report.registered_rust_providers,
             vec![

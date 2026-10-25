@@ -51,12 +51,8 @@ async fn upload_channel_missing_route_pattern_returns_field_pathed_details() {
     );
 }
 
-/// Kafka left Community: `protocol: "kafka"` is refused like any protocol this
-/// build does not know, before any per-protocol rule runs.
-///
-/// The definition upload refuses an unknown variant while deserializing its
-/// body, so the refusal is the extractor's: a client error whose text names
-/// the variant.
+/// Kafka left Community: `protocol: "kafka"` is refused like any protocol no
+/// channel driver on this node serves — by field, naming the ones it does.
 #[tokio::test]
 async fn upload_channel_with_the_kafka_protocol_is_refused_as_unknown() {
     let app = test_app().await;
@@ -72,15 +68,17 @@ async fn upload_channel_with_the_kafka_protocol_is_refused_as_unknown() {
         ))
         .await
         .unwrap();
-    let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes);
-    assert!(status.is_client_error(), "{status}: {text}");
-    assert!(
-        text.contains("unknown variant `kafka`"),
-        "kafka must be an unknown protocol, got {text}"
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    let details = body["error"]["details"].as_array().expect("details");
+    assert_eq!(details.len(), 1, "{body}");
+    assert_eq!(details[0]["path"], "definition.protocol", "{body}");
+    assert_eq!(details[0]["code"], "INVALID", "{body}");
+    assert_eq!(details[0]["got"], "kafka", "{body}");
+    assert_eq!(
+        details[0]["expected"],
+        json!(["cron", "http", "rest"]),
+        "{body}"
     );
 }
 

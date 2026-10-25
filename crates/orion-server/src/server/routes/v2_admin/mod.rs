@@ -253,10 +253,7 @@ mod tests {
         assert_eq!(dto.api_version, "v2");
         assert_eq!(dto.edition, "community");
         assert_eq!(dto.wasm_worlds, vec!["orion:plugin@1.0.0"]);
-        assert_eq!(
-            dto.registered_channel_drivers,
-            vec!["cron", "http", "rest", "source"]
-        );
+        assert_eq!(dto.registered_channel_drivers, vec!["cron", "http", "rest"]);
     }
 
     #[tokio::test]

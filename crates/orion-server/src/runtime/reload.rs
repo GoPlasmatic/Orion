@@ -276,10 +276,14 @@ async fn manifest_definitions(
 /// never run (#279) — only the `"/"` mount can produce one.
 fn refuse_route_collisions(
     channels: &[crate::storage::models::Channel],
+    drivers: &crate::extensions::ChannelDriverRegistry,
     data_mounts: &[String],
 ) -> Result<(), crate::errors::OrionError> {
     use crate::channel::routing::{declared_route, methods_overlap};
-    let routes: Vec<_> = channels.iter().map(|c| (c, declared_route(c))).collect();
+    let routes: Vec<_> = channels
+        .iter()
+        .map(|c| (c, declared_route(c, drivers)))
+        .collect();
     for (channel, declared) in &routes {
         for (route, _) in declared {
             for mount in data_mounts {
@@ -408,7 +412,11 @@ async fn build_and_publish(
             plugin_components,
         } = manifest_definitions(state, &manifest).await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
-        refuse_route_collisions(&channels, &state.config.server.data_mounts)?;
+        refuse_route_collisions(
+            &channels,
+            &state.composition.channels,
+            &state.config.server.data_mounts,
+        )?;
         // Each workflow is granted the connections its member requires.
         let connector_authority = Arc::new(super::authority::ConnectorAuthority::from_manifest(
             &manifest,
@@ -457,6 +465,7 @@ async fn build_and_publish(
                     oidc_discovery: &state.oidc_discovery,
                     global_trace_storage: &state.config.trace_storage,
                     cron_enabled: state.config.cron.enabled,
+                    channel_drivers: &state.composition.channels,
                 },
                 engine_issues,
             )
@@ -723,7 +732,11 @@ pub async fn check_candidate(
         plugin_components,
     } = manifest_definitions(state, manifest).await?;
     let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
-    refuse_route_collisions(&channels, &state.config.server.data_mounts)?;
+    refuse_route_collisions(
+        &channels,
+        &state.composition.channels,
+        &state.config.server.data_mounts,
+    )?;
     let current = state.runtime.load();
     let half = compile_engine(
         state,

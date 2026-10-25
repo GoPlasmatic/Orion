@@ -8,10 +8,10 @@
 //!
 //! - **Channels (100% Native Rust via [`ChannelDriver`])**:
 //!   Community ships the foundational ingress and scheduler drivers (`http`, `rest`,
-//!   `cron`, `source`) in [`ChannelDriverRegistry::community`]. Enterprise registers
+//!   `cron`) in [`ChannelDriverRegistry::community`]. Enterprise registers
 //!   additional native Rust drivers (`graphql`, `kafka`, `sse`) via
-//!   [`CompositionRoot::with_channel_driver`] without adding variants to a closed
-//!   `ChannelProtocol` enum.
+//!   [`CompositionRoot::with_channel_driver`]; the registered driver is what
+//!   validates a channel of its protocol and decides whether it claims a route.
 //! - **Connectors (Unified Backend Architecture via [`ProviderBackend`])**:
 //!   Supports Direct Rust (`ImplementationKind::Rust`) and Workflow-Group composite
 //!   packages (`ImplementationKind::Workflow`) under one invocation contract ([`ConnectorResult`]),
@@ -55,7 +55,7 @@ pub use admission::{
 };
 pub use channel_driver::{
     ChannelDriver, ChannelDriverCapabilities, ChannelDriverRegistry, ChannelProtocolFields,
-    CronChannelDriver, HttpChannelDriver, RestChannelDriver, SourceChannelDriver,
+    CronChannelDriver, HttpChannelDriver, RestChannelDriver,
 };
 pub use context::{
     AdmittedRun, AttemptContext, AuthorityGrant, BudgetCounters, BudgetLimits, BudgetScope,
@@ -150,7 +150,7 @@ impl CompositionRoot {
     /// Construct the default Community Edition composition root (`V2-11.1`, `V2-14`).
     ///
     /// Registers:
-    /// - Foundational native Rust channel drivers (`rest`, `http`, `cron`, `source`)
+    /// - Foundational native Rust channel drivers (`rest`, `http`, `cron`)
     /// - Foundational Direct Rust connector providers (`org.orion.http`,
     ///   `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite`,
     ///   `org.orion.memory-cache`) and
@@ -234,10 +234,7 @@ mod tests {
         let root = CompositionRoot::community().with_resource_pool(pool.clone());
 
         assert_eq!(root.admission.policy_id(), "orion.community.admission/1");
-        assert_eq!(
-            root.channels.protocol_ids(),
-            vec!["cron", "http", "rest", "source"]
-        );
+        assert_eq!(root.channels.protocol_ids(), vec!["cron", "http", "rest"]);
         // 4 foundation stateful pools (postgresql, mysql, sqlite, memory-cache) + 1 custom pool registered above = 5.
         assert_eq!(root.pools.len(), 5);
         assert!(root.pools.get::<VersionedSessionPool<String>>().is_some());

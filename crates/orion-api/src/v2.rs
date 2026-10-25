@@ -658,7 +658,10 @@ pub struct ChannelDefinition {
     pub description: Option<String>,
     #[serde(default = "channel_type_sync")]
     pub channel_type: crate::enums::ChannelType,
-    pub protocol: crate::enums::ChannelProtocol,
+    /// The channel driver that serves it (`rest`, `http`, `cron` in
+    /// Community), lowercased.
+    #[serde(deserialize_with = "crate::enums::deserialize_protocol")]
+    pub protocol: String,
     #[serde(default)]
     pub methods: Option<Vec<String>>,
     #[serde(default)]

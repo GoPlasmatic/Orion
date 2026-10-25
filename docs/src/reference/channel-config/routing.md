@@ -17,7 +17,7 @@ These fields sit on the channel object itself, beside `config`. They decide how 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `channel_type` | string | yes | — | `sync` (the caller waits for the result) or `async` (queued; answers `202` with a trace id). Case-insensitive. A `cron` channel must be `async`. |
-| `protocol` | string | yes | — | `rest`, `http`, or `cron`. Case-insensitive. |
+| `protocol` | string | yes | — | The channel driver that serves the channel: `rest`, `http`, or `cron` on a Community node. Case-insensitive. A protocol no driver on the node serves is refused with `INVALID` on `protocol`, its `expected` listing the ones that are. |
 | `methods` | array of strings | `rest`, `http` | — | HTTP methods the route answers. Valid values: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`. An unknown or duplicated method is refused. |
 | `route_pattern` | string | `rest`, `http` | — | Path pattern, for example `/orders/{id}`. Grammar below. At most 255 characters. |
 | `topic` | string | no | — | Stored with the channel; nothing in this build reads it. At most 255 characters. Refused on a `cron` channel. |

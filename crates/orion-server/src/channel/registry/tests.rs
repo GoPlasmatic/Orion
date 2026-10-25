@@ -223,6 +223,75 @@ async fn turning_the_scheduler_off_does_not_reuse_a_compiled_descriptor() {
     );
 }
 
+/// A channel's protocol is served by its driver: one this node has no driver
+/// for is quarantined by name rather than loaded and left unrouted.
+#[tokio::test]
+async fn a_channel_whose_protocol_has_no_driver_is_quarantined() {
+    let registry = TestRegistry::new();
+    let channel = Channel {
+        protocol: "kafka".to_string(),
+        ..rest_channel("orders-stream", "/orders-stream")
+    };
+    TestDeps::new().reload(&registry, &[channel]).await;
+
+    let issues = registry.quarantined();
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(
+        issues[0].reason.contains("no channel driver"),
+        "the reason must name the missing driver: {}",
+        issues[0].reason
+    );
+    assert!(registry.get_by_name("orders-stream").is_none());
+    assert!(matches!(
+        registry.match_route("POST", "orders-stream"),
+        Ok(None)
+    ));
+}
+
+/// The route table asks the driver, not a list of protocol names: a driver
+/// registered on the composition root that declares `registers_http_routes`
+/// gets its channel's route served.
+#[tokio::test]
+async fn a_registered_driver_that_registers_routes_is_routed() {
+    use crate::extensions::{ChannelDriver, ChannelDriverCapabilities, ChannelProtocolFields};
+    struct Graphql;
+    impl ChannelDriver for Graphql {
+        fn protocol_id(&self) -> &'static str {
+            "graphql"
+        }
+        fn capabilities(&self) -> ChannelDriverCapabilities {
+            ChannelDriverCapabilities {
+                supports_sync: true,
+                supports_async: false,
+                registers_http_routes: true,
+                supports_oauth2_login: false,
+            }
+        }
+        fn validate_fields(&self, _: &ChannelProtocolFields<'_>) -> Vec<crate::errors::FieldError> {
+            Vec::new()
+        }
+    }
+    let registry = TestRegistry::new();
+    let channel = Channel {
+        protocol: "graphql".to_string(),
+        ..rest_channel("graph", "/graph")
+    };
+    let deps = TestDeps::new();
+    deps.channel_drivers.register(Arc::new(Graphql));
+    deps.reload(&registry, &[channel]).await;
+
+    assert!(
+        registry.quarantined().is_empty(),
+        "{:?}",
+        registry.quarantined()
+    );
+    let matched = registry
+        .match_route("POST", "graph")
+        .expect("valid path")
+        .expect("the driver's route is served");
+    assert_eq!(matched.channel_name, "graph");
+}
+
 /// A REST channel that claims `route_pattern`, so it lands in the route
 /// table as well as the serving map.
 fn rest_channel(name: &str, route_pattern: &str) -> Channel {
@@ -249,6 +318,9 @@ struct TestDeps {
     /// `[cron] enabled` as this harness's node sees it. Default `true`;
     /// the D3 quarantine test flips it.
     cron_enabled: bool,
+    /// The node's channel drivers. Community by default; the driver tests
+    /// register one.
+    channel_drivers: crate::extensions::ChannelDriverRegistry,
 }
 
 impl TestDeps {
@@ -263,6 +335,7 @@ impl TestDeps {
             http_client: reqwest::Client::new(),
             trace_storage: TraceStorageConfig::default(),
             cron_enabled: true,
+            channel_drivers: crate::extensions::ChannelDriverRegistry::community(),
         }
     }
 
@@ -300,6 +373,7 @@ impl TestDeps {
                     ),
                     global_trace_storage: &self.trace_storage,
                     cron_enabled: self.cron_enabled,
+                    channel_drivers: &self.channel_drivers,
                 },
                 engine_issues,
             )
@@ -405,6 +479,7 @@ async fn test_write_gated_connector_cannot_back_a_dedup_store() {
                 oidc_discovery: &test_discovery(),
                 global_trace_storage: &TraceStorageConfig::default(),
                 cron_enabled: true,
+                channel_drivers: &crate::extensions::ChannelDriverRegistry::community(),
             },
             Vec::new(),
         )
@@ -444,6 +519,7 @@ async fn test_ungated_connector_still_backs_a_dedup_store() {
                 oidc_discovery: &test_discovery(),
                 global_trace_storage: &TraceStorageConfig::default(),
                 cron_enabled: true,
+                channel_drivers: &crate::extensions::ChannelDriverRegistry::community(),
             },
             Vec::new(),
         )
@@ -481,6 +557,7 @@ async fn test_single_node_write_gated_connector_falls_back() {
                 oidc_discovery: &test_discovery(),
                 global_trace_storage: &TraceStorageConfig::default(),
                 cron_enabled: true,
+                channel_drivers: &crate::extensions::ChannelDriverRegistry::community(),
             },
             Vec::new(),
         )

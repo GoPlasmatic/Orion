@@ -39,7 +39,8 @@ pub struct CreateChannelRequest {
     pub name: String,
     pub description: Option<String>,
     pub channel_type: super::ChannelType,
-    pub protocol: super::ChannelProtocol,
+    #[serde(deserialize_with = "orion_api::enums::deserialize_protocol")]
+    pub protocol: String,
     pub methods: Option<Vec<String>>,
     pub route_pattern: Option<String>,
     pub topic: Option<String>,

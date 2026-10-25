@@ -881,6 +881,7 @@ mod tests {
                     )),
                     global_trace_storage: &crate::config::TraceStorageConfig::default(),
                     cron_enabled: true,
+                    channel_drivers: &crate::extensions::ChannelDriverRegistry::community(),
                 },
                 issues,
             )

@@ -1398,9 +1398,20 @@ mod tests {
     /// which is harmless and is covered by the validation module's own tests.
     #[test]
     fn cron_guards_and_validation_agree() {
+        use crate::extensions::ChannelDriver;
         let cron = Transport::Cron.guards();
+        // Asked of the cron channel driver, which is what validates a cron
+        // channel at upload — not of a helper beside it.
+        let schedule = serde_json::json!({"schedule": "0 15 2 * * *"});
+        assert!(
+            crate::extensions::CronChannelDriver
+                .validate_transport(&schedule, &serde_json::json!({}), None)
+                .is_empty(),
+            "the probe schedule itself must be valid"
+        );
         let refused = |key: &str| {
-            !crate::validation::cron_config_errors_for_test(&serde_json::json!({ key: {} }))
+            !crate::extensions::CronChannelDriver
+                .validate_transport(&schedule, &serde_json::json!({ key: {} }), None)
                 .is_empty()
         };
         for (guard_on, key) in [
