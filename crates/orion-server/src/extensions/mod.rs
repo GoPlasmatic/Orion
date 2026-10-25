@@ -103,7 +103,7 @@ pub use resource_pool::{
 pub use schema_profile::{
     CompiledSchemaBundle, DIALECT_URI, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, PROFILE_ID,
     SchemaProfileFinding, SchemaProfileLimits, check_manifest_bundle, parse_json_pointer,
-    parse_strict_json, resolve_pointer, validate_safe_package_path,
+    resolve_pointer, validate_safe_package_path,
 };
 pub use source_runner::{
     ContiguousCheckpointLedger, ItemSettlementState, SourceChannelRunner, SourceCoordinationError,

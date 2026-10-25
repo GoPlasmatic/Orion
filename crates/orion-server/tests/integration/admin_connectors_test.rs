@@ -1,8 +1,9 @@
 //! Connectors at run time: connections deployed over the built-in drivers,
 //! their endpoint gates, the circuit-breaker admin endpoints, and probing.
 //!
-//! A connection's public config is not shape-checked when it is created; a
-//! connector the node cannot load is reported in `/health` under
+//! A connection's configuration is judged when it is created, references
+//! unresolved, and refused by field when it would not load; one that fails
+//! only once its references resolve is reported in `/health` under
 //! `connectors.failed_to_load`, naming the stage that refused it.
 
 use crate::common;
@@ -26,6 +27,47 @@ async fn load_issue(app: &axum::Router, name: &str) -> Option<Value> {
         .flatten()
         .find(|issue| issue["connector"] == name)
         .cloned()
+}
+
+/// Create a connection over the built-in `driver` with `public_config`,
+/// asserting it is refused, answering the refusal.
+async fn refused_connection(
+    app: &axum::Router,
+    id: &str,
+    driver: &str,
+    public_config: Value,
+) -> Value {
+    let provider = orion::extensions::foundation::builtin_provider_digest(driver).unwrap();
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/admin/connections",
+            Some(json!({
+                "connection_id": id,
+                "revision": 1,
+                "provider_digest": provider,
+                "public_config": public_config,
+            })),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{public_config}: {body}");
+    body
+}
+
+/// The message of the refusal's problem at `path`.
+fn problem_at(body: &Value, path: &str) -> String {
+    body["error"]["details"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|d| d["path"] == path)
+        .and_then(|d| d["message"].as_str())
+        .unwrap_or_else(|| panic!("no problem at {path}: {body}"))
+        .to_string()
 }
 
 /// Deploy a v1-shaped connector body as a connection.
@@ -132,29 +174,23 @@ async fn test_sync_processing_with_metadata() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn an_http_connector_with_a_non_http_url_scheme_does_not_load() {
+async fn an_http_connection_with_a_non_http_url_scheme_is_refused() {
     let app = common::test_app().await;
-
-    deploy_connector(
+    let body = refused_connection(
         &app,
         "ftp-connector",
-        "http",
+        orion::extensions::foundation::DRIVER_HTTP,
         json!({"url": "ftp://example.com/files", "method": "GET"}),
     )
     .await;
-
-    let issue = load_issue(&app, "ftp-connector")
-        .await
-        .expect("an ftp:// http connector must not load");
-    assert_eq!(issue["stage"], "endpoint", "{issue}");
     assert!(
-        issue["reason"].as_str().unwrap_or("").contains("ftp"),
-        "the issue must name the scheme: {issue}"
+        problem_at(&body, "public_config.url").contains("ftp"),
+        "the refusal must name the scheme: {body}"
     );
 }
 
 #[tokio::test]
-async fn s6_db_connector_rejects_schemes_that_are_not_databases() {
+async fn s6_db_connection_refuses_schemes_that_are_not_databases() {
     let app = common::test_app().await;
 
     for (id, conn) in [
@@ -167,20 +203,16 @@ async fn s6_db_connector_rejects_schemes_that_are_not_databases() {
         ("s6-db-mongo", "mongodb://m.example.com:27017/orion"),
         ("s6-db-srv", "mongodb+srv://cluster.example.com/orion"),
     ] {
-        // The driver is named, since the scheme cannot say which it is.
-        deploy_connector(
+        let body = refused_connection(
             &app,
             id,
-            "db",
-            json!({"driver": "postgresql", "connection_string": conn}),
+            orion::extensions::foundation::DRIVER_POSTGRESQL,
+            json!({"connection_string": conn}),
         )
         .await;
-        let issue = load_issue(&app, id)
-            .await
-            .unwrap_or_else(|| panic!("{conn} must not load"));
         assert!(
-            issue["reason"].as_str().unwrap_or("").contains("Allowed:"),
-            "{conn}: the issue should name the allowed schemes, got {issue}"
+            problem_at(&body, "public_config.connection_string").contains("Allowed:"),
+            "{conn}: the refusal should name the allowed schemes, got {body}"
         );
     }
 }
@@ -206,22 +238,17 @@ async fn a_cache_connector_is_memory_only() {
     let app = common::test_app().await;
 
     // `redis` is refused like any unsupported backend, naming the one there is.
-    deploy_connector(
+    let body = refused_connection(
         &app,
         "cache-redis",
-        "cache",
+        orion::extensions::foundation::DRIVER_MEMORY_CACHE,
         json!({"backend": "redis", "url": "rediss://cache.example.com:6379"}),
     )
     .await;
-    let issue = load_issue(&app, "cache-redis")
-        .await
-        .expect("a redis cache connector must not load");
     assert!(
-        issue["reason"]
-            .as_str()
-            .unwrap_or("")
+        problem_at(&body, "public_config.backend")
             .contains("Invalid cache backend 'redis'. Must be one of: memory"),
-        "{issue}"
+        "{body}"
     );
 
     deploy_connector(&app, "cache-memory", "cache", json!({"backend": "memory"})).await;

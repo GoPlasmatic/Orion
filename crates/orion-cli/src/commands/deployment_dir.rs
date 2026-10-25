@@ -318,6 +318,15 @@ pub async fn prepare(
                 stored.digest
             );
         }
+        for advisory in &stored.advisories {
+            eprintln!(
+                "warning: '{}' {}: {} [{}]",
+                path.display(),
+                advisory.path,
+                advisory.message,
+                advisory.check
+            );
+        }
     }
 
     let mut connection_revisions: BTreeMap<String, (u64, String)> = BTreeMap::new();

@@ -408,7 +408,7 @@ mod tests {
             connection_id: "cache-main".to_string(),
             revision: 1,
             provider_digest: upload_resp.digest.clone(),
-            public_config: json!({"max_entries": 128}),
+            public_config: json!({"endpoint": "https://cache.example.com"}),
             secret_locators: Default::default(),
         };
         let (status, conn_resp): (_, CreateConnectionRevisionResponse) =

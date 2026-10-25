@@ -54,6 +54,7 @@ Because `action` and `resource_type` match exactly, a filter is only as good as 
 | `v2_definition_upload` | `definition` | `POST /definitions`; `resource_id` is the definition digest |
 | `v2_definition_test` | `definition` | `POST /definitions/test`, before the run; `resource_id` is the digest the workflow definition would have |
 | `v2_connection_create` | `connection` | `POST /connections` — one row per connection revision; `resource_id` is `{connection_id}@{revision}` |
+| `v2_connection_probe` | `connection` | `POST /connections/{id}/probe` — written before the probe connects, since it reaches a real backend with the connection's credentials; `resource_id` is `{connection_id}@{revision}` |
 | `v2_deployment_apply` | `deployment` | `POST /deployments`; `resource_id` is the committed revision |
 | `v2_deployment_rollback` | `deployment` | `POST /deployments/rollback`; `resource_id` is `{target_revision}->{committed_revision}` |
 

@@ -1,5 +1,5 @@
-//! V2-10.2 Constrained JSON Schema profile (`orion-json-schema/1`), RFC 7493
-//! I-JSON parser, manifest validator, and step-metered instance validator.
+//! V2-10.2 Constrained JSON Schema profile (`orion-json-schema/1`): the
+//! manifest validator and the step-metered instance validator.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -87,6 +87,11 @@ impl Default for SchemaProfileLimits {
 pub struct SchemaProfileFinding {
     pub code: String,
     pub location: String,
+    /// For an instance a schema refused, the JSON pointer to the value it
+    /// refused (`/auth/token`); empty for the instance's root, and for a
+    /// finding about a schema or a manifest.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instance_path: String,
 }
 
 impl SchemaProfileFinding {
@@ -94,260 +99,27 @@ impl SchemaProfileFinding {
         Self {
             code: code.into(),
             location: location.into(),
+            instance_path: String::new(),
         }
     }
-}
 
-/// Strict RFC 7493 (I-JSON) parser that rejects duplicate object keys,
-/// non-finite numbers, out-of-range exponents, and integers outside
-/// `[-(2^53 - 1), 2^53 - 1]` when `enforce_safe_int` is enabled.
-pub fn parse_strict_json(raw: &str, enforce_safe_int: bool) -> Result<Value, SchemaProfileFinding> {
-    let bytes = raw.as_bytes();
-    let mut idx = 0;
-    skip_ws(bytes, &mut idx);
-    let val = parse_json_value(bytes, &mut idx, enforce_safe_int, 1)?;
-    skip_ws(bytes, &mut idx);
-    if idx != bytes.len() {
-        return Err(SchemaProfileFinding::new(
-            "DOCUMENT_INVALID_JSON",
-            "trailing tokens",
-        ));
+    /// This finding, about the value under `segment` of the instance the
+    /// caller was checking.
+    fn within(mut self, segment: &str) -> Self {
+        let escaped = segment.replace('~', "~0").replace('/', "~1");
+        self.instance_path = format!("/{escaped}{}", self.instance_path);
+        self
     }
-    Ok(val)
-}
 
-fn skip_ws(bytes: &[u8], idx: &mut usize) {
-    while *idx < bytes.len() && matches!(bytes[*idx], b' ' | b'\t' | b'\r' | b'\n') {
-        *idx += 1;
-    }
-}
-
-fn parse_json_value(
-    bytes: &[u8],
-    idx: &mut usize,
-    enforce_safe_int: bool,
-    depth: usize,
-) -> Result<Value, SchemaProfileFinding> {
-    if depth > 64 {
-        return Err(SchemaProfileFinding::new(
-            "DOCUMENT_INVALID_JSON",
-            "nesting limit exceeded",
-        ));
-    }
-    skip_ws(bytes, idx);
-    if *idx >= bytes.len() {
-        return Err(SchemaProfileFinding::new(
-            "DOCUMENT_INVALID_JSON",
-            "unexpected EOF",
-        ));
-    }
-    match bytes[*idx] {
-        b'{' => {
-            *idx += 1;
-            skip_ws(bytes, idx);
-            let mut map = Map::new();
-            if *idx < bytes.len() && bytes[*idx] == b'}' {
-                *idx += 1;
-                return Ok(Value::Object(map));
-            }
-            loop {
-                skip_ws(bytes, idx);
-                if *idx >= bytes.len() || bytes[*idx] != b'"' {
-                    return Err(SchemaProfileFinding::new(
-                        "DOCUMENT_INVALID_JSON",
-                        "expected object key",
-                    ));
-                }
-                let key = parse_json_string(bytes, idx)?;
-                if map.contains_key(&key) {
-                    return Err(SchemaProfileFinding::new(
-                        "DOCUMENT_INVALID_JSON",
-                        "duplicate key",
-                    ));
-                }
-                skip_ws(bytes, idx);
-                if *idx >= bytes.len() || bytes[*idx] != b':' {
-                    return Err(SchemaProfileFinding::new(
-                        "DOCUMENT_INVALID_JSON",
-                        "expected colon",
-                    ));
-                }
-                *idx += 1;
-                let value = parse_json_value(bytes, idx, enforce_safe_int, depth + 1)?;
-                map.insert(key, value);
-                skip_ws(bytes, idx);
-                if *idx >= bytes.len() {
-                    return Err(SchemaProfileFinding::new(
-                        "DOCUMENT_INVALID_JSON",
-                        "unclosed object",
-                    ));
-                }
-                match bytes[*idx] {
-                    b',' => {
-                        *idx += 1;
-                    }
-                    b'}' => {
-                        *idx += 1;
-                        return Ok(Value::Object(map));
-                    }
-                    _ => {
-                        return Err(SchemaProfileFinding::new(
-                            "DOCUMENT_INVALID_JSON",
-                            "invalid object separator",
-                        ));
-                    }
-                }
-            }
-        }
-        b'[' => {
-            *idx += 1;
-            skip_ws(bytes, idx);
-            let mut items = Vec::new();
-            if *idx < bytes.len() && bytes[*idx] == b']' {
-                *idx += 1;
-                return Ok(Value::Array(items));
-            }
-            loop {
-                let value = parse_json_value(bytes, idx, enforce_safe_int, depth + 1)?;
-                items.push(value);
-                skip_ws(bytes, idx);
-                if *idx >= bytes.len() {
-                    return Err(SchemaProfileFinding::new(
-                        "DOCUMENT_INVALID_JSON",
-                        "unclosed array",
-                    ));
-                }
-                match bytes[*idx] {
-                    b',' => {
-                        *idx += 1;
-                    }
-                    b']' => {
-                        *idx += 1;
-                        return Ok(Value::Array(items));
-                    }
-                    _ => {
-                        return Err(SchemaProfileFinding::new(
-                            "DOCUMENT_INVALID_JSON",
-                            "invalid array separator",
-                        ));
-                    }
-                }
-            }
-        }
-        b'"' => Ok(Value::String(parse_json_string(bytes, idx)?)),
-        b't' if bytes[*idx..].starts_with(b"true") => {
-            *idx += 4;
-            Ok(Value::Bool(true))
-        }
-        b'f' if bytes[*idx..].starts_with(b"false") => {
-            *idx += 5;
-            Ok(Value::Bool(false))
-        }
-        b'n' if bytes[*idx..].starts_with(b"null") => {
-            *idx += 4;
-            Ok(Value::Null)
-        }
-        b'-' | b'0'..=b'9' => parse_json_number(bytes, idx, enforce_safe_int),
-        _ => Err(SchemaProfileFinding::new(
-            "DOCUMENT_INVALID_JSON",
-            "invalid token",
-        )),
-    }
-}
-
-fn parse_json_string(bytes: &[u8], idx: &mut usize) -> Result<String, SchemaProfileFinding> {
-    let start = *idx;
-    *idx += 1; // skip opening quote
-    while *idx < bytes.len() {
-        match bytes[*idx] {
-            b'"' => {
-                *idx += 1;
-                let slice = std::str::from_utf8(&bytes[start..*idx]).map_err(|_| {
-                    SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "invalid utf8")
-                })?;
-                return serde_json::from_str(slice).map_err(|_| {
-                    SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "invalid string escape")
-                });
-            }
-            b'\\' => {
-                *idx += 2;
-            }
-            c if c < 0x20 => {
-                return Err(SchemaProfileFinding::new(
-                    "DOCUMENT_INVALID_JSON",
-                    "unescaped control character",
-                ));
-            }
-            _ => {
-                *idx += 1;
-            }
-        }
-    }
-    Err(SchemaProfileFinding::new(
-        "DOCUMENT_INVALID_JSON",
-        "unterminated string",
-    ))
-}
-
-fn parse_json_number(
-    bytes: &[u8],
-    idx: &mut usize,
-    enforce_safe_int: bool,
-) -> Result<Value, SchemaProfileFinding> {
-    let start = *idx;
-    while *idx < bytes.len()
-        && matches!(bytes[*idx], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
-    {
-        *idx += 1;
-    }
-    let token = std::str::from_utf8(&bytes[start..*idx])
-        .map_err(|_| SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "invalid number utf8"))?;
-    let is_float = token.contains('.') || token.contains('e') || token.contains('E');
-    if is_float {
-        let parsed: f64 = token.parse().map_err(|_| {
-            SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "invalid float literal")
-        })?;
-        if !parsed.is_finite() {
-            return Err(SchemaProfileFinding::new(
-                "DOCUMENT_INVALID_JSON",
-                "unsupported numeric range",
-            ));
-        }
-        let num = serde_json::Number::from_f64(parsed).ok_or_else(|| {
-            SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "non-finite number")
-        })?;
-        let check: Value = serde_json::from_str(token).map_err(|_| {
-            SchemaProfileFinding::new("DOCUMENT_INVALID_JSON", "invalid float syntax")
-        })?;
-        if !check.is_number() {
-            return Err(SchemaProfileFinding::new(
-                "DOCUMENT_INVALID_JSON",
-                "invalid number",
-            ));
-        }
-        Ok(Value::Number(num))
-    } else {
-        let check: Value = serde_json::from_str(token).map_err(|_| {
-            SchemaProfileFinding::new(
-                "DOCUMENT_INVALID_JSON",
-                "integer outside representable range",
-            )
-        })?;
-        let parsed: i128 = token.parse().map_err(|_| {
-            SchemaProfileFinding::new(
-                "DOCUMENT_INVALID_JSON",
-                "integer outside RFC 7493 safe range",
-            )
-        })?;
-        if enforce_safe_int
-            && !(i128::from(MIN_SAFE_INTEGER)..=i128::from(MAX_SAFE_INTEGER)).contains(&parsed)
-        {
-            return Err(SchemaProfileFinding::new(
-                "DOCUMENT_INVALID_JSON",
-                "integer outside RFC 7493 safe range",
-            ));
-        }
-        Ok(check)
+    /// The refused value's path as dotted keys (`auth.token`, `items.0`),
+    /// the way a field error names a field; empty for the root.
+    pub fn instance_field(&self) -> String {
+        self.instance_path
+            .split('/')
+            .skip(1)
+            .map(|segment| segment.replace("~1", "/").replace("~0", "~"))
+            .collect::<Vec<_>>()
+            .join(".")
     }
 }
 
@@ -904,8 +676,9 @@ impl CompiledSchemaBundle {
                     if map.contains_key("items") {
                         let mut item_ptr = pointer.to_vec();
                         item_ptr.push("items".to_string());
-                        for elem in arr {
-                            self.eval_node(schema_path, &item_ptr, elem, steps)?;
+                        for (index, elem) in arr.iter().enumerate() {
+                            self.eval_node(schema_path, &item_ptr, elem, steps)
+                                .map_err(|f| f.within(&index.to_string()))?;
                         }
                     }
                 }
@@ -936,7 +709,8 @@ impl CompiledSchemaBundle {
                                 return Err(SchemaProfileFinding::new(
                                     "CONNECTOR_INVALID_INPUT",
                                     "required",
-                                ));
+                                )
+                                .within(r_str));
                             }
                         }
                     }
@@ -948,11 +722,13 @@ impl CompiledSchemaBundle {
                             let mut prop_ptr = pointer.to_vec();
                             prop_ptr.push("properties".to_string());
                             prop_ptr.push(k.clone());
-                            self.eval_node(schema_path, &prop_ptr, v, steps)?;
+                            self.eval_node(schema_path, &prop_ptr, v, steps)
+                                .map_err(|f| f.within(k))?;
                         } else if map.contains_key("additionalProperties") {
                             let mut add_ptr = pointer.to_vec();
                             add_ptr.push("additionalProperties".to_string());
-                            self.eval_node(schema_path, &add_ptr, v, steps)?;
+                            self.eval_node(schema_path, &add_ptr, v, steps)
+                                .map_err(|f| f.within(k))?;
                         }
                     }
                 }
@@ -1005,46 +781,6 @@ impl CompiledSchemaBundle {
             _ => Err(SchemaProfileFinding::new("SCHEMA_INVALID", schema_path)),
         }
     }
-
-    /// Omit configuration fields marked `x-orion-sensitive: true` (and their
-    /// descendants) when building public projections.
-    pub fn project_public_configuration(&self, schema_path: &str, config: &Value) -> Value {
-        let Some(doc) = self.schemas.get(schema_path) else {
-            return config.clone();
-        };
-        redact_sensitive_node(doc, config)
-    }
-}
-
-fn redact_sensitive_node(schema: &Value, value: &Value) -> Value {
-    let Some(map) = schema.as_object() else {
-        return value.clone();
-    };
-    if map.get("x-orion-sensitive").and_then(Value::as_bool) == Some(true) {
-        return Value::String("[REDACTED]".to_string());
-    }
-    if let (Some(props), Some(obj)) = (
-        map.get("properties").and_then(Value::as_object),
-        value.as_object(),
-    ) {
-        let mut out = Map::new();
-        for (k, v) in obj {
-            if let Some(prop_schema) = props.get(k) {
-                if prop_schema
-                    .get("x-orion-sensitive")
-                    .and_then(Value::as_bool)
-                    == Some(true)
-                {
-                    continue;
-                }
-                out.insert(k.clone(), redact_sensitive_node(prop_schema, v));
-            } else {
-                out.insert(k.clone(), v.clone());
-            }
-        }
-        return Value::Object(out);
-    }
-    value.clone()
 }
 
 fn check_instance_bounds(
@@ -1698,17 +1434,12 @@ mod tests {
         let base: Value = serde_json::from_str(&base_raw).unwrap();
 
         let cases = catalog["cases"].as_array().unwrap();
-        assert_eq!(cases.len(), 42);
+        assert_eq!(cases.len(), 38);
 
         for case in cases {
             let id = case["id"].as_str().unwrap();
             let expected = case["expect"].as_str().unwrap();
-            let observed = if let Some(raw_json) = case.get("raw_json").and_then(Value::as_str) {
-                match parse_strict_json(raw_json, true) {
-                    Ok(_) => "OK".to_string(),
-                    Err(f) => f.code,
-                }
-            } else {
+            let observed = {
                 let mut bundle = base.clone();
                 if let Some(patches) = case.get("patch").and_then(Value::as_array) {
                     apply_patch(&mut bundle, patches);
@@ -1750,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    fn enforces_step_metering_and_sensitive_projection() {
+    fn enforces_step_metering() {
         let mut schemas = BTreeMap::new();
         schemas.insert(
             "schemas/config.json".to_string(),
@@ -1768,18 +1499,6 @@ mod tests {
             ..Default::default()
         };
         let bundle = CompiledSchemaBundle::compile(schemas, limits).unwrap();
-        let projected = bundle.project_public_configuration(
-            "schemas/config.json",
-            &serde_json::json!({
-                "base_url": "https://api.example.com",
-                "client_secret": "super-secret"
-            }),
-        );
-        assert_eq!(
-            projected,
-            serde_json::json!({ "base_url": "https://api.example.com" })
-        );
-
         let err = bundle
             .validate_instance(
                 "schemas/config.json",
@@ -1790,5 +1509,44 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(err.code, "SCHEMA_PROFILE_LIMIT");
+    }
+
+    #[test]
+    fn a_refusal_names_the_value_it_refused() {
+        let mut schemas = BTreeMap::new();
+        schemas.insert(
+            "schemas/config.json".to_string(),
+            serde_json::json!({
+                "$schema": DIALECT_URI,
+                "type": "object",
+                "required": ["auth"],
+                "properties": {
+                    "auth": {
+                        "type": "object",
+                        "required": ["token"],
+                        "properties": { "scopes": { "type": "array", "items": { "type": "string" } } }
+                    }
+                }
+            }),
+        );
+        let bundle =
+            CompiledSchemaBundle::compile(schemas, SchemaProfileLimits::default()).unwrap();
+        let refused = |instance: Value| {
+            bundle
+                .validate_instance("schemas/config.json", &instance)
+                .unwrap_err()
+        };
+        let err = refused(serde_json::json!({}));
+        assert_eq!(
+            (err.location.as_str(), err.instance_field()),
+            ("required", "auth".into())
+        );
+        let err = refused(serde_json::json!({"auth": {}}));
+        assert_eq!(err.instance_field(), "auth.token");
+        let err = refused(serde_json::json!({"auth": {"token": "t", "scopes": ["a", 2]}}));
+        assert_eq!(
+            (err.location.as_str(), err.instance_path.as_str()),
+            ("type", "/auth/scopes/1")
+        );
     }
 }

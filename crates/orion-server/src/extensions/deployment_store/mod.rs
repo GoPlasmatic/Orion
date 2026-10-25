@@ -23,7 +23,19 @@ use super::package_identity::{
     VerifiedArtifactMetadata, canonical_bytes, check_dependency_lock, sha256_digest,
     verify_inventory,
 };
-use super::schema_profile::{check_manifest_bundle, validate_safe_package_path};
+use super::schema_profile::{
+    CompiledSchemaBundle, SchemaProfileFinding, check_manifest_bundle, validate_safe_package_path,
+};
+
+/// Which of an uploaded package's declared schemas an instance is checked
+/// against ([`ImmutableDeploymentStore::check_package_instance`]).
+#[derive(Debug, Clone, Copy)]
+pub enum PackageSchema<'a> {
+    /// The manifest's `configuration_schema`: a connection's configuration.
+    Configuration,
+    /// `operations.<name>.input_schema`: what `connector_call` sends.
+    OperationInput(&'a str),
+}
 
 /// Whether `key` names a secret, so its value belongs in `secret_locators`.
 ///
@@ -217,28 +229,39 @@ impl ConnectionRevisionRow {
     /// with every secret reference placed at its path. The references are
     /// resolved where they are used, never stored resolved.
     pub fn config_with_locators(&self) -> Value {
-        let mut config = self.public_config.clone();
-        if !config.is_object() {
-            config = Value::Object(serde_json::Map::new());
-        }
-        for (path, reference) in &self.secret_locators {
-            let mut at = &mut config;
-            let mut segments = path.split('.').peekable();
-            while let Some(segment) = segments.next() {
-                let Some(object) = at.as_object_mut() else {
-                    break;
-                };
-                if segments.peek().is_none() {
-                    object.insert(segment.to_string(), Value::String(reference.clone()));
-                    break;
-                }
-                at = object
-                    .entry(segment.to_string())
-                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            }
-        }
-        config
+        place_locators(&self.public_config, &self.secret_locators)
     }
+}
+
+/// A connection's configuration as a provider reads it: `public_config` with
+/// each secret reference placed at its locator path. What
+/// [`ConnectionRevisionRow::config_with_locators`] answers, for a caller
+/// judging a connection before it is stored.
+pub fn place_locators(
+    public_config: &Value,
+    secret_locators: &std::collections::BTreeMap<String, String>,
+) -> Value {
+    let mut config = public_config.clone();
+    if !config.is_object() {
+        config = Value::Object(serde_json::Map::new());
+    }
+    for (path, reference) in secret_locators {
+        let mut at = &mut config;
+        let mut segments = path.split('.').peekable();
+        while let Some(segment) = segments.next() {
+            let Some(object) = at.as_object_mut() else {
+                break;
+            };
+            if segments.peek().is_none() {
+                object.insert(segment.to_string(), Value::String(reference.clone()));
+                break;
+            }
+            at = object
+                .entry(segment.to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        }
+    }
+    config
 }
 
 /// The bytes a connection revision's `configuration_digest` is taken over:
@@ -458,6 +481,9 @@ impl Default for DeploymentState {
 pub struct ImmutableDeploymentStore {
     pub(super) inner: Arc<Mutex<DeploymentState>>,
     pub(super) write_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Each uploaded package's schemas, compiled once: a package is immutable
+    /// by digest, so its bundle never goes stale.
+    schema_bundles: Arc<Mutex<BTreeMap<String, Arc<CompiledSchemaBundle>>>>,
 }
 
 impl Default for ImmutableDeploymentStore {
@@ -486,7 +512,99 @@ impl ImmutableDeploymentStore {
         Self {
             inner: Arc::new(Mutex::new(state)),
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
+            schema_bundles: Arc::default(),
         }
+    }
+
+    /// The schemas `package_digest`'s package declares, compiled as its
+    /// upload checked them. `None` when no package is stored under that
+    /// digest (a built-in driver's, or none at all); an error when a schema
+    /// file the package lists is no longer stored.
+    pub fn package_schemas(
+        &self,
+        package_digest: &str,
+    ) -> Option<Result<Arc<CompiledSchemaBundle>, DeploymentError>> {
+        if let Some(bundle) = self
+            .schema_bundles
+            .lock()
+            .expect("schema cache lock")
+            .get(package_digest)
+        {
+            return Some(Ok(Arc::clone(bundle)));
+        }
+        let package = self.get_package(package_digest)?;
+        let compiled = (|| {
+            let files: Vec<String> = package.inventory_json["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry["path"].as_str().map(str::to_string))
+                .collect();
+            let mut schemas = BTreeMap::new();
+            for entry in package.inventory_json["files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let (Some(path), Some(sha)) = (entry["path"].as_str(), entry["sha256"].as_str())
+                else {
+                    continue;
+                };
+                if !(path.starts_with("schemas/") && path.ends_with(".json")) {
+                    continue;
+                }
+                let bytes = self
+                    .get_artifact(&format!("sha256:{sha}"))
+                    .and_then(|row| row.bytes)
+                    .ok_or_else(|| {
+                        DeploymentError::new(
+                            "CORRUPT_PERSISTED_STATE",
+                            format!("package {package_digest} lists '{path}', which is not stored"),
+                        )
+                    })?;
+                let schema: Value = serde_json::from_slice(&bytes)
+                    .map_err(|_| DeploymentError::new("SCHEMA_INVALID_JSON", path))?;
+                schemas.insert(path.to_string(), schema);
+            }
+            check_manifest_bundle(&package.manifest_json, &files, &schemas)
+                .map(Arc::new)
+                .map_err(|f| DeploymentError::new(f.code, f.location))
+        })();
+        if let Ok(bundle) = &compiled {
+            self.schema_bundles
+                .lock()
+                .expect("schema cache lock")
+                .insert(package_digest.to_string(), Arc::clone(bundle));
+        }
+        Some(compiled)
+    }
+
+    /// Check `instance` against the schema `package_digest`'s manifest
+    /// declares for `slot`: its `configuration_schema`, or an operation's
+    /// `input_schema`. `None` when no package is stored under that digest;
+    /// `Ok` when the manifest declares no schema there.
+    pub fn check_package_instance(
+        &self,
+        package_digest: &str,
+        slot: PackageSchema<'_>,
+        instance: &Value,
+    ) -> Option<Result<(), SchemaProfileFinding>> {
+        let package = self.get_package(package_digest)?;
+        let declared = match slot {
+            PackageSchema::Configuration => package.manifest_json.get("configuration_schema"),
+            PackageSchema::OperationInput(operation) => package
+                .manifest_json
+                .get("operations")
+                .and_then(|ops| ops.get(operation))
+                .and_then(|op| op.get("input_schema")),
+        };
+        let Some(path) = declared.and_then(Value::as_str) else {
+            return Some(Ok(()));
+        };
+        Some(match self.package_schemas(package_digest)? {
+            Ok(bundle) => bundle.validate_instance(path, instance),
+            Err(e) => Err(SchemaProfileFinding::new(e.code, e.message)),
+        })
     }
 
     pub fn node_id(&self) -> String {

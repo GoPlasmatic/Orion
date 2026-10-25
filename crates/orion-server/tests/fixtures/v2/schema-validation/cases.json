@@ -71,10 +71,6 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"deny": false}, "$ref": "#/$defs/deny"
     }}], "expect": "OK", "instances": [
       {"schema": "schemas/contact-request.json", "value": {"contact_id": "123"}, "valid": false}
-    ]},
-    {"id": "duplicate-json-key", "raw_json": "{\"schema_version\":2,\"schema_version\":2}", "expect": "DOCUMENT_INVALID_JSON"},
-    {"id": "nonfinite-json-number", "raw_json": "{\"value\":NaN}", "expect": "DOCUMENT_INVALID_JSON"},
-    {"id": "unsupported-exponent-range", "raw_json": "{\"value\":1e999}", "expect": "DOCUMENT_INVALID_JSON"},
-    {"id": "integer-above-safe-range", "raw_json": "{\"value\":9007199254740992}", "expect": "DOCUMENT_INVALID_JSON"}
+    ]}
   ]
 }

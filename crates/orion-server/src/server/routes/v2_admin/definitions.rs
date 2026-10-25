@@ -11,7 +11,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Json, Router};
 use orion_api::v2::{
-    ChannelDefinition, Definition, DefinitionResponse, TestDefinitionRequest, WorkflowDefinition,
+    ChannelDefinition, Definition, DefinitionAdvisory, DefinitionResponse, TestDefinitionRequest,
+    WorkflowDefinition,
 };
 use serde_json::{Value, json};
 
@@ -31,7 +32,7 @@ use crate::server::state::AppState;
     description = "Validates a workflow, channel or plugin definition as the node will load it — a workflow is parsed strictly and compiled, refusing anything that would quarantine it; a channel's routing and guards are checked; a plugin's manifest is read and its component compiled and self-tested — and stores its canonical form. The answered `digest` is what a manifest member's `definition_digest` names. Idempotent: the same definition is one digest however it is spelled.",
     request_body = Definition,
     responses(
-        (status = 201, description = "Definition stored", body = DefinitionResponse),
+        (status = 201, description = "Definition stored. For a workflow, `advisories` lists what the engine reports and does not refuse (`validation::engine_advisories`: an accidentally escaped `$` key, a `validation` whose failure stops nothing); they never refuse the upload.", body = DefinitionResponse),
         (status = 400, description = "The definition would not serve; `details` names each problem by field"),
     )
 )]
@@ -41,6 +42,10 @@ pub(crate) async fn upload_definition(
     OrionJson(mut definition): OrionJson<Definition>,
 ) -> Result<impl IntoResponse, OrionError> {
     validate(&state, &mut definition).await?;
+    let advisories = match &definition {
+        Definition::Workflow(workflow) => workflow_advisories(&state, workflow),
+        Definition::Channel(_) | Definition::Plugin(_) => Vec::new(),
+    };
     let bytes = definitions::canonical_bytes(&definition)?;
     let row = match state
         .composition
@@ -64,6 +69,7 @@ pub(crate) async fn upload_definition(
             digest: row.digest,
             kind: definition.kind().to_string(),
             size_bytes: row.size_bytes as u64,
+            advisories,
         }),
     )
         .into_response())
@@ -77,7 +83,7 @@ pub(crate) async fn upload_definition(
     summary = "Read a stored definition",
     params(("digest" = String, Path, description = "`sha256:…` the upload answered")),
     responses(
-        (status = 200, description = "The definition as stored", body = Definition),
+        (status = 200, description = "The definition as stored, except that a channel's credentials (`auth.keys`, `auth.secret`, `auth.secrets`, `auth.jwt_keys[*].key`, `oauth2_login`'s client and state secrets) read as `******`; a secret reference such as `env://NAME` is shown as written. The digest is of the stored, unmasked definition.", body = Definition),
         (status = 404, description = "No definition is stored under that digest"),
     )
 )]
@@ -93,8 +99,13 @@ pub(crate) async fn get_definition(
         .ok_or_else(|| OrionError::NotFound(format!("no definition is stored as '{digest}'")))?;
     // A stored artifact that is not a definition — a connection's
     // configuration, a package file — is not one to serve here.
-    let definition = definitions::parse(&bytes)
+    let mut definition = definitions::parse(&bytes)
         .map_err(|_| OrionError::NotFound(format!("'{digest}' is not a definition")))?;
+    // Masked for the read only: the stored bytes, and so the digest, keep
+    // the credential a channel serves with.
+    if let Definition::Channel(channel) = &mut definition {
+        crate::connector::mask_channel_config(&mut channel.config);
+    }
     Ok(Json(definition))
 }
 
@@ -300,6 +311,24 @@ fn workflow_problems(
         problems.extend(crate::validation::quarantine_refusals(issues));
     }
     Ok(problems)
+}
+
+/// What the engine reports about `workflow` and does not refuse, the
+/// findings `lint` and `compile` report as warnings.
+fn workflow_advisories(state: &AppState, workflow: &WorkflowDefinition) -> Vec<DefinitionAdvisory> {
+    let generation = state.runtime.load();
+    crate::validation::engine_advisories(
+        &workflow.tasks,
+        workflow.loop_config.as_ref(),
+        &generation.functions,
+    )
+    .into_iter()
+    .map(|advisory| DefinitionAdvisory {
+        check: advisory.check.to_string(),
+        path: advisory.path,
+        message: advisory.message,
+    })
+    .collect()
 }
 
 /// A channel is checked as a channel create is, minus its identity and its

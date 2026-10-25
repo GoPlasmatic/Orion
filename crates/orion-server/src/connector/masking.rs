@@ -349,6 +349,63 @@ pub fn find_masked_value(value: &Value) -> Option<String> {
     walk(value, "")
 }
 
+/// Mask a channel's `config` for a read, in place.
+///
+/// The channel config's schema is closed (`deny_unknown_fields`), and these
+/// are the fields that hold a credential, named outright rather than judged
+/// by key name: `auth.keys[*]` (API keys), `auth.secret` and `auth.secrets[*]`
+/// (HMAC, with its rotation list), `auth.jwt_keys[*].key`, and
+/// `oauth2_login.client_secret` / `oauth2_login.state_secret` with each
+/// `oauth2_login.providers.<slug>.client_secret`. A resolvable reference
+/// (`env://NAME`) survives: the stored config never held the value, and a
+/// masked pointer could not be deployed again.
+pub fn mask_channel_config(config: &mut Value) {
+    if let Some(login) = config.get_mut("oauth2_login") {
+        // `client_id` travels in the authorize URL in every user's address
+        // bar: it is not a secret.
+        for field in ["client_secret", "state_secret"] {
+            if let Some(value) = login.get_mut(field) {
+                mask_channel_secret_leaf(value);
+            }
+        }
+        if let Some(providers) = login.get_mut("providers").and_then(Value::as_object_mut) {
+            for provider in providers.values_mut() {
+                if let Some(value) = provider.get_mut("client_secret") {
+                    mask_channel_secret_leaf(value);
+                }
+            }
+        }
+    }
+    let Some(auth) = config.get_mut("auth") else {
+        return;
+    };
+    for list in ["keys", "secrets"] {
+        if let Some(Value::Array(items)) = auth.get_mut(list) {
+            for item in items.iter_mut() {
+                mask_channel_secret_leaf(item);
+            }
+        }
+    }
+    if let Some(secret) = auth.get_mut("secret") {
+        mask_channel_secret_leaf(secret);
+    }
+    if let Some(Value::Array(entries)) = auth.get_mut("jwt_keys") {
+        for entry in entries.iter_mut() {
+            if let Some(key) = entry.get_mut("key") {
+                mask_channel_secret_leaf(key);
+            }
+        }
+    }
+}
+
+fn mask_channel_secret_leaf(value: &mut Value) {
+    match value {
+        Value::String(s) if crate::connector::secrets::is_resolvable_reference(s) => {}
+        Value::Null => {}
+        other => *other = Value::String(MASK.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,4 +595,40 @@ mod tests {
     // ---------------------------------------------------------------
     // H3: the allowlist inversion, and channel config masking
     // ---------------------------------------------------------------
+
+    #[test]
+    fn a_channel_read_masks_every_credential_and_keeps_references() {
+        let mut config = json!({
+            "auth": {
+                "type": "api_key",
+                "keys": ["sk_live_1", "env://SECOND_KEY"],
+                "secret": "hmac-secret",
+                "secrets": ["old-secret"],
+                "jwt_keys": [{"key": "-----BEGIN KEY-----", "kid": "k1"}],
+                "header": "x-api-key"
+            },
+            "oauth2_login": {
+                "client_id": "public-id",
+                "client_secret": "cs",
+                "state_secret": "vault://kv/state",
+                "providers": {"github": {"client_id": "gh", "client_secret": "gh-secret"}}
+            },
+            "rate_limit": {"requests_per_second": 5}
+        });
+        mask_channel_config(&mut config);
+        assert_eq!(config["auth"]["keys"], json!([MASK, "env://SECOND_KEY"]));
+        assert_eq!(config["auth"]["secret"], MASK);
+        assert_eq!(config["auth"]["secrets"], json!([MASK]));
+        assert_eq!(config["auth"]["jwt_keys"][0]["key"], MASK);
+        assert_eq!(config["auth"]["jwt_keys"][0]["kid"], "k1");
+        assert_eq!(config["auth"]["header"], "x-api-key");
+        assert_eq!(config["oauth2_login"]["client_id"], "public-id");
+        assert_eq!(config["oauth2_login"]["client_secret"], MASK);
+        assert_eq!(config["oauth2_login"]["state_secret"], "vault://kv/state");
+        assert_eq!(
+            config["oauth2_login"]["providers"]["github"]["client_secret"],
+            MASK
+        );
+        assert_eq!(config["rate_limit"]["requests_per_second"], 5);
+    }
 }

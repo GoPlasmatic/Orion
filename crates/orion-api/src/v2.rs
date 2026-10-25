@@ -706,6 +706,27 @@ pub struct DefinitionResponse {
     pub digest: String,
     pub kind: String,
     pub size_bytes: u64,
+    /// What the engine reports about a workflow and does not refuse — a
+    /// `$`-prefixed key it emits with one `$` stripped, a `validation` whose
+    /// failure stops nothing. Informational: the definition was stored.
+    /// Empty for a channel or a plugin.
+    #[serde(default)]
+    pub advisories: Vec<DefinitionAdvisory>,
+}
+
+/// One advisory on an uploaded definition ([`DefinitionResponse::advisories`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct DefinitionAdvisory {
+    /// A stable id for the kind of finding (`engine.unguarded_validation`,
+    /// `logic.escaped_template_key`, `engine.advisory`).
+    #[serde(default)]
+    pub check: String,
+    /// Where in the definition it was found, as the engine names it.
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub message: String,
 }
 
 /// `POST /api/v2/admin/definitions/test`: run a workflow definition once on

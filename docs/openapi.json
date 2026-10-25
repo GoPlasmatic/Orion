@@ -750,7 +750,7 @@
           "Connections"
         ],
         "summary": "Create an immutable connection revision",
-        "description": "Validates that public_config contains no raw secrets and persists an immutable, content-addressed connection revision.",
+        "description": "Refuses a raw secret in public_config and a malformed secret locator, then judges the configuration as the node will read it — public_config with each secret reference at its locator path, the references unresolved. Over a built-in driver it is typed and checked as the connector it serves (`http`, `db` or `cache`), exactly as `orion-server compile` checks it; over an uploaded provider package it must satisfy the package's declared `configuration_schema`. A refusal names each problem by field in `details`. Then persists an immutable, content-addressed connection revision.",
         "operationId": "create_connection_revision",
         "requestBody": {
           "content": {
@@ -774,7 +774,7 @@
             }
           },
           "400": {
-            "description": "Raw secret in public_config or non-canonical JSON",
+            "description": "Raw secret in public_config, a malformed locator, or a configuration that would not load; `details` names each problem by field",
             "content": {
               "application/json": {
                 "schema": {
@@ -840,7 +840,7 @@
           "Connections"
         ],
         "summary": "Execute an audited health probe against a connection",
-        "description": "Validates the connection revision's configuration and executes the backing provider's health_check within an admitted run budget.",
+        "description": "Probes the connection's latest revision (or `revision`), recorded in the audit log first because it reaches a real backend. Over a built-in driver it connects for real, with the revision's secret references resolved as the node resolves them at load: `org.orion.postgresql`, `org.orion.mysql` and `org.orion.sqlite` run `SELECT 1` through the node's own connector pool (refusing a private address unless `allow_private_urls`); `org.orion.http` resolves the configured URL's host and opens a TCP connection to it (no HTTP request is sent and no credential is presented; the same private-address rule applies); `org.orion.memory-cache` reads a probe key. `details.probe` says which check ran and `details.error` why it failed — never a resolved secret. Over an uploaded provider package it validates the configuration and runs the provider's health check within an admitted run budget.",
         "operationId": "probe_connection",
         "parameters": [
           {
@@ -1834,7 +1834,7 @@
         },
         "responses": {
           "201": {
-            "description": "Definition stored",
+            "description": "Definition stored. For a workflow, `advisories` lists what the engine reports and does not refuse (`validation::engine_advisories`: an accidentally escaped `$` key, a `validation` whose failure stops nothing); they never refuse the upload.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1994,7 +1994,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The definition as stored",
+            "description": "The definition as stored, except that a channel's credentials (`auth.keys`, `auth.secret`, `auth.secrets`, `auth.jwt_keys[*].key`, `oauth2_login`'s client and state secrets) read as `******`; a secret reference such as `env://NAME` is shown as written. The digest is of the stored, unmasked definition.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5429,6 +5429,23 @@
         ],
         "description": "One deployable definition, as `POST /api/v2/admin/definitions` takes it\nand the artifact store holds it: its kind and the document of that kind.\nThe artifact's digest covers the whole value, so a manifest member's kind\nis bound to the definition it names. Identity is not part of it: a\nmember's `id` and `revision` say which entity this definition is."
       },
+      "DefinitionAdvisory": {
+        "type": "object",
+        "description": "One advisory on an uploaded definition ([`DefinitionResponse::advisories`]).",
+        "properties": {
+          "check": {
+            "type": "string",
+            "description": "A stable id for the kind of finding (`engine.unguarded_validation`,\n`logic.escaped_template_key`, `engine.advisory`)."
+          },
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Where in the definition it was found, as the engine names it."
+          }
+        }
+      },
       "DefinitionResponse": {
         "type": "object",
         "description": "A stored definition (`POST`/`GET /api/v2/admin/definitions`).",
@@ -5438,6 +5455,13 @@
           "size_bytes"
         ],
         "properties": {
+          "advisories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DefinitionAdvisory"
+            },
+            "description": "What the engine reports about a workflow and does not refuse — a\n`$`-prefixed key it emits with one `$` stripped, a `validation` whose\nfailure stops nothing. Informational: the definition was stored.\nEmpty for a channel or a plugin."
+          },
           "digest": {
             "type": "string",
             "description": "`sha256:…` of the canonical definition: what a manifest member's\n`definition_digest` names."

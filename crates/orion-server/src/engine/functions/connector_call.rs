@@ -299,6 +299,33 @@ async fn execute_connector_call(
                     ),
                 ));
             }
+            // The input the package declares for this operation, checked
+            // before anything is dispatched to the provider.
+            if let Some(Err(finding)) = store.check_package_instance(
+                &pkg.package_digest,
+                crate::extensions::deployment_store::PackageSchema::OperationInput(operation),
+                &input_val,
+            ) {
+                let field = finding.instance_field();
+                let at = if field.is_empty() {
+                    "the input".to_string()
+                } else {
+                    format!("`input.{field}`")
+                };
+                return Err(connector_err_to_handler(
+                    crate::extensions::ConnectorError::invalid_input(
+                        format!(
+                            "'{operation}' on '{connection}': {at} does not satisfy provider \
+                             '{}''s input_schema ({} refused it)",
+                            pkg.provider_id, finding.location
+                        ),
+                        Some(json!({
+                            "pointer": finding.instance_path,
+                            "keyword": finding.location,
+                        })),
+                    ),
+                ));
+            }
             ProviderReference {
                 provider_id: pkg.provider_id,
                 version: pkg.version,

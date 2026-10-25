@@ -19,7 +19,10 @@ pub(crate) fn cron_config_errors_for_test(
 ) -> Vec<crate::errors::FieldError> {
     cron::cron_config_errors(config)
 }
-pub use connectors::{reject_masked_values, validate_connector_config, validate_create_connector};
+pub use connectors::{
+    builtin_connection_problems, reject_masked_values, validate_connector_config,
+    validate_create_connector,
+};
 pub use endpoints::check_db_endpoint;
 pub use packages::{MAX_PACKAGE_NAME_LEN, package_key};
 pub use ssrf::{PinnedDnsResolver, validate_hostport_not_private, validate_url_not_private};

@@ -594,6 +594,24 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
                 e.message
             )
         })?;
+    // The judgement `POST /api/v2/admin/connections` makes, so a set that
+    // compiles deploys.
+    if let Some(problems) =
+        crate::validation::builtin_connection_problems(&provider_digest, &config, &secret_locators)
+        && !problems.is_empty()
+    {
+        let said: Vec<String> = problems
+            .iter()
+            .map(|problem| match problem.path.as_str() {
+                "" => problem.message.clone(),
+                path => format!("`config.{path}`: {}", problem.message),
+            })
+            .collect();
+        return Err(format!(
+            "{what}: its configuration would not load — {}",
+            said.join("; ")
+        ));
+    }
 
     Ok((
         CompiledConnection {

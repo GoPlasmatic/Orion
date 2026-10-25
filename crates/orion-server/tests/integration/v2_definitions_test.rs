@@ -122,6 +122,72 @@ async fn an_upload_is_idempotent_and_reads_back() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// A channel reads back with its credentials masked — references kept — while
+/// the digest stays the stored, unmasked definition's.
+#[tokio::test]
+async fn a_channel_reads_back_with_its_credentials_masked() {
+    let app = test_app().await;
+    let channel = json!({"kind": "channel", "definition": {
+        "name": "keyed",
+        "protocol": "rest",
+        "methods": ["POST"],
+        "route_pattern": "/keyed",
+        "config": {"auth": {"mode": "api_key", "keys": ["sk_live_one", "env://SECOND_KEY"]}}
+    }});
+    let digest = upload(&app, channel.clone()).await;
+    let (status, stored) = send(&app, "GET", &format!("{DEFINITIONS}/{digest}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{stored}");
+    assert_eq!(
+        stored["definition"]["config"]["auth"]["keys"],
+        json!(["******", "env://SECOND_KEY"]),
+        "{stored}"
+    );
+    assert!(!stored.to_string().contains("sk_live_one"), "{stored}");
+    // The same definition uploaded again is still the same digest: masking
+    // is the read's, not the store's.
+    assert_eq!(upload(&app, channel).await, digest);
+}
+
+/// A workflow upload answers what the engine advises and does not refuse,
+/// and stores the workflow.
+#[tokio::test]
+async fn a_workflow_upload_reports_its_advisories() {
+    let app = test_app().await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        DEFINITIONS,
+        Some(json!({"kind": "workflow", "definition": {
+            "name": "Check",
+            "tasks": [
+                {"id": "check", "function": {"name": "validation", "input": {
+                    "rules": [{"logic": {"==": [1, 2]}, "message": "no"}]}}},
+                {"id": "respond", "function": {"name": "map", "input": {
+                    "mappings": [{"path": "data.x", "logic": true}]}}}
+            ]
+        }})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let advisories = body["advisories"].as_array().expect("an advisories list");
+    assert!(
+        advisories
+            .iter()
+            .any(|a| a["check"] == "engine.unguarded_validation"),
+        "{body}"
+    );
+    assert!(
+        advisories
+            .iter()
+            .all(|a| a["message"].is_string() && a["path"].is_string()),
+        "{body}"
+    );
+
+    let (status, body) = send(&app, "POST", DEFINITIONS, Some(greeting_workflow())).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["advisories"], json!([]), "{body}");
+}
+
 /// A definition that would not serve is refused at upload, with the problem
 /// at its field under `definition`.
 #[tokio::test]

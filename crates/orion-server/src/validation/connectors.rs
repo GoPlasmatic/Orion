@@ -1,6 +1,7 @@
 use crate::connector::{ConnectorConfig, ConnectorType};
-use crate::errors::OrionError;
+use crate::errors::{FieldError, OrionError};
 use crate::storage::models::CreateConnectorRequest;
+use orion_api::error::field_codes;
 
 use super::common::{validate_id, validate_name};
 
@@ -34,8 +35,10 @@ pub fn validate_connector_config(
             serde_json::Value::String(type_str.to_string()),
         );
     } else {
-        return Err(OrionError::validation(
-            "Connector config must be a JSON object".to_string(),
+        return Err(OrionError::invalid_field(
+            "",
+            field_codes::TYPE_MISMATCH,
+            "Connector config must be a JSON object",
         ));
     }
 
@@ -50,14 +53,17 @@ pub fn validate_connector_config(
         &crate::connector::secrets::UnresolvedReferences,
     )
     .map_err(|e| {
-        OrionError::validation(format!(
-            "Invalid connector config for type '{type_str}': {e}"
-        ))
+        let message = format!("Invalid connector config for type '{type_str}': {e}");
+        OrionError::Validation {
+            code: orion_api::error::codes::VALIDATION_ERROR,
+            details: vec![parse_problem(&e, &message)],
+            message,
+        }
     })?;
 
-    validate_operation_gate_keys(connector_type, config)?;
-    validate_retry_keys(connector_type, config)?;
-    validate_query_params(connector_type, config)?;
+    validate_operation_gate_keys(connector_type, config).map_err(|e| at("operations", e))?;
+    validate_retry_keys(connector_type, config).map_err(|e| at("retry", e))?;
+    validate_query_params(connector_type, config).map_err(|e| at("query_params", e))?;
 
     // S6: every variant's endpoint gets a scheme allow-list, not just HTTP's.
     // Schemes only — the private-address check runs on the pool-open paths,
@@ -65,7 +71,18 @@ pub fn validate_connector_config(
     super::endpoints::validate_endpoint_schemes(
         &parsed,
         super::endpoints::EndpointPhase::Authoring,
-    )?;
+    )
+    .map_err(|e| {
+        let path = match &parsed {
+            ConnectorConfig::Http(_) if e.client_message().contains("token_url") => {
+                "auth.token_url"
+            }
+            ConnectorConfig::Http(_) => "url",
+            ConnectorConfig::Db(_) => "connection_string",
+            ConnectorConfig::Cache(_) => "",
+        };
+        at(path, e)
+    })?;
 
     // Per-type rules, and exhaustive on purpose.
     //
@@ -84,10 +101,95 @@ pub fn validate_connector_config(
     match &parsed {
         ConnectorConfig::Http(c) => validate_http(c)?,
         ConnectorConfig::Cache(c) => validate_cache(c, config)?,
-        ConnectorConfig::Db(_) => validate_db(config)?,
+        ConnectorConfig::Db(_) => validate_db(config).map_err(|e| at("driver", e))?,
     }
 
     Ok(())
+}
+
+/// `error` with a field error at `path` (relative to the connector's
+/// config), unless it already names its fields.
+fn at(path: &str, error: OrionError) -> OrionError {
+    match error {
+        OrionError::Validation {
+            code,
+            message,
+            details,
+        } if details.is_empty() => OrionError::Validation {
+            code,
+            details: vec![FieldError::new(path, field_codes::INVALID, message.clone())],
+            message,
+        },
+        other => other,
+    }
+}
+
+/// A typed-parse refusal as a field error, at the path the parse reported it
+/// at (`retry.max_retries: invalid type …`), and for a missing or unknown
+/// field at that field.
+fn parse_problem(parse_error: &str, message: &str) -> FieldError {
+    let (prefix, detail) = match parse_error.split_once(": ") {
+        Some((path, detail)) if !path.is_empty() && !path.contains(char::is_whitespace) => {
+            (path.trim_start_matches('.'), detail)
+        }
+        _ => ("", parse_error),
+    };
+    let quoted = |lead: &str| {
+        detail
+            .strip_prefix(lead)
+            .and_then(|rest| rest.strip_prefix('`'))
+            .and_then(|rest| rest.split('`').next())
+    };
+    let under = |field: &str| {
+        if prefix.is_empty() {
+            field.to_string()
+        } else {
+            format!("{prefix}.{field}")
+        }
+    };
+    if let Some(field) = quoted("missing field ") {
+        FieldError::new(under(field), field_codes::REQUIRED, message)
+    } else if let Some(field) = quoted("unknown field ") {
+        FieldError::new(under(field), field_codes::UNKNOWN_FIELD, message)
+    } else if detail.starts_with("invalid type") {
+        FieldError::new(prefix, field_codes::TYPE_MISMATCH, message)
+    } else {
+        FieldError::new(prefix, field_codes::INVALID, message)
+    }
+}
+
+/// What a connection over a built-in driver would not load with, by field:
+/// its configuration — `public_config` with each secret reference at its
+/// locator path, the references unresolved — typed as the connector type the
+/// driver serves, as the registry types it at load, and checked as a
+/// connector config is ([`validate_connector_config`]). Paths are relative
+/// to the configuration. `None` when `provider_digest` names no built-in
+/// driver.
+///
+/// The one judgement behind `POST /api/v2/admin/connections` and
+/// `orion-server compile`, so the two cannot disagree about a connection.
+pub fn builtin_connection_problems(
+    provider_digest: &str,
+    public_config: &serde_json::Value,
+    secret_locators: &std::collections::BTreeMap<String, String>,
+) -> Option<Vec<FieldError>> {
+    let driver = crate::extensions::foundation::builtin_driver(provider_digest)?;
+    let config =
+        crate::extensions::deployment_store::place_locators(public_config, secret_locators);
+    let (connector_type, config) =
+        crate::extensions::foundation::builtin_connector(driver, config)?;
+    let connector_type = ConnectorType::from_stored(connector_type)?;
+    Some(match validate_connector_config(connector_type, &config) {
+        Ok(()) => Vec::new(),
+        Err(e) if e.field_errors().is_empty() => {
+            vec![FieldError::new(
+                "",
+                field_codes::INVALID,
+                e.client_message(),
+            )]
+        }
+        Err(e) => e.field_errors().to_vec(),
+    })
 }
 
 /// Db: a `driver`, when one is given, is one of the three names and agrees
@@ -137,17 +239,21 @@ fn validate_http(http_config: &crate::connector::HttpConnectorConfig) -> Result<
     // copies on db and es, so validating them here would have been validating
     // a field with no consumer.
     if http_config.retry.max_retries > 16 {
-        return Err(OrionError::validation(format!(
-            "retry.max_retries must be <= 16 (backoff doubles per attempt), got {}",
-            http_config.retry.max_retries
-        )));
+        return Err(OrionError::invalid_field(
+            "retry.max_retries",
+            field_codes::INVALID,
+            format!(
+                "retry.max_retries must be <= 16 (backoff doubles per attempt), got {}",
+                http_config.retry.max_retries
+            ),
+        ));
     }
 
     // #268: managed OAuth2. The grant-conditional shape is fully determined
     // at authoring time, so every mistake here is a create/update/import
     // refusal, never a first-request surprise.
     if let Some(crate::connector::AuthConfig::OAuth2(o)) = &http_config.auth {
-        validate_oauth2(o)?;
+        validate_oauth2(o).map_err(|e| at("auth", e))?;
     }
 
     // F22e: an HTTP connector's operation gate is a method allow-list, so a
@@ -159,11 +265,14 @@ fn validate_http(http_config: &crate::connector::HttpConnectorConfig) -> Result<
             .iter()
             .any(|valid| valid.eq_ignore_ascii_case(method))
         {
-            return Err(OrionError::validation(format!(
-                "Invalid HTTP method '{method}' in operations.methods. Must be \
+            return Err(at(
+                "operations.methods",
+                OrionError::validation(format!(
+                    "Invalid HTTP method '{method}' in operations.methods. Must be \
                      one of: {}",
-                crate::connector::VALID_HTTP_METHODS.join(", ")
-            )));
+                    crate::connector::VALID_HTTP_METHODS.join(", ")
+                )),
+            ));
         }
     }
     Ok(())
@@ -181,14 +290,22 @@ fn validate_cache(
     raw: &serde_json::Value,
 ) -> Result<(), OrionError> {
     if let Some(reason) = cache_config.unsupported_backend() {
-        return Err(OrionError::validation(reason));
+        return Err(OrionError::invalid_field(
+            "backend",
+            field_codes::INVALID,
+            reason,
+        ));
     }
     if raw.get("url").is_some_and(|url| !url.is_null()) {
-        return Err(OrionError::validation(format!(
-            "A cache connector has no 'url': its backend is per-node memory. Remove \
-             the 'url' (supported backends: {})",
-            crate::connector::VALID_CACHE_BACKENDS.join(", ")
-        )));
+        return Err(OrionError::invalid_field(
+            "url",
+            field_codes::INVALID,
+            format!(
+                "A cache connector has no 'url': its backend is per-node memory. Remove \
+                 the 'url' (supported backends: {})",
+                crate::connector::VALID_CACHE_BACKENDS.join(", ")
+            ),
+        ));
     }
     Ok(())
 }

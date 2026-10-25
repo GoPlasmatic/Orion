@@ -246,7 +246,7 @@ pub fn lint_provider_package(files: &BTreeMap<String, Vec<u8>>) -> PackageLintRe
         }
     }
 
-    if let Err(SchemaProfileFinding { code, location }) =
+    if let Err(SchemaProfileFinding { code, location, .. }) =
         check_manifest_bundle(&manifest, &file_list, &schema_files)
     {
         errors.push(format!("{code}: {location}"));

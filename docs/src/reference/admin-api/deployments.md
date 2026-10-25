@@ -13,6 +13,7 @@ A deployment states everything a node serves in one manifest. You store the defi
 | POST | `/api/v2/admin/definitions/test` | Run a workflow definition once on this node, without deploying it |
 | GET | `/api/v2/admin/connections` | List every stored connection revision |
 | POST | `/api/v2/admin/connections` | Create an immutable connection revision |
+| POST | `/api/v2/admin/connections/{id}/probe` | Connect to a connection's backend and report whether it answers |
 | POST | `/api/v2/admin/deployment-plans` | Check a candidate manifest against a base revision; answers the diff and the reviewed digest |
 | POST | `/api/v2/admin/deployments` | Apply a manifest as the next revision, under compare-and-swap on the head |
 | GET | `/api/v2/admin/deployments` | The head revision and every committed revision with its manifest |
@@ -38,12 +39,16 @@ curl -s -X POST http://localhost:8080/api/v2/admin/definitions \
   -d '{"kind": "workflow", "definition": {"name": "Greet", "tasks": [
         {"id": "greet", "function": {"name": "map", "input": {"mappings": [
           {"path": "data.greeting", "logic": {"cat": ["Hello, ", {"var": "data.name"}]}}]}}}]}}'
-# {"digest": "sha256:…", "kind": "workflow", "size_bytes": 214}
+# {"digest": "sha256:…", "kind": "workflow", "size_bytes": 214, "advisories": []}
 
 curl -s http://localhost:8080/api/v2/admin/definitions/sha256:3f9c… | jq '.definition.name'
 ```
 
-A definition that would not serve is refused with a `400`, each problem at its field under `definition`. A workflow may call a plugin function this node does not serve yet, by a qualified name such as `acme.iso8583.parse`. Its plugin can arrive in the same deployment, so the plan checks that name, not the upload.
+A definition that would not serve is refused with a `400`, each problem at its field under `definition`.
+
+A workflow the engine accepts but has something to say about is stored, and the answer lists it under `advisories`, each with a `check` id, the `path` the engine names and a `message`: a `$`-prefixed key the engine emits with one `$` stripped (`logic.escaped_template_key`), a `validation` whose failure stops nothing (`engine.unguarded_validation`), or an advisory this version has no id for (`engine.advisory`). These are the warnings `orion-server lint` reports. They never refuse the upload, and `deployments apply -d` prints them. A channel or plugin answers an empty list.
+
+A channel reads back with its credentials masked as `******`: `auth.keys[*]`, `auth.secret`, `auth.secrets[*]`, `auth.jwt_keys[*].key`, and `oauth2_login`'s `client_secret`, `state_secret` and each `providers.<slug>.client_secret`. A secret reference such as `env://API_KEY` is shown as written. Only the read is masked: the stored bytes, and so the digest, are the definition as uploaded. A workflow may call a plugin function this node does not serve yet, by a qualified name such as `acme.iso8583.parse`. Its plugin can arrive in the same deployment, so the plan checks that name, not the upload.
 
 ### Test a workflow definition
 
@@ -76,6 +81,13 @@ A connection revision is the configuration a provider runs with: `{connection_id
 
 `provider_digest` names the provider. A built-in driver's digest is listed under `provider_backends[].package_digest` in `GET /api/v2/admin/runtime-capabilities`. The built-in drivers are `org.orion.http`, `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` and `org.orion.memory-cache`.
 
+The configuration is judged as the node will read it, `public_config` with each locator's reference at its path, before anything is stored. The references are not resolved, so a reference standing in a boolean or a number is read as the kind of value that field takes.
+
+- Over a **built-in driver**, it is typed as the connector the driver serves (`http`, `db` or `cache`) and checked the way that connector is: field types, endpoint schemes, `retry`, `operations` and `query_params` keys, OAuth2 shape, the cache backend. `orion-server compile` makes the same check on a definition set's connectors, so a set that compiles is one this endpoint accepts.
+- Over an **uploaded provider package**, it must satisfy the package's `configuration_schema`.
+
+A configuration that would not load is refused with a `400` `VALIDATION_ERROR`, each problem at its field: under `public_config.`, or `secret_locators.` when a locator supplies the field. A failure only a resolved value can cause, such as a reference that resolves to an `ftp://` URL, surfaces when the node loads the deployment, in `/health` under `connectors.failed_to_load`.
+
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/connections \
   -H 'Content-Type: application/json' \
@@ -90,6 +102,33 @@ curl -s http://localhost:8080/api/v2/admin/connections | jq '.connections[] | {c
 The answer carries the revision's `configuration_digest`, taken over its public settings and its locators. A manifest names the revision by it.
 
 A connection over a built-in driver is also a connector to the built-in functions. `http_call`, `db_read`, `data_query`, `cache_read` and the rest name it by its connection id.
+
+A `connector_call` to an uploaded package's operation sends an input the package's `operations.<name>.input_schema` must accept. One it refuses fails the task with `CONNECTOR_INVALID_INPUT`, naming the field, before the provider is called.
+
+### Probe a connection
+
+`POST /api/v2/admin/connections/{id}/probe` connects to the backend of the connection's latest revision, or of `{"revision": N}`, and answers whether it responds. The probe is recorded in the audit log (`v2_connection_probe`) before it runs, because it reaches a real backend with the connection's credentials.
+
+Over a built-in driver, the configuration is first resolved exactly as the node resolves it at load: `[vars]`, secret references, the typed parse and the endpoint scheme. Then the driver's own check runs:
+
+| Driver | Check (`details.probe`) |
+|---|---|
+| `org.orion.postgresql`, `org.orion.mysql`, `org.orion.sqlite` | `SELECT 1` through the pool the `db_*` and `data_*` functions use. A private or internal address is refused unless `allow_private_urls` is set |
+| `org.orion.http` | The URL's host is resolved and a TCP connection opened to it (`TCP connect to the URL's host`). No HTTP request is sent and no credential is presented. A private or internal address is refused unless `allow_private_urls` is set |
+| `org.orion.memory-cache` | A read of a probe key |
+
+A healthy backend answers `200` with `"healthy": true`. Anything else answers `503` with `"healthy": false` and `details.error`: the stage that failed (`configuration`, `secret_resolution`, …) or what the backend did. A resolved secret never appears in the answer; a driver error that could carry one is written to the server log instead.
+
+Over an uploaded provider package, the probe validates the configuration and runs the provider's health check within an admitted run budget.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v2/admin/connections/orders-db/probe
+# {"connection_id": "orders-db", "revision": 1, "driver_id": "org.orion.postgresql",
+#  "healthy": true, "status": "healthy", "latency_ms": 4,
+#  "details": {"probe": "SELECT 1", "status": "ok"}}
+```
+
+`orion-cli connections probe <id>` sends the same request.
 
 ## Manifests
 

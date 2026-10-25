@@ -21,7 +21,10 @@ pub use config::{
 };
 pub use kind::{ConnectorKind, ConnectorTarget, DataBackend, PoolSlot};
 pub(crate) use masking::MASK;
-pub use masking::{find_masked_value, mask_secrets, redact_url_secrets, redact_url_secrets_or_raw};
+pub use masking::{
+    find_masked_value, mask_channel_config, mask_secrets, redact_url_secrets,
+    redact_url_secrets_or_raw,
+};
 /// Stub connector rows shared by the connector and channel loader tests —
 /// the channel loader's reuse cache is keyed on the connector token, so
 /// testing it takes a connector *load*.
