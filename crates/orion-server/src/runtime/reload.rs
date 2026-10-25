@@ -331,6 +331,36 @@ async fn manifest_definitions(
     })
 }
 
+/// Two channels of one deployment claiming one route at one priority would
+/// serve it arbitrarily, the second one dead: the revision fails, naming
+/// both. The same rule an activation gate applies to a v1 channel, over the
+/// whole deployed set at once.
+fn refuse_route_collisions(
+    channels: &[crate::storage::models::Channel],
+) -> Result<(), crate::errors::OrionError> {
+    use crate::channel::routing::{declared_route, methods_overlap};
+    let routes: Vec<_> = channels.iter().map(|c| (c, declared_route(c))).collect();
+    for (i, (first, first_routes)) in routes.iter().enumerate() {
+        for (second, second_routes) in &routes[i + 1..] {
+            if first.priority != second.priority {
+                continue;
+            }
+            for (route, methods) in first_routes {
+                for (other_route, other_methods) in second_routes {
+                    if route == other_route && methods_overlap(methods, other_methods) {
+                        return Err(crate::errors::OrionError::validation(format!(
+                            "channels '{}' and '{}' both claim {route} at priority {}: give \
+                             one another route, narrower methods or a higher priority",
+                            first.channel_id, second.channel_id, first.priority
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The connectors a manifest generation serves the built-in functions
 /// through: each Connection member over a built-in driver, named by its id,
 /// its configuration the revision's `public_config` with its secret
@@ -494,6 +524,9 @@ async fn reload_with_manifest(
             None => state.repos.active_definitions().await?,
         };
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
+        if manifest_revision.is_some() {
+            refuse_route_collisions(&channels)?;
+        }
         // A generation built from a manifest grants each workflow the
         // connections its member requires; any other grants none.
         let connector_authority = Arc::new(

@@ -34,9 +34,9 @@ use crate::server::state::AppState;
 pub(crate) async fn upload_definition(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(definition): Json<Definition>,
+    Json(mut definition): Json<Definition>,
 ) -> Result<impl IntoResponse, OrionError> {
-    validate(&state, &definition).await?;
+    validate(&state, &mut definition).await?;
     let bytes = definitions::canonical_bytes(&definition)?;
     let row = match state
         .composition
@@ -101,7 +101,9 @@ pub(super) fn routes() -> Router<AppState> {
 }
 
 /// Refuse a definition that would not serve, with every problem by field.
-async fn validate(state: &AppState, definition: &Definition) -> Result<(), OrionError> {
+/// A plugin's manifest is stored as the parsed JSON the loader reads, however
+/// it was written (`plugin.toml` text or an object).
+async fn validate(state: &AppState, definition: &mut Definition) -> Result<(), OrionError> {
     let details = match definition {
         Definition::Workflow(workflow) => workflow_problems(state, workflow)?,
         Definition::Channel(channel) => channel_problems(channel),
@@ -115,7 +117,9 @@ async fn validate(state: &AppState, definition: &Definition) -> Result<(), Orion
                 plugin.signature.as_deref(),
                 &plugin.tags,
             )?;
+            let manifest = prepared.manifest_json.clone();
             crate::server::routes::admin::services::plugins::resolve(state, prepared).await?;
+            plugin.manifest = manifest;
             Vec::new()
         }
     };
@@ -182,7 +186,21 @@ fn channel_problems(channel: &ChannelDefinition) -> Vec<FieldError> {
     match crate::validation::validate_create_channel(&request) {
         Ok(()) => Vec::new(),
         Err(e) => {
-            let details = e.field_errors().to_vec();
+            // Channel validation roots its paths at the v1 request's
+            // `channel`; a definition's fields sit directly under it.
+            let details: Vec<FieldError> = e
+                .field_errors()
+                .iter()
+                .cloned()
+                .map(|mut d| {
+                    if let Some(rest) = d.path.strip_prefix("channel.") {
+                        d.path = rest.to_string();
+                    } else if d.path == "channel" {
+                        d.path = String::new();
+                    }
+                    d
+                })
+                .collect();
             if details.is_empty() {
                 vec![FieldError::new("", "INVALID", e.to_string())]
             } else {

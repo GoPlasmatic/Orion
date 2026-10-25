@@ -269,3 +269,49 @@ async fn a_deployed_connection_serves_the_built_in_functions() {
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["data"]["rows"][0]["answer"], 42, "{answer}");
 }
+
+/// Two channels of one deployment claiming one route at one priority fail
+/// the revision, naming both, and the previous generation keeps serving.
+#[tokio::test]
+async fn two_channels_claiming_one_route_fail_the_revision() {
+    let app = test_app().await;
+    let workflow = upload(&app, greeting_workflow()).await;
+    let route = |name: &str, pattern: &str| {
+        json!({"kind": "channel", "definition": {
+            "name": name, "protocol": "rest", "methods": ["GET"], "route_pattern": pattern,
+        }})
+    };
+    let first = upload(&app, route("orders.first", "/orders/{id}")).await;
+    // Same shape, another parameter name: one route.
+    let second = upload(&app, route("orders.second", "/orders/{order_id}")).await;
+    let member = |kind: &str, id: &str, digest: &str| {
+        json!({"entity": {"kind": kind, "id": id, "revision": 1},
+               "definition_digest": digest,
+               "requires": if kind == "channel" {
+                   json!([{"kind": "workflow", "id": "wf", "revision": 1}])
+               } else { json!([]) }})
+    };
+    let (status, applied) = send(
+        &app,
+        "POST",
+        DEPLOYMENTS,
+        Some(json!({
+            "idempotency_key": "collide",
+            "base_revision": 0,
+            "manifest": {"schema_version": 2, "providers": [], "members": [
+                member("workflow", "wf", &workflow),
+                member("channel", "orders.first", &first),
+                member("channel", "orders.second", &second),
+            ]},
+            "reason": "collide",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{applied}");
+    assert_eq!(applied["evaluation"]["converged"], false, "{applied}");
+    let error = applied["local_error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("orders.first") && error.contains("orders.second"),
+        "{applied}"
+    );
+}

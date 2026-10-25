@@ -649,10 +649,12 @@ pub async fn deploy_plugin(app: &axum::Router, manifest_toml: &str, component: &
     let manifest = orion::plugin::manifest::Manifest::parse(manifest_toml)
         .unwrap_or_else(|e| panic!("the fixture manifest parses: {e:?}"));
     let id = manifest.name.clone();
+    // The `plugin.toml` text as written: upload stores the manifest the
+    // loader reads.
     let digest = deploy::upload(
         app,
         serde_json::json!({"kind": "plugin", "definition": {
-            "manifest": serde_json::to_value(&manifest).expect("a manifest serializes"),
+            "manifest": manifest_toml,
             "component": base64::engine::general_purpose::STANDARD.encode(component),
         }}),
     )
