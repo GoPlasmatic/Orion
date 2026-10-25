@@ -278,7 +278,11 @@ async fn sqlite_migration_and_persistence_roundtrip() {
             1,
             &pkg.package_digest,
             json!({"url": "https://api.example.com"}),
-            Some("vault://secrets/orders#v1".to_string()),
+            [(
+                "connection_string".to_string(),
+                "vault://secrets/orders#v1".to_string(),
+            )]
+            .into(),
         )
         .unwrap();
 
@@ -417,7 +421,13 @@ fn connection_secret_rejection_canonical_digests_and_staged_gc_protection() {
         json!({ "url": "https://api.example.com/v1?api_key=secret123" }),
     ] {
         let err = store
-            .store_connection_revision("conn-bad", 1, &pkg.package_digest, bad_cfg, None)
+            .store_connection_revision(
+                "conn-bad",
+                1,
+                &pkg.package_digest,
+                bad_cfg,
+                Default::default(),
+            )
             .expect_err("secret in public_config must be rejected");
         assert_eq!(err.code, "CONNECTION_PUBLIC_SECRET_FORBIDDEN");
     }
@@ -429,7 +439,7 @@ fn connection_secret_rejection_canonical_digests_and_staged_gc_protection() {
             1,
             &pkg.package_digest,
             json!({ "b": 2, "a": 1 }),
-            None,
+            Default::default(),
         )
         .unwrap();
     let conn_b = store
@@ -438,7 +448,7 @@ fn connection_secret_rejection_canonical_digests_and_staged_gc_protection() {
             1,
             &pkg.package_digest,
             json!({ "a": 1, "b": 2 }),
-            None,
+            Default::default(),
         )
         .expect("canonical public_config with reordered keys must be idempotent");
     assert_eq!(conn_a.configuration_digest, conn_b.configuration_digest);
@@ -633,7 +643,7 @@ async fn failed_persistence_never_undoes_committed_in_memory_state() {
             1,
             &pkg.package_digest,
             json!({"url": "https://one.example.com"}),
-            None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -654,7 +664,7 @@ async fn failed_persistence_never_undoes_committed_in_memory_state() {
             1,
             &pkg.package_digest,
             json!({"url": "https://two.example.com"}),
-            None,
+            Default::default(),
         )
         .await
         .expect_err("DB failure must return error");
@@ -688,7 +698,7 @@ fn a_builtin_provider_needs_no_declaration_and_an_uploaded_one_does() {
                 1,
                 provider,
                 json!({"url": "https://api.example.com"}),
-                None,
+                Default::default(),
             )
             .unwrap();
         CanonicalManifest {

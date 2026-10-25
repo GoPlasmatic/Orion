@@ -38,15 +38,17 @@ A connection revision names its provider by package digest. The built-in drivers
 
 ### The foundation SQL and HTTP providers
 
-The Community providers `org.orion.postgresql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP). A credential may live only behind its `secret_locator`, a reference such as `env://ORDERS_DB_URL`. For SQL it resolves to the whole connection string.
+The Community providers `org.orion.postgresql`, `org.orion.sqlite` and `org.orion.http` take their target from the connection revision, never from `input`. An `input` carrying `connection_string`, `url` or `base_url` is refused with `CONNECTOR_CONNECTION_FORBIDDEN`. A revision's `public_config` names the target (`connection_string`, or `url` for HTTP) and never holds a credential: a credential-shaped key or value there is refused when the revision is created.
 
-For HTTP, the secret is the credential itself, and `public_config.auth` says how it is sent:
+A credential comes from the revision's `secret_locators`: a map from a config path to a secret reference such as `env://ORDERS_DB_URL` or `vault://secret/orders#password`. Each reference is resolved where it is used and placed at its path, so `{"connection_string": "env://ORDERS_DB_URL"}` supplies a SQL connection's whole connection string. A locator must be a reference, never the secret itself, and may not name a path `public_config` already sets.
 
-- `{"type": "bearer"}` sends `Authorization: Bearer <secret>`.
-- `{"type": "header", "name": "X-API-Key"}` sends the secret in the named header, which may not be `Host`, `Content-Length`, `Content-Type` or `Transfer-Encoding`.
-- `{"type": "basic", "username": "svc"}` sends HTTP Basic, with the secret as the password.
+For HTTP, `public_config.auth` says how the credential is sent, and its secret field comes from the locator at that field's path:
 
-`auth` and `secret_locator` come together: a revision with one and not the other is refused with `CONNECTOR_INVALID_INPUT` before any request is made, as is an `auth` with an unknown `type` or a field its type does not take.
+- `{"type": "bearer"}` with `auth.token` sends `Authorization: Bearer <token>`.
+- `{"type": "api_key", "header": "X-API-Key"}` with `auth.key` sends the key in the named header, which may not be `Host`, `Content-Length`, `Content-Type` or `Transfer-Encoding`.
+- `{"type": "basic", "username": "svc"}` with `auth.password` sends HTTP Basic.
+
+An `auth` with no locator for its credential is refused with `CONNECTOR_INVALID_INPUT` before any request is made, as is an `auth` with an unknown `type` or a field its type does not take.
 
 A SQL statement (`input.sql`, or `source` for a query and `target` for a write) must be a literal string. A task that builds one from the message, such as `{"sql": {"var": "data.q"}}`, is refused when it loads. The message reaches the database only through `input.params`, an array bound to the statement's placeholders (`$1` on PostgreSQL, `?` on SQLite):
 

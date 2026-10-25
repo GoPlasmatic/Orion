@@ -57,7 +57,7 @@ fn validate_no_secrets_in_public_config(value: &Value) -> Result<(), DeploymentE
                 if is_public_config_secret_key(k) {
                     return Err(DeploymentError::new(
                         "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
-                        format!("secret key '{k}' must use secret_locator, not public_config"),
+                        format!("secret key '{k}' must use secret_locators, not public_config"),
                     ));
                 }
                 validate_no_secrets_in_public_config(v)?;
@@ -75,7 +75,7 @@ fn validate_no_secrets_in_public_config(value: &Value) -> Result<(), DeploymentE
             if trimmed.starts_with("Bearer ") || trimmed.starts_with("Basic ") {
                 return Err(DeploymentError::new(
                     "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
-                    "authorization credentials must use secret_locator, not public_config",
+                    "authorization credentials must use secret_locators, not public_config",
                 ));
             }
             if let Some(after_scheme) = trimmed.split("://").nth(1) {
@@ -83,7 +83,7 @@ fn validate_no_secrets_in_public_config(value: &Value) -> Result<(), DeploymentE
                 if authority.contains('@') {
                     return Err(DeploymentError::new(
                         "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
-                        "credential-bearing URL userinfo must use secret_locator, not public_config",
+                        "credential-bearing URL userinfo must use secret_locators, not public_config",
                     ));
                 }
             }
@@ -91,7 +91,7 @@ fn validate_no_secrets_in_public_config(value: &Value) -> Result<(), DeploymentE
                 if !parsed.username().is_empty() || parsed.password().is_some() {
                     return Err(DeploymentError::new(
                         "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
-                        "credential-bearing URL userinfo must use secret_locator, not public_config",
+                        "credential-bearing URL userinfo must use secret_locators, not public_config",
                     ));
                 }
                 for (qk, _) in parsed.query_pairs() {
@@ -99,7 +99,7 @@ fn validate_no_secrets_in_public_config(value: &Value) -> Result<(), DeploymentE
                         return Err(DeploymentError::new(
                             "CONNECTION_PUBLIC_SECRET_FORBIDDEN",
                             format!(
-                                "secret URL query parameter '{qk}' must use secret_locator, not public_config"
+                                "secret URL query parameter '{qk}' must use secret_locators, not public_config"
                             ),
                         ));
                     }
@@ -190,9 +190,123 @@ pub struct ConnectionRevisionRow {
     pub revision: u64,
     pub provider_digest: String,
     pub public_config: Value,
-    /// Versioned secret locator (never raw secret bytes in public projections/hashes).
-    pub secret_locator: Option<String>,
+    /// Where each credential comes from: a config path (`connection_string`,
+    /// `auth.token`, `auth.client_secret`) to a secret reference (`env://`,
+    /// `vault://`, …). Never a secret itself, and never a path
+    /// `public_config` already holds.
+    pub secret_locators: std::collections::BTreeMap<String, String>,
     pub configuration_digest: String,
+}
+
+impl ConnectionRevisionRow {
+    /// The connection's configuration as a provider reads it: `public_config`
+    /// with every secret reference placed at its path. The references are
+    /// resolved where they are used, never stored resolved.
+    pub fn config_with_locators(&self) -> Value {
+        let mut config = self.public_config.clone();
+        if !config.is_object() {
+            config = Value::Object(serde_json::Map::new());
+        }
+        for (path, reference) in &self.secret_locators {
+            let mut at = &mut config;
+            let mut segments = path.split('.').peekable();
+            while let Some(segment) = segments.next() {
+                let Some(object) = at.as_object_mut() else {
+                    break;
+                };
+                if segments.peek().is_none() {
+                    object.insert(segment.to_string(), Value::String(reference.clone()));
+                    break;
+                }
+                at = object
+                    .entry(segment.to_string())
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            }
+        }
+        config
+    }
+}
+
+/// The bytes a connection revision's `configuration_digest` is taken over:
+/// its public settings and where each secret comes from, in the general
+/// canonical form (a connector's settings hold booleans and fractions the
+/// package encoder refuses).
+pub(super) fn connection_config_bytes(
+    public_config: &Value,
+    secret_locators: &std::collections::BTreeMap<String, String>,
+) -> Vec<u8> {
+    crate::storage::content::canonical_json(&serde_json::json!({
+        "public_config": public_config,
+        "secret_locators": secret_locators,
+    }))
+    .into_bytes()
+}
+
+/// A secret locator map as the `secret_locator` column holds it: canonical
+/// JSON, or NULL when there is none.
+pub(super) fn locators_column(
+    secret_locators: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    (!secret_locators.is_empty())
+        .then(|| crate::storage::content::canonical_json(&serde_json::json!(secret_locators)))
+}
+
+/// The map a `secret_locator` column holds, read strictly.
+pub(super) fn locators_from_column(
+    column: Option<String>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    match column {
+        None => Ok(Default::default()),
+        Some(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("secret_locator is not a locator map: {e}")),
+    }
+}
+
+/// Refuse a secret locator map whose paths are not config paths, whose
+/// values are not secret references, or whose paths `public_config` already
+/// sets.
+fn validate_secret_locators(
+    public_config: &Value,
+    locators: &std::collections::BTreeMap<String, String>,
+) -> Result<(), DeploymentError> {
+    for (path, reference) in locators {
+        let well_formed = !path.is_empty()
+            && path.split('.').all(|seg| {
+                !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            });
+        if !well_formed {
+            return Err(DeploymentError::new(
+                "CONNECTION_SECRET_LOCATOR_INVALID",
+                format!("secret locator path '{path}' is not a dotted config path"),
+            ));
+        }
+        let is_reference =
+            crate::connector::secrets::parse_reference(reference).is_some_and(|(scheme, _)| {
+                crate::connector::secrets::default_resolvers()
+                    .iter()
+                    .any(|r| r.scheme() == scheme)
+            });
+        if !is_reference {
+            return Err(DeploymentError::new(
+                "CONNECTION_SECRET_LOCATOR_INVALID",
+                format!(
+                    "secret locator '{path}' must be a secret reference (such as env://VAR), \
+                     never the secret itself"
+                ),
+            ));
+        }
+        let mut at = Some(public_config);
+        for segment in path.split('.') {
+            at = at.and_then(|v| v.get(segment));
+        }
+        if at.is_some() {
+            return Err(DeploymentError::new(
+                "CONNECTION_SECRET_LOCATOR_INVALID",
+                format!("'{path}' is set in public_config and by a secret locator; keep one"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -877,14 +991,14 @@ impl ImmutableDeploymentStore {
         revision: u64,
         provider_digest: &str,
         public_config: Value,
-        secret_locator: Option<String>,
+        secret_locators: std::collections::BTreeMap<String, String>,
     ) -> Result<ConnectionRevisionRow, DeploymentError> {
         let (row, cfg_digest, cfg_bytes) = Self::prepare_connection_revision(
             connection_id,
             revision,
             provider_digest,
             public_config,
-            secret_locator,
+            secret_locators,
         )?;
         let mut g = self.inner.lock().expect("store lock");
         Self::finish_store_connection_revision(&mut g, row, cfg_digest, cfg_bytes)
@@ -895,7 +1009,7 @@ impl ImmutableDeploymentStore {
         revision: u64,
         provider_digest: &str,
         public_config: Value,
-        secret_locator: Option<String>,
+        secret_locators: std::collections::BTreeMap<String, String>,
     ) -> Result<(ConnectionRevisionRow, String, Vec<u8>), DeploymentError> {
         if revision == 0 {
             return Err(DeploymentError::new(
@@ -905,20 +1019,19 @@ impl ImmutableDeploymentStore {
         }
         // Reject raw secret keys or credential-bearing URLs at any nesting depth
         validate_no_secrets_in_public_config(&public_config)?;
+        validate_secret_locators(&public_config, &secret_locators)?;
 
-        let cfg_bytes = canonical_bytes(&public_config).map_err(|e| {
-            DeploymentError::new(
-                "CONNECTION_CONFIG_INVALID",
-                format!("{connection_id}: {}", e.code),
-            )
-        })?;
+        // The digest covers where each secret comes from as well as the
+        // public settings, in the general canonical form (a connector's
+        // settings hold booleans and fractions the package encoder refuses).
+        let cfg_bytes = connection_config_bytes(&public_config, &secret_locators);
         let cfg_digest = sha256_digest(&cfg_bytes);
         let row = ConnectionRevisionRow {
             connection_id: connection_id.to_string(),
             revision,
             provider_digest: provider_digest.to_string(),
             public_config,
-            secret_locator,
+            secret_locators,
             configuration_digest: cfg_digest.clone(),
         };
         Ok((row, cfg_digest, cfg_bytes))

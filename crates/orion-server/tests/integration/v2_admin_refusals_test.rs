@@ -143,3 +143,50 @@ async fn a_secret_in_public_config_is_refused() {
         );
     }
 }
+
+/// A secret locator is a reference, never the secret: a literal is refused,
+/// as is the single `secret_locator` field the map replaced.
+#[tokio::test]
+async fn a_secret_locator_must_be_a_reference() {
+    let app = test_app().await;
+    let (digest, _) = deployed_package(&app).await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        CONNECTIONS,
+        json!({
+            "connection_id": "crm",
+            "revision": 1,
+            "provider_digest": digest,
+            "public_config": {"url": "https://crm.example.com", "auth": {"type": "bearer"}},
+            "secret_locators": {"auth.token": "sk_live_inline"},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["error"]["code"], "CONNECTION_SECRET_LOCATOR_INVALID",
+        "{body}"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            CONNECTIONS,
+            Some(json!({
+                "connection_id": "crm",
+                "revision": 1,
+                "provider_digest": digest,
+                "public_config": {"url": "https://crm.example.com"},
+                "secret_locator": "env://CRM_TOKEN",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_client_error(),
+        "the single-locator field is unknown: {}",
+        resp.status()
+    );
+}

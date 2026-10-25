@@ -32,8 +32,7 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
         }),
         config: row.public_config.clone(),
         public_config: row.public_config.clone(),
-        secret_locator: row.secret_locator.clone(),
-        secret_locators: json!(row.secret_locator),
+        secret_locators: row.secret_locators.clone(),
         config_fingerprint: row.configuration_digest.clone(),
         configuration_digest: row.configuration_digest.clone(),
     }
@@ -88,7 +87,7 @@ pub(crate) async fn create_connection_revision(
             req.revision,
             &req.provider_digest,
             req.public_config,
-            req.secret_locator,
+            req.secret_locators,
         )
         .await
     {

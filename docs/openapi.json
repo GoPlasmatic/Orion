@@ -9836,13 +9836,16 @@
             "format": "int64",
             "minimum": 0
           },
-          "secret_locator": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "secret_locators": {}
+          "secret_locators": {
+            "type": "object",
+            "description": "Config path to secret reference (`env://`, `vault://`, …).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
         }
       },
       "ConnectionsListResponse": {
@@ -10259,19 +10262,26 @@
           "provider_digest": {
             "type": "string"
           },
-          "public_config": {},
+          "public_config": {
+            "description": "The connection's settings. Never a secret: a credential-shaped key or\nvalue is refused."
+          },
           "revision": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
           },
-          "secret_locator": {
-            "type": [
-              "string",
-              "null"
-            ]
+          "secret_locators": {
+            "type": "object",
+            "description": "Where each credential comes from: a config path (`connection_string`,\n`auth.token`, `auth.client_secret`, …) to a secret reference such as\n`env://ORDERS_DB_URL`. Placed at that path when the connection is used.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
-        }
+        },
+        "additionalProperties": false
       },
       "CreateConnectionRevisionResponse": {
         "type": "object",

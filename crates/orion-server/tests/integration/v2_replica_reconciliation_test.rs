@@ -135,7 +135,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
             1,
             &pkg.package_digest,
             json!({"url": "https://crm.example.com"}),
-            None,
+            Default::default(),
         )
         .await
         .unwrap();

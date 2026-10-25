@@ -325,11 +325,18 @@ async fn execute_connector_call(
         provider_digest: provider.package_digest.clone(),
         connection_id: connection.to_string(),
         revision: conn_row.revision,
-        secret_hash: conn_row
-            .secret_locator
-            .as_deref()
-            .map(|loc| sha256_digest(loc.as_bytes()))
-            .unwrap_or_default(),
+        // Of where the secrets come from, never of a secret: a revision
+        // reading another vault path is another identity.
+        secret_hash: if conn_row.secret_locators.is_empty() {
+            String::new()
+        } else {
+            sha256_digest(
+                crate::storage::content::canonical_json(&serde_json::json!(
+                    conn_row.secret_locators
+                ))
+                .as_bytes(),
+            )
+        },
     };
     let conn_ref = ConnectionReference {
         connection_id: connection.to_string(),
@@ -454,7 +461,7 @@ mod tests {
                 1,
                 &digest_for(connection),
                 json!({}),
-                None,
+                Default::default(),
             );
             grant
                 .allowed_operations
@@ -525,7 +532,7 @@ mod tests {
                 1,
                 &digest_for("dead-db"),
                 json!({"connection_string": "postgres://127.0.0.1:1/nothing"}),
-                None,
+                Default::default(),
             )
             .expect("revision stored");
         let func = ConnectorCallFunction {

@@ -10,7 +10,7 @@ use super::{
 };
 use crate::extensions::AdmissionPolicy;
 use crate::extensions::contract::ImplementationKind;
-use crate::extensions::package_identity::{canonical_bytes, sha256_digest};
+use crate::extensions::package_identity::sha256_digest;
 
 type PersistedArtifactTuple = (String, i64, String, Option<i64>, Option<Vec<u8>>);
 type PersistedRevisionTuple = (i64, Option<i64>, String, String, String, String, bool);
@@ -371,13 +371,12 @@ impl ImmutableDeploymentStore {
                     "corrupt public_config_json for connection '{connection_id}' revision {revision}: {e}"
                 ))
             })?;
-            let cfg_bytes = canonical_bytes(&public_config).map_err(|e| {
+            let secret_locators = super::locators_from_column(secret_locator).map_err(|e| {
                 corrupt(format!(
-                    "public_config_json for connection '{connection_id}' revision {revision} \
-                     is not canonicalizable: {}",
-                    e.code
+                    "connection '{connection_id}' revision {revision}: {e}"
                 ))
             })?;
+            let cfg_bytes = super::connection_config_bytes(&public_config, &secret_locators);
             let configuration_digest = sha256_digest(&cfg_bytes);
             staged
                 .artifacts
@@ -397,7 +396,7 @@ impl ImmutableDeploymentStore {
                     revision,
                     provider_digest,
                     public_config,
-                    secret_locator,
+                    secret_locators,
                     configuration_digest,
                 });
         }
@@ -806,7 +805,7 @@ impl ImmutableDeploymentStore {
             .bind(conn.revision as i64)
             .bind(&conn.provider_digest)
             .bind(cfg_str)
-            .bind(conn.secret_locator.as_deref())
+            .bind(super::locators_column(&conn.secret_locators))
             .execute(&mut **tx)
             .await
             .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1099,7 +1098,7 @@ impl ImmutableDeploymentStore {
             .bind(conn.revision as i64)
             .bind(&conn.provider_digest)
             .bind(cfg_str)
-            .bind(conn.secret_locator.as_deref())
+            .bind(super::locators_column(&conn.secret_locators))
             .execute(&mut **tx)
             .await
             .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1393,7 +1392,7 @@ impl ImmutableDeploymentStore {
             .bind(conn.revision as i64)
             .bind(&conn.provider_digest)
             .bind(cfg_str)
-            .bind(conn.secret_locator.as_deref())
+            .bind(super::locators_column(&conn.secret_locators))
             .execute(&mut **tx)
             .await
             .map_err(|e| DeploymentError::new("DB_WRITE_ERROR", e.to_string()))?;
@@ -1751,14 +1750,14 @@ impl ImmutableDeploymentStore {
         revision: u64,
         provider_digest: &str,
         public_config: Value,
-        secret_locator: Option<String>,
+        secret_locators: std::collections::BTreeMap<String, String>,
     ) -> Result<ConnectionRevisionRow, DeploymentError> {
         let (row, cfg_digest, cfg_bytes) = Self::prepare_connection_revision(
             connection_id,
             revision,
             provider_digest,
             public_config,
-            secret_locator,
+            secret_locators,
         )?;
         self.transactional_mutate(pool, move |staged| {
             Self::finish_store_connection_revision(staged, row, cfg_digest, cfg_bytes)
@@ -2258,15 +2257,13 @@ impl ImmutableDeploymentStore {
                     ),
                 )
             })?;
-            let cfg_bytes = canonical_bytes(&public_config).map_err(|e| {
+            let secret_locators = super::locators_from_column(secret_locator).map_err(|e| {
                 DeploymentError::new(
                     "CORRUPT_PERSISTED_STATE",
-                    format!(
-                        "non-canonical public_config_json for connection '{connection_id}' rev {revision}: {}",
-                        e.code
-                    ),
+                    format!("connection '{connection_id}' rev {revision}: {e}"),
                 )
             })?;
+            let cfg_bytes = super::connection_config_bytes(&public_config, &secret_locators);
             let configuration_digest = sha256_digest(&cfg_bytes);
             g.artifacts
                 .entry(configuration_digest.clone())
@@ -2284,7 +2281,7 @@ impl ImmutableDeploymentStore {
                     revision,
                     provider_digest,
                     public_config,
-                    secret_locator,
+                    secret_locators,
                     configuration_digest,
                 },
             );

@@ -163,10 +163,9 @@ fn governed_connection(
         .or_else(|| store.get_active_connection(&identity.connection_id))
 }
 
-/// The connection string a governed revision names. A credential may live
-/// only behind the revision's `secret_locator`, which must be a reference
-/// (`env://`, `vault://`, …) and resolves to the whole connection string;
-/// without one, `public_config.connection_string` is used as written.
+/// The connection string a governed revision names: its
+/// `connection_string` secret locator resolved, or `public_config`'s, which
+/// holds no credential (the revision's own screen refused one).
 async fn governed_connection_string(
     store: Option<&super::deployment_store::ImmutableDeploymentStore>,
     identity: &EffectiveConnectionIdentity,
@@ -175,7 +174,7 @@ async fn governed_connection_string(
     let Some(conn) = governed_connection(store, identity) else {
         return Ok(None);
     };
-    match governed_secret(&conn, identity, driver).await? {
+    match governed_secret(&conn, "connection_string", identity, driver).await? {
         Some(secret) => Ok(Some(secret)),
         None => Ok(conn
             .public_config
@@ -185,40 +184,24 @@ async fn governed_connection_string(
     }
 }
 
-/// What a governed revision's `secret_locator` resolves to, or `None` when
-/// it has none. The locator must be a reference (`env://`, `vault://`, …):
-/// a literal there would be a credential stored in the clear.
+/// What a governed revision's secret locator for `path` resolves to, or
+/// `None` when it names none there. Resolved per use, never cached here.
 async fn governed_secret(
     conn: &super::deployment_store::ConnectionRevisionRow,
+    path: &str,
     identity: &EffectiveConnectionIdentity,
     driver: &str,
 ) -> Result<Option<String>, ConnectorError> {
-    let Some(locator) = conn.secret_locator.as_deref() else {
+    let Some(reference) = conn.secret_locators.get(path) else {
         return Ok(None);
     };
-    let is_reference =
-        crate::connector::secrets::parse_reference(locator).is_some_and(|(scheme, _)| {
-            crate::connector::secrets::default_resolvers()
-                .iter()
-                .any(|r| r.scheme() == scheme)
-        });
-    if !is_reference {
-        return Err(ConnectorError::invalid_input(
-            format!(
-                "{driver}: connection '{}' has a secret_locator that is not a secret reference \
-                 (such as env://VAR)",
-                identity.connection_id
-            ),
-            None,
-        ));
-    }
-    crate::connector::secrets::resolve_secret_string(locator, "secret_locator")
+    crate::connector::secrets::resolve_secret_string(reference, path)
         .await
         .map(Some)
         .map_err(|e| {
             ConnectorError::unavailable(
                 format!(
-                    "{driver}: connection '{}' secret_locator did not resolve: {e}",
+                    "{driver}: connection '{}' secret '{path}' did not resolve: {e}",
                     identity.connection_id
                 ),
                 EffectStatus::NotStarted,
@@ -461,23 +444,34 @@ impl HttpProviderBackend {
     }
 }
 
-/// How an HTTP connection presents its credential, from its
-/// `public_config.auth`. The credential itself is never here: it is what
-/// the revision's `secret_locator` resolves to.
+/// How an HTTP connection authenticates, from `public_config.auth`, in the
+/// HTTP connector's own shape. The secret fields (`token`, `password`, `key`)
+/// are never in `public_config`: each comes from the secret locator at its
+/// path (`auth.token`, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HttpAuth {
-    /// `{"type": "bearer"}`: `Authorization: Bearer <secret>`.
+    /// `{"type": "bearer"}` + `auth.token`: `Authorization: Bearer <token>`.
     Bearer,
-    /// `{"type": "header", "name": "X-API-Key"}`: the named header carries
-    /// the secret.
-    Header(reqwest::header::HeaderName),
-    /// `{"type": "basic", "username": "svc"}`: HTTP Basic with the secret as
-    /// the password.
+    /// `{"type": "basic", "username": "svc"}` + `auth.password`.
     Basic { username: String },
+    /// `{"type": "api_key", "header": "X-API-Key"}` + `auth.key`: the named
+    /// header carries the key.
+    ApiKey(reqwest::header::HeaderName),
 }
 
-/// Headers an `auth` of type `header` may not name: the request's framing
-/// and routing are Orion's, not the credential's.
+impl HttpAuth {
+    /// The secret locator path this scheme's credential comes from.
+    fn secret_path(&self) -> &'static str {
+        match self {
+            Self::Bearer => "auth.token",
+            Self::Basic { .. } => "auth.password",
+            Self::ApiKey(_) => "auth.key",
+        }
+    }
+}
+
+/// Headers an `api_key` auth may not name: the request's framing and
+/// routing are Orion's, not the credential's.
 const RESERVED_AUTH_HEADERS: &[&str] = &[
     "host",
     "content-length",
@@ -486,7 +480,7 @@ const RESERVED_AUTH_HEADERS: &[&str] = &[
 ];
 
 /// The `auth` object of an HTTP connection's `public_config`, read strictly:
-/// a known `type`, the fields that type needs, and nothing else.
+/// a known `type`, the public fields that type needs, and nothing else.
 fn http_auth(config: &Value) -> Result<Option<HttpAuth>, ConnectorError> {
     let Some(auth) = config.get("auth") else {
         return Ok(None);
@@ -506,18 +500,21 @@ fn http_auth(config: &Value) -> Result<Option<HttpAuth>, ConnectorError> {
         .unwrap_or_default();
     let allowed: &[&str] = match kind {
         "bearer" => &["type"],
-        "header" => &["type", "name"],
         "basic" => &["type", "username"],
+        "api_key" => &["type", "header"],
         _ => {
             return Err(invalid(
-                format!("HTTP 'auth.type' must be 'bearer', 'header' or 'basic' (got '{kind}')"),
+                format!("HTTP 'auth.type' must be 'bearer', 'basic' or 'api_key' (got '{kind}')"),
                 "/auth/type",
             ));
         }
     };
     if let Some(extra) = object.keys().find(|k| !allowed.contains(&k.as_str())) {
         return Err(invalid(
-            format!("HTTP 'auth' of type '{kind}' does not take '{extra}'"),
+            format!(
+                "HTTP 'auth' of type '{kind}' does not take '{extra}' in public_config \
+                 (a secret field comes from secret_locators)"
+            ),
             &format!("/auth/{extra}"),
         ));
     }
@@ -535,17 +532,17 @@ fn http_auth(config: &Value) -> Result<Option<HttpAuth>, ConnectorError> {
     };
     Ok(Some(match kind {
         "bearer" => HttpAuth::Bearer,
-        "header" => {
-            let name = field("name")?;
+        "api_key" => {
+            let name = field("header")?;
             let header = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| invalid(format!("'{name}' is not a header name"), "/auth/name"))?;
+                .map_err(|_| invalid(format!("'{name}' is not a header name"), "/auth/header"))?;
             if RESERVED_AUTH_HEADERS.contains(&header.as_str()) {
                 return Err(invalid(
-                    format!("HTTP 'auth' may not carry its secret in '{name}'"),
-                    "/auth/name",
+                    format!("HTTP 'auth' may not carry its key in '{name}'"),
+                    "/auth/header",
                 ));
             }
-            HttpAuth::Header(header)
+            HttpAuth::ApiKey(header)
         }
         _ => HttpAuth::Basic {
             username: field("username")?.to_string(),
@@ -563,7 +560,7 @@ fn authorize(
     Ok(match auth {
         HttpAuth::Bearer => request.bearer_auth(secret),
         HttpAuth::Basic { username } => request.basic_auth(username, Some(secret)),
-        HttpAuth::Header(name) => {
+        HttpAuth::ApiKey(name) => {
             let mut value = reqwest::header::HeaderValue::from_str(secret).map_err(|_| {
                 ConnectorError::invalid_input(
                     "HTTP connection secret is not a valid header value",
@@ -689,31 +686,24 @@ impl ProviderBackend for HttpProviderBackend {
             };
 
             // The credential is settled before anything leaves the node: a
-            // revision whose `auth` and `secret_locator` disagree is refused
+            // revision whose `auth` has no secret locator for its credential is refused
             // without a DNS lookup.
-            let credential = match (http_auth(&conn.public_config)?, &conn.secret_locator) {
-                (Some(auth), Some(_)) => governed_secret(&conn, identity, DRIVER_HTTP)
-                    .await?
-                    .map(|secret| (auth, secret)),
-                (None, None) => None,
-                (Some(_), None) => {
-                    return Err(ConnectorError::invalid_input(
-                        format!(
-                            "HTTP connection '{}' declares 'auth' but has no secret_locator",
-                            identity.connection_id
-                        ),
-                        Some(json!({"pointer": "/auth"})),
-                    ));
-                }
-                (None, Some(_)) => {
-                    return Err(ConnectorError::invalid_input(
-                        format!(
-                            "HTTP connection '{}' has a secret_locator but no 'auth' saying how \
-                             to send it",
-                            identity.connection_id
-                        ),
-                        Some(json!({"pointer": "/auth"})),
-                    ));
+            let credential = match http_auth(&conn.public_config)? {
+                None => None,
+                Some(auth) => {
+                    let path = auth.secret_path();
+                    let Some(secret) = governed_secret(&conn, path, identity, DRIVER_HTTP).await?
+                    else {
+                        return Err(ConnectorError::invalid_input(
+                            format!(
+                                "HTTP connection '{}' declares 'auth' but has no secret \
+                                 locator for '{path}'",
+                                identity.connection_id
+                            ),
+                            Some(json!({"pointer": "/auth"})),
+                        ));
+                    };
+                    Some((auth, secret))
                 }
             };
 

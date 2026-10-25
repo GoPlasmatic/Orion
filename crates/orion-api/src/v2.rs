@@ -216,10 +216,9 @@ pub struct ConnectionRevisionResponse {
     pub config: Value,
     #[serde(default)]
     pub public_config: Value,
+    /// Config path to secret reference (`env://`, `vault://`, …).
     #[serde(default)]
-    pub secret_locator: Option<String>,
-    #[serde(default)]
-    pub secret_locators: Value,
+    pub secret_locators: BTreeMap<String, String>,
     #[serde(default)]
     pub config_fingerprint: String,
     #[serde(default)]
@@ -239,14 +238,20 @@ pub struct ConnectionsListResponse {
 /// Request body to create an immutable connection revision (`POST /api/v2/admin/connections`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
 pub struct CreateConnectionRevisionRequest {
     pub connection_id: String,
     pub revision: u64,
     pub provider_digest: String,
-    #[serde(default, alias = "config")]
-    pub public_config: Value,
+    /// The connection's settings. Never a secret: a credential-shaped key or
+    /// value is refused.
     #[serde(default)]
-    pub secret_locator: Option<String>,
+    pub public_config: Value,
+    /// Where each credential comes from: a config path (`connection_string`,
+    /// `auth.token`, `auth.client_secret`, …) to a secret reference such as
+    /// `env://ORDERS_DB_URL`. Placed at that path when the connection is used.
+    #[serde(default)]
+    pub secret_locators: BTreeMap<String, String>,
 }
 
 /// Response from creating an immutable connection revision (`POST /api/v2/admin/connections`).

@@ -108,7 +108,7 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
             1,
             &builtin,
             json!({}),
-            None,
+            Default::default(),
         )
         .await
         .unwrap();

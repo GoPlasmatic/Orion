@@ -45,11 +45,12 @@ fn make_invocation(
         .expect("invocation starts")
 }
 
-/// A store holding revision 1 of `conn_id` with `public_config`.
+/// A store holding revision 1 of `conn_id` with `public_config` and the
+/// `(path, reference)` secret locators.
 fn with_connection(
     conn_id: &str,
     public_config: Value,
-    secret_locator: Option<&str>,
+    secret_locators: &[(&str, &str)],
 ) -> crate::extensions::ImmutableDeploymentStore {
     let store = crate::extensions::ImmutableDeploymentStore::default();
     store
@@ -58,7 +59,10 @@ fn with_connection(
             1,
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             public_config,
-            secret_locator.map(str::to_string),
+            secret_locators
+                .iter()
+                .map(|(path, reference)| (path.to_string(), reference.to_string()))
+                .collect(),
         )
         .expect("connection revision stored");
     store
@@ -83,25 +87,22 @@ async fn sql_rows_are_capped_and_a_secret_locator_must_be_a_reference() {
     assert_eq!(err.code, codes::INVALID_INPUT);
     assert!(err.message.contains("2 rows"), "{}", err.message);
 
-    let pg = PostgresProviderBackend::with_deployment_store(
-        4,
-        with_connection("pg-literal", json!({}), Some("postgres://u:p@db/app")),
-    );
-    let inv = make_invocation(DRIVER_POSTGRESQL, "pg-literal", 1, "query");
-    let err = pg
-        .invoke(
-            &inv.next_attempt().unwrap(),
-            "query",
-            json!({"sql": "SELECT 1"}),
+    // A literal where a reference belongs is refused when the revision is
+    // stored, so it never reaches a provider.
+    let refused = crate::extensions::ImmutableDeploymentStore::default()
+        .store_connection_revision(
+            "pg-literal",
+            1,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            json!({}),
+            [(
+                "connection_string".to_string(),
+                "postgres://u:p@db/app".to_string(),
+            )]
+            .into(),
         )
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, codes::INVALID_INPUT);
-    assert!(
-        err.message.contains("not a secret reference"),
-        "{}",
-        err.message
-    );
+        .expect_err("a literal locator is refused");
+    assert_eq!(refused.code, "CONNECTION_SECRET_LOCATOR_INVALID");
 }
 
 /// Each built-in driver answers to one stable digest, which maps back to
@@ -308,7 +309,7 @@ async fn http_ssrf_guard_and_live_sqlite_execution() {
     let store = with_connection(
         "http-conn",
         json!({"url": "http://169.254.169.254/latest"}),
-        None,
+        &[],
     );
     let http = HttpProviderBackend::with_deployment_store(store);
     let ssrf_err = http
@@ -345,7 +346,7 @@ async fn http_ssrf_guard_and_live_sqlite_execution() {
         with_connection(
             "pg-conn",
             json!({"connection_string": "postgres://127.0.0.1:1/nonexistent"}),
-            None,
+            &[],
         ),
     );
     let pg_inv_w = make_invocation(DRIVER_POSTGRESQL, "pg-conn", 1, "execute");
@@ -486,8 +487,9 @@ async fn sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and
     assert_eq!(ttl_err.code, codes::INVALID_INPUT);
 }
 
-/// An HTTP connection's `auth` is read strictly: a known type, the fields
-/// that type needs, and a header name that is not the request's framing.
+/// An HTTP connection's `auth` is read strictly: a known type, the public
+/// fields that type needs, no secret field, and a header name that is not
+/// the request's framing.
 #[test]
 fn http_auth_is_read_strictly() {
     let auth = |value: Value| http_auth(&json!({"url": "https://x.example", "auth": value}));
@@ -496,8 +498,8 @@ fn http_auth_is_read_strictly() {
         Some(HttpAuth::Bearer)
     );
     assert_eq!(
-        auth(json!({"type": "header", "name": "X-API-Key"})).unwrap(),
-        Some(HttpAuth::Header(reqwest::header::HeaderName::from_static(
+        auth(json!({"type": "api_key", "header": "X-API-Key"})).unwrap(),
+        Some(HttpAuth::ApiKey(reqwest::header::HeaderName::from_static(
             "x-api-key"
         )))
     );
@@ -514,10 +516,10 @@ fn http_auth_is_read_strictly() {
     for bad in [
         json!("bearer"),
         json!({"type": "digest"}),
-        json!({"type": "bearer", "name": "X"}),
-        json!({"type": "header"}),
-        json!({"type": "header", "name": "not a header"}),
-        json!({"type": "header", "name": "Host"}),
+        json!({"type": "bearer", "token": "inline"}),
+        json!({"type": "api_key"}),
+        json!({"type": "api_key", "header": "not a header"}),
+        json!({"type": "api_key", "header": "Host"}),
         json!({"type": "basic"}),
     ] {
         let err = auth(bad.clone()).expect_err("refused");
@@ -546,7 +548,7 @@ fn http_auth_puts_the_secret_where_it_says() {
     assert_eq!(bearer.headers()["authorization"], "Bearer s3cret");
     assert!(bearer.headers()["authorization"].is_sensitive());
 
-    let header = built(&HttpAuth::Header(reqwest::header::HeaderName::from_static(
+    let header = built(&HttpAuth::ApiKey(reqwest::header::HeaderName::from_static(
         "x-api-key",
     )));
     assert_eq!(header.headers()["x-api-key"], "s3cret");
@@ -559,39 +561,80 @@ fn http_auth_puts_the_secret_where_it_says() {
     assert_eq!(basic.headers()["authorization"], "Basic c3ZjOnMzY3JldA==");
 }
 
-/// `auth` and `secret_locator` come together or not at all, and a mismatch
-/// is refused before the call leaves the node.
+/// An `auth` whose credential has no secret locator is refused before the
+/// call leaves the node.
 #[tokio::test]
-async fn http_auth_and_secret_locator_must_agree() {
+async fn http_auth_needs_a_secret_locator_for_its_credential() {
     let inv = make_invocation(DRIVER_HTTP, "http-conn", 1, "get");
     let attempt = inv.next_attempt().unwrap();
-    for (config, locator, says) in [
+    for (config, locators) in [
         (
             json!({"url": "https://api.example.com", "auth": {"type": "bearer"}}),
-            None,
-            "has no secret_locator",
+            vec![],
         ),
-        (
-            json!({"url": "https://api.example.com"}),
-            Some("env://ORION_TEST_HTTP_TOKEN"),
-            "no 'auth'",
-        ),
+        // A locator at another scheme's path does not stand in.
         (
             json!({"url": "https://api.example.com", "auth": {"type": "bearer"}}),
-            Some("plain-text-token"),
-            "not a secret reference",
+            vec![("auth.password", "env://ORION_TEST_HTTP_TOKEN")],
         ),
     ] {
         let http = HttpProviderBackend::with_deployment_store(with_connection(
             "http-conn",
             config,
-            locator,
+            &locators,
         ));
         let err = http
             .invoke(&attempt, "get", json!({"path": "/"}))
             .await
             .expect_err("refused");
         assert_eq!(err.code, codes::INVALID_INPUT);
-        assert!(err.message.contains(says), "{}", err.message);
+        assert!(
+            err.message.contains("no secret locator for 'auth.token'"),
+            "{}",
+            err.message
+        );
+    }
+}
+
+/// A connection's configuration as a provider reads it: each locator placed
+/// at its path; and a locator is refused where it would shadow a public
+/// value or is not a dotted path.
+#[test]
+fn locators_are_placed_at_their_paths() {
+    let store = with_connection(
+        "c",
+        json!({"url": "https://x.example", "auth": {"type": "bearer"}}),
+        &[
+            ("auth.token", "env://TOKEN"),
+            ("extra.deep.key", "vault://k#v"),
+        ],
+    );
+    let row = store.get_connection("c", 1).expect("stored");
+    assert_eq!(
+        row.config_with_locators(),
+        json!({
+            "url": "https://x.example",
+            "auth": {"type": "bearer", "token": "env://TOKEN"},
+            "extra": {"deep": {"key": "vault://k#v"}},
+        })
+    );
+    for (public, path) in [
+        (
+            json!({"auth": {"type": "basic", "username": "u"}}),
+            "auth.username",
+        ),
+        (json!({}), "not a path"),
+        (json!({}), "trailing."),
+    ] {
+        let err = crate::extensions::ImmutableDeploymentStore::default()
+            .store_connection_revision(
+                "c",
+                1,
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                public,
+                [(path.to_string(), "env://X".to_string())].into(),
+            )
+            .expect_err("refused");
+        assert_eq!(err.code, "CONNECTION_SECRET_LOCATOR_INVALID", "{path}");
     }
 }
