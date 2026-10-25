@@ -389,6 +389,36 @@ fn a_plugin_in_the_set_compiles_into_the_deployment_with_its_component() {
     definition_of(&out, "workflow", "wrap");
 }
 
+/// A detached signature beside the component — the file `orion-server plugin
+/// sign` writes — travels with the plugin, so a node with `[plugins.trust]`
+/// can verify it. Without one the definition carries none.
+#[test]
+fn a_signature_beside_the_component_travels_with_the_plugin() {
+    use base64::Engine as _;
+    let scratch = plugin_set("compile-plugin-signed", true);
+    let dir = scratch.path();
+    let signature = base64::engine::general_purpose::STANDARD.encode([7u8; 64]);
+    std::fs::write(dir.join("codec/fixture.wasm.sig"), format!("{signature}\n")).unwrap();
+    let out = dir.join("dist");
+
+    let (ok, report) = compile_deployment(dir, &out);
+    assert!(ok, "{report}");
+    let plugin = definition_of(&out, "plugin", "test.fixture");
+    assert_eq!(plugin["definition"]["signature"], signature.as_str());
+
+    let unsigned = plugin_set("compile-plugin-unsigned", true);
+    let out = unsigned.path().join("dist");
+    let (ok, report) = compile_deployment(unsigned.path(), &out);
+    assert!(ok, "{report}");
+    let plugin = definition_of(&out, "plugin", "test.fixture");
+    assert!(
+        plugin["definition"]
+            .get("signature")
+            .is_none_or(|s| s.is_null()),
+        "{plugin}"
+    );
+}
+
 /// A manifest with no component beside it lints — the workflow is checked
 /// against the manifest — but cannot become a deployment: the deployment is
 /// what carries the bytes, and one without them would fail at apply.

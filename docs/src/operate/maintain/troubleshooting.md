@@ -54,7 +54,7 @@ And from the workflow behind it, since a channel whose workflow cannot be built 
 **What you see.** The apply printed a committed revision, but the route still answers `404`:
 
 ```json
-{ "error": { "code": "NOT_FOUND", "message": "Channel 'orders' not found or not active" } }
+{ "error": { "code": "NOT_FOUND", "message": "Channel 'orders' not found: no deployed channel has that name" } }
 ```
 
 **Why.** `404` means the path is not a channel this node serves. A channel that exists but failed to load answers `503` instead. Four causes, most likely first:

@@ -281,7 +281,7 @@ pub(crate) async fn dynamic_handler(
     // clone below is the `Arc` every path past the gate is entitled to.
     let Some(channel_config) = channel_runtime.clone() else {
         return Err(OrionError::NotFound(format!(
-            "Channel '{channel}' not found or not active"
+            "Channel '{channel}' not found: no deployed channel has that name"
         )));
     };
 

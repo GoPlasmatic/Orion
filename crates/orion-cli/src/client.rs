@@ -202,7 +202,7 @@ fn error_hint(code: &str) -> &'static str {
         // connector endpoints, and naming one command sent readers of the
         // other two to the wrong place.
         codes::VALIDATION_ERROR => {
-            "\n  Hint: Check the JSON structure. Use '<workflows|channels|connectors> validate -f <file>' to check a definition without writing it"
+            "\n  Hint: Check the definition against the field errors above. 'orion-server lint <dir>' checks a definition set offline"
         }
         codes::CONFLICT => "\n  Hint: A resource with this ID or name may already exist",
         _ => "",

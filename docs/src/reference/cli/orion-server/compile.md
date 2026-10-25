@@ -35,6 +35,8 @@ Every entity must carry an explicit id. A member of a deployment is its kind and
 
 `compile` writes the set as a v2 deployment with no revisions in it. Only the target knows which revision a changed definition gets, so the deployer assigns them. [`orion-cli deployments apply -d`](../../admin-api/deployments.md#deploy-a-compiled-directory) does.
 
+A plugin's component is inlined into its definition. A detached signature beside the component, `<plugin id>.sig` or `<component>.sig` as [`orion-server plugin sign`](./plugin.md) writes it, goes into the definition too, so a node with `[plugins.trust]` can verify it. The signature is part of the definition's digest: signing a component again gives it a new digest.
+
 ```text
 dist/
 ├── deployment.json

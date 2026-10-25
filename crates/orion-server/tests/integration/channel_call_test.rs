@@ -703,7 +703,7 @@ async fn seen_on(generation: &orion::runtime::RuntimeGeneration, channel: &str) 
 ///   generation's engine;
 /// - a target whose workflow would not serve (a typo'd key) never reaches a
 ///   generation: its definition is refused at upload, naming the key;
-/// - a call into no channel is refused as not found or not active.
+/// - a call into no channel is refused as naming no deployed channel.
 #[tokio::test]
 async fn a_channel_call_runs_on_the_generations_engine() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
@@ -753,7 +753,7 @@ async fn a_channel_call_runs_on_the_generations_engine() {
     let missing = seen_on(&generation, "v4-caller-missing").await;
     let (_, message) = missing.as_ref().expect_err("no target is refused");
     assert!(
-        message.contains("channel not found or not active"),
+        message.contains("no deployed channel has that name"),
         "{message}"
     );
 }

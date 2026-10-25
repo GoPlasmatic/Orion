@@ -30,13 +30,13 @@ is the word.
 
 | Use | Not | Why |
 |---|---|---|
-| definition | config, spec, manifest | A definition is the JSON a reader posts. `manifest` is reserved for a plugin's `plugin.toml` and a model's `orion:model` document. |
-| activate | deploy, publish, promote | `activate` is the status change. `promote` is moving a package between instances, which is a different verb with its own page. |
+| definition | config, spec | A definition is the JSON a reader uploads. `manifest` means a deployment's member list, or a plugin's `plugin.toml`; say which. |
+| deploy | activate, publish, promote | A deployment commits a manifest as the head; nothing is activated. An apply deploys; a rollback deploys an earlier manifest again. |
 | dry run (noun), dry-run (the flag) | test run | `--dry-run` and `?dry_run=true` are the wire spellings. |
-| the admin API | the management API, the control plane API | `/api/v1/admin/` is the path. |
+| the admin API | the management API, the control plane API | `/api/v2/admin/` is the path. |
 | the data plane | the runtime API, the invocation API | The pairing is control plane / data plane. |
-| quarantine | disable, park, deactivate | A quarantined entity is stored and refused at every ingress. Nothing was deactivated. |
-| ingress | entry point, inbound | One word for the four ways work reaches the engine: a request, a Kafka record, a queued trace, a `channel_call`. |
+| quarantine | disable, park, deactivate | A quarantined channel is deployed and refused at every ingress. Nothing was deactivated. |
+| ingress | entry point, inbound | One word for the ways work reaches the engine: a request, a cron occurrence, a queued trace, a `channel_call`. |
 | task function | function, action, operator | `operator` is a JSONLogic operator and nothing else. |
 | the engine | the runtime, the core | `the runtime` is the whole product; `the engine` is dataflow-rs inside it. |
 | Orion answers `409` | Orion throws a 409, returns a 409 error | The product answers a status. Status codes are in code font. |
@@ -55,7 +55,7 @@ American technical spellings that are the wire name stay as the wire name:
 
 An identifier that a reader could type is in code font, exactly as the product
 spells it: `workflow_id`, `channel_call`, `ORION_SERVER__PORT`,
-`POST /api/v1/admin/engine/reload`, `503`.
+`POST /api/v2/admin/deployments`, `503`.
 
 Prose may say "the workflow ID" when talking about the idea, and must say
 `workflow_id` when naming the field. The two never appear in one sentence in

@@ -16,6 +16,7 @@
 //! silently lost a setting would serve something nobody wrote.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use orion_api::v2::{
     COMPILED_DEPLOYMENT_SCHEMA_VERSION, ChannelDefinition, CompiledConnection, CompiledDeployment,
@@ -207,7 +208,9 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
             .map_err(|e| format!("reading '{}': {e}", path.display()))
             .and_then(|bytes| {
                 let manifest = serde_json::to_value(&plugin.manifest).map_err(|e| e.to_string())?;
-                definition_file(&Definition::Plugin(plugin_definition(manifest, &bytes)))
+                let mut definition = plugin_definition(manifest, &bytes);
+                definition.signature = beside_signature(&id, path, &bytes)?;
+                definition_file(&Definition::Plugin(definition))
             });
         match converted {
             Ok((digest, path, bytes)) => {
@@ -473,6 +476,28 @@ pub fn used_connections(
         }
     }
     used
+}
+
+/// The detached signature beside a plugin's component, when there is one:
+/// `<id>.sig` or `<component file>.sig`, as `orion-server plugin sign`
+/// writes it. A node with `[plugins.trust]` refuses an unsigned plugin, so a
+/// signed component must reach the deployment with its signature.
+fn beside_signature(id: &str, component: &Path, bytes: &[u8]) -> Result<Option<String>, String> {
+    use crate::signatures::{Kind, SignatureDir, Subject};
+    let dir = SignatureDir::open(component.parent().unwrap_or_else(|| Path::new(".")))?;
+    let subject = Subject {
+        kind: Kind::Plugin,
+        id: id.to_string(),
+        file_names: component
+            .file_name()
+            .map(|n| vec![n.to_string_lossy().into_owned()])
+            .unwrap_or_default(),
+        digest: crate::plugin::WasmRuntime::digest(bytes),
+        carried: None,
+    };
+    dir.lookup(&subject)
+        .map(crate::signatures::read_sig_file)
+        .transpose()
 }
 
 /// A plugin manifest and its component as a [`PluginDefinition`].

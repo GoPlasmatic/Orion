@@ -404,7 +404,7 @@
   "unserviceable/nowhere": {
     "err": {
       "code": "FUNCTION_ERROR",
-      "message": "Function execution error: channel_call to 'nowhere': channel not found or not active",
+      "message": "Function execution error: channel_call to 'nowhere': no deployed channel has that name",
       "retryable": false,
       "detail": null
     }

@@ -521,7 +521,7 @@ fn serviceable_target(
 fn not_found(target: &str) -> HandlerError {
     HandlerError::new(
         ErrorClass::Backend,
-        format!("channel_call to '{target}': channel not found or not active"),
+        format!("channel_call to '{target}': no deployed channel has that name"),
     )
 }
 

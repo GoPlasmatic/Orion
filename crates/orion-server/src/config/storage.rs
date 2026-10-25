@@ -18,10 +18,11 @@ pub struct StorageConfig {
     pub acquire_timeout_secs: u64,
     /// Maximum idle time in seconds before a connection is closed (0 = no limit).
     pub idle_timeout_secs: u64,
-    /// Encrypt `connectors.config_json` at rest (H3). Empty (the default)
-    /// stores connector configs as plaintext JSON. Set to the 64-hex-char
-    /// encoding of a 32-byte key (`openssl rand -hex 32`) and every connector
-    /// write is AES-256-GCM-encrypted before it reaches the database; reads
+    /// Encrypt `connector_oauth_state.state_json` — the OAuth2 tokens a
+    /// connection obtains — at rest (H3). Empty (the default) stores it as
+    /// plaintext JSON. Set to the 64-hex-char encoding of a 32-byte key
+    /// (`openssl rand -hex 32`) and every write is AES-256-GCM-encrypted
+    /// before it reaches the database; reads
     /// decrypt transparently, and pre-existing plaintext rows keep loading
     /// until their next write re-encrypts them. Prefer the environment form
     /// (`ORION_STORAGE__CONNECTOR_ENCRYPTION_KEY`) over the config file — a
