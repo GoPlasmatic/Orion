@@ -7,6 +7,15 @@ use tower::ServiceExt;
 
 use orion::config::{AppConfig, EndpointRateLimits, RateLimitConfig};
 
+/// A one-task workflow that logs `message`.
+fn log_workflow(name: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "condition": true,
+        "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": message}}}]
+    })
+}
+
 /// Create a test app with rate limiting enabled (very low limits for testing).
 async fn rate_limited_app(rps: u32, burst: u32) -> Router {
     common::test_app_with_config(AppConfig {
@@ -138,7 +147,7 @@ async fn test_rate_limit_admin_endpoint() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v2/admin/workflows")
+        .uri("/api/v2/admin/deployments")
         .header("x-forwarded-for", "10.0.0.200")
         .body(Body::empty())
         .unwrap();
@@ -148,7 +157,7 @@ async fn test_rate_limit_admin_endpoint() {
     // Second should be rate limited
     let req2 = Request::builder()
         .method("GET")
-        .uri("/api/v2/admin/workflows")
+        .uri("/api/v2/admin/deployments")
         .header("x-forwarded-for", "10.0.0.200")
         .body(Body::empty())
         .unwrap();
@@ -176,74 +185,21 @@ async fn test_rate_limit_channel_specific_from_db() {
     })
     .await;
 
-    // Create a workflow
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(serde_json::json!({
-                "name": "rate-limit-test-wf",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate workflow
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Create a channel with per-channel rate limit in config_json (1 rps, burst 1)
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": "rate-limited-orders",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/rate-limited-orders",
-                "workflow_id": wf_id,
-                "config": {
-                    "rate_limit": {
-                        "requests_per_second": 1,
-                        "burst": 1,
-                        "key_logic": { "var": "client_ip" }
-                    }
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate channel (triggers engine reload → ChannelRegistry rebuilt with rate limiter)
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // A channel with a per-channel rate limit in its config (1 rps, burst 1).
+    // Deploying it rebuilds the channel estate with the limiter.
+    common::create_and_activate_channel_with_config(
+        &app,
+        "rate-limited-orders",
+        log_workflow("rate-limit-test-wf", "test"),
+        serde_json::json!({
+            "rate_limit": {
+                "requests_per_second": 1,
+                "burst": 1,
+                "key_logic": { "var": "client_ip" }
+            }
+        }),
+    )
+    .await;
 
     // First request to channel — should succeed (not 429)
     let req1 = Request::builder()
@@ -268,11 +224,12 @@ async fn test_rate_limit_channel_specific_from_db() {
     assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
-/// N6: an engine reload must not reset per-channel limiter state. Every
-/// admin mutation triggers a reload, so a fresh limiter per reload meant a
-/// caller could bypass a channel's limit by causing (or waiting for) one.
+/// N6: a redeploy must not reset per-channel limiter state. Every deployment
+/// rebuilds the serving generation, so a fresh limiter per rebuild would let a
+/// caller bypass a channel's limit by causing (or waiting for) one — here, a
+/// deployment that adds something else and leaves the channel unchanged.
 #[tokio::test]
-async fn test_channel_rate_limit_survives_engine_reload() {
+async fn test_channel_rate_limit_survives_a_redeploy() {
     let app = common::test_app_with_config(AppConfig {
         rate_limit: RateLimitConfig {
             enabled: true,
@@ -288,66 +245,15 @@ async fn test_channel_rate_limit_survives_engine_reload() {
     })
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(serde_json::json!({
-                "name": "reload-rl-wf",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    let wf_id = common::body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": "reload-rl-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/reload-rl-ch",
-                "workflow_id": wf_id,
-                "config": {
-                    "rate_limit": { "requests_per_second": 1, "burst": 1 }
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    let ch_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::create_and_activate_channel_with_config(
+        &app,
+        "reload-rl-ch",
+        log_workflow("reload-rl-wf", "test"),
+        serde_json::json!({
+            "rate_limit": { "requests_per_second": 1, "burst": 1 }
+        }),
+    )
+    .await;
 
     let data_req = || {
         Request::builder()
@@ -365,24 +271,16 @@ async fn test_channel_rate_limit_survives_engine_reload() {
     let resp = app.clone().oneshot(data_req()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 
-    // Trigger a reload with the channel unchanged.
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/engine/reload",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Redeploy with the channel unchanged: a new workflow joins the
+    // manifest, and the node rebuilds its generation.
+    common::create_and_activate_workflow(&app, log_workflow("reload-rl-other", "other")).await;
 
     // The consumed burst must still be consumed.
     let resp = app.clone().oneshot(data_req()).await.unwrap();
     assert_eq!(
         resp.status(),
         StatusCode::TOO_MANY_REQUESTS,
-        "an engine reload must not refill a channel's rate-limit burst"
+        "a redeploy must not refill a channel's rate-limit burst"
     );
 }
 
@@ -416,68 +314,20 @@ async fn test_rate_limit_custom_key_logic_by_header() {
     })
     .await;
 
-    // Create workflow
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(serde_json::json!({
-                "name": "key-logic-test-wf",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = common::body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    // Create channel with key_logic keyed by x-api-key header
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": "api-key-limited",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/api-key-limited",
-                "workflow_id": wf_id,
-                "config": {
-                    "rate_limit": {
-                        "requests_per_second": 1,
-                        "burst": 1,
-                        "key_logic": { "var": "headers.x-api-key" }
-                    }
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = common::body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
+    // A channel with key_logic keyed by the x-api-key header.
+    common::create_and_activate_channel_with_config(
+        &app,
+        "api-key-limited",
+        log_workflow("key-logic-test-wf", "test"),
+        serde_json::json!({
+            "rate_limit": {
+                "requests_per_second": 1,
+                "burst": 1,
+                "key_logic": { "var": "headers.x-api-key" }
+            }
+        }),
+    )
+    .await;
 
     // Request with API key "key-A" — should succeed
     let req1 = Request::builder()
@@ -564,72 +414,29 @@ async fn test_rate_limit_applies_to_rest_routed_channel() {
     })
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(serde_json::json!({
-                "name": "s9-wf",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "s9"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let wf_id = common::create_and_activate_workflow(&app, log_workflow("s9-wf", "s9")).await;
 
     // The channel name and its route prefix are deliberately different — that
     // difference is the whole bug.
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": "s9-orders-get",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": "/orders/{id}",
-                "workflow_id": wf_id,
-                "config": {
-                    "rate_limit": {
-                        "requests_per_second": 1,
-                        "burst": 1,
-                        "key_logic": { "var": "client_ip" }
-                    }
+    common::deploy_channel(
+        &app,
+        serde_json::json!({
+            "name": "s9-orders-get",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["GET"],
+            "route_pattern": "/orders/{id}",
+            "workflow_id": wf_id,
+            "config": {
+                "rate_limit": {
+                    "requests_per_second": 1,
+                    "burst": 1,
+                    "key_logic": { "var": "client_ip" }
                 }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+            }
+        }),
+    )
+    .await;
 
     let get_order = || {
         Request::builder()
@@ -674,69 +481,27 @@ async fn test_rate_limit_applies_to_rest_routed_async_path() {
     })
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(serde_json::json!({
-                "name": "s9-async-wf",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "s9"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = common::body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+    let wf_id = common::create_and_activate_workflow(&app, log_workflow("s9-async-wf", "s9")).await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": "s9-events-post",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["POST"],
-                "route_pattern": "/events/{kind}",
-                "workflow_id": wf_id,
-                "config": {
-                    "rate_limit": {
-                        "requests_per_second": 1,
-                        "burst": 1,
-                        "key_logic": { "var": "client_ip" }
-                    }
+    common::deploy_channel(
+        &app,
+        serde_json::json!({
+            "name": "s9-events-post",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["POST"],
+            "route_pattern": "/events/{kind}",
+            "workflow_id": wf_id,
+            "config": {
+                "rate_limit": {
+                    "requests_per_second": 1,
+                    "burst": 1,
+                    "key_logic": { "var": "client_ip" }
                 }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+            }
+        }),
+    )
+    .await;
 
     let post_event = || {
         Request::builder()
@@ -781,65 +546,10 @@ async fn test_data_plane_429_comes_from_endpoints_data_rps() {
     })
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(serde_json::json!({
-                "name": "data-rps-wf",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "x"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
     // Deliberately no `config.rate_limit`: the platform limiter must be the
     // only 429 producer on this channel.
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(serde_json::json!({
-                "name": "data-rps-channel",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/data-rps-channel",
-                "workflow_id": wf_id
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::create_and_activate_channel(&app, "data-rps-channel", log_workflow("data-rps-wf", "x"))
+        .await;
 
     let data_req = |ip: &str| {
         Request::builder()

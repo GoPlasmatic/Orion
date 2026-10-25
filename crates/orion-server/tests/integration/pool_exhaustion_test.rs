@@ -22,13 +22,17 @@ async fn test_pool_exhaustion_no_panics() {
     };
     let app = common::test_app_with_config(config).await;
 
-    // Fire 20 concurrent admin list requests (each hits the DB)
+    // Fire 20 concurrent audit-log list requests (each hits the DB)
     let mut tasks = Vec::new();
     for _ in 0..20 {
         let app = app.clone();
         tasks.push(tokio::spawn(async move {
             let resp = app
-                .oneshot(common::json_request("GET", "/api/v2/admin/workflows", None))
+                .oneshot(common::json_request(
+                    "GET",
+                    "/api/v2/admin/audit-logs",
+                    None,
+                ))
                 .await
                 .unwrap();
             let status = resp.status();
@@ -89,7 +93,11 @@ async fn test_pool_recovery_after_burst() {
         let app = app.clone();
         tasks.push(tokio::spawn(async move {
             let resp = app
-                .oneshot(common::json_request("GET", "/api/v2/admin/workflows", None))
+                .oneshot(common::json_request(
+                    "GET",
+                    "/api/v2/admin/audit-logs",
+                    None,
+                ))
                 .await
                 .unwrap();
             resp.status()
@@ -104,7 +112,11 @@ async fn test_pool_recovery_after_burst() {
     // Now verify recovery: a single request should succeed
     let resp = app
         .clone()
-        .oneshot(common::json_request("GET", "/api/v2/admin/workflows", None))
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v2/admin/audit-logs",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(
@@ -119,13 +131,17 @@ async fn test_pool_recovery_after_burst() {
 async fn test_normal_pool_handles_concurrency() {
     let app = common::test_app().await;
 
-    // Fire 20 concurrent admin list requests with default pool (5 connections)
+    // Fire 20 concurrent audit-log list requests with default pool (5 connections)
     let mut tasks = Vec::new();
     for _ in 0..20 {
         let app = app.clone();
         tasks.push(tokio::spawn(async move {
             let resp = app
-                .oneshot(common::json_request("GET", "/api/v2/admin/workflows", None))
+                .oneshot(common::json_request(
+                    "GET",
+                    "/api/v2/admin/audit-logs",
+                    None,
+                ))
                 .await
                 .unwrap();
             resp.status()

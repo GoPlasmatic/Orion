@@ -1,452 +1,44 @@
+//! Workflow definitions: what `POST /api/v2/admin/definitions` refuses and
+//! accepts for a workflow, and what `POST /api/v2/admin/definitions/test`
+//! runs. Upload strict-parses and compiles a workflow on the node's engine
+//! and refuses anything that would quarantine it, so every "refused at
+//! authoring time" rule here is a `400` naming the problem at its path
+//! under `definition`.
+
 use crate::common;
 
+use crate::common::deploy;
 use crate::common::{body_json, json_request};
 use axum::http::StatusCode;
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
-// ============================================================
-// Workflow CRUD Lifecycle
-// ============================================================
+/// Upload a v1-shaped workflow body as a workflow definition, answering the
+/// status and body as they are.
+async fn upload_workflow(app: &axum::Router, workflow: Value) -> (StatusCode, Value) {
+    deploy::try_upload(app, deploy::workflow_definition(&workflow)).await
+}
 
-#[tokio::test]
-async fn test_workflows_crud_lifecycle() {
-    let app = common::test_app().await;
-
-    // Create a workflow (starts as draft)
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::workflow_with_priority("Test Workflow", 10)),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-    assert_eq!(body["data"]["name"], "Test Workflow");
-    assert_eq!(body["data"]["version"], 1);
-    assert_eq!(body["data"]["status"], "draft");
-    assert_eq!(body["data"]["rollout_percentage"], 100);
-
-    // Get the workflow
+/// The stored definition a digest names, as `GET /definitions/{digest}`
+/// serves it.
+async fn read_definition(app: &axum::Router, digest: &str) -> Value {
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v2/admin/workflows/{}", workflow_id),
-            None,
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["name"], "Test Workflow");
-
-    // List workflows
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert!(body["total"].as_i64().unwrap() >= 1);
-    assert!(!body["data"].as_array().unwrap().is_empty());
-
-    // Update the draft workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            &format!("/api/v2/admin/workflows/{}", workflow_id),
-            Some(json!({"name": "Updated Workflow", "priority": 20})),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["name"], "Updated Workflow");
-    assert_eq!(body["data"]["priority"], 20);
-
-    // Activate the workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", workflow_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["status"], "active");
-
-    // Archive the workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", workflow_id),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["status"], "archived");
-
-    // Delete the workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/workflows/{}", workflow_id),
-            None,
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    // Verify 404
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/workflows/{}", workflow_id),
-            None,
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn test_workflow_status_transitions() {
-    let app = common::test_app().await;
-
-    // Create a workflow (draft)
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "status-test",
-                "name": "Status Test",
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["status"], "draft");
-
-    // Activate
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/status-test/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["status"], "active");
-
-    // Archive
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/status-test/status",
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["status"], "archived");
-}
-
-#[tokio::test]
-async fn test_workflow_list_with_filters() {
-    let app = common::test_app().await;
-
-    // Create two workflows with different tags
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Filter Workflow A",
-                "tags": ["production"],
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let wf_a_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate workflow A
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_a_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Filter Workflow B",
-                "tags": ["staging"],
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    // Filter by status
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/workflows?status=active",
+            &format!("/api/v2/admin/definitions/{digest}"),
             None,
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let data = body["data"].as_array().unwrap();
-    for workflow in data {
-        assert_eq!(workflow["status"], "active");
-    }
-
-    // Filter by tag
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/workflows?tag=production",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let data = body["data"].as_array().unwrap();
-    assert!(!data.is_empty());
-}
-
-#[tokio::test]
-async fn test_workflow_pagination() {
-    let app = common::test_app().await;
-
-    // Create 3 workflows
-    for i in 0..3 {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(json!({
-                    "name": format!("Pagination Workflow {}", i),
-                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-    }
-
-    // Get page 1
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/workflows?limit=2&offset=0",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"].as_array().unwrap().len(), 2);
-    assert!(body["total"].as_i64().unwrap() >= 3);
-    assert_eq!(body["limit"], 2);
-    assert_eq!(body["offset"], 0);
-}
-
-#[tokio::test]
-async fn test_workflow_with_custom_id() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "my-custom-workflow",
-                "name": "Custom ID Workflow",
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["workflow_id"], "my-custom-workflow");
-}
-
-#[tokio::test]
-async fn test_cannot_update_active_workflow() {
-    let app = common::test_app().await;
-
-    // Create a workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "no-update-active",
-                "name": "No Update Active",
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    // Activate the workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/no-update-active/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Try to update the active workflow -- should fail (no draft exists).
-    // 404, not 400: D22 aligned the no-draft miss with every other
-    // missing-row lookup.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/no-update-active",
-            Some(json!({"name": "Should Fail"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn test_create_new_version_and_edit() {
-    let app = common::test_app().await;
-
-    // Create a workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "new-ver-test",
-                "name": "New Version Test",
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"v1"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    // Activate the workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/new-ver-test/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Create new version (draft v2)
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/new-ver-test/versions",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["version"], 2);
-    assert_eq!(body["data"]["status"], "draft");
-
-    // Edit the draft
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/new-ver-test",
-            Some(json!({"name": "New Version Test v2"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Cannot create another draft when one exists
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/new-ver-test/versions",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    body_json(resp).await
 }
 
 // ============================================================
 // Engine Status
+// ============================================================
+
 // ============================================================
 
 #[tokio::test]
@@ -478,455 +70,209 @@ async fn test_engine_status_with_loaded_workflows() {
 }
 
 // ============================================================
-// Version History with Pagination
+// Task conditions
 // ============================================================
 
 #[tokio::test]
-async fn test_version_list_with_pagination_params() {
+async fn a_task_condition_is_accepted_at_upload() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "ver-page-test",
-                "name": "Version Pagination",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "v1"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/ver-page-test/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/ver-page-test/versions",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/ver-page-test/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/ver-page-test/versions",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/workflows/ver-page-test/versions?limit=1&offset=0",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["limit"], 1);
-    assert_eq!(body["offset"], 0);
-    assert!(body["total"].as_i64().unwrap() >= 2);
-    assert_eq!(body["data"].as_array().unwrap().len(), 1);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/workflows/ver-page-test/versions?limit=10&offset=1",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["offset"], 1);
-    assert!(!body["data"].as_array().unwrap().is_empty());
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "Condition Test",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Task with condition",
+                "condition": {">": [{"var": "data.amount"}, 100]},
+                "function": {"name": "log", "input": {"message": "test"}}
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
-// ============================================================
-// Export with Filters
-// ============================================================
-
+/// I188: upload compiles a condition on the serving engine, in templating
+/// mode, where a multi-key object is a template emitting that object rather
+/// than an invalid expression. A bare engine refused one ("Invalid JSONLogic
+/// in … condition") that the serving engine compiles and runs.
 #[tokio::test]
-async fn test_export_workflows_with_status_filter() {
+async fn upload_compiles_a_condition_as_the_serving_engine_does() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "export-a",
-                "name": "Export Workflow A",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "a"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/export-a/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "export-b",
-                "name": "Export Workflow B",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "b"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/workflows/export?status=active",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let data = body["data"].as_array().unwrap();
-    assert!(!data.is_empty());
-    for workflow in data {
-        assert_eq!(workflow["status"], "active");
-    }
-}
-
-// ============================================================
-// Validate workflow - task condition JSONLogic
-// ============================================================
-
-#[tokio::test]
-async fn test_validate_workflow_with_task_condition() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "name": "Condition Test",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Task with condition",
-                    "condition": {">": [{"var": "data.amount"}, 100]},
-                    "function": {"name": "log", "input": {"message": "test"}}
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], true);
-}
-
-/// I188: `/validate` compiles a condition on the process's expression engine,
-/// in templating mode as activation's engine is, where a multi-key object is a
-/// template emitting that object rather than an invalid expression. The bare
-/// engine it used before refused one ("Invalid JSONLogic in … condition") that
-/// activation compiled and ran, so `valid: false` named a condition the
-/// serving engine accepts.
-#[tokio::test]
-async fn validate_compiles_a_condition_as_the_serving_engine_does() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "name": "Templated Condition",
-                "condition": {"a": {"var": "data.amount"}, "b": 2},
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Task with a templated condition",
-                    "condition": {"!!": [{"a": 1, "b": 2}]},
-                    "function": {"name": "log", "input": {"message": "test"}}
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], true, "{body}");
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "Templated Condition",
+            "condition": {"a": {"var": "data.amount"}, "b": 2},
+            "tasks": [{
+                "id": "t1",
+                "name": "Task with a templated condition",
+                "condition": {"!!": [{"a": 1, "b": 2}]},
+                "function": {"name": "log", "input": {"message": "test"}}
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
 /// I182, as refined: a Defect dataflow-rs 4 reports at load and does not
-/// quarantine on, a `PAYLOAD_VAR` above all, is surfaced by `/validate` as a
-/// warning at its path, so the author sees what the loader only logs. The
-/// workflow stays valid: create accepts it and the channel serves.
+/// quarantine on, a `PAYLOAD_VAR` above all, does not refuse an upload. The
+/// workflow deploys and its channel serves.
 #[tokio::test]
-async fn validate_warns_of_a_payload_var_defect_and_stays_valid() {
+async fn a_payload_var_defect_does_not_refuse_the_upload_and_the_channel_serves() {
     let app = common::test_app().await;
+    let workflow = json!({
+        "name": "Payload Read",
+        "condition": true,
+        "tasks": [{
+            "id": "t1",
+            "name": "Copy",
+            "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.copied", "logic": {"var": "payload.x"}}
+            ]}}
+        }]
+    });
 
+    let (status, body) = upload_workflow(&app, workflow.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    common::create_and_activate_channel(&app, "payload-var-ch", workflow).await;
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "name": "Payload Read",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Copy",
-                    "function": {"name": "map", "input": {"mappings": [
-                        {"path": "data.copied", "logic": {"var": "payload.x"}}
-                    ]}}
-                }]
-            })),
+            "/api/v2/data/payload-var-ch",
+            Some(json!({"data": {}})),
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], true, "{body}");
-    let warnings = body["data"]["warnings"].as_array().expect("warnings");
-    assert!(
-        warnings.iter().any(|w| {
-            w["field"] == "tasks[0].function.input.mappings[0].logic"
-                && w["message"]
-                    .as_str()
-                    .is_some_and(|m| m.starts_with("PAYLOAD_VAR: "))
-        }),
-        "{body}"
-    );
+    assert_eq!(resp.status(), StatusCode::OK, "{}", body_json(resp).await);
 }
 
 #[tokio::test]
-async fn test_validate_workflow_with_connector_warning() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "name": "Connector Warning Test",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "HTTP Call",
-                    "function": {
-                        "name": "http_call",
-                        "input": {
-                            "connector": "nonexistent-connector",
-                            "method": "GET",
-                            "path": "/api",
-                            "timeout_ms": 5000
-                        }
-                    }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let warnings = body["data"]["warnings"].as_array().unwrap();
-    let has_connector_warning = warnings
-        .iter()
-        .any(|w| w["message"].as_str().unwrap_or("").contains("not found"));
-    assert!(has_connector_warning);
-}
-
-#[tokio::test]
-async fn test_http_call_format_axes_validated_at_create() {
+async fn test_http_call_format_axes_validated_at_upload() {
     let app = common::test_app().await;
 
     // Known values and a well-shaped static form body — scalars, an array of
     // scalars, a conditionally-null entry — are accepted.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "OAuth Token Call",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Token",
-                    "function": {
-                        "name": "http_call",
-                        "input": {
-                            "connector": "oauth",
-                            "method": "POST",
-                            "path": "/token",
-                            "body_format": "form",
-                            "body": {
-                                "grant_type": "client_credentials",
-                                "scope": ["read", "write"],
-                                "audience": null
-                            },
-                            "response_format": "text",
-                            "output": "temp_data.token"
-                        }
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "OAuth Token Call",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Token",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "oauth",
+                        "method": "POST",
+                        "path": "/token",
+                        "body_format": "form",
+                        "body": {
+                            "grant_type": "client_credentials",
+                            "scope": ["read", "write"],
+                            "audience": null
+                        },
+                        "response_format": "text",
+                        "output": "temp_data.token"
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 
-    // Unknown format values are refused when the workflow is created — an
-    // authoring-time 400 naming both fields, never a request-time surprise.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Bad Formats",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Call",
-                    "function": {
-                        "name": "http_call",
-                        "input": {
-                            "connector": "oauth",
-                            "body_format": "multipart",
-                            "response_format": "base64"
-                        }
+    // Unknown format values are refused at upload — an authoring-time 400
+    // naming both fields, never a request-time surprise.
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "Bad Formats",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Call",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "oauth",
+                        "body_format": "multipart",
+                        "response_format": "base64"
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let details = body["error"]["details"].to_string();
     assert!(details.contains("body_format"), "{details}");
     assert!(details.contains("response_format"), "{details}");
 
     // A static body whose shape contradicts the format is caught the same way.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Nested Form Body",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Call",
-                    "function": {
-                        "name": "http_call",
-                        "input": {
-                            "connector": "oauth",
-                            "body_format": "form",
-                            "body": {"metadata": {"nested": true}}
-                        }
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "Nested Form Body",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Call",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "oauth",
+                        "body_format": "form",
+                        "body": {"metadata": {"nested": true}}
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let details = body["error"]["details"].to_string();
     assert!(details.contains("metadata"), "{details}");
 }
 
 #[tokio::test]
-async fn test_crypto_op_envelope_validated_at_create() {
+async fn test_crypto_op_envelope_validated_at_upload() {
     let app = common::test_app().await;
 
-    // The Zoom CRC shape from #259 — a valid hmac task is accepted as a draft.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Zoom CRC",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Sign",
-                    "function": {
-                        "name": "crypto",
-                        "input": {
-                            "op": "hmac",
-                            "algorithm": "sha256",
-                            "key": "env://ZOOM_WEBHOOK_SECRET",
-                            "data": {"var": "data.payload.plainToken"},
-                            "encoding": "hex",
-                            "output": "temp_data.encrypted_token"
-                        }
+    // The Zoom CRC shape from #259 — a valid hmac task is accepted.
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "Zoom CRC",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Sign",
+                "function": {
+                    "name": "crypto",
+                    "input": {
+                        "op": "hmac",
+                        "algorithm": "sha256",
+                        "key": "env://ZOOM_WEBHOOK_SECRET",
+                        "data": {"var": "data.payload.plainToken"},
+                        "encoding": "hex",
+                        "output": "temp_data.encrypted_token"
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 
-    // The capability table is enforced at create: fast-hash-for-passwords,
+    // The capability table is enforced at upload: fast-hash-for-passwords,
     // a MAC without a key, an out-of-bounds cost, and a field that does not
     // apply to the op are each a named 400, never a request-time surprise.
     for (input, expected_field) in [
@@ -941,29 +287,20 @@ async fn test_crypto_op_envelope_validated_at_create() {
         ),
         (json!({"op": "hash", "data": "x", "key": "why"}), "key"),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(json!({
-                    "name": "Bad Crypto",
-                    "condition": true,
-                    "tasks": [{
-                        "id": "t1",
-                        "name": "Bad",
-                        "function": {"name": "crypto", "input": input}
-                    }]
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "expected 400 for {input}"
-        );
-        let body = body_json(resp).await;
+        let (status, body) = upload_workflow(
+            &app,
+            json!({
+                "name": "Bad Crypto",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Bad",
+                    "function": {"name": "crypto", "input": input}
+                }]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for {input}");
         let details = body["error"]["details"].to_string();
         assert!(
             details.contains(expected_field),
@@ -972,143 +309,76 @@ async fn test_crypto_op_envelope_validated_at_create() {
     }
 }
 
-#[tokio::test]
-async fn test_validate_workflow_with_empty_name() {
-    let app = common::test_app().await;
+// ============================================================
+// Running a definition once (POST /definitions/test)
+// ============================================================
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "name": "",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Log",
-                    "function": {"name": "log", "input": {"message": "test"}}
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], false);
-    let errors = body["data"]["errors"].as_array().unwrap();
-    // R20: field paths come from the create-path validator now, so they read
-    // the same in both places.
-    let has_name_error = errors
-        .iter()
-        .any(|e| e["field"].as_str().unwrap_or("") == "workflow.name");
-    assert!(has_name_error, "{errors:?}");
+fn log_workflow(name: &str) -> Value {
+    json!({
+        "name": name,
+        "condition": true,
+        "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "dry run"}}}]
+    })
 }
-
-// ============================================================
-// Test workflow with test endpoint (dry-run with data)
-// ============================================================
 
 #[tokio::test]
 async fn test_workflow_test_with_metadata() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "test-dry-run-meta",
-                "name": "Dry Run Workflow",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "dry run"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/test-dry-run-meta/test",
-            Some(json!({
-                "data": {"key": "value"},
-                "metadata": {"source": "test-suite"}
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert!(body["data"].get("matched").is_some());
-    assert!(body["data"].get("trace").is_some());
-    assert!(body["data"].get("output").is_some());
-    assert!(body["data"].get("errors").is_some());
+    let (status, body) = deploy::test_run(
+        &app,
+        &log_workflow("Dry Run Workflow"),
+        json!({"key": "value"}),
+        Some(json!({"source": "test-suite"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("matched").is_some(), "{body}");
+    assert!(body.get("trace").is_some(), "{body}");
+    assert!(body.get("output").is_some(), "{body}");
+    assert!(body.get("errors").is_some(), "{body}");
 }
 
-/// `POST /workflows/{id}/test` must judge a workflow on state an ingress can
-/// actually produce.
-///
-/// It stamped `vars` and nothing else, so the endpoint a human reaches for
-/// first accepted caller-supplied `oauth`, `cookies` and `_orion_errors`, and
-/// unlowercased, unmasked `headers` — and a workflow could pass its test on
-/// state no request can create. The two *offline* surfaces (`dry-run`, the
-/// CLI's `test`) already went through `prepare_offline_metadata`, whose stated
-/// purpose is that "an offline pass must mean the same thing as a production
-/// pass"; this is the third surface joining them.
+/// `POST /definitions/test` must judge a workflow on state an ingress can
+/// actually produce: caller-supplied `_orion_errors` is cleared, and
+/// `headers` are lowercased and masked, as they are at ingress. Otherwise a
+/// workflow could pass its test on state no request can create. The two
+/// offline surfaces (`dry-run`, the CLI's `test`) go through the same
+/// `prepare_offline_metadata`, so an offline pass means what a production
+/// pass means.
 #[tokio::test]
 async fn workflow_test_normalizes_metadata_the_way_an_ingress_does() {
     let app = common::test_app().await;
+    let workflow = json!({
+        "name": "Echo Metadata",
+        "condition": true,
+        "tasks": [{
+            "id": "t1",
+            "name": "Echo",
+            "function": { "name": "map", "input": { "mappings": [
+                { "path": "data.hdr", "logic": { "var": "metadata.headers.deviceid" } },
+                { "path": "data.auth_hdr", "logic": { "var": "metadata.headers.authorization" } },
+                { "path": "data.errs", "logic": { "var": "metadata._orion_errors" } }
+            ] } }
+        }]
+    });
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "test-meta-norm",
-                "name": "Echo Metadata",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Echo",
-                    "function": { "name": "map", "input": { "mappings": [
-                        { "path": "data.hdr", "logic": { "var": "metadata.headers.deviceid" } },
-                        { "path": "data.auth_hdr", "logic": { "var": "metadata.headers.authorization" } },
-                        { "path": "data.errs", "logic": { "var": "metadata._orion_errors" } }
-                    ] } }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/test-meta-norm/test",
-            Some(json!({
-                "data": {},
-                "metadata": {
-                    // axum yields lowercase header names, so a case writing
-                    // this would match here and miss in production.
-                    "headers": { "DeviceId": "abc", "Authorization": "Bearer sk-live-xyz" },
-                    // Engine-owned; the ingress clears it unconditionally, so a
-                    // caller cannot pre-seed failures a workflow branches on.
-                    "_orion_errors": [{ "message": "pre-seeded" }]
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let out = &body["data"]["output"];
+    let (status, body) = deploy::test_run(
+        &app,
+        &workflow,
+        json!({}),
+        Some(json!({
+            // axum yields lowercase header names, so a case writing
+            // this would match here and miss in production.
+            "headers": { "DeviceId": "abc", "Authorization": "Bearer sk-live-xyz" },
+            // Engine-owned; the ingress clears it unconditionally, so a
+            // caller cannot pre-seed failures a workflow branches on.
+            "_orion_errors": [{ "message": "pre-seeded" }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let out = &body["output"];
 
     assert_eq!(out["hdr"], "abc", "header keys are lowercased: {body}");
     assert_ne!(
@@ -1126,22 +396,7 @@ async fn workflow_test_normalizes_metadata_the_way_an_ingress_does() {
 #[tokio::test]
 async fn workflow_test_refuses_metadata_no_ingress_could_produce() {
     let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "test-meta-refuse",
-                "name": "Refuse",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "x"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    let workflow = log_workflow("Refuse");
 
     for (label, metadata) in [
         (
@@ -1158,19 +413,11 @@ async fn workflow_test_refuses_metadata_no_ingress_could_produce() {
         // #307: stamped by the sign-in guard once the grant is verified.
         ("oauth not an object", json!({ "oauth": "token" })),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows/test-meta-refuse/test",
-                Some(json!({ "data": {}, "metadata": metadata })),
-            ))
-            .await
-            .unwrap();
+        let (status, body) = deploy::test_run(&app, &workflow, json!({}), Some(metadata)).await;
         assert_eq!(
-            resp.status(),
+            status,
             StatusCode::BAD_REQUEST,
-            "{label} must be refused"
+            "{label} must be refused: {body}"
         );
     }
 }
@@ -1179,348 +426,82 @@ async fn workflow_test_refuses_metadata_no_ingress_could_produce() {
 async fn test_workflow_test_with_non_object_data() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "test-non-obj",
-                "name": "Non Object Data",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/test-non-obj/test",
-            Some(json!({
-                "data": "just a string"
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-// ============================================================
-// Create workflow with description and custom ID
-// ============================================================
-
-#[tokio::test]
-async fn test_create_workflow_with_description_and_tags() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "desc-workflow",
-                "name": "Described Workflow",
-                "description": "This is a test workflow with a description",
-                "priority": 5,
-                "condition": {"==": [1, 1]},
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}],
-                "tags": ["production", "important"],
-                "continue_on_error": true
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["workflow_id"], "desc-workflow");
-    assert_eq!(
-        body["data"]["description"],
-        "This is a test workflow with a description"
-    );
-    assert_eq!(body["data"]["priority"], 5);
-    assert!(body["data"]["continue_on_error"].as_bool().unwrap());
-}
-
-// ============================================================
-// Update workflow with description
-// ============================================================
-
-#[tokio::test]
-async fn test_update_workflow_with_description() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "upd-desc-workflow",
-                "name": "Update Desc Workflow",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/upd-desc-workflow",
-            Some(json!({
-                "description": "Updated description"
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-// ============================================================
-// R5: workflows that cannot run are rejected, not deferred
-// ============================================================
-
-#[tokio::test]
-async fn test_create_rejects_unknown_function() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "unknown-fn-wf",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "typo",
-                    "function": { "name": "http_calll", "input": { "connector": "c", "output": "data.x" } }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    // Previously 201 with only a lint warning — the workflow then failed at
-    // its first request (R5).
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert!(
-        body.to_string().contains("http_calll"),
-        "error must name the unknown function, got {body}"
-    );
-}
-
-#[tokio::test]
-async fn test_activate_rejects_missing_connector() {
-    let app = common::test_app().await;
-
-    // Create is allowed (connectors and workflows may be authored in either
-    // order) …
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "needs-conn-wf",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "read",
-                    "function": { "name": "db_read", "input": {
-                        "connector": "not-yet-created-db",
-                        "query": "SELECT 1",
-                        "output": "data.r"
-                    }}
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let wf_id = body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    // …activation is the gate.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{wf_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert!(
-        body.to_string().contains("not-yet-created-db"),
-        "error must name the missing connector, got {body}"
-    );
-
-    // With the connector present, activation succeeds.
-    common::create_connector(&app, common::db_connector("not-yet-created-db")).await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{wf_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-}
-
-/// Create a workflow with the given tasks and try to activate it, returning
-/// the activation response body and status.
-async fn create_then_activate(
-    app: &axum::Router,
-    name: &str,
-    tasks: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({ "name": name, "tasks": tasks })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "create must succeed");
-    let wf_id = body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{wf_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    let status = resp.status();
-    (status, body_json(resp).await)
-}
-
-/// F52: the connector must be of a type the referencing function can use.
-/// `ensure_workflow_connectors_exist` checked existence only, so pointing
-/// `cache_read` at a `db` connector activated cleanly and then 500'd on the
-/// first request — a runtime discovery for something fully determined at
-/// authoring time.
-#[tokio::test]
-async fn test_activate_rejects_a_connector_of_the_wrong_type() {
-    let app = common::test_app().await;
-    common::create_connector(&app, common::db_connector("a-sql-db")).await;
-
-    let (status, body) = create_then_activate(
+    let (status, body) = deploy::test_run(
         &app,
-        "wrong-type-wf",
-        json!([{
-            "id": "t1",
-            "name": "lookup",
-            "function": { "name": "cache_read", "input": {
-                "connector": "a-sql-db",
-                "key": "k",
-                "output": "data.v"
-            }}
-        }]),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let msg = body.to_string();
-    assert!(msg.contains("a-sql-db"), "must name the connector: {msg}");
-    assert!(msg.contains("cache_read"), "must name the function: {msg}");
-    assert!(
-        msg.contains("'db'") && msg.contains("'cache'"),
-        "must say what it is and what was needed: {msg}"
-    );
-
-    // The same workflow against a cache connector activates.
-    common::create_connector(&app, common::cache_connector_memory("a-cache")).await;
-    let (status, body) = create_then_activate(
-        &app,
-        "right-type-wf",
-        json!([{
-            "id": "t1",
-            "name": "lookup",
-            "function": { "name": "cache_read", "input": {
-                "connector": "a-cache",
-                "key": "k",
-                "output": "data.v"
-            }}
-        }]),
+        &log_workflow("Non Object Data"),
+        json!("just a string"),
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 // ============================================================
-// Single-draft invariant (proposal D9)
+// Definition round trip
+// ============================================================
+
+/// A workflow's description, priority, condition, tags and `on_failure`
+/// are stored as uploaded: the definition read back by its digest carries
+/// each of them.
+#[tokio::test]
+async fn a_workflow_definition_reads_back_with_description_priority_and_tags() {
+    let app = common::test_app().await;
+
+    let digest = deploy::upload(
+        &app,
+        deploy::workflow_definition(&json!({
+            "name": "Described Workflow",
+            "description": "This is a test workflow with a description",
+            "priority": 5,
+            "condition": {"==": [1, 1]},
+            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}],
+            "tags": ["production", "important"],
+            "continue_on_error": true
+        })),
+    )
+    .await;
+
+    let stored = read_definition(&app, &digest).await;
+    assert_eq!(stored["kind"], "workflow", "{stored}");
+    let def = &stored["definition"];
+    assert_eq!(
+        def["description"], "This is a test workflow with a description",
+        "{stored}"
+    );
+    assert_eq!(def["priority"], 5, "{stored}");
+    assert_eq!(def["tags"], json!(["production", "important"]), "{stored}");
+    assert_eq!(def["on_failure"], "continue", "{stored}");
+}
+
+// ============================================================
+// R5: workflows that cannot run are refused, not deferred
 // ============================================================
 
 #[tokio::test]
-async fn a_second_draft_cannot_be_created_for_one_workflow() {
-    // Postgres enforces this with a partial unique index covering INSERT and
-    // UPDATE; SQLite and MySQL had BEFORE INSERT triggers only, so an UPDATE
-    // that set status='draft' produced a second draft on two of three
-    // backends — after which draft lookups silently pick an arbitrary row.
+async fn test_upload_rejects_unknown_function() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Draft One",
-                "tasks": [{"id": "t1", "name": "Log",
-                           "function": {"name": "log", "input": {"message": "x"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // A draft already exists for this id, so asking for another new version
-    // must be refused rather than yielding two drafts.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{workflow_id}/versions"),
-            Some(json!({
-                "name": "Draft Two",
-                "tasks": [{"id": "t1", "name": "Log",
-                           "function": {"name": "log", "input": {"message": "y"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        resp.status(),
-        StatusCode::CONFLICT,
-        "a second draft must be refused, got {}",
-        resp.status()
+    // Accepting it would only defer the failure to its first request (R5).
+    let body = deploy::assert_upload_refused(
+        &app,
+        deploy::workflow_definition(&json!({
+            "name": "unknown-fn-wf",
+            "tasks": [{
+                "id": "t1",
+                "name": "typo",
+                "function": { "name": "http_calll", "input": { "connector": "c", "output": "data.x" } }
+            }]
+        })),
+        "definition.tasks[0].function.name",
+    )
+    .await;
+    assert!(
+        body.to_string().contains("http_calll"),
+        "error must name the unknown function, got {body}"
     );
 }
 
-/// `enrich` is refused at create, because Orion registers no handler for it.
+/// `enrich` is refused at upload, because Orion registers no handler for it.
 ///
 /// It is a dataflow-rs built-in *name* but not a self-contained one: it
 /// deserializes into a typed built-in variant — so `Engine::new` accepts it and
@@ -1530,32 +511,26 @@ async fn a_second_draft_cannot_be_created_for_one_workflow() {
 ///
 /// The gate used to be membership in a hand-copied name list, and `enrich` was
 /// added to it (F54) on the reasoning that "the engine runs it". The engine
-/// does not: such a workflow activated cleanly and then failed every single
-/// request with `FunctionNotFound`, forever. dataflow-rs 3.1 publishes the
-/// distinction as `BuiltinKind`, so the gate now asks whether this engine can
+/// does not: such a workflow served cleanly and then failed every single
+/// request with `FunctionNotFound`, forever. dataflow-rs publishes the
+/// distinction as `BuiltinKind`, so the gate asks whether this engine can
 /// run the task rather than whether the name is spelled correctly.
 #[tokio::test]
 async fn a_workflow_using_the_handlerless_enrich_builtin_is_refused() {
     let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "enrich-wf",
-                "channel": "enrich-ch",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Enrich",
-                    "function": { "name": "enrich", "input": {} }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "enrich-wf",
+            "tasks": [{
+                "id": "t1",
+                "name": "Enrich",
+                "function": { "name": "enrich", "input": {} }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
         body.to_string().contains("enrich"),
         "the refusal must name the function, got: {body}"
@@ -1568,220 +543,19 @@ async fn a_workflow_using_the_handlerless_enrich_builtin_is_refused() {
 #[tokio::test]
 async fn a_workflow_using_a_self_contained_builtin_is_accepted() {
     let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "filter-wf",
-                "channel": "filter-ch",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Filter",
-                    "function": { "name": "filter", "input": {"condition": true} }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "body = {}",
-        common::body_json(resp).await
-    );
-}
-
-// ============================================================
-// R20: /validate must agree with POST /workflows
-// ============================================================
-
-/// R20: `validate_workflow_tasks_schema` carried the doc comment *"Public so
-/// the `/validate` endpoint can reuse it"* and had **zero external callers**;
-/// the endpoint re-implemented the same walk and the two disagreed by design —
-/// an unknown `function.name` was a hard error at create and a *warning* here.
-/// So `/validate` reported `valid: true` for a workflow create rejects, which is
-/// worse than no linter: it lies in the one direction that matters.
-#[tokio::test]
-async fn validate_never_green_lights_what_create_rejects() {
-    let app = common::test_app().await;
-
-    // Every payload here is one `POST /workflows` refuses.
-    let rejected = [
-        // Unknown function — the exact case that used to be a warning.
+    let (status, body) = upload_workflow(
+        &app,
         json!({
-            "name": "Unknown Function",
-            "tasks": [{"id": "t1", "name": "T",
-                       "function": {"name": "not_a_function", "input": {}}}]
+            "name": "filter-wf",
+            "tasks": [{
+                "id": "t1",
+                "name": "Filter",
+                "function": { "name": "filter", "input": {"condition": true} }
+            }]
         }),
-        // Missing a required input field for a known function.
-        json!({
-            "name": "Missing Input",
-            "tasks": [{"id": "t1", "name": "T",
-                       "function": {"name": "cache_read", "input": {"connector": "c"}}}]
-        }),
-        // Wrongly-typed input field.
-        json!({
-            "name": "Wrong Type",
-            "tasks": [{"id": "t1", "name": "T",
-                       "function": {"name": "db_read",
-                                    "input": {"connector": "c", "query": 42}}}]
-        }),
-        // Empty name.
-        json!({
-            "name": "",
-            "tasks": [{"id": "t1", "name": "T",
-                       "function": {"name": "log", "input": {"message": "x"}}}]
-        }),
-    ];
-
-    for payload in rejected {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows/validate",
-                Some(payload.clone()),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "/validate always answers 200"
-        );
-        let validated = body_json(resp).await;
-
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(payload.clone()),
-            ))
-            .await
-            .unwrap();
-        let created = resp.status();
-
-        assert!(
-            created.is_client_error(),
-            "fixture must be one create rejects: {payload}"
-        );
-        assert_eq!(
-            validated["data"]["valid"], false,
-            "/validate said valid for a payload create rejected with {created}: \
-             {payload} -> {validated}"
-        );
-    }
-}
-
-/// The other direction still holds: a payload create accepts validates clean.
-#[tokio::test]
-async fn validate_accepts_what_create_accepts() {
-    let app = common::test_app().await;
-    let payload = json!({
-        "name": "Perfectly Fine",
-        "condition": true,
-        "tasks": [{"id": "t1", "name": "Log",
-                   "function": {"name": "log", "input": {"message": "x"}}}]
-    });
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(payload.clone()),
-        ))
-        .await
-        .unwrap();
-    let validated = body_json(resp).await;
-    assert_eq!(validated["data"]["valid"], true, "{validated}");
-
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(payload),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-}
-
-/// R24: the version endpoints' page defaults were written out twice in the
-/// route layer (`unwrap_or(50)` / `unwrap_or(0)`) and a third time in the
-/// repository's `clamp_pagination`. They now come from one place, and both
-/// entities behave identically — including for the out-of-range values the
-/// route layer previously passed through untouched.
-#[tokio::test]
-async fn version_pagination_bounds_are_shared_by_both_entities() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "page-bounds",
-                "name": "Page Bounds",
-                "tasks": [{"id":"t1","name":"Log",
-                           "function":{"name":"log","input":{"message":"v1"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "channel_id": "page-bounds-ch",
-                "name": "page-bounds-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/page-bounds"
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    for (entity, id) in [("workflows", "page-bounds"), ("channels", "page-bounds-ch")] {
-        // Default page size.
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "GET",
-                &format!("/api/v2/admin/{entity}/{id}/versions"),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "{entity}");
-        assert_eq!(body_json(resp).await["limit"], 50, "{entity} default limit");
-
-        // Over the cap and below the floor: clamped identically for both.
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "GET",
-                &format!("/api/v2/admin/{entity}/{id}/versions?limit=999999&offset=-5"),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "{entity}");
-        let body = body_json(resp).await;
-        assert_eq!(body["limit"], 1000, "{entity} limit must be capped");
-        assert_eq!(body["offset"], 0, "{entity} offset must not go negative");
-    }
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
 }
 
 // ============================================================
@@ -1793,33 +567,16 @@ fn workflow_with_tasks(id: &str, tasks: serde_json::Value) -> serde_json::Value 
     json!({"workflow_id": id, "name": "Identity", "condition": true, "tasks": tasks})
 }
 
-async fn create_status_and_body(
-    app: &axum::Router,
-    wf: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(wf),
-        ))
-        .await
-        .unwrap();
-    let status = resp.status();
-    (status, common::body_json(resp).await)
-}
-
-/// A task with no `id` is refused at create, not discovered at first request.
+/// A task with no `id` is refused at upload, not discovered at first request.
 ///
 /// 1.12's task type required an `id`, so such a workflow used to be
-/// accepted (201), activate cleanly (200), and then fail to convert at engine
+/// accepted, activate cleanly, and then fail to convert at engine
 /// load — quarantining its channel and answering 503 to every request with
 /// "missing field `id`". Same class as the `enrich` false-accept above.
 #[tokio::test]
-async fn a_task_without_an_id_is_refused_at_create() {
+async fn a_task_without_an_id_is_refused_at_upload() {
     let app = common::test_app().await;
-    let (status, body) = create_status_and_body(
+    let (status, body) = upload_workflow(
         &app,
         workflow_with_tasks(
             "no-task-id",
@@ -1835,11 +592,11 @@ async fn a_task_without_an_id_is_refused_at_create() {
 }
 
 /// A task's `name` is optional, as it is to the engine: a task without one is
-/// accepted at create.
+/// accepted at upload.
 #[tokio::test]
-async fn a_task_without_a_name_is_accepted_at_create() {
+async fn a_task_without_a_name_is_accepted_at_upload() {
     let app = common::test_app().await;
-    let (status, body) = create_status_and_body(
+    let (status, body) = upload_workflow(
         &app,
         workflow_with_tasks(
             "no-task-name",
@@ -1855,15 +612,15 @@ async fn a_task_without_a_name_is_accepted_at_create() {
 /// This is the boundary between the two rules. Orion tracks dataflow-rs's
 /// parsing rules rather than tightening them, so that "Orion accepts it" and
 /// "the engine can load it" remain the same statement. `""` is accepted and
-/// the workflow loads and runs; an empty name is
-/// unhelpful in a log, but that is an authoring preference, not a defect, and
-/// refusing it would be Orion inventing a rule the engine does not have.
-/// `id` is the one deliberate exception — see below.
+/// the workflow loads and runs; an empty name is unhelpful in a log, but that
+/// is an authoring preference, not a defect, and refusing it would be Orion
+/// inventing a rule the engine does not have. `id` is the one deliberate
+/// exception — see below.
 #[tokio::test]
 async fn a_task_with_an_empty_name_is_accepted_and_serves_traffic() {
     let app = common::test_app().await;
 
-    // Not just "create says 201": the point of the parity rule is that what
+    // Not just "upload says 201": the point of the parity rule is that what
     // Orion accepts, the engine loads. Drive it all the way to a served
     // request, so this fails if the rule ever drifts in either direction.
     common::create_and_activate_channel(
@@ -1900,14 +657,13 @@ async fn a_task_with_an_empty_name_is_accepted_and_serves_traffic() {
 }
 
 /// Duplicate task ids are the worst of the three: `Workflow::validate()` runs
-/// inside `LogicCompiler::compile_workflows`, so a repeated id fails the whole
-/// `Engine::new` — a 500 on the activate that triggers the reload, and a boot
-/// abort on startup. It is not contained by the per-channel quarantine, which
-/// is exactly why it cannot be left to load time.
+/// inside the engine's compile, so a repeated id fails the whole engine build
+/// rather than one channel. It is not contained by the per-channel
+/// quarantine, which is exactly why it cannot be left to load time.
 #[tokio::test]
-async fn duplicate_task_ids_are_refused_at_create() {
+async fn duplicate_task_ids_are_refused_at_upload() {
     let app = common::test_app().await;
-    let (status, body) = create_status_and_body(
+    let (status, body) = upload_workflow(
         &app,
         workflow_with_tasks(
             "dup-task-ids",
@@ -1927,11 +683,11 @@ async fn duplicate_task_ids_are_refused_at_create() {
 }
 
 /// A near miss of a known key is a `LIKELY_TYPO` Defect, which the loader
-/// quarantines, so create refuses it: an accepted workflow always serves.
+/// quarantines, so upload refuses it: an accepted workflow always serves.
 #[tokio::test]
-async fn a_likely_typo_is_refused_at_create() {
+async fn a_likely_typo_is_refused_at_upload() {
     let app = common::test_app().await;
-    let (status, body) = create_status_and_body(
+    let (status, body) = upload_workflow(
         &app,
         workflow_with_tasks(
             "typo-key",
@@ -1956,9 +712,9 @@ async fn a_likely_typo_is_refused_at_create() {
 /// writes an empty `task_id` into every trace step, audit entry and metric
 /// label, which makes the identifier useless for the thing it exists to do.
 #[tokio::test]
-async fn a_blank_task_id_is_refused_at_create() {
+async fn a_blank_task_id_is_refused_at_upload() {
     let app = common::test_app().await;
-    let (status, body) = create_status_and_body(
+    let (status, body) = upload_workflow(
         &app,
         workflow_with_tasks(
             "blank-task-id",
@@ -1970,36 +726,11 @@ async fn a_blank_task_id_is_refused_at_create() {
     assert!(body.to_string().contains("tasks[0].id"), "body = {body}");
 }
 
-/// R20: `/validate` must agree with create rather than green-lighting a payload
-/// create refuses.
-#[tokio::test]
-async fn the_validate_endpoint_agrees_about_task_identity() {
-    let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(workflow_with_tasks(
-                "v",
-                json!([{"name": "Log", "function": {"name": "log", "input": {"message": "hi"}}}]),
-            )),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
-    assert_eq!(
-        body["data"]["valid"], false,
-        "/validate must not accept what create rejects, got: {body}"
-    );
-}
-
 /// The whole point: a well-formed workflow is untouched by any of this.
 #[tokio::test]
 async fn a_workflow_with_proper_task_identity_is_accepted() {
     let app = common::test_app().await;
-    let (status, body) = create_status_and_body(
+    let (status, body) = upload_workflow(
         &app,
         workflow_with_tasks(
             "good-ids",
@@ -2030,97 +761,60 @@ fn looping_workflow(name: &str, loop_config: serde_json::Value) -> serde_json::V
     })
 }
 
-/// A `loop` survives create → read → new version → activate. The version copy
-/// matters most: `create_new_version` builds its row field by field, so a
-/// column it forgets is silently dropped rather than failing anything.
+/// A `loop` survives upload and read-back, and the definition read back is
+/// the same content: uploading it again answers the same digest.
 #[tokio::test]
-async fn workflow_loop_round_trips_and_survives_a_new_version() {
+async fn a_workflow_loop_round_trips_through_its_definition() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(looping_workflow(
-                "Looping",
-                json!({ "counter": "i", "max": 500 }),
-            )),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-    assert_eq!(body["data"]["loop"]["counter"], "i");
-    assert_eq!(body["data"]["loop"]["max"], 500);
-    let hash_with_loop = body["data"]["content_hash"].as_str().unwrap().to_string();
+    let digest = deploy::upload(
+        &app,
+        deploy::workflow_definition(&looping_workflow(
+            "Looping",
+            json!({ "counter": "i", "max": 500 }),
+        )),
+    )
+    .await;
+    let stored = read_definition(&app, &digest).await;
+    assert_eq!(stored["definition"]["loop"]["counter"], "i", "{stored}");
+    assert_eq!(stored["definition"]["loop"]["max"], 500, "{stored}");
 
-    // Activate, then branch a new draft version off it.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{id}/status"),
-            Some(json!({ "status": "active" })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{id}/versions"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["version"], 2);
+    let again = deploy::upload(&app, stored.clone()).await;
     assert_eq!(
-        body["data"]["loop"]["max"], 500,
-        "the new version must carry the loop the old one had"
-    );
-    assert_eq!(
-        body["data"]["content_hash"].as_str().unwrap(),
-        hash_with_loop,
-        "copying a version must not change its content"
+        again, digest,
+        "the definition read back must be the content uploaded"
     );
 }
 
-/// A workflow with no `loop` must not grow a `loop` key, and its hash must be
-/// what it was before the column existed — package receipts are content-
-/// immutable, so a shifted hash turns a re-apply into a 409.
+/// A workflow with no `loop` reads back without one, and its digest does not
+/// depend on how the absence is spelled: the read-back form (which writes the
+/// absent loop as `null`) uploads to the digest the loop-less upload answered.
 #[tokio::test]
 async fn a_workflow_without_a_loop_is_unchanged_by_the_feature() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::workflow_with_priority("No Loop", 0)),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
+    let digest = deploy::upload(
+        &app,
+        deploy::workflow_definition(&common::workflow_with_priority("No Loop", 0)),
+    )
+    .await;
+    let stored = read_definition(&app, &digest).await;
     assert!(
-        body["data"].get("loop").is_none(),
-        "absent must stay absent, not become null: {}",
-        body["data"]
+        stored["definition"]["loop"].is_null(),
+        "no loop was uploaded, so none may be read back: {stored}"
     );
+    let again = deploy::upload(&app, stored.clone()).await;
+    assert_eq!(again, digest, "an absent loop must not move the digest");
 }
 
 /// Each rule mirrors `LoopConfig::validate` in dataflow-rs, which otherwise
-/// only fires at `Engine::build()` — where the failure is a refused reload
-/// across every channel rather than a 400 on one call.
+/// only fires at engine build — where the failure is a refused generation
+/// rather than a 400 on one upload.
+///
+/// A `max` above `engine.max_loop_iterations` is not among them: upload
+/// accepts it.
 #[tokio::test]
-async fn an_invalid_loop_is_refused_at_write_time() {
+async fn an_invalid_loop_is_refused_at_upload() {
     let app = common::test_app().await;
 
     let cases = [
@@ -2129,26 +823,16 @@ async fn an_invalid_loop_is_refused_at_write_time() {
         (json!({ "max": 5, "init": 5 }), "max"),
         (json!({ "max": 10, "counter": "" }), "counter"),
         (json!({ "max": 10, "counter": "a..b" }), "counter"),
-        // Above engine.max_loop_iterations, which defaults to 10_000.
-        (json!({ "max": 10_000_001 }), "max"),
     ];
 
     for (loop_config, expected_field) in cases {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(looping_workflow("Bad Loop", loop_config.clone())),
-            ))
-            .await
-            .unwrap();
+        let (status, body) =
+            upload_workflow(&app, looping_workflow("Bad Loop", loop_config.clone())).await;
         assert_eq!(
-            resp.status(),
+            status,
             StatusCode::BAD_REQUEST,
-            "expected 400 for loop {loop_config}"
+            "expected 400 for loop {loop_config}: {body}"
         );
-        let body = body_json(resp).await;
         let details = body["error"]["details"].to_string();
         assert!(
             details.contains(expected_field),
@@ -2157,11 +841,11 @@ async fn an_invalid_loop_is_refused_at_write_time() {
     }
 }
 
-/// A loop's `setup` steps share the body's step-id namespace, and `build`
-/// checks the two together. Create and update checked the body alone, so each
-/// of these was accepted and then failed every reload once active.
+/// A loop's `setup` steps share the body's step-id namespace, and the engine
+/// checks the two together, so a setup step reusing a body step's id is
+/// refused at upload; a distinct one is accepted.
 #[tokio::test]
-async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
+async fn a_setup_step_id_colliding_with_the_body_is_refused_at_upload() {
     let app = common::test_app().await;
     let setup = |id: &str| {
         json!({ "max": 2, "setup": [{
@@ -2170,191 +854,41 @@ async fn a_setup_step_id_colliding_with_the_body_is_refused_at_write_time() {
         }]})
     };
 
-    // Create: the body's `note` is the setup step's id too.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(looping_workflow("Colliding Loop", setup("note"))),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    // The body's `note` is the setup step's id too.
+    let (status, body) =
+        upload_workflow(&app, looping_workflow("Colliding Loop", setup("note"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-    // A draft whose setup step is `prime`.
-    let mut workflow = looping_workflow("Setup Loop", setup("prime"));
-    workflow["workflow_id"] = json!("setup-loop");
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    // Update the body alone, onto the stored setup step's id.
-    let tasks = json!([{
-        "id": "prime", "name": "Body",
-        "function": { "name": "log", "input": { "message": "body" } }
-    }]);
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/setup-loop",
-            Some(json!({ "tasks": tasks })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "a body step colliding with the stored setup must be refused"
-    );
-
-    // Update the loop alone, onto the stored body step's id.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/setup-loop",
-            Some(json!({ "loop": setup("note") })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "a setup step colliding with the stored body must be refused"
-    );
-
-    // Clearing the loop leaves nothing to collide with. An explicit `null` is
-    // not an absent key: it removes the stored loop.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/setup-loop",
-            Some(json!({ "tasks": tasks, "loop": null })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert!(
-        body["data"].get("loop").is_none_or(|l| l.is_null()),
-        "`loop: null` must remove the loop, got {}",
-        body["data"]
-    );
+    let (status, body) =
+        upload_workflow(&app, looping_workflow("Setup Loop", setup("prime"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
-/// #351: a loop's `setup` steps are steps. Every check that asks what a
-/// workflow runs or references walked `tasks` alone, so a setup step was
-/// validated by nothing, and a connector used only there passed activation,
-/// was absent from `/dependencies`, and could be renamed out from under it.
+/// #351: a loop's `setup` steps are steps. A check that walks `tasks` alone
+/// validates a setup step by nothing; upload walks both, so an unknown
+/// function in setup is refused at its own coordinate.
 #[tokio::test]
-async fn a_loops_setup_steps_are_validated_and_referenced() {
+async fn a_loops_setup_steps_are_validated() {
     let app = common::test_app().await;
-    let setup_step = |function: serde_json::Value| json!({ "max": 2, "setup": [{ "id": "prime", "name": "Prime", "function": function }] });
 
-    // An unknown function in setup is refused at create, at its coordinate.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(looping_workflow(
-                "Unknown In Setup",
-                setup_step(json!({ "name": "nosuch_fn", "input": {} })),
-            )),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert!(
-        body["error"]["details"]
-            .as_array()
-            .is_some_and(|d| d.iter().any(|e| e["path"] == "loop.setup[0].function.name")),
-        "{body}"
-    );
-
-    // A connector referenced only from setup.
-    let mut workflow = looping_workflow(
-        "Reads In Setup",
-        setup_step(json!({ "name": "db_read", "input": {
-            "connector": "setup-db", "query": "SELECT 1", "output": "data.r"
-        }})),
-    );
-    workflow["workflow_id"] = json!("reads-in-setup");
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let activate = || {
-        json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/reads-in-setup/status",
-            Some(json!({"status": "active"})),
-        )
-    };
-    let resp = app.clone().oneshot(activate()).await.unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "activation must refuse a missing connector used in setup"
-    );
-
-    let conn_id = common::v1::create_connector(&app, common::db_connector("setup-db")).await;
-    let resp = app.clone().oneshot(activate()).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/workflows/reads-in-setup/dependencies",
-            None,
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(
-        body["data"]["connectors"][0]["connector"], "setup-db",
-        "{body}"
-    );
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            &format!("/api/v2/admin/connectors/{conn_id}"),
-            Some(json!({"name": "setup-db-v2"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "renaming a connector an active setup step uses must be refused"
-    );
+    deploy::assert_upload_refused(
+        &app,
+        deploy::workflow_definition(&looping_workflow(
+            "Unknown In Setup",
+            json!({ "max": 2, "setup": [{
+                "id": "prime", "name": "Prime",
+                "function": { "name": "nosuch_fn", "input": {} }
+            }]}),
+        )),
+        "definition.loop.setup[0].function.name",
+    )
+    .await;
 }
 
 /// The one that proves the feature rather than the plumbing: a looping
 /// workflow, executed, must run its task list once per sweep and stop where
-/// the break says. Storage round-trips and 400s would all still pass if
-/// `workflow_to_dataflow` dropped the `loop` key on the floor.
+/// the break says. Upload acceptance would still pass if the `loop` key were
+/// dropped on its way to the engine.
 ///
 /// The break is a `filter` with `on_reject: "halt"` rather than a workflow
 /// condition, and that is not a stylistic choice: `data` starts empty, so a
@@ -2363,67 +897,47 @@ async fn a_loops_setup_steps_are_validated_and_referenced() {
 #[tokio::test]
 async fn a_loop_executes_one_sweep_per_iteration() {
     let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "loop-exec",
-                "name": "Loop Exec",
-                "condition": true,
-                "loop": { "counter": "i", "max": 50 },
-                "tasks": [
-                    {
-                        "id": "parse",
-                        "name": "Parse the payload",
-                        "function": {
-                            "name": "parse_json",
-                            "input": { "source": "payload", "target": "req" }
-                        }
-                    },
-                    {
-                        "id": "more",
-                        "name": "Stop once every item is done",
-                        "function": {
-                            "name": "filter",
-                            "input": {
-                                "condition": {
-                                    "<": [{ "var": "temp_data.i" }, { "var": "data.req.count" }]
-                                },
-                                "on_reject": "halt"
-                            }
-                        }
-                    },
-                    {
-                        "id": "sweep",
-                        "name": "One sweep",
-                        "function": { "name": "log", "input": { "message": "sweep" } }
+    let workflow = json!({
+        "name": "Loop Exec",
+        "condition": true,
+        "loop": { "counter": "i", "max": 50 },
+        "tasks": [
+            {
+                "id": "parse",
+                "name": "Parse the payload",
+                "function": {
+                    "name": "parse_json",
+                    "input": { "source": "payload", "target": "req" }
+                }
+            },
+            {
+                "id": "more",
+                "name": "Stop once every item is done",
+                "function": {
+                    "name": "filter",
+                    "input": {
+                        "condition": {
+                            "<": [{ "var": "temp_data.i" }, { "var": "data.req.count" }]
+                        },
+                        "on_reject": "halt"
                     }
-                ]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+                }
+            },
+            {
+                "id": "sweep",
+                "name": "One sweep",
+                "function": { "name": "log", "input": { "message": "sweep" } }
+            }
+        ]
+    });
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/loop-exec/test",
-            // `max` is 50, so the filter is what stops this at 3.
-            Some(json!({ "data": { "count": 3 } })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    // `max` is 50, so the filter is what stops this at 3.
+    let (status, body) = deploy::test_run(&app, &workflow, json!({ "count": 3 }), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
-    let steps = body["data"]["trace"]["steps"]
+    let steps = body["trace"]["steps"]
         .as_array()
-        .unwrap_or_else(|| panic!("trace.steps should be an array: {}", body["data"]));
+        .unwrap_or_else(|| panic!("trace.steps should be an array: {body}"));
     let sweeps = steps
         .iter()
         .filter(|s| s["task_id"] == "sweep" && s["result"] != "skipped")
@@ -2431,116 +945,72 @@ async fn a_loop_executes_one_sweep_per_iteration() {
     assert_eq!(
         sweeps, 3,
         "expected one executed step per sweep, stopped by the filter, got {sweeps} in {:#}",
-        body["data"]["trace"]
+        body["trace"]
     );
 }
 
 // ============================================================
-// Validate workflow - task groups (dataflow-rs 3.6)
+// Task groups (dataflow-rs 3.6)
 // ============================================================
 
-/// `/validate` must agree with create about what a task is. Before the walk
-/// here was flattened, the group itself was read as a task and reported as
-/// missing `name` and `function.name` — so a workflow that `POST /workflows`
-/// accepts and the engine runs came back `valid: false` from the linting
-/// endpoint, which is the one direction R20 says must never happen.
+/// Upload must agree with the engine about what a task is: a group read as a
+/// task would be reported as missing `name` and `function.name`, refusing a
+/// workflow the engine runs.
 #[tokio::test]
-async fn test_validate_accepts_a_workflow_whose_tasks_are_grouped() {
+async fn a_workflow_whose_tasks_are_grouped_is_accepted() {
     let app = common::test_app().await;
 
-    let workflow = json!({
-        "name": "Grouped",
-        "condition": true,
-        "tasks": [
-            {
-                "id": "seed",
-                "name": "Seed",
-                "function": {"name": "map", "input": {"mappings": [
-                    {"path": "data.amount", "logic": 500}
-                ]}}
-            },
-            {
-                "id": "guard",
-                "condition": {">": [{"var": "data.amount"}, 100]},
-                "tasks": [{
-                    "id": "inner",
-                    "name": "Inner",
-                    "function": {"name": "log", "input": {"message": "big"}}
-                }]
-            }
-        ]
-    });
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(workflow.clone()),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    let (status, body) = upload_workflow(
+        &app,
+        json!({
+            "name": "Grouped",
+            "condition": true,
+            "tasks": [
+                {
+                    "id": "seed",
+                    "name": "Seed",
+                    "function": {"name": "map", "input": {"mappings": [
+                        {"path": "data.amount", "logic": 500}
+                    ]}}
+                },
+                {
+                    "id": "guard",
+                    "condition": {">": [{"var": "data.amount"}, 100]},
+                    "tasks": [{
+                        "id": "inner",
+                        "name": "Inner",
+                        "function": {"name": "log", "input": {"message": "big"}}
+                    }]
+                }
+            ]
+        }),
+    )
+    .await;
     assert_eq!(
-        body["data"]["valid"], true,
-        "grouped workflow rejected by /validate: {:?}",
-        body["data"]["errors"]
+        status,
+        StatusCode::CREATED,
+        "grouped workflow refused: {body}"
     );
-
-    // The agreement that matters: create accepts exactly what validate blessed.
-    let created = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "wf-grouped",
-                "name": "Grouped",
-                "condition": true,
-                "tasks": workflow["tasks"].clone()
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(created.status(), StatusCode::CREATED);
 }
 
 /// The other half: a broken task *inside* a group is still checked, and its
-/// error names the path that addresses it rather than a top-level index.
+/// refusal names the path that addresses it rather than a top-level index.
 #[tokio::test]
-async fn test_validate_reports_a_broken_task_inside_a_group() {
+async fn a_broken_task_inside_a_group_is_refused_at_its_path() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "name": "Grouped",
+    deploy::assert_upload_refused(
+        &app,
+        deploy::workflow_definition(&json!({
+            "name": "Grouped",
+            "condition": true,
+            "tasks": [{
+                "id": "guard",
                 "condition": true,
-                "tasks": [{
-                    "id": "guard",
-                    "condition": true,
-                    "tasks": [{"id": "inner", "name": "Inner"}]
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], false);
-
-    let fields: Vec<&str> = body["data"]["errors"]
-        .as_array()
-        .expect("errors array")
-        .iter()
-        .filter_map(|e| e["field"].as_str())
-        .collect();
-    assert!(
-        fields.contains(&"tasks[0].tasks[0].function.name"),
-        "expected the nested task's own path, got {fields:?}"
-    );
+                "tasks": [{"id": "inner", "name": "Inner"}]
+            }]
+        })),
+        "definition.tasks[0].tasks[0].function.name",
+    )
+    .await;
 }

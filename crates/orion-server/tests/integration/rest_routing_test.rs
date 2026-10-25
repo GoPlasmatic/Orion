@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tower::ServiceExt;
 
-use crate::common::{create_and_activate_workflow, create_rest_channel};
+use crate::common::{create_and_activate_workflow, create_rest_channel, deploy};
 
 /// Create and activate the shared echo workflow (echoes input + adds a
 /// `data.matched` marker), returning its workflow_id.
@@ -393,37 +393,33 @@ async fn invalid_percent_sequence_returns_400() {
 // R6: route patterns and methods are structurally validated
 // ============================================================
 
-/// Create a REST channel without activating it, returning the status and body.
+/// Upload a REST channel definition without deploying it, returning the
+/// status and body.
 async fn try_create_rest_channel(
     app: &axum::Router,
     name: &str,
     route_pattern: &str,
     methods: Vec<&str>,
 ) -> (StatusCode, serde_json::Value) {
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": name,
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": methods,
-                "route_pattern": route_pattern,
-            })),
-        ))
-        .await
-        .unwrap();
-    let status = resp.status();
-    (status, common::body_json(resp).await)
+    deploy::try_upload(
+        app,
+        json!({"kind": "channel", "definition": {
+            "name": name,
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": methods,
+            "route_pattern": route_pattern,
+        }}),
+    )
+    .await
 }
 
-/// R6: `methods: ["POTS"]` and `route_pattern: "orders/{id"` were created,
-/// activated and reloaded — and then never matched a request, with nothing
-/// reporting it. The channel was simply dead.
+/// R6: `methods: ["POTS"]` and `route_pattern: "orders/{id"` were once
+/// created, activated and reloaded — and then never matched a request, with
+/// nothing reporting it. The channel was simply dead. Its definition is now
+/// refused at upload.
 #[tokio::test]
-async fn a_channel_that_could_never_match_is_rejected_at_create() {
+async fn a_channel_that_could_never_match_is_rejected_at_upload() {
     let app = common::test_app().await;
 
     let (status, body) = try_create_rest_channel(&app, "typo-verb", "/orders", vec!["POTS"]).await;
@@ -444,7 +440,7 @@ async fn a_channel_that_could_never_match_is_rejected_at_create() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.to_string().contains("more than once"), "{body}");
 
-    // The well-formed equivalent still creates.
+    // The well-formed equivalent still uploads.
     let (status, body) =
         try_create_rest_channel(&app, "fine", "/orders/{id}", vec!["GET", "post"]).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -461,8 +457,8 @@ async fn every_route_problem_is_reported_at_once() {
     let details = body["error"]["details"].as_array().expect("details");
     assert_eq!(details.len(), 2, "{body}");
     let paths: Vec<&str> = details.iter().filter_map(|d| d["path"].as_str()).collect();
-    assert!(paths.contains(&"channel.methods"), "{body}");
-    assert!(paths.contains(&"channel.route_pattern"), "{body}");
+    assert!(paths.contains(&"definition.methods"), "{body}");
+    assert!(paths.contains(&"definition.route_pattern"), "{body}");
 }
 
 // ============================================================
@@ -470,64 +466,51 @@ async fn every_route_problem_is_reported_at_once() {
 // ============================================================
 
 /// R7: `RouteTable::match_route` returns the first hit, so a second claimant
-/// is dead — requests to its declared path run the incumbent's workflow. The
-/// tie used to break on DB row order, so which one served could differ per node
-/// and change on any reload.
+/// would be dead — requests to its declared path would run the incumbent's
+/// workflow. A deployment adding a second claimant of a served route is
+/// committed but does not build: the node reports it unconverged, naming the
+/// incumbent and the route, and keeps serving the generation it had.
 #[tokio::test]
 async fn a_second_channel_cannot_claim_a_route_another_already_serves() {
     let app = common::test_app().await;
-    let wf_id =
-        common::v1::create_and_activate_workflow(&app, common::echo_workflow("Orders Workflow"))
-            .await;
-    common::v1::create_rest_channel(&app, "orders.first", "/orders/{id}", vec!["GET"], &wf_id)
-        .await;
+    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
+    create_rest_channel(&app, "orders.first", "/orders/{id}", vec!["GET"], &wf_id).await;
 
     // Same shape, different parameter name — the name is a workflow-facing
     // label, not part of the match, so these collide.
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "orders.second",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": "/orders/{order_id}",
-                "workflow_id": wf_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "create stays permissive"
-    );
-    let ch_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{ch_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let msg = common::body_json(resp).await.to_string();
+    let digest = deploy::upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "orders.second",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["GET"],
+            "route_pattern": "/orders/{order_id}",
+        }}),
+    )
+    .await;
+    let (base, members) = deploy::merged(
+        &app,
+        vec![deploy::Upsert {
+            kind: "channel",
+            id: "orders.second".into(),
+            digest,
+            revision: None,
+            requires: vec![("workflow", wf_id.clone())],
+        }],
+    )
+    .await;
+    let (status, body) = deploy::apply(&app, base, members).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["evaluation"]["converged"], false, "{body}");
+    let msg = body["local_error"].to_string();
     assert!(
         msg.contains("orders.first"),
-        "must name the incumbent: {msg}"
+        "must name the incumbent: {body}"
     );
-    assert!(msg.contains("/orders/{}"), "must name the route: {msg}");
+    assert!(msg.contains("/orders/{}"), "must name the route: {body}");
 
-    // The incumbent keeps serving — activating a second channel must never
+    // The incumbent keeps serving — deploying a second claimant must never
     // take a running one down.
     let resp = app
         .clone()
@@ -567,45 +550,55 @@ async fn disjoint_methods_on_one_path_are_not_a_conflict() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// A new *version* of the same channel replaces itself rather than colliding
+/// A new revision of the same channel replaces itself rather than colliding
 /// with itself — otherwise no REST channel could ever be edited.
 #[tokio::test]
 async fn a_new_version_of_the_same_channel_does_not_collide() {
     let app = common::test_app().await;
-    let wf_id =
-        common::v1::create_and_activate_workflow(&app, common::echo_workflow("Orders Workflow"))
-            .await;
-    let ch_id =
-        common::v1::create_rest_channel(&app, "orders.v", "/orders/{id}", vec!["GET"], &wf_id)
-            .await;
+    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
+    create_rest_channel(&app, "orders.v", "/orders/{id}", vec!["GET"], &wf_id).await;
+
+    // A changed definition under the same id: the merge gives it the next
+    // revision, on the same route. `deploy_channel` panics unless the node
+    // converges on it.
+    common::deploy_channel(
+        &app,
+        json!({
+            "name": "orders.v",
+            "description": "revision two",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["GET"],
+            "route_pattern": "/orders/{id}",
+            "workflow_id": wf_id,
+        }),
+    )
+    .await;
+    let (_, members) = deploy::head(&app).await;
+    let channel = members
+        .iter()
+        .find(|m| m["entity"]["kind"] == "channel" && m["entity"]["id"] == "orders.v")
+        .expect("the channel member");
+    assert_eq!(channel["entity"]["revision"], 2, "{channel}");
 
     let resp = app
         .clone()
-        .oneshot(common::json_request(
-            "POST",
-            &format!("/api/v2/admin/channels/{ch_id}/versions"),
-            None,
-        ))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v2/data/orders/1")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{ch_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "{:?}", resp.status());
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 /// A channel name is free-form, and the encoded spelling of one has to reach it.
 ///
 /// `validate_name` checks only emptiness and length, so `orders/v2` is an
-/// accepted, activatable channel name — and the name is the channel's address
+/// accepted, deployable channel name — and the name is the channel's address
 /// on the data plane. The single-segment branch of route resolution decodes
 /// exactly once for this reason, which is the contract `orion-client`'s path
 /// encoding now depends on: it sends `orders%2Fv2`, and that must land here
@@ -614,7 +607,7 @@ async fn a_new_version_of_the_same_channel_does_not_collide() {
 async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
     let app = common::test_app().await;
 
-    // Built inline rather than through `create_and_activate_channel`, which
+    // Deployed through `deploy_channel` rather than `create_and_activate_channel`, which
     // derives `route_pattern` from the name — `/orders/v2` and `/q?x=1` are not
     // valid route patterns, and the point here is the *name*, which is a
     // separate address.
@@ -626,75 +619,33 @@ async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
     .into_iter()
     .enumerate()
     {
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(common::workflow_with_tasks(
-                    "Echo",
-                    json!([{
-                        "id": "echo",
-                        "name": "Echo",
-                        "function": { "name": "map", "input": { "mappings": [
-                            { "path": "data.ok", "logic": true }
-                        ] } }
-                    }]),
-                )),
-            ))
-            .await
-            .expect("create workflow");
-        assert_eq!(resp.status(), StatusCode::CREATED);
-        let wf = common::body_json(resp).await;
-        let workflow_id = wf["data"]["workflow_id"].as_str().expect("id").to_string();
-
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "PATCH",
-                &format!("/api/v2/admin/workflows/{workflow_id}/status"),
-                Some(json!({"status": "active"})),
-            ))
-            .await
-            .expect("activate workflow");
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "POST",
-                "/api/v2/admin/channels",
-                Some(json!({
-                    "name": name,
-                    "channel_type": "sync",
-                    "protocol": "rest",
-                    "methods": ["POST"],
-                    "route_pattern": format!("/named-{i}"),
-                    "workflow_id": workflow_id,
-                    "config": {}
-                })),
-            ))
-            .await
-            .expect("create channel");
-        let status = resp.status();
-        let created = common::body_json(resp).await;
-        assert_eq!(
-            status,
-            StatusCode::CREATED,
-            "'{name}' is an accepted channel name: {created}"
-        );
-        let channel_id = created["data"]["channel_id"].as_str().expect("id");
-
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "PATCH",
-                &format!("/api/v2/admin/channels/{channel_id}/status"),
-                Some(json!({"status": "active"})),
-            ))
-            .await
-            .expect("activate channel");
-        assert_eq!(resp.status(), StatusCode::OK);
+        let workflow_id = create_and_activate_workflow(
+            &app,
+            common::workflow_with_tasks(
+                "Echo",
+                json!([{
+                    "id": "echo",
+                    "name": "Echo",
+                    "function": { "name": "map", "input": { "mappings": [
+                        { "path": "data.ok", "logic": true }
+                    ] } }
+                }]),
+            ),
+        )
+        .await;
+        common::deploy_channel(
+            &app,
+            json!({
+                "name": name,
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": format!("/named-{i}"),
+                "workflow_id": workflow_id,
+                "config": {}
+            }),
+        )
+        .await;
 
         let resp = app
             .clone()

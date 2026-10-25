@@ -1,5 +1,6 @@
 use crate::common;
 
+use crate::common::deploy;
 use crate::common::{body_json, json_request};
 use axum::http::StatusCode;
 use serde_json::json;
@@ -39,6 +40,15 @@ async fn wait_for_audit_entries(app: &axum::Router, expected: &[(&str, &str)]) {
     }
 }
 
+/// Upload a one-task workflow definition named `name` — one audited mutation.
+async fn upload_workflow(app: &axum::Router, name: &str) -> String {
+    deploy::upload(
+        app,
+        deploy::workflow_definition(&common::simple_log_workflow(name)),
+    )
+    .await
+}
+
 /// Poll until the audit log holds at least `min_total` entries (5s deadline).
 async fn wait_for_audit_total(app: &axum::Router, min_total: i64) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -66,366 +76,16 @@ async fn wait_for_audit_total(app: &axum::Router, min_total: i64) {
 }
 
 // ============================================================
-// 1. Workflow CRUD generates audit entries
-// ============================================================
-
-#[tokio::test]
-async fn test_audit_workflow_crud() {
-    let app = common::test_app().await;
-
-    // Create workflow (draft)
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::simple_log_workflow("Audit WF")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Archive
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Delete
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/workflows/{}", wf_id),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    wait_for_audit_entries(
-        &app,
-        &[
-            ("workflow", "create"),
-            ("workflow", "status_active"),
-            ("workflow", "status_archived"),
-            ("workflow", "delete"),
-        ],
-    )
-    .await;
-
-    // Fetch audit logs
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let entries = body["data"].as_array().expect("data should be an array");
-
-    // Filter to workflow entries
-    let wf_entries: Vec<&serde_json::Value> = entries
-        .iter()
-        .filter(|e| e["resource_type"] == "workflow")
-        .collect();
-
-    let actions: Vec<&str> = wf_entries
-        .iter()
-        .map(|e| e["action"].as_str().unwrap())
-        .collect();
-
-    assert!(actions.contains(&"create"), "missing 'create' audit entry");
-    assert!(
-        actions.contains(&"status_active"),
-        "missing 'status_active' audit entry"
-    );
-    assert!(
-        actions.contains(&"status_archived"),
-        "missing 'status_archived' audit entry"
-    );
-    assert!(actions.contains(&"delete"), "missing 'delete' audit entry");
-}
-
-// ============================================================
-// 2. Channel CRUD generates audit entries
-// ============================================================
-
-#[tokio::test]
-async fn test_audit_channel_crud() {
-    let app = common::test_app().await;
-
-    // Create and activate a workflow (required for channel)
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::simple_log_workflow("Chan Audit WF")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Create channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(common::sync_http_channel("audit-chan", &wf_id)),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Archive channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    wait_for_audit_entries(
-        &app,
-        &[
-            ("channel", "create"),
-            ("channel", "status_active"),
-            ("channel", "status_archived"),
-        ],
-    )
-    .await;
-
-    // Fetch audit logs
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let entries = body["data"].as_array().expect("data should be an array");
-
-    // Filter to channel entries
-    let ch_entries: Vec<&serde_json::Value> = entries
-        .iter()
-        .filter(|e| e["resource_type"] == "channel")
-        .collect();
-
-    let actions: Vec<&str> = ch_entries
-        .iter()
-        .map(|e| e["action"].as_str().unwrap())
-        .collect();
-
-    assert!(
-        actions.contains(&"create"),
-        "missing 'create' audit entry for channel"
-    );
-    assert!(
-        actions.contains(&"status_active"),
-        "missing 'status_active' audit entry for channel"
-    );
-    assert!(
-        actions.contains(&"status_archived"),
-        "missing 'status_archived' audit entry for channel"
-    );
-}
-
-// ============================================================
-// 3. Connector CRUD generates audit entries
-// ============================================================
-
-#[tokio::test]
-async fn test_audit_connector_crud() {
-    let app = common::test_app().await;
-
-    // Create connector
-    let connector_id = common::v1::create_connector(&app, common::db_connector("audit-conn")).await;
-
-    // Update connector
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            &format!("/api/v2/admin/connectors/{}", connector_id),
-            Some(json!({"name": "audit-conn-renamed"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Delete connector
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/connectors/{}", connector_id),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    wait_for_audit_entries(
-        &app,
-        &[
-            ("connector", "create"),
-            ("connector", "update"),
-            ("connector", "delete"),
-        ],
-    )
-    .await;
-
-    // Fetch audit logs
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let entries = body["data"].as_array().expect("data should be an array");
-
-    // Filter to connector entries
-    let conn_entries: Vec<&serde_json::Value> = entries
-        .iter()
-        .filter(|e| e["resource_type"] == "connector")
-        .collect();
-
-    let actions: Vec<&str> = conn_entries
-        .iter()
-        .map(|e| e["action"].as_str().unwrap())
-        .collect();
-
-    assert!(
-        actions.contains(&"create"),
-        "missing 'create' audit entry for connector"
-    );
-    assert!(
-        actions.contains(&"update"),
-        "missing 'update' audit entry for connector"
-    );
-    assert!(
-        actions.contains(&"delete"),
-        "missing 'delete' audit entry for connector"
-    );
-}
-
-// ============================================================
-// 4. Engine reload generates audit entry
-// ============================================================
-
-#[tokio::test]
-async fn test_audit_engine_reload() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    wait_for_audit_entries(&app, &[("engine", "reload")]).await;
-
-    // Fetch audit logs
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let entries = body["data"].as_array().expect("data should be an array");
-
-    let engine_entries: Vec<&serde_json::Value> = entries
-        .iter()
-        .filter(|e| e["resource_type"] == "engine")
-        .collect();
-
-    let actions: Vec<&str> = engine_entries
-        .iter()
-        .map(|e| e["action"].as_str().unwrap())
-        .collect();
-
-    assert!(
-        actions.contains(&"reload"),
-        "missing 'reload' audit entry for engine"
-    );
-}
-
-// ============================================================
-// 5. Pagination of audit logs
+// 1. Pagination of audit logs
 // ============================================================
 
 #[tokio::test]
 async fn test_audit_pagination() {
     let app = common::test_app().await;
 
-    // Create 5 workflows to produce at least 5 audit entries
+    // Upload 5 definitions to produce at least 5 audit entries
     for i in 0..5 {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(common::simple_log_workflow(&format!("Pagination WF {}", i))),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
+        upload_workflow(&app, &format!("Pagination WF {}", i)).await;
     }
 
     wait_for_audit_total(&app, 5).await;
@@ -469,7 +129,7 @@ async fn test_audit_pagination() {
 }
 
 // ============================================================
-// 6. `details` is populated end-to-end (D3)
+// 2. `details` is populated end-to-end (D3)
 // ============================================================
 
 /// Before D3 the `Some(details)` branch built malformed SQL, so the column was
@@ -478,14 +138,9 @@ async fn test_audit_pagination() {
 async fn test_audit_details_carries_request_id() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    upload_workflow(&app, "Request Id WF").await;
 
-    wait_for_audit_entries(&app, &[("engine", "reload")]).await;
+    wait_for_audit_entries(&app, &[("definition", "v2_definition_upload")]).await;
 
     let resp = app
         .clone()
@@ -498,8 +153,8 @@ async fn test_audit_details_carries_request_id() {
         .as_array()
         .expect("data should be an array")
         .iter()
-        .find(|e| e["resource_type"] == "engine")
-        .expect("reload must produce an audit entry")
+        .find(|e| e["resource_type"] == "definition")
+        .expect("an upload must produce an audit entry")
         .clone();
 
     let details = entry["details"]
@@ -513,138 +168,61 @@ async fn test_audit_details_carries_request_id() {
 }
 
 // ============================================================
-// 7. Import workflows generates audit entry
+// 3. Server-side filtering (O8)
 // ============================================================
 
-#[tokio::test]
-async fn test_audit_import() {
-    let app = common::test_app().await;
-
-    // Import 2 workflows
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/import",
-            Some(json!([
-                {
-                    "workflow_id": "audit-import-1",
-                    "name": "Audit Import WF 1",
-                    "condition": true,
-                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"imported"}}}]
-                },
-                {
-                    "workflow_id": "audit-import-2",
-                    "name": "Audit Import WF 2",
-                    "condition": true,
-                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"imported"}}}]
-                }
-            ])),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["imported"], 2);
-
-    wait_for_audit_entries(&app, &[("workflow", "import")]).await;
-
-    // Fetch audit logs
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/audit-logs", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let entries = body["data"].as_array().expect("data should be an array");
-
-    let import_entries: Vec<&serde_json::Value> = entries
-        .iter()
-        .filter(|e| e["resource_type"] == "workflow" && e["action"] == "import")
-        .collect();
-
-    assert!(
-        !import_entries.is_empty(),
-        "expected at least one 'import' audit entry for workflow resource_type"
-    );
-}
-
-// ============================================================
-// 8. Server-side filtering (O8)
-// ============================================================
-
-/// Seed a mix of workflow / channel / connector audit entries and return the
-/// app plus the workflow id used.
+/// Seed a mix of audit entries — two definition uploads, a connection
+/// create and one deployment apply naming them — and return the app plus the
+/// workflow definition's digest (its upload's `resource_id`).
 async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::simple_log_workflow("Filter WF")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let wf_id = body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{wf_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(common::sync_http_channel("filter-chan", &wf_id)),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let ch_id = body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{ch_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    common::v1::create_connector(&app, common::db_connector("filter-conn")).await;
+    let workflow = common::simple_log_workflow("Filter WF");
+    let wf_digest = deploy::upload(&app, deploy::workflow_definition(&workflow)).await;
+    let (channel, _) =
+        deploy::channel_definition(&common::sync_http_channel("filter-chan", "unused"));
+    let ch_digest = deploy::upload(&app, channel).await;
+    let (conn_id, conn_rev, conn_digest) =
+        deploy::create_connection(&app, &common::db_connector("filter-conn")).await;
+    deploy::deploy(
+        &app,
+        vec![
+            deploy::Upsert {
+                kind: "workflow",
+                id: "filter-wf".to_string(),
+                digest: wf_digest.clone(),
+                revision: None,
+                requires: Vec::new(),
+            },
+            deploy::Upsert {
+                kind: "channel",
+                id: "filter-chan".to_string(),
+                digest: ch_digest,
+                revision: None,
+                requires: vec![("workflow", "filter-wf".to_string())],
+            },
+            deploy::Upsert {
+                kind: "connection",
+                id: conn_id,
+                digest: conn_digest,
+                revision: Some(conn_rev),
+                requires: Vec::new(),
+            },
+        ],
+    )
+    .await;
 
     wait_for_audit_entries(
         &app,
         &[
-            ("workflow", "create"),
-            ("workflow", "status_active"),
-            ("channel", "create"),
-            ("channel", "status_active"),
-            ("connector", "create"),
+            ("definition", "v2_definition_upload"),
+            ("connection", "v2_connection_create"),
+            ("deployment", "v2_deployment_apply"),
         ],
     )
     .await;
-    (app, wf_id)
+    wait_for_audit_total(&app, 4).await;
+    (app, wf_digest)
 }
 
 async fn audit_query(app: &axum::Router, query: &str) -> (StatusCode, serde_json::Value) {
@@ -663,18 +241,26 @@ async fn audit_query(app: &axum::Router, query: &str) -> (StatusCode, serde_json
 
 #[tokio::test]
 async fn test_audit_filter_each_param_narrows_results() {
-    let (app, wf_id) = app_with_mixed_audit_entries().await;
+    let (app, wf_digest) = app_with_mixed_audit_entries().await;
 
     let (status, all) = audit_query(&app, "").await;
     assert_eq!(status, StatusCode::OK);
     let total = all["total"].as_i64().unwrap();
-    assert!(total >= 5, "expected a mixed seed, got {total}");
+    assert!(total >= 4, "expected a mixed seed, got {total}");
 
     for (query, key, value) in [
-        ("?resource_type=workflow", "resource_type", "workflow"),
-        ("?resource_type=connector", "resource_type", "connector"),
-        ("?action=create", "action", "create"),
-        ("?action=status_active", "action", "status_active"),
+        ("?resource_type=definition", "resource_type", "definition"),
+        ("?resource_type=connection", "resource_type", "connection"),
+        (
+            "?action=v2_definition_upload",
+            "action",
+            "v2_definition_upload",
+        ),
+        (
+            "?action=v2_deployment_apply",
+            "action",
+            "v2_deployment_apply",
+        ),
     ] {
         let (status, body) = audit_query(&app, query).await;
         assert_eq!(status, StatusCode::OK, "query {query}");
@@ -695,11 +281,11 @@ async fn test_audit_filter_each_param_narrows_results() {
         );
     }
 
-    let (status, body) = audit_query(&app, &format!("?resource_id={wf_id}")).await;
+    let (status, body) = audit_query(&app, &format!("?resource_id={wf_digest}")).await;
     assert_eq!(status, StatusCode::OK);
     let entries = body["data"].as_array().unwrap();
     assert!(!entries.is_empty());
-    assert!(entries.iter().all(|e| e["resource_id"] == wf_id));
+    assert!(entries.iter().all(|e| e["resource_id"] == wf_digest));
 
     let (status, body) = audit_query(&app, "?principal=anonymous").await;
     assert_eq!(status, StatusCode::OK);
@@ -716,17 +302,19 @@ async fn test_audit_filter_each_param_narrows_results() {
 
 #[tokio::test]
 async fn test_audit_filters_and_together() {
-    let (app, wf_id) = app_with_mixed_audit_entries().await;
+    let (app, _) = app_with_mixed_audit_entries().await;
 
-    // The documented example: ?action=…&resource_type=workflow.
-    let (status, body) = audit_query(&app, "?action=status_active&resource_type=workflow").await;
+    // The documented example: ?action=…&resource_type=….
+    let (status, body) =
+        audit_query(&app, "?action=v2_deployment_apply&resource_type=deployment").await;
     assert_eq!(status, StatusCode::OK);
     let entries = body["data"].as_array().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["resource_id"], wf_id);
+    assert_eq!(entries.len(), 1, "{body}");
+    assert_eq!(entries[0]["resource_id"], "1", "the first revision: {body}");
 
     // A matching action with a non-matching type must yield nothing, not the union.
-    let (status, body) = audit_query(&app, "?action=status_active&resource_type=connector").await;
+    let (status, body) =
+        audit_query(&app, "?action=v2_deployment_apply&resource_type=connection").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["total"], 0);
     assert!(body["data"].as_array().unwrap().is_empty());
@@ -769,7 +357,7 @@ async fn test_audit_unknown_query_param_is_rejected() {
 }
 
 // ============================================================
-// Audit v2 (O7): actor identity, request context, drain, /test
+// Audit v2 (O7): actor identity, request context, drain, definition test
 // ============================================================
 
 /// Two admin keys sharing a long prefix — the case the old 8-character
@@ -848,9 +436,13 @@ async fn audit_actor_distinguishes_keys_sharing_a_prefix() {
             .clone()
             .oneshot(authed_request(
                 "POST",
-                "/api/v2/admin/workflows",
+                "/api/v2/admin/definitions",
                 key,
-                Some(common::simple_log_workflow("O7 actor")),
+                Some(
+                    json!({"kind": "workflow", "definition": common::simple_log_workflow(
+                        &format!("O7 actor {}", &key[key.len() - 4..])
+                    )}),
+                ),
             ))
             .await
             .unwrap();
@@ -860,7 +452,13 @@ async fn audit_actor_distinguishes_keys_sharing_a_prefix() {
     let body = wait_for_audit(&app, KEY_A, |b| {
         b["data"]
             .as_array()
-            .map(|entries| entries.iter().filter(|e| e["action"] == "create").count() >= 2)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|e| e["action"] == "v2_definition_upload")
+                    .count()
+                    >= 2
+            })
             .unwrap_or(false)
     })
     .await;
@@ -869,7 +467,7 @@ async fn audit_actor_distinguishes_keys_sharing_a_prefix() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["action"] == "create")
+        .filter(|e| e["action"] == "v2_definition_upload")
         .filter_map(|e| e["principal"].as_str())
         .collect();
     assert_eq!(
@@ -896,9 +494,9 @@ async fn audit_records_request_context() {
         .clone()
         .oneshot(authed_request(
             "POST",
-            "/api/v2/admin/workflows",
+            "/api/v2/admin/definitions",
             KEY_A,
-            Some(common::simple_log_workflow("O7 context")),
+            Some(json!({"kind": "workflow", "definition": common::simple_log_workflow("O7 context")})),
         ))
         .await
         .unwrap();
@@ -907,7 +505,11 @@ async fn audit_records_request_context() {
     let body = wait_for_audit(&app, KEY_A, |b| {
         b["data"]
             .as_array()
-            .map(|entries| entries.iter().any(|e| e["action"] == "create"))
+            .map(|entries| {
+                entries
+                    .iter()
+                    .any(|e| e["action"] == "v2_definition_upload")
+            })
             .unwrap_or(false)
     })
     .await;
@@ -915,8 +517,8 @@ async fn audit_records_request_context() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["action"] == "create")
-        .expect("create entry");
+        .find(|e| e["action"] == "v2_definition_upload")
+        .expect("upload entry");
     let details: serde_json::Value = serde_json::from_str(
         entry["details"]
             .as_str()
@@ -934,35 +536,22 @@ async fn audit_records_request_context() {
     );
 }
 
-/// O7: `POST /workflows/{id}/test` executes the workflow's tasks against
-/// **live connectors** and used to emit no audit event at all.
+/// O7: `POST /definitions/test` executes the workflow's tasks against
+/// **live connectors**, so it is on the record, named by the digest the same
+/// definition uploads to.
 #[tokio::test]
 async fn workflow_test_emits_an_audit_event() {
     let app = authed_app().await;
+    let definition =
+        json!({"kind": "workflow", "definition": common::simple_log_workflow("O7 test-run")});
 
     let resp = app
         .clone()
         .oneshot(authed_request(
             "POST",
-            "/api/v2/admin/workflows",
+            "/api/v2/admin/definitions/test",
             KEY_A,
-            Some(common::simple_log_workflow("O7 test-run")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let wf_id = body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(authed_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{wf_id}/test"),
-            KEY_A,
-            Some(json!({"data": {"x": 1}})),
+            Some(json!({"definition": definition["definition"].clone(), "data": {"x": 1}})),
         ))
         .await
         .unwrap();
@@ -971,7 +560,7 @@ async fn workflow_test_emits_an_audit_event() {
     let body = wait_for_audit(&app, KEY_A, |b| {
         b["data"]
             .as_array()
-            .map(|entries| entries.iter().any(|e| e["action"] == "test"))
+            .map(|entries| entries.iter().any(|e| e["action"] == "v2_definition_test"))
             .unwrap_or(false)
     })
     .await;
@@ -979,10 +568,24 @@ async fn workflow_test_emits_an_audit_event() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["action"] == "test")
-        .expect("running live connectors must be on the record");
-    assert_eq!(entry["resource_type"], "workflow");
-    assert_eq!(entry["resource_id"], wf_id);
+        .find(|e| e["action"] == "v2_definition_test")
+        .expect("running live connectors must be on the record")
+        .clone();
+    assert_eq!(entry["resource_type"], "definition");
+
+    let resp = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/v2/admin/definitions",
+            KEY_A,
+            Some(definition),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let digest = body_json(resp).await["digest"].clone();
+    assert_eq!(entry["resource_id"], digest, "{entry}");
 }
 
 /// Wiring check for the shutdown drain: the queue an admin handler submits to
@@ -1001,8 +604,8 @@ async fn mutations_just_before_shutdown_are_still_recorded() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/workflows",
-            Some(common::simple_log_workflow("O7 shutdown")),
+            "/api/v2/admin/definitions",
+            Some(json!({"kind": "workflow", "definition": common::simple_log_workflow("O7 shutdown")})),
         ))
         .await
         .unwrap();
@@ -1018,71 +621,7 @@ async fn mutations_just_before_shutdown_are_still_recorded() {
         .await
         .expect("audit rows readable after shutdown");
     assert!(
-        rows.data.iter().any(|e| e.action == "create"),
+        rows.data.iter().any(|e| e.action == "v2_definition_upload"),
         "the drain must persist a mutation accepted immediately before shutdown"
-    );
-}
-
-/// §2.6: an active-set change and its audit row are one commit, so the row is
-/// there the instant the mutation answers — no queue to drain, nothing to poll
-/// for.
-///
-/// This is the observable form of the guarantee. Before, the audit row was
-/// handed to a bounded queue after the entity write had already committed, so
-/// between those two points the change was live and unrecorded — and it stayed
-/// that way if the process exited, if the queue was full, or if the INSERT
-/// failed. Every other test in this file polls (`wait_for_audit_entries`)
-/// because that is what a queued write requires; this one deliberately does
-/// not, and would go red if the audit row went back on the queue.
-#[tokio::test]
-async fn an_active_set_change_is_audited_before_it_answers() {
-    let app = common::test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::simple_log_workflow("Synchronous Audit")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let wf_id = body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{wf_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // No polling, no sleep: the next request the client could possibly make.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v2/admin/audit-logs?limit=100",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let entries = body["data"].as_array().expect("audit entries");
-
-    assert!(
-        entries.iter().any(|e| e["resource_type"] == "workflow"
-            && e["action"] == "status_active"
-            && e["resource_id"] == wf_id.as_str()),
-        "the activation committed but its audit row is not visible yet — the row \
-         must commit with the change, not behind it: {body}"
     );
 }

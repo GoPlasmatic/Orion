@@ -27,110 +27,39 @@ async fn test_channel_timeout_returns_504() {
 
     let app = common::test_app().await;
 
-    // Create connector pointing to slow mock server
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "slow-api",
-                "name": "slow-api",
-                "connector_type": "http",
-                "config": {
-                    "type": "http",
-                    "url": format!("http://{}", mock_addr),
-                    "retry": {"max_retries": 0, "retry_delay_ms": 10},
-                    "allow_private_urls": true
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    // Connector pointing to the slow mock server.
+    common::create_http_connector(&app, "slow-api", mock_addr).await;
 
-    // Create workflow that calls the slow endpoint
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Timeout Test Workflow",
-                "tasks": [{
-                    "id": "slow-call",
-                    "name": "Slow HTTP Call",
-                    "function": {
-                        "name": "http_call",
-                        "input": {
-                            "connector": "slow-api",
-                            "method": "POST",
-                            "path": "/slow",
-                            "body": {"test": true},
-                            // A path: `"response"` names no context root and
-                            // is refused at load (O3's named break, pinned by
-                            // `channel_load_refusal_test::
-                            // an_output_that_is_no_path_quarantines_its_channel`).
-                            "output": "data.response",
-                            "timeout_ms": 5000
-                        }
+    // A workflow that calls the slow endpoint, behind a channel with a 50ms
+    // timeout (the mock server takes 200ms, so the request times out).
+    common::create_and_activate_channel_with_config(
+        &app,
+        "timeout-ch",
+        common::workflow_with_tasks(
+            "Timeout Test Workflow",
+            json!([{
+                "id": "slow-call",
+                "name": "Slow HTTP Call",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "slow-api",
+                        "method": "POST",
+                        "path": "/slow",
+                        "body": {"test": true},
+                        // A path: `"response"` names no context root and
+                        // is refused at upload (O3's named break, pinned by
+                        // `channel_load_refusal_test::
+                        // an_output_that_is_no_path_quarantines_its_channel`).
+                        "output": "data.response",
+                        "timeout_ms": 5000
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Create channel with 50ms timeout (mock server takes 200ms -> will timeout)
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "timeout-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/timeout-ch",
-                "workflow_id": wf_id,
-                "config": {
-                    "timeout_ms": 50
                 }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+            }]),
+        ),
+        json!({"timeout_ms": 50}),
+    )
+    .await;
 
     // Send request — expect 504 Gateway Timeout
     let resp = app
@@ -215,69 +144,21 @@ async fn test_response_body_carries_no_internal_rollout_key() {
 async fn test_channel_validation_logic_rejects_invalid_input() {
     let app = common::test_app().await;
 
-    // Create workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Validation Test WF",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    // Create channel with validation_logic: order_id must exist AND quantity > 0
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "validated-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/validated-ch",
-                "workflow_id": wf_id,
-                "config": {
-                    "validation_logic": {
-                        "and": [
-                            { "!!": { "var": "data.order_id" } },
-                            { ">": [{ "var": "data.quantity" }, 0] }
-                        ]
-                    }
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
+    // A channel with validation_logic: order_id must exist AND quantity > 0.
+    common::create_and_activate_channel_with_config(
+        &app,
+        "validated-ch",
+        common::simple_log_workflow("Validation Test WF"),
+        json!({
+            "validation_logic": {
+                "and": [
+                    { "!!": { "var": "data.order_id" } },
+                    { ">": [{ "var": "data.quantity" }, 0] }
+                ]
+            }
+        }),
+    )
+    .await;
 
     // Valid input — should pass
     let resp = app
@@ -354,64 +235,14 @@ async fn test_channel_without_validation_logic_passes_any_input() {
 async fn test_channel_cors_rejects_disallowed_origin() {
     let app = common::test_app().await;
 
-    // Create workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "CORS Test WF",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    // Create channel with CORS restricted to https://allowed.example.com
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "cors-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/cors-ch",
-                "workflow_id": wf_id,
-                "config": {
-                    "origin_allow_list": ["https://allowed.example.com"]
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
+    // A channel with CORS restricted to https://allowed.example.com.
+    common::create_and_activate_channel_with_config(
+        &app,
+        "cors-ch",
+        common::simple_log_workflow("CORS Test WF"),
+        json!({"origin_allow_list": ["https://allowed.example.com"]}),
+    )
+    .await;
 
     // Request from allowed origin — should succeed
     let req = axum::http::Request::builder()
@@ -480,69 +311,14 @@ async fn test_channel_without_cors_allows_any_origin() {
 async fn test_channel_backpressure_rejects_when_at_capacity() {
     let app = common::test_app().await;
 
-    // Create workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Backpressure Test WF",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    // Create channel with max_concurrent_per_node = 0 (immediately at
-    // capacity). Deliberately spelled with the pre-1.0 alias
-    // `max_concurrent` — configs stored before the N9 rename must keep
-    // enforcing for one release.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "backpressure-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/backpressure-ch",
-                "workflow_id": wf_id,
-                "config": {
-                    "backpressure": {
-                        "max_concurrent_per_node": 0
-                    }
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    let _ = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
+    // A channel with max_concurrent_per_node = 0: immediately at capacity.
+    common::create_and_activate_channel_with_config(
+        &app,
+        "backpressure-ch",
+        common::simple_log_workflow("Backpressure Test WF"),
+        json!({"backpressure": {"max_concurrent_per_node": 0}}),
+    )
+    .await;
 
     // Request should be rejected with 503 — channel at capacity
     let resp = app

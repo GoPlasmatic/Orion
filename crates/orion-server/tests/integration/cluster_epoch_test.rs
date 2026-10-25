@@ -1,86 +1,19 @@
-//! Epoch-bus send side (multi-instance-ha A2): admin mutations that change
-//! the active set must advance the config epoch — even with cluster mode
-//! disabled (the counter stays monotonic so enabling cluster later is sane).
-//! The receive side (watcher resync on another node) lives in tests/cluster.
-
-use std::sync::atomic::Ordering;
+//! What a deployment rebuild leaves alone. The cross-node half (a peer's
+//! reconciler taking up a committed revision) lives in tests/cluster.
 
 use crate::common;
 
-#[tokio::test]
-async fn admin_mutations_advance_config_epoch() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-
-    let start_epoch = state.cluster.repo.get_epoch().await.expect("epoch").epoch;
-    assert_eq!(start_epoch, 0);
-
-    // Workflow activate + channel activate → two audit_and_reload calls.
-    common::v1::create_and_activate_channel(
-        &app,
-        "epoch-ch",
-        common::simple_log_workflow("Epoch WF"),
-    )
-    .await;
-
-    let row = state.cluster.repo.get_epoch().await.expect("epoch");
-    assert!(
-        row.epoch >= 2,
-        "workflow + channel activation must each bump the epoch, got {}",
-        row.epoch
-    );
-    // The mutating node marks its own bumps as already applied.
-    assert_eq!(
-        state.cluster.last_seen_epoch.load(Ordering::Acquire),
-        row.epoch
-    );
-    // Breaker epoch untouched by config mutations.
-    assert_eq!(row.breaker_epoch, 0);
-}
-
-/// A channel or workflow mutation must record the scope that says so, and a
-/// connector mutation must record its own.
+/// The reconnect storm, gone: rebuilding the generation for a deployment
+/// that does not touch a connection must leave its cached pools open.
 ///
-/// The scope is what lets a peer size its resync. Before it existed the epoch
-/// was a bare counter, so every node answering every bump reloaded all
-/// connectors and evicted every cached pool.
+/// A resync used to reload the connector registry and evict every SQL,
+/// MongoDB and cache pool on every config change, whatever it touched — so
+/// one workflow activation dropped every pooled connection on every node in
+/// the fleet. A deployment rebuild keys pools on the connection's settings
+/// and keeps them; the eviction handler closes what it drops, which is what
+/// makes a wrong eviction observable here.
 #[tokio::test]
-async fn a_bump_records_what_changed() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-
-    common::v1::create_and_activate_channel(
-        &app,
-        "scope-ch",
-        common::simple_log_workflow("Scope WF"),
-    )
-    .await;
-    let row = state.cluster.repo.get_epoch().await.expect("epoch");
-    assert_eq!(
-        orion::cluster::EpochScope::parse(&row.epoch_scope),
-        orion::cluster::EpochScope::Definitions,
-        "a channel activation touches no connector"
-    );
-
-    common::v1::create_connector(&app, common::cache_connector_memory("scope-conn")).await;
-    let row = state.cluster.repo.get_epoch().await.expect("epoch");
-    assert_eq!(
-        orion::cluster::EpochScope::parse(&row.epoch_scope),
-        orion::cluster::EpochScope::Connectors,
-    );
-}
-
-/// The reconnect storm, gone: a `Definitions` resync must leave a peer's
-/// cached connection pools open.
-///
-/// `resync_from_db` used to reload the connector registry and call
-/// `evict_all()` on the SQL, MongoDB and cache pool caches on *every* epoch
-/// tick, whatever the originating mutation touched — so one workflow
-/// activation dropped every pooled connection on every node in the fleet. The
-/// eviction handler closes what it drops, which is what makes it observable
-/// here.
-#[tokio::test]
-async fn a_definitions_resync_leaves_cached_pools_open() {
+async fn a_definitions_deployment_leaves_cached_pools_open() {
     let db = common::ScratchDir::new("epoch_scope_pools");
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
@@ -106,28 +39,24 @@ async fn a_definitions_resync_leaves_cached_pools_open() {
         .expect("pool opens");
     assert!(!pool.is_closed());
 
-    orion::runtime::resync_from_db(&state, orion::cluster::EpochScope::Definitions)
-        .await
-        .expect("resync");
+    // A deployment that adds a workflow and a channel, and touches no
+    // connection: the generation is rebuilt, the pool is not dropped.
+    let before = state.runtime.load().id;
+    common::create_and_activate_channel(
+        &app,
+        "pool-keep-ch",
+        common::simple_log_workflow("Pool Keep WF"),
+    )
+    .await;
+    assert!(
+        state.runtime.load().id > before,
+        "the deployment rebuilt the generation"
+    );
+    // The evict handler closes on a detached task, so give a wrong eviction
+    // the time it would need to show.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(
         !pool.is_closed(),
-        "a workflow or channel change must not drop a peer's connector pools"
-    );
-
-    // The complement: a connector change still evicts, because the endpoint or
-    // the credentials behind a live connection may now be wrong. The evict
-    // handler closes on a detached task, so give it a moment.
-    orion::runtime::resync_from_db(&state, orion::cluster::EpochScope::Connectors)
-        .await
-        .expect("resync");
-    for _ in 0..50 {
-        if pool.is_closed() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(
-        pool.is_closed(),
-        "a connector change must still drop the cached pools"
+        "a workflow or channel deployment must not drop the connector pools"
     );
 }

@@ -244,13 +244,13 @@ fn echo_grant_workflow() -> Value {
     })
 }
 
-/// Create and activate a `rest`/`GET` channel carrying an `oauth2_login` block.
+/// Deploy a `rest`/`GET` channel carrying an `oauth2_login` block.
 async fn deploy(app: &axum::Router, login: Value, workflow: Value) -> Value {
     deploy_with_config(app, json!({ "oauth2_login": login }), workflow).await
 }
 
 /// The same, for a channel that declares other guards alongside the sign-in —
-/// `deduplication`, say, which create-time validation permits and which shares
+/// `deduplication`, say, which upload validation permits and which shares
 /// the callback's admission path.
 async fn deploy_with_config(app: &axum::Router, config: Value, workflow: Value) -> Value {
     deploy_on_route(app, "/v1/auth/idp", config, workflow).await
@@ -264,82 +264,20 @@ async fn deploy_on_route(
     config: Value,
     workflow: Value,
 ) -> Value {
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow),
-        ))
-        .await
-        .expect("create workflow");
-    let status = resp.status();
-    let wf_body = common::body_json(resp).await;
-    assert_eq!(status, StatusCode::CREATED, "{wf_body}");
-    let workflow_id = wf_body["data"]["workflow_id"]
-        .as_str()
-        .expect("workflow_id")
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{workflow_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate workflow");
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "signin",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": route_pattern,
-                "workflow_id": workflow_id,
-                "config": config
-            })),
-        ))
-        .await
-        .expect("create channel");
-    let status = resp.status();
-    let created = common::body_json(resp).await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "GET",
-            "/api/v2/admin/channels?status=draft",
-            None,
-        ))
-        .await
-        .expect("list");
-    let body = common::body_json(resp).await;
-    let channel_id = body["data"][0]["channel_id"]
-        .as_str()
-        .expect("channel_id")
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate channel");
-    let status = resp.status();
-    let activated = common::body_json(resp).await;
-    assert_eq!(status, StatusCode::OK, "{activated}");
+    let workflow_id = common::create_and_activate_workflow(app, workflow).await;
+    let channel_id = common::deploy_channel(
+        app,
+        json!({
+            "name": "signin",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["GET"],
+            "route_pattern": route_pattern,
+            "workflow_id": workflow_id,
+            "config": config
+        }),
+    )
+    .await;
     json!({ "channel_id": channel_id })
 }
 
@@ -844,78 +782,27 @@ async fn a_workflow_can_refuse_the_sign_in() {
     let mut login = login_config(&url);
     login["run_workflow_on_authorize"] = json!(true);
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "signin",
-                "condition": true,
-                "tasks": [{
-                    "id": "refuse",
-                    "name": "Refuse the sign-in",
-                    "function": { "name": "map", "input": { "mappings": [
-                        { "path": "data.body", "logic": { "error": "closed" } },
-                        { "path": "data._orion.response",
-                          "logic": { "status": 503, "body_path": "data.body" } }
-                    ] } }
-                }]
-            })),
-        ))
-        .await
-        .expect("create workflow");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let workflow_id = common::body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .expect("workflow_id")
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{workflow_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate");
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "signin",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": "/v1/auth/idp",
-                "workflow_id": workflow_id,
-                "config": {
-                    "response": { "mode": "shaped" },
-                    "oauth2_login": login
-                }
-            })),
-        ))
-        .await
-        .expect("create channel");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel_id")
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate channel");
-    assert_eq!(resp.status(), StatusCode::OK);
+    deploy_with_config(
+        &app,
+        json!({
+            "response": { "mode": "shaped" },
+            "oauth2_login": login
+        }),
+        json!({
+            "name": "signin",
+            "condition": true,
+            "tasks": [{
+                "id": "refuse",
+                "name": "Refuse the sign-in",
+                "function": { "name": "map", "input": { "mappings": [
+                    { "path": "data.body", "logic": { "error": "closed" } },
+                    { "path": "data._orion.response",
+                      "logic": { "status": 503, "body_path": "data.body" } }
+                ] } }
+            }]
+        }),
+    )
+    .await;
 
     let resp = app
         .clone()
@@ -953,72 +840,31 @@ async fn a_callback_cannot_be_submitted_asynchronously() {
 }
 
 // ---------------------------------------------------------------------------
-// Config refusals — asserted on create and on update alike
+// Config refusals — asserted on definition upload
 // ---------------------------------------------------------------------------
 
 async fn assert_refused(app: &axum::Router, config: Value, expect: &str) {
-    // Create
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": format!("refused-{}", uuid::Uuid::new_v4().simple()),
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": "/v1/auth/idp",
-                "config": config,
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "create: {expect}");
-    let body = common::body_json(resp).await;
+    let (status, body) = common::deploy::try_upload(
+        app,
+        json!({"kind": "channel", "definition": {
+            "name": "refused",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["GET"],
+            "route_pattern": "/v1/auth/idp",
+            "config": config,
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "upload: {expect}: {body}");
     assert!(
         body.to_string().contains(expect),
-        "create: expected {expect:?} in {body}"
+        "upload: expected {expect:?} in {body}"
     );
-
-    // Update, against a stored draft that is otherwise valid.
-    let name = format!("draft-{}", uuid::Uuid::new_v4().simple());
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": name,
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": "/v1/auth/idp",
-                "config": {},
-            })),
-        ))
-        .await
-        .expect("create draft");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel_id")
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PUT",
-            &format!("/api/v2/admin/channels/{channel_id}"),
-            Some(json!({ "config": config })),
-        ))
-        .await
-        .expect("update");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "update: {expect}");
 }
 
 #[tokio::test]
-async fn the_config_refusals_hold_on_create_and_update() {
+async fn the_config_refusals_hold_on_upload() {
     let app = common::test_app_with_config(app_config()).await;
     let base = login_config("https://idp.example.com");
 
@@ -1065,78 +911,20 @@ async fn the_config_refusals_hold_on_create_and_update() {
 #[tokio::test]
 async fn a_non_rest_channel_cannot_declare_a_sign_in() {
     let app = common::test_app_with_config(app_config()).await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "http-signin",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["GET"],
-                "route_pattern": "/signin",
-                "config": { "oauth2_login": login_config("https://idp.example.com") },
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "http-signin",
+            "channel_type": "sync",
+            "protocol": "http",
+            "methods": ["GET"],
+            "route_pattern": "/signin",
+            "config": { "oauth2_login": login_config("https://idp.example.com") },
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.to_string().contains("rest"), "{body}");
-}
-
-// ---------------------------------------------------------------------------
-// Masking
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn a_channel_read_masks_the_secrets_and_keeps_the_pointers() {
-    let app = common::test_app_with_config(app_config()).await;
-    let mut login = login_config("https://idp.example.com");
-    // A literal is masked; a reference survives, because the stored config
-    // never held the value and masking the pointer breaks export → import.
-    login["state_secret"] = json!("env://ORION_SECRET_OAUTH_STATE");
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "masked-signin",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": "/v1/auth/idp",
-                "config": { "oauth2_login": login },
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel_id")
-        .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "GET",
-            &format!("/api/v2/admin/channels/{channel_id}"),
-            None,
-        ))
-        .await
-        .expect("read");
-    let body = common::body_json(resp).await;
-    let read = &body["data"]["config"]["oauth2_login"];
-
-    assert_ne!(read["client_secret"], "the-client-secret");
-    assert_eq!(read["state_secret"], "env://ORION_SECRET_OAUTH_STATE");
-    // The client id travels in every user's address bar; masking it would only
-    // make a channel read useless for reviewing the flow.
-    assert_eq!(read["client_id"], "client-123");
 }
 
 // ---------------------------------------------------------------------------
@@ -1169,77 +957,26 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
     // own output is the author's decision, not a leak. This one proves it read
     // the grant without republishing it, so the only way the token can appear
     // below is if Orion put it there.
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "signin",
-                "condition": true,
-                "tasks": [{
-                    "id": "observe",
-                    "name": "Observe the grant without echoing it",
-                    "function": { "name": "map", "input": { "mappings": [{
-                        "path": "data.saw_a_token",
-                        "logic": { "!!": { "var": "metadata.oauth.access_token" } }
-                    }] } }
-                }]
-            })),
-        ))
-        .await
-        .expect("create workflow");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let workflow_id = common::body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .expect("workflow_id")
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{workflow_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate workflow");
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "signin",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["GET"],
-                "route_pattern": "/v1/auth/idp",
-                "workflow_id": workflow_id,
-                "config": {
-                    "tracing": { "task_details": true },
-                    "oauth2_login": login
-                }
-            })),
-        ))
-        .await
-        .expect("create channel");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel_id")
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate channel");
-    assert_eq!(resp.status(), StatusCode::OK);
+    deploy_with_config(
+        &app,
+        json!({
+            "tracing": { "task_details": true },
+            "oauth2_login": login
+        }),
+        json!({
+            "name": "signin",
+            "condition": true,
+            "tasks": [{
+                "id": "observe",
+                "name": "Observe the grant without echoing it",
+                "function": { "name": "map", "input": { "mappings": [{
+                    "path": "data.saw_a_token",
+                    "logic": { "!!": { "var": "metadata.oauth.access_token" } }
+                }] } }
+            }]
+        }),
+    )
+    .await;
 
     let (state, cookie) = begin(&app).await;
     let resp = app
@@ -1931,39 +1668,6 @@ async fn a_state_cannot_be_redeemed_at_another_providers_callback() {
         .expect("cross callback");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(idp.token_hits(), 0, "the code was never exchanged");
-}
-
-/// A per-provider `client_secret` is masked on a channel read, like the flat one.
-#[tokio::test]
-async fn a_channel_read_masks_per_provider_secrets() {
-    let idp = Idp::new();
-    let idp_url = start_idp(idp.clone()).await;
-    let app = common::test_app_with_config(app_config()).await;
-    let created = deploy_multi(&app, multi_login_config(&idp_url), echo_provider_workflow()).await;
-    let channel_id = created["channel_id"].as_str().expect("channel_id");
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "GET",
-            &format!("/api/v2/admin/channels/{channel_id}"),
-            None,
-        ))
-        .await
-        .expect("read channel");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
-    let providers = &body["data"]["config"]["oauth2_login"]["providers"];
-    for slug in ["github", "acme"] {
-        let secret = providers[slug]["client_secret"]
-            .as_str()
-            .unwrap_or_default();
-        assert_ne!(secret, "gh-secret", "github secret leaked");
-        assert_ne!(secret, "acme-secret", "acme secret leaked");
-        assert!(!secret.is_empty(), "the field is present but masked");
-    }
-    // client_id is not a secret and stays readable.
-    assert_eq!(providers["github"]["client_id"], "gh-client");
 }
 
 /// Deploy a multi-provider sign-in channel on `/v1/auth/{provider}`.

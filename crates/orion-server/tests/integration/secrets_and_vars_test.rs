@@ -127,21 +127,11 @@ async fn post(app: &axum::Router, channel: &str, body: Value) -> (StatusCode, Va
     (status, body_json(resp).await)
 }
 
-/// Create a workflow through the admin API and return `(status, body)` — the
-/// authoring-time checks are asserted on the refusal, so they need the raw
-/// response rather than a helper that unwraps a 201.
+/// Upload a v1-shaped workflow body as a workflow definition and return
+/// `(status, body)` — the authoring-time checks are asserted on the refusal,
+/// so they need the raw response rather than a helper that unwraps a 201.
 async fn create_workflow(app: &axum::Router, workflow: Value) -> (StatusCode, Value) {
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow),
-        ))
-        .await
-        .expect("create workflow");
-    let status = resp.status();
-    (status, body_json(resp).await)
+    common::deploy::try_upload(app, common::deploy::workflow_definition(&workflow)).await
 }
 
 // ---------------------------------------------------------------------------
@@ -330,33 +320,22 @@ async fn the_async_ingress_stamps_the_same_vars() {
     );
 }
 
-/// `POST /admin/workflows/{id}/test` builds its own message, so it needs its
+/// `POST /admin/definitions/test` builds its own message, so it needs its
 /// own stamp — otherwise "test this workflow" answers differently from the
 /// request it is meant to stand in for.
 #[tokio::test]
 async fn the_admin_test_endpoint_stamps_the_same_vars() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let wf_id =
-        common::v1::create_and_activate_workflow(&app, metadata_echo_workflow("test-ep wf"))
-            .await
-            .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{wf_id}/test"),
-            Some(json!({
-                "data": {},
-                "metadata": { "vars": { "topic_prefix": "attacker" } }
-            })),
-        ))
-        .await
-        .expect("test endpoint");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    let (status, body) = common::deploy::test_run(
+        &app,
+        &metadata_echo_workflow("test-ep wf"),
+        json!({}),
+        Some(json!({ "vars": { "topic_prefix": "attacker" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
-        body["data"]["output"]["meta"]["vars"]["topic_prefix"],
+        body["output"]["meta"]["vars"]["topic_prefix"],
         json!("eu-west"),
         "the test endpoint must stamp what a real request would: {body}"
     );
@@ -701,12 +680,13 @@ async fn a_secret_gates_a_task_condition() {
     );
 }
 
-/// The store is per-engine, and a reload builds a new one. `with_new_workflows`
-/// carries the secrets forward upstream, but Orion rebuilds from its own
-/// `ResolvedSecrets` — either way a reload must not silently empty the store
-/// and quarantine every channel that names a secret.
+/// The store is per-engine, and every deployment builds a new one.
+/// `with_new_workflows` carries the secrets forward upstream, but Orion
+/// rebuilds from its own `ResolvedSecrets` — either way a new generation must
+/// not silently empty the store and quarantine every channel that names a
+/// secret.
 #[tokio::test]
-async fn an_engine_reload_keeps_the_store() {
+async fn a_new_generation_keeps_the_store() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
     common::create_and_activate_channel(
         &app,
@@ -718,18 +698,19 @@ async fn an_engine_reload_keeps_the_store() {
     let (before_status, before) = post(&app, "reload-ch", json!({})).await;
     assert_eq!(before_status, StatusCode::OK, "{before}");
 
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .expect("reload");
-    assert_eq!(resp.status(), StatusCode::OK, "{:?}", body_json(resp).await);
+    // Another deployment: the node builds and publishes a new generation.
+    common::create_and_activate_channel(
+        &app,
+        "reload-other-ch",
+        common::simple_log_workflow("reload other wf"),
+    )
+    .await;
 
     let (after_status, after) = post(&app, "reload-ch", json!({})).await;
     assert_eq!(
         after_status,
         StatusCode::OK,
-        "a reload must not empty the secret store: {after}"
+        "a new generation must not empty the secret store: {after}"
     );
     assert_eq!(
         after["data"]["mac"], before["data"]["mac"],
@@ -1171,82 +1152,15 @@ async fn the_sweep_finds_a_value_that_does_reach_the_message() {
     );
 }
 
-/// The other control, for the other assertion. A key written as a **literal**
-/// never reaches the message — the handler resolves it into a MAC and keeps the
-/// bytes to itself — so a trace is *not* where a literal leaks. It leaks into
-/// the stored definition, which is exactly what the docs say and exactly what
-/// `[secrets]` fixes: connector configs can be encrypted at rest, workflow
-/// documents cannot, and every version of the workflow keeps the key.
-#[tokio::test]
-async fn a_literal_key_leaks_through_the_stored_definition_not_the_trace() {
-    const LITERAL: &str = "literal-key-value-3e2f";
-
-    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let (_, wf_id) = common::v1::create_and_activate_channel(
-        &app,
-        "literal-ch",
-        hmac_workflow("literal wf", json!(LITERAL)),
-    )
-    .await;
-
-    let (status, body) = post(&app, "literal-ch", json!({})).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        !body.to_string().contains(LITERAL),
-        "a key never reaches the message, whichever spelling it was written in: {body}"
-    );
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/workflows/{wf_id}"),
-            None,
-        ))
-        .await
-        .expect("admin read");
-    let stored = body_json(resp).await;
-    assert!(
-        stored.to_string().contains(LITERAL),
-        "a literal key is stored in clear — the leak `[secrets]` closes: {stored}"
-    );
-}
-
-/// The stored definition holds the *name*, not the value — which is what makes
-/// a package promotable. If the admin read echoed a resolved secret, exporting
-/// a workflow would copy production key material into the artifact.
-#[tokio::test]
-async fn the_stored_definition_holds_the_name_and_not_the_value() {
-    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let (_, wf_id) = common::v1::create_and_activate_channel(
-        &app,
-        "export-ch",
-        hmac_workflow("export wf", json!({"secret": "partner_hmac"})),
-    )
-    .await;
-
-    for uri in [
-        format!("/api/v2/admin/workflows/{wf_id}"),
-        "/api/v2/admin/workflows/export".to_string(),
-    ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request("GET", &uri, None))
-            .await
-            .expect("admin read");
-        let body = body_json(resp).await;
-        let rendered = body.to_string();
-        assert!(
-            rendered.contains("partner_hmac"),
-            "{uri} must carry the name: {body}"
-        );
-        assert_no_secret_in(&uri, &rendered);
-    }
-}
-
-/// The two tests above, for a deployed workflow: the stored definition —
+/// The other control, for the other assertion. A key written as a
+/// **literal** never reaches the message — the handler resolves it into a
+/// MAC and keeps the bytes to itself — so a trace is *not* where a literal
+/// leaks. It leaks into the stored definition, which is exactly what the docs
+/// say and exactly what `[secrets]` fixes: the stored definition —
 /// `GET /definitions/{digest}`, what a deployment names and promotes — holds
-/// a literal key in clear and a declared secret by name, never its value.
+/// a literal key in clear, and a declared secret by name, never its value.
+/// That is what makes a deployment promotable: were the read to echo a
+/// resolved secret, promoting a workflow would copy production key material.
 #[tokio::test]
 async fn a_deployed_definition_holds_the_name_and_a_literal_in_clear() {
     const LITERAL: &str = "literal-key-value-9a8b";
@@ -1263,6 +1177,10 @@ async fn a_deployed_definition_holds_the_name_and_a_literal_in_clear() {
             common::create_and_activate_channel(&app, channel, hmac_workflow(channel, key)).await;
         let (status, body) = post(&app, channel, json!({})).await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            !body.to_string().contains(LITERAL),
+            "a key never reaches the message, whichever spelling it was written in: {body}"
+        );
         let digest = common::deploy::member_digest(&app, "workflow", &wf_id).await;
         let resp = app
             .clone()
@@ -1280,32 +1198,25 @@ async fn a_deployed_definition_holds_the_name_and_a_literal_in_clear() {
     }
 }
 
-/// `POST /admin/workflows/{id}/test` returns the **whole** `ExecutionTrace`
-/// under default trace options — a full `Message` clone per step, and the one
-/// surface that hands a caller more of the run than a persisted trace does.
+/// `POST /admin/definitions/test` returns the run's trace with every step's
+/// changes — the one surface that hands a caller more of the run than a
+/// persisted trace does.
 #[tokio::test]
 async fn the_admin_test_endpoint_leaks_no_secret() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let wf_id =
-        common::v1::create_and_activate_workflow(&app, every_secret_shape_workflow("test-leak wf"))
-            .await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{wf_id}/test"),
-            Some(json!({ "data": { "payload": "order-4711" } })),
-        ))
-        .await
-        .expect("test endpoint");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    let (status, body) = common::deploy::test_run(
+        &app,
+        &every_secret_shape_workflow("test-leak wf"),
+        json!({ "payload": "order-4711" }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
-        body["data"]["output"]["mac"].as_str().is_some(),
+        body["output"]["mac"].as_str().is_some(),
         "the run must have used the store, or this proves nothing: {body}"
     );
-    assert_no_secret_in("the workflow test endpoint's trace", &body.to_string());
+    assert_no_secret_in("the definition test endpoint's trace", &body.to_string());
 }
 
 /// A *failing* run is the surface a leak is likeliest to reach: an error
@@ -1381,109 +1292,12 @@ fn the_store_never_yields_a_value_to_debug_or_display() {
 }
 
 // ---------------------------------------------------------------------------
-// authoring-time: a reference in a field that resolves none
+// authoring-time: references and secret nodes at upload
 // ---------------------------------------------------------------------------
 
-/// A reference in a field nothing resolves is refused at create, not accepted
-/// and then requested as a URL spelled `env://API_BASE`.
-#[tokio::test]
-async fn a_stray_reference_is_refused_at_create() {
-    let app = common::test_app().await;
-    let (status, body) = create_workflow(
-        &app,
-        common::workflow_with_tasks(
-            "stray wf",
-            json!([{
-                "id": "call", "name": "Call",
-                "function": { "name": "http_call", "input": {
-                    "connector": "crm", "path": "env://API_BASE"
-                } }
-            }]),
-        ),
-    )
-    .await;
-
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let details = body["error"]["details"].to_string();
-    assert!(details.contains("UNRESOLVED_SECRET_REF"), "{body}");
-    assert!(
-        details.contains("tasks[0].function.input.path"),
-        "the refusal must name the field: {body}"
-    );
-}
-
-/// The same document, through `POST /workflows/validate` — the endpoint CI
-/// calls before it ever writes, so it must agree with create.
-#[tokio::test]
-async fn validate_reports_the_same_stray_reference() {
-    let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(common::workflow_with_tasks(
-                "stray wf",
-                json!([{
-                    "id": "call", "name": "Call",
-                    "function": { "name": "http_call", "input": {
-                        "connector": "crm", "path": "env://API_BASE"
-                    } }
-                }]),
-            )),
-        ))
-        .await
-        .expect("validate");
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], json!(false), "{body}");
-    let errors = body["data"]["errors"].to_string();
-    assert!(
-        errors.contains("tasks[0].function.input.path"),
-        "validate must name the same field create refuses: {body}"
-    );
-    assert!(
-        errors.contains("env://API_BASE"),
-        "and quote the reference it found: {body}"
-    );
-}
-
-/// An update carries the same check — otherwise the refusal is one PATCH away
-/// from being bypassed.
-#[tokio::test]
-async fn a_stray_reference_is_refused_on_update() {
-    let app = common::test_app().await;
-    let (status, created) = create_workflow(&app, common::simple_log_workflow("update wf")).await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    let wf_id = created["data"]["workflow_id"].as_str().unwrap();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            &format!("/api/v2/admin/workflows/{wf_id}"),
-            Some(json!({ "tasks": [{
-                "id": "call", "name": "Call",
-                "function": { "name": "http_call", "input": {
-                    "connector": "api", "method": "POST",
-                    "body": "vault://secret/data/x#y"
-                } }
-            }] })),
-        ))
-        .await
-        .expect("update");
-    let status = resp.status();
-    let body = body_json(resp).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(
-        body["error"]["details"]
-            .to_string()
-            .contains("UNRESOLVED_SECRET_REF"),
-        "{body}"
-    );
-}
-
-/// And the five fields that *do* resolve one stay accepted — the check is a
-/// field allowlist, not a ban on the `env://` characters.
+/// A field that resolves a reference keeps accepting one at upload:
+/// `crypto.key` takes an `env://` reference as well as a `{"secret": …}`
+/// node.
 #[tokio::test]
 async fn a_reference_in_a_secret_bearing_field_is_still_accepted() {
     let app = common::test_app().await;
@@ -1504,9 +1318,12 @@ async fn a_reference_in_a_secret_bearing_field_is_still_accepted() {
 /// flag being consulted, the store form would be rejected as a type error.
 #[tokio::test]
 async fn a_secret_node_satisfies_a_string_typed_secret_field() {
-    let app = common::test_app().await;
-    let (status, body) =
-        create_workflow(&app, hmac_workflow("node wf", json!({"secret": "k"}))).await;
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    let (status, body) = create_workflow(
+        &app,
+        hmac_workflow("node wf", json!({"secret": "partner_hmac"})),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -1669,7 +1486,7 @@ fn an_offline_case_refuses_a_non_object_vars() {
 /// The regression the stamping helper's own contract implies: a caller that
 /// omits `metadata` entirely still gets the instance's vars.
 ///
-/// `TestWorkflowRequest.metadata` is `#[serde(default)]`, so an omitted field
+/// `TestDefinitionRequest.metadata` is `#[serde(default)]`, so an omitted field
 /// arrives as `Value::Null`. The data route normalises before stamping and
 /// this one does not, so a helper that skipped a non-object made the endpoint
 /// answer differently from the request it stands in for — which is the one
@@ -1677,24 +1494,12 @@ fn an_offline_case_refuses_a_non_object_vars() {
 #[tokio::test]
 async fn the_admin_test_endpoint_stamps_vars_when_metadata_is_omitted() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let wf_id =
-        common::v1::create_and_activate_workflow(&app, metadata_echo_workflow("omitted wf"))
-            .await
-            .to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{wf_id}/test"),
-            Some(json!({ "data": {} })),
-        ))
-        .await
-        .expect("test endpoint");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    let (status, body) =
+        common::deploy::test_run(&app, &metadata_echo_workflow("omitted wf"), json!({}), None)
+            .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
-        body["data"]["output"]["meta"]["vars"]["topic_prefix"],
+        body["output"]["meta"]["vars"]["topic_prefix"],
         json!("eu-west"),
         "an omitted metadata must still be stamped: {body}"
     );
@@ -1927,24 +1732,19 @@ async fn a_var_in_a_required_field_passes_create_and_serves() {
 #[tokio::test]
 async fn an_unknown_key_holding_a_var_is_still_refused() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "typo-var-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/typo-var",
-                "config": { "cache": { "enabled": true, "ttl_sec": "var://max_retries" } }
-            })),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "typo-var-ch",
+            "channel_type": "sync",
+            "protocol": "http",
+            "methods": ["POST"],
+            "route_pattern": "/typo-var",
+            "config": { "cache": { "enabled": true, "ttl_sec": "var://max_retries" } }
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.to_string().contains("ttl_sec"), "{body}");
 }
 

@@ -1,79 +1,80 @@
 //! A1 (Tier-1 ergonomics): schema-validated function input contracts.
 //!
 //! Verifies that:
-//!   - workflow create rejects tasks with missing/typed-wrong function inputs
-//!     and returns field-pathed details via A3's envelope
-//!   - the POST /workflows/validate endpoint reports the same issues in its
-//!     `errors[]` array
+//!   - a workflow definition upload refuses tasks with missing/typed-wrong
+//!     function inputs and returns field-pathed details via A3's envelope,
+//!     every issue at once
 //!   - GET /api/v2/admin/functions returns the registered schema list
 
+use crate::common::deploy;
 use crate::common::{body_json, json_request, test_app};
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
+/// Upload `workflow` (a v1-shaped body) as a workflow definition.
+async fn upload(
+    app: &axum::Router,
+    workflow: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    deploy::try_upload(app, deploy::workflow_definition(&workflow)).await
+}
+
 #[tokio::test]
-async fn create_workflow_with_missing_function_input_field_returns_field_pathed_details() {
+async fn upload_workflow_with_missing_function_input_field_returns_field_pathed_details() {
     let app = test_app().await;
     // db_read requires connector + query. Omit connector.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "broken-db-read",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "read",
-                    "function": {
-                        "name": "db_read",
-                        "input": { "query": "SELECT 1" }
-                    }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+    let (status, body) = upload(
+        &app,
+        json!({
+            "name": "broken-db-read",
+            "tasks": [{
+                "id": "t1",
+                "name": "read",
+                "function": {
+                    "name": "db_read",
+                    "input": { "query": "SELECT 1" }
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let details = body["error"]["details"]
         .as_array()
         .expect("expected field-pathed details");
     assert!(
-        details
-            .iter()
-            .any(|d| d["path"] == "tasks[0].function.input.connector" && d["code"] == "REQUIRED"),
+        details.iter().any(
+            |d| d["path"] == "definition.tasks[0].function.input.connector"
+                && d["code"] == "REQUIRED"
+        ),
         "details should report missing connector field, got {body:?}"
     );
 }
 
 #[tokio::test]
-async fn create_workflow_with_wrong_input_type_returns_type_mismatch_with_got() {
+async fn upload_workflow_with_wrong_input_type_returns_type_mismatch_with_got() {
     let app = test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "wrong-types",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "read",
-                    "function": {
-                        "name": "cache_read",
-                        "input": { "connector": 42, "key": "k" }
-                    }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+    let (status, body) = upload(
+        &app,
+        json!({
+            "name": "wrong-types",
+            "tasks": [{
+                "id": "t1",
+                "name": "read",
+                "function": {
+                    "name": "cache_read",
+                    "input": { "connector": 42, "key": "k" }
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let details = body["error"]["details"].as_array().unwrap();
     let mismatch = details
         .iter()
-        .find(|d| d["path"] == "tasks[0].function.input.connector")
+        .find(|d| d["path"] == "definition.tasks[0].function.input.connector")
         .expect("expected TYPE_MISMATCH on connector");
     assert_eq!(mismatch["code"], "TYPE_MISMATCH");
     assert_eq!(mismatch["expected"], "string");
@@ -81,58 +82,54 @@ async fn create_workflow_with_wrong_input_type_returns_type_mismatch_with_got() 
 }
 
 #[tokio::test]
-async fn create_workflow_with_valid_inputs_succeeds() {
+async fn upload_workflow_with_valid_inputs_succeeds() {
     let app = test_app().await;
     // Use cache_read with all required fields — must NOT trip the schema check.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "happy-path",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "read",
-                    "function": {
-                        "name": "cache_read",
-                        "input": { "connector": "my-cache", "key": "k" }
-                    }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    let (status, body) = upload(
+        &app,
+        json!({
+            "name": "happy-path",
+            "tasks": [{
+                "id": "t1",
+                "name": "read",
+                "function": {
+                    "name": "cache_read",
+                    "input": { "connector": "my-cache", "key": "k" }
+                }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 }
 
+/// Every missing required input is reported in one refusal, not just the
+/// first one found.
 #[tokio::test]
-async fn validate_endpoint_returns_schema_errors_in_errors_array() {
+async fn upload_reports_every_schema_error_at_once() {
     let app = test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "name": "test-validate",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "broken",
-                    "function": { "name": "data_query", "input": {} }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], false);
-    let errs = body["data"]["errors"].as_array().unwrap();
-    let paths: Vec<&str> = errs
-        .iter()
-        .map(|e| e["field"].as_str().unwrap_or(""))
-        .collect();
-    assert!(paths.contains(&"tasks[0].function.input.connector"));
-    assert!(paths.contains(&"tasks[0].function.input.query"));
+    let (status, body) = upload(
+        &app,
+        json!({
+            "name": "test-validate",
+            "tasks": [{
+                "id": "t1",
+                "name": "broken",
+                "function": { "name": "data_query", "input": {} }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let paths = deploy::refused_paths(&body);
+    assert!(
+        paths.contains(&"definition.tasks[0].function.input.connector".to_string()),
+        "{paths:?}"
+    );
+    assert!(
+        paths.contains(&"definition.tasks[0].function.input.query".to_string()),
+        "{paths:?}"
+    );
 }
 
 /// The endpoint is a catalogue of every name a workflow may use, not just the
@@ -339,28 +336,25 @@ async fn list_functions_returns_registry_with_schemas() {
 #[tokio::test]
 async fn channel_call_without_channel_or_logic_is_rejected() {
     let app = test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "broken-channel-call",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "call",
-                    "function": { "name": "channel_call", "input": {} }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+    let (status, body) = upload(
+        &app,
+        json!({
+            "name": "broken-channel-call",
+            "tasks": [{
+                "id": "t1",
+                "name": "call",
+                "function": { "name": "channel_call", "input": {} }
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let details = body["error"]["details"].as_array().unwrap();
     assert!(
-        details
-            .iter()
-            .any(|d| d["path"] == "tasks[0].function.input.channel" && d["code"] == "REQUIRED"),
+        details.iter().any(
+            |d| d["path"] == "definition.tasks[0].function.input.channel"
+                && d["code"] == "REQUIRED"
+        ),
         "should report channel_call needs a channel, got {body:?}"
     );
 }

@@ -66,11 +66,14 @@ async fn test_concurrent_data_requests_multiple_channels() {
 }
 
 // ============================================================
-// Engine reload under concurrent data requests
+// Rebuilds under concurrent data requests
 // ============================================================
 
+/// Deployments that rebuild the generation, one after another, while data
+/// requests to a channel they do not touch are in flight: every request is
+/// served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_engine_reload_under_data_load() {
+async fn test_rebuild_under_data_load() {
     let app = common::test_app().await;
 
     // Set up an active channel
@@ -81,26 +84,22 @@ async fn test_engine_reload_under_data_load() {
     )
     .await;
 
-    // Spawn concurrent reloads and data requests
-    let mut tasks = Vec::new();
-
-    // 5 concurrent engine reloads
-    for _ in 0..5 {
+    // 5 deployments, each a rebuild of the whole generation
+    let deployments = {
         let app = app.clone();
-        tasks.push(tokio::spawn(async move {
-            let resp = app
-                .oneshot(common::json_request(
-                    "POST",
-                    "/api/v2/admin/engine/reload",
-                    None,
-                ))
-                .await
-                .unwrap();
-            resp.status()
-        }));
-    }
+        tokio::spawn(async move {
+            for i in 0..5 {
+                common::create_and_activate_workflow(
+                    &app,
+                    common::simple_log_workflow(&format!("Reload Churn {i}")),
+                )
+                .await;
+            }
+        })
+    };
 
     // 5 concurrent data requests
+    let mut tasks = Vec::new();
     for _ in 0..5 {
         let app = app.clone();
         tasks.push(tokio::spawn(async move {
@@ -117,25 +116,20 @@ async fn test_engine_reload_under_data_load() {
     }
 
     let results = join_all(tasks).await;
+    deployments.await.expect("every deployment converges");
 
-    // Reloads should all succeed (200)
-    for status in &results[..5] {
+    // Data requests during a rebuild must succeed outright: readers hold the
+    // previous engine Arc while the swap happens, so there is no window in
+    // which the channel is unserved.
+    for status in &results {
         assert_eq!(
             *status,
             StatusCode::OK,
-            "Engine reload failed with {}",
-            status
+            "data request failed during rebuild"
         );
     }
 
-    // Data requests during a reload must succeed outright: readers hold the
-    // previous engine Arc while the swap happens, so there is no window in
-    // which the channel is unserved.
-    for status in &results[5..] {
-        assert_eq!(*status, StatusCode::OK, "data request failed during reload");
-    }
-
-    // After reloads, the channel should still work
+    // After the rebuilds, the channel should still work
     let resp = app
         .clone()
         .oneshot(common::json_request(
@@ -149,76 +143,109 @@ async fn test_engine_reload_under_data_load() {
 }
 
 // ============================================================
-// Engine reload is serialised by AppState::reload_lock
+// Rebuilds are serialised by AppState::reload_lock
 // ============================================================
 
-/// A reload is a read-modify-write: it reads the active rows, builds the new
-/// engine from the current one, republishes the registry and stores the
-/// engine. Two of them interleaved would each build from the same pre-mutation
-/// read and the loser's `store` would win — so `reload_engine` must take
-/// `AppStateInner::reload_lock` for the whole sequence, not just for the
-/// registry rebuild (which has a lock of its own that does not cover the
-/// engine store).
+/// A rebuild is a read-modify-write: it reads the committed revision,
+/// builds the new engine from the current one, republishes the estate and
+/// stores the engine. Two of them interleaved would each build from the same
+/// generation and the loser's `store` would win — so a rebuild must take
+/// `AppStateInner::reload_lock` for the whole sequence.
 ///
 /// Holding the lock from the test is what makes this deterministic: with the
-/// acquisition removed from `reload_engine_with_opts` the spawned reload runs
-/// to completion while the guard is held and the `is_finished` assertion fails.
+/// acquisition removed from the rebuild, the deployment below converges
+/// while the guard is held and the `is_finished` assertion fails.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn engine_reload_waits_on_the_reload_lock() {
+async fn a_rebuild_waits_on_the_reload_lock() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
 
     let guard = state.reload_lock.lock().await;
 
-    let reload = tokio::spawn({
-        let state = state.clone();
-        async move { orion::runtime::reload_engine(&state).await }
+    let deployment = tokio::spawn({
+        let app = app.clone();
+        async move {
+            common::create_and_activate_channel(
+                &app,
+                "lock-ch",
+                common::simple_log_workflow("Lock Workflow"),
+            )
+            .await
+        }
     });
 
-    // Long enough for the spawned task to be scheduled and reach the lock.
+    // Long enough for the deployment to commit and reach the lock.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(
-        !reload.is_finished(),
-        "reload completed while reload_lock was held — the reload is not serialised"
+        !deployment.is_finished(),
+        "a deployment converged while reload_lock was held — the rebuild is not serialised"
+    );
+    assert!(
+        state
+            .runtime
+            .load()
+            .channels
+            .get_by_name("lock-ch")
+            .is_none(),
+        "nothing is published while the lock is held"
     );
 
     drop(guard);
-    reload
+    deployment
         .await
-        .expect("reload task")
-        .expect("reload succeeds once the lock is free");
+        .expect("the deployment converges once the lock is free");
+    assert!(
+        state
+            .runtime
+            .load()
+            .channels
+            .get_by_name("lock-ch")
+            .is_some()
+    );
 }
 
-/// Concurrent reloads racing a mutation converge on the mutation's outcome.
-/// Without the lock the losing build — made from the pre-activation read —
-/// can `store` last and leave the new channel unrouted until the next reload.
+/// Rebuilds racing a newer deployment converge on the newer one. A rebuild
+/// of a revision the node has already moved past is refused rather than
+/// published, so a losing build made from an older revision can never
+/// `store` last and leave the newer channel unrouted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_reloads_converge_on_the_latest_rows() {
-    let app = common::test_app().await;
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
 
+    common::create_and_activate_workflow(&app, common::simple_log_workflow("Older Workflow")).await;
+    let (older, _) = state.composition.deployments.current_head();
     common::create_and_activate_channel(
         &app,
         "converge-ch",
         common::simple_log_workflow("Converge Workflow"),
     )
     .await;
+    let (latest, _) = state.composition.deployments.current_head();
+    assert!(latest > older);
+    let published = state.runtime.load().id;
 
     let mut tasks = Vec::new();
-    for _ in 0..8 {
-        let app = app.clone();
+    for i in 0..8 {
+        let state = state.clone();
+        let revision = if i % 2 == 0 { older } else { latest };
         tasks.push(tokio::spawn(async move {
-            app.oneshot(common::json_request(
-                "POST",
-                "/api/v2/admin/engine/reload",
-                None,
-            ))
-            .await
-            .unwrap()
-            .status()
+            orion::runtime::reconcile_deployment_revision(&state, revision)
+                .await
+                .is_ok()
         }));
     }
-    for status in join_all(tasks).await {
-        assert_eq!(status, StatusCode::OK, "reload failed with {status}");
+    for task in tasks {
+        assert!(
+            !task.await.unwrap(),
+            "a rebuild of a revision the node already applied, or moved past, must be refused"
+        );
     }
+    assert_eq!(
+        state.runtime.load().id,
+        published,
+        "a refused rebuild publishes nothing"
+    );
 
     let resp = app
         .clone()
@@ -232,91 +259,58 @@ async fn concurrent_reloads_converge_on_the_latest_rows() {
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "the channel is unrouted after concurrent reloads"
+        "the channel is unrouted after concurrent rebuilds"
     );
 }
 
 // ============================================================
-// Channel status race: activate/deactivate while sending data
+// Channel deploy/remove race while sending data
 // ============================================================
 
+/// Deploying a channel and deploying without it, concurrently and with data
+/// requests in flight, never answers a 5xx. Each toggle is an apply over the
+/// head it read: it lands (`202`) or loses the compare-and-swap to another
+/// toggle (`409`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_channel_status_race_no_panics() {
     let app = common::test_app().await;
 
-    // Create workflow and channel
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::simple_log_workflow("Race Workflow")),
-        ))
-        .await
-        .unwrap();
-    let body = common::body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+    let wf_id =
+        common::create_and_activate_workflow(&app, common::simple_log_workflow("Race Workflow"))
+            .await;
+    common::deploy_channel(
+        &app,
+        json!({
+            "name": "race-ch",
+            "channel_type": "sync",
+            "protocol": "http",
+            "methods": ["POST"],
+            "route_pattern": "/race",
+            "workflow_id": wf_id,
+        }),
+    )
+    .await;
+    let (_, with_channel) = common::deploy::head(&app).await;
+    let without_channel: Vec<serde_json::Value> = with_channel
+        .iter()
+        .filter(|m| m["entity"]["kind"] != "channel")
+        .cloned()
+        .collect();
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "race-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/race",
-                "workflow_id": wf_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = common::body_json(resp).await;
-    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate first
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // Now rapidly toggle status while sending data
+    // Now rapidly toggle the channel while sending data
     let mut tasks = Vec::new();
 
-    // Status toggle tasks, spawned concurrently with the data requests below.
+    // Toggle tasks, spawned concurrently with the data requests below.
     for i in 0..10 {
         let app = app.clone();
-        let ch_id = ch_id.clone();
+        let members = if i % 2 == 0 {
+            without_channel.clone()
+        } else {
+            with_channel.clone()
+        };
         tasks.push(tokio::spawn(async move {
-            let status = if i % 2 == 0 { "archived" } else { "active" };
-            let resp = app
-                .oneshot(common::json_request(
-                    "PATCH",
-                    &format!("/api/v2/admin/channels/{}/status", ch_id),
-                    Some(json!({"status": status})),
-                ))
-                .await
-                .unwrap();
-            resp.status()
+            let (base, _) = common::deploy::head(&app).await;
+            common::deploy::apply(&app, base, members).await.0
         }));
     }
 
@@ -338,13 +332,13 @@ async fn test_channel_status_race_no_panics() {
 
     let results = join_all(tasks).await;
 
-    // Toggles land as 200, or as a client-error refusal when the transition
-    // is invalid at that instant. Data requests see 200 (active, or the
-    // engine fallback while archived) or 404/503 around the flip. Anything
-    // else — above all any 5xx — is a race bug.
+    // Toggles land as 202, or as a 409 when another toggle moved the head
+    // first. Data requests see 200 while the channel is deployed and 404 or
+    // 503 around the flip. Anything else — above all any 5xx other than a
+    // 503 — is a race bug.
     let allowed = [
         StatusCode::OK,
-        StatusCode::BAD_REQUEST,
+        StatusCode::ACCEPTED,
         StatusCode::CONFLICT,
         StatusCode::NOT_FOUND,
         StatusCode::SERVICE_UNAVAILABLE,
@@ -358,48 +352,45 @@ async fn test_channel_status_race_no_panics() {
 }
 
 // ============================================================
-// Concurrent workflow creation with same name
+// Concurrent uploads of one definition
 // ============================================================
 
+/// A definition is stored by its digest, so five concurrent uploads of the
+/// same workflow all succeed and name one digest: none of them is refused as
+/// a duplicate, and none stores a second copy under another name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_concurrent_workflow_creation_same_name() {
+async fn test_concurrent_uploads_of_one_definition() {
     let app = common::test_app().await;
 
-    // Try to create 5 workflows with the same name concurrently
     let mut tasks = Vec::new();
     for _ in 0..5 {
         let app = app.clone();
         tasks.push(tokio::spawn(async move {
-            let resp = app
-                .oneshot(common::json_request(
-                    "POST",
-                    "/api/v2/admin/workflows",
-                    Some(common::simple_log_workflow("duplicate-wf")),
-                ))
-                .await
-                .unwrap();
-            resp.status()
+            common::deploy::try_upload(
+                &app,
+                common::deploy::workflow_definition(&common::simple_log_workflow("duplicate-wf")),
+            )
+            .await
         }));
     }
 
-    let results = join_all(tasks).await;
-
-    // Names are not unique keys — every creation gets its own workflow_id,
-    // so all five must succeed outright.
-    for status in &results {
-        assert_eq!(
-            *status,
-            StatusCode::CREATED,
-            "concurrent same-name creation must succeed"
+    let mut digests = std::collections::BTreeSet::new();
+    for task in tasks {
+        let (status, body) = task.await.unwrap();
+        assert!(
+            status.is_success(),
+            "concurrent upload of one definition must succeed, got {status}: {body}"
         );
+        digests.insert(body["digest"].as_str().expect("a digest").to_string());
     }
+    assert_eq!(digests.len(), 1, "one definition, one digest: {digests:?}");
 }
 
 // ============================================================
 // The engine and the channel estate are one published generation
 // ============================================================
 
-/// A reload publishes **once**.
+/// A rebuild publishes **once**.
 ///
 /// This is the structural guarantee, stated as a number. The engine and the
 /// channel estate used to be two `ArcSwap`s stored one after the other: each
@@ -415,11 +406,8 @@ async fn a_reload_publishes_exactly_one_generation() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
 
-    // A channel worth republishing, so the reload below is doing real work
-    // rather than rebuilding nothing.
-    common::create_and_activate_channel(&app, "gen-count-ch", common::echo_workflow("Gen Count"))
-        .await;
-
+    // A deployment worth publishing: a channel and its workflow, so the
+    // rebuild is doing real work rather than rebuilding nothing.
     let before = state.runtime.published_count();
     assert_eq!(
         state.runtime.load().id,
@@ -427,14 +415,13 @@ async fn a_reload_publishes_exactly_one_generation() {
         "the live generation's id is the publish count"
     );
 
-    orion::runtime::reload_engine(&state)
-        .await
-        .expect("reload succeeds");
+    common::create_and_activate_channel(&app, "gen-count-ch", common::echo_workflow("Gen Count"))
+        .await;
 
     assert_eq!(
         state.runtime.published_count(),
         before + 1,
-        "one reload must publish exactly one generation"
+        "one deployment must publish exactly one generation"
     );
 
     // And the pair that came out of it is coherent: the channel is in the
@@ -454,7 +441,7 @@ async fn a_reload_publishes_exactly_one_generation() {
     );
 }
 
-/// The building cutover (I182): a reload that keeps the plugin set compiles
+/// The building cutover (I182): a rebuild that keeps the plugin set compiles
 /// every row on the running dataflow-rs 4 engine's compiler and swaps with
 /// `Engine::with_program`, so the next generation runs on the same
 /// `Registry` (Orion's functions, the plugin functions and the profile
@@ -487,9 +474,9 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
     let compiled = probe(&before.engine.compiler());
     let fresh = probe(&before.engine.compiler());
 
-    orion::runtime::reload_engine(&state)
-        .await
-        .expect("reload succeeds");
+    // A deployment that changes no plugin: the next generation is built on
+    // the running engine's compiler.
+    common::create_and_activate_workflow(&app, common::simple_log_workflow("Reuse Other")).await;
 
     let after = state.runtime.load();
     assert!(after.id > before.id);
@@ -498,7 +485,7 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
     assert_eq!(
         program.workflows().len(),
         1,
-        "one registry across the reload"
+        "one registry across the rebuild"
     );
     let channels: Vec<String> = after
         .workflows()
@@ -526,7 +513,7 @@ async fn a_reload_without_a_plugin_change_reuses_the_v4_registry() {
 /// reported `Ok`, and the caller received its own input back with a `200`.
 ///
 /// Every status code in that story is correct, which is exactly why
-/// `test_engine_reload_under_data_load` above cannot see it: the assertion has
+/// `test_rebuild_under_data_load` above cannot see it: the assertion has
 /// to be on the body. `404` is a fine answer here — the channel genuinely is
 /// not active yet. `200` without the workflow's stamp is the bug.
 ///

@@ -1,139 +1,136 @@
-//! A4 (Tier-1 ergonomics): typed-enum DTOs for channel_type / protocol / connector_type.
+//! A4 (Tier-1 ergonomics): typed enums for a channel's `channel_type` and
+//! `protocol`, as a channel definition takes them.
 //!
 //! Verifies that:
-//!   - v0.1.1 lowercase wire values ("sync", "rest", "http") still create
+//!   - v0.1.1 lowercase wire values ("sync", "rest") upload
 //!   - the deserializer is case-insensitive (e.g. "SYNC", "Rest")
-//!   - bad enum values fail with 400 (v0.1 status preserved by OrionJson extractor)
-//!   - the response field shape is unchanged (still lowercase strings)
+//!   - bad enum values are refused, naming the allowed values
+//!   - the stored definition reads back in the canonical lowercase
 
+use crate::common::deploy;
 use crate::common::{body_json, json_request, test_app};
 use axum::http::StatusCode;
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::ServiceExt;
+
+/// The stored definition a digest names.
+async fn read_definition(app: &axum::Router, digest: &str) -> Value {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v2/admin/definitions/{digest}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await
+}
+
+/// Upload a channel definition, answering the status and the body as text —
+/// a refused enum is refused while the body is deserialized, before any
+/// JSON envelope is built.
+async fn upload_text(app: &axum::Router, definition: Value) -> (StatusCode, String) {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/admin/definitions",
+            Some(json!({"kind": "channel", "definition": definition})),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
 
 #[tokio::test]
 async fn v01_lowercase_wire_values_still_accepted() {
     let app = test_app().await;
     // sync REST channel — the exact shape v0.1.1 clients send.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "v01-style",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["POST"],
-                "route_pattern": "/v01-style",
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    // Response keeps the v0.1 lowercase shape.
-    assert_eq!(body["data"]["channel_type"], "sync");
-    assert_eq!(body["data"]["protocol"], "rest");
+    let digest = deploy::upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "v01-style",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["POST"],
+            "route_pattern": "/v01-style",
+        }}),
+    )
+    .await;
+    let stored = read_definition(&app, &digest).await;
+    // The stored form keeps the v0.1 lowercase shape.
+    assert_eq!(stored["definition"]["channel_type"], "sync", "{stored}");
+    assert_eq!(stored["definition"]["protocol"], "rest", "{stored}");
 }
 
 #[tokio::test]
 async fn channel_type_and_protocol_are_case_insensitive() {
     let app = test_app().await;
     // Mixed casing — would have failed under v0.1's strict lowercase string
-    // validation. Now succeeds because A4's deserializer lowercases before
+    // validation. Succeeds because A4's deserializer lowercases before
     // matching variants.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "mixed-case",
-                "channel_type": "SYNC",
-                "protocol": "Rest",
-                "methods": ["POST"],
-                "route_pattern": "/mixed-case",
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    // Canonical lowercase is preserved on read so existing clients that
-    // compare `==` to "sync"/"rest" keep working.
-    assert_eq!(body["data"]["channel_type"], "sync");
-    assert_eq!(body["data"]["protocol"], "rest");
+    let digest = deploy::upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "mixed-case",
+            "channel_type": "SYNC",
+            "protocol": "Rest",
+            "methods": ["POST"],
+            "route_pattern": "/mixed-case",
+        }}),
+    )
+    .await;
+    // Canonical lowercase is what is stored, so clients that compare `==`
+    // to "sync"/"rest" keep working.
+    let stored = read_definition(&app, &digest).await;
+    assert_eq!(stored["definition"]["channel_type"], "sync", "{stored}");
+    assert_eq!(stored["definition"]["protocol"], "rest", "{stored}");
 }
 
 #[tokio::test]
-async fn connector_type_is_case_insensitive() {
+async fn invalid_channel_protocol_is_rejected_at_deserialization() {
     let app = test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "name": "uppercase-http",
-                "connector_type": "HTTP",
-                "config": { "url": "https://example.com" }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["connector_type"], "http");
-}
-
-#[tokio::test]
-async fn invalid_channel_protocol_is_rejected_at_deserialization_with_400() {
-    let app = test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "bad-protocol",
-                "channel_type": "sync",
-                "protocol": "grpc",
-                "methods": ["POST"],
-                "route_pattern": "/x",
-            })),
-        ))
-        .await
-        .unwrap();
-    // v0.1 returned 400 for bad protocol strings; we preserve that status via
-    // the OrionJson extractor even though serde's default would be 422.
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    let msg = body["error"]["message"].as_str().unwrap_or("");
+    let (status, text) = upload_text(
+        &app,
+        json!({
+            "name": "bad-protocol",
+            "channel_type": "sync",
+            "protocol": "grpc",
+            "methods": ["POST"],
+            "route_pattern": "/x",
+        }),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}: {text}");
     assert!(
-        msg.contains("rest") && msg.contains("cron"),
-        "message should list allowed protocols, got {msg}"
+        text.contains("rest") && text.contains("cron"),
+        "the refusal should list allowed protocols, got {text}"
     );
 }
 
 #[tokio::test]
-async fn invalid_channel_type_is_rejected_with_400() {
+async fn invalid_channel_type_is_rejected_at_deserialization() {
     let app = test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "bad-channel-type",
-                "channel_type": "stream",
-                "protocol": "rest",
-                "methods": ["POST"],
-                "route_pattern": "/x",
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    let msg = body["error"]["message"].as_str().unwrap_or("");
+    let (status, text) = upload_text(
+        &app,
+        json!({
+            "name": "bad-channel-type",
+            "channel_type": "stream",
+            "protocol": "rest",
+            "methods": ["POST"],
+            "route_pattern": "/x",
+        }),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}: {text}");
     assert!(
-        msg.contains("sync") && msg.contains("async"),
-        "message should list allowed channel types, got {msg}"
+        text.contains("sync") && text.contains("async"),
+        "the refusal should list allowed channel types, got {text}"
     );
 }

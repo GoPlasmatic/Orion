@@ -1,41 +1,24 @@
-//! N3/N4: a channel whose stored config no longer parses, or whose
-//! `validation_logic` no longer compiles, must refuse to load rather than
-//! serve with its guards silently absent — on a single node, not just in
-//! cluster mode.
+//! N3/N4: a channel whose config does not parse, or whose
+//! `validation_logic` does not compile, must never serve with its guards
+//! silently absent.
 //!
-//! F35 changed *how* it is refused, not whether. The channel is quarantined:
-//! absent from the registry and the route table, and refused at every ingress
-//! with a 503. The reload itself succeeds, so one broken row no longer fails
-//! every activate, archive, delete and rollout on the instance.
-//!
-//! Both rows are written straight to the DB: that is exactly how such a row
-//! occurs in practice (import, a hand-edited row, or a datalogic upgrade that
-//! changed what compiles), since create/update validation rejects them.
-//!
-//! A node serving a deployment states the same guarantees differently, by
-//! design. A definition that would not serve is refused at upload, naming the
-//! field; and a revision whose workflow cannot build anyway — stored past
-//! upload, or read differently by a later engine — fails as a whole: the
+//! A node serving a deployment states that guarantee at two points. A
+//! definition that would not serve is refused at upload, naming the field.
+//! A definition stored past upload (`common::store_definition`, which writes
+//! past upload validation — how such a definition occurs in practice: an
+//! older node's upload, or a later engine reading it differently) is caught
+//! when the revision builds: a channel whose config does not load is
+//! quarantined — absent from the route table and refused at every ingress —
+//! while a workflow that cannot build fails its revision as a whole: the
 //! node reports it as not converged and the previous generation keeps
 //! serving every channel. Nothing of the failed revision is published, so
-//! nothing is quarantined. Those tests store their definition with
-//! `common::store_definition`, which writes past upload validation.
+//! nothing of it is quarantined.
 
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
 use crate::common::{self, body_json, json_request};
-
-async fn reload_engine(app: &axum::Router) -> (StatusCode, serde_json::Value) {
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .expect("reload request");
-    let status = resp.status();
-    (status, body_json(resp).await)
-}
 
 async fn serves_ok(app: &axum::Router, channel: &str) -> bool {
     let resp = app
@@ -187,9 +170,6 @@ async fn an_unreachable_key_logic_header_warns_but_still_loads() {
     )
     .await;
 
-    let (status, body) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK, "reload must succeed: {body}");
-
     assert!(
         state
             .runtime
@@ -286,26 +266,45 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
 
 /// A quarantined channel's REST route must not resolve either — otherwise it
 /// would shadow the path and 503 requests that a working channel could serve.
+///
+/// The channel is stored past upload with a REST route and a config that
+/// does not load; its revision builds with the channel quarantined.
 #[tokio::test]
 async fn a_quarantined_channel_is_absent_from_the_route_table() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
+    let workflow =
+        common::create_and_activate_workflow(&app, common::simple_log_workflow("Route WF")).await;
 
-    // Raw insert with a REST route pattern and an unparseable config. The
-    // column is `methods_json` since D26 — this SQL bypasses the repository,
-    // so it is one of the few places that names a physical column directly.
-    let sql = "INSERT INTO channels (channel_id, version, name, channel_type, protocol, \
-               methods_json, route_pattern, transport_config_json, config_json, status, priority) \
-               VALUES ('ch_route', 1, 'route-ch', 'sync', 'rest', '[\"GET\"]', \
-               '/quarantined/{id}', '{}', '{ not json', 'active', 0)";
-    state
-        .db_pool
-        .execute_query(sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
-        .await
-        .expect("raw channel insert");
-
-    let (status, _) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK);
+    let digest = common::store_definition(
+        &state,
+        json!({"kind": "channel", "definition": {
+            "name": "route-ch",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["GET"],
+            "route_pattern": "/quarantined/{id}",
+            "config": "{ not json",
+        }}),
+    )
+    .await;
+    let (base, members) = common::deploy::merged(
+        &app,
+        vec![common::deploy::Upsert {
+            kind: "channel",
+            id: "route-ch".to_string(),
+            digest,
+            revision: None,
+            requires: vec![("workflow", workflow)],
+        }],
+    )
+    .await;
+    let (status, body) = common::deploy::apply(&app, base, members).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "the revision commits: {body}");
+    assert!(
+        quarantine_reason(&app, "route-ch").await.is_some(),
+        "the channel is quarantined: {body}"
+    );
     assert!(
         state
             .runtime
@@ -363,49 +362,6 @@ async fn channel_whose_workflow_disappears_is_quarantined() {
         "nothing was committed"
     );
     assert!(serves_ok(&app, "f33-orphan").await);
-}
-
-/// Insert an `active` workflow row and an `active` channel pointing at it,
-/// both straight to the DB.
-///
-/// Create-time validation refuses these task shapes, so this is how such a row
-/// occurs in practice: an import from an older instance, a hand-edited row, or
-/// a dataflow-rs upgrade that narrowed what a handler's input accepts.
-async fn insert_raw_active_workflow_and_channel(
-    state: &orion::server::state::AppState,
-    name: &str,
-    tasks_json: &str,
-) {
-    let wf = format!("wf_{name}");
-    let sql = format!(
-        "INSERT INTO workflows (workflow_id, version, name, priority, status, \
-         rollout_percentage, condition_json, tasks_json, tags_json) \
-         VALUES ('{wf}', 1, '{name}', 0, 'active', 100, 'true', '{tasks_json}', '[]')"
-    );
-    state
-        .db_pool
-        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
-        .await
-        .expect("raw workflow insert");
-    insert_raw_active_channel_for(state, name, &wf).await;
-}
-
-/// An `active` channel named `name` bound to workflow `wf`, straight to the DB.
-async fn insert_raw_active_channel_for(
-    state: &orion::server::state::AppState,
-    name: &str,
-    wf: &str,
-) {
-    let sql = format!(
-        "INSERT INTO channels (channel_id, version, name, channel_type, protocol, \
-         transport_config_json, config_json, status, priority, workflow_id) \
-         VALUES ('ch_{name}', 1, '{name}', 'sync', 'http', '{{}}', '{{}}', 'active', 0, '{wf}')"
-    );
-    state
-        .db_pool
-        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
-        .await
-        .expect("raw channel insert");
 }
 
 /// The reason a channel was quarantined, or `None` if it loaded.
@@ -487,29 +443,20 @@ async fn assert_workflow_refused(
 }
 
 /// `channel_logic`, 1.12's spelling of a computed `channel`, is no longer
-/// read: a stored row carrying it is quarantined at load, naming the key,
-/// rather than running with no target.
+/// read: a definition carrying only it has no `channel`, so it is refused at
+/// upload naming the missing field, and stored past upload it fails its
+/// revision, rather than running with no target.
 #[tokio::test]
 async fn channel_call_with_only_channel_logic_is_quarantined() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-
-    insert_raw_active_workflow_and_channel(
-        &state,
+    assert_workflow_refused(
+        json!({"name": "dyn-fanout", "tasks": [{"id": "t1", "name": "fan",
+            "function": {"name": "channel_call",
+                "input": {"channel_logic": {"var": "target"}}}}]}),
         "dyn-fanout",
-        r#"[{"id":"t1","name":"fan","function":{"name":"channel_call",           "input":{"channel_logic":{"var":"target"}}}}]"#,
+        "definition.tasks[0].function.input.channel",
+        &["channel 'dyn-fanout'", "task 't1'"],
     )
     .await;
-
-    let (status, body) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK, "reload must succeed: {body}");
-    let reason = quarantine_reason(&app, "dyn-fanout")
-        .await
-        .expect("a channel_call carrying only channel_logic is quarantined");
-    assert!(
-        reason.contains("tasks[0].function.input.channel_logic"),
-        "the reason names the key: {reason}"
-    );
 }
 
 /// The other half: a typed field carrying the wrong type must be caught at
@@ -533,22 +480,22 @@ async fn channel_call_with_a_wrongly_typed_field_quarantines_only_its_channel() 
 /// I182, as refined: a Defect quarantines its channel only where
 /// dataflow-rs 4 would fail every message or the plan names it. A
 /// `PAYLOAD_VAR` (a `var` rooted at `payload`, which reads nothing) is
-/// neither: the channel loads and serves, as on 1.12, and the loader logs
-/// the Defect.
+/// neither: upload accepts it, and the channel deploys and serves, as on
+/// 1.12.
 #[tokio::test]
 async fn a_payload_var_defect_loads_and_serves() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
 
-    insert_raw_active_workflow_and_channel(
-        &state,
+    common::create_and_activate_channel(
+        &app,
         "payload-var",
-        r#"[{"id":"t1","name":"m","function":{"name":"map","input":{"mappings":[{"path":"data.copied","logic":{"var":"payload.x"}}]}}}]"#,
+        json!({"name": "payload-var", "tasks": [{"id": "t1", "name": "m",
+            "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.copied", "logic": {"var": "payload.x"}}]}}}]}),
     )
     .await;
 
-    let (status, body) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(quarantine_reason(&app, "payload-var").await, None);
     assert!(serves_ok(&app, "payload-var").await);
     assert!(
@@ -626,29 +573,19 @@ async fn an_output_that_is_no_path_quarantines_its_channel() {
 }
 
 /// Break 2: a near miss of a known key is a `LIKELY_TYPO` Defect, and it
-/// quarantines: `conditon` would otherwise run the task unconditionally,
-/// which is what 1.12 did with it.
+/// refuses the workflow: `conditon` would otherwise run the task
+/// unconditionally, which is what 1.12 did with it. Upload refuses it;
+/// stored past upload, it fails its revision.
 #[tokio::test]
 async fn a_likely_typo_quarantines_its_channel() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-
-    insert_raw_active_workflow_and_channel(
-        &state,
+    assert_workflow_refused(
+        json!({"name": "typo", "tasks": [{"id": "t1", "name": "log", "conditon": false,
+            "function": {"name": "log", "input": {"message": "x"}}}]}),
         "typo",
-        r#"[{"id":"t1","name":"log","conditon":false,"function":{"name":"log","input":{"message":"x"}}}]"#,
+        "definition.tasks[0].conditon",
+        &["LIKELY_TYPO at tasks[0].conditon"],
     )
     .await;
-
-    let (status, body) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let reason = quarantine_reason(&app, "typo")
-        .await
-        .expect("a typo'd task key is quarantined");
-    assert!(
-        reason.contains("LIKELY_TYPO at tasks[0].conditon"),
-        "{reason}"
-    );
 }
 
 /// A stored workflow whose `loop` the engine build refuses must not fail the

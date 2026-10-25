@@ -1,12 +1,12 @@
-//! F16: an enabled connector that fails to load must be visible.
+//! F16: a deployed connection that fails to load must be visible.
 //!
-//! A connector whose config cannot be resolved is skipped and simply absent
-//! from the registry, so every workflow using it returns a 500 at request
-//! time — possibly hours after the deploy that broke it. Before this, a log
-//! line at boot was the only evidence. These tests pin the two reporting
-//! surfaces: `/health` and `GET /api/v2/admin/connectors`.
+//! A connection whose config cannot be resolved is skipped and simply absent
+//! from the connector registry, so every workflow using it returns a 500 at
+//! request time — possibly hours after the deployment that broke it. Before
+//! this, a log line was the only evidence. These tests pin the reporting
+//! surface, `/health`.
 
-use crate::common::{body_json, json_request, test_app};
+use crate::common::{self, body_json, json_request, test_app};
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
@@ -31,32 +31,23 @@ fn install_connector_load_env() {
     }
 }
 
-/// Create a connector whose secret reference cannot resolve. Creating it
-/// succeeds — the reference is only resolved when the registry loads it.
+/// Deploy a connection whose secret reference cannot resolve. The
+/// deployment converges — the reference is only resolved when the registry
+/// loads it.
 async fn create_broken_connector(app: &axum::Router, id: &str) {
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": id,
-                "name": id,
-                "connector_type": "http",
-                "config": {
-                    "url": "https://api.example.com",
-                    "method": "GET",
-                    "auth": {"type": "bearer", "token": "env://ORION_F16_DEFINITELY_UNSET"}
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "the reference is resolved at load, not at create"
-    );
+    common::create_connector(
+        app,
+        json!({
+            "name": id,
+            "connector_type": "http",
+            "config": {
+                "url": "https://api.example.com",
+                "method": "GET",
+                "auth": {"type": "bearer", "token": "env://ORION_F16_DEFINITELY_UNSET"}
+            }
+        }),
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -101,21 +92,15 @@ async fn health_reports_a_connector_that_failed_to_load() {
 async fn health_is_ok_when_every_connector_loads() {
     let app = test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "f16-fine",
-                "name": "f16-fine",
-                "connector_type": "http",
-                "config": {"url": "https://api.example.com", "method": "GET"}
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    common::create_connector(
+        &app,
+        json!({
+            "name": "f16-fine",
+            "connector_type": "http",
+            "config": {"url": "https://api.example.com", "method": "GET"}
+        }),
+    )
+    .await;
 
     let resp = app
         .clone()
@@ -134,116 +119,8 @@ async fn health_is_ok_when_every_connector_loads() {
     );
 }
 
-#[tokio::test]
-async fn admin_list_marks_the_failed_connector() {
-    let app = test_app().await;
-    create_broken_connector(&app, "f16-listed").await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "f16-healthy",
-                "name": "f16-healthy",
-                "connector_type": "http",
-                "config": {"url": "https://api.example.com", "method": "GET"}
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/connectors", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let rows = body["data"].as_array().unwrap();
-
-    let broken = rows
-        .iter()
-        .find(|r| r["name"] == "f16-listed")
-        .expect("the broken connector must still be listed — it exists, it just is not live");
-    assert_eq!(broken["load_status"], "failed");
-    assert_eq!(broken["load_error_stage"], "secret_resolution");
-    assert!(broken["load_error"].is_string());
-
-    let healthy = rows
-        .iter()
-        .find(|r| r["name"] == "f16-healthy")
-        .expect("healthy connector missing from the list");
-    assert_eq!(healthy["load_status"], "loaded");
-    assert!(healthy.get("load_error").is_none());
-}
-
-/// A disabled connector is not a failure — it was never meant to be live, so
-/// it must not make `/health` degraded.
-#[tokio::test]
-async fn a_disabled_connector_is_not_a_load_failure() {
-    let app = test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "f16-disabled",
-                "name": "f16-disabled",
-                "connector_type": "http",
-                "config": {
-                    "url": "https://api.example.com",
-                    "method": "GET",
-                    "auth": {"type": "bearer", "token": "env://ORION_F16_DEFINITELY_UNSET"}
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/connectors/f16-disabled",
-            Some(json!({"enabled": false})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/health", None))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(
-        body["status"], "ok",
-        "a disabled connector is not loaded on purpose, so it is not degraded"
-    );
-
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/connectors", None))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let row = body["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["name"] == "f16-disabled")
-        .expect("disabled connector missing from the list");
-    assert_eq!(row["load_status"], "disabled");
-}
-
-/// The failure must clear once the config is fixed, not stick until restart.
+/// The failure must clear once a fixed config is deployed, not stick until
+/// restart.
 #[tokio::test]
 async fn fixing_the_config_clears_the_issue() {
     let app = test_app().await;
@@ -256,19 +133,16 @@ async fn fixing_the_config_clears_the_issue() {
         .unwrap();
     assert_eq!(body_json(resp).await["status"], "degraded");
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/connectors/f16-fixable",
-            Some(json!({"config": {
-                "url": "https://api.example.com",
-                "method": "GET"
-            }})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // The fix is the connection's next revision, deployed.
+    common::create_connector(
+        &app,
+        json!({
+            "name": "f16-fixable",
+            "connector_type": "http",
+            "config": {"url": "https://api.example.com", "method": "GET"}
+        }),
+    )
+    .await;
 
     let resp = app
         .clone()
@@ -282,18 +156,16 @@ async fn fixing_the_config_clears_the_issue() {
             .as_array()
             .unwrap()
             .is_empty(),
-        "the issue list is rebuilt on reload, not accumulated"
+        "the issue list is rebuilt from each deployment, not accumulated"
     );
 }
 
-/// `ConnectorConfig` is internally tagged on `type`, but the API takes the
-/// type as a sibling `connector_type` field and stores it in its own column.
-/// A connector authored the documented way — no redundant `"type"` inside
-/// `config` — used to fail deserialization with "missing field `type`" and
-/// silently never load. That is the shape every example, the OpenAPI spec and
-/// any admin UI produces, so in practice most connectors were dead.
-///
-/// This is the bug F16's reporting surface made visible on its first run.
+/// A connection carries no type: the driver it names decides it. A config
+/// authored the documented way — no `"type"` inside it — must load as the
+/// driver's type. (In v1, where the type was a column beside the config,
+/// this shape once failed with "missing field `type`" and silently never
+/// loaded; it was the bug F16's reporting surface made visible on its first
+/// run.)
 #[tokio::test]
 async fn a_config_without_a_redundant_inner_type_loads() {
     let app = test_app().await;
@@ -311,21 +183,11 @@ async fn a_config_without_a_redundant_inner_type_loads() {
             json!({"connection_string": "sqlite::memory:"}),
         ),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/connectors",
-                Some(json!({
-                    "id": id,
-                    "name": id,
-                    "connector_type": connector_type,
-                    "config": config
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED, "create {id}");
+        common::create_connector(
+            &app,
+            json!({"name": id, "connector_type": connector_type, "config": config}),
+        )
+        .await;
     }
 
     let resp = app
@@ -341,28 +203,19 @@ async fn a_config_without_a_redundant_inner_type_loads() {
     );
 }
 
-/// An inner `type` that contradicts the stored column must not win — the
-/// column is what create/update validated against (R4), so it is the source
-/// of truth and the injection overwrites.
+/// An inner `type` that contradicts the connection's driver must not win —
+/// the driver is the source of truth, so a memory-cache connection whose
+/// public config says `"type": "http"` still loads as a cache.
 #[tokio::test]
-async fn the_stored_type_column_wins_over_an_inner_type() {
+async fn the_driver_wins_over_an_inner_type() {
     let app = test_app().await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "f16-conflict",
-                "name": "f16-conflict",
-                "connector_type": "cache",
-                "config": {"type": "http", "backend": "memory"}
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    deploy_raw_connection(
+        &app,
+        "f16-conflict",
+        "org.orion.memory-cache",
+        json!({"type": "http", "backend": "memory"}),
+    )
+    .await;
 
     let resp = app
         .clone()
@@ -380,94 +233,80 @@ async fn the_stored_type_column_wins_over_an_inner_type() {
     );
 }
 
-/// F16 fail-fast: with `engine.fail_on_connector_load_error = true`, boot
-/// must refuse when an enabled connector fails to load — through the REAL
-/// startup wiring (`orion::bootstrap::build_engine_components`, reachable
-/// from tests since bootstrap moved into the lib). Previously this refusal
-/// was structurally untestable and only its runtime health-reporting side
-/// had coverage.
-#[tokio::test]
-async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
-    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
-        url: "sqlite::memory:".to_string(),
-        max_connections: 5,
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-
-    // An enabled connector whose env:// secret cannot resolve: valid in the
-    // DB, broken at registry load time (secret_resolution stage).
-    pool.execute_query(
-        r#"INSERT INTO connectors (id, name, connector_type, config_json, enabled)
-           VALUES ('f16-fatal', 'f16-fatal', 'http',
-                   '{"url":"https://example.com","auth":{"type":"bearer","token":"env://ORION_F16_NEVER_SET"}}',
-                   true)"#,
-        sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
+/// Create a connection over the built-in `driver` with `public_config`
+/// exactly as given — no secret split, no key stripped — and deploy it.
+async fn deploy_raw_connection(
+    app: &axum::Router,
+    id: &str,
+    driver: &str,
+    public_config: serde_json::Value,
+) {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v2/admin/runtime-capabilities",
+            None,
+        ))
+        .await
+        .unwrap();
+    let caps = body_json(resp).await;
+    let provider = caps["provider_backends"]
+        .as_array()
+        .and_then(|b| b.iter().find(|b| b["driver_id"] == driver))
+        .and_then(|b| b["package_digest"].as_str())
+        .unwrap_or_else(|| panic!("no built-in digest for {driver}: {caps}"))
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/admin/connections",
+            Some(json!({
+                "connection_id": id,
+                "revision": 1,
+                "provider_digest": provider,
+                "public_config": public_config,
+                "secret_locators": {},
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = body_json(resp).await;
+    let digest = created["connection"]["configuration_digest"]
+        .as_str()
+        .expect("a digest")
+        .to_string();
+    common::deploy::deploy(
+        app,
+        vec![common::deploy::Upsert {
+            kind: "connection",
+            id: id.to_string(),
+            digest,
+            revision: Some(1),
+            requires: Vec::new(),
+        }],
     )
-    .await
-    .expect("seed broken connector");
-
-    let mut config = orion::config::AppConfig::default();
-    let repos = orion::bootstrap::Repositories::new(&pool, &config.storage).expect("repositories");
-    config.engine.fail_on_connector_load_error = true;
-
-    let err = orion::bootstrap::build_engine_components(
-        &config,
-        &repos,
-        &std::sync::Arc::new(orion::channel::ChannelLoader::new()),
-    )
-    .await
-    .err()
-    .expect("boot must refuse with a broken connector and fail-fast on");
-    let msg = err.to_string();
-    assert!(msg.contains("refused to start"), "{msg}");
-    assert!(msg.contains("f16-fatal"), "must name the connector: {msg}");
-    assert!(
-        msg.contains("fail_on_connector_load_error"),
-        "must name the escape hatch: {msg}"
-    );
-
-    // Same database, flag off → boots degraded instead of refusing.
-    config.engine.fail_on_connector_load_error = false;
-    orion::bootstrap::build_engine_components(
-        &config,
-        &repos,
-        &std::sync::Arc::new(orion::channel::ChannelLoader::new()),
-    )
-    .await
-    .expect("with fail-fast off the same state must boot (degraded)");
+    .await;
 }
 
-/// A stored `storage` connector — a 0.x row, or one written while the type
-/// existed — names a type this build has no variant for. It does not load:
-/// it reports a load issue naming the type and the ones this build knows,
-/// rather than failing the boot or loading as a connector nothing can use.
+/// A connector naming a type this build has no variant for — `storage`, a
+/// 0.x type — does not load: it reports a load issue naming the type and the
+/// ones this build knows, rather than failing the load or loading as a
+/// connector nothing can use.
 #[tokio::test]
 async fn a_stored_storage_connector_reports_an_unknown_type() {
-    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
-        url: "sqlite::memory:".to_string(),
-        max_connections: 5,
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-
-    // Exactly what a 0.3.x instance would have persisted.
-    pool.execute_query(
-        r#"INSERT INTO connectors (id, name, connector_type, config_json, enabled)
-           VALUES ('legacy-uploads', 'legacy-uploads', 'storage',
-                   '{"provider":"s3","bucket":"my-uploads","region":"us-east-1"}',
-                   true)"#,
-        sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
-    )
-    .await
-    .expect("seed a storage connector");
-
-    let registry =
-        std::sync::Arc::new(orion::connector::ConnectorRegistry::new(Default::default()));
-    let repo = orion::storage::repositories::connectors::SqlConnectorRepository::new(pool.clone());
-    registry.load_from_repo(&repo).await.expect("load");
+    let registry = orion::connector::ConnectorRegistry::new(Default::default());
+    registry
+        .load(vec![orion::connector::StoredConnector {
+            id: "legacy-uploads@1".to_string(),
+            name: "legacy-uploads".to_string(),
+            connector_type: "storage".to_string(),
+            config_json: r#"{"provider":"s3","bucket":"my-uploads","region":"us-east-1"}"#
+                .to_string(),
+        }])
+        .await;
 
     let issues = registry.load_issues().await;
     assert_eq!(issues.len(), 1, "expected one load issue: {issues:?}");
@@ -482,17 +321,14 @@ async fn a_stored_storage_connector_reports_an_unknown_type() {
     );
 }
 
-/// Create an http connector through the admin API, returning its status.
-async fn create_http(app: &axum::Router, name: &str, config: serde_json::Value) -> StatusCode {
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({"id": name, "name": name, "connector_type": "http", "config": config})),
-        ))
-        .await
-        .unwrap()
-        .status()
+/// Deploy an http connection with `config`. A reference in it is judged
+/// when the registry loads it, so the deployment itself converges.
+async fn create_http(app: &axum::Router, name: &str, config: serde_json::Value) {
+    common::create_connector(
+        app,
+        json!({"name": name, "connector_type": "http", "config": config}),
+    )
+    .await;
 }
 
 /// The `failed_to_load` entry `/health` reports for `name`, if any.
@@ -518,16 +354,12 @@ async fn load_failure(app: &axum::Router, name: &str) -> Option<serde_json::Valu
 #[tokio::test]
 async fn a_reference_url_resolving_to_a_bad_scheme_is_an_endpoint_load_issue() {
     let app = test_app().await;
-    assert_eq!(
-        create_http(
-            &app,
-            "t338-ftp",
-            json!({"url": "env://ORION_SECRET_T338_BAD_SCHEME_URL"})
-        )
-        .await,
-        StatusCode::CREATED,
-        "a reference is judged at load, not at create"
-    );
+    create_http(
+        &app,
+        "t338-ftp",
+        json!({"url": "env://ORION_SECRET_T338_BAD_SCHEME_URL"}),
+    )
+    .await;
     let failure = load_failure(&app, "t338-ftp").await.expect("a load issue");
     assert_eq!(failure["stage"], "endpoint", "{failure}");
     let reason = failure["reason"].as_str().unwrap();
@@ -540,18 +372,15 @@ async fn a_reference_url_resolving_to_a_bad_scheme_is_an_endpoint_load_issue() {
 #[tokio::test]
 async fn a_boolean_reference_resolving_to_true_loads() {
     let app = test_app().await;
-    assert_eq!(
-        create_http(
-            &app,
-            "t338-peer",
-            json!({
-                "url": "env://ORION_SECRET_T338_PEER_URL",
-                "allow_private_urls": "env://ORION_SECRET_T338_PEER_PRIVATE",
-            }),
-        )
-        .await,
-        StatusCode::CREATED
-    );
+    create_http(
+        &app,
+        "t338-peer",
+        json!({
+            "url": "env://ORION_SECRET_T338_PEER_URL",
+            "allow_private_urls": "env://ORION_SECRET_T338_PEER_PRIVATE",
+        }),
+    )
+    .await;
     assert!(load_failure(&app, "t338-peer").await.is_none());
 }
 
@@ -561,18 +390,15 @@ async fn a_boolean_reference_resolving_to_true_loads() {
 #[tokio::test]
 async fn a_boolean_reference_resolving_to_garbage_is_a_deserialize_load_issue() {
     let app = test_app().await;
-    assert_eq!(
-        create_http(
-            &app,
-            "t338-garbage",
-            json!({
-                "url": "https://api.example.com",
-                "allow_private_urls": "env://ORION_SECRET_T338_NOT_A_BOOL",
-            }),
-        )
-        .await,
-        StatusCode::CREATED
-    );
+    create_http(
+        &app,
+        "t338-garbage",
+        json!({
+            "url": "https://api.example.com",
+            "allow_private_urls": "env://ORION_SECRET_T338_NOT_A_BOOL",
+        }),
+    )
+    .await;
     let failure = load_failure(&app, "t338-garbage")
         .await
         .expect("a load issue");

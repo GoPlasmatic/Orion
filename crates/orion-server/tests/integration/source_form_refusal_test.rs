@@ -151,104 +151,27 @@ async fn condition_and_loop_are_checked_as_well_as_tasks() {
     assert_eq!(detail(&body, "loop")["code"], "UNCOMPILED_SOURCE");
 }
 
-/// Before: `Invalid connector config for type 'db': missing field
-/// connection_string` — the field the shared value carries.
-#[tokio::test]
-async fn a_connector_config_names_the_reference() {
-    let (status, body) = post(
-        "/api/v2/admin/connectors",
-        json!({"name": "probe", "connector_type": "db",
-               "config": {"$from": "constants.db"}}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let d = detail(&body, "connector.config");
-    assert_eq!(d["code"], "UNCOMPILED_SOURCE");
-    assert!(
-        d["message"].as_str().unwrap().contains("constants.db"),
-        "{body}"
-    );
-}
-
 /// Before: `unknown field '$from', expected one of rate_limit, timeout_ms, …`
 /// — which names the key but reads as a typo, and offers a list of spellings
-/// none of which is what the author meant.
+/// none of which is what the author meant. A channel definition upload runs
+/// the same channel validation, so it names the reference too.
 #[tokio::test]
 async fn a_channel_config_says_what_the_key_is_rather_than_offering_spellings() {
-    let (status, body) = post(
-        "/api/v2/admin/channels",
-        json!({"name": "probe-ch", "channel_type": "sync", "protocol": "rest",
-               "methods": ["POST"], "route_pattern": "/probe",
-               "config": {"$from": "constants.guards", "timeout_ms": 1000}}),
+    let app = common::test_app().await;
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "probe-ch", "channel_type": "sync", "protocol": "rest",
+            "methods": ["POST"], "route_pattern": "/probe",
+            "config": {"$from": "constants.guards", "timeout_ms": 1000}}}),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let d = detail(&body, "channel.config");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let d = detail(&body, "definition.config");
     assert_eq!(d["code"], "UNCOMPILED_SOURCE");
     let message = d["message"].as_str().unwrap();
     assert!(!message.contains("unknown field"), "{message}");
     assert!(message.contains("shared-value reference"), "{message}");
-}
-
-/// `/validate` reuses the create-path validator, so it must agree with create
-/// — a linter that green-lit a payload create rejects is worse than no linter.
-#[tokio::test]
-async fn validate_agrees_with_create() {
-    let app = common::test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(json!({
-                "workflow_id": "probe", "name": "Probe",
-                "tasks": [{"id": "t", "name": "T", "function": {"name": "data_query",
-                    "input": {"$from": "constants.db", "query": {"source": "u"},
-                              "output": "temp_data.u"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["valid"], false, "{body}");
-    let rendered = body.to_string();
-    assert!(rendered.contains("constants.db"), "{body}");
-}
-
-/// The update path stores into the same column, so it needs the same gate.
-#[tokio::test]
-async fn the_update_path_is_gated_too() {
-    let app = common::test_app().await;
-    let created = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "workflow_id": "upd", "name": "Upd",
-                "tasks": [{"id": "t", "name": "T", "function": {"name": "map",
-                    "input": {"mappings": [{"path": "data.ok", "logic": true}]}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(created.status(), StatusCode::CREATED);
-
-    let resp = app
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/upd",
-            Some(json!({"tasks": [{"id": "t", "name": "T",
-                "function": {"name": "data_query", "input": {"$from": "constants.db",
-                    "query": {"source": "u"}, "output": "temp_data.u"}}}]})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert_eq!(
-        detail(&body, "tasks[0].function.input")["code"],
-        "UNCOMPILED_SOURCE"
-    );
 }
 
 /// The refusal must be precise about what a reference *is*, or it becomes a

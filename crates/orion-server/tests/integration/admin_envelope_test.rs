@@ -7,6 +7,9 @@
 //! client could not write one unwrapping function. These tests pin the single
 //! shape endpoint by endpoint; `admin_2xx_bodies_all_carry_the_data_envelope`
 //! is the one that would catch a *new* handler regressing to a bare object.
+//!
+//! The deployment surface (`/definitions`, `/deployments`, `/connections`, …)
+//! answers bare bodies by design and is not held to this shape.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -82,13 +85,7 @@ async fn admin_2xx_bodies_all_carry_the_data_envelope() {
         assert_data_envelope(&get(&app, uri).await, uri);
     }
 
-    for uri in [
-        "/api/v2/admin/workflows",
-        "/api/v2/admin/channels",
-        "/api/v2/admin/connectors",
-        "/api/v2/admin/audit-logs",
-        "/api/v2/admin/trace-dlq",
-    ] {
+    for uri in ["/api/v2/admin/audit-logs", "/api/v2/admin/trace-dlq"] {
         assert_paginated_envelope(&get(&app, uri).await, uri);
     }
 }
@@ -119,150 +116,6 @@ async fn trace_list_omits_total_unless_asked() {
         counted["total"], 0,
         "include_total=true must restore the count: {counted}"
     );
-}
-
-#[tokio::test]
-async fn engine_reload_is_enveloped() {
-    let app = test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_data_envelope(&body, "POST /engine/reload");
-    assert_eq!(body["data"]["reloaded"], true);
-}
-
-#[tokio::test]
-async fn workflow_validate_and_test_are_enveloped() {
-    let app = test_app().await;
-    let workflow = json!({
-        "name": "envelope-wf",
-        "channel": "envelope-ch",
-        "tasks": [{
-            "id": "t1",
-            "name": "log",
-            "function": {"name": "log", "input": {"message": "hi"}}
-        }]
-    });
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/validate",
-            Some(workflow.clone()),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_data_envelope(&body, "POST /workflows/validate");
-    assert_eq!(body["data"]["valid"], true);
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let created = body_json(resp).await;
-    assert_data_envelope(&created, "POST /workflows");
-    let id = created["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{id}/test"),
-            Some(json!({"data": {"x": 1}})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_data_envelope(&body, "POST /workflows/{id}/test");
-    assert!(body["data"].get("matched").is_some());
-}
-
-/// R18: dry run and real run return the same four fields, told apart by
-/// `dry_run`. The pre-1.0 dry run answered with six — `would_create` and
-/// `would_fail` next to a hardcoded `imported: 0` and a `failed` that always
-/// equalled `would_fail`.
-#[tokio::test]
-async fn import_dry_run_and_real_run_share_one_shape() {
-    let app = test_app().await;
-    let items = json!([{
-        "name": "import-envelope-wf",
-        "tasks": [{
-            "id": "t1",
-            "name": "log",
-            "function": {"name": "log", "input": {"message": "hi"}}
-        }]
-    }]);
-
-    let mut shapes = Vec::new();
-    for uri in [
-        "/api/v2/admin/workflows/import?dry_run=true",
-        "/api/v2/admin/workflows/import",
-    ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request("POST", uri, Some(items.clone())))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "POST {uri}");
-        let body = body_json(resp).await;
-        assert_data_envelope(&body, uri);
-        let mut keys: Vec<String> = body["data"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        keys.sort();
-        shapes.push((uri, body, keys));
-    }
-
-    let (dry_uri, dry, dry_keys) = &shapes[0];
-    let (real_uri, real, real_keys) = &shapes[1];
-    assert_eq!(
-        dry_keys, real_keys,
-        "{dry_uri} and {real_uri} must return the same field set"
-    );
-    assert_eq!(
-        dry_keys,
-        &[
-            "dry_run",
-            "errors",
-            "failed",
-            "imported",
-            "results",
-            "skipped",
-            "unchanged"
-        ],
-        "unexpected import field set"
-    );
-
-    // The dry run reports its projection in `imported`, not a hardcoded 0.
-    assert_eq!(dry["data"]["dry_run"], true);
-    assert_eq!(dry["data"]["imported"], 1);
-    assert_eq!(dry["data"]["failed"], 0);
-    assert_eq!(real["data"]["dry_run"], false);
-    assert_eq!(real["data"]["imported"], 1);
-    // K2: both runs carry the same per-item report.
-    for (uri, body, _) in &shapes {
-        assert_eq!(
-            body["data"]["results"][0]["action"], "created",
-            "{uri}: per-item action"
-        );
-    }
 }
 
 /// The single-trace read is the one admin endpoint whose envelope the rest of

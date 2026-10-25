@@ -30,7 +30,7 @@ fn install_channel_auth_env() {
 }
 
 use crate::common;
-use crate::common::{body_json, json_request};
+use crate::common::{body_json, deploy, json_request};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -378,136 +378,27 @@ async fn a_channel_whose_auth_cannot_be_built_is_quarantined() {
     );
 }
 
-/// H3: channel reads mask `auth.keys` / `auth.secret`, and the masked shape
-/// round-trips through PUT without corrupting the live credential — the same
-/// F34 cycle connectors have always had, proven end to end against the data
-/// plane: after a GET → edit → PUT, the original key still authenticates.
+/// A channel definition carrying the `******` mask sentinel as a credential is
+/// a copied-from-a-read mistake: it is refused at upload rather than stored
+/// as the key.
 #[tokio::test]
-async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
+async fn channel_upload_rejects_the_mask_sentinel() {
     let app = common::test_app().await;
-    let (channel_id, _wf) = common::v1::create_and_activate_channel_full(
+    let body = deploy::assert_upload_refused(
         &app,
-        "masked-rt",
-        common::echo_workflow("masked-rt-wf"),
-        api_key_config("sk-live-9"),
+        json!({"kind": "channel", "definition": {
+            "name": "mask-reject",
+            "channel_type": "sync",
+            "protocol": "http",
+            "methods": ["POST"],
+            "route_pattern": "/mask-reject",
+            "config": {"auth": {"mode": "api_key", "keys": ["******"]}}
+        }}),
+        "definition.config.auth.keys[0]",
     )
     .await;
-
-    // GET masks the key.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/channels/{channel_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
-    assert_eq!(
-        body["data"]["config"]["auth"]["keys"][0], "******",
-        "the admin read must not return the literal key: {body}"
-    );
-
-    // A new draft, edited from the masked GET shape, PUT back verbatim.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/channels/{channel_id}/versions"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let mut config = body["data"]["config"].clone();
-    config["rate_limit"] = json!({"requests_per_second": 50});
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            &format!("/api/v2/admin/channels/{channel_id}"),
-            Some(json!({"config": config})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "{}",
-        common::body_json(resp).await
-    );
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // The ORIGINAL key still authenticates: the PUT restored it rather than
-    // persisting the sentinel as the credential.
-    let resp = app
-        .clone()
-        .oneshot(request_with_header(
-            "/api/v2/data/masked-rt",
-            ("x-api-key", "sk-live-9"),
-            json!({"data": {"ok": true}}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "the real key must survive the masked round-trip"
-    );
-
-    // And the sentinel itself is not a working credential.
-    let resp = app
-        .clone()
-        .oneshot(request_with_header(
-            "/api/v2/data/masked-rt",
-            ("x-api-key", "******"),
-            json!({"data": {"ok": true}}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-/// A create carrying the sentinel has nothing to restore from — it is a
-/// copied-from-a-GET mistake and must be refused, not persisted as the key.
-#[tokio::test]
-async fn channel_create_rejects_the_mask_sentinel() {
-    let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "mask-reject",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/mask-reject",
-                "workflow_id": "any-wf",
-                "config": {"auth": {"mode": "api_key", "keys": ["******"]}}
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("masked placeholder"),
+        body["error"].to_string().contains("masked placeholder"),
         "{body}"
     );
 }
@@ -516,8 +407,10 @@ async fn channel_create_rejects_the_mask_sentinel() {
 // #264: activation-time auth validation + generalized HMAC config
 // ============================================================
 
+/// A broken `auth` block is refused when its channel definition is uploaded,
+/// naming the problem, rather than deployed and quarantined at load.
 #[tokio::test]
-async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
+async fn broken_auth_configs_are_refused_at_upload_not_quarantined() {
     let app = common::test_app().await;
 
     for (auth, expected) in [
@@ -549,29 +442,19 @@ async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
             "auth.scheme",
         ),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/channels",
-                Some(json!({
-                    "name": "bad-auth-channel",
-                    "channel_type": "sync",
-                    "protocol": "rest",
-                    "route_pattern": "/hooks/bad",
-                    "methods": ["POST"],
-                    "workflow_id": "wf-x",
-                    "config": {"auth": auth}
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "expected 400 for {auth}"
-        );
-        let body = body_json(resp).await;
+        let (status, body) = deploy::try_upload(
+            &app,
+            json!({"kind": "channel", "definition": {
+                "name": "bad-auth-channel",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "route_pattern": "/hooks/bad",
+                "methods": ["POST"],
+                "config": {"auth": auth}
+            }}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for {auth}");
         assert!(
             body["error"].to_string().contains(expected),
             "{auth} should have reported '{expected}', got {}",
@@ -582,25 +465,19 @@ async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
     // A preset config with an env:// secret is structurally fine and must be
     // accepted even though the variable is unset on this host — resolution
     // stays load-time so bundles validate anywhere.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "zoom-hooks",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "route_pattern": "/hooks/zoom",
-                "methods": ["POST"],
-                "workflow_id": "wf-x",
-                "config": {"auth": {"mode": "hmac", "preset": "zoom",
-                                     "secret": "env://UNSET_ZOOM_SECRET_264"}}
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    deploy::upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "zoom-hooks",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "route_pattern": "/hooks/zoom",
+            "methods": ["POST"],
+            "config": {"auth": {"mode": "hmac", "preset": "zoom",
+                                 "secret": "env://UNSET_ZOOM_SECRET_264"}}
+        }}),
+    )
+    .await;
 }
 
 // ============================================================
@@ -900,8 +777,9 @@ async fn a_foreign_scheme_gets_the_bare_challenge_and_a_bad_token_does_not() {
     assert_eq!(bodies[0], bodies[1], "the body never names the cause");
 }
 
+/// A `jwt` auth block that could never verify a token is refused at upload.
 #[tokio::test]
-async fn broken_jwt_configs_are_refused_at_create() {
+async fn broken_jwt_configs_are_refused_at_upload() {
     let app = common::test_app().await;
     for (auth, expected) in [
         (json!({"mode": "jwt"}), "algorithms"),
@@ -926,29 +804,19 @@ async fn broken_jwt_configs_are_refused_at_create() {
             "auth.source.scheme",
         ),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/channels",
-                Some(json!({
-                    "name": "bad-jwt",
-                    "channel_type": "sync",
-                    "protocol": "rest",
-                    "route_pattern": "/hooks/jwt",
-                    "methods": ["POST"],
-                    "workflow_id": "wf-x",
-                    "config": {"auth": auth}
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "expected 400 for {auth}"
-        );
-        let body = body_json(resp).await;
+        let (status, body) = deploy::try_upload(
+            &app,
+            json!({"kind": "channel", "definition": {
+                "name": "bad-jwt",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "route_pattern": "/hooks/jwt",
+                "methods": ["POST"],
+                "config": {"auth": auth}
+            }}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for {auth}");
         assert!(
             body["error"].to_string().contains(expected),
             "{auth} should have reported '{expected}', got {}",

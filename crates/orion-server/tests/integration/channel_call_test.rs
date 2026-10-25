@@ -11,155 +11,61 @@ use tower::ServiceExt;
 async fn test_channel_call_basic() {
     let app = common::test_app().await;
 
-    // Create target workflow (just logs and maps)
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Target Workflow",
-                "condition": true,
-                "tasks": [
-                    {
-                        "id": "t0",
-                        "name": "Parse payload",
-                        "function": {
-                            "name": "parse_json",
-                            "input": { "source": "payload", "target": "input" }
-                        }
-                    },
-                    {
-                        "id": "t1",
-                        "name": "Map result",
-                        "function": {
-                            "name": "map",
-                            "input": {
-                                "mappings": [{
-                                    "path": "data.greeting",
-                                    "logic": { "cat": ["Hello, ", { "var": "data.input.name" }] }
-                                }]
-                            }
-                        }
-                    }
-                ]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let target_wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate target workflow
-    app.clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", target_wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    // Create target channel
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "target",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/target",
-                "workflow_id": target_wf_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let target_ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate target channel
-    app.clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", target_ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    // Create source workflow that calls the target channel
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Source Workflow",
-                "condition": true,
-                "tasks": [{
-                    "id": "s1",
-                    "name": "Call target channel",
+    // Target channel: parses the payload and maps a greeting.
+    common::create_and_activate_channel(
+        &app,
+        "target",
+        json!({
+            "name": "Target Workflow",
+            "condition": true,
+            "tasks": [
+                {
+                    "id": "t0",
+                    "name": "Parse payload",
                     "function": {
-                        "name": "channel_call",
+                        "name": "parse_json",
+                        "input": { "source": "payload", "target": "input" }
+                    }
+                },
+                {
+                    "id": "t1",
+                    "name": "Map result",
+                    "function": {
+                        "name": "map",
                         "input": {
-                            "channel": "target",
-                            "output": "data.target_result"
+                            "mappings": [{
+                                "path": "data.greeting",
+                                "logic": { "cat": ["Hello, ", { "var": "data.input.name" }] }
+                            }]
                         }
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let source_wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+                }
+            ]
+        }),
+    )
+    .await;
 
-    // Activate source workflow
-    app.clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{}/status", source_wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    // Create source channel
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "source",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/source",
-                "workflow_id": source_wf_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let source_ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate source channel
-    app.clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{}/status", source_ch_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
+    // Source channel: its workflow calls the target channel.
+    common::create_and_activate_channel(
+        &app,
+        "source",
+        json!({
+            "name": "Source Workflow",
+            "condition": true,
+            "tasks": [{
+                "id": "s1",
+                "name": "Call target channel",
+                "function": {
+                    "name": "channel_call",
+                    "input": {
+                        "channel": "target",
+                        "output": "data.target_result"
+                    }
+                }
+            }]
+        }),
+    )
+    .await;
 
     // Now call the source channel — it should invoke target via channel_call
     let resp = app

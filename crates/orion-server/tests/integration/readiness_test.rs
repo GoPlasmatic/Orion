@@ -186,21 +186,19 @@ async fn test_health_endpoint() {
     assert_eq!(body["components"]["engine"], "ok");
 }
 
-/// A failed engine reload is a `/health` degradation and **not** a `/readyz`
+/// A failed rebuild is a `/health` degradation and **not** a `/readyz`
 /// failure.
 ///
-/// The pairing is the point. An admin mutation that commits and then fails to
-/// reload now answers 2xx — the row is `active` and the next successful reload
-/// serves it, so a 5xx would tell the client its change failed when it did
-/// not. That makes `/health` the only place the condition is visible, so it has
-/// to be visible there. `/readyz` stays ready because this node is serving
-/// correctly, just not the newest config: ejecting it would trade a
-/// stale-config problem for an availability one, which is the argument
-/// `config_propagation` already makes.
+/// The pairing is the point. A deployment that commits and then fails to
+/// build on this node answers `202` — the revision is committed and the
+/// reconciler retries it — so a 5xx would tell the client its change failed
+/// when it did not. That makes `/health` the only place the condition is
+/// visible to a monitor, so it has to be visible there. `/readyz` stays ready
+/// because this node is serving correctly, just not the newest revision:
+/// ejecting it would trade a stale-config problem for an availability one.
 ///
-/// The flag is set directly rather than by breaking a real reload. What is
-/// under test is the probes reading it; making `list_active` fail would test
-/// sqlx.
+/// The flag is set directly rather than by breaking a real build. What is
+/// under test is the probes reading it; the test below breaks a real one.
 #[tokio::test]
 async fn a_failed_reload_degrades_health_without_failing_readiness() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
@@ -247,64 +245,83 @@ async fn a_failed_reload_degrades_health_without_failing_readiness() {
     assert_eq!(body_json(resp).await["status"], "ready");
 }
 
-/// The other half of a failed reload, and the half that regressed: the manual
-/// route has to tell its caller.
+/// The other half of a failed rebuild: the deployment has to tell its
+/// caller.
 ///
-/// `POST /engine/reload` has no committed write for an error to misdescribe.
-/// That is what separates it from an activate or an archive, where the row is
-/// already live and a `5xx` invites a retry that writes a second version or
-/// collides with the first — so those degrade `/health` and answer `2xx`. A
-/// caller who *asked* for a reload and did not get one must not read
-/// `{"reloaded": true}`: a deploy pipeline gating on this route would call a
-/// rollout landed while the node still serves the previous generation.
+/// A deployment that does not build here is still committed, so it answers
+/// `202` — but a caller gating a rollout on the answer must not read it as
+/// served. The answer says so: `evaluation.converged` is `false` and
+/// `local_error` names why, while the previous generation keeps serving.
 ///
-/// Unlike the test above, this one breaks a real reload rather than setting the
-/// flag, because the flag is not what is under test — the propagation out of
-/// `audit_and_reload` is, and only a genuine failure exercises it.
+/// Unlike the test above, this one breaks a real build (two channels
+/// claiming one route at one priority) rather than setting the flag, because
+/// the propagation out of the rebuild is what is under test, and only a
+/// genuine failure exercises it.
 #[tokio::test]
-async fn a_failed_manual_reload_is_reported_to_the_caller() {
-    let (state, pool) = common::test_state_and_pool(orion::config::AppConfig::default()).await;
+async fn a_deployment_that_does_not_build_is_reported_to_the_caller() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let degraded = state.reload_degraded.clone();
-    let app = orion::server::build_router(state);
+    let app = orion::server::build_router(state.clone());
 
-    // Baseline: the route works, so the assertion below is about the failure
-    // and not about the request never having been routed.
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .expect("reload");
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Baseline: a deployment that builds, so the assertions below are about
+    // the failure and not about a node that never served anything.
+    let (_, workflow) =
+        common::create_and_activate_channel(&app, "route-a", common::simple_log_workflow("A"))
+            .await;
+    assert!(!degraded.load(std::sync::atomic::Ordering::Acquire));
+    let before = state.runtime.load().id;
 
-    // Take the database away. That is the reload's remaining failure mode: an
-    // unusable workflow or channel row is quarantined rather than raised, by
-    // design, so there is nothing else to break.
-    match &pool {
-        orion::storage::DbPool::Sqlite(p) => p.close().await,
-        _ => unreachable!("the integration harness is SQLite"),
-    }
-
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .expect("reload");
-    let status = resp.status();
-    assert!(
-        status.is_server_error(),
-        "a reload that did not happen must not answer {status}"
+    // A second channel claiming route-a's route, method and priority: each
+    // definition is valid alone, so upload accepts it; the revision does not
+    // build.
+    let mut collide = common::sync_http_channel("route-b", &workflow);
+    collide["route_pattern"] = serde_json::json!("/route-a");
+    let digest = common::deploy::upload(&app, common::deploy::channel_definition(&collide).0).await;
+    let (base, members) = common::deploy::merged(
+        &app,
+        vec![common::deploy::Upsert {
+            kind: "channel",
+            id: "route-b".to_string(),
+            digest,
+            revision: None,
+            requires: vec![("workflow", workflow)],
+        }],
+    )
+    .await;
+    let (status, body) = common::deploy::apply(&app, base, members).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "the revision is committed: {body}"
     );
-    let body = body_json(resp).await;
+    assert_eq!(
+        body["evaluation"]["converged"], false,
+        "a revision this node did not build must not read as converged: {body}"
+    );
+    let error = body["local_error"].as_str().unwrap_or_default();
     assert!(
-        body["data"].is_null(),
-        "a failed reload must not carry a success envelope: {body}"
+        error.contains("route-a") && error.contains("route-b"),
+        "the answer names why it did not build: {body}"
+    );
+    assert_eq!(
+        state.runtime.load().id,
+        before,
+        "a revision that does not build publishes nothing"
     );
 
-    // And the degradation is still raised. The two reports are not
-    // alternatives: the pipeline learns from the response, a dashboard
-    // watching a fleet learns from `/health`.
+    // And the degradation is raised. The two reports are not alternatives:
+    // the pipeline learns from the response, a dashboard watching a fleet
+    // learns from `/health`.
     assert!(
         degraded.load(std::sync::atomic::Ordering::Acquire),
         "the failure must reach /health as well as the caller"
     );
+    let body = body_json(
+        app.clone()
+            .oneshot(json_request("GET", "/health", None))
+            .await
+            .expect("health"),
+    )
+    .await;
+    assert_eq!(body["components"]["engine_reload"], "degraded", "{body}");
 }

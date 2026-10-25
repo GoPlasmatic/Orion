@@ -11,7 +11,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tower::ServiceExt;
 
-use crate::common::{self, body_json, json_request};
+use crate::common::{self, body_json, deploy, json_request};
 
 /// A channel with an `api_key` auth guard and a shaped 401.
 async fn shaped_auth_channel(app: &axum::Router, name: &str, error_bodies: serde_json::Value) {
@@ -236,7 +236,7 @@ async fn a_text_content_type_is_applied() {
 /// Authoring-time refusals. The templates that cannot work are refused at the
 /// door rather than falling back silently at request time.
 #[tokio::test]
-async fn unusable_templates_are_refused_at_create() {
+async fn unusable_templates_are_refused_at_upload() {
     let app = common::test_app().await;
     for (name, bodies) in [
         // Unknown placeholder — a misspelling must not ship as a literal.
@@ -249,28 +249,19 @@ async fn unusable_templates_are_refused_at_create() {
         // JSON content type that does not render as JSON.
         ("not-json", json!({ "401": { "body": "plain text" } })),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/channels",
-                Some(json!({
-                    "name": name,
-                    "channel_type": "sync",
-                    "protocol": "rest",
-                    "methods": ["POST"],
-                    "route_pattern": format!("/{name}"),
-                    "config": { "response": { "error_bodies": bodies } }
-                })),
-            ))
-            .await
-            .expect("request");
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "{name} must be refused"
-        );
-        let body = body_json(resp).await;
+        let (status, body) = deploy::try_upload(
+            &app,
+            json!({"kind": "channel", "definition": {
+                "name": name,
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": format!("/{name}"),
+                "config": { "response": { "error_bodies": bodies } }
+            }}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name} must be refused");
         let details = body["error"]["details"]
             .as_array()
             .cloned()
@@ -278,7 +269,7 @@ async fn unusable_templates_are_refused_at_create() {
         assert!(
             details.iter().any(|d| d["path"]
                 .as_str()
-                .is_some_and(|p| p.starts_with("channel.config.response.error_bodies."))),
+                .is_some_and(|p| p.starts_with("definition.config.response.error_bodies."))),
             "{name}: expected a field-pathed detail, got {body}"
         );
     }

@@ -276,24 +276,18 @@ async fn test_backup_contains_data() {
     let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
     let app = backup_test_app(&base_dir, &backup_dir, None).await;
 
-    // Insert some workflows
+    // Deploy some workflows
     for i in 0..3 {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(common::simple_log_workflow(&format!("Backup WF {}", i))),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
+        common::create_and_activate_workflow(
+            &app,
+            common::simple_log_workflow(&format!("Backup WF {}", i)),
+        )
+        .await;
     }
 
-    // Insert some connectors
+    // Deploy some connections
     for i in 0..2 {
-        common::v1::create_connector(&app, common::db_connector(&format!("backup-conn-{}", i)))
-            .await;
+        common::create_connector(&app, common::db_connector(&format!("backup-conn-{}", i))).await;
     }
 
     // Create a backup

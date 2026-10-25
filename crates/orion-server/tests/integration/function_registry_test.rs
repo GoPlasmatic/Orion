@@ -10,7 +10,7 @@
 //!   entry without a handler fails every request;
 //! - the catalogue route serves the *generation's* registry, so an entry a
 //!   generation carries is what a tool sees;
-//! - create-time validation reads the same registry, so a workflow is
+//! - upload validation reads the same registry, so a workflow is
 //!   accepted against exactly the set the engine it will run on dispatches;
 //! - `fmt` reads none of it. One style everywhere is its whole value, so an
 //!   entry only a generation knows must not change how a file is laid out.
@@ -168,15 +168,27 @@ async fn the_catalogue_route_serves_the_generations_registry() {
     assert_eq!(entry["input_fields"][0]["name"], "message");
 }
 
-/// Workflow creation is validated against the registry of the generation the
-/// node is serving — not against the static tables.
+/// Upload `workflow` (a v1-shaped body) as a workflow definition.
+async fn upload(
+    app: &axum::Router,
+    workflow: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    crate::common::deploy::try_upload(app, crate::common::deploy::workflow_definition(&workflow))
+        .await
+}
+
+/// A workflow definition upload is validated against the registry of the
+/// generation the node is serving — not against the static tables.
 ///
-/// The same request is refused with `UNKNOWN_FUNCTION` while no generation
-/// knows the name, and accepted once one does. This is the property every
+/// The same request is refused by the registry with `UNKNOWN_FUNCTION` while
+/// no generation knows the name; once one does, the registry passes it and
+/// its entry's schema validates the inputs. (Upload then compiles on the
+/// generation's engine, which has no handler for this hand-made entry, so the
+/// well-formed workflow is refused there instead.) This is the property every
 /// later phase builds on: a plugin's functions become nameable by publishing
 /// a generation, and nothing else.
 #[tokio::test]
-async fn create_time_validation_reads_the_generations_registry() {
+async fn upload_validation_reads_the_generations_registry() {
     let state = test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
     let workflow = json!({
@@ -192,20 +204,17 @@ async fn create_time_validation_reads_the_generations_registry() {
         }]
     });
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow.clone()),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+    let (status, body) = upload(&app, workflow.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body.to_string().contains("UNKNOWN_FUNCTION"),
         "an unregistered name is refused by code: {body}"
+    );
+    assert!(
+        body["error"]["details"][0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Unknown function")),
+        "the registry is what refuses it: {body}"
     );
 
     let generation = state.runtime.load();
@@ -220,41 +229,37 @@ async fn create_time_validation_reads_the_generations_registry() {
         generation.plugins.clone(),
     );
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(workflow),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "the same workflow is accepted once a generation's registry names the function"
+    // Upload also compiles on the generation's engine, and no handler is
+    // registered for this entry, so the same workflow is still refused — but
+    // by the engine, no longer by the registry: the registry now names it.
+    let (status, body) = upload(&app, workflow).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["error"]["details"][0]["message"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        message.contains("no function `acme.echo.identity` is registered")
+            && !message.contains("Unknown function"),
+        "once a generation's registry names the function only the engine refuses it: {body}"
     );
 
     // And the entry's own schema is what validates it: a field the entry does
     // not declare is refused, because the entry says `deny_unknown`.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Echo via plugin, misspelled",
-                "condition": true,
-                "tasks": [{
-                    "id": "echo",
-                    "name": "echo",
-                    "function": {"name": "acme.echo.identity", "input": {"mesage": "x"}}
-                }]
-            })),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await.to_string();
+    let (status, body) = upload(
+        &app,
+        json!({
+            "name": "Echo via plugin, misspelled",
+            "condition": true,
+            "tasks": [{
+                "id": "echo",
+                "name": "echo",
+                "function": {"name": "acme.echo.identity", "input": {"mesage": "x"}}
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let body = body.to_string();
     assert!(body.contains("REQUIRED"), "{body}");
     assert!(body.contains("UNKNOWN_FIELD"), "{body}");
 }

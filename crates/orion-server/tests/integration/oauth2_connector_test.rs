@@ -1,8 +1,7 @@
 //! #268: managed OAuth2 connector auth, end to end — a workflow's `http_call`
-//! through an oauth2 connector against an in-process fake IdP + fake API, the
-//! probe endpoint acquiring a real token, and the admin read masking the
-//! credential halves. No containers: both backends are axum listeners, the
-//! same pattern as the fake Vault.
+//! through a deployed oauth2 connection against an in-process fake IdP + fake
+//! API. No containers: both backends are axum listeners, the same pattern as
+//! the fake Vault.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -281,113 +280,5 @@ async fn http_call_acquires_applies_and_caches_the_token() {
         idp.hits.load(Ordering::SeqCst),
         1,
         "three calls, one token acquisition"
-    );
-}
-
-/// `POST /connectors/{id}/test` acquires a real token — the probe validates
-/// the whole OAuth setup before any workflow depends on it, and a rejecting
-/// IdP therefore fails the probe.
-#[tokio::test]
-async fn the_probe_exercises_the_whole_oauth_setup() {
-    let app = common::test_app().await;
-    let idp = Arc::new(Idp {
-        hits: AtomicU64::new(0),
-    });
-    let token_url = start_idp(Arc::clone(&idp)).await;
-    let api_url = start_api().await;
-
-    let id = common::v1::create_connector(&app, oauth2_connector("probe-ok", &api_url, &token_url))
-        .await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            &format!("/api/v2/admin/connectors/{id}/test"),
-            None,
-        ))
-        .await
-        .expect("probe");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
-    assert_eq!(body["data"]["reachable"], true, "{body}");
-    assert!(
-        idp.hits.load(Ordering::SeqCst) >= 1,
-        "the probe must acquire a real token"
-    );
-
-    // A connector whose credentials the IdP rejects: the probe fails instead
-    // of reporting a half-validated setup as healthy.
-    let mut bad = oauth2_connector("probe-bad", &api_url, &token_url);
-    bad["config"]["auth"]["client_auth"] = json!("body"); // fake IdP requires Basic
-    let id = common::v1::create_connector(&app, bad).await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            &format!("/api/v2/admin/connectors/{id}/test"),
-            None,
-        ))
-        .await
-        .expect("probe");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
-    assert_eq!(body["data"]["reachable"], false, "{body}");
-}
-
-/// The admin read masks the credential halves and keeps the structure —
-/// grant, token endpoint, client id — readable, at the API surface.
-#[tokio::test]
-async fn the_admin_read_masks_oauth2_credentials() {
-    let app = common::test_app().await;
-    let id = common::v1::create_connector(
-        &app,
-        oauth2_connector(
-            "masked",
-            "https://api.example.com",
-            "https://idp.example.com/t",
-        ),
-    )
-    .await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "GET",
-            &format!("/api/v2/admin/connectors/{id}"),
-            None,
-        ))
-        .await
-        .expect("read");
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
-    let auth = &body["data"]["config"]["auth"];
-    assert_eq!(auth["client_secret"], "******", "{body}");
-    assert_eq!(auth["grant"], "client_credentials", "{body}");
-    assert_eq!(auth["token_url"], "https://idp.example.com/t", "{body}");
-    assert_eq!(auth["client_id"], "svc-app", "{body}");
-}
-
-/// The authoring matrix reaches the API: a bad grant is a 400 at create.
-#[tokio::test]
-async fn a_bad_oauth2_block_is_refused_at_create() {
-    let app = common::test_app().await;
-    let mut bad = oauth2_connector("bad", "https://api.example.com", "https://idp/t");
-    bad["config"]["auth"]["grant"] = json!("password");
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(bad),
-        ))
-        .await
-        .expect("create");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("unknown OAuth2 grant"),
-        "{body}"
     );
 }

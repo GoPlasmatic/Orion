@@ -1,8 +1,8 @@
 //! A2 (Tier-1 ergonomics): per-task trace data (intermediate inputs/outputs).
 //!
 //! Verifies that:
-//!   - the dry-run `/test` endpoint returns the run's trace: the context the
-//!     run started from, and each step with the changes it made
+//!   - the `POST /definitions/test` endpoint returns the run's trace: the
+//!     context the run started from, and each step with the changes it made
 //!   - opting into `config.tracing.task_details = true` causes the engine to
 //!     capture that trace and persist it as `task_trace_json` on the resulting
 //!     trace row
@@ -18,44 +18,29 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn dry_run_test_endpoint_returns_a_replayable_trace() {
     let app = test_app().await;
-    // Create a draft workflow with a single log task (avoids needing connectors).
-    let create_resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "trace-shape",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "log it",
-                    "function": { "name": "log", "input": { "message": "hello" } }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(create_resp.status(), StatusCode::CREATED);
-    let body = body_json(create_resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Dry-run it.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/admin/workflows/{}/test", wf_id),
-            Some(json!({ "data": { "x": 1 } })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    // Run a single log task once through the definition test endpoint
+    // (avoids needing connectors; nothing is deployed).
+    let (status, body) = crate::common::deploy::test_run(
+        &app,
+        &json!({
+            "name": "trace-shape",
+            "tasks": [{
+                "id": "t1",
+                "name": "log it",
+                "function": { "name": "log", "input": { "message": "hello" } }
+            }]
+        }),
+        json!({ "x": 1 }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // The trace is `{initial, steps, truncated}`: the context the run started
     // from, then each step with its task id and the changes it made, which
     // replay to the context after it. Confirm the shape so tooling can rely
     // on it.
-    let trace = &body["data"]["trace"];
+    let trace = &body["trace"];
     assert_eq!(
         trace["initial"]["data"],
         json!({"x": 1}),

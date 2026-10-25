@@ -1,14 +1,15 @@
-//! B5 (Tier-2 ergonomics): `env://` secret references in connector configs.
+//! B5 (Tier-2 ergonomics): `env://` secret references in deployed
+//! connections.
 //!
 //! Verifies that:
-//!   - a connector authored with `"token": "env://VAR_NAME"` loads with
-//!     the resolved env-var value (engine sees the secret, DB stays clean)
+//!   - a connection authored with `"token": "env://VAR_NAME"` is stored as
+//!     the reference and serves with the resolved env-var value (the engine
+//!     sees the secret, the deployment store stays clean)
 //!   - plain strings (https://..., postgres://...) pass through unchanged
-//!   - a missing required env var fails the connector load cleanly
 
-use crate::common::{body_json, json_request, test_app};
-use axum::http::StatusCode;
-use serde_json::json;
+use crate::common::{self, body_json, json_request, test_app};
+use axum::http::{HeaderMap, StatusCode};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// Set before `main()`, while the process is still single-threaded — the only
@@ -36,83 +37,160 @@ fn install_b5_env_fixture() {
     }
 }
 
+/// The connection revisions `GET /connections` lists under `id`.
+async fn connection_rows(app: &axum::Router, id: &str) -> Vec<Value> {
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v2/admin/connections", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await["connections"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["connection_id"] == id)
+        .cloned()
+        .collect()
+}
+
+/// `/health`'s `failed_to_load` list.
+async fn load_failures(app: &axum::Router) -> Vec<Value> {
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    body_json(resp).await["connectors"]["failed_to_load"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// A server that echoes the `Authorization` header it received.
+async fn start_header_echo() -> std::net::SocketAddr {
+    let mock = axum::Router::new().route(
+        "/api",
+        axum::routing::post(|headers: HeaderMap| async move {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            axum::Json(json!({ "authorization": auth }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    addr
+}
+
+/// The connection stores the `env://` reference, never the value, and the
+/// generation built from it resolves the reference: a request through it
+/// carries the resolved token.
 #[tokio::test]
 async fn connector_with_env_reference_resolves_at_engine_load() {
     let app = test_app().await;
+    let addr = start_header_echo().await;
 
-    // Create an http connector whose Bearer token is an env:// reference.
+    common::create_connector(
+        &app,
+        json!({
+            "name": "secret-http",
+            "connector_type": "http",
+            "config": {
+                "url": format!("http://{addr}"),
+                "method": "POST",
+                "allow_private_urls": true,
+                "auth": { "type": "bearer", "token": "env://ORION_SECRET_B5_TEST_TOKEN" }
+            }
+        }),
+    )
+    .await;
+
+    // The stored revision holds the reference, not what it resolves to.
+    let rows = connection_rows(&app, "secret-http").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let stored = rows[0].to_string();
+    assert!(
+        !stored.contains("resolved-secret-value"),
+        "the resolved value must not reach the deployment store: {stored}"
+    );
+    assert!(
+        stored.contains("env://ORION_SECRET_B5_TEST_TOKEN"),
+        "the reference is what is stored: {stored}"
+    );
+
+    // The registry resolved it at load: no load issue, and the call carries
+    // the resolved token.
+    assert!(load_failures(&app).await.is_empty());
+    common::create_and_activate_channel(
+        &app,
+        "b5-secret",
+        common::workflow_with_tasks(
+            "b5",
+            json!([{
+                "id": "call", "name": "Call",
+                "function": { "name": "http_call", "input": {
+                    "connector": "secret-http",
+                    "method": "POST",
+                    "path": "/api",
+                    "body": {},
+                    "output": "data.echo"
+                }}
+            }]),
+        ),
+    )
+    .await;
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "secret-http",
-                "name": "secret-http",
-                "connector_type": "http",
-                "config": {
-                    "url": "https://example.com/api",
-                    "method": "POST",
-                    "auth": { "type": "bearer", "token": "env://ORION_SECRET_B5_TEST_TOKEN" }
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let id = body["data"]["id"].as_str().unwrap().to_string();
-
-    // Verify the DB row still holds the env:// reference (secrets stay
-    // out of storage) — the masked read replaces sensitive fields with
-    // "******" so we just confirm the raw env:// value is not exposed.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/connectors/{}", id),
-            None,
+            "/api/v2/data/b5-secret",
+            Some(json!({ "data": {} })),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let cfg = body["data"]["config_json"].as_str().unwrap_or("");
-    assert!(
-        !cfg.contains("resolved-secret-value"),
-        "resolved value must not leak into masked read; got {cfg}"
+    assert_eq!(
+        body["data"]["echo"]["authorization"], "Bearer resolved-secret-value",
+        "{body}"
     );
-
-    // Confirm the registry resolved the env:// reference: trigger an
-    // engine reload + read the connector registry (channel_call path
-    // would actually use the secret, but here we just exercise the load).
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn plain_url_passes_through_unchanged() {
     let app = test_app().await;
-    // postgres://... is a real connection string, not a secret reference.
-    // Must survive load + read unchanged (modulo masking on the read).
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "name": "plain-db",
-                "connector_type": "db",
-                "config": {
-                    "connection_string": "postgres://localhost/example",
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    // postgres://... is a real connection string, not a secret reference:
+    // it stays in the public config as written and is no locator.
+    common::create_connector(
+        &app,
+        json!({
+            "name": "plain-db",
+            "connector_type": "db",
+            "config": {
+                "connection_string": "postgres://localhost/example",
+            }
+        }),
+    )
+    .await;
+    let rows = connection_rows(&app, "plain-db").await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0]["public_config"]["connection_string"], "postgres://localhost/example",
+        "{}",
+        rows[0]
+    );
+    assert!(
+        rows[0]["secret_locators"]
+            .as_object()
+            .is_none_or(|m| m.is_empty()),
+        "{}",
+        rows[0]
+    );
+    assert!(load_failures(&app).await.is_empty());
 }

@@ -10,86 +10,81 @@ use tower::ServiceExt;
 // SQL injection resistance
 // ============================================================
 
+/// Upload a v1-shaped workflow body as a workflow definition, answering its
+/// digest.
+async fn upload_workflow(app: &axum::Router, workflow: serde_json::Value) -> String {
+    common::deploy::upload(app, common::deploy::workflow_definition(&workflow)).await
+}
+
+/// The stored definition a digest names.
+async fn read_definition(app: &axum::Router, digest: &str) -> serde_json::Value {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v2/admin/definitions/{digest}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await
+}
+
+/// A workflow whose name is SQL uploads, reads back by its digest intact, and
+/// deploys and serves: nothing interpreted it.
 #[tokio::test]
 async fn test_sql_injection_in_workflow_name() {
     let app = common::test_app().await;
 
     let malicious_name = "'; DROP TABLE workflows;--";
+    let workflow = json!({
+        "name": malicious_name,
+        "condition": true,
+        "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
+    });
 
+    // Verify the definition is stored safely and retrievable
+    let digest = upload_workflow(&app, workflow.clone()).await;
+    let stored = read_definition(&app, &digest).await;
+    assert_eq!(stored["definition"]["name"], malicious_name);
+
+    // …and that it deploys and serves.
+    common::create_and_activate_channel(&app, "sqli-name-ch", workflow).await;
     let resp = app
-        .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": malicious_name,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Verify the workflow is stored safely and retrievable
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/workflows/{}", workflow_id),
-            None,
+            "/api/v2/data/sqli-name-ch",
+            Some(json!({"data": {}})),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["name"], malicious_name);
-
-    // Verify the workflows table still exists by listing workflows
-    let resp = app
-        .oneshot(json_request("GET", "/api/v2/admin/workflows", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert!(body["total"].as_i64().unwrap() >= 1);
 }
 
 #[tokio::test]
-async fn test_sql_injection_in_tag_filter() {
+async fn test_sql_injection_in_audit_log_filter() {
     let app = common::test_app().await;
 
-    // Create a workflow with a normal tag
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "Tagged Workflow",
-                "tags": ["safe-tag"],
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    // One audited mutation, so an injected filter that matched everything
+    // would have something to return.
+    upload_workflow(&app, common::simple_log_workflow("Audited Workflow")).await;
+    common::wait_for_body(&app, "/api/v2/admin/audit-logs", |b| b["total"] == 1).await;
 
-    // Attempt SQL injection via tag filter (percent-encoded: %' OR 1=1 --)
+    // Attempt SQL injection via a filter (percent-encoded: ' OR 1=1 --)
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/workflows?tag=%25%27%20OR%201%3D1%20--",
+            "/api/v2/admin/audit-logs?resource_type=%27%20OR%201%3D1%20--",
             None,
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    // The injection should not return all workflows -- should match 0 since no tag matches the payload
-    assert_eq!(body["total"], 0);
+    // The injection must not return every row: no resource type matches the payload.
+    assert_eq!(body["total"], 0, "{body}");
 }
 
 // ============================================================
@@ -102,35 +97,19 @@ async fn test_xss_in_workflow_description() {
 
     let xss_payload = "<script>alert('xss')</script>";
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "XSS Test Workflow",
-                "description": xss_payload,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+    let digest = upload_workflow(
+        &app,
+        json!({
+            "name": "XSS Test Workflow",
+            "description": xss_payload,
+            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
+        }),
+    )
+    .await;
 
     // Verify the description is stored and returned as-is (JSON-escaped, not interpreted)
-    let resp = app
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/workflows/{}", workflow_id),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["description"], xss_payload);
+    let stored = read_definition(&app, &digest).await;
+    assert_eq!(stored["definition"]["description"], xss_payload);
 }
 
 // ============================================================
@@ -206,38 +185,23 @@ async fn test_unicode_in_workflow_fields() {
     let cjk_description = "\u{4E1A}\u{52A1}\u{89C4}\u{5219} (Business Workflow)";
     let unicode_tags = vec!["tag-\u{00E9}\u{00E8}\u{00EA}", "\u{0442}\u{0435}\u{0433}"];
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": emoji_name,
-                "description": cjk_description,
-                "tags": unicode_tags,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+    let digest = upload_workflow(
+        &app,
+        json!({
+            "name": emoji_name,
+            "description": cjk_description,
+            "tags": unicode_tags,
+            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
+        }),
+    )
+    .await;
 
     // Verify roundtrip
-    let resp = app
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/workflows/{}", workflow_id),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["data"]["name"], emoji_name);
-    assert_eq!(body["data"]["description"], cjk_description);
-    let tags = body["data"]["tags"].as_array().unwrap();
+    let stored = read_definition(&app, &digest).await;
+    let def = &stored["definition"];
+    assert_eq!(def["name"], emoji_name);
+    assert_eq!(def["description"], cjk_description);
+    let tags = def["tags"].as_array().unwrap();
     assert_eq!(tags[0], unicode_tags[0]);
     assert_eq!(tags[1], unicode_tags[1]);
 }
@@ -252,36 +216,24 @@ async fn test_null_bytes_in_string_fields() {
 
     let name_with_null = "test\0name";
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": name_with_null,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "workflow", "definition": {
+            "name": name_with_null,
+            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
+        }}),
+    )
+    .await;
 
     // System should either accept safely or reject -- must not panic
-    if resp.status().is_success() {
-        let body = body_json(resp).await;
-        let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
+    if status.is_success() {
         // Verify retrieval is consistent
-        let resp = app
-            .oneshot(json_request(
-                "GET",
-                &format!("/api/v2/admin/workflows/{}", workflow_id),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        let digest = body["digest"].as_str().unwrap();
+        let stored = read_definition(&app, digest).await;
+        assert_eq!(stored["definition"]["name"], name_with_null);
+    } else {
+        assert!(status.is_client_error(), "{status}: {body}");
     }
-    // If rejected, that is also acceptable -- no crash or corruption
 }
 
 // ============================================================
@@ -384,7 +336,7 @@ async fn test_admin_preflight_is_answered_not_rejected() {
 
     let req = Request::builder()
         .method("OPTIONS")
-        .uri("/api/v2/admin/workflows")
+        .uri("/api/v2/admin/definitions")
         .header("Origin", "https://console.example.com")
         .header("Access-Control-Request-Method", "GET")
         // A browser calling an authenticated admin route sends this. Omitting
@@ -762,66 +714,6 @@ async fn test_admin_auth_multiple_api_keys() {
 }
 
 // ============================================================
-// Connector secret masking
-// ============================================================
-
-#[tokio::test]
-async fn test_connector_secret_masking() {
-    let app = common::test_app().await;
-
-    let secret_token = "super-secret-token-12345";
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "name": "Secret Connector",
-                "connector_type": "http",
-                "config": {
-                    "url": "https://example.com/api",
-                    "method": "POST",
-                    "auth": {
-                        "type": "bearer",
-                        "token": secret_token
-                    }
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let connector_id = body["data"]["id"].as_str().unwrap().to_string();
-
-    // The create response should already have masked secrets
-    let config_json_str = body["data"]["config_json"].as_str().unwrap();
-    let config: serde_json::Value = serde_json::from_str(config_json_str).unwrap();
-    assert_eq!(config["auth"]["token"], "******");
-    assert_ne!(config["auth"]["token"], secret_token);
-
-    // GET should also return masked secrets
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v2/admin/connectors/{}", connector_id),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let config_json_str = body["data"]["config_json"].as_str().unwrap();
-    let config: serde_json::Value = serde_json::from_str(config_json_str).unwrap();
-    assert_eq!(config["auth"]["token"], "******");
-
-    // URL should NOT be masked
-    assert_eq!(config["url"], "https://example.com/api");
-}
-
-// ============================================================
 // Metrics endpoint authentication
 // ============================================================
 
@@ -1008,15 +900,15 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // A mutation with the read-only key is 403 FORBIDDEN.
-    let create = serde_json::json!({
+    let create = serde_json::json!({"kind": "workflow", "definition": {
         "name": "s13-wf",
         "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
-    });
+    }});
     let resp = app
         .clone()
         .oneshot(with_key(
             "POST",
-            "/api/v2/admin/workflows",
+            "/api/v2/admin/definitions",
             "read-only-key-long-enough-00000000",
             Some(create.clone()),
         ))
@@ -1038,7 +930,7 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
         .clone()
         .oneshot(with_key(
             "POST",
-            "/api/v2/admin/workflows",
+            "/api/v2/admin/definitions",
             "full-access-key-long-enough-000000",
             Some(create),
         ))
@@ -1046,14 +938,19 @@ async fn test_read_only_key_reads_but_cannot_mutate() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // DELETE with the read-only key: same refusal.
+    // Applying a deployment with the read-only key: same refusal.
     let resp = app
         .clone()
         .oneshot(with_key(
-            "DELETE",
-            "/api/v2/admin/workflows/s13-wf",
+            "POST",
+            "/api/v2/admin/deployments",
             "read-only-key-long-enough-00000000",
-            None,
+            Some(serde_json::json!({
+                "idempotency_key": "s13-apply",
+                "base_revision": 0,
+                "manifest": {"schema_version": 2, "providers": [], "members": []},
+                "reason": "read-only key",
+            })),
         ))
         .await
         .unwrap();
@@ -1075,9 +972,16 @@ async fn test_read_only_role_applies_to_the_digest_form() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v2/admin/engine/reload")
+        .uri("/api/v2/admin/definitions")
         .header("Authorization", format!("Bearer {key}"))
-        .body(Body::empty())
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({"kind": "workflow", "definition": {
+                "name": "digest-form-wf",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
+            }}))
+            .unwrap(),
+        ))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);

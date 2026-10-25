@@ -505,7 +505,8 @@ async fn cache_incr_keys_and_delete_compose_a_generation_counter() {
 }
 
 /// `cache_read` takes `key` or `keys`, never both and never neither — refused
-/// when the workflow is created, not when a message reaches the task.
+/// when the workflow definition is uploaded, not when a message reaches the
+/// task.
 #[tokio::test]
 async fn cache_read_requires_exactly_one_of_key_and_keys() {
     let app = common::test_app().await;
@@ -517,18 +518,12 @@ async fn cache_read_requires_exactly_one_of_key_and_keys() {
         ),
         ("neither", json!({"connector": "kk-cache"})),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "POST",
-                "/api/v2/admin/workflows",
-                Some(common::workflow_with_tasks(
-                    id,
-                    json!([{"id": "t", "name": "t", "function": {"name": "cache_read", "input": input}}]),
-                )),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{id}");
+        let workflow = common::workflow_with_tasks(
+            id,
+            json!([{"id": "t", "name": "t", "function": {"name": "cache_read", "input": input}}]),
+        );
+        let (status, body) =
+            common::deploy::try_upload(&app, common::deploy::workflow_definition(&workflow)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{id}: {body}");
     }
 }

@@ -569,20 +569,19 @@ async fn an_open_breaker_is_named_in_the_errors_of_a_continue_on_error_workflow(
 }
 
 // ---------------------------------------------------------------------------
-// Test: a breaker survives a reload of an unrelated part of the estate.
+// Test: a breaker survives a rebuild for an unrelated deployment.
 //
-// `prune_breakers` runs on every reload and drops breakers whose channel or
+// `prune_breakers` runs on every rebuild and drops breakers whose channel or
 // connector the new generation no longer carries. A breaker's stored channel
-// is the routing identity (`metadata.channel` — the channel *name*), not the
-// `channel_id` storage PK. Wiring prune against `channel_id` — a UUID the
-// admin API auto-assigns — matched no breaker's channel, so every reload wiped
-// the whole map, silently defeating circuit breaking after the first
-// activate/archive/delete/rollout. This pins that a still-live pairing's
-// breaker is kept, without the container-gated cluster suite.
+// is the routing identity (`metadata.channel` — the channel *name*), not a
+// storage id. Wiring prune against a storage id matched no breaker's
+// channel, so every rebuild wiped the whole map, silently defeating circuit
+// breaking after the first deployment. This pins that a still-live
+// pairing's breaker is kept, without the container-gated cluster suite.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn breaker_survives_reload_of_a_live_pairing() {
+async fn breaker_survives_a_rebuild_of_a_live_pairing() {
     let addr = start_failing_server().await;
     let app = common::test_app_with_config(cb_config(2, 300)).await;
 
@@ -616,23 +615,20 @@ async fn breaker_survives_reload_of_a_live_pairing() {
     assert_eq!(
         body["data"]["breakers"][key].as_str(),
         Some("open"),
-        "the breaker must be open before the reload: {body}"
+        "the breaker must be open before the rebuild: {body}"
     );
 
-    // Reload the engine. Nothing about `cb-survive` or `survive-api` changed,
-    // so its breaker must still be there afterwards.
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/engine/reload", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Deploy something unrelated, which rebuilds the generation. Nothing
+    // about `cb-survive` or `survive-api` changed, so its breaker must still
+    // be there afterwards.
+    common::create_and_activate_workflow(&app, common::simple_log_workflow("CB Unrelated WF"))
+        .await;
 
     let body = breakers(app.clone()).await;
     assert_eq!(
         body["data"]["breakers"][key].as_str(),
         Some("open"),
-        "a reload must not prune the breaker of a still-live channel + \
+        "a rebuild must not prune the breaker of a still-live channel + \
          connector — prune keys off the channel name, not the channel_id: {body}"
     );
 }

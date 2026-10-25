@@ -941,7 +941,7 @@ async fn test_origin_allow_list_refuses_an_unlisted_origin() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// N24: the pre-1.0 `cors` spelling is refused at create, not accepted and
+/// N24: the pre-1.0 `cors` spelling is refused at upload, not accepted and
 /// dropped.
 ///
 /// Dropping it would leave the channel serving with no origin allow-list —
@@ -949,29 +949,23 @@ async fn test_origin_allow_list_refuses_an_unlisted_origin() {
 /// unlisted origin would be admitted with nothing to indicate the guard had
 /// gone. A 400 naming the key is the only outcome that cannot be missed.
 #[tokio::test]
-async fn test_pre_1_0_cors_key_is_refused_at_create() {
+async fn test_pre_1_0_cors_key_is_refused_at_upload() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "n24-legacy-cors",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["POST"],
-                "route_pattern": "/n24-legacy-cors",
-                "workflow_id": "wf-does-not-matter",
-                "config": { "cors": { "allowed_origins": ["https://allowed.example"] } }
-            })),
-        ))
-        .await
-        .unwrap();
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "n24-legacy-cors",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["POST"],
+            "route_pattern": "/n24-legacy-cors",
+            "config": { "cors": { "allowed_origins": ["https://allowed.example"] } }
+        }}),
+    )
+    .await;
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let message = body.to_string();
     assert!(
         message.contains("cors"),
@@ -983,29 +977,23 @@ async fn test_pre_1_0_cors_key_is_refused_at_create() {
 /// config is a guard that would silently not run, so it is refused rather than
 /// ignored.
 #[tokio::test]
-async fn test_misspelled_channel_config_key_is_refused_at_create() {
+async fn test_misspelled_channel_config_key_is_refused_at_upload() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "typo-guard",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["POST"],
-                "route_pattern": "/typo-guard",
-                "workflow_id": "wf-does-not-matter",
-                "config": { "deduplicaton": { "header": "Idempotency-Key" } }
-            })),
-        ))
-        .await
-        .unwrap();
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "typo-guard",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["POST"],
+            "route_pattern": "/typo-guard",
+            "config": { "deduplicaton": { "header": "Idempotency-Key" } }
+        }}),
+    )
+    .await;
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let message = body.to_string();
     assert!(
         message.contains("deduplicaton"),

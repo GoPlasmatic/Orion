@@ -1,19 +1,19 @@
 //! Multi-node (cluster mode) integration tests — multi-instance-ha M2.
 //!
 //! Each test builds N full `AppState`s (nodes) sharing one Postgres
-//! testcontainer, with cluster mode on and a
-//! fast epoch poll. This binary is separate from `tests/integration`, though
-//! no longer forced to be: the backend used to be a process-global `OnceLock`
-//! that the integration binary pinned to SQLite, and it is now carried on
-//! `DbPool` itself.
+//! testcontainer, with cluster mode on and a fast reconciler poll
+//! (`cluster.epoch_poll_interval_ms`). This binary is separate from
+//! `tests/integration`, though no longer forced to be: the backend used to
+//! be a process-global `OnceLock` that the integration binary pinned to
+//! SQLite, and it is now carried on `DbPool` itself.
 //!
 //! Containers are per-test on purpose: the outage tests pause/stop theirs,
-//! and the shared stores (config_epoch, channels, dedup keys) make each test
+//! and the shared stores (deployments, dedup keys) make each test
 //! order-independent even under `--test-threads=1`.
 //!
 //! Poll-budget policy: every cross-node assertion goes through `eventually`
 //! / `eventually_n` with a total budget of at least 25× the slowest involved
-//! watcher interval; bare sleeps are allowed only for rate-limit window
+//! reconciler interval; bare sleeps are allowed only for rate-limit window
 //! alignment.
 //!
 //! Run with: cargo test --test cluster -- --ignored
@@ -41,7 +41,7 @@ use orion::server::state::AppState;
 ///
 /// `_handles` is held, not read: dropping it closes the trace and audit queue
 /// senders it owns, so the node's queues would shut down under the test.
-/// Teardown stops the *supervised* tasks — the epoch watcher above all —
+/// Teardown stops the *supervised* tasks — the reconciler above all —
 /// through `state.tasks`, not through this.
 struct Node {
     state: AppState,
@@ -53,23 +53,23 @@ struct ClusterHarness {
     /// The outage tests pause/unpause this.
     pg: testcontainers::ContainerAsync<Postgres>,
     nodes: Vec<Node>,
-    /// The FASTEST epoch poll interval any node runs at.
+    /// The FASTEST reconciler poll interval any node runs at.
     poll: Duration,
 }
 
 impl Drop for ClusterHarness {
     fn drop(&mut self) {
-        // Stop the epoch watchers: without this, every finished test leaked
-        // watchers polling its destroyed Postgres every 200ms (a 3s connect
+        // Stop the reconcilers: without this, every finished test leaked
+        // loops polling its destroyed Postgres every 200ms (a 3s connect
         // timeout each) for the rest of the serial binary run. The worker and
         // persistence tasks exit on their own when the states drop and their
         // queue senders close.
         //
         // `Drop` cannot await, so this only *signals* the supervisor rather
-        // than joining it — which is all that is needed here: a watcher wakes
+        // than joining it — which is all that is needed here: a loop wakes
         // at its next tick, sees the signal and returns, instead of running
         // for the rest of the binary. It used to be `JoinHandle::abort()`,
-        // which could cut a resync mid-reload.
+        // which could cut a rebuild mid-publish.
         for node in &self.nodes {
             node.state.tasks.signal_shutdown();
         }
@@ -108,14 +108,14 @@ async fn two_nodes_with(customize: impl Fn(&mut orion::config::AppConfig)) -> Tw
     }
 }
 
-/// Retry `check` once per epoch-poll interval (25 tries ≈ 5 s at the harness
+/// Retry `check` once per reconciler poll interval (25 tries ≈ 5 s at the harness
 /// poll rate); `true` as soon as it passes. The shared retry budget for
 /// "node B eventually observes node A's change" assertions.
 async fn eventually(poll: Duration, check: impl AsyncFnMut() -> bool) -> bool {
     eventually_n(poll, 25, check).await
 }
 
-/// `eventually` with an explicit budget — for tests whose slowest watcher
+/// `eventually` with an explicit budget — for tests whose slowest reconciler
 /// polls slower than the harness default (e.g. the stale-node test).
 async fn eventually_n(
     interval: Duration,
@@ -131,10 +131,28 @@ async fn eventually_n(
     false
 }
 
+/// The revision `state`'s node has built and serves.
+fn applied_revision(state: &AppState) -> u64 {
+    state.composition.reconciler.local_status().applied_revision
+}
+
+/// POST an empty payload to `channel` on `node`, answering the status.
+async fn post_status(node: &axum::Router, channel: &str) -> StatusCode {
+    node.clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v2/data/{channel}"),
+            Some(json!({"data": {"x": 1}})),
+        ))
+        .await
+        .unwrap()
+        .status()
+}
+
 /// Build an N-node cluster over one Postgres container, which is all a
 /// cluster shares.
 /// `shared` customizes the config every node gets; `per_node(i, cfg)` runs
-/// after it for node-specific overrides (e.g. a slow epoch poll).
+/// after it for node-specific overrides (e.g. a slow reconciler poll).
 async fn cluster_nodes_with(
     n: usize,
     shared: impl Fn(&mut orion::config::AppConfig),
@@ -167,21 +185,20 @@ async fn cluster_nodes_with(
     ClusterHarness { pg, nodes, poll }
 }
 
-/// A plugin activated through node A is compiled and served by node B within
-/// a few epoch polls: the `Plugins` scope makes B compare the active set's
-/// fingerprint, load the artifact from the shared database and rebuild its
-/// engine with the new handler — no request to B's admin API, no shared
-/// filesystem.
+/// A plugin deployed through node A is compiled and served by node B within
+/// a few reconciler polls: B takes up the revision carrying it, loads the
+/// component from the shared deployment store and rebuilds its engine with
+/// the new handler — no request to B's admin API, no shared filesystem.
 ///
-/// Then the same claim under load: activating a *new version* through A
-/// refuses nothing on B, whose engine is rebuilt whole for the changed
-/// fingerprint. This is `deploy/ha/plugin-drill.sh`'s second assertion
-/// without the containers — the drill measures it through a load balancer
-/// across two processes, and this pins it per run of the cluster suite.
+/// Then the same claim under load: deploying a *new revision* of the plugin
+/// through A refuses nothing on B, whose engine is rebuilt whole for the
+/// changed fingerprint. This is `deploy/ha/plugin-drill.sh`'s second
+/// assertion without the containers — the drill measures it through a load
+/// balancer across two processes, and this pins it per run of the cluster
+/// suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn plugin_activation_propagates_across_nodes() {
-    use base64::Engine as _;
     let h = two_nodes_with(|c| {
         c.plugins.enabled = true;
         c.plugins.max_timeout_ms = 2_000;
@@ -190,33 +207,10 @@ async fn plugin_activation_propagates_across_nodes() {
     let component = include_bytes!("../fixtures/plugins/fixture.wasm");
     let manifest = include_str!("../fixtures/plugins/fixture-upload.toml");
 
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/plugins",
-            Some(json!({
-                "manifest": manifest,
-                "component": base64::engine::general_purpose::STANDARD.encode(component),
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/plugins/test.fixture/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::deploy_plugin(&h.node_a, manifest, component).await;
 
-    // Node B's generation carries the function once its watcher resyncs.
+    // Node B's generation carries the function once its reconciler takes up
+    // the revision.
     let loaded = eventually(h.poll, async || {
         h.state_b
             .runtime
@@ -227,12 +221,12 @@ async fn plugin_activation_propagates_across_nodes() {
     .await;
     assert!(
         loaded,
-        "node B must load the plugin within a few epoch polls"
+        "node B must load the plugin within a few reconciler polls"
     );
     assert!(h.state_b.runtime.load().plugins.issues.is_empty());
 
-    // And a workflow activated on A that calls it serves on B.
-    common::v1::create_and_activate_channel(
+    // And a workflow deployed on A that calls it serves on B.
+    common::create_and_activate_channel(
         &h.node_a,
         "plugin-prop",
         json!({
@@ -266,11 +260,11 @@ async fn plugin_activation_propagates_across_nodes() {
     .await;
     assert!(served, "node B must serve the plugin-backed channel");
 
-    // The plugin drill's second claim, in process: activating a NEW version
+    // The plugin drill's second claim, in process: deploying a NEW revision
     // under steady load produces no refusal on a peer. The peer's whole
     // engine is rebuilt for a changed plugin fingerprint, so this is the
     // window where a request could be admitted against one generation and
-    // executed against another — or meet an estate that has neither version.
+    // executed against another — or meet an estate that has neither revision.
     let hammering = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let load = {
         let router = h.node_b.clone();
@@ -294,54 +288,36 @@ async fn plugin_activation_propagates_across_nodes() {
         })
     };
 
-    // The same bytes under a new draft: the digest is what a generation
-    // names, so a re-upload is a legitimate new version and activating it
+    // The same component under a manifest that differs only by a comment: a
+    // different definition, so the plugin's next revision, and deploying it
     // rebuilds the engine on every node.
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/plugins/test.fixture/versions",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/plugins/test.fixture/status",
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let revised = format!("{manifest}\n# revision 2\n");
+    common::deploy_plugin(&h.node_a, &revised, component).await;
+    let (target, _) = h.state_a.composition.deployments.current_head();
 
     let on_v2 = eventually(h.poll, async || {
-        h.state_b.runtime.load().plugins.fingerprint()
-            == h.state_a.runtime.load().plugins.fingerprint()
+        applied_revision(&h.state_b) == target
+            && h.state_b.runtime.load().plugins.fingerprint()
+                == h.state_a.runtime.load().plugins.fingerprint()
     })
     .await;
     hammering.store(false, std::sync::atomic::Ordering::Relaxed);
     let codes = load.await.unwrap();
-    assert!(on_v2, "node B must reach the new version");
+    assert!(on_v2, "node B must reach the new revision");
 
     let refused: Vec<StatusCode> = codes.iter().copied().filter(|c| !c.is_success()).collect();
     assert!(
         refused.is_empty(),
-        "a version activation must not refuse a request on a peer: {refused:?} of {} were non-2xx",
+        "a plugin revision must not refuse a request on a peer: {refused:?} of {} were non-2xx",
         codes.len()
     );
 }
 
-/// A2: a channel activated through node A is served by node B within a few
-/// epoch polls, with no request to node B's admin API.
+/// A2: a channel deployed through node A is served by node B within a few
+/// reconciler polls, with no request to node B's admin API.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
-async fn epoch_propagates_channel_activation_across_nodes() {
+async fn deployment_propagates_channel_activation_across_nodes() {
     let h = two_nodes().await;
 
     common::create_and_activate_channel(
@@ -351,7 +327,7 @@ async fn epoch_propagates_channel_activation_across_nodes() {
     )
     .await;
 
-    // Node B picks the channel up via its epoch watcher.
+    // Node B picks the channel up via its reconciler.
     let payload = json!({"data": {"x": 1}});
     let served = eventually(h.poll, async || {
         let resp = h
@@ -369,7 +345,7 @@ async fn epoch_propagates_channel_activation_across_nodes() {
     .await;
     assert!(
         served,
-        "node B must serve the channel within a few epoch polls"
+        "node B must serve the channel within a few reconciler polls"
     );
 
     // Sanity: node B's registry (not just routing fallbacks) has it.
@@ -580,111 +556,64 @@ async fn rate_limit_holds_across_nodes_combined() {
     );
 }
 
-/// Propagation beyond activation: archive and delete ride the same epoch bus
-/// (`audit_and_reload` → bump; watcher → `resync_from_db`). Workflow-status
-/// and rollout mutations use the identical path, so channel archive/delete
-/// is the representative pin.
+/// Propagation beyond activation: deploying without a channel — what
+/// archiving or deleting it was in v1 — rides the same path as adding one
+/// (an apply on A; B's reconciler takes up the revision). Two removals, in
+/// two revisions, so the second is taken up from a peer that already applied
+/// the first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
-async fn archive_and_delete_propagate_across_nodes() {
+async fn removal_propagates_across_nodes() {
     let h = two_nodes().await;
 
-    let (arch_id, _) = common::v1::create_and_activate_channel_full(
+    common::create_and_activate_channel(
         &h.node_a,
         "arch-ch",
         common::simple_log_workflow("Archive WF"),
-        json!({}),
     )
     .await;
-    let (del_id, _) = common::v1::create_and_activate_channel_full(
+    common::create_and_activate_channel(
         &h.node_a,
         "del-ch",
         common::simple_log_workflow("Delete WF"),
-        json!({}),
     )
     .await;
-
-    let payload = json!({"data": {"x": 1}});
-    let data = |node: axum::Router, ch: &'static str, payload: serde_json::Value| async move {
-        node.oneshot(json_request(
-            "POST",
-            &format!("/api/v2/data/{ch}"),
-            Some(payload),
-        ))
-        .await
-        .unwrap()
-        .status()
-    };
 
     // Baseline: node B serves both.
     for ch in ["arch-ch", "del-ch"] {
         let served = eventually(h.poll, async || {
-            data(h.node_b.clone(), ch, payload.clone()).await == StatusCode::OK
+            post_status(&h.node_b, ch).await == StatusCode::OK
         })
         .await;
-        assert!(served, "node B must serve {ch} before the mutation phase");
+        assert!(served, "node B must serve {ch} before the removal phase");
     }
 
-    // Archive one; archive-then-delete the other (delete requires archived,
-    // same as the single-node admin flow).
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{arch_id}/status"),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{del_id}/status"),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "DELETE",
-            &format!("/api/v2/admin/channels/{del_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    common::remove_member(&h.node_a, "channel", "arch-ch").await;
+    common::remove_member(&h.node_a, "channel", "del-ch").await;
 
-    // Node A stops serving immediately (local reload precedes the bump)...
+    // Node A stops serving immediately (its apply rebuilt it inline)...
     for ch in ["arch-ch", "del-ch"] {
         assert_eq!(
-            data(h.node_a.clone(), ch, payload.clone()).await,
+            post_status(&h.node_a, ch).await,
             StatusCode::NOT_FOUND,
-            "{ch} must 404 on node A immediately after the mutation"
+            "{ch} must 404 on node A immediately after the removal"
         );
     }
 
     // ...and node B within the poll budget.
     for ch in ["arch-ch", "del-ch"] {
         let gone = eventually(h.poll, async || {
-            data(h.node_b.clone(), ch, payload.clone()).await == StatusCode::NOT_FOUND
+            post_status(&h.node_b, ch).await == StatusCode::NOT_FOUND
         })
         .await;
         assert!(gone, "node B must stop serving {ch} within the poll budget");
     }
 }
 
-/// T6 — connector mutation propagation, the bug this release claims to fix:
-/// a connector config updated through node A must take effect on node B,
-/// which requires BOTH the connector-registry reload and the
-/// `sql_pool_cache.evict_all()` inside `resync_from_db`; without the
-/// eviction node B keeps answering from a pool built for the old config.
+/// T6 — connection change propagation: a connection repointed through node
+/// A (a new connection revision, deployed) must take effect on node B, which
+/// requires B to load the new revision into its connector registry and to
+/// stop answering from a pool built for the old settings.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn connector_update_propagates_to_other_node() {
@@ -714,9 +643,8 @@ async fn connector_update_propagates_to_other_node() {
             .expect("seed");
     }
 
-    common::v1::create_connector(&h.node_a, common::db_connector_sqlite("prop-conn", old_url))
-        .await;
-    common::v1::create_and_activate_channel(
+    common::create_connector(&h.node_a, common::db_connector_sqlite("prop-conn", old_url)).await;
+    common::create_and_activate_channel(
         &h.node_a,
         "conn-prop-ch",
         common::workflow_with_tasks(
@@ -766,31 +694,11 @@ async fn connector_update_propagates_to_other_node() {
     );
     assert_eq!(read_val(h.node_a.clone()).await.as_deref(), Some("old"));
 
-    // Repoint the connector at the new DB via node A.
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/connectors/prop-conn",
-            Some(json!({
-                "config": {
-                    "type": "db",
-                    "connection_string": new_url,
-                    "max_connections": 1,
-                    "query_timeout_ms": 5000
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "connector update must succeed"
-    );
+    // Repoint the connection at the new DB via node A: its next revision,
+    // deployed.
+    common::create_connector(&h.node_a, common::db_connector_sqlite("prop-conn", new_url)).await;
 
-    // Node A serves "new" immediately (local registry reload + pool eviction).
+    // Node A serves "new" immediately (its apply rebuilt it inline).
     assert_eq!(read_val(h.node_a.clone()).await.as_deref(), Some("new"));
 
     // The T6 pin: node B must serve "new" within the poll budget.
@@ -798,80 +706,111 @@ async fn connector_update_propagates_to_other_node() {
         read_val(h.node_b.clone()).await.as_deref() == Some("new")
     })
     .await;
-    assert!(
-        propagated,
-        "the connector update must propagate to node B (registry reload + pool eviction)"
-    );
+    assert!(propagated, "the connection change must propagate to node B");
 }
 
-/// Concurrent admin writes on different nodes converge: the epoch bump is an
-/// atomic single-row UPDATE, and a node claims the epoch its own bump returned
-/// only when that epoch is the next one — a bump that jumped means a peer's
-/// change is folded into the number, so the watermark stays put and the
-/// watcher resyncs for it. Neither node's bump can mask the other's.
+/// Concurrent deployments on different nodes converge: two applies over the
+/// same head race the compare-and-swap, exactly one commits, and the other
+/// is refused with `409` rather than silently overwriting it. Retried over
+/// the new head, the loser commits too, and both nodes serve both channels —
+/// neither node's change can mask the other's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn concurrent_admin_writes_converge() {
     let h = two_nodes().await;
-    let start = h
-        .state_a
-        .cluster
-        .repo
-        .get_epoch()
-        .await
-        .expect("epoch")
-        .epoch;
 
-    tokio::join!(
-        common::v1::create_and_activate_channel(
-            &h.node_a,
-            "conc-a",
-            common::simple_log_workflow("Conc A WF"),
-        ),
-        common::v1::create_and_activate_channel(
-            &h.node_b,
-            "conc-b",
-            common::simple_log_workflow("Conc B WF"),
-        ),
+    // Each node uploads its own channel and workflow and merges them over
+    // the head it sees — the same head on both, so the applies race.
+    let upserts = |name: &str, workflow_id: String, wf: String, ch: String| {
+        vec![
+            common::deploy::Upsert {
+                kind: "workflow",
+                id: workflow_id.clone(),
+                digest: wf,
+                revision: None,
+                requires: Vec::new(),
+            },
+            common::deploy::Upsert {
+                kind: "channel",
+                id: name.to_string(),
+                digest: ch,
+                revision: None,
+                requires: vec![("workflow", workflow_id)],
+            },
+        ]
+    };
+    let mut plans = Vec::new();
+    for (node, name) in [(&h.node_a, "conc-a"), (&h.node_b, "conc-b")] {
+        let workflow = common::simple_log_workflow(&format!("{name} WF"));
+        let workflow_id = common::deploy::workflow_id_of(&workflow);
+        let wf = common::deploy::upload(node, common::deploy::workflow_definition(&workflow)).await;
+        let ch = common::deploy::upload(
+            node,
+            common::deploy::channel_definition(&common::sync_http_channel(name, &workflow_id)).0,
+        )
+        .await;
+        plans.push(upserts(name, workflow_id, wf, ch));
+    }
+    let plan_b = plans.pop().unwrap();
+    let plan_a = plans.pop().unwrap();
+    let (base_a, members_a) = common::deploy::merged(&h.node_a, plan_a).await;
+    let (base_b, members_b) = common::deploy::merged(&h.node_b, plan_b).await;
+    assert_eq!(base_a, base_b, "both applies are based on one head");
+
+    let ((status_a, body_a), (status_b, body_b)) = tokio::join!(
+        common::deploy::apply(&h.node_a, base_a, members_a),
+        common::deploy::apply(&h.node_b, base_b, members_b),
+    );
+    let mut statuses = [status_a, status_b];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::ACCEPTED, StatusCode::CONFLICT],
+        "exactly one apply wins the compare-and-swap: {body_a} / {body_b}"
+    );
+
+    // The loser retries over the head it learns from its reconciler.
+    let (loser, name) = if status_a == StatusCode::CONFLICT {
+        (&h.node_a, "conc-a")
+    } else {
+        (&h.node_b, "conc-b")
+    };
+    let workflow = common::simple_log_workflow(&format!("{name} WF"));
+    let retried = eventually(h.poll, async || {
+        let wf =
+            common::deploy::upload(loser, common::deploy::workflow_definition(&workflow)).await;
+        let workflow_id = common::deploy::workflow_id_of(&workflow);
+        let ch = common::deploy::upload(
+            loser,
+            common::deploy::channel_definition(&common::sync_http_channel(name, &workflow_id)).0,
+        )
+        .await;
+        let (base, members) =
+            common::deploy::merged(loser, upserts(name, workflow_id, wf, ch)).await;
+        common::deploy::apply(loser, base, members).await.0 == StatusCode::ACCEPTED
+    })
+    .await;
+    assert!(
+        retried,
+        "the refused apply commits once retried over the new head"
     );
 
     // Both nodes must converge on serving BOTH channels.
-    let payload = json!({"data": {"x": 1}});
-    for (name, ch, node) in [
+    for (node_name, ch, node) in [
         ("node A", "conc-b", &h.node_a),
         ("node B", "conc-a", &h.node_b),
         ("node A", "conc-a", &h.node_a),
         ("node B", "conc-b", &h.node_b),
     ] {
         let served = eventually(h.poll, async || {
-            node.clone()
-                .oneshot(json_request(
-                    "POST",
-                    &format!("/api/v2/data/{ch}"),
-                    Some(payload.clone()),
-                ))
-                .await
-                .unwrap()
-                .status()
-                == StatusCode::OK
+            post_status(node, ch).await == StatusCode::OK
         })
         .await;
-        assert!(served, "{name} must serve {ch} after the concurrent writes");
+        assert!(
+            served,
+            "{node_name} must serve {ch} after the concurrent writes"
+        );
     }
-
-    // Workflow + channel activation each bump: two per pair, four total.
-    let end = h
-        .state_a
-        .cluster
-        .repo
-        .get_epoch()
-        .await
-        .expect("epoch")
-        .epoch;
-    assert!(
-        end >= start + 4,
-        "expected >= 4 epoch bumps (2 per activation pair), got {start} -> {end}"
-    );
 }
 
 /// N-generality: nothing in src/cluster assumes two nodes (D4 — no node
@@ -1105,17 +1044,15 @@ async fn breaker_reset_fans_out_across_nodes() {
 
 /// The Postgres outage window + stale-node semantics, pinned in one pause
 /// cycle. There is NO fencing anywhere by design (retired HA plan D1): a
-/// node whose resync fails keeps serving its last-applied engine, and the
-/// containment is `/readyz` withdrawing every node so the LB stops sending
-/// traffic. Node B runs a 5s epoch poll so "archive on A, pause before B's
-/// next tick" is anchored to an observed tick with a ~25x safety ratio —
-/// the guard assertion detects the pathological miss loudly instead of
-/// letting the test pass vacuously.
+/// node whose reconciler cannot read the deployment store keeps serving its
+/// last-applied generation, and the containment is `/readyz` withdrawing
+/// every node so the LB stops sending traffic. Node B runs a 5s reconciler
+/// poll so "remove on A, pause before B's next tick" is anchored to an
+/// observed tick with a ~25x safety ratio — the guard assertion detects the
+/// pathological miss loudly instead of letting the test pass vacuously.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
-    use std::sync::atomic::Ordering;
-
     let h = cluster_nodes_with(
         2,
         |_| {},
@@ -1130,11 +1067,10 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     let node_b = h.nodes[1].router.clone();
     let state_b = h.nodes[1].state.clone();
 
-    let (ch_id, _) = common::v1::create_and_activate_channel_full(
+    common::create_and_activate_channel(
         &node_a,
         "stale-ch",
         common::simple_log_workflow("Stale WF"),
-        json!({}),
     )
     .await;
 
@@ -1155,25 +1091,16 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     })
     .await;
     assert!(served, "node B must serve the baseline channel");
-    let e_b = state_b.cluster.last_seen_epoch.load(Ordering::Acquire);
+    let e_b = applied_revision(&state_b);
 
-    // Archive via node A, then immediately pause Postgres — inside node B's
-    // ~5s tick window (the archive+pause pair takes tens of milliseconds).
-    let resp = node_a
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{ch_id}/status"),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Remove it via node A, then immediately pause Postgres — inside node
+    // B's ~5s tick window (the apply+pause pair takes tens of milliseconds).
+    common::remove_member(&node_a, "channel", "stale-ch").await;
     h.pg.pause().await.expect("pause postgres");
     assert_eq!(
-        state_b.cluster.last_seen_epoch.load(Ordering::Acquire),
+        applied_revision(&state_b),
         e_b,
-        "node B ticked inside the archive->pause gap (a ~25x-margin race); re-run"
+        "node B ticked inside the remove->pause gap (a ~25x-margin race); re-run"
     );
 
     // Every outage-window request is bounded by an outer timeout: DB
@@ -1182,8 +1109,8 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     let deadline = Duration::from_secs(15);
 
     // PIN 1 — availability over consistency: node B keeps serving its
-    // last-applied engine (200) even though the channel is archived in the
-    // DB. The 200 also pins "trace persistence down != data plane down":
+    // last-applied generation (200) even though the committed head no
+    // longer carries the channel. The 200 also pins "trace persistence down != data plane down":
     // the sync trace write fails after ~3s and is swallowed with a warning.
     let resp = tokio::time::timeout(
         deadline,
@@ -1202,7 +1129,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
         "the stale node must keep serving during the outage (no fencing, by design)"
     );
 
-    // PIN 2 — the split view: node A already applied the archive → 404.
+    // PIN 2 — the split view: node A already applied the removal → 404.
     let resp = tokio::time::timeout(
         deadline,
         node_a.clone().oneshot(json_request(
@@ -1235,29 +1162,29 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
         assert_eq!(body["components"]["database"], "error", "{name}: {body}");
     }
 
-    // PIN 4 — admin mutations fail loudly (the repo write fails first).
-    let resp = tokio::time::timeout(
+    // PIN 4 — admin mutations fail loudly: a definition upload is a write to
+    // the deployment store, and it fails first.
+    let (status, body) = tokio::time::timeout(
         deadline,
-        node_a.clone().oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::simple_log_workflow("Outage Draft WF")),
-        )),
+        common::deploy::try_upload(
+            &node_a,
+            common::deploy::workflow_definition(&common::simple_log_workflow("Outage WF")),
+        ),
     )
     .await
-    .expect("admin mutation must not hang")
-    .unwrap();
+    .expect("admin mutation must not hang");
     assert_eq!(
-        resp.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "admin writes must fail during the outage"
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "admin writes must fail during the outage: {body}"
     );
+    assert_eq!(body["error"]["code"], "DB_TRANSACTION_ERROR", "{body}");
 
-    // PIN 5 — a failed resync never advances last_seen.
-    assert_eq!(state_b.cluster.last_seen_epoch.load(Ordering::Acquire), e_b);
+    // PIN 5 — a failed reconcile never advances the applied revision.
+    assert_eq!(applied_revision(&state_b), e_b);
 
-    // Recovery: node B resyncs on its next successful tick and applies the
-    // archive; readiness and the epoch bus come back.
+    // Recovery: node B reconciles on its next successful tick and applies
+    // the removal; readiness and propagation come back.
     h.pg.unpause().await.expect("unpause postgres");
     let archived = eventually_n(Duration::from_millis(500), 40, async || {
         node_b
@@ -1275,7 +1202,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     .await;
     assert!(
         archived,
-        "node B must apply the archive once Postgres returns"
+        "node B must apply the removal once Postgres returns"
     );
 
     let mut ready = StatusCode::SERVICE_UNAVAILABLE;
@@ -1293,7 +1220,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     }
     assert_eq!(ready, StatusCode::OK, "node A readiness must return");
 
-    common::v1::create_and_activate_channel(
+    common::create_and_activate_channel(
         &node_a,
         "post-outage-ch",
         common::simple_log_workflow("Post Outage WF"),
@@ -1313,7 +1240,7 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
             == StatusCode::OK
     })
     .await;
-    assert!(served, "the epoch bus must be live again after recovery");
+    assert!(served, "propagation must be live again after recovery");
 }
 
 /// T6 — the response cache is a shared store, not per-node memory: a body
@@ -1567,9 +1494,9 @@ fn post_with_sticky_caller(uri: &str, caller: &str, body: serde_json::Value) -> 
         .unwrap()
 }
 
-/// T6 — sticky rollout across replicas: with a 50/50 canary split active on
-/// both nodes, the SAME sticky identity must get the SAME workflow version
-/// from node A and node B. The bucketing is an unkeyed FNV-1a hash of the
+/// T6 — sticky rollout across replicas: with a 50/50 canary split between two
+/// workflow revisions deployed on both nodes, the SAME sticky identity must
+/// get the SAME revision from node A and node B. The bucketing is an unkeyed FNV-1a hash of the
 /// configured sticky header's value (`engine/utils.rs`), deliberately
 /// process-independent — this is the cross-node pin that design carries.
 ///
@@ -1585,7 +1512,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
     })
     .await;
 
-    // v1 and v2 mark themselves in the response body, so "which version
+    // v1 and v2 mark themselves in the response body, so "which revision
     // served this" is readable from `data.version`.
     let marker_workflow = |marker: &str| {
         json!({
@@ -1603,48 +1530,33 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
         })
     };
 
-    // v1 at 100% on an active channel; then v2 as a new draft, edited to
-    // mark itself, activated at 50% — all via node A (same flow as the
-    // single-process rollout_percentages_split_traffic_across_versions).
-    common::v1::create_and_activate_channel(&h.node_a, "canary-ch", marker_workflow("v1")).await;
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/workflows/canary/versions",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            "/api/v2/admin/workflows/canary",
-            Some(marker_workflow("v2")),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let resp = h
-        .node_a
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/v2/admin/workflows/canary/status",
-            Some(json!({"status": "active", "rollout_percentage": 50})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "body = {}",
-        body_json(resp).await
-    );
+    // Revision 1 of the workflow at 100% on a channel; then a deployment
+    // carrying revisions 1 and 2 side by side, the channel's rollout
+    // splitting the buckets between them — all via node A.
+    common::create_and_activate_channel(&h.node_a, "canary-ch", marker_workflow("v1")).await;
+    let v2 = common::deploy::upload(
+        &h.node_a,
+        common::deploy::workflow_definition(&marker_workflow("v2")),
+    )
+    .await;
+    let (base, mut members) = common::deploy::head(&h.node_a).await;
+    members.push(json!({
+        "entity": {"kind": "workflow", "id": "canary", "revision": 2},
+        "definition_digest": v2,
+        "requires": [],
+    }));
+    let channel = members
+        .iter_mut()
+        .find(|m| m["entity"]["kind"] == "channel" && m["entity"]["id"] == "canary-ch")
+        .expect("the channel member");
+    channel["requires"] = json!([{"kind": "workflow", "id": "canary", "revision": 2}]);
+    channel["rollouts"] = json!([
+        {"workflow_revision": 1, "start_bucket": 0, "end_bucket": 50},
+        {"workflow_revision": 2, "start_bucket": 50, "end_bucket": 100},
+    ]);
+    let (status, body) = common::deploy::apply(&h.node_a, base, members).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["evaluation"]["converged"], true, "{body}");
 
     let version_on = |node: axum::Router, caller: String| async move {
         let resp = node
@@ -1678,7 +1590,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
         "the fixed identity set must land on both sides of the split: {baseline:?}"
     );
 
-    // Node B serves v1-at-100% until its watcher applies the activation (one
+    // Node B serves v1-at-100% until its reconciler applies the split (one
     // atomic engine swap), so "answers v2 for an identity node A routes to
     // v2" is exactly "node B has the split".
     let v2_caller = identities[baseline.iter().position(|v| v == "v2").unwrap()].clone();
@@ -1689,7 +1601,7 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
             == Some("v2")
     })
     .await;
-    assert!(propagated, "node B must apply the 50% activation of v2");
+    assert!(propagated, "node B must apply the 50/50 split");
 
     // THE pin, twice over: every identity gets its baseline version from
     // BOTH nodes, and repeatably — same caller, same version, wherever the
@@ -1710,6 +1622,106 @@ async fn sticky_rollout_assignment_is_stable_across_nodes() {
             );
         }
     }
+}
+
+/// A rollback committed through node A reaches node B like any other
+/// revision: revision 1 serves one behaviour, revision 2 another, and a
+/// rollback to 1 — a new revision carrying revision 1's manifest — makes
+/// both nodes serve revision 1's behaviour again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn rollback_propagates_across_nodes() {
+    let h = two_nodes().await;
+    let marker_workflow = |marker: &str| {
+        json!({
+            "workflow_id": "rollback-wf",
+            "name": "Rollback",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Mark the revision",
+                "function": {
+                    "name": "map",
+                    "input": {"mappings": [{"path": "data.version", "logic": marker}]}
+                }
+            }]
+        })
+    };
+    let version_on = |node: axum::Router| async move {
+        let resp = node
+            .oneshot(json_request(
+                "POST",
+                "/api/v2/data/rollback-ch",
+                Some(json!({"data": {}})),
+            ))
+            .await
+            .unwrap();
+        if resp.status() != StatusCode::OK {
+            return None;
+        }
+        body_json(resp).await["data"]["version"]
+            .as_str()
+            .map(str::to_string)
+    };
+
+    common::create_and_activate_channel(&h.node_a, "rollback-ch", marker_workflow("first")).await;
+    let (first, _) = h.state_a.composition.deployments.current_head();
+    let on_first = eventually(h.poll, async || {
+        version_on(h.node_b.clone()).await.as_deref() == Some("first")
+    })
+    .await;
+    assert!(on_first, "node B must serve the first revision");
+
+    common::create_and_activate_workflow(&h.node_a, marker_workflow("second")).await;
+    let (second, _) = h.state_a.composition.deployments.current_head();
+    assert_eq!(
+        version_on(h.node_a.clone()).await.as_deref(),
+        Some("second")
+    );
+    let on_second = eventually(h.poll, async || {
+        version_on(h.node_b.clone()).await.as_deref() == Some("second")
+    })
+    .await;
+    assert!(on_second, "node B must serve the second revision");
+
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v2/admin/deployments/rollback",
+            Some(json!({
+                "idempotency_key": "rollback-to-first",
+                "expected_head_revision": second,
+                "target_revision": first,
+                "reason": "cluster rollback test",
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    assert_eq!(body["evaluation"]["converged"], true, "{body}");
+    let rolled_back = body["committed_revision"].as_u64().expect("a revision");
+    assert!(
+        rolled_back > second,
+        "a rollback is a new forward revision: {body}"
+    );
+
+    assert_eq!(
+        version_on(h.node_a.clone()).await.as_deref(),
+        Some("first"),
+        "node A serves the first revision's behaviour right after the rollback"
+    );
+    let back = eventually(h.poll, async || {
+        applied_revision(&h.state_b) == rolled_back
+            && version_on(h.node_b.clone()).await.as_deref() == Some("first")
+    })
+    .await;
+    assert!(
+        back,
+        "node B must serve the first revision's behaviour again"
+    );
 }
 
 /// B3: filesystem backups are refused in cluster mode — the file would land
@@ -2010,7 +2022,7 @@ async fn cron_schedule_changes_propagate_across_nodes() {
     .await;
     assert!(
         seen,
-        "node B must load the cron channel within a few epochs"
+        "node B must load the cron channel within a few reconciler polls"
     );
 
     // Deploying without it on A stops both: the cursor is paused once, in
@@ -2028,6 +2040,6 @@ async fn cron_schedule_changes_propagate_across_nodes() {
     .await;
     assert!(
         stopped,
-        "node B must stop scheduling an archived channel within a few epochs"
+        "node B must stop scheduling a removed channel within a few reconciler polls"
     );
 }

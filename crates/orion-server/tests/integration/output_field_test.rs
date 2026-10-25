@@ -2,9 +2,9 @@
 //!
 //! Before 1.0 the destination path was called `output` in eight handlers and
 //! `response_path` in `http_call` and `channel_call`. `output` is the one
-//! name now: the pre-1.0 spelling is an unknown key, refused at create by
-//! Orion's own input schema rather than at engine load, where it would
-//! quarantine the channel.
+//! name now: the pre-1.0 spelling is an unknown key, refused when the
+//! workflow definition is uploaded rather than at engine load, where it
+//! would quarantine the channel.
 
 use crate::common;
 
@@ -102,7 +102,7 @@ async fn http_call_accepts_output() {
     );
 }
 
-/// The 0.3.x name is refused at create, alone or beside `output`, naming
+/// The 0.3.x name is refused at upload, alone or beside `output`, naming
 /// the key.
 #[tokio::test]
 async fn http_call_refuses_response_path() {
@@ -116,14 +116,10 @@ async fn http_call_refuses_response_path() {
 }
 
 async fn refused_naming_response_path(app: &axum::Router, wf: serde_json::Value) {
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/workflows", Some(wf)))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (status, body) =
+        common::deploy::try_upload(app, common::deploy::workflow_definition(&wf)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-    let body = body_json(resp).await;
     let rendered = body.to_string();
     assert!(
         rendered.contains("response_path"),
@@ -131,26 +127,21 @@ async fn refused_naming_response_path(app: &axum::Router, wf: serde_json::Value)
     );
 }
 
-/// A misspelled `http_call` input key is refused at create.
+/// A misspelled `http_call` input key is refused at upload.
 ///
-/// `HttpCallConfig` is `deny_unknown_fields` as of dataflow-rs 3.1, so the
-/// workflow would otherwise activate and then fail `Workflow::from_json` at
-/// engine build — quarantining the whole channel over a typo the admin API
-/// had already accepted. Before 3.1 it parsed cleanly and the response was
-/// silently discarded, which was worse still.
+/// `HttpCallConfig` is `deny_unknown_fields`, so the workflow would
+/// otherwise deploy and then fail to compile at engine build — quarantining
+/// the whole channel over a typo the admin API had already accepted. Before
+/// dataflow-rs 3.1 it parsed cleanly and the response was silently
+/// discarded, which was worse still.
 #[tokio::test]
 async fn http_call_rejects_a_misspelled_input_key() {
     let app = app_with_mock_origin().await;
     let wf = http_call_workflow("outputs", "data.api_response");
 
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/workflows", Some(wf)))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-    let body = body_json(resp).await;
+    let (status, body) =
+        common::deploy::try_upload(&app, common::deploy::workflow_definition(&wf)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
         body.to_string().contains("outputs"),
         "the error must name the offending key, got: {body}"

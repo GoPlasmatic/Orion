@@ -459,38 +459,29 @@ async fn literal_inputs_are_unchanged() {
     assert_eq!(body["data"]["cached"]["nested"]["deep"], json!([1, 2, 3]));
 }
 
-/// Admin-time validation accepts a `{"var": ..}` node where the handler
-/// resolves one, so a dynamic workflow can actually be created.
+/// Upload validation accepts a `{"var": ..}` node where the handler
+/// resolves one, so a dynamic workflow can actually be deployed.
 #[tokio::test]
 async fn workflow_validation_accepts_var_nodes_on_resolvable_fields() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "dynamic-inputs",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "read",
-                    "function": {
-                        "name": "cache_read",
-                        "input": {"connector": "c", "key": {"var": "data.req.id"}}
-                    }
-                }]
-            })),
-        ))
-        .await
-        .expect("request");
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "workflow", "definition": {
+            "name": "dynamic-inputs",
+            "tasks": [{
+                "id": "t1",
+                "name": "read",
+                "function": {
+                    "name": "cache_read",
+                    "input": {"connector": "c", "key": {"var": "data.req.id"}}
+                }
+            }]
+        }}),
+    )
+    .await;
 
-    assert_eq!(
-        resp.status(),
-        StatusCode::CREATED,
-        "body: {}",
-        common::body_json(resp).await
-    );
+    assert_eq!(status, StatusCode::CREATED, "body: {body}");
 }
 
 /// The connector name is privileged config, not request data. It stays literal,
@@ -499,36 +490,31 @@ async fn workflow_validation_accepts_var_nodes_on_resolvable_fields() {
 async fn workflow_validation_rejects_var_nodes_on_literal_fields() {
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(json!({
-                "name": "dynamic-connector",
-                "tasks": [{
-                    "id": "t1",
-                    "name": "read",
-                    "function": {
-                        "name": "cache_read",
-                        "input": {"connector": {"var": "data.req.which"}, "key": "k"}
-                    }
-                }]
-            })),
-        ))
-        .await
-        .expect("request");
+    let (status, body) = common::deploy::try_upload(
+        &app,
+        json!({"kind": "workflow", "definition": {
+            "name": "dynamic-connector",
+            "tasks": [{
+                "id": "t1",
+                "name": "read",
+                "function": {
+                    "name": "cache_read",
+                    "input": {"connector": {"var": "data.req.which"}, "key": "k"}
+                }
+            }]
+        }}),
+    )
+    .await;
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let details = body["error"]["details"]
         .as_array()
         .unwrap_or_else(|| panic!("expected details, got {body}"));
     assert!(
-        details
-            .iter()
-            .any(|d| d["path"] == "tasks[0].function.input.connector"
-                && d["code"] == "TYPE_MISMATCH"),
+        details.iter().any(
+            |d| d["path"] == "definition.tasks[0].function.input.connector"
+                && d["code"] == "TYPE_MISMATCH"
+        ),
         "got {body}"
     );
 }

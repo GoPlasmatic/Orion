@@ -615,6 +615,20 @@ async fn test_trace_read_does_not_expose_request_context() {
 // Brute-force protection on the trace token (FEAT-01)
 // ============================================================
 
+/// The admin key `guessing_a_trace_token_trips_the_admin_lockout` runs with.
+const TRACE_LOCKOUT_ADMIN_KEY: &str = "a-sufficiently-long-test-secret-key-000";
+
+/// Attach the admin key to a request, for the fixture deployments of a test
+/// whose node has admin auth on.
+async fn with_admin_key(mut req: axum::extract::Request) -> axum::extract::Request {
+    req.headers_mut().insert(
+        "authorization",
+        axum::http::HeaderValue::from_str(&format!("Bearer {TRACE_LOCKOUT_ADMIN_KEY}"))
+            .expect("a header value"),
+    );
+    req
+}
+
 /// Guessing a `trace_token` is rate-limited by the same lockout the admin
 /// middleware applies.
 ///
@@ -630,66 +644,32 @@ async fn test_trace_read_does_not_expose_request_context() {
 async fn guessing_a_trace_token_trips_the_admin_lockout() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_keys = vec!["a-sufficiently-long-test-secret-key-000".to_string()];
+    config.admin_auth.api_keys = vec![TRACE_LOCKOUT_ADMIN_KEY.to_string()];
     let app = common::test_app_with_config(config).await;
 
-    // Admin auth is on, so the shared helper (which sends no key) cannot do
-    // the setup — build the workflow and channel with the key attached.
-    const KEY: &str = "a-sufficiently-long-test-secret-key-000";
-    let authed = |method: &str, uri: String, body: Option<serde_json::Value>| {
-        let mut req = axum::http::Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {KEY}"));
-        let body = match body {
-            Some(v) => axum::body::Body::from(v.to_string()),
-            None => axum::body::Body::empty(),
-        };
-        req = req.header("accept", "application/json");
-        req.body(body).unwrap()
-    };
-
-    for (method, uri, body) in [
-        (
-            "POST",
-            "/api/v2/admin/workflows".to_string(),
-            Some(json!({
-                "workflow_id": "t-wf", "name": "T", "condition": true,
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
-            })),
-        ),
-        (
-            "PATCH",
-            "/api/v2/admin/workflows/t-wf/status".to_string(),
-            Some(json!({"status": "active"})),
-        ),
-        (
-            "POST",
-            "/api/v2/admin/channels".to_string(),
-            Some(json!({
-                "channel_id": "test-ch", "name": "test-ch", "channel_type": "async",
-                "protocol": "rest", "route_pattern": "/test-ch",
-                "methods": ["POST"], "workflow_id": "t-wf"
-            })),
-        ),
-        (
-            "PATCH",
-            "/api/v2/admin/channels/test-ch/status".to_string(),
-            Some(json!({"status": "active"})),
-        ),
-    ] {
-        let resp = app
-            .clone()
-            .oneshot(authed(method, uri.clone(), body))
-            .await
-            .unwrap();
-        assert!(
-            resp.status().is_success(),
-            "setup call {method} {uri} failed: {}",
-            resp.status()
-        );
-    }
+    // Admin auth is on, so the shared helpers (which send no key) deploy
+    // through a router that attaches it. The data plane and the trace reads
+    // below go through `app`, without it.
+    let setup = app
+        .clone()
+        .layer(axum::middleware::map_request(with_admin_key));
+    let workflow = common::create_and_activate_workflow(
+        &setup,
+        json!({
+            "workflow_id": "t-wf", "name": "T", "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
+        }),
+    )
+    .await;
+    common::deploy_channel(
+        &setup,
+        json!({
+            "name": "test-ch", "channel_type": "async",
+            "protocol": "rest", "route_pattern": "/test-ch",
+            "methods": ["POST"], "workflow_id": workflow
+        }),
+    )
+    .await;
 
     let resp = app
         .clone()

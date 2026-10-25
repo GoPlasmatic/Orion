@@ -1,11 +1,10 @@
 //! D18: every list endpoint pages the same way, because they all go through
 //! one helper.
 //!
-//! `versioned::paginate` used to serve two of seven call sites — traces, the
-//! trace DLQ, audit logs, connectors and version history each re-implemented
-//! count-then-page — so a pagination fix had to land six times and any one of
-//! them could drift. They now share `helpers::paginate`, and this test is what
-//! says so: it asserts one contract against all seven.
+//! Traces, the trace DLQ and audit logs each once re-implemented
+//! count-then-page, so a pagination fix had to land several times and any one
+//! of them could drift. They now share `helpers::paginate`, and this test is
+//! what says so: it asserts one contract against each of them.
 //!
 //! The contract:
 //!
@@ -80,95 +79,22 @@ async fn assert_pagination_contract(app: &axum::Router, base: &str, total: i64) 
 }
 
 // ---------------------------------------------------------------------------
-// 1 & 2: workflows and channels (the two that already used the helper)
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn workflows_and_channels_lists_page_the_same_way() {
-    let app = common::test_app().await;
-    for i in 0..3 {
-        common::v1::create_and_activate_channel(
-            &app,
-            &format!("page-ch-{i}"),
-            common::simple_log_workflow(&format!("page-wf-{i}")),
-        )
-        .await;
-    }
-
-    assert_pagination_contract(&app, "/api/v2/admin/workflows", 3).await;
-    assert_pagination_contract(&app, "/api/v2/admin/channels", 3).await;
-}
-
-// ---------------------------------------------------------------------------
-// 3: version history (`versioned::list_versions`)
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn version_history_pages_the_same_way() {
-    let app = common::test_app().await;
-    let workflow_id = common::v1::create_and_activate_workflow(
-        &app,
-        common::simple_log_workflow("page-versions"),
-    )
-    .await;
-
-    // v1 is active; add and activate two more so the history has three rows.
-    for _ in 0..2 {
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "POST",
-                &format!("/api/v2/admin/workflows/{workflow_id}/versions"),
-                Some(json!({})),
-            ))
-            .await
-            .expect("new version");
-        assert_eq!(resp.status(), StatusCode::CREATED);
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "PATCH",
-                &format!("/api/v2/admin/workflows/{workflow_id}/status"),
-                Some(json!({"status": "active"})),
-            ))
-            .await
-            .expect("activate");
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    assert_pagination_contract(
-        &app,
-        &format!("/api/v2/admin/workflows/{workflow_id}/versions"),
-        3,
-    )
-    .await;
-}
-
-// ---------------------------------------------------------------------------
-// 4: connectors — the one list with no filter at all
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn connectors_list_pages_the_same_way() {
-    let app = common::test_app().await;
-    for i in 0..3 {
-        common::v1::create_connector(&app, common::db_connector(&format!("page-conn-{i}"))).await;
-    }
-
-    assert_pagination_contract(&app, "/api/v2/admin/connectors", 3).await;
-}
-
-// ---------------------------------------------------------------------------
-// 5: audit logs
+// 1: audit logs
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn audit_log_list_pages_the_same_way() {
     let app = common::test_app().await;
-    // One audit row per connector create — through the async audit queue, so
-    // wait for all three to land before asserting the contract.
+    // One audit row per definition upload — through the async audit queue,
+    // so wait for all three to land before asserting the contract.
     for i in 0..3 {
-        common::v1::create_connector(&app, common::db_connector(&format!("page-audit-{i}"))).await;
+        common::deploy::upload(
+            &app,
+            common::deploy::workflow_definition(&common::simple_log_workflow(&format!(
+                "page-audit-{i}"
+            ))),
+        )
+        .await;
     }
     common::wait_for_body(&app, "/api/v2/admin/audit-logs", |b| b["total"] == 3).await;
 
@@ -176,7 +102,7 @@ async fn audit_log_list_pages_the_same_way() {
 }
 
 // ---------------------------------------------------------------------------
-// 6: trace DLQ — the one list with a narrow projection
+// 2: trace DLQ — the one list with a narrow projection
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -204,7 +130,7 @@ async fn trace_dlq_list_pages_the_same_way() {
 }
 
 // ---------------------------------------------------------------------------
-// 7: traces — the other narrow projection
+// 3: traces — the other narrow projection
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

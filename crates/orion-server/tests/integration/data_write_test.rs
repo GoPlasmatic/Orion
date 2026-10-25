@@ -10,7 +10,6 @@ use crate::common::dsl::{ddl, dq, dw, is_rejection, post};
 use axum::http::StatusCode;
 use orion::config::{AppConfig, WriteConfig};
 use serde_json::{Value, json};
-use tower::ServiceExt;
 
 async fn sqlite_app(conn: &str, mem: &str) -> axum::Router {
     let app = common::test_app().await;
@@ -461,40 +460,33 @@ async fn unknown_write_envelope_keys_are_rejected() {
 }
 
 /// W7: the pre-1.0 flat shape — envelope keys sharing the namespace with the
-/// handler's own — is refused at create, naming `write`.
+/// handler's own — is refused when its definition is uploaded, naming
+/// `write`.
 ///
-/// Refusing at create rather than at the task's first request is the whole
-/// point: a stored `data_write` that never migrated would otherwise keep
-/// loading and activating, and fail only once production traffic reached it.
+/// Refusing at upload rather than at the task's first request is the whole
+/// point: a `data_write` that never migrated would otherwise deploy and
+/// serve, and fail only once production traffic reached it.
 #[tokio::test]
-async fn the_pre_1_0_flat_envelope_is_refused_at_create() {
+async fn the_pre_1_0_flat_envelope_is_refused_at_upload() {
     let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::workflow_with_tasks(
-                "dw",
-                json!([{
-                    "id": "w", "name": "w",
-                    "function": { "name": "data_write", "input": {
-                        "connector": "dw-shapes",
-                        "output": "data.w",
-                        "schema": { "unmapped": "identity" },
-                        // The envelope, flat — the 0.3.x spelling.
-                        "op": "insert",
-                        "target": "shapes_flat",
-                        "values": { "id": 1, "name": "a" }
-                    }}
-                }]),
-            )),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    let workflow = common::workflow_with_tasks(
+        "dw",
+        json!([{
+            "id": "w", "name": "w",
+            "function": { "name": "data_write", "input": {
+                "connector": "dw-shapes",
+                "output": "data.w",
+                "schema": { "unmapped": "identity" },
+                // The envelope, flat — the 0.3.x spelling.
+                "op": "insert",
+                "target": "shapes_flat",
+                "values": { "id": 1, "name": "a" }
+            }}
+        }]),
+    );
+    let (status, body) =
+        common::deploy::try_upload(&app, common::deploy::workflow_definition(&workflow)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
     assert!(
         body.to_string().contains("write"),
         "the rejection must name the envelope key: {body}"
@@ -549,27 +541,20 @@ async fn stale_flat_keys_beside_the_envelope_quarantine_the_channel() {
     }
 }
 
-/// A task with neither shape is rejected at create time, naming `write`.
+/// A task with neither shape is refused at upload, naming `write`.
 #[tokio::test]
-async fn a_data_write_without_an_envelope_is_rejected_at_create() {
+async fn a_data_write_without_an_envelope_is_refused_at_upload() {
     let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::workflow_with_tasks(
-                "dw",
-                json!([{
-                    "id": "w", "name": "w",
-                    "function": { "name": "data_write", "input": { "connector": "c" } }
-                }]),
-            )),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    let workflow = common::workflow_with_tasks(
+        "dw",
+        json!([{
+            "id": "w", "name": "w",
+            "function": { "name": "data_write", "input": { "connector": "c" } }
+        }]),
+    );
+    let (status, body) =
+        common::deploy::try_upload(&app, common::deploy::workflow_definition(&workflow)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
     let details = body["error"]["details"].as_array().expect("field details");
     assert!(
         details.iter().any(|d| d["path"]
@@ -584,26 +569,19 @@ async fn a_data_write_without_an_envelope_is_rejected_at_create() {
 #[tokio::test]
 async fn envelope_errors_are_reported_under_the_write_path() {
     let app = common::test_app().await;
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/admin/workflows",
-            Some(common::workflow_with_tasks(
-                "dw",
-                json!([{
-                    "id": "w", "name": "w",
-                    "function": { "name": "data_write", "input": {
-                        "connector": "c",
-                        "write": { "op": "insert" }   // `target` missing
-                    }}
-                }]),
-            )),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = common::body_json(resp).await;
+    let workflow = common::workflow_with_tasks(
+        "dw",
+        json!([{
+            "id": "w", "name": "w",
+            "function": { "name": "data_write", "input": {
+                "connector": "c",
+                "write": { "op": "insert" }   // `target` missing
+            }}
+        }]),
+    );
+    let (status, body) =
+        common::deploy::try_upload(&app, common::deploy::workflow_definition(&workflow)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
     let details = body["error"]["details"].as_array().expect("field details");
     assert!(
         details.iter().any(|d| d["path"]

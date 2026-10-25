@@ -78,8 +78,8 @@ async fn a_root_mount_does_not_disable_admin_auth() {
 
     for path in [
         "/api/v2/admin/nonexistent",
-        "/api/v2/admin/workflows/x/steal",
-        "/api/v2/admin/workflows",
+        "/api/v2/admin/deployments/x/steal",
+        "/api/v2/admin/deployments",
     ] {
         let resp = app
             .clone()
@@ -183,57 +183,6 @@ async fn platform_routes_win_over_a_root_mount() {
         .await
         .expect("request");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-}
-
-/// A channel whose served path would land under a platform route is refused at
-/// activation — the R7 rule that the gate and the table must not drift.
-#[tokio::test]
-async fn a_channel_shadowed_by_a_platform_route_is_refused_at_activation() {
-    let app = common::test_app_with_config(config_with_mounts(&["/"])).await;
-    let wf_id = common::create_and_activate_workflow(&app, common::echo_workflow("Shadow")).await;
-
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "shadowed",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["POST"],
-                "route_pattern": "/api/v2/admin/anything",
-                "workflow_id": wf_id,
-            })),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("id")
-        .to_string();
-
-    let resp = app
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({ "status": "active" })),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "a channel the platform would shadow must not activate"
-    );
-    let body = body_json(resp).await;
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .is_some_and(|m| m.contains("platform route")),
-        "{body}"
-    );
 }
 
 /// With no mounts configured — the default — nothing changes.

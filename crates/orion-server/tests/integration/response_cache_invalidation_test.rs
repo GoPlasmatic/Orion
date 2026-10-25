@@ -138,7 +138,7 @@ async fn a_workflow_and_the_admin_route_invalidate_a_namespace() {
 }
 
 #[tokio::test]
-async fn namespaces_are_validated_at_create() {
+async fn namespaces_are_validated_at_upload() {
     let app = common::test_app().await;
     for (label, namespaces) in [
         ("empty", json!([])),
@@ -149,24 +149,25 @@ async fn namespaces_are_validated_at_create() {
             json!(["a", "b", "c", "d", "e", "f", "g", "h", "i"]),
         ),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(common::json_request(
-                "POST",
-                "/api/v2/admin/channels",
-                Some(json!({
-                    "name": format!("ns-{}", label.replace(' ', "-")),
-                    "channel_type": "sync",
-                    "protocol": "http",
-                    "methods": ["POST"],
-                    "route_pattern": format!("/ns-{}", label.replace(' ', "-")),
-                    "config": {"cache": {"enabled": true, "namespaces": namespaces}}
-                })),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{label}");
-        let body = common::body_json(resp).await;
+        let (status, body) = common::deploy::try_upload(
+            &app,
+            json!({"kind": "channel", "definition": {
+                "name": format!("ns-{}", label.replace(' ', "-")),
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["POST"],
+                "route_pattern": format!("/ns-{}", label.replace(' ', "-")),
+                "config": {"cache": {"enabled": true, "namespaces": namespaces}}
+            }}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}");
+        assert!(
+            common::deploy::refused_paths(&body)
+                .iter()
+                .any(|p| p.starts_with("definition.config")),
+            "{label}: the refusal is rooted at the definition: {body}"
+        );
         assert!(
             body.to_string().contains("namespaces"),
             "{label}: the refusal names the field: {body}"

@@ -52,7 +52,7 @@ async fn test_openapi_spec_all_endpoints() {
         "/api/v2/admin/trace-dlq/{id}",
         "/api/v2/admin/trace-dlq/{id}/requeue",
         "/api/v2/admin/trace-dlq/purge",
-        // V2 deployment, provider, connection, authoring, and migration endpoints:
+        // V2 deployment, provider, connection and authoring endpoints:
         "/api/v2/admin/runtime-capabilities",
         "/api/v2/admin/connector-packages",
         "/api/v2/admin/connector-packages/{digest}/admit",
@@ -128,9 +128,9 @@ async fn openapi_declares_admin_security() {
     let paths = body["paths"].as_object().unwrap();
     // Everything the admin-auth middleware guards must say so.
     for path in [
-        "/api/v2/admin/channels",
-        "/api/v2/admin/workflows",
-        "/api/v2/admin/connectors",
+        "/api/v2/admin/deployments",
+        "/api/v2/admin/connections",
+        "/api/v2/admin/connectors/circuit-breakers",
         "/api/v2/admin/trace-dlq",
         "/api/v2/admin/audit-logs",
         "/api/v2/admin/traces",
@@ -379,7 +379,11 @@ async fn disabling_docs_leaves_the_rest_of_the_api_served() {
 
     let resp = app
         .clone()
-        .oneshot(common::json_request("GET", "/api/v2/admin/workflows", None))
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v2/admin/deployments",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);

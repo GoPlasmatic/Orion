@@ -6,30 +6,27 @@
 //!   - `request_id` is embedded in error bodies when middleware is active
 //!   - non-validation errors omit the `details` key (no breakage for old clients)
 
+use crate::common::deploy;
 use crate::common::{body_json, json_request, test_app};
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
 #[tokio::test]
-async fn create_channel_missing_route_pattern_returns_field_pathed_details() {
+async fn upload_channel_missing_route_pattern_returns_field_pathed_details() {
     let app = test_app().await;
-    // REST channel without route_pattern — should fail with field details.
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "broken",
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": ["POST"],
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
+    // REST channel without route_pattern — refused with field details.
+    let (status, body) = deploy::try_upload(
+        &app,
+        json!({"kind": "channel", "definition": {
+            "name": "broken",
+            "channel_type": "sync",
+            "protocol": "rest",
+            "methods": ["POST"],
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let error = &body["error"];
 
     // v0.1.1 envelope preserved.
@@ -47,86 +44,55 @@ async fn create_channel_missing_route_pattern_returns_field_pathed_details() {
     // B1: protocol-conditional required fields use REQUIRED_FOR_PROTOCOL
     // so clients can distinguish them from generic missing-field errors.
     assert!(
-        details
-            .iter()
-            .any(|d| d["path"] == "channel.route_pattern" && d["code"] == "REQUIRED_FOR_PROTOCOL"),
-        "expected channel.route_pattern with REQUIRED_FOR_PROTOCOL, got {body:?}"
+        details.iter().any(
+            |d| d["path"] == "definition.route_pattern" && d["code"] == "REQUIRED_FOR_PROTOCOL"
+        ),
+        "expected definition.route_pattern with REQUIRED_FOR_PROTOCOL, got {body:?}"
     );
 }
 
 /// Kafka left Community: `protocol: "kafka"` is refused like any protocol this
 /// build does not know, before any per-protocol rule runs.
+///
+/// The definition upload refuses an unknown variant while deserializing its
+/// body, so the refusal is the extractor's: a client error whose text names
+/// the variant.
 #[tokio::test]
-async fn create_channel_with_the_kafka_protocol_is_refused_as_unknown() {
+async fn upload_channel_with_the_kafka_protocol_is_refused_as_unknown() {
     let app = test_app().await;
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
+            "/api/v2/admin/definitions",
+            Some(json!({"kind": "channel", "definition": {
                 "name": "needs-topic",
                 "channel_type": "async",
                 "protocol": "kafka",
-                "topic": "orders",
-            })),
+            }})),
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    let detail = &body["error"]["details"][0];
-    let msg = detail["message"].as_str().unwrap_or("");
-    assert!(
-        msg.contains("unknown variant `kafka`"),
-        "kafka must be an unknown protocol, got {body}"
-    );
-}
-
-#[tokio::test]
-async fn invalid_connector_type_returns_field_pathed_error_with_allowed_values_in_message() {
-    let app = test_app().await;
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "name": "bad",
-                "connector_type": "grpc",
-                "config": {}
-            })),
-        ))
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    // v0.1 returned 400 here; the typed-enum DTO (A4) catches the bad value
-    // at deserialization but the OrionJson extractor preserves the 400 status.
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    let detail = &body["error"]["details"][0];
-    // After A4, serde rejects the enum before our custom validator runs.
-    // The body-level path + the full serde diagnosis in the message is
-    // still actionable: it names both the bad value ("grpc") and the
-    // allowed variants.
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(status.is_client_error(), "{status}: {text}");
     assert!(
-        detail["path"].as_str().unwrap_or("").starts_with("body"),
-        "path should be body-rooted, got {detail:?}"
-    );
-    let msg = detail["message"].as_str().unwrap_or("");
-    assert!(msg.contains("grpc"), "message should name the bad value");
-    assert!(
-        msg.contains("http") && msg.contains("cache"),
-        "message should list allowed variants, got {msg}"
+        text.contains("unknown variant `kafka`"),
+        "kafka must be an unknown protocol, got {text}"
     );
 }
 
 #[tokio::test]
 async fn v01_envelope_preserved_for_non_validation_404() {
     let app = test_app().await;
-    // GET an unknown workflow — produces NotFound, not Validation.
+    // GET an unknown definition — produces NotFound, not Validation.
     // Must keep the v0.1 shape: code + message, no details key.
     let resp = app
         .oneshot(json_request(
             "GET",
-            "/api/v2/admin/workflows/does-not-exist",
+            "/api/v2/admin/definitions/sha256:0000000000000000000000000000000000000000000000000000000000000000",
             None,
         ))
         .await
@@ -147,16 +113,16 @@ async fn error_response_embeds_request_id_when_header_provided() {
     let app = test_app().await;
     let req = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/v2/admin/channels")
+        .uri("/api/v2/admin/definitions")
         .header("content-type", "application/json")
         .header("x-request-id", "test-req-id-42")
         .body(axum::body::Body::from(
-            serde_json::to_string(&json!({
+            serde_json::to_string(&json!({"kind": "channel", "definition": {
                 "name": "broken",
                 "channel_type": "sync",
                 "protocol": "rest",
                 "methods": ["POST"],
-            }))
+            }}))
             .unwrap(),
         ))
         .unwrap();

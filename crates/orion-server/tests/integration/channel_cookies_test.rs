@@ -16,7 +16,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tower::ServiceExt;
 
-use crate::common::{self, body_json, json_request};
+use crate::common::{self, body_json, deploy};
 
 /// A workflow that copies the whole metadata object into `data` so a test can
 /// see exactly what the engine received.
@@ -243,28 +243,19 @@ async fn structurally_impossible_names_are_refused() {
         json!(["a;b"]),
         json!(["a b"]),
     ] {
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/v2/admin/channels",
-                Some(json!({
-                    "name": format!("bad-{}", bad[0].as_str().unwrap_or("empty")),
-                    "channel_type": "sync",
-                    "protocol": "rest",
-                    "methods": ["POST"],
-                    "route_pattern": "/bad",
-                    "config": { "request": { "cookies_to_metadata": bad } }
-                })),
-            ))
-            .await
-            .expect("request");
-        assert_eq!(
-            resp.status(),
-            StatusCode::BAD_REQUEST,
-            "{bad} must be refused"
-        );
-        let body = body_json(resp).await;
+        let (status, body) = deploy::try_upload(
+            &app,
+            json!({"kind": "channel", "definition": {
+                "name": format!("bad-{}", bad[0].as_str().unwrap_or("empty")),
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": "/bad",
+                "config": { "request": { "cookies_to_metadata": bad } }
+            }}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad} must be refused");
         let details = body["error"]["details"]
             .as_array()
             .cloned()
@@ -272,7 +263,7 @@ async fn structurally_impossible_names_are_refused() {
         assert!(
             details
                 .iter()
-                .any(|d| d["path"] == "channel.config.request.cookies_to_metadata"),
+                .any(|d| d["path"] == "definition.config.request.cookies_to_metadata"),
             "{bad}: expected a field-pathed detail, got {body}"
         );
     }

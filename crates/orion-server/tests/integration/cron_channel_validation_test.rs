@@ -1,5 +1,6 @@
-//! The cron channel as an *authored definition*: what the admin API accepts,
-//! what it refuses, and the two doors it closes.
+//! The cron channel as an *authored definition*: what definition upload
+//! (`POST /api/v2/admin/definitions`) accepts, what it refuses, and the two
+//! doors it closes.
 //!
 //! The refusals here are all one idea. A cron channel is started by a clock, so
 //! every setting that describes a caller — who they are, where they came from,
@@ -16,7 +17,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::common::{self, body_json, json_request};
+use crate::common::{self, body_json, deploy, json_request};
 
 /// A well-formed cron channel body. Tests override one field at a time.
 fn cron_channel(name: &str, workflow_id: &str) -> Value {
@@ -34,14 +35,30 @@ fn cron_channel(name: &str, workflow_id: &str) -> Value {
     })
 }
 
-async fn post_channel(app: &axum::Router, body: Value) -> (StatusCode, Value) {
+/// Upload a v1-shaped channel body as a channel definition — its
+/// `workflow_id` is the manifest's business, not the definition's — answering
+/// the status and body as they are.
+async fn post_channel(app: &axum::Router, mut body: Value) -> (StatusCode, Value) {
+    body.as_object_mut()
+        .expect("a channel")
+        .remove("workflow_id");
+    deploy::try_upload(app, json!({"kind": "channel", "definition": body})).await
+}
+
+/// The stored channel definition an accepted upload's `digest` names.
+async fn read_back(app: &axum::Router, upload: &Value) -> Value {
+    let digest = upload["digest"].as_str().expect("a digest");
     let resp = app
         .clone()
-        .oneshot(json_request("POST", "/api/v2/admin/channels", Some(body)))
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v2/admin/definitions/{digest}"),
+            None,
+        ))
         .await
         .expect("request");
-    let status = resp.status();
-    (status, body_json(resp).await)
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await["definition"].take()
 }
 
 /// Every `path` a refusal named, so a test can assert on the set rather than on
@@ -66,15 +83,16 @@ async fn a_well_formed_cron_channel_is_accepted_and_reads_back() {
 
     let (status, body) = post_channel(&app, cron_channel("nightly-rollup", &wf)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["data"]["protocol"], "cron");
+    let body = read_back(&app, &body).await;
+    assert_eq!(body["protocol"], "cron");
     // The schedule stays inside `transport_config`, which is what makes it
-    // versioned, content-hashed and packageable with no new top-level field.
+    // versioned and content-hashed with no new top-level field.
     assert_eq!(
-        body["data"]["transport_config"]["schedule"], "0 15 2 * * *",
+        body["transport_config"]["schedule"], "0 15 2 * * *",
         "{body}"
     );
-    assert_eq!(body["data"]["route_pattern"], Value::Null);
-    assert_eq!(body["data"]["topic"], Value::Null);
+    assert_eq!(body["route_pattern"], Value::Null);
+    assert_eq!(body["topic"], Value::Null);
 }
 
 /// The protocol is case-insensitive on the wire, like every other enum Orion
@@ -89,7 +107,7 @@ async fn the_protocol_is_case_insensitive() {
     body["protocol"] = json!("CRON");
     let (status, body) = post_channel(&app, body).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["data"]["protocol"], "cron");
+    assert_eq!(read_back(&app, &body).await["protocol"], "cron");
 }
 
 // ============================================================
@@ -97,7 +115,7 @@ async fn the_protocol_is_case_insensitive() {
 // ============================================================
 
 #[tokio::test]
-async fn a_schedule_that_does_not_compile_is_refused_at_create() {
+async fn a_schedule_that_does_not_compile_is_refused_at_upload() {
     let app = common::test_app().await;
     let wf =
         common::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
@@ -108,7 +126,7 @@ async fn a_schedule_that_does_not_compile_is_refused_at_create() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(
         error_paths(&body),
-        vec!["channel.transport_config.schedule"],
+        vec!["definition.transport_config.schedule"],
         "{body}"
     );
     assert!(
@@ -152,7 +170,7 @@ async fn concurrency_slots_are_bounded_and_forbid_only() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
         assert_eq!(
             error_paths(&body),
-            vec!["channel.transport_config.concurrency.slots"],
+            vec!["definition.transport_config.concurrency.slots"],
             "{name}: {body}"
         );
         assert!(
@@ -167,7 +185,10 @@ async fn concurrency_slots_are_bounded_and_forbid_only() {
     body["transport_config"]["concurrency"] = json!({"policy": "forbid", "key": "w", "slots": 4});
     let (status, body) = post_channel(&app, body).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["data"]["transport_config"]["concurrency"]["slots"], 4);
+    assert_eq!(
+        read_back(&app, &body).await["transport_config"]["concurrency"]["slots"],
+        4
+    );
 }
 
 #[tokio::test]
@@ -219,7 +240,7 @@ async fn an_unknown_time_zone_is_refused() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(
         error_paths(&body),
-        vec!["channel.transport_config.timezone"],
+        vec!["definition.transport_config.timezone"],
         "{body}"
     );
 }
@@ -260,9 +281,9 @@ async fn every_problem_is_reported_at_once() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let paths = error_paths(&body);
     for expected in [
-        "channel.transport_config.schedule",
-        "channel.transport_config.timezone",
-        "channel.transport_config.max_catch_up",
+        "definition.transport_config.schedule",
+        "definition.transport_config.timezone",
+        "definition.transport_config.max_catch_up",
     ] {
         assert!(paths.contains(&expected.to_string()), "{expected}: {body}");
     }
@@ -281,16 +302,45 @@ async fn routing_fields_of_other_protocols_are_refused() {
     for (field, value) in [
         ("methods", json!(["POST"])),
         ("route_pattern", json!("/nightly")),
-        ("topic", json!("orders")),
-        ("consumer_group", json!("group-a")),
     ] {
         let mut body = cron_channel(&format!("routed-{field}"), &wf);
         body[field] = value;
         let (status, body) = post_channel(&app, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{field}: {body}");
         assert!(
-            error_paths(&body).contains(&format!("channel.{field}")),
+            error_paths(&body).contains(&format!("definition.{field}")),
             "{field}: {body}"
+        );
+    }
+
+    // A channel definition has no Kafka fields at all, so these are refused
+    // as unknown keys before channel validation runs.
+    for (field, value) in [
+        ("topic", json!("orders")),
+        ("consumer_group", json!("group-a")),
+    ] {
+        let mut body = cron_channel(&format!("routed-{field}"), &wf);
+        body.as_object_mut()
+            .expect("a channel")
+            .remove("workflow_id");
+        body[field] = value;
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v2/admin/definitions",
+                Some(json!({"kind": "channel", "definition": body})),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "{field}");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains(&format!("unknown field `{field}`")),
+            "{field}: {text}"
         );
     }
 }
@@ -308,7 +358,7 @@ async fn a_sync_cron_channel_is_refused() {
     let (status, body) = post_channel(&app, body).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
-        error_paths(&body).contains(&"channel.channel_type".to_string()),
+        error_paths(&body).contains(&"definition.channel_type".to_string()),
         "{body}"
     );
 }
@@ -337,7 +387,7 @@ async fn every_caller_shaped_guard_is_refused() {
         let (status, body) = post_channel(&app, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{key}: {body}");
         assert!(
-            error_paths(&body).contains(&format!("channel.config.{key}")),
+            error_paths(&body).contains(&format!("definition.config.{key}")),
             "{key}: {body}"
         );
     }
@@ -360,54 +410,6 @@ async fn the_guards_a_schedule_can_use_are_accepted() {
     });
     let (status, body) = post_channel(&app, body).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-}
-
-// ============================================================
-// The update path sees the same rules
-// ============================================================
-
-/// R3's rule applied to cron: an update that replaces only `transport_config`
-/// is still checked, and against the `config` it will actually serve with.
-#[tokio::test]
-async fn an_update_is_validated_against_the_merged_view() {
-    let app = common::test_app().await;
-    let wf =
-        common::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
-
-    let (status, body) = post_channel(&app, cron_channel("updatable", &wf)).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let id = body["data"]["channel_id"].as_str().expect("id").to_string();
-
-    // A bad schedule alone, with no `config` in the request at all.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            &format!("/api/v2/admin/channels/{id}"),
-            Some(json!({"transport_config": {"schedule": "nope"}})),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-    // A refused guard alone, with no `transport_config` in the request — the
-    // stored schedule is what makes this a cron channel, so the rule still
-    // applies.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PUT",
-            &format!("/api/v2/admin/channels/{id}"),
-            Some(json!({"config": {"auth": {"mode": "api_key", "keys": ["k"]}}})),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert!(
-        error_paths(&body).contains(&"channel.config.auth".to_string()),
-        "{body}"
-    );
 }
 
 // ============================================================
@@ -448,38 +450,72 @@ async fn a_cron_channel_is_not_reachable_over_http() {
 }
 
 /// D3: the one configuration whose failure an operator cannot otherwise see —
-/// an active schedule on a node that will never run it. Refused at the moment
-/// they activate, not discovered at the first missed run.
+/// a deployed schedule on a node that will never run it. The deployment is
+/// committed, but the node reports itself degraded on it and quarantines the
+/// channel, naming the setting, rather than discovering it at the first
+/// missed run.
 #[tokio::test]
-async fn activation_is_refused_when_the_scheduler_is_off() {
+async fn a_cron_channel_deployed_with_the_scheduler_off_is_quarantined() {
     let mut config = orion::config::AppConfig::default();
     config.cron.enabled = false;
     let app = common::test_app_with_config(config).await;
     let wf =
-        common::v1::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
+        common::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
 
     // Authoring still works with the scheduler off: an instance that cannot run
     // schedules is still a place to write and promote them.
     let (status, body) = post_channel(&app, cron_channel("disabled", &wf)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    let id = body["data"]["channel_id"].as_str().expect("id").to_string();
+    let digest = body["digest"].as_str().expect("a digest").to_string();
+
+    let (base, members) = deploy::merged(
+        &app,
+        vec![deploy::Upsert {
+            kind: "channel",
+            id: "disabled".into(),
+            digest,
+            revision: None,
+            requires: vec![("workflow", wf)],
+        }],
+    )
+    .await;
+    let (status, body) = deploy::apply(&app, base, members).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert!(
+        body["evaluation"]["degraded_nodes"]
+            .as_array()
+            .is_some_and(|nodes| !nodes.is_empty()),
+        "the node must report itself degraded on this deployment: {body}"
+    );
 
     let resp = app
         .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .expect("request");
+    let health = body_json(resp).await;
+    assert_eq!(health["components"]["cron"], "degraded", "{health}");
+    let quarantined = health["channels"]["quarantined"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        quarantined.iter().any(|q| q["channel"] == "disabled"
+            && q["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("cron.enabled"))),
+        "the quarantine must name the setting: {health}"
+    );
+
+    // Not serving: there is no schedule a manual trigger could run.
+    let resp = app
+        .clone()
         .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{id}/status"),
-            Some(json!({"status": "active"})),
+            "POST",
+            "/api/v2/admin/channels/disabled/trigger",
+            None,
         ))
         .await
         .expect("request");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("cron.enabled"),
-        "the refusal must name the setting: {body}"
-    );
 }
