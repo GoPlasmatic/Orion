@@ -163,7 +163,8 @@ pub(crate) async fn dynamic_handler(
     {
         (rm.channel_name, rm.params, rm.role)
     } else if !route_path.contains('/') {
-        // Single segment — treat as simple channel name (backward compat),
+        // Single segment — a channel by its name (`/api/v2/data/{name}`, what
+        // `orion-cli send` calls),
         // decoded once like a captured param so the encoded spelling of a
         // name reaches the same channel. `match_route` above has already
         // answered 400 for invalid sequences, so the decode fallback cannot

@@ -19,7 +19,7 @@ use crate::server::state::AppState;
 pub async fn reload_engine(
     state: &AppState,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
-    reload_with_scope(state, None, false).await
+    reload_with_scope(state, None, PoolEviction::Keep).await
 }
 
 /// Epoch-driven resync from the database, run by the watcher when another
@@ -47,7 +47,7 @@ pub async fn resync_from_db(
     state: &AppState,
     scope: crate::cluster::EpochScope,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
-    reload_with_scope(state, Some(scope), true).await
+    reload_with_scope(state, Some(scope), PoolEviction::OnConnectorChange).await
 }
 
 /// Local connector writes already invalidate the affected names. Rebuild
@@ -55,7 +55,12 @@ pub async fn resync_from_db(
 pub(crate) async fn reload_connectors_after_commit(
     state: &AppState,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
-    reload_with_scope(state, Some(crate::cluster::EpochScope::Connectors), false).await
+    reload_with_scope(
+        state,
+        Some(crate::cluster::EpochScope::Connectors),
+        PoolEviction::Keep,
+    )
+    .await
 }
 
 /// Build and publish the exact entity revisions declared in `target_revision`'s
@@ -72,7 +77,16 @@ pub async fn reconcile_deployment_revision(
     use crate::extensions::reconciler::CandidateBuildIssue;
 
     state.composition.reconciler.observe_desired_head();
-    let build_res = reload_with_manifest(state, None, false, Some(target_revision), true).await;
+    let build_res = reload_with_manifest(
+        state,
+        Reload {
+            scope: None,
+            pools: PoolEviction::Keep,
+            manifest_revision: Some(target_revision),
+            barrier: PublicationBarrier::Enforce,
+        },
+    )
+    .await;
 
     let mut build_issues = Vec::new();
     match build_res {
@@ -367,23 +381,66 @@ fn manifest_connectors(
     Ok(connectors)
 }
 
+/// Whether a reload that changes connectors drops the cached pools built
+/// from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoolEviction {
+    /// The caller has already evicted what its change invalidated (a local
+    /// connector write), or nothing it does can invalidate a pool.
+    Keep,
+    /// Evict every pool when connectors changed: a peer's change, whose
+    /// names this node does not know.
+    OnConnectorChange,
+}
+
+/// Whether the publish waits on the node reconciler's publication barrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicationBarrier {
+    Enforce,
+    Skip,
+}
+
+/// What one reload builds and how it publishes.
+#[derive(Debug, Clone, Copy)]
+struct Reload {
+    /// What the triggering change touched; `None` is a full reload.
+    scope: Option<crate::cluster::EpochScope>,
+    pools: PoolEviction,
+    /// The committed deployment revision to build from, or the v1 tables.
+    manifest_revision: Option<u64>,
+    barrier: PublicationBarrier,
+}
+
 async fn reload_with_scope(
     state: &AppState,
     scope: Option<crate::cluster::EpochScope>,
-    evict_connector_pools: bool,
+    pools: PoolEviction,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     let (head_rev, _) = state.composition.deployments.current_head();
-    let manifest_rev = (head_rev > 0).then_some(head_rev);
-    reload_with_manifest(state, scope, evict_connector_pools, manifest_rev, false).await
+    reload_with_manifest(
+        state,
+        Reload {
+            scope,
+            pools,
+            manifest_revision: (head_rev > 0).then_some(head_rev),
+            barrier: PublicationBarrier::Skip,
+        },
+    )
+    .await
 }
 
 async fn reload_with_manifest(
     state: &AppState,
-    scope: Option<crate::cluster::EpochScope>,
-    evict_connector_pools: bool,
-    manifest_revision: Option<u64>,
-    enforce_publication_barrier: bool,
+    reload: Reload,
 ) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
+    let Reload {
+        scope,
+        pools,
+        manifest_revision,
+        barrier,
+    } = reload;
+    let evict_connector_pools = pools == PoolEviction::OnConnectorChange;
+    let enforce_publication_barrier = barrier == PublicationBarrier::Enforce;
     let start = std::time::Instant::now();
 
     // One reload at a time, process-wide. Everything below is a

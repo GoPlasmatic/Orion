@@ -176,13 +176,19 @@ impl CompositionRoot {
     ///   `org.orion.memory-cache`) and
     ///   their version-fenced session/cache pools
     /// - [`CommunityAdmissionPolicy`]
+    ///
+    /// The node identity is a fixed placeholder: a running node builds its
+    /// root with [`Self::community_with`] and its own.
     pub fn community() -> Self {
-        Self::community_with(&foundation::FoundationOptions::default())
+        Self::community_with(
+            &foundation::FoundationOptions::default(),
+            NodeIdentity::new("node-local-1", "boot-1"),
+        )
     }
 
     /// [`Self::community`], with the foundation providers bounded by `options`
     /// (the node's shared HTTP client and its configured caps).
-    pub fn community_with(options: &foundation::FoundationOptions) -> Self {
+    pub fn community_with(options: &foundation::FoundationOptions, node: NodeIdentity) -> Self {
         let providers = ProviderRegistry::new();
         let pools = ResourcePoolRegistry::new();
         let deployments = ImmutableDeploymentStore::default();
@@ -195,7 +201,7 @@ impl CompositionRoot {
         let admission: Arc<dyn AdmissionPolicy> = Arc::new(CommunityAdmissionPolicy::new());
         providers.set_admission_policy(admission.clone());
         providers.set_deployment_store(deployments.clone());
-        let reconciler = NodeReconciler::new(deployments.clone(), "node-local-1", "boot-1");
+        let reconciler = NodeReconciler::new(deployments.clone(), node.node_id, node.boot_id);
         Self {
             channels: ChannelDriverRegistry::community(),
             providers,
@@ -223,17 +229,6 @@ impl CompositionRoot {
     pub fn with_admission_policy(mut self, policy: Arc<dyn AdmissionPolicy>) -> Self {
         self.providers.set_admission_policy(policy.clone());
         self.admission = policy;
-        self
-    }
-
-    /// Override the node reconciler's [`NodeIdentity`] (`node_id` and `boot_id`)
-    /// with the running instance's configured cluster/node identity.
-    pub fn with_node_identity(
-        mut self,
-        node_id: impl Into<String>,
-        boot_id: impl Into<String>,
-    ) -> Self {
-        self.reconciler = NodeReconciler::new(self.deployments.clone(), node_id, boot_id);
         self
     }
 

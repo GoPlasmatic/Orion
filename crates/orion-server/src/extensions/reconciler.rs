@@ -21,6 +21,15 @@ pub struct NodeIdentity {
     pub boot_id: String,
 }
 
+impl NodeIdentity {
+    pub fn new(node_id: impl Into<String>, boot_id: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            boot_id: boot_id.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CandidateBuildIssue {
     /// Whole-build integrity, admission, or workflow compilation failure:
@@ -596,12 +605,14 @@ mod tests {
             .unwrap();
         let db_pool = crate::storage::DbPool::Sqlite(pool);
 
-        let root_a = crate::extensions::CompositionRoot::community()
-            .with_node_identity("node-alpha", "boot-alpha");
+        let root_a = crate::extensions::CompositionRoot::community_with(
+            &crate::extensions::FoundationOptions::default(),
+            NodeIdentity::new("node-alpha", "boot-alpha"),
+        );
         assert_eq!(
             root_a.deployments.node_id(),
             "node-alpha",
-            "with_node_identity must synchronize store and reconciler node_id"
+            "the identity a root is built with is the store's and the reconciler's"
         );
 
         let policy = CommunityAdmissionPolicy::new();

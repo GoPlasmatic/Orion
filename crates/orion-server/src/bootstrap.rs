@@ -315,8 +315,14 @@ pub async fn build_engine_components(
         },
         ..Default::default()
     };
-    let composition = crate::extensions::CompositionRoot::community_with(&foundation)
-        .with_resource_pool(sql_pool_cache.clone());
+    let composition = crate::extensions::CompositionRoot::community_with(
+        &foundation,
+        crate::extensions::NodeIdentity::new(
+            config.cluster.instance_id.clone(),
+            format!("boot-{}", uuid::Uuid::new_v4().simple()),
+        ),
+    )
+    .with_resource_pool(sql_pool_cache.clone());
     let providers = composition.providers.clone();
 
     // The node's live components, as every function gets them.
@@ -932,6 +938,17 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         pool,
         metrics_handle,
     } = params;
+    // One identity for this node, resolved once: the cluster runtime, the
+    // node reconciler, the deployment store's receipts and the model node all
+    // read it from here. `main` resolves it into the config already; a test
+    // harness may leave it empty, which mints one.
+    let config = if config.cluster.instance_id.is_empty() {
+        let mut resolved = (*config).clone();
+        resolved.cluster.instance_id = config.cluster.effective_instance_id();
+        Arc::new(resolved)
+    } else {
+        config
+    };
 
     // Cluster runtime: instance identity and the shared store over the state
     // database.
@@ -1128,8 +1145,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     let packages = Arc::new(crate::runtime::boot_packages::BootPackages::new(
         &config.packages.apply,
     ));
-    let boot_id = format!("boot-{}", uuid::Uuid::new_v4().simple());
-    let composition = composition.with_node_identity(cluster.instance_id.clone(), boot_id);
     let provider_pools = composition.pools.clone();
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         runtime,
