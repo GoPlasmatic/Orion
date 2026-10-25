@@ -505,51 +505,45 @@ async fn the_pre_1_0_flat_envelope_is_refused_at_create() {
 /// behind. 1.12 ran the `write` envelope and the stale keys were inert.
 ///
 /// Break 2a: the stale keys are keys `data_write`'s dataflow-rs 4 config
-/// does not declare, and its verdict decides which rows load (I182), so the
-/// channel is quarantined with each key's path in the reason, and nothing is
-/// written. The create path still accepts them; the refusal is the load's.
+/// does not declare, so the workflow would not serve: its definition is
+/// refused at upload with each key's path, and nothing is deployed or
+/// written. (The v1 create path accepted them and the load quarantined the
+/// channel.)
 #[tokio::test]
 async fn stale_flat_keys_beside_the_envelope_quarantine_the_channel() {
     let app = sqlite_app("dw-both", "dw_both").await;
-    common::create_and_activate_channel(
-        &app,
-        "ch-dw-both",
-        common::workflow_with_tasks(
-            "dw",
-            json!([
-                ddl(
-                    "dw-both",
-                    "ddl",
-                    "CREATE TABLE IF NOT EXISTS both_t (id INTEGER, name TEXT)"
-                ),
-                json!({
-                    "id": "w", "name": "w",
-                    "function": { "name": "data_write", "input": {
-                        "connector": "dw-both",
-                        "output": "data.w",
-                        "schema": { "unmapped": "identity" },
-                        // Stale flat keys left behind by a partial migration.
-                        "op": "insert",
-                        "target": "both_t",
-                        "values": { "id": 99, "name": "stale" },
-                        // The authoritative envelope.
-                        "write": { "op": "insert", "target": "both_t", "values": { "id": 1, "name": "fresh" } }
-                    }}
-                }),
-                dq("dw-both", "read", json!({ "source": "both_t" })),
-            ]),
-        ),
-    )
-    .await;
-
-    let (status, body) = post(&app, "ch-dw-both", json!({ "data": {} })).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body = {body}");
-    let message = body["error"]["message"].as_str().unwrap_or_default();
+    let workflow = common::workflow_with_tasks(
+        "dw",
+        json!([
+            ddl(
+                "dw-both",
+                "ddl",
+                "CREATE TABLE IF NOT EXISTS both_t (id INTEGER, name TEXT)"
+            ),
+            json!({
+                "id": "w", "name": "w",
+                "function": { "name": "data_write", "input": {
+                    "connector": "dw-both",
+                    "output": "data.w",
+                    "schema": { "unmapped": "identity" },
+                    // Stale flat keys left behind by a partial migration.
+                    "op": "insert",
+                    "target": "both_t",
+                    "values": { "id": 99, "name": "stale" },
+                    // The authoritative envelope.
+                    "write": { "op": "insert", "target": "both_t", "values": { "id": 1, "name": "fresh" } }
+                }}
+            }),
+            dq("dw-both", "read", json!({ "source": "both_t" })),
+        ]),
+    );
+    let (status, body) =
+        common::deploy::try_upload(&app, common::deploy::workflow_definition(&workflow)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    let paths = common::deploy::refused_paths(&body);
     for key in ["op", "target", "values"] {
         assert!(
-            message.contains(&format!(
-                "task 'w': UNKNOWN_KEY at tasks[1].function.input.{key}"
-            )),
+            paths.contains(&format!("definition.tasks[1].function.input.{key}")),
             "body = {body}"
         );
     }

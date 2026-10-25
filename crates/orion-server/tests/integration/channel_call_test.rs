@@ -368,36 +368,13 @@ async fn a_cron_channel_is_not_callable() {
     let target_wf =
         common::create_and_activate_workflow(&app, common::simple_log_workflow("Scheduled Work"))
             .await;
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "scheduled-target",
-                "channel_type": "async",
-                "protocol": "cron",
-                "workflow_id": target_wf,
-                "transport_config": {"schedule": "0 15 2 * * *"},
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let channel_id = common::body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel id")
-        .to_string();
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{channel_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    common::create_cron_channel(
+        &app,
+        "scheduled-target",
+        &target_wf,
+        json!({"schedule": "0 15 2 * * *"}),
+    )
+    .await;
 
     // The caller: an ordinary channel whose workflow calls it.
     common::create_and_activate_channel(
@@ -651,26 +628,7 @@ async fn test_http_call_end_to_end() {
 
     let app = common::test_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/connectors",
-            Some(json!({
-                "id": "mock-http-api",
-                "name": "mock-http-api",
-                "connector_type": "http",
-                "config": {
-                    "type": "http",
-                    "url": format!("http://{}", mock_addr),
-                    "retry": {"max_retries": 0, "retry_delay_ms": 10},
-                    "allow_private_urls": true
-                }
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    common::create_http_connector(&app, "mock-http-api", mock_addr).await;
 
     common::create_and_activate_channel(
         &app,
@@ -832,16 +790,14 @@ async fn seen_on(generation: &orion::runtime::RuntimeGeneration, channel: &str) 
     }
 }
 
-/// `channel_call` through the generation the real load publishes (O10,
+/// `channel_call` through the generation a deployment publishes (O10,
 /// O11a):
 ///
-/// - a call into a channel the engine accepted runs its target on the
+/// - a call into a channel the generation serves runs its target on the
 ///   generation's engine;
-/// - a call into a channel the load quarantined (break 2, a typo'd key) is
-///   refused with the quarantine, as 1.12 refused a quarantined target
-///   (F35): the snapshot and the engine are built from one verdict;
-/// - a call into no channel is refused as not found or not active, as 1.12
-///   refused an inactive one.
+/// - a target whose workflow would not serve (a typo'd key) never reaches a
+///   generation: its definition is refused at upload, naming the key;
+/// - a call into no channel is refused as not found or not active.
 #[tokio::test]
 async fn a_channel_call_runs_on_the_generations_engine() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
@@ -862,41 +818,31 @@ async fn a_channel_call_runs_on_the_generations_engine() {
     )
     .await;
     // Break 2: `mesage` is a near miss of `log`'s `message`.
-    common::create_and_activate_channel(
+    let (status, refused) = common::deploy::try_upload(
         &app,
-        "v4-broken",
-        workflow(
+        common::deploy::workflow_definition(&workflow(
             "Broken",
             json!([{"id": "t1", "name": "log", "function": {"name": "log", "input": {
                 "message": "x", "mesage": "y"}}}]),
-        ),
+        )),
     )
     .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        common::deploy::refused_paths(&refused)
+            .contains(&"definition.tasks[0].function.input.mesage".to_string()),
+        "the refusal names the typo'd key: {refused}"
+    );
     for (caller, target) in [
         ("v4-caller", "v4-target"),
-        ("v4-caller-broken", "v4-broken"),
         ("v4-caller-missing", "v4-no-such-channel"),
     ] {
         common::create_and_activate_channel(&app, caller, workflow(caller, call(target))).await;
     }
 
     let generation = state.runtime.load();
-    assert!(
-        generation.channels.quarantine_reason("v4-broken").is_some(),
-        "the load quarantines the typo"
-    );
-
     let served = seen_on(&generation, "v4-caller").await;
     assert_eq!(served, Ok(json!({"child": {"greeting": "hello"}})));
-
-    let quarantined = seen_on(&generation, "v4-caller-broken").await;
-    let (_, message) = quarantined
-        .as_ref()
-        .expect_err("a quarantined target is refused");
-    assert!(
-        message.contains("Channel 'v4-broken' failed to load and is not being served"),
-        "{message}"
-    );
 
     let missing = seen_on(&generation, "v4-caller-missing").await;
     let (_, message) = missing.as_ref().expect_err("no target is refused");

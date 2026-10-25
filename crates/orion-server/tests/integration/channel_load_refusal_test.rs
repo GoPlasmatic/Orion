@@ -11,30 +11,21 @@
 //! Both rows are written straight to the DB: that is exactly how such a row
 //! occurs in practice (import, a hand-edited row, or a datalogic upgrade that
 //! changed what compiles), since create/update validation rejects them.
+//!
+//! A node serving a deployment states the same guarantees differently, by
+//! design. A definition that would not serve is refused at upload, naming the
+//! field; and a revision whose workflow cannot build anyway — stored past
+//! upload, or read differently by a later engine — fails as a whole: the
+//! node reports it as not converged and the previous generation keeps
+//! serving every channel. Nothing of the failed revision is published, so
+//! nothing is quarantined. Those tests store their definition with
+//! `common::store_definition`, which writes past upload validation.
 
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
 use crate::common::{self, body_json, json_request};
-
-/// Insert an `active` channel row directly, bypassing admin validation.
-async fn insert_raw_active_channel(
-    state: &orion::server::state::AppState,
-    name: &str,
-    config: &str,
-) {
-    let sql = format!(
-        "INSERT INTO channels (channel_id, version, name, channel_type, protocol, \
-         transport_config_json, config_json, status, priority) \
-         VALUES ('ch_{name}', 1, '{name}', 'sync', 'http', '{{}}', '{config}', 'active', 0)"
-    );
-    state
-        .db_pool
-        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
-        .await
-        .expect("raw channel insert");
-}
 
 async fn reload_engine(app: &axum::Router) -> (StatusCode, serde_json::Value) {
     let resp = app
@@ -59,144 +50,81 @@ async fn serves_ok(app: &axum::Router, channel: &str) -> bool {
     resp.status() == StatusCode::OK
 }
 
-async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &str) {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-
-    common::create_and_activate_channel(&app, "keep-ch", common::simple_log_workflow("Keep WF"))
-        .await;
-    assert!(serves_ok(&app, "keep-ch").await, "baseline channel serves");
-
-    insert_raw_active_channel(&state, bad_channel, config_json).await;
-
-    // F35: the reload succeeds. One broken row must not fail every admin
-    // mutation that triggers a reload.
-    let (status, body) = reload_engine(&app).await;
+/// A deployment adding `upserts` to the head, applied as it is: answering
+/// the apply body, and asserting the node accepted the revision but did not
+/// build it, naming every one of `fragments`, while the generation it served before keeps
+/// serving.
+async fn assert_revision_fails_whole(
+    state: &orion::server::state::AppState,
+    app: &axum::Router,
+    upserts: Vec<common::deploy::Upsert>,
+    fragments: &[&str],
+    neighbour: &str,
+) -> serde_json::Value {
+    let before = state.runtime.load().id;
+    let (base, members) = common::deploy::merged(app, upserts).await;
+    let (status, body) = common::deploy::apply(app, base, members).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "the revision commits: {body}");
+    assert_eq!(body["evaluation"]["converged"], false, "{body}");
+    let error = body["local_error"].as_str().unwrap_or_default();
+    for fragment in fragments {
+        assert!(
+            error.contains(fragment),
+            "expected {fragment:?} in the node's error: {body}"
+        );
+    }
     assert_eq!(
-        status,
-        StatusCode::OK,
-        "reload must succeed and quarantine the broken channel, got body {body}"
-    );
-    // #342: the answer says what *that* generation refused, with the row's
-    // identity — and `/engine/status` and `/health` say the same, from the
-    // one collector.
-    let issues = &body["data"]["load_issues"]["channels"];
-    assert_eq!(issues.as_array().map(Vec::len), Some(1), "{body}");
-    assert_eq!(issues[0]["channel"], bad_channel, "{body}");
-    assert_eq!(
-        issues[0]["channel_id"],
-        format!("ch_{bad_channel}"),
-        "{body}"
+        state.runtime.load().id,
+        before,
+        "a revision that cannot build publishes nothing"
     );
     assert!(
-        body["data"]["generation"].as_u64().unwrap_or(0) > 0,
-        "{body}"
+        serves_ok(app, neighbour).await,
+        "the previous generation keeps serving"
     );
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v2/admin/engine/status", None))
-        .await
-        .expect("status");
-    let status_body = body_json(resp).await;
-    assert_eq!(status_body["data"]["load_issues"]["channels"], *issues);
-    assert_eq!(
-        status_body["data"]["generation"],
-        body["data"]["generation"]
+    assert!(
+        state.runtime.load().channels.quarantined().is_empty(),
+        "nothing of the failed revision is quarantined, because nothing of it is published"
     );
-    assert_eq!(
-        status_body["data"]["capabilities"]["cron"],
-        json!(orion::config::AppConfig::default().cron.enabled)
-    );
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/health", None))
-        .await
-        .expect("health");
-    let health = body_json(resp).await;
-    assert_eq!(health["channels"]["quarantined"], *issues);
+    body
+}
 
-    // The broken channel must not be reachable...
+/// The v2 statement of a channel whose config would not load: its definition
+/// is refused at upload, naming the field at `path` (under the request's
+/// `definition`). A definition stored past upload is not asserted here: a
+/// manifest build quarantines a channel whose config does not load rather
+/// than failing its revision, which is not a guarantee to pin.
+async fn assert_refused(config: serde_json::Value, bad_channel: &str, path: &str) {
+    let app = common::test_app().await;
+    let channel = json!({
+        "name": bad_channel,
+        "channel_type": "sync",
+        "protocol": "http",
+        "methods": ["POST"],
+        "route_pattern": format!("/{bad_channel}"),
+        "config": config,
+    });
+    let (status, body) =
+        common::deploy::try_upload(&app, json!({"kind": "channel", "definition": channel})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let paths = common::deploy::refused_paths(&body);
     assert!(
-        state
-            .runtime
-            .load()
-            .channels
-            .get_by_name(bad_channel)
-            .is_none(),
-        "quarantined channel must not be in the registry"
+        paths
+            .iter()
+            .any(|p| p.starts_with("definition.") && p.ends_with(path)),
+        "the refusal names {path}: {body}"
     );
-    let reason = state
-        .runtime
-        .load()
-        .channels
-        .quarantine_reason(bad_channel)
-        .expect("the broken channel must be quarantined, not merely absent");
-    assert!(
-        reason.contains(reason_fragment),
-        "expected reason {reason_fragment:?} in: {reason}"
-    );
-
-    // ...and requesting it must be refused, not served with its guards
-    // silently absent. That distinction is the whole point of N3/N4: a plain
-    // registry miss would fall through to "no config, no guards".
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v2/data/{bad_channel}"),
-            Some(json!({"data": {"x": 1}})),
-        ))
-        .await
-        .expect("data request");
     assert_eq!(
-        resp.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "a quarantined channel must be refused at ingress"
-    );
-    let body = body_json(resp).await;
-    let message = body["error"]["message"].as_str().unwrap_or("");
-    assert!(
-        message.contains(bad_channel) && message.contains("failed to load"),
-        "the refusal must say which channel and why: {message}"
-    );
-
-    // The quarantine must be confined to the broken row.
-    assert!(
-        state
-            .runtime
-            .load()
-            .channels
-            .get_by_name("keep-ch")
-            .is_some(),
-        "quarantining one channel must leave the others loaded"
-    );
-    assert!(serves_ok(&app, "keep-ch").await);
-
-    // /health is the operator-facing signal that something is not being served.
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/health", None))
-        .await
-        .expect("health request");
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "quarantine is degraded, not down"
-    );
-    let body = body_json(resp).await;
-    assert_eq!(body["status"], "degraded");
-    assert_eq!(body["components"]["channels"], "degraded");
-    let quarantined = body["channels"]["quarantined"].as_array().expect("array");
-    assert!(
-        quarantined.iter().any(|q| q["channel"] == bad_channel),
-        "health must list the quarantined channel: {quarantined:?}"
+        common::deploy::head(&app).await.0,
+        0,
+        "nothing was deployed"
     );
 }
 
 #[tokio::test]
 async fn malformed_config_json_refuses_channel_load_on_single_node() {
-    // Not JSON at all.
-    assert_refused("{ not json", "bad-cfg-ch", "config_json does not parse").await;
+    // A config that is not an object at all.
+    assert_refused(json!("{ not json"), "bad-cfg-ch", "config").await;
 }
 
 #[tokio::test]
@@ -204,9 +132,9 @@ async fn wrongly_typed_config_field_refuses_channel_load() {
     // Valid JSON, wrong type — the proposal's example: one typo used to load
     // the channel with no rate limit, validation, dedup, or backpressure.
     assert_refused(
-        r#"{"rate_limit": {"requests_per_second": "100"}}"#,
+        json!({"rate_limit": {"requests_per_second": "100"}}),
         "typo-cfg-ch",
-        "config_json does not parse",
+        "config",
     )
     .await;
 }
@@ -217,9 +145,9 @@ async fn uncompilable_validation_logic_refuses_channel_load() {
     // The channel must not serve unvalidated because its input contract
     // stopped compiling.
     assert_refused(
-        r#"{"validation_logic": {"==": [1, 1], "!=": [1, 2]}}"#,
+        json!({"validation_logic": {"==": [1, 1], "!=": [1, 2]}}),
         "bad-logic-ch",
-        "validation_logic does not compile",
+        "config.validation_logic",
     )
     .await;
 }
@@ -233,9 +161,9 @@ async fn uncompilable_validation_logic_refuses_channel_load() {
 #[tokio::test]
 async fn uncompilable_rate_limit_key_logic_refuses_channel_load() {
     assert_refused(
-        r#"{"rate_limit": {"requests_per_second": 10, "burst": 10, "key_logic": {"==": [1, 1], "!=": [1, 2]}}}"#,
+        json!({"rate_limit": {"requests_per_second": 10, "burst": 10, "key_logic": {"==": [1, 1], "!=": [1, 2]}}}),
         "bad-key-logic-ch",
-        "rate_limit.key_logic does not compile",
+        "config.rate_limit.key_logic",
     )
     .await;
 }
@@ -288,6 +216,10 @@ async fn an_unreachable_key_logic_header_warns_but_still_loads() {
 /// registry reload was all-or-nothing and the admin handler turned a non-empty
 /// issue list into a hard error. The instance became unmanageable through the
 /// API until someone edited the row out of the database by hand.
+///
+/// A deployment that cannot build does not wedge the node either: the next
+/// deployment, without the broken member, converges, and whatever it adds
+/// serves — and so does the one after it, which takes that away again.
 #[tokio::test]
 async fn a_broken_channel_does_not_wedge_admin_mutations() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
@@ -299,81 +231,57 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
         common::simple_log_workflow("Keep WF"),
     )
     .await;
-    insert_raw_active_channel(&state, "wedge-ch", "{ not json").await;
+    // A revision that cannot build: a channel whose workflow, stored past
+    // upload, carries a typo'd key.
+    let broken = common::store_definition(
+        &state,
+        common::deploy::workflow_definition(&json!({"name": "Wedge", "tasks": [
+            {"id": "t1", "name": "log", "conditon": false,
+             "function": {"name": "log", "input": {"message": "x"}}}]})),
+    )
+    .await;
+    let wedge = common::deploy::upload(
+        &app,
+        common::deploy::channel_definition(&common::sync_http_channel("wedge-ch", "wedge-wf")).0,
+    )
+    .await;
+    assert_revision_fails_whole(
+        &state,
+        &app,
+        vec![
+            common::deploy::Upsert {
+                kind: "workflow",
+                id: "wedge-wf".to_string(),
+                digest: broken,
+                revision: None,
+                requires: Vec::new(),
+            },
+            common::deploy::Upsert {
+                kind: "channel",
+                id: "wedge-ch".to_string(),
+                digest: wedge,
+                revision: None,
+                requires: vec![("workflow", "wedge-wf".to_string())],
+            },
+        ],
+        &["wedge-ch", "LIKELY_TYPO"],
+        "keep-ch",
+    )
+    .await;
 
-    let (status, _) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Create a second channel on the same workflow so we hold its real
-    // channel_id, then drive it through both reload-triggering transitions.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/admin/channels",
-            Some(json!({
-                "name": "new-ch",
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": "/new-ch",
-                "workflow_id": keep_wf,
-            })),
-        ))
-        .await
-        .expect("create channel");
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let new_id = body_json(resp).await["data"]["channel_id"]
-        .as_str()
-        .expect("channel_id")
-        .to_string();
-
-    // Activating triggers a reload — this is the operation that used to 500.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{new_id}/status"),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .expect("activate request");
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "activating must not be blocked by an unrelated broken channel"
-    );
+    // The next deployment drops the broken member and adds a channel on the
+    // same workflow — the operation that used to 500.
+    common::deploy::remove(&app, &[("channel", "wedge-ch"), ("workflow", "wedge-wf")]).await;
+    common::deploy_channel(&app, common::sync_http_channel("new-ch", &keep_wf)).await;
     assert!(
         serves_ok(&app, "new-ch").await,
-        "a channel activated while another is quarantined must serve"
+        "a channel deployed after a failed revision must serve"
     );
 
-    // Archiving triggers a reload too.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/channels/{new_id}/status"),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .expect("archive request");
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "archiving must not be blocked by an unrelated broken channel"
-    );
-
-    // The broken channel is still quarantined throughout — the fix is about
-    // blast radius, not about relaxing the refusal.
-    assert!(
-        state
-            .runtime
-            .load()
-            .channels
-            .quarantine_reason("wedge-ch")
-            .is_some()
-    );
+    // Taking it away again deploys too.
+    common::remove_member(&app, "channel", "new-ch").await;
+    assert!(!serves_ok(&app, "new-ch").await);
+    assert!(serves_ok(&app, "keep-ch").await);
 }
 
 /// A quarantined channel's REST route must not resolve either — otherwise it
@@ -418,6 +326,10 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
 /// channel in the route table with no workflow behind it — requests got an
 /// opaque engine error. Engine-build failures now feed the same quarantine
 /// as config-load failures.
+///
+/// A deployment cannot take a workflow out from under its channel at all:
+/// the manifest that drops it leaves the channel's requirement unmet, so it
+/// is refused, naming both, and the channel keeps serving.
 #[tokio::test]
 async fn channel_whose_workflow_disappears_is_quarantined() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
@@ -429,56 +341,28 @@ async fn channel_whose_workflow_disappears_is_quarantined() {
         common::simple_log_workflow("F33 Orphan WF"),
     )
     .await;
-
-    // Serving normally before.
     assert!(serves_ok(&app, "f33-orphan").await);
 
-    // Archive the workflow — the status change triggers a reload.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v2/admin/workflows/{wf_id}/status"),
-            Some(json!({"status": "archived"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "archive must succeed (F35)");
-
-    // The channel is quarantined: refused with 503, not an opaque engine error…
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v2/data/f33-orphan",
-            Some(json!({"data": {"x": 1}})),
-        ))
-        .await
-        .unwrap();
+    let (base, mut members) = common::deploy::head(&app).await;
+    members.retain(|m| !(m["entity"]["kind"] == "workflow" && m["entity"]["id"] == wf_id.as_str()));
+    let (status, body) = common::deploy::apply(&app, base, members).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(
-        resp.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "quarantined channel must be refused (F33)"
+        body["error"]["code"], "MANIFEST_MISSING_REQUIREMENT",
+        "{body}"
+    );
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("f33-orphan") && message.contains(&wf_id),
+        "the refusal names the channel and the workflow it requires: {message}"
     );
 
-    // …and reported on /health with the reason.
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/health", None))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let quarantined = body["channels"]["quarantined"]
-        .as_array()
-        .expect("quarantined list");
-    let entry = quarantined
-        .iter()
-        .find(|e| e["channel"] == "f33-orphan")
-        .unwrap_or_else(|| panic!("f33-orphan must be quarantined, got {body}"));
-    assert!(
-        entry["reason"].as_str().unwrap().contains("not found"),
-        "reason must name the missing workflow, got {entry}"
+    assert_eq!(
+        common::deploy::head(&app).await.0,
+        base,
+        "nothing was committed"
     );
+    assert!(serves_ok(&app, "f33-orphan").await);
 }
 
 /// Insert an `active` workflow row and an `active` channel pointing at it,
@@ -540,6 +424,68 @@ async fn quarantine_reason(app: &axum::Router, channel: &str) -> Option<String> 
         .map(|e| e["reason"].as_str().unwrap_or_default().to_string())
 }
 
+/// The v2 statement of a workflow the load refuses: the definition is
+/// refused at upload, naming `path`; stored past upload and committed behind
+/// `bad_channel`, the revision fails as a whole, naming every one of
+/// `fragments`, and a
+/// neighbour deployed before it keeps serving.
+async fn assert_workflow_refused(
+    workflow: serde_json::Value,
+    bad_channel: &str,
+    path: &str,
+    fragments: &[&str],
+) {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+    common::create_and_activate_channel(&app, "neighbour", common::simple_log_workflow("Healthy"))
+        .await;
+
+    let definition = common::deploy::workflow_definition(&workflow);
+    let (status, body) = common::deploy::try_upload(&app, definition.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad_channel}: {body}");
+    assert!(
+        common::deploy::refused_paths(&body)
+            .iter()
+            .any(|p| p == path),
+        "{bad_channel}: the refusal names {path}: {body}"
+    );
+
+    let workflow_id = format!("wf_{bad_channel}");
+    let digest = common::store_definition(&state, definition).await;
+    let channel = common::deploy::upload(
+        &app,
+        common::deploy::channel_definition(&common::sync_http_channel(bad_channel, &workflow_id)).0,
+    )
+    .await;
+    assert_revision_fails_whole(
+        &state,
+        &app,
+        vec![
+            common::deploy::Upsert {
+                kind: "workflow",
+                id: workflow_id.clone(),
+                digest,
+                revision: None,
+                requires: Vec::new(),
+            },
+            common::deploy::Upsert {
+                kind: "channel",
+                id: bad_channel.to_string(),
+                digest: channel,
+                revision: None,
+                requires: vec![("workflow", workflow_id)],
+            },
+        ],
+        fragments,
+        "neighbour",
+    )
+    .await;
+    assert!(
+        !serves_ok(&app, bad_channel).await,
+        "{bad_channel} was never published"
+    );
+}
+
 /// `channel_logic`, 1.12's spelling of a computed `channel`, is no longer
 /// read: a stored row carrying it is quarantined at load, naming the key,
 /// rather than running with no target.
@@ -569,41 +515,19 @@ async fn channel_call_with_only_channel_logic_is_quarantined() {
 /// The other half: a typed field carrying the wrong type must be caught at
 /// load and quarantine only its own channel, rather than failing the build for
 /// every channel on the node.
+///
+/// Deployed, it is caught at upload; stored past upload, it fails its
+/// revision — never the generation already serving.
 #[tokio::test]
 async fn channel_call_with_a_wrongly_typed_field_quarantines_only_its_channel() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-
-    // A healthy channel alongside it, to prove the blast radius is one row.
-    common::create_and_activate_channel(
-        &app,
-        "healthy-neighbour",
-        common::simple_log_workflow("Healthy"),
-    )
-    .await;
-
-    insert_raw_active_workflow_and_channel(
-        &state,
+    assert_workflow_refused(
+        json!({"name": "bad-typed-input", "tasks": [{"id": "t1", "name": "fan",
+            "function": {"name": "channel_call", "input": {"channel": 7}}}]}),
         "bad-typed-input",
-        r#"[{"id":"t1","name":"fan","function":{"name":"channel_call",           "input":{"channel":7}}}]"#,
+        "definition.tasks[0].function.input.channel",
+        &["channel 'bad-typed-input'", "task 't1'"],
     )
     .await;
-
-    let (status, body) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK, "reload must still succeed: {body}");
-
-    let reason = quarantine_reason(&app, "bad-typed-input")
-        .await
-        .expect("a channel_call with a non-string `channel` must be quarantined");
-    assert!(
-        reason.contains("t1"),
-        "the reason must name the offending task: {reason}"
-    );
-    assert!(
-        quarantine_reason(&app, "healthy-neighbour").await.is_none()
-            && serves_ok(&app, "healthy-neighbour").await,
-        "one unusable row must not take its neighbours down"
-    );
 }
 
 /// I182, as refined: a Defect quarantines its channel only where
@@ -642,97 +566,62 @@ async fn a_payload_var_defect_loads_and_serves() {
 
 /// Break 21 (I185): a function whose result is never an object, written at
 /// a literal context root, fails every message on dataflow-rs 4, so its
-/// Defect quarantines the channel, the code and path in the reason. 1.12
+/// Defect refuses the workflow, the code and path in the reason. 1.12
 /// loaded it and replaced `data` with the rows.
 #[tokio::test]
 async fn a_root_output_defect_quarantines_only_its_channel() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-    common::create_and_activate_channel(
-        &app,
-        "root-neighbour",
-        common::simple_log_workflow("Root Neighbour"),
-    )
-    .await;
-
-    insert_raw_active_workflow_and_channel(
-        &state,
+    assert_workflow_refused(
+        json!({"name": "rows-at-root", "tasks": [{"id": "t1", "name": "read",
+            "function": {"name": "db_read", "input": {
+                "connector": "db", "query": "SELECT 1", "output": "data"}}}]}),
         "rows-at-root",
-        r#"[{"id":"t1","name":"read","function":{"name":"db_read","input":{"connector":"db","query":"SELECT 1","output":"data"}}}]"#,
+        "definition.tasks[0].function.input.output",
+        &["task 't1': INPUT_PARSE at tasks[0].function.input.output"],
     )
     .await;
-
-    let (status, body) = reload_engine(&app).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let reason = quarantine_reason(&app, "rows-at-root")
-        .await
-        .expect("a db_read writing its rows at `data` is quarantined");
-    assert!(
-        reason.contains("task 't1': INPUT_PARSE at tasks[0].function.input.output")
-            && reason.contains("break 21"),
-        "{reason}"
-    );
-    assert!(
-        quarantine_reason(&app, "root-neighbour").await.is_none()
-            && serves_ok(&app, "root-neighbour").await
-    );
 }
 
 /// O3's and O10's named load break: an `output` written as a string that
 /// names no context root (`"result"`, `"response"`), where 1.12 wrote the
-/// answer at a key no response shows, is `INVALID_PATH` at load and
-/// quarantines its channel, written through its pre-1.0 alias too, which the
-/// loader rewrites first (I186). The create path still accepts it.
+/// answer at a key no response shows, is `INVALID_PATH` at load. The v1
+/// create path accepted it and the load quarantined the channel; upload
+/// refuses it, and a revision carrying it past upload fails.
 #[tokio::test]
 async fn an_output_that_is_no_path_quarantines_its_channel() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-    common::create_http_connector(&app, "no-path-api", "127.0.0.1:1".parse().unwrap()).await;
-
     let task = |function: &str, input: serde_json::Value| {
         json!({"name": "No Path", "condition": true, "tasks": [
             {"id": "t1", "name": "t1", "function": {"name": function, "input": input}}
         ]})
     };
-    common::create_and_activate_channel(
-        &app,
-        "cc-result",
-        task(
-            "channel_call",
-            json!({"channel": "nonexistent", "output": "result"}),
+    for (channel, spelled, workflow) in [
+        (
+            "cc-result",
+            "result",
+            task(
+                "channel_call",
+                json!({"channel": "nonexistent", "output": "result"}),
+            ),
         ),
-    )
-    .await;
-    common::create_and_activate_channel(
-        &app,
-        "http-response",
-        task(
-            "http_call",
-            json!({"connector": "no-path-api", "method": "POST", "path": "/x",
-                   "output": "response"}),
+        (
+            "http-response",
+            "response",
+            task(
+                "http_call",
+                json!({"connector": "no-path-api", "method": "POST", "path": "/x",
+                       "output": "response"}),
+            ),
         ),
-    )
-    .await;
-
-    for (channel, spelled) in [("cc-result", "result"), ("http-response", "response")] {
-        let reason = quarantine_reason(&app, channel)
-            .await
-            .unwrap_or_else(|| panic!("{channel} must be quarantined"));
-        assert!(
-            reason.contains("task 't1': INVALID_PATH at tasks[0].function.input.output")
-                && reason.contains(&format!("path `{spelled}` must start at `data`")),
-            "{channel}: {reason}"
-        );
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                &format!("/api/v2/data/{channel}"),
-                Some(json!({"data": {}})),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{channel}");
+    ] {
+        assert_workflow_refused(
+            workflow,
+            channel,
+            "definition.tasks[0].function.input.output",
+            &[
+                "task 't1': INVALID_PATH at tasks[0].function.input.output",
+                &format!("path `{spelled}` must start at `data`"),
+            ],
+        )
+        .await;
     }
 }
 
@@ -762,26 +651,17 @@ async fn a_likely_typo_quarantines_its_channel() {
     );
 }
 
-/// A stored workflow whose `loop` the engine build refuses must quarantine its
-/// own channel, not fail the build for every channel on the node.
+/// A stored workflow whose `loop` the engine build refuses must not fail the
+/// build for every channel on the node.
 ///
 /// `Engine::check_workflow` does not run `Workflow::validate()`; only `build`
 /// does, and it fails on the first refusal. With nothing screening it, a
 /// duplicate step id across `loop.setup` and `tasks` failed every reload, and
-/// at boot stopped the process.
+/// at boot stopped the process. Deployed, it is refused at upload; stored
+/// past upload, it fails its own revision and the serving one stays.
 #[tokio::test]
 async fn a_loop_the_engine_refuses_quarantines_only_its_channel() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let app = orion::server::build_router(state.clone());
-
-    common::create_and_activate_channel(
-        &app,
-        "loop-neighbour",
-        common::simple_log_workflow("Loop Neighbour"),
-    )
-    .await;
-
-    let log = r#"{"name":"log","input":{"message":"x"}}"#;
+    let log = json!({"name": "log", "input": {"message": "x"}});
     // dataflow-rs 4's verdict decides which rows load, so each reason names
     // its issue's code and path (I182), where it was dataflow-rs 3's
     // `Workflow::validate` text ("Duplicate task id …").
@@ -789,71 +669,35 @@ async fn a_loop_the_engine_refuses_quarantines_only_its_channel() {
         // A setup step shares the body's id namespace.
         (
             "loop-dup-id",
-            format!(r#"{{"max":2,"setup":[{{"id":"t1","name":"s","function":{log}}}]}}"#),
+            json!({"max": 2, "setup": [{"id": "t1", "name": "s", "function": log}]}),
+            "tasks[0].id",
             "DUPLICATE_STEP_ID at loop.setup[0].id",
         ),
         // Two setup steps with one id.
         (
             "loop-dup-setup",
-            format!(
-                r#"{{"max":2,"setup":[{{"id":"s","name":"s","function":{log}}},{{"id":"s","name":"s","function":{log}}}]}}"#
-            ),
+            json!({"max": 2, "setup": [
+                {"id": "s", "name": "s", "function": log},
+                {"id": "s", "name": "s", "function": log}]}),
+            "loop.setup[1].id",
             "DUPLICATE_STEP_ID at loop.setup[1].id",
         ),
         // `as` names a `temp_data` slot and must be a plain key.
         (
             "loop-bad-as",
-            r#"{"max":2,"over":{"var":"data.items"},"as":"a..b"}"#.to_string(),
+            json!({"max": 2, "over": {"var": "data.items"}, "as": "a..b"}),
+            "loop.as",
             "at loop.as",
         ),
     ];
-
-    for (name, loop_json, _) in &cases {
-        let tasks = format!(r#"[{{"id":"t1","name":"body","function":{log}}}]"#);
-        insert_raw_active_workflow_with_loop(&state, name, &tasks, loop_json).await;
+    for (name, loop_config, path, fragment) in cases {
+        assert_workflow_refused(
+            json!({"name": name, "tasks": [{"id": "t1", "name": "body", "function": log}],
+                   "loop": loop_config}),
+            name,
+            &format!("definition.{path}"),
+            &[fragment],
+        )
+        .await;
     }
-
-    let (status, body) = reload_engine(&app).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "one unbuildable loop must not fail the reload: {body}"
-    );
-
-    for (name, _, fragment) in &cases {
-        let reason = quarantine_reason(&app, name)
-            .await
-            .unwrap_or_else(|| panic!("{name} must be quarantined"));
-        assert!(
-            reason.contains(fragment),
-            "{name}: the reason must say why, got {reason}"
-        );
-    }
-    assert!(
-        quarantine_reason(&app, "loop-neighbour").await.is_none()
-            && serves_ok(&app, "loop-neighbour").await,
-        "an unbuildable loop must not take its neighbours down"
-    );
-}
-
-/// [`insert_raw_active_workflow_and_channel`] with a `loop_json` column. The
-/// loop goes in with the insert: an active row is immutable.
-async fn insert_raw_active_workflow_with_loop(
-    state: &orion::server::state::AppState,
-    name: &str,
-    tasks_json: &str,
-    loop_json: &str,
-) {
-    let wf = format!("wf_{name}");
-    let sql = format!(
-        "INSERT INTO workflows (workflow_id, version, name, priority, status, \
-         rollout_percentage, condition_json, tasks_json, tags_json, loop_json) \
-         VALUES ('{wf}', 1, '{name}', 0, 'active', 100, 'true', '{tasks_json}', '[]', '{loop_json}')"
-    );
-    state
-        .db_pool
-        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
-        .await
-        .expect("raw workflow insert");
-    insert_raw_active_channel_for(state, name, &wf).await;
 }

@@ -336,9 +336,10 @@ async fn the_async_ingress_stamps_the_same_vars() {
 #[tokio::test]
 async fn the_admin_test_endpoint_stamps_the_same_vars() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let wf_id = common::create_and_activate_workflow(&app, metadata_echo_workflow("test-ep wf"))
-        .await
-        .to_string();
+    let wf_id =
+        common::v1::create_and_activate_workflow(&app, metadata_echo_workflow("test-ep wf"))
+            .await
+            .to_string();
 
     let resp = app
         .clone()
@@ -740,34 +741,46 @@ async fn an_engine_reload_keeps_the_store() {
 // secrets — the engine refuses what it cannot keep out of a record
 // ---------------------------------------------------------------------------
 
+/// Upload `tasks` as a workflow, asserting it is refused at a path starting
+/// with `path` and that the refusal quotes no secret value: the v2 statement
+/// of a workflow the load used to quarantine for how it reads a secret.
+async fn assert_refused_at_upload(app: &axum::Router, name: &str, tasks: Value, path: &str) {
+    let workflow = common::workflow_with_tasks(name, tasks);
+    let (status, body) =
+        common::deploy::try_upload(app, common::deploy::workflow_definition(&workflow)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "'{name}' must not serve: {body}"
+    );
+    assert!(
+        common::deploy::refused_paths(&body)
+            .iter()
+            .any(|p| p.starts_with(path)),
+        "'{name}': the refusal names {path}: {body}"
+    );
+    assert_no_secret_in(name, &body.to_string());
+}
+
 /// A workflow naming a secret the instance does not declare does not silently
-/// read `null`: the engine refuses it, and the channel is quarantined with the
-/// reason named rather than served with a missing key.
+/// read `null`: the engine refuses it, so its definition is refused at upload
+/// with the reason named rather than served with a missing key.
 #[tokio::test]
 async fn an_undeclared_secret_quarantines_the_channel() {
     let app = common::test_app().await; // no [secrets] at all
-    common::create_and_activate_channel(
+    assert_refused_at_upload(
         &app,
-        "unknown-ch",
-        common::workflow_with_tasks(
-            "unknown wf",
-            json!([{
-                "id": "guard", "name": "Guard",
-                "condition": { "==": [{ "secret": "nope" }, "x"] },
-                "function": { "name": "map", "input": { "mappings": [
-                    { "path": "data.ran", "logic": true }
-                ] } }
-            }]),
-        ),
+        "unknown wf",
+        json!([{
+            "id": "guard", "name": "Guard",
+            "condition": { "==": [{ "secret": "nope" }, "x"] },
+            "function": { "name": "map", "input": { "mappings": [
+                { "path": "data.ran", "logic": true }
+            ] } }
+        }]),
+        "definition.tasks[0].condition",
     )
     .await;
-
-    let (status, body) = post(&app, "unknown-ch", json!({})).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "a workflow reading an undeclared secret must not serve: {body}"
-    );
 }
 
 /// The same refusal from inside a function input rather than a condition. The
@@ -777,53 +790,35 @@ async fn an_undeclared_secret_quarantines_the_channel() {
 #[tokio::test]
 async fn an_undeclared_secret_in_a_function_field_quarantines_the_channel() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    common::create_and_activate_channel(
+    // `partner_hmacc` — one letter off a declared name.
+    let workflow = hmac_workflow("typo wf", json!({"secret": "partner_hmacc"}));
+    assert_refused_at_upload(
         &app,
-        "typo-ch",
-        // `partner_hmacc` — one letter off a declared name.
-        hmac_workflow("typo wf", json!({"secret": "partner_hmacc"})),
+        "typo wf",
+        workflow["tasks"].clone(),
+        "definition.tasks[0].function.input.key",
     )
     .await;
-
-    let (status, body) = post(&app, "typo-ch", json!({})).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "a misspelled secret must fail at build, not at the remote system: {body}"
-    );
 }
 
 /// A `map` mapping may not read a secret, because the engine records a
 /// mapping's result by construction. dataflow-rs refuses it at build, so the
-/// channel never serves rather than writing the key into `data`.
+/// definition is refused at upload rather than writing the key into `data`.
 #[tokio::test]
 async fn a_mapping_may_not_read_a_secret() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    common::create_and_activate_channel(
+    assert_refused_at_upload(
         &app,
-        "copy-ch",
-        common::workflow_with_tasks(
-            "copy wf",
-            json!([{
-                "id": "copy", "name": "Copy",
-                "function": { "name": "map", "input": { "mappings": [
-                    { "path": "data.leaked", "logic": { "secret": "partner_hmac" } }
-                ] } }
-            }]),
-        ),
+        "copy wf",
+        json!([{
+            "id": "copy", "name": "Copy",
+            "function": { "name": "map", "input": { "mappings": [
+                { "path": "data.leaked", "logic": { "secret": "partner_hmac" } }
+            ] } }
+        }]),
+        "definition.tasks[0].function.input.mappings[0].logic",
     )
     .await;
-
-    let (status, body) = post(&app, "copy-ch", json!({})).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "copying a secret into `data` must not be servable: {body}"
-    );
-    assert!(
-        !body.to_string().contains(SECRET_VALUE),
-        "the refusal must not quote the value: {body}"
-    );
 }
 
 /// The refusal is about *recording*, not about `map` — so it covers a value
@@ -831,9 +826,10 @@ async fn a_mapping_may_not_read_a_secret() {
 /// rather than stores. Both are documented as refused; both are pinned here.
 #[tokio::test]
 async fn a_derived_secret_and_a_log_field_are_refused_too() {
-    for (channel, tasks) in [
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    for (name, tasks, path) in [
         (
-            "derive-ch",
+            "derive wf",
             json!([{
                 "id": "derive", "name": "Derive",
                 "function": { "name": "map", "input": { "mappings": [
@@ -844,9 +840,10 @@ async fn a_derived_secret_and_a_log_field_are_refused_too() {
                     ] } }
                 ] } }
             }]),
+            "definition.tasks[0].function.input.mappings[0].logic",
         ),
         (
-            "log-ch",
+            "log wf",
             json!([{
                 "id": "shout", "name": "Shout",
                 "function": { "name": "log", "input": {
@@ -854,26 +851,10 @@ async fn a_derived_secret_and_a_log_field_are_refused_too() {
                     "fields": { "key": { "secret": "partner_hmac" } }
                 } }
             }]),
+            "definition.tasks[0].function.input.fields",
         ),
     ] {
-        let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-        common::create_and_activate_channel(
-            &app,
-            channel,
-            common::workflow_with_tasks(&format!("{channel} wf"), tasks),
-        )
-        .await;
-
-        let (status, body) = post(&app, channel, json!({})).await;
-        assert_ne!(
-            status,
-            StatusCode::OK,
-            "'{channel}' reads a secret into a recorded expression and must not serve: {body}"
-        );
-        assert!(
-            !body.to_string().contains(SECRET_VALUE),
-            "'{channel}': the refusal must not quote the value: {body}"
-        );
+        assert_refused_at_upload(&app, name, tasks, path).await;
     }
 }
 
@@ -1201,7 +1182,7 @@ async fn a_literal_key_leaks_through_the_stored_definition_not_the_trace() {
     const LITERAL: &str = "literal-key-value-3e2f";
 
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let (_, wf_id) = common::create_and_activate_channel(
+    let (_, wf_id) = common::v1::create_and_activate_channel(
         &app,
         "literal-ch",
         hmac_workflow("literal wf", json!(LITERAL)),
@@ -1237,7 +1218,7 @@ async fn a_literal_key_leaks_through_the_stored_definition_not_the_trace() {
 #[tokio::test]
 async fn the_stored_definition_holds_the_name_and_not_the_value() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let (_, wf_id) = common::create_and_activate_channel(
+    let (_, wf_id) = common::v1::create_and_activate_channel(
         &app,
         "export-ch",
         hmac_workflow("export wf", json!({"secret": "partner_hmac"})),
@@ -1263,6 +1244,42 @@ async fn the_stored_definition_holds_the_name_and_not_the_value() {
     }
 }
 
+/// The two tests above, for a deployed workflow: the stored definition —
+/// `GET /definitions/{digest}`, what a deployment names and promotes — holds
+/// a literal key in clear and a declared secret by name, never its value.
+#[tokio::test]
+async fn a_deployed_definition_holds_the_name_and_a_literal_in_clear() {
+    const LITERAL: &str = "literal-key-value-9a8b";
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    for (channel, key, expect) in [
+        ("literal-dep-ch", json!(LITERAL), LITERAL),
+        (
+            "named-dep-ch",
+            json!({"secret": "partner_hmac"}),
+            "partner_hmac",
+        ),
+    ] {
+        let (_, wf_id) =
+            common::create_and_activate_channel(&app, channel, hmac_workflow(channel, key)).await;
+        let (status, body) = post(&app, channel, json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let digest = common::deploy::member_digest(&app, "workflow", &wf_id).await;
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v2/admin/definitions/{digest}"),
+                None,
+            ))
+            .await
+            .expect("definition read");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let rendered = body_json(resp).await.to_string();
+        assert!(rendered.contains(expect), "{channel}: {rendered}");
+        assert_no_secret_in(channel, &rendered);
+    }
+}
+
 /// `POST /admin/workflows/{id}/test` returns the **whole** `ExecutionTrace`
 /// under default trace options — a full `Message` clone per step, and the one
 /// surface that hands a caller more of the run than a persisted trace does.
@@ -1270,7 +1287,7 @@ async fn the_stored_definition_holds_the_name_and_not_the_value() {
 async fn the_admin_test_endpoint_leaks_no_secret() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
     let wf_id =
-        common::create_and_activate_workflow(&app, every_secret_shape_workflow("test-leak wf"))
+        common::v1::create_and_activate_workflow(&app, every_secret_shape_workflow("test-leak wf"))
             .await;
 
     let resp = app
@@ -1660,9 +1677,10 @@ fn an_offline_case_refuses_a_non_object_vars() {
 #[tokio::test]
 async fn the_admin_test_endpoint_stamps_vars_when_metadata_is_omitted() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let wf_id = common::create_and_activate_workflow(&app, metadata_echo_workflow("omitted wf"))
-        .await
-        .to_string();
+    let wf_id =
+        common::v1::create_and_activate_workflow(&app, metadata_echo_workflow("omitted wf"))
+            .await
+            .to_string();
 
     let resp = app
         .clone()
@@ -1819,7 +1837,7 @@ async fn a_secret_node_cannot_stand_in_for_the_keys_array() {
 #[tokio::test]
 async fn an_absent_audience_element_is_dropped_rather_than_failing_the_task() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
-    let wf_id = common::create_and_activate_workflow(
+    let wf_id = common::v1::create_and_activate_workflow(
         &app,
         json!({
             "id": "aud-partial", "name": "aud partial", "priority": 0, "condition": true,

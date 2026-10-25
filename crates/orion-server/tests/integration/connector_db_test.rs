@@ -583,68 +583,41 @@ async fn test_db_read_row_cap_enforced() {
 /// stray, and the write proceeded.
 ///
 /// Break 2a: dataflow-rs 4's derived config refuses a key it does not
-/// declare, and its verdict decides which rows load (I182), so the channel
-/// is quarantined, the key's path in the reason, and nothing is written.
-/// The create path still accepts the key; the refusal is the load's.
+/// declare, so the workflow would not serve: its definition is refused at
+/// upload, the key's path named, and nothing is deployed or written. (The v1
+/// create path accepted the key and the load quarantined the channel.)
 #[tokio::test]
 async fn db_write_with_a_numeric_as_it_cannot_act_on_quarantines_its_channel() {
     let app = common::test_app().await;
-
-    common::create_connector(
-        &app,
-        common::db_connector_sqlite(
-            "na-db",
-            "sqlite:file:db_write_numeric_as?mode=memory&cache=shared",
-        ),
-    )
-    .await;
-
-    common::create_and_activate_channel(
-        &app,
-        "na-ch",
-        common::workflow_with_tasks(
-            "WriteNumericAs",
-            json!([
-                {
-                    "id": "ddl",
-                    "name": "Create",
-                    "function": { "name": "db_write", "input": {
-                        "connector": "na-db",
-                        "query": "CREATE TABLE IF NOT EXISTS na_rows (id INTEGER PRIMARY KEY)",
-                        "output": "data.created"
-                    }}
-                },
-                {
-                    "id": "ins",
-                    "name": "Insert",
-                    "function": { "name": "db_write", "input": {
-                        "connector": "na-db",
-                        "query": "INSERT INTO na_rows (id) VALUES (1)",
-                        // The value that used to fail the task outright.
-                        "numeric_as": "not-a-mode",
-                        "output": "data.inserted"
-                    }}
-                }
-            ]),
-        ),
-    )
-    .await;
-
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v2/data/na-ch",
-            Some(json!({"data": {}})),
-        ))
-        .await
-        .expect("request");
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = common::body_json(resp).await;
-    let message = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("failed to load")
-            && message.contains("task 'ins': UNKNOWN_KEY at tasks[1].function.input.numeric_as"),
-        "{body}"
+    let workflow = common::workflow_with_tasks(
+        "WriteNumericAs",
+        json!([
+            {
+                "id": "ddl",
+                "name": "Create",
+                "function": { "name": "db_write", "input": {
+                    "connector": "na-db",
+                    "query": "CREATE TABLE IF NOT EXISTS na_rows (id INTEGER PRIMARY KEY)",
+                    "output": "data.created"
+                }}
+            },
+            {
+                "id": "ins",
+                "name": "Insert",
+                "function": { "name": "db_write", "input": {
+                    "connector": "na-db",
+                    "query": "INSERT INTO na_rows (id) VALUES (1)",
+                    // The value that used to fail the task outright.
+                    "numeric_as": "not-a-mode",
+                    "output": "data.inserted"
+                }}
+            }
+        ]),
     );
+    common::deploy::assert_upload_refused(
+        &app,
+        common::deploy::workflow_definition(&workflow),
+        "definition.tasks[1].function.input.numeric_as",
+    )
+    .await;
 }
