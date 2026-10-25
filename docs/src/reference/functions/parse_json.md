@@ -5,8 +5,9 @@
 # `parse_json`
 
 Reads a raw value (typically the request payload) and parses it as JSON into the
-data context. Almost every workflow starts with this — without it, task
-conditions that reference `data.*` see an empty context.
+data context, under one key. `data` already starts as a copy of the payload's
+fields, so this is for placing the payload, or a string holding JSON, under a
+name of your choosing.
 
 ## Synopsis
 

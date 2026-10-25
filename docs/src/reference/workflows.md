@@ -209,12 +209,16 @@ exactly three areas your JSONLogic can read:
 
 | Area | Starts as | Purpose |
 |------|-----------|---------|
-| `data` | `{}` | The working document. Tasks read and write `data.*`. For a sync channel, the final `data` object is the response body |
+| `data` | a copy of the payload | The working document. Tasks read and write `data.*`. For a sync channel, the final `data` object is the response body |
 | `metadata` | ingress-stamped | Request context — channel name, method, headers, and params (see [Request metadata](#request-metadata)) |
 | `temp_data` | `{}` | Scratch space for intermediate values. Not part of the response |
 
-> [!WARNING]
-> `payload` is not in the context. The raw ingress payload lives in a sibling field outside the JSONLogic context, so `{"var": "payload.x"}` resolves to nothing. The only way to reach it is `parse_json` or `parse_xml` with `source: "payload"`, which parses it into `data`. A workflow that reads request data therefore starts with `parse_json`; otherwise conditions referencing `data.*` see an empty context.
+`data` starts as a copy of the request payload, so a field the caller sent is readable as `data.<field>` from the first condition on, the workflow's own included. The payload itself is kept apart: it lives in a sibling field outside the JSONLogic context, so `{"var": "payload.x"}` resolves to nothing, and it is never changed by a task. Two consequences follow from the seed:
+
+- **The response carries the caller's fields.** The final `data` is the payload plus whatever the tasks wrote, so a field the workflow should not echo has to be removed or overwritten.
+- **An unmatched request answers with its own input.** When no workflow matches, nothing changes `data`, and the response is the payload.
+
+`parse_json` with `source: "payload"` is still how a workflow places the whole payload under one key (`target`), as in the example below; `parse_xml` is how an XML body becomes readable.
 
 ```json
 {
@@ -227,7 +231,7 @@ exactly three areas your JSONLogic can read:
 
 ### Output paths
 
-Every connector function writes its result to a dotted path named `output`; a `map` task uses its mapping `path` instead. Orion creates the path inside the context if it does not exist. `http_call` and `channel_call` also accept the pre-1.0 spelling `response_path`. Supplying both in one input is a duplicate-field error, not a precedence rule. See [Accepted alternate spellings](../releases/versioning-policy.md#accepted-alternate-spellings).
+Every connector function writes its result to a dotted path named `output`; a `map` task uses its mapping `path` instead. Orion creates the path inside the context if it does not exist.
 
 ### Request metadata
 
@@ -417,7 +421,7 @@ Stopping early is a [`filter`](./functions/filter.md) task with `on_reject:
 ```
 
 > [!WARNING]
-> Do not put the break in the workflow `condition`. It looks like the natural home for it and it does not work. `data` [starts empty](#the-data-context), so `{"<": [{"var": "temp_data.i"}, {"var": "data.req.count"}]}` as a workflow condition is false on sweep 0, before any `parse_json` has run, and the loop never starts. Inside the body the parse has already happened, which is why the break belongs there. A workflow condition can still end a loop, but only over what is readable before the sweep's own tasks run: `metadata`, or `data` a previous workflow populated.
+> Do not put this break in the workflow `condition`. It looks like the natural home for it and it does not work. `data.req` is written by the body's own `parse_json`, so `{"<": [{"var": "temp_data.i"}, {"var": "data.req.count"}]}` as a workflow condition is false on sweep 0, before the parse has run, and the loop never starts. Inside the body the parse has already happened, which is why the break belongs there. A workflow condition can still end a loop, but only over what is readable before the sweep's own tasks run: `metadata`, the payload's own fields (`data` [starts as a copy of it](#the-data-context), so `data.count` would do), or `data` a previous workflow populated.
 
 The two bounds do different jobs. `max` is structural: the loop cannot outrun it, whatever the body does. The `filter` is what ends it early, once the real work is done. Reaching `max` is normal completion, not an error, because `max` is always something you wrote.
 

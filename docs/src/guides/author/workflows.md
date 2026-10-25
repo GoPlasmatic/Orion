@@ -10,19 +10,19 @@ A workflow is a JSON document listing tasks to run in order. This guide is how t
 
 You need a workflow file to edit and `orion-server` on your `PATH` for the offline checks. If the words *task*, *data context* and *condition* are new, read [Workflows](../../concepts/workflows.md) first; this page assumes them.
 
-## Parse request payloads first
+## Read the request under `data`
 
-The raw request payload is not in the expression context. A workflow that reads JSON request data begins with `parse_json`, which lifts the payload into the data context under a name you choose:
+`data` starts as a copy of the request payload, so a JSON body's fields are readable straight away: a caller sending `{"total": 120}` is read as `data.total`. To keep the request under one name instead, start with `parse_json`, which places the whole payload at `data.<target>`:
 
 ```json
 { "id": "parse", "name": "Parse payload",
   "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } } }
 ```
 
-Everything downstream then reads `data.order.*`. A workflow that does not read a request payload does not need this step.
+Everything downstream then reads `data.order.*`. The examples on this page use that shape.
 
 > [!WARNING]
-> Skip this and nothing errors. `{"var": "payload.total"}` resolves to nothing, conditions referencing `data.*` evaluate against an empty object, every conditional task silently skips, and the response comes back empty. It is the most common way a first workflow "does nothing".
+> The payload itself is not in the expression context. `{"var": "payload.total"}` resolves to nothing, so a condition written that way never fires, and nothing errors. Read `data.total` (or `data.order.total` after the parse above) instead. Because `data` starts from the payload, the caller's fields are also in the response unless a task removes them.
 
 ## Shape the data with `map`
 

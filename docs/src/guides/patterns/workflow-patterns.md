@@ -10,11 +10,11 @@ Seven shapes cover most workflows. Each states the problem, the pattern, and the
 
 You need a workflow you are authoring and `orion-server` for the offline checks. The vocabulary is [Author a workflow](../author/workflows.md)'s; the patterns assume it.
 
-## Parse, then process
+## Read the request under `data`
 
-**Problem.** Task conditions referencing `data.*` never fire, and the response comes back empty.
+**Problem.** Task conditions referencing `payload.*` never fire.
 
-**Pattern.** Every workflow that reads request data starts with `parse_json`:
+**Pattern.** Read request fields under `data`, which starts as a copy of the payload. To keep the request under one name, start with `parse_json`:
 
 ```json
 {
@@ -28,7 +28,7 @@ You need a workflow you are authoring and `orion-server` for the offline checks.
 }
 ```
 
-**Why it bites.** The raw payload sits outside the expression context, so `{"var": "payload.total"}` resolves to nothing and every condition over `data.*` evaluates against `{}`. Nothing errors. The workflow does nothing, which is the hardest failure to read.
+**Why it bites.** The raw payload sits outside the expression context, so `{"var": "payload.total"}` resolves to nothing and the condition is false on every request. Nothing errors. The task never runs, which is the hardest failure to read.
 
 ## Mutually exclusive branches
 
@@ -158,7 +158,7 @@ Two things to know before composing. The called channel applies its own guards, 
 
 **Why it bites.** Two traps, both silent:
 
-- Putting the break in the workflow `condition` is the obvious move and it does nothing. `data` starts empty, so the condition is false on sweep 0 and the loop never runs once. Put it in a `filter`, after the parse.
+- Putting this break in the workflow `condition` is the obvious move and it does nothing. `data.req` is written by the body's own parse, so the condition is false on sweep 0 and the loop never runs once. Put it in a `filter`, after the parse. (A workflow condition over the payload's own fields, such as `data.count`, would work, because `data` starts as a copy of the payload.)
 - `var` cannot index by a computed value. Its second argument is a *default*, not an index, so `{"var": ["data.req.recipients", {"var": "temp_data.i"}]}` quietly returns the whole array on every sweep. Dynamic indexing needs `val` with path-chain segments, as above.
 
 The sweeps are sequential and inside one request. Twenty calls at 50 ms is a second of wall clock against your channel timeout. A thousand is a job for an async channel or a service built for it. `max` is capped by [`engine.max_loop_iterations`](../../reference/configuration/index.md).

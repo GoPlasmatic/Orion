@@ -44,7 +44,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 
 - [Guides](https://docs.goplasmatic.io/guides/index.html): complete one task at a time: author a service, extend Orion with plugins and models, author with an AI assistant, or apply a pattern or integration
 - [Author a service](https://docs.goplasmatic.io/guides/author/index.html): recommended authoring sequence across workflows, channels, connectors, tests, and rollout
-- [Author a workflow](https://docs.goplasmatic.io/guides/author/workflows.html): parse-then-process, mapping, conditions, task groups and terminal steps, shared values and fragments, connector tasks, error handling
+- [Author a workflow](https://docs.goplasmatic.io/guides/author/workflows.html): reading the request, mapping, conditions, task groups and terminal steps, shared values and fragments, connector tasks, error handling
 - [Configure a channel](https://docs.goplasmatic.io/guides/author/channels.html): routes, async, auth, rate limits, validation, dedup, cache, backpressure, timeouts
 - [Connect a database or API](https://docs.goplasmatic.io/guides/author/connectors.html): creating connectors, env:// secrets, operation gates, data_query vs db_read
 - [Test a workflow offline](https://docs.goplasmatic.io/guides/author/testing.html): lint one file or a whole definition set, dry-run, connector stubs, *.case.json suites with request metadata and recorded-call assertions, validate-config, preflight
@@ -58,7 +58,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Prompt pack for any LLM](https://docs.goplasmatic.io/guides/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
 - [Worked examples: prompt to service](https://docs.goplasmatic.io/guides/ai/worked-examples.html): four services from prompt to deployed JSON, included from the tested example packages
 - [Patterns and integrations](https://docs.goplasmatic.io/guides/patterns/index.html): reusable workflow patterns and the integrations around them: Kafka ingress, scheduled work, CI/CD with packages and the Orion Console
-- [Common workflow patterns](https://docs.goplasmatic.io/guides/patterns/workflow-patterns.html): parse-then-process, exclusive branches, enrichment, channel_call composition, error collection
+- [Common workflow patterns](https://docs.goplasmatic.io/guides/patterns/workflow-patterns.html): reading the request, exclusive branches, enrichment, channel_call composition, error collection
 - [Consume from Kafka](https://docs.goplasmatic.io/guides/patterns/kafka-channels.html): consumer config, topic-to-channel mapping, DLQ, at-least-once semantics, scaling
 - [Run work on a schedule](https://docs.goplasmatic.io/guides/patterns/scheduled-workflows.html): cron channels — the six-field expression, time zones and DST, misfire policies, non-overlap, the occurrence ledger
 - [CI/CD with packages](https://docs.goplasmatic.io/guides/patterns/ci-cd.html): offline PR gates, plan/apply pipelines, drift detection, rollback
@@ -82,7 +82,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Promote between environments](https://docs.goplasmatic.io/operate/maintain/promotion.html): the five package verbs, receipts, secrets, mid-apply failure modes, rollback
 - [Back up and restore](https://docs.goplasmatic.io/operate/maintain/backup-restore.html): per-backend backup, the offline restore procedure, package artifacts as estate backup
 - [Upgrade an instance](https://docs.goplasmatic.io/operate/maintain/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
-- [Troubleshooting](https://docs.goplasmatic.io/operate/maintain/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, Kafka lag, empty context
+- [Troubleshooting](https://docs.goplasmatic.io/operate/maintain/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, Kafka lag, conditions over payload
 
 ## Reference
 

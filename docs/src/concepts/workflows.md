@@ -51,7 +51,7 @@ Tasks do not pass values to each other. They share one JSON document, the *data 
 - **`metadata`**: stamped by the ingress: channel name, method, headers, route parameters.
 - **`temp_data`**: scratch space that never reaches the response.
 
-One rule catches most beginners: the raw request payload is not in the context. A workflow that reads request data starts with a `parse_json` task, which lifts the payload into `data`. Without it, conditions referencing `data.*` evaluate against an empty object and quietly do nothing.
+`data` starts as a copy of the request payload, so a condition can read a field the caller sent as `data.<field>` straight away. The payload itself stays outside the context, unchanged, and a `parse_json` task with `source: "payload"` places it under one key when a workflow wants it there. Because `data` starts from the payload, a sync response carries the caller's fields beside what the tasks wrote, and a request no workflow matches is answered with its own input.
 
 ## Conditions
 

@@ -257,9 +257,10 @@ fn v4_trace_options(max_snapshot_bytes: usize) -> dataflow_rs::observe::TraceOpt
 ///
 /// `data` is seeded because dataflow-rs 4 keeps the payload out of the
 /// evaluation context (a path rooted at `payload` is a `PAYLOAD_VAR`), so a
-/// workflow reads its input under `data`. Every surface that runs a
-/// workflow builds its message here, so an offline run starts where a
-/// served one does.
+/// workflow reads its input under `data`. The one copy is inherent: the
+/// payload stays as the caller sent it while tasks change `data`. Every
+/// surface that runs a workflow builds its message here, so an offline run
+/// starts where a served one does.
 pub fn serving_message(data: &Value, metadata: &Value) -> dataflow_rs::Message {
     use dataflow_rs::datavalue::OwnedDataValue;
     let data = OwnedDataValue::from(data);

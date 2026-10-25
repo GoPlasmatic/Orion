@@ -175,20 +175,18 @@ The function catalogue is the authority. A plugin function only appears there on
 
 **How to verify.** The function appears in `orion-cli functions list` with `source: plugin`, and the workflow's channel leaves `channels.quarantined`.
 
-## A workflow runs but the data context is empty
+## A condition over the request never fires
 
-**Why.** The raw request payload is not in the JSONLogic context. `{"var": "payload.x"}` resolves to nothing, and every condition referencing `data.*` evaluates against an empty object. Tasks silently skip, and the response comes back with nothing in it.
+**Why.** The raw request payload is not in the JSONLogic context. `{"var": "payload.x"}` resolves to nothing, so a condition written over `payload.*` is false on every request and its task silently skips.
 
-**What to do.** Start the workflow with a `parse_json` task:
+**What to do.** Read the field under `data`, which starts as a copy of the payload: `{"var": "data.x"}`. To keep the request under one name, start the workflow with a `parse_json` task and read `data.req.*`:
 
 ```json
 { "id": "parse", "name": "Parse",
   "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } } }
 ```
 
-Then read request data at `data.req.*`.
-
-**How to verify.** `orion-server dry-run -w workflow.json -i payload.json` prints the context each task produced, with `data.req` populated after the parse.
+**How to verify.** `orion-server dry-run -w workflow.json -i payload.json` prints the context each task produced, starting from the payload's fields under `data`.
 
 ## A mapping wrote an object where a value belongs
 

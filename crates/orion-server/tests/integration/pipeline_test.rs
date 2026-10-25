@@ -893,3 +893,54 @@ async fn test_data_async_processing() {
     let body = common::poll_trace_until_done(&app, &trace_id, 20, Some(&token)).await;
     assert_eq!(body["status"], "completed");
 }
+
+/// `data` starts as a copy of the payload: a workflow condition reads the
+/// caller's fields with no parse step, the response carries them beside what
+/// the tasks wrote, and a request no workflow matches is answered with its
+/// own input.
+#[tokio::test]
+async fn data_starts_as_a_copy_of_the_payload() {
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(
+        &app,
+        "seeded",
+        json!({
+            "name": "Seeded",
+            "condition": { "==": [{ "var": "data.kind" }, "a"] },
+            "tasks": [{
+                "id": "mark",
+                "name": "Mark",
+                "function": { "name": "map", "input": { "mappings": [
+                    { "path": "data.seen", "logic": true }
+                ] } }
+            }]
+        }),
+    )
+    .await;
+
+    let send = |kind: &'static str| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(json_request(
+                    "POST",
+                    "/api/v2/data/seeded",
+                    Some(json!({ "data": { "kind": kind, "x": 1 } })),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            body_json(resp).await
+        }
+    };
+
+    let matched = send("a").await;
+    assert_eq!(
+        matched["data"],
+        json!({ "kind": "a", "x": 1, "seen": true })
+    );
+
+    let unmatched = send("b").await;
+    assert_eq!(unmatched["data"], json!({ "kind": "b", "x": 1 }));
+}
