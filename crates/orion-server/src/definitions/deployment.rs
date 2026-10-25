@@ -92,6 +92,14 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
         }
     }
 
+    // Which functions take a connector, plugins of the set included. A set
+    // whose plugins collide was refused by the gate already; the built-in
+    // registry still answers for the built-ins.
+    let registry = set.function_registry().ok();
+    let functions = registry
+        .as_ref()
+        .unwrap_or_else(|| crate::engine::FunctionRegistry::builtin());
+
     // Connections first: a workflow's requirements are checked against them.
     let mut connection_ids: BTreeSet<String> = BTreeSet::new();
     for def in set.iter(Entity::Connector) {
@@ -134,7 +142,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
             }
         };
         let mut requires = Vec::new();
-        for connection in connector_call_connections(&workflow) {
+        for (connection, function) in used_connections(&workflow, functions) {
             if connection_ids.contains(&connection) {
                 requires.push(CompiledRequirement {
                     kind: "connection".to_string(),
@@ -142,7 +150,7 @@ pub fn build(set: &DefinitionSet) -> Result<DeploymentFiles, Vec<String>> {
                 });
             } else {
                 errors.push(format!(
-                    "workflow '{id}' ({}): connector_call names connection '{connection}', and \
+                    "workflow '{id}' ({}): {function} names connection '{connection}', and \
                      the set has no connector of that name — a deployment carries every \
                      connection it uses",
                     def.origin
@@ -442,15 +450,39 @@ pub fn channel_definition(
     Ok((id, workflow_id, channel))
 }
 
-/// The connections `workflow`'s `connector_call` tasks name, task groups
-/// and loop setup included.
-pub fn connector_call_connections(workflow: &WorkflowDefinition) -> BTreeSet<String> {
-    crate::engine::leaf_tasks(&workflow.tasks, workflow.loop_config.as_ref())
-        .into_iter()
-        .filter(|task| task["function"]["name"] == crate::engine::functions::connector_call::NAME)
-        .filter_map(|task| task["function"]["input"]["connection"].as_str())
-        .map(str::to_string)
-        .collect()
+/// Every connection `workflow` uses, each with a function that names it:
+/// the `connector` of every task whose function takes one — `http_call`,
+/// `db_read`/`db_write`, `data_query`/`data_write`, the `cache_*` family,
+/// whatever `functions` says carries a [`ConnectorRule`] — and the
+/// `connection` of every `connector_call`. Task groups and loop setup
+/// included; a computed name is not a literal and is not counted.
+///
+/// A workflow member requires all of them, because the deployment must
+/// carry each. Requiring one grants nothing by itself: connector authority
+/// (`runtime::authority`) admits only the operations a workflow's own
+/// `connector_call` tasks name on a connection it requires.
+///
+/// [`ConnectorRule`]: crate::engine::ConnectorRule
+pub fn used_connections(
+    workflow: &WorkflowDefinition,
+    functions: &crate::engine::FunctionRegistry,
+) -> BTreeMap<String, String> {
+    let loop_config = workflow.loop_config.as_ref();
+    let mut used = BTreeMap::new();
+    for reference in crate::engine::connector_refs(&workflow.tasks, loop_config, functions) {
+        used.entry(reference.connector.to_string())
+            .or_insert_with(|| reference.function.to_string());
+    }
+    for task in crate::engine::leaf_tasks(&workflow.tasks, loop_config) {
+        if task["function"]["name"] != crate::engine::functions::connector_call::NAME {
+            continue;
+        }
+        if let Some(connection) = task["function"]["input"]["connection"].as_str() {
+            used.entry(connection.to_string())
+                .or_insert_with(|| crate::engine::functions::connector_call::NAME.to_string());
+        }
+    }
+    used
 }
 
 /// A plugin manifest and its component as a [`PluginDefinition`].
@@ -725,6 +757,39 @@ mod tests {
         assert_eq!(
             conn.public_config,
             json!({"url": "https://api.example.com", "auth": {"type": "bearer"}})
+        );
+    }
+
+    #[test]
+    fn a_workflow_uses_every_connection_its_tasks_name() {
+        let (_, wf) = workflow_definition(
+            &json!({"workflow_id": "w", "name": "W",
+                "loop": {"setup": [
+                    {"id": "warm", "name": "Warm", "function": {"name": "cache_read",
+                        "input": {"connector": "cache", "key": "k", "output": "data.k"}}}]},
+                "tasks": [
+                    {"id": "api", "name": "Api", "function": {"name": "http_call",
+                        "input": {"connector": "partner", "method": "GET", "path": "/x"}}},
+                    {"id": "g", "tasks": [
+                        {"id": "read", "name": "Read", "function": {"name": "db_read",
+                            "input": {"connector": "orders-db", "query": "SELECT 1"}}}]},
+                    {"id": "call", "name": "Call", "function": {"name": "connector_call",
+                        "input": {"connection": "billing", "target_id": "org.orion.http",
+                                  "operation": "http.get", "input": {}}}},
+                    {"id": "computed", "name": "Computed", "function": {"name": "db_read",
+                        "input": {"connector": {"var": "c"}, "query": "SELECT 1"}}}]}),
+            "wf.json",
+        )
+        .expect("converts");
+        let used = used_connections(&wf, crate::engine::FunctionRegistry::builtin());
+        assert_eq!(
+            used.into_iter().collect::<Vec<_>>(),
+            [
+                ("billing".to_string(), "connector_call".to_string()),
+                ("cache".to_string(), "cache_read".to_string()),
+                ("orders-db".to_string(), "db_read".to_string()),
+                ("partner".to_string(), "http_call".to_string()),
+            ]
         );
     }
 

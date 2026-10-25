@@ -107,6 +107,12 @@ impl ConnectorAuthority {
 }
 
 /// The `connector_call` tasks of `wf` whose connection is in `connections`.
+///
+/// Only `connector_call` tasks grant. A member requires every connection its
+/// workflow uses — the `connector` of an `http_call`, a `db_read`, a
+/// `cache_write` too, because the deployment must carry each — but a
+/// requirement is the deployment's bookkeeping, not authority: a connection
+/// required only by a built-in task grants no operation here.
 fn workflow_grant(wf: &Workflow, connections: &BTreeSet<&str>) -> AuthorityGrant {
     let mut grant = AuthorityGrant::default();
     let Ok(tasks) = serde_json::from_str::<Value>(&wf.tasks_json) else {
@@ -216,5 +222,38 @@ mod tests {
         }
         assert!(authority.for_workflow("other").is_none());
         assert!(authority.union().allows("crm", "http.post"));
+    }
+
+    /// Requiring a connection grants nothing by itself: one the workflow
+    /// uses only through a built-in function's `connector` field is
+    /// required, and no operation on it is granted.
+    #[test]
+    fn a_requirement_from_a_built_in_task_grants_nothing() {
+        let manifest = CanonicalManifest {
+            schema_version: 2,
+            providers: Vec::new(),
+            provider_lock_digest: None,
+            members: vec![member(
+                EntityKind::Workflow,
+                "orders",
+                &["crm", "orders-db"],
+            )],
+        };
+        let tasks = json!([
+            call("crm", "http.get"),
+            {"id": "read", "name": "Read", "function": {"name": "db_read",
+                "input": {"connector": "orders-db", "query": "SELECT 1"}}},
+        ]);
+        let authority =
+            ConnectorAuthority::from_manifest(&manifest, &[workflow("orders", 1, tasks)]);
+        let grant = authority.for_workflow("orders").expect("granted");
+        assert!(grant.allows("crm", "http.get"));
+        assert!(!grant.allowed_operations.contains_key("orders-db"));
+        assert!(
+            !authority
+                .union()
+                .allowed_operations
+                .contains_key("orders-db")
+        );
     }
 }

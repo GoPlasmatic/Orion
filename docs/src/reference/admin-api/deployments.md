@@ -87,7 +87,7 @@ A manifest lists the members a deployment deploys:
 }
 ```
 
-A workflow, channel or plugin member's `definition_digest` names a stored definition. A connection member's is the revision's `configuration_digest`. A channel `requires` its workflow. A workflow `requires` the connections its `connector_call` tasks call, and may call only those. Every requirement must be a member of the same manifest.
+A workflow, channel or plugin member's `definition_digest` names a stored definition. A connection member's is the revision's `configuration_digest`. A channel `requires` its workflow. A workflow `requires` the connections it uses. Through `connector_call` it may call only connections it requires, and only the operations its own `connector_call` tasks name; requiring a connection grants nothing else. Every requirement must be a member of the same manifest.
 
 ## Plan and apply
 

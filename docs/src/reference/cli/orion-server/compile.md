@@ -104,7 +104,7 @@ Any other connector is an error. A `db` connector's driver comes from its [`driv
 
 Every string in the config that is a secret reference (`env://`, `vault://`) moves to `secret_locators` at its dotted path, such as `auth.token`. The rest is `public_config`, without the `type` key. A deployment carries references only. A literal credential, such as a secret-shaped key with a literal value or a password in a URL, is an error.
 
-A connector's tags are not carried, and compile prints a note saying so. A workflow `requires` the connections its `connector_call` tasks name. Each must be a connector in the set.
+A connector's tags are not carried, and compile prints a note saying so. A workflow `requires` every connection its tasks name: the `connector` of a task whose function takes one (`http_call`, `db_read`, `db_write`, `data_query`, `data_write`, the `cache_*` functions) and the `connection` of a `connector_call`, inside task groups and `loop.setup` too. Each must be a connector in the set. A requirement grants nothing by itself: a workflow may call through `connector_call` only the operations its own `connector_call` tasks name.
 
 The same set compiles to the same bytes. A recompile into the same directory removes the files under `definitions/` and `connections/` that the set no longer produces. `--requires-channel` and `--requires-connector` do not apply: a deployment carries everything it references. A model manifest in the set is an error, because a deployment cannot carry one yet.
 

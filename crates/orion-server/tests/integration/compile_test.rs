@@ -1331,9 +1331,9 @@ fn the_unrolled_example_compiles_to_one_step_per_seat_and_runs() {
 // ============================================================
 
 /// A set with one of each thing a deployment carries: a workflow on v1's
-/// `continue_on_error` calling a connection through `connector_call`, the
-/// channel serving it, an HTTP connector whose token is a secret reference,
-/// and a cache connector the workflow calls.
+/// `continue_on_error` calling a connection through `connector_call` and
+/// another through `http_call`, the channel serving it, an HTTP connector
+/// whose token is a secret reference, and a cache connector.
 fn deployment_set(label: &str) -> ScratchDir {
     let scratch = ScratchDir::new(label);
     let dir = scratch.path();
@@ -1358,6 +1358,8 @@ fn deployment_set(label: &str) -> ScratchDir {
                    "connection": "local-cache", "target_id": "org.orion.memory-cache",
                    "operation": "cache.set", "input": { "key": "k", "value": "v" },
                    "output": "data.set" } } },
+               { "id": "ping", "name": "Ping", "function": { "name": "http_call", "input": {
+                   "connector": "partner-api", "method": "GET", "output": "data.ping" } } },
                { "id": "done", "name": "Done", "function": { "name": "map", "input": {
                    "mappings": [ { "path": "data.done", "logic": true } ] } } } ] }"#,
     )
@@ -1435,15 +1437,19 @@ fn a_deployment_is_written_without_revisions() {
             ("workflow", "remember"),
         ]
     );
-    // A channel requires its workflow; a workflow the connections its
-    // connector_call tasks name, and no other.
+    // A channel requires its workflow; a workflow every connection its
+    // tasks name — through connector_call's `connection` and through a
+    // built-in's `connector` alike.
     assert_eq!(
         members[0]["requires"],
         serde_json::json!([{"kind": "workflow", "id": "remember"}])
     );
     assert_eq!(
         members[3]["requires"],
-        serde_json::json!([{"kind": "connection", "id": "local-cache"}])
+        serde_json::json!([
+            {"kind": "connection", "id": "local-cache"},
+            {"kind": "connection", "id": "partner-api"},
+        ])
     );
     assert_eq!(members[1]["connection"], "local-cache");
 
