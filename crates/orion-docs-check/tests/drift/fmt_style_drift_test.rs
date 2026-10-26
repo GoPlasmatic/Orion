@@ -10,10 +10,10 @@
 
 use std::collections::BTreeSet;
 
-use orion::definitions::documents::{
+use orion_authoring::definitions::documents::{
     CreateChannelRequest, CreateConnectorRequest, CreateWorkflowRequest,
 };
-use orion::definitions::fmt::style::{self, STYLE};
+use orion_authoring::definitions::fmt::style::{self, STYLE};
 const FMT_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/reference/fmt.md"
@@ -139,7 +139,7 @@ fn step_tables_match_the_workflow_reference() {
 
 #[test]
 fn every_builtin_input_table_names_an_engine_builtin_and_only_those() {
-    let catalogue = orion::engine::FunctionRegistry::builtin().catalogue();
+    let catalogue = orion_engine::FunctionRegistry::builtin().catalogue();
     let builtins: BTreeSet<&str> = catalogue
         .iter()
         .filter(|e| e.input_fields.is_none())
@@ -192,7 +192,8 @@ fn documented_field_order_is_the_formatters() {
             // Top-level fields only: `mappings[].path` describes a member.
             .filter(|f| !f.contains('[') && !f.contains('.'))
             .collect();
-        let Some(formatter) = orion::definitions::fmt::formatter().input_key_order(Some(name))
+        let Some(formatter) =
+            orion_authoring::definitions::fmt::formatter().input_key_order(Some(name))
         else {
             continue;
         };

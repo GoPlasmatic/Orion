@@ -229,7 +229,7 @@ cargo test --test integration -- --ignored <filter> # container-gated integratio
 ```
 
 The `#[ignore]` → CI-filter mapping is self-enforcing
-(`tests/integration/ci_filter_drift_test.rs`): a container-gated module missing
+(`crates/orion-docs-check/tests/drift/ci_filter_drift_test.rs`): a container-gated module missing
 from CI's name filters fails the build, in both directions.
 
 ### End-to-end suite

@@ -34,14 +34,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use orion::config::AppConfig;
+use orion_common::config::AppConfig;
 
 // The docs tree lives at the repo root, two levels above this crate.
 const REFERENCE_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/reference/configuration"
 );
-const EXAMPLE_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml.example");
+const EXAMPLE_TOML: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../orion-server/config.toml.example"
+);
 /// Real config fields that have no default value to state: `Option<T>` fields
 /// (unset means "don't send this setting at all") and the element fields of
 /// free-form maps and arrays of tables. Documented with an illustrative value,
@@ -188,7 +191,7 @@ fn flatten(prefix: &str, value: &toml::Value, out: &mut BTreeMap<String, toml::V
 
 /// Use the same serde-derived catalogue as the runtime unknown-variable guard.
 fn env_override_names() -> BTreeSet<String> {
-    orion::config::known_env_override_keys()
+    orion_common::config::known_env_override_keys()
 }
 
 /// The env var that overrides a setting: `ORION_SECTION__KEY`, uppercased with
@@ -325,7 +328,7 @@ fn is_excused(token: &str, path: &str) -> bool {
 ///   through — which leaves this test as the only thing between a reader and a
 ///   variable that silently does nothing.
 fn looks_like_a_setting(token: &str, known: &BTreeSet<String>) -> bool {
-    orion::config::looks_like_env_override(token, known)
+    orion_common::config::looks_like_env_override(token, known)
         || known.iter().any(|key| key.replace("__", "_") == token)
 }
 
@@ -422,8 +425,8 @@ fn orion_tokens(text: &str) -> Vec<(String, usize)> {
 /// object. [`looks_like_a_setting`] covers both.
 #[test]
 fn every_documented_env_name_is_real() {
-    let known = orion::config::known_env_override_keys();
-    let retired = orion::config::retired_env_names();
+    let known = orion_common::config::known_env_override_keys();
+    let retired = orion_common::config::retired_env_names();
     // Prose scanning starts at the repo root, two levels above this crate.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
@@ -469,7 +472,7 @@ fn every_documented_env_name_is_real() {
 /// setting, that no page mentions any more, or whose page moved, is stale.
 #[test]
 fn every_excused_env_name_is_still_needed() {
-    let known = orion::config::known_env_override_keys();
+    let known = orion_common::config::known_env_override_keys();
     // Prose scanning starts at the repo root, two levels above this crate.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut mentioned: BTreeSet<(String, String)> = BTreeSet::new();
@@ -902,6 +905,6 @@ fn config_example_parses_as_toml() {
 /// substitution pass is covered rather than skipped.
 #[test]
 fn config_example_loads_through_the_real_entry_point() {
-    orion::config::load_config(Some(EXAMPLE_TOML))
+    orion_common::config::load_config(Some(EXAMPLE_TOML))
         .expect("config.toml.example must load with no environment variables set");
 }

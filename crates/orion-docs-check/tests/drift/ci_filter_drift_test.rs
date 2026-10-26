@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-// The manifest dir is crates/orion-server; the workflow lives at the repo root.
+// The manifest dir is crates/orion-docs-check; the workflow lives at the repo root.
 const WORKFLOW: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../.github/workflows/ci.yml"
@@ -34,7 +34,10 @@ const JUSTFILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../justfile");
 const NAMED_BINARIES: &[(&str, &str)] = &[
     (
         "--test integration",
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/integration"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../orion-server/tests/integration"
+        ),
     ),
     (
         "--test authoring",
@@ -157,7 +160,10 @@ fn every_ci_filter_still_matches_a_module() {
 /// line.
 #[test]
 fn every_test_binary_with_ignored_tests_has_a_ci_step() {
-    let tests_dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
+    let tests_dir = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../orion-server/tests"
+    ));
     let workflow = std::fs::read_to_string(Path::new(WORKFLOW)).expect("read ci.yml");
 
     // Auto-discovered `tests/*.rs` binaries, plus explicit [[test]] targets

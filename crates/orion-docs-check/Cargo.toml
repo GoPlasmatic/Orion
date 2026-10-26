@@ -1,0 +1,24 @@
+[package]
+name = "orion-docs-check"
+# Never published: the crate exists for its test binary, the drift guards.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The guards that keep Orion's documentation in step with its code"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+orion-api.workspace = true
+orion-authoring.workspace = true
+orion-common.workspace = true
+orion-engine.workspace = true
+orion-http.workspace = true
+serde_json = "1"
+# The fmt guard reads a definition file's fields off its schema type.
+utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }

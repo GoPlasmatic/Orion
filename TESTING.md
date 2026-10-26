@@ -103,15 +103,20 @@ cargo test --test integration                     # the whole binary
 cargo test --test integration rest_routing_test   # one module
 ```
 
-**Drift guards live here** and are part of the default run:
+**Drift guards** are part of the default run. The `*_drift_test` modules —
+config, metrics, functions, routes, audit actions, field and v2 error codes,
+the formatter's style, the clippy pages, the mdBook pin and the CI filters —
+are their own small binary, `cargo test -p orion-docs-check`
+(`crates/orion-docs-check/tests/drift/`), linked against the library crates
+alone; the rest live here:
 
 - `openapi_test` — the committed `docs/openapi.json` must match what the
   server generates (`just openapi` refreshes it).
-- `ci_filter_drift_test` — every `#[ignore]`d container module must be named
-  by a CI filter and vice versa (see layer 3).
-- `config_docs_drift_test` / `metrics_docs_drift_test` / `docs_link_test` —
-  the book's config reference, metrics list, and internal links track the
-  code.
+- `ci_filter_drift_test` (docs-check) — every `#[ignore]`d container module
+  must be named by a CI filter and vice versa (see layer 3).
+- `config_docs_drift_test` / `metrics_docs_drift_test` (docs-check) and
+  `docs_link_test` — the book's config reference, metrics list, and internal
+  links track the code.
 - `function_schema_test` — the two function lists Orion cannot derive, pinned
   against a **live engine**. Workflow creation is validated before an engine
   exists, so `FunctionRegistry::builtin()` and the `/admin/functions` catalogue

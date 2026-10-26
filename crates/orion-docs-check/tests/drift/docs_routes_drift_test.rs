@@ -73,7 +73,7 @@ impl Route {
 /// committed-copy drift check use, so this cannot be checking a spec that
 /// differs from the shipped one.
 fn routes() -> Vec<Route> {
-    let spec: Value = serde_json::from_str(&orion::server::routes::openapi::pretty_json())
+    let spec: Value = serde_json::from_str(&orion_http::routes::openapi::pretty_json())
         .expect("the generated OpenAPI document parses");
     let paths = spec["paths"].as_object().expect("spec has paths");
 

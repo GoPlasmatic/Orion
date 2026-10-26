@@ -32,8 +32,8 @@
 
 use std::collections::BTreeSet;
 
-use orion::engine::functions::schema::Source;
-use orion::engine::{CatalogueEntry, FunctionEntry, FunctionRegistry};
+use orion_engine::functions::schema::Source;
+use orion_engine::{CatalogueEntry, FunctionEntry, FunctionRegistry};
 
 /// The built-in catalogue — what a binary with no plugins loaded serves. A
 /// plugin entry, when a generation carries one, is filtered on every side of
@@ -275,7 +275,7 @@ fn the_summary_table_matches_the_catalogue() {
 /// with one. A consumer branches on exactly that.
 #[test]
 fn the_catalogue_marks_which_entries_carry_a_schema() {
-    use orion::engine::functions::schema::Source;
+    use orion_engine::functions::schema::Source;
     for entry in catalogue() {
         match entry.source {
             Source::Orion => assert!(
@@ -500,7 +500,7 @@ fn documented_retry_safety(doc: &str) -> std::collections::BTreeMap<String, Stri
 
 /// What the registry says, in the spelling the page uses.
 fn registry_retry_safety() -> std::collections::BTreeMap<String, String> {
-    use orion::engine::functions::schema::RetrySafety;
+    use orion_engine::functions::schema::RetrySafety;
     orion_entries()
         .map(|s| {
             let answer = match s.retry_safety {

@@ -20,7 +20,7 @@ use orion_api::V2Code;
 /// The sources of every crate the runtime is built from. Not `orion-api`:
 /// it defines the registry, so scanning it would find every code raised.
 const SRC_DIRS: &[&str] = &[
-    concat!(env!("CARGO_MANIFEST_DIR"), "/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-server/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-common/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-storage/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-engine/src"),

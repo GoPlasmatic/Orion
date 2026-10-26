@@ -3067,6 +3067,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-docs-check"
+version = "1.12.0"
+dependencies = [
+ "orion-api",
+ "orion-authoring",
+ "orion-common",
+ "orion-engine",
+ "orion-http",
+ "serde_json",
+ "toml",
+ "utoipa",
+]
+
+[[package]]
 name = "orion-engine"
 version = "1.12.0"
 dependencies = [

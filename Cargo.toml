@@ -10,7 +10,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-default-members = ["crates/orion-server"]
+default-members = ["crates/orion-server", "crates/orion-docs-check"]
 
 [workspace.package]
 # One version for the whole workspace.

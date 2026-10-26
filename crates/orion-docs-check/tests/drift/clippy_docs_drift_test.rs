@@ -2,7 +2,7 @@
 //! and summary on the hub's table, and one page per rule — so the book cannot
 //! describe a rule that does not exist or omit one that does.
 
-use orion::definitions::clippy;
+use orion_authoring::definitions::clippy;
 
 const CLIPPY_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

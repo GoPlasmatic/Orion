@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 /// The sources of every crate the runtime is built from. Not `orion-api`:
 /// it defines the vocabulary, so scanning it would find every entry used.
 const SRC_DIRS: &[&str] = &[
-    concat!(env!("CARGO_MANIFEST_DIR"), "/src"),
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-server/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-common/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-storage/src"),
     concat!(env!("CARGO_MANIFEST_DIR"), "/../orion-engine/src"),
