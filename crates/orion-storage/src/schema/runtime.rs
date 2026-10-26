@@ -222,3 +222,16 @@ pub enum RuntimeNodes {
     SecurityLeaseUntil,
     UpdatedAt,
 }
+
+// ============================================================
+// Connector OAuth2 runtime state (#268)
+// ============================================================
+
+#[derive(Iden)]
+pub enum ConnectorOauthState {
+    Table,
+    ConnectorName,
+    Fingerprint,
+    StateJson,
+    UpdatedAt,
+}

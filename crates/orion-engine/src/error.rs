@@ -151,6 +151,27 @@ impl HandlerError {
         }
     }
 
+    /// [`ErrorClass::CallerInput`]: the workflow or its caller can fix this.
+    pub fn caller_input(msg: impl std::fmt::Display) -> Self {
+        Self::new(ErrorClass::CallerInput, msg)
+    }
+
+    /// [`ErrorClass::Backend`]: the backend was reached and the operation
+    /// failed; repeating it would fail the same way.
+    pub fn backend(msg: impl std::fmt::Display) -> Self {
+        Self::new(ErrorClass::Backend, msg)
+    }
+
+    /// [`ErrorClass::Connector`]: the backend could not be reached; retryable.
+    pub fn connector(msg: impl std::fmt::Display) -> Self {
+        Self::new(ErrorClass::Connector, msg)
+    }
+
+    /// [`ErrorClass::Timeout`]: the operation ran out of time; retryable.
+    pub fn timeout(msg: impl std::fmt::Display) -> Self {
+        Self::new(ErrorClass::Timeout, msg)
+    }
+
     pub fn with_detail(mut self, detail: impl std::fmt::Display) -> Self {
         self.detail = Some(detail.to_string());
         self

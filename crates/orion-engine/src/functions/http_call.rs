@@ -22,7 +22,7 @@ use super::schema::{FieldKind, RetrySafety};
 use crate::connector::{ConnectorRegistry, HttpConnectorConfig};
 use crate::kit::{self, read};
 use crate::retry::{RetryPolicy, retry_with_attempts};
-use crate::{ErrorClass, HandlerError, http_status};
+use crate::{HandlerError, http_status};
 
 /// This function's name, for the free functions below — a reference to the
 /// one place it is written (F48), not a second spelling of it.
@@ -227,12 +227,6 @@ pub struct HttpCallFunction {
     pub client: reqwest::Client,
 }
 
-/// A refusal the caller can fix, its message kept: dataflow-rs 3's
-/// `Validation`.
-fn validation(msg: impl std::fmt::Display) -> HandlerError {
-    HandlerError::new(ErrorClass::CallerInput, msg)
-}
-
 /// A string parameter's value for this call, by `Template::resolve_string`'s
 /// reading, or `None` when it is unset or written as `null`.
 fn plain(
@@ -309,10 +303,10 @@ impl Function for HttpCallFunction {
         // formats, the timeout and the headers, in that order.
         let method =
             reqwest::Method::from_bytes(cfg.method.as_bytes()).unwrap_or(reqwest::Method::GET);
-        let body_format =
-            BodyFormat::parse(plain(ctx, &cfg.body_format)?.as_deref()).map_err(validation)?;
+        let body_format = BodyFormat::parse(plain(ctx, &cfg.body_format)?.as_deref())
+            .map_err(HandlerError::caller_input)?;
         let response_format = ResponseFormat::parse(plain(ctx, &cfg.response_format)?.as_deref())
-            .map_err(validation)?;
+            .map_err(HandlerError::caller_input)?;
         let timeout = ctx.eval(&cfg.timeout_ms)?;
         let timeout = Duration::from_millis(read::template_u64(&timeout, "http_call timeout_ms")?);
         let headers = cfg

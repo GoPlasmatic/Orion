@@ -158,18 +158,14 @@ impl KdfAdmission {
 static KDF_ADMISSION: std::sync::LazyLock<KdfAdmission> =
     std::sync::LazyLock::new(KdfAdmission::default);
 
-/// A caller-fixable problem with the task's input, message bare. See the shell
-/// on `execute` for where the handler's name is added.
-fn validation(msg: &str) -> HandlerError {
-    HandlerError::new(ErrorClass::CallerInput, msg)
-}
-
 /// An optional literal string field; a present non-string is an error.
 fn literal_str<'i>(input: &'i Value, field: &str) -> Result<Option<&'i str>, HandlerError> {
     match input.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
-        Some(_) => Err(validation(&format!("'{field}' must be a string"))),
+        Some(_) => Err(HandlerError::caller_input(format!(
+            "'{field}' must be a string"
+        ))),
     }
 }
 
@@ -192,7 +188,7 @@ fn algorithm_named<'i>(
     match name {
         None => Ok(default),
         Some(a) if allowed.contains(&a) => Ok(a),
-        Some(other) => Err(validation(&format!(
+        Some(other) => Err(HandlerError::caller_input(format!(
             "algorithm '{other}' is not valid here — expected one of {}",
             allowed.join(", ")
         ))),
@@ -209,7 +205,7 @@ fn codec_named(name: Option<&str>) -> Result<Codec, HandlerError> {
     match name {
         None => Ok(Codec::Hex),
         Some(name) => Codec::parse(name).ok_or_else(|| {
-            validation(&format!(
+            HandlerError::caller_input(format!(
                 "unknown encoding '{name}' — expected one of hex, base64, base64url"
             ))
         }),
@@ -228,7 +224,7 @@ fn byte_codec_named(name: Option<&str>, field: &str) -> Result<Option<Codec>, Ha
         None | Some("utf8") => Ok(None),
         Some("hex") => Ok(Some(Codec::Hex)),
         Some("base64") => Ok(Some(Codec::Base64)),
-        Some(other) => Err(validation(&format!(
+        Some(other) => Err(HandlerError::caller_input(format!(
             "unknown {field} '{other}' — expected one of utf8, hex, base64"
         ))),
     }
@@ -239,23 +235,22 @@ fn bytes_of(data: Value, codec: Option<Codec>) -> Result<Vec<u8>, HandlerError> 
     match data {
         Value::String(s) => match codec {
             None => Ok(s.into_bytes()),
-            Some(c) => {
-                decode_bytes(c, &s).map_err(|e| validation(&format!("'data' does not decode: {e}")))
-            }
+            Some(c) => decode_bytes(c, &s)
+                .map_err(|e| HandlerError::caller_input(format!("'data' does not decode: {e}"))),
         },
-        Value::Null => Err(validation(
+        Value::Null => Err(HandlerError::caller_input(
             "'data' resolved to null — check the referenced path",
         )),
         other => {
             if codec.is_some() {
-                return Err(validation(
+                return Err(HandlerError::caller_input(
                     "input_encoding applies to string data only — this data is JSON and \
                      would be hashed as its compact serialization",
                 ));
             }
             serde_json::to_string(&other)
                 .map(String::into_bytes)
-                .map_err(|e| validation(&format!("'data' failed to serialize: {e}")))
+                .map_err(|e| HandlerError::caller_input(format!("'data' failed to serialize: {e}")))
         }
     }
 }
@@ -284,12 +279,15 @@ fn key_bytes(
     codec: Result<Option<Codec>, HandlerError>,
 ) -> Result<Vec<u8>, HandlerError> {
     if resolved.is_empty() {
-        return Err(validation("'key' resolved to an empty value"));
+        return Err(HandlerError::caller_input(
+            "'key' resolved to an empty value",
+        ));
     }
     match codec? {
         None => Ok(resolved.into_bytes()),
-        Some(c) => decode_bytes(c, &resolved)
-            .map_err(|e| validation(&format!("'key' does not decode per key_encoding: {e}"))),
+        Some(c) => decode_bytes(c, &resolved).map_err(|e| {
+            HandlerError::caller_input(format!("'key' does not decode per key_encoding: {e}"))
+        }),
     }
 }
 
@@ -322,7 +320,7 @@ fn decode_presented_signature(s: &str) -> Result<Vec<u8>, HandlerError> {
     decode_bytes(Codec::Hex, s)
         .or_else(|_| decode_bytes(Codec::Base64, s))
         .or_else(|_| decode_bytes(Codec::Base64Url, s))
-        .map_err(|_| validation("'signature' is not hex, base64, or base64url"))
+        .map_err(|_| HandlerError::caller_input("'signature' is not hex, base64, or base64url"))
 }
 
 /// A `params` cost knob: defaulted, must be an integer inside `range`.
@@ -337,7 +335,7 @@ fn cost_param(
     };
     match v.as_u64() {
         Some(n) if range.contains(&n) => Ok(n as u32),
-        _ => Err(validation(&format!(
+        _ => Err(HandlerError::caller_input(format!(
             "params.{key} must be an integer between {} and {}",
             range.start(),
             range.end()
@@ -350,13 +348,13 @@ fn cost_param(
 fn check_param_keys(params: Option<&Value>, allowed: &[&str]) -> Result<(), HandlerError> {
     let Some(Value::Object(map)) = params else {
         if params.is_some_and(|p| !p.is_null()) {
-            return Err(validation("'params' must be an object"));
+            return Err(HandlerError::caller_input("'params' must be an object"));
         }
         return Ok(());
     };
     for key in map.keys() {
         if !allowed.contains(&key.as_str()) {
-            return Err(validation(&format!(
+            return Err(HandlerError::caller_input(format!(
                 "unknown params key '{key}' — this algorithm takes {}",
                 allowed.join(", ")
             )));
@@ -466,13 +464,15 @@ fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
     if hash.starts_with("$argon2") {
         use argon2::Params;
         use argon2::password_hash::phc::PasswordHash;
-        let parsed = PasswordHash::new(hash)
-            .map_err(|e| validation(&format!("stored hash is not a valid PHC string: {e}")))?;
-        let params = Params::try_from(&parsed)
-            .map_err(|e| validation(&format!("stored argon2 hash has invalid parameters: {e}")))?;
+        let parsed = PasswordHash::new(hash).map_err(|e| {
+            HandlerError::caller_input(format!("stored hash is not a valid PHC string: {e}"))
+        })?;
+        let params = Params::try_from(&parsed).map_err(|e| {
+            HandlerError::caller_input(format!("stored argon2 hash has invalid parameters: {e}"))
+        })?;
         let m_cost = u64::from(params.m_cost());
         if !ARGON2_MEMORY_KIB_RANGE.contains(&m_cost) {
-            return Err(validation(&format!(
+            return Err(HandlerError::caller_input(format!(
                 "stored argon2 hash memory_kib ({m_cost}) is outside allowed range {}..={}",
                 ARGON2_MEMORY_KIB_RANGE.start(),
                 ARGON2_MEMORY_KIB_RANGE.end()
@@ -480,7 +480,7 @@ fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
         }
         let t_cost = u64::from(params.t_cost());
         if !ARGON2_ITERATIONS_RANGE.contains(&t_cost) {
-            return Err(validation(&format!(
+            return Err(HandlerError::caller_input(format!(
                 "stored argon2 hash iterations ({t_cost}) is outside allowed range {}..={}",
                 ARGON2_ITERATIONS_RANGE.start(),
                 ARGON2_ITERATIONS_RANGE.end()
@@ -488,7 +488,7 @@ fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
         }
         let p_cost = u64::from(params.p_cost());
         if !ARGON2_PARALLELISM_RANGE.contains(&p_cost) {
-            return Err(validation(&format!(
+            return Err(HandlerError::caller_input(format!(
                 "stored argon2 hash parallelism ({p_cost}) is outside allowed range {}..={}",
                 ARGON2_PARALLELISM_RANGE.start(),
                 ARGON2_PARALLELISM_RANGE.end()
@@ -499,15 +499,15 @@ fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
         // Standard modular crypt format: `$2a$<cost>$<22-char salt><31-char hash>`
         let parts: Vec<&str> = hash.split('$').collect();
         if parts.len() != 4 || !matches!(parts[1], "2a" | "2b" | "2x" | "2y") {
-            return Err(validation(
+            return Err(HandlerError::caller_input(
                 "stored bcrypt hash is malformed: invalid version or segment count",
             ));
         }
-        let cost: u64 = parts[2]
-            .parse()
-            .map_err(|_| validation("stored bcrypt hash is malformed: invalid cost parameter"))?;
+        let cost: u64 = parts[2].parse().map_err(|_| {
+            HandlerError::caller_input("stored bcrypt hash is malformed: invalid cost parameter")
+        })?;
         if !BCRYPT_COST_RANGE.contains(&cost) {
-            return Err(validation(&format!(
+            return Err(HandlerError::caller_input(format!(
                 "stored bcrypt hash cost ({cost}) is outside allowed range {}..={}",
                 BCRYPT_COST_RANGE.start(),
                 BCRYPT_COST_RANGE.end()
@@ -515,7 +515,7 @@ fn preflight_verify_hash(hash: &str) -> Result<u32, HandlerError> {
         }
         Ok(BCRYPT_MEMORY_KIB)
     } else {
-        Err(validation(
+        Err(HandlerError::caller_input(
             "unrecognized password hash scheme — expected an $argon2*$ PHC string or a \
              $2*$ bcrypt hash",
         ))
@@ -584,7 +584,7 @@ where
     })
     .await
     .map_err(|e| HandlerError::new(ErrorClass::Backend, format!("hashing task failed: {e}")))?
-    .map_err(|e| validation(&e))
+    .map_err(|e| HandlerError::caller_input(&e))
 }
 
 // -- dataflow-rs 4 --
@@ -776,7 +776,7 @@ async fn compute(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Value, HandlerErro
         "password_hash" => password_hash_v4(ctx, cfg).await,
         "password_verify" => password_verify_v4(ctx, cfg).await,
         // Refused at load by the check; kept for the call's own guard.
-        other => Err(validation(&format!(
+        other => Err(HandlerError::caller_input(format!(
             "unknown op '{other}' — expected one of {}",
             OPS.join(", ")
         ))),
@@ -798,7 +798,7 @@ fn required_v4(
 /// then the evaluation's error, in that order, as 1.12 judged them.
 fn data_bytes_v4(ctx: &Ctx<'_>, cfg: &CryptoConfig) -> Result<Vec<u8>, HandlerError> {
     let Some(expr) = &cfg.data else {
-        return Err(validation("this op requires 'data'"));
+        return Err(HandlerError::caller_input("this op requires 'data'"));
     };
     let data = ctx.eval(expr).map(|value| Value::from(&*value));
     let codec = byte_codec_named(cfg.input_encoding.as_deref(), "input_encoding")?;

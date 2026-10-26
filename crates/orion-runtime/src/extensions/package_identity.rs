@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::schema_profile::MAX_SAFE_INTEGER;
 
@@ -25,74 +24,39 @@ impl PackageIdentityFinding {
     }
 }
 
-/// Restricted ASCII/nonnegative safe-integer canonical JSON encoder.
-///
-/// Sorts object keys by ASCII byte order, preserves array order, emits no
-/// whitespace or trailing newline, and rejects non-ASCII strings, negative or
-/// unsafe integers, floats, booleans, and null.
+/// The package-manifest canonical form: [`crate::canonical::canonical_json`]
+/// over the restricted value set a package identity admits — ASCII strings and
+/// keys, and nonnegative safe integers, in objects and arrays. Floats,
+/// booleans, null, non-ASCII text and integers past 2^53 − 1 are refused, so a
+/// manifest has one spelling in every JSON implementation that reads it. Over
+/// that set the general encoder's output is already canonical: keys sorted by
+/// byte order, no whitespace, serde's string escaping.
 pub fn canonical_bytes(value: &Value) -> Result<Vec<u8>, PackageIdentityFinding> {
-    let mut out = Vec::new();
-    encode_canonical_item(value, &mut out)?;
-    Ok(out)
+    admits(value)?;
+    Ok(crate::canonical::canonical_json(value).into_bytes())
 }
 
-fn encode_canonical_item(value: &Value, out: &mut Vec<u8>) -> Result<(), PackageIdentityFinding> {
+/// Whether `value` stays inside the set [`canonical_bytes`] encodes.
+fn admits(value: &Value) -> Result<(), PackageIdentityFinding> {
+    let refused = || PackageIdentityFinding::new("CANONICAL_VALUE_UNSUPPORTED");
     match value {
-        Value::String(s) => {
-            if !s.is_ascii() {
-                return Err(PackageIdentityFinding::new("CANONICAL_VALUE_UNSUPPORTED"));
+        Value::String(s) if s.is_ascii() => Ok(()),
+        Value::Number(n) if n.as_u64().is_some_and(|u| u <= MAX_SAFE_INTEGER as u64) => Ok(()),
+        Value::Array(items) => items.iter().try_for_each(admits),
+        Value::Object(map) => map.iter().try_for_each(|(key, item)| {
+            if key.is_ascii() {
+                admits(item)
+            } else {
+                Err(refused())
             }
-            let encoded = serde_json::to_string(s)
-                .map_err(|_| PackageIdentityFinding::new("CANONICAL_VALUE_UNSUPPORTED"))?;
-            out.extend_from_slice(encoded.as_bytes());
-            Ok(())
-        }
-        Value::Number(n) => {
-            if let Some(u) = n.as_u64()
-                && u <= MAX_SAFE_INTEGER as u64
-            {
-                out.extend_from_slice(u.to_string().as_bytes());
-                return Ok(());
-            }
-            Err(PackageIdentityFinding::new("CANONICAL_VALUE_UNSUPPORTED"))
-        }
-        Value::Array(items) => {
-            out.push(b'[');
-            for (idx, item) in items.iter().enumerate() {
-                if idx > 0 {
-                    out.push(b',');
-                }
-                encode_canonical_item(item, out)?;
-            }
-            out.push(b']');
-            Ok(())
-        }
-        Value::Object(map) => {
-            let mut sorted_keys: Vec<&String> = map.keys().collect();
-            sorted_keys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-            out.push(b'{');
-            for (idx, key) in sorted_keys.iter().enumerate() {
-                if !key.is_ascii() {
-                    return Err(PackageIdentityFinding::new("CANONICAL_VALUE_UNSUPPORTED"));
-                }
-                if idx > 0 {
-                    out.push(b',');
-                }
-                let encoded_key = serde_json::to_string(key)
-                    .map_err(|_| PackageIdentityFinding::new("CANONICAL_VALUE_UNSUPPORTED"))?;
-                out.extend_from_slice(encoded_key.as_bytes());
-                out.push(b':');
-                encode_canonical_item(&map[*key], out)?;
-            }
-            out.push(b'}');
-            Ok(())
-        }
-        _ => Err(PackageIdentityFinding::new("CANONICAL_VALUE_UNSUPPORTED")),
+        }),
+        _ => Err(refused()),
     }
 }
 
+/// The bare hex of [`sha256_digest`], as a package inventory records it.
 pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
+    sha256_digest(data).hex().to_string()
 }
 
 pub use crate::crypto::sha256_digest;
@@ -676,6 +640,34 @@ mod tests {
     use super::*;
     use crate::extensions::schema_profile::parse_json_pointer;
     use std::path::PathBuf;
+
+    /// The restricted canonical form: keys in byte order at every depth, no
+    /// whitespace — and a refusal for every value outside the admitted set.
+    #[test]
+    fn canonical_bytes_encodes_the_admitted_set_and_refuses_the_rest() {
+        let value =
+            json!({"b": [2, {"z": "x", "a": 1}], "A": "q\"r", "a": 9_007_199_254_740_991u64});
+        assert_eq!(
+            String::from_utf8(canonical_bytes(&value).unwrap()).unwrap(),
+            r#"{"A":"q\"r","a":9007199254740991,"b":[2,{"a":1,"z":"x"}]}"#
+        );
+        for refused in [
+            json!(1.5),
+            json!(-1),
+            json!(9_007_199_254_740_992u64),
+            json!(true),
+            json!(null),
+            json!("é"),
+            json!({"é": 1}),
+            json!([1, [false]]),
+        ] {
+            assert_eq!(
+                canonical_bytes(&refused).unwrap_err().code,
+                "CANONICAL_VALUE_UNSUPPORTED",
+                "{refused}"
+            );
+        }
+    }
 
     fn apply_patch(root: &mut Value, patches: &[Value]) {
         for patch in patches {

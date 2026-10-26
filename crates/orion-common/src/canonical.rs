@@ -2,10 +2,9 @@
 //!
 //! One encoder for every content-addressed document Orion stores — a v2
 //! definition, a connection revision's configuration — so two spellings of
-//! the same document are one digest. A leaf beside `crypto`.
+//! the same document are one digest, through `crypto::sha256_digest`.
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 /// Serialize with object keys sorted at every depth, compactly.
 ///
@@ -49,11 +48,7 @@ pub fn canonical_json(value: &Value) -> String {
 
 /// `sha256:<hex>` over [`canonical_json`].
 pub fn content_hash(value: &Value) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_json(value).as_bytes());
-    // `hex::encode`, not `{:x}`: sha2 0.11 returns crypto-common's `Array`,
-    // which — unlike the `GenericArray` it replaced — implements no LowerHex.
-    format!("sha256:{}", hex::encode(hasher.finalize()))
+    crate::crypto::sha256_digest(canonical_json(value).as_bytes()).into_string()
 }
 
 #[cfg(test)]
