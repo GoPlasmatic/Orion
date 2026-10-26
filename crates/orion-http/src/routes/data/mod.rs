@@ -15,7 +15,7 @@ use crate::errors::OrionError;
 use crate::extract::{OrionBody, OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::routes::openapi::ErrorResponse;
-use crate::runtime::state::AppState;
+use crate::runtime::state::{AppState, DataPlane};
 
 use sync::process_sync_for_channel;
 
@@ -113,7 +113,7 @@ and its sibling fields are discarded.",
     fields(path = %uri.path())
 )]
 pub(crate) async fn dynamic_handler(
-    State(state): State<AppState>,
+    State(state): State<DataPlane>,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
@@ -299,7 +299,7 @@ pub(crate) async fn dynamic_handler(
     let client_ip = crate::rate_limit::request_client_ip_from_parts(
         peer.as_ref(),
         &headers,
-        state.trusted_proxies(),
+        &state.trusted_proxies,
     );
     let transport = if is_async {
         guards::Transport::HttpAsync
@@ -679,7 +679,7 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
 /// trace (or a synthetic id in `off` mode), enqueue the message, and answer
 /// 202.
 async fn submit_async(
-    state: &AppState,
+    state: &DataPlane,
     channel: String,
     data: Value,
     metadata: Value,
@@ -734,7 +734,6 @@ async fn submit_async(
     let token = uuid::Uuid::new_v4().simple().to_string();
     let token_hash = crate::admin_auth::hash_trace_token(&token);
     let trace = state
-        .repos
         .traces
         .create_pending(
             &channel,
@@ -769,7 +768,6 @@ async fn submit_async(
         // (best-effort: this write hits the same DB that just served
         // `create_pending`).
         if let Err(update_err) = state
-            .repos
             .traces
             .update_status(
                 &trace_id,

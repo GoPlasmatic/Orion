@@ -21,6 +21,52 @@ pub struct Caches {
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
 }
 
+/// What the data plane reads: the handles a data request needs, and nothing
+/// else.
+///
+/// The data handlers extract this ([`axum::extract::FromRef`]) rather than
+/// the whole [`AppState`], so what a request can reach is the serving
+/// generation, the config, the expression engine, `[vars]`, the client
+/// identity policy, the trace pipeline and the channel-credential backoff —
+/// not the deployment store, the reconciler, the backup lock or the admin
+/// plane's trackers. Built once, at assembly, from the same handles
+/// [`AppStateInner`] holds, and cloned per request as one refcount bump.
+#[derive(Clone)]
+pub struct DataPlane(Arc<DataPlaneParts>);
+
+/// The fields of a [`DataPlane`]; see [`AppStateInner`] for each.
+pub struct DataPlaneParts {
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
+    pub config: Arc<AppConfig>,
+    pub exprs: ExprEngine,
+    pub vars: Option<Arc<serde_json::Value>>,
+    pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
+    pub trace_queue: TraceQueue,
+    pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
+    pub traces: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    pub channel_auth_failures: Arc<crate::auth::FailedAuthTracker>,
+}
+
+impl DataPlane {
+    pub fn new(parts: DataPlaneParts) -> Self {
+        Self(Arc::new(parts))
+    }
+}
+
+impl std::ops::Deref for DataPlane {
+    type Target = DataPlaneParts;
+
+    fn deref(&self) -> &DataPlaneParts {
+        &self.0
+    }
+}
+
+impl axum::extract::FromRef<AppState> for DataPlane {
+    fn from_ref(state: &AppState) -> Self {
+        state.data_plane.clone()
+    }
+}
+
 /// Owned fields shared across all route handlers.
 ///
 /// Wrapped in an `Arc` (via the [`AppState`] type alias) so the per-request
@@ -178,6 +224,9 @@ pub struct AppStateInner {
     /// per-channel limit exists for, every client behind a proxy collapsed
     /// into one bucket (S15).
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
+    /// The data plane's narrow view of this state, built from the same
+    /// handles; see [`DataPlane`].
+    pub data_plane: DataPlane,
     /// What this node serves, frozen at boot (`V2-11.1`): its edition, the
     /// channel drivers, the provider backends (composed, plus the packages
     /// it admits at runtime), the connection-pool caches and its admission

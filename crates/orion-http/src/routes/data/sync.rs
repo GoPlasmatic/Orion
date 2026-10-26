@@ -12,7 +12,7 @@ use crate::channel::guards::{Admission, CacheStoreCtx};
 use crate::errors::OrionError;
 use crate::metrics;
 use crate::queue::trace_record::{CompletedTrace, TracePlan, route_store_completed};
-use crate::runtime::state::AppState;
+use crate::runtime::state::DataPlane;
 
 /// Build an HTTP response from a pre-serialized JSON string, avoiding
 /// the double-serialization that `Json<Value>` would incur.
@@ -53,7 +53,7 @@ fn json_response(status: StatusCode, body: String) -> Response {
 /// to callers verbatim, so the cached copy must be the sanitized envelope
 /// (G1), while the persisted trace keeps `trace.response_json` full detail.
 async fn persist_trace_and_cache(
-    state: &AppState,
+    state: &DataPlane,
     channel_config: &std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
     plan: &TracePlan,
     trace: CompletedTrace<'_>,
@@ -97,7 +97,7 @@ async fn persist_trace_and_cache(
         let trace_store_start = Instant::now();
         route_store_completed(
             &effective_trace,
-            &*state.repos.traces,
+            &*state.traces,
             &state.trace_persistence_queue,
             trace,
         )
@@ -588,7 +588,7 @@ pub(super) struct AdmittedOn {
 ///
 /// Returns a pre-serialized `Response` so the JSON is serialized exactly once.
 pub(super) async fn process_sync_for_channel(
-    state: &AppState,
+    state: &DataPlane,
     channel: &str,
     data: Value,
     metadata: Value,
