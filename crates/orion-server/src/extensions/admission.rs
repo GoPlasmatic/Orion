@@ -1,12 +1,14 @@
 //! Package admission and runtime security-lease policy (`V2-11.1`, `V2-05.5`, `CTX-09`).
 //!
-//! Separates the public Community trust policy ([`CommunityAdmissionPolicy`])
-//! from Enterprise license, signature, and entitlement verification while
-//! enforcing monotonic runtime revocation across all live generations (`CTX-09`).
+//! Split in two: the [`PackageVerifier`] an edition plugs in (Community's
+//! [`CommunityPackageVerifier`], or Enterprise's license, signature and
+//! entitlement checks), and the [`RevocationLedger`] every node keeps, which
+//! enforces monotonic runtime revocation across all live generations
+//! (`CTX-09`). [`Admission`] is the two together.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +56,7 @@ impl EditionTier {
     }
 }
 
-/// Successful admission verdict returned by [`AdmissionPolicy::verify_package`].
+/// Successful admission verdict returned by [`PackageVerifier::verify_package`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdmissionVerdict {
     pub provider: ProviderReference,
@@ -77,113 +79,37 @@ impl std::fmt::Display for AdmissionRejection {
 
 impl std::error::Error for AdmissionRejection {}
 
-/// Open policy interface for package admission and runtime revocation/lease checks (`V2-11.1`, `CTX-09`).
+/// The part of admission an edition plugs in: whether a provider package may
+/// be admitted on this node (`V2-11.1`).
 ///
-/// Community uses [`CommunityAdmissionPolicy`]; Enterprise supplies its own
-/// implementation at the composition root to verify signed packages, entitlements,
-/// and fleet license leases without altering core engine dispatch.
-pub trait AdmissionPolicy: Send + Sync {
-    /// Policy identifier for diagnostics and audit receipts.
+/// Community composes [`CommunityPackageVerifier`]; Enterprise supplies its
+/// own (signed packages, offline entitlements) through
+/// [`super::CompositionBuilder::with_package_verifier`]. Revocation and the
+/// security lease are not the verifier's: every node keeps them in its
+/// [`RevocationLedger`], and [`Admission`] consults the ledger before and
+/// after the verifier, so a verifier cannot disable revocation by omission.
+pub trait PackageVerifier: Send + Sync {
+    /// Policy identifier for diagnostics, audit receipts and the admission
+    /// fingerprint: an admission recorded under another policy is
+    /// invalidated.
     fn policy_id(&self) -> &'static str;
-
-    /// The edition this policy admits for: what the node reports as its
-    /// edition.
-    fn edition(&self) -> EditionTier;
 
     /// Validate a provider package before admission into a deployment generation.
     fn verify_package(
         &self,
         request: &PackageAdmissionRequest,
     ) -> Result<AdmissionVerdict, AdmissionRejection>;
-
-    /// Check the monotonic runtime deny-set and security lease before child dispatch
-    /// or external connector operations (`V2-05.5`, `CTX-09`).
-    ///
-    /// Normal generation pinning does not freeze emergency revocations or expired
-    /// security leases: an old generation must consult this operational check
-    /// before starting new external work.
-    fn check_runtime_lease(
-        &self,
-        generation_id: u64,
-        provider_id: &str,
-        connection_id: &str,
-        prior_effect: EffectStatus,
-    ) -> Result<(), ConnectorError>;
-
-    // The revocation and lease methods have no defaults on purpose: a
-    // policy that does not implement them would silently disable
-    // revocation, so every policy must say what it does.
-
-    /// Monotonically revoke a package digest across all active and retained
-    /// generations (`CTX-09`). Returns the new revocation watermark.
-    fn revoke_digest(&self, digest: &str) -> u64;
-
-    /// Check whether a package digest has been monotonically revoked (`CTX-09`).
-    fn is_digest_revoked(&self, digest: &str) -> bool;
-
-    /// Monotonically revoke a provider ID across all active and retained
-    /// generations (`CTX-09`). Returns the new revocation watermark.
-    fn revoke_provider(&self, provider_id: &str) -> u64;
-
-    /// Monotonically revoke a connection ID across all active and retained
-    /// generations (`CTX-09`). Returns the new revocation watermark.
-    fn revoke_connection(&self, connection_id: &str) -> u64;
-
-    /// Update the node's runtime security lease validity (`CTX-09`).
-    /// Returns the new revocation watermark.
-    fn set_lease_valid(&self, valid: bool) -> u64;
 }
 
-/// Community Edition admission and runtime revocation policy (`V2-11.1`, `CTX-09`).
+/// Community Edition package verifier (`V2-11.1`).
 ///
 /// - Verifies canonical `sha256:<64 hex>` package digests and non-empty targets.
-/// - Rejects packages explicitly marked `tier: "enterprise"` on a Community node.
-/// - Maintains a monotonic runtime deny-set and lease validity state so `CTX-09`
-///   revocations take effect immediately across all retained generations.
-pub struct CommunityAdmissionPolicy {
-    revoked_digests: RwLock<BTreeSet<String>>,
-    revoked_providers: RwLock<BTreeSet<String>>,
-    revoked_connections: RwLock<BTreeSet<String>>,
-    lease_valid: AtomicBool,
-    watermark: AtomicU64,
-}
+/// - Rejects packages explicitly marked `tier: "enterprise"`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommunityPackageVerifier;
 
-impl Default for CommunityAdmissionPolicy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CommunityAdmissionPolicy {
-    pub fn new() -> Self {
-        Self {
-            revoked_digests: RwLock::new(BTreeSet::new()),
-            revoked_providers: RwLock::new(BTreeSet::new()),
-            revoked_connections: RwLock::new(BTreeSet::new()),
-            lease_valid: AtomicBool::new(true),
-            watermark: AtomicU64::new(0),
-        }
-    }
-
-    /// Add `value` to `set`. A poisoned lock still takes the write: a
-    /// revocation that was dropped would fail open.
-    fn revoke_into(&self, set: &RwLock<BTreeSet<String>>, value: &str) -> u64 {
-        set.write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(value.to_string());
-        self.watermark.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    /// Whether `set` holds `value`, reading through a poisoned lock.
-    fn revoked_in(set: &RwLock<BTreeSet<String>>, value: &str) -> bool {
-        set.read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(value)
-    }
-
-    pub fn watermark(&self) -> u64 {
-        self.watermark.load(Ordering::SeqCst)
-    }
+impl CommunityPackageVerifier {
+    pub const POLICY_ID: &'static str = "orion.community.admission/1";
 }
 
 fn is_valid_sha256_digest(digest: &str) -> bool {
@@ -196,13 +122,9 @@ fn is_valid_sha256_digest(digest: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-impl AdmissionPolicy for CommunityAdmissionPolicy {
+impl PackageVerifier for CommunityPackageVerifier {
     fn policy_id(&self) -> &'static str {
-        "orion.community.admission/1"
-    }
-
-    fn edition(&self) -> EditionTier {
-        EditionTier::Community
+        Self::POLICY_ID
     }
 
     fn verify_package(
@@ -239,46 +161,100 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
                 ),
             });
         }
-
-        if self.is_digest_revoked(&request.provider.package_digest) {
-            return Err(AdmissionRejection {
-                code: "PROVIDER_REVOKED".to_string(),
-                message: format!(
-                    "Provider package '{}' ({}) has been revoked",
-                    request.provider.provider_id, request.provider.package_digest
-                ),
-            });
-        }
-
         Ok(AdmissionVerdict {
             provider: request.provider.clone(),
             implementation: request.implementation,
             policy_id: self.policy_id().to_string(),
         })
     }
+}
 
-    fn revoke_digest(&self, digest: &str) -> u64 {
+/// The node's monotonic runtime deny-set and security lease (`CTX-09`).
+///
+/// Core state every node keeps whatever its edition: revocations take effect
+/// immediately across all retained generations, and an expired lease blocks
+/// new external work. One per node, shared by [`Admission`] and the
+/// [`super::ProviderRegistry`] that dispatches connector calls.
+#[derive(Debug)]
+pub struct RevocationLedger {
+    revoked_digests: RwLock<BTreeSet<String>>,
+    revoked_providers: RwLock<BTreeSet<String>>,
+    revoked_connections: RwLock<BTreeSet<String>>,
+    lease_valid: AtomicBool,
+    watermark: AtomicU64,
+}
+
+impl Default for RevocationLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RevocationLedger {
+    pub fn new() -> Self {
+        Self {
+            revoked_digests: RwLock::new(BTreeSet::new()),
+            revoked_providers: RwLock::new(BTreeSet::new()),
+            revoked_connections: RwLock::new(BTreeSet::new()),
+            lease_valid: AtomicBool::new(true),
+            watermark: AtomicU64::new(0),
+        }
+    }
+
+    /// Add `value` to `set`. A poisoned lock still takes the write: a
+    /// revocation that was dropped would fail open.
+    fn revoke_into(&self, set: &RwLock<BTreeSet<String>>, value: &str) -> u64 {
+        set.write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(value.to_string());
+        self.watermark.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Whether `set` holds `value`, reading through a poisoned lock.
+    fn revoked_in(set: &RwLock<BTreeSet<String>>, value: &str) -> bool {
+        set.read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(value)
+    }
+
+    pub fn watermark(&self) -> u64 {
+        self.watermark.load(Ordering::SeqCst)
+    }
+
+    /// Monotonically revoke a package digest. Returns the new watermark.
+    pub fn revoke_digest(&self, digest: &str) -> u64 {
         self.revoke_into(&self.revoked_digests, digest)
     }
 
-    fn is_digest_revoked(&self, digest: &str) -> bool {
+    /// Whether a package digest has been revoked.
+    pub fn is_digest_revoked(&self, digest: &str) -> bool {
         Self::revoked_in(&self.revoked_digests, digest)
     }
 
-    fn revoke_provider(&self, provider_id: &str) -> u64 {
+    /// Monotonically revoke a provider ID. Returns the new watermark.
+    pub fn revoke_provider(&self, provider_id: &str) -> u64 {
         self.revoke_into(&self.revoked_providers, provider_id)
     }
 
-    fn revoke_connection(&self, connection_id: &str) -> u64 {
+    /// Monotonically revoke a connection ID. Returns the new watermark.
+    pub fn revoke_connection(&self, connection_id: &str) -> u64 {
         self.revoke_into(&self.revoked_connections, connection_id)
     }
 
-    fn set_lease_valid(&self, valid: bool) -> u64 {
+    /// Update the node's runtime security lease validity. Returns the new
+    /// watermark.
+    pub fn set_lease_valid(&self, valid: bool) -> u64 {
         self.lease_valid.store(valid, Ordering::SeqCst);
         self.watermark.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    fn check_runtime_lease(
+    /// Check the deny-set and the security lease before child dispatch or an
+    /// external connector operation (`V2-05.5`, `CTX-09`).
+    ///
+    /// Generation pinning does not freeze an emergency revocation or an
+    /// expired lease: an old generation consults this before starting new
+    /// external work.
+    pub fn check_runtime_lease(
         &self,
         _generation_id: u64,
         provider_id: &str,
@@ -318,6 +294,82 @@ impl AdmissionPolicy for CommunityAdmissionPolicy {
     }
 }
 
+/// The node's admission: the edition's [`PackageVerifier`] over the node's
+/// [`RevocationLedger`]. What the deployment store and the admin routes
+/// admit, roll out and roll back under.
+#[derive(Clone)]
+pub struct Admission {
+    verifier: Arc<dyn PackageVerifier>,
+    ledger: Arc<RevocationLedger>,
+}
+
+impl std::fmt::Debug for Admission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Admission")
+            .field("policy_id", &self.policy_id())
+            .field("watermark", &self.ledger.watermark())
+            .finish()
+    }
+}
+
+impl Admission {
+    pub fn new(verifier: Arc<dyn PackageVerifier>, ledger: Arc<RevocationLedger>) -> Self {
+        Self { verifier, ledger }
+    }
+
+    /// Community's verifier over a fresh ledger.
+    pub fn community() -> Self {
+        Self::new(
+            Arc::new(CommunityPackageVerifier),
+            Arc::new(RevocationLedger::new()),
+        )
+    }
+
+    /// The verifier's policy identifier.
+    pub fn policy_id(&self) -> &'static str {
+        self.verifier.policy_id()
+    }
+
+    /// The node's revocation ledger.
+    pub fn ledger(&self) -> &Arc<RevocationLedger> {
+        &self.ledger
+    }
+
+    /// The verifier's verdict on `request`, refused when its digest is
+    /// revoked on this node whatever the verifier says.
+    pub fn verify_package(
+        &self,
+        request: &PackageAdmissionRequest,
+    ) -> Result<AdmissionVerdict, AdmissionRejection> {
+        let verdict = self.verifier.verify_package(request)?;
+        if self
+            .ledger
+            .is_digest_revoked(&request.provider.package_digest)
+        {
+            return Err(AdmissionRejection {
+                code: "PROVIDER_REVOKED".to_string(),
+                message: format!(
+                    "Provider package '{}' ({}) has been revoked",
+                    request.provider.provider_id, request.provider.package_digest
+                ),
+            });
+        }
+        Ok(verdict)
+    }
+
+    /// [`RevocationLedger::check_runtime_lease`].
+    pub fn check_runtime_lease(
+        &self,
+        generation_id: u64,
+        provider_id: &str,
+        connection_id: &str,
+        prior_effect: EffectStatus,
+    ) -> Result<(), ConnectorError> {
+        self.ledger
+            .check_runtime_lease(generation_id, provider_id, connection_id, prior_effect)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -327,7 +379,7 @@ mod tests {
     /// writer poisoned: dropping it would fail open.
     #[test]
     fn revocation_holds_through_a_poisoned_lock() {
-        let policy = std::sync::Arc::new(CommunityAdmissionPolicy::new());
+        let policy = std::sync::Arc::new(RevocationLedger::new());
         let poisoner = std::sync::Arc::clone(&policy);
         let _ = std::thread::spawn(move || {
             let _guard = poisoner.revoked_digests.write().unwrap();
@@ -354,7 +406,7 @@ mod tests {
 
     #[test]
     fn ctx_09_revocation_and_lease_expiry_block_live_old_generation() {
-        let policy = CommunityAdmissionPolicy::new();
+        let policy = RevocationLedger::new();
 
         // Generation 41 is live and initially allowed.
         assert!(

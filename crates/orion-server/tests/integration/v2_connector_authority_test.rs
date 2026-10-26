@@ -60,25 +60,28 @@ fn entity(kind: EntityKind, id: &str) -> EntityRef {
 
 #[tokio::test]
 async fn a_workflow_calls_only_the_connections_its_member_requires() {
-    let state = orion::bootstrap::assemble(orion::bootstrap::AssembleParams {
-        config: std::sync::Arc::new(orion::config::AppConfig::default()),
-        pool: {
-            use std::str::FromStr;
-            let pool = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(4)
-                .connect_with(
-                    sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
-                )
-                .await
-                .unwrap();
-            orion::storage::migrator_for(orion::storage::DbBackend::Sqlite)
-                .run(&pool)
-                .await
-                .unwrap();
-            orion::storage::DbPool::Sqlite(pool)
+    let state = orion::bootstrap::assemble(
+        orion::bootstrap::AssembleParams {
+            config: std::sync::Arc::new(orion::config::AppConfig::default()),
+            pool: {
+                use std::str::FromStr;
+                let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(4)
+                    .connect_with(
+                        sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:").unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                orion::storage::migrator_for(orion::storage::DbBackend::Sqlite)
+                    .run(&pool)
+                    .await
+                    .unwrap();
+                orion::storage::DbPool::Sqlite(pool)
+            },
+            metrics_handle: orion::metrics::init_metrics_with_instance(None),
         },
-        metrics_handle: orion::metrics::init_metrics_with_instance(None),
-    })
+        orion::extensions::CompositionRoot::community(),
+    )
     .await
     .expect("boots")
     .state;
@@ -96,7 +99,7 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
 
     // The connection names the built-in memory-cache driver by its built-in
     // digest, so the manifest declares no provider package for it.
-    let deployments = &state.composition.deployments;
+    let deployments = &state.deployments;
     let builtin = orion::extensions::foundation::builtin_provider_digest(
         orion::extensions::foundation::DRIVER_MEMORY_CACHE,
     )
@@ -161,7 +164,7 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
             "idem-authority",
             &plan,
             "deploy",
-            state.composition.admission.as_ref(),
+            state.composition.admission(),
         )
         .await
         .unwrap();

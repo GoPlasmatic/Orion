@@ -8,7 +8,7 @@ use super::{
     DeploymentRevisionRow, DeploymentState, ImmutableDeploymentStore, ProviderAdmissionRow,
     ProviderPackageRow, Rollback,
 };
-use crate::extensions::AdmissionPolicy;
+use crate::extensions::Admission;
 use crate::extensions::contract::ImplementationKind;
 use crate::extensions::package_identity::sha256_digest;
 use crate::storage::repositories::audit_logs::AuditEvent;
@@ -1888,7 +1888,7 @@ impl ImmutableDeploymentStore {
         &self,
         pool: &crate::storage::DbPool,
         package_digest: &str,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
         lock: Option<&Value>,
     ) -> Result<ProviderAdmissionRow, DeploymentError> {
         self.transactional_mutate(pool, |staged| {
@@ -1986,7 +1986,7 @@ impl ImmutableDeploymentStore {
         idempotency_key: &str,
         plan: &CandidatePlan,
         reason: &str,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
     ) -> Result<DeploymentReceipt, DeploymentError> {
         self.transactional_mutate(pool, |staged| {
             Self::apply_candidate_into_state(
@@ -2013,7 +2013,7 @@ impl ImmutableDeploymentStore {
         idempotency_key: &str,
         plan: &CandidatePlan,
         reason: &str,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
         audit: impl FnOnce(&DeploymentReceipt) -> AuditEvent,
     ) -> Result<(DeploymentReceipt, Option<AuditEvent>), DeploymentError> {
         self.transactional_mutate_audited(
@@ -2039,7 +2039,7 @@ impl ImmutableDeploymentStore {
         &self,
         pool: &crate::storage::DbPool,
         rollback: &Rollback<'_>,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
         audit: impl FnOnce(&DeploymentReceipt) -> AuditEvent,
     ) -> Result<((DeploymentReceipt, Vec<String>), Option<AuditEvent>), DeploymentError> {
         self.transactional_mutate_audited(
@@ -2054,7 +2054,7 @@ impl ImmutableDeploymentStore {
         &self,
         pool: &crate::storage::DbPool,
         rollback: &Rollback<'_>,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
     ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
         self.transactional_mutate(pool, |staged| {
             Self::rollback_to_revision_into_state(staged, rollback, policy)

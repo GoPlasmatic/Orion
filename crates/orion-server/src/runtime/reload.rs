@@ -23,13 +23,13 @@ pub async fn reconcile_deployment_revision(
     use crate::extensions::deployment_store::{EntityKind, EntityRef};
     use crate::extensions::reconciler::CandidateBuildIssue;
 
-    state.composition.reconciler.observe_desired_head();
+    state.reconciler.observe_desired_head();
     let build_res = build_and_publish(state, target_revision).await;
 
     let mut build_issues = Vec::new();
     match build_res {
         Ok(published) => {
-            if let Some(rev_row) = state.composition.deployments.get_revision(target_revision) {
+            if let Some(rev_row) = state.deployments.get_revision(target_revision) {
                 for q in published.channels.quarantined() {
                     let rev = rev_row
                         .manifest
@@ -60,11 +60,9 @@ pub async fn reconcile_deployment_revision(
     }
 
     let status_res = state
-        .composition
         .reconciler
         .build_and_publish_candidate(target_revision, build_issues);
     let _ = state
-        .composition
         .reconciler
         .persist_local_status_to_db_pool(&state.db_pool)
         .await;
@@ -101,13 +99,19 @@ async fn manifest_definitions(
     use crate::extensions::deployment_store::{ArtifactState, EntityKind, ManifestMember};
 
     for p in &manifest.providers {
-        let Some(adm) = state.composition.deployments.get_admission(&p.digest) else {
+        let Some(adm) = state.deployments.get_admission(&p.digest) else {
             return Err(OrionError::validation(format!(
                 "provider '{}' ({}) is not admitted",
                 p.provider_id, p.digest
             )));
         };
-        if adm.revoked || state.composition.admission.is_digest_revoked(&p.digest) {
+        if adm.revoked
+            || state
+                .composition
+                .admission()
+                .ledger()
+                .is_digest_revoked(&p.digest)
+        {
             return Err(OrionError::validation(format!(
                 "provider '{}' ({}) is revoked",
                 p.provider_id, p.digest
@@ -128,7 +132,6 @@ async fn manifest_definitions(
             )
         };
         let artifact = state
-            .composition
             .deployments
             .get_artifact(&member.definition_digest)
             .ok_or_else(|| {
@@ -220,7 +223,6 @@ async fn manifest_definitions(
             }
             EntityKind::Connection => {
                 let conn = state
-                    .composition
                     .deployments
                     .get_connection(&m.entity.id, m.entity.revision)
                     .ok_or_else(|| {
@@ -270,11 +272,9 @@ async fn manifest_definitions(
     });
     active_plugins.sort_by(|a, b| a.plugin_id.cmp(&b.plugin_id));
 
-    let dependencies = crate::extensions::workflow_provider::manifest_dependencies(
-        &state.composition.deployments,
-        manifest,
-    )
-    .map_err(OrionError::validation)?;
+    let dependencies =
+        crate::extensions::workflow_provider::manifest_dependencies(&state.deployments, manifest)
+            .map_err(OrionError::validation)?;
 
     Ok(ManifestDefinitions {
         channels: active_channels,
@@ -295,7 +295,7 @@ fn workflow_package_serves(
     use crate::errors::OrionError;
     use crate::extensions::ImplementationKind;
 
-    let store = &state.composition.deployments;
+    let store = &state.deployments;
     let Some(package) = store
         .get_package(&conn.provider_digest)
         .filter(|p| p.implementation == ImplementationKind::Workflow)
@@ -313,7 +313,8 @@ fn workflow_package_serves(
         .is_some_and(|a| !a.revoked)
         && !state
             .composition
-            .admission
+            .admission()
+            .ledger()
             .is_digest_revoked(&package.package_digest);
     if !admitted {
         return Err(OrionError::validation(format!(
@@ -332,7 +333,7 @@ fn workflow_package_serves(
     }
     if state
         .composition
-        .providers
+        .providers()
         .get(ImplementationKind::Workflow, &package.package_digest)
         .is_none()
     {
@@ -417,7 +418,6 @@ fn manifest_connectors(
             continue;
         }
         let Some(row) = state
-            .composition
             .deployments
             .get_connection(&member.entity.id, member.entity.revision)
         else {
@@ -466,7 +466,6 @@ async fn build_and_publish(
 
     let result = async {
         let manifest = state
-            .composition
             .deployments
             .get_revision(revision)
             .map(|rev| rev.manifest)
@@ -494,7 +493,7 @@ async fn build_and_publish(
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
         refuse_route_collisions(
             &channels,
-            &state.composition.channels,
+            state.composition.channels(),
             &state.config.server.data_mounts,
         )?;
         // Each workflow is granted the connections its member requires.
@@ -545,7 +544,7 @@ async fn build_and_publish(
                     oidc_discovery: &state.oidc_discovery,
                     global_trace_storage: &state.config.trace_storage,
                     cron_enabled: state.config.cron.enabled,
-                    channel_drivers: &state.composition.channels,
+                    channel_drivers: state.composition.channels(),
                 },
                 engine_issues,
             )
@@ -553,8 +552,8 @@ async fn build_and_publish(
 
         // The publication barrier: a revision older than what this node
         // already desires or applied never replaces it.
-        let local = state.composition.reconciler.local_status();
-        let (latest_head, _) = state.composition.deployments.current_head();
+        let local = state.reconciler.local_status();
+        let (latest_head, _) = state.deployments.current_head();
         let desired = local.desired_revision.max(latest_head);
         if revision < desired || revision <= local.applied_revision {
             return Err(crate::errors::OrionError::Conflict(format!(
@@ -816,7 +815,7 @@ pub async fn check_candidate(
     let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
     refuse_route_collisions(
         &channels,
-        &state.composition.channels,
+        state.composition.channels(),
         &state.config.server.data_mounts,
     )?;
     let current = state.runtime.load();

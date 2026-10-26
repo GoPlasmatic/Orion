@@ -19,8 +19,6 @@ pub struct Caches {
     pub cache_pool: Arc<CachePool>,
     /// External SQL connection pool cache — shared so admin routes can evict stale pools.
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    /// Extensible provider-owned connection-pool caches (`V2-11.1`, `V2-05.4`).
-    pub provider_pools: crate::extensions::ResourcePoolRegistry,
 }
 
 /// Owned fields shared across all route handlers.
@@ -180,10 +178,19 @@ pub struct AppStateInner {
     /// per-channel limit exists for, every client behind a proxy collapsed
     /// into one bucket (S15).
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
-    /// The node's composition root (`V2-11.1`): registered native Rust
-    /// `ChannelDriver`s, `ProviderBackend`s (`rust`, `workflow`, `wasm`),
-    /// `AdmissionPolicy`, and `ResourcePoolRegistry`.
-    pub composition: crate::extensions::CompositionRoot,
+    /// What this node serves, frozen at boot (`V2-11.1`): its edition, the
+    /// channel drivers, the provider backends (composed, plus the packages
+    /// it admits at runtime), the connection-pool caches and its admission
+    /// (the edition's package verifier over the node's revocation ledger).
+    /// Every driver and provider lookup goes through it.
+    pub composition: crate::extensions::Composition,
+    /// The node's v2 deployment store, created with the node's identity.
+    pub deployments: crate::extensions::ImmutableDeploymentStore,
+    /// The node's deployment reconciler.
+    pub reconciler: crate::extensions::NodeReconciler,
+    /// Bounded host-owned native work (plugin compiles), sized from
+    /// `engine.native_work_max_in_flight`.
+    pub native_scheduler: crate::extensions::NativeWorkScheduler,
 }
 
 impl AppStateInner {

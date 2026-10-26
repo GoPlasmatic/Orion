@@ -1,7 +1,7 @@
 //! Native Rust channel driver interface and registry (`V2-11.1`).
 //!
 //! A channel's `protocol` names a [`ChannelDriver`], and the driver registered
-//! on the node's [`super::CompositionRoot`] under that name is what decides
+//! in the node's [`super::Composition`] under that name is what decides
 //! whether a channel of that protocol is valid and whether it claims an HTTP
 //! route:
 //! - **Validation**: `validation::validate_create_channel` (the definition
@@ -13,15 +13,19 @@
 //!   protocol has no driver on this node, and the route table registers a
 //!   route only for a driver that declares `registers_http_routes`.
 //!
-//! Community (`ChannelDriverRegistry::community()`) registers `"rest"`,
-//! `"http"` and `"cron"`. An edition that composes its own root registers more
-//! (`"graphql"`, `"sse"`, …) with [`super::CompositionRoot::with_channel_driver`],
-//! without a closed protocol enum or per-protocol match arms in core. There is
+//! Community ([`community_drivers`]) registers `"rest"`, `"http"` and
+//! `"cron"`. An edition that composes its own node registers more
+//! (`"graphql"`, `"sse"`, …) with
+//! [`super::CompositionBuilder::with_channel_driver`], without a closed
+//! protocol enum or per-protocol match arms in core: the protocol is a string
+//! id resolved here. What stays closed is `channel::guards::Transport`, which
+//! names core's own ingress paths (the HTTP data plane, `channel_call`, the
+//! cron worker) and the guards each applies, not which protocols exist. There is
 //! no `"source"` driver: the source runner has no Community source provider to
 //! drive, so a protocol for it would accept channels nothing runs.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -207,10 +211,13 @@ impl ChannelDriver for CronChannelDriver {
     }
 }
 
-/// Open registry of native Rust [`ChannelDriver`] implementations (`V2-11.1`).
-#[derive(Clone, Default)]
+/// The registry of native Rust [`ChannelDriver`]s a node serves (`V2-11.1`):
+/// the one answer to which channel protocols exist. Built once, by
+/// [`super::CompositionBuilder::build`] (or [`Self::community`] for the
+/// offline tooling), and frozen.
+#[derive(Clone)]
 pub struct ChannelDriverRegistry {
-    drivers: Arc<RwLock<BTreeMap<String, Arc<dyn ChannelDriver>>>>,
+    drivers: Arc<BTreeMap<String, Arc<dyn ChannelDriver>>>,
 }
 
 impl std::fmt::Debug for ChannelDriverRegistry {
@@ -222,40 +229,51 @@ impl std::fmt::Debug for ChannelDriverRegistry {
     }
 }
 
+/// Community's drivers: `"rest"`, `"http"` and `"cron"`.
+pub fn community_drivers() -> Vec<Arc<dyn ChannelDriver>> {
+    vec![
+        Arc::new(RestChannelDriver),
+        Arc::new(HttpChannelDriver),
+        Arc::new(CronChannelDriver),
+    ]
+}
+
 impl ChannelDriverRegistry {
-    pub fn new() -> Self {
-        Self::default()
+    /// A registry of `drivers`, refusing the first protocol id seen twice
+    /// (compared case-insensitively).
+    pub fn new(drivers: impl IntoIterator<Item = Arc<dyn ChannelDriver>>) -> Result<Self, String> {
+        let mut map = BTreeMap::new();
+        for driver in drivers {
+            let id = driver.protocol_id().to_ascii_lowercase();
+            if map.contains_key(&id) {
+                return Err(id);
+            }
+            map.insert(id, driver);
+        }
+        Ok(Self {
+            drivers: Arc::new(map),
+        })
     }
 
     /// Community Edition channel driver registry: `"rest"`, `"http"` and
-    /// `"cron"`.
+    /// `"cron"`. What the offline tooling (`lint`, `compile`) validates
+    /// against; a running node validates against its composition's.
     pub fn community() -> Self {
-        let registry = Self::new();
-        registry.register(Arc::new(RestChannelDriver));
-        registry.register(Arc::new(HttpChannelDriver));
-        registry.register(Arc::new(CronChannelDriver));
-        registry
-    }
-
-    /// Register or replace a native Rust [`ChannelDriver`].
-    pub fn register(&self, driver: Arc<dyn ChannelDriver>) {
-        if let Ok(mut guard) = self.drivers.write() {
-            guard.insert(driver.protocol_id().to_ascii_lowercase(), driver);
-        }
+        Self::new(community_drivers())
+            .unwrap_or_else(|_| unreachable!("distinct community protocols"))
     }
 
     /// Look up a registered driver by case-insensitive protocol identifier.
     pub fn get(&self, protocol_id: &str) -> Option<Arc<dyn ChannelDriver>> {
-        let key = protocol_id.to_ascii_lowercase();
-        self.drivers.read().ok()?.get(&key).cloned()
+        if let Some(driver) = self.drivers.get(protocol_id) {
+            return Some(driver.clone());
+        }
+        self.drivers.get(&protocol_id.to_ascii_lowercase()).cloned()
     }
 
     /// List all registered protocol identifiers in sorted order.
     pub fn protocol_ids(&self) -> Vec<String> {
-        self.drivers
-            .read()
-            .map(|g| g.keys().cloned().collect())
-            .unwrap_or_default()
+        self.drivers.keys().cloned().collect()
     }
 
     /// Whether `protocol_id` is registered and declares HTTP route registration.
@@ -372,6 +390,22 @@ mod tests {
         }
     }
 
+    fn with_graphql() -> ChannelDriverRegistry {
+        let mut drivers = community_drivers();
+        drivers.push(Arc::new(CustomGraphqlDriver));
+        ChannelDriverRegistry::new(drivers).expect("distinct protocols")
+    }
+
+    #[test]
+    fn a_protocol_registered_twice_is_refused() {
+        let mut drivers = community_drivers();
+        drivers.push(Arc::new(CronChannelDriver));
+        assert_eq!(
+            ChannelDriverRegistry::new(drivers).err().as_deref(),
+            Some("cron")
+        );
+    }
+
     #[test]
     fn community_registry_contains_foundation_drivers_only() {
         let reg = ChannelDriverRegistry::community();
@@ -396,8 +430,7 @@ mod tests {
 
     #[test]
     fn external_enterprise_driver_registers_without_core_enum_changes() {
-        let reg = ChannelDriverRegistry::community();
-        reg.register(Arc::new(CustomGraphqlDriver));
+        let reg = with_graphql();
 
         assert!(reg.get("graphql").is_some());
         assert!(reg.registers_http_routes("graphql"));
@@ -420,8 +453,7 @@ mod tests {
 
     #[test]
     fn channel_type_is_held_to_the_driver_capabilities() {
-        let reg = ChannelDriverRegistry::community();
-        reg.register(Arc::new(CustomGraphqlDriver));
+        let reg = with_graphql();
         let mut f = fields("graphql", "async");
         f.route_pattern = Some("/graphql");
         let errs = reg.validate_channel(&f, &json!({}), &json!({}), None);

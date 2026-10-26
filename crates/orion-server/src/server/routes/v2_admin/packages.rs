@@ -58,8 +58,8 @@ fn package_row_to_summary(
     )
 )]
 pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> impl IntoResponse {
-    let raw_packages = state.composition.deployments.list_packages();
-    let raw_admissions = state.composition.deployments.list_admissions();
+    let raw_packages = state.deployments.list_packages();
+    let raw_admissions = state.deployments.list_admissions();
     let admissions: Vec<ProviderAdmissionDto> = raw_admissions
         .iter()
         .map(|a| ProviderAdmissionDto {
@@ -78,7 +78,6 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
             let admitted = adm.is_some_and(|a| !a.revoked);
             let revoked = adm.is_some_and(|a| a.revoked);
             let artifact_state = match state
-                .composition
                 .deployments
                 .get_artifact(&p.package_digest)
                 .map(|a| a.state)
@@ -151,7 +150,6 @@ pub(crate) async fn upload_connector_package(
         .collect();
 
     let row = match state
-        .composition
         .deployments
         .ingest_verified_archive_in_db(&state.db_pool, &entries)
         .await
@@ -168,12 +166,11 @@ pub(crate) async fn upload_connector_package(
             return crate::runtime::workflow_providers::refusal("admission refused", problems);
         }
         match state
-            .composition
             .deployments
             .admit_package_in_db(
                 &state.db_pool,
                 &row.package_digest,
-                state.composition.admission.as_ref(),
+                state.composition.admission(),
                 req.lock.as_ref(),
             )
             .await
@@ -241,12 +238,11 @@ pub(crate) async fn admit_connector_package(
         return crate::runtime::workflow_providers::refusal("admission refused", problems);
     }
     match state
-        .composition
         .deployments
         .admit_package_in_db(
             &state.db_pool,
             &digest,
-            state.composition.admission.as_ref(),
+            state.composition.admission(),
             lock.as_ref(),
         )
         .await
@@ -302,13 +298,16 @@ pub(crate) async fn revoke_connector_package(
 ) -> impl IntoResponse {
     let reason = req.and_then(|Json(r)| r.reason);
     match state
-        .composition
         .deployments
         .revoke_package_in_db(&state.db_pool, &digest)
         .await
     {
         Ok(()) => {
-            state.composition.admission.revoke_digest(&digest);
+            state
+                .composition
+                .admission()
+                .ledger()
+                .revoke_digest(&digest);
             crate::runtime::workflow_providers::sync(&state);
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,

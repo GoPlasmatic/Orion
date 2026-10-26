@@ -237,13 +237,16 @@ async fn execute_connector_call(
     // is resolved from it below.
     let target_from_connection = impl_kind != ImplementationKind::Rust && cfg.target_id.is_none();
 
-    if !target_from_connection && providers.get(impl_kind, &target_id).is_none() {
-        return Err(HandlerError::new(
-            ErrorClass::Backend,
-            format!(
-                "CONNECTOR_PROVIDER_NOT_FOUND: provider ({impl_kind:?}, '{target_id}') is not registered"
-            ),
-        ));
+    // A target named in the task is resolved now, and the backend found
+    // here is the one dispatched to: one lookup per call. A target taken
+    // from the connection's package is resolved once that is read.
+    let mut backend = None;
+    if !target_from_connection {
+        backend = Some(
+            providers
+                .get(impl_kind, &target_id)
+                .ok_or_else(|| not_registered(impl_kind, &target_id))?,
+        );
     }
 
     let run_ctx = ACTIVE_RUN_CONTEXT.try_with(Clone::clone).map_err(|_| {
@@ -267,12 +270,7 @@ async fn execute_connector_call(
         )));
     }
 
-    let Some(store) = providers.deployment_store() else {
-        return Err(forbidden(format!(
-            "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' cannot be resolved: \
-             this node has no deployment store"
-        )));
-    };
+    let store = providers.deployment_store();
     // The revision the manifest deploys, never one stored since.
     let deployed = crate::runtime::generation::PINNED_GENERATION
         .try_with(|generation| {
@@ -394,15 +392,14 @@ async fn execute_connector_call(
         .start_invocation(conn_ref, effective_conn, operation, idempotency_key, 2)
         .map_err(connector_error)?;
 
-    let admission = providers.admission_policy();
+    let backend = match backend {
+        Some(backend) => backend,
+        None => providers
+            .get(impl_kind, &target_id)
+            .ok_or_else(|| not_registered(impl_kind, &target_id))?,
+    };
     match providers
-        .dispatch_attempt(
-            admission.as_ref(),
-            &invocation,
-            impl_kind,
-            &target_id,
-            input_val,
-        )
+        .dispatch_attempt(&invocation, backend.as_ref(), input_val)
         .await
     {
         ConnectorResult::Success { data, .. } => Ok(data),
@@ -430,6 +427,15 @@ pub(crate) fn effective_identity(
             )
         },
     }
+}
+
+fn not_registered(kind: ImplementationKind, target_id: &str) -> HandlerError {
+    HandlerError::new(
+        ErrorClass::Backend,
+        format!(
+            "CONNECTOR_PROVIDER_NOT_FOUND: provider ({kind:?}, '{target_id}') is not registered"
+        ),
+    )
 }
 
 fn forbidden(message: String) -> HandlerError {
@@ -494,8 +500,13 @@ pub fn register_connector_call(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::AdmissionPolicy;
-    use crate::extensions::CompositionRoot;
+    use crate::extensions::Composition;
+
+    fn community() -> Composition {
+        crate::extensions::CompositionRoot::community()
+            .build_in_memory()
+            .expect("community composes")
+    }
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use dataflow_rs::function::testing;
     use serde_json::Value;
@@ -519,19 +530,22 @@ mod tests {
     /// generation granting the harness's workflow (`test`) `grants`, each
     /// connection with a revision in `root`'s store.
     async fn served(
-        root: &CompositionRoot,
+        root: &Composition,
         grants: &[(&str, &str)],
         call: testing::Call<ConnectorCallFunction>,
     ) -> testing::Called {
         let mut grant = AuthorityGrant::default();
         for (connection, operation) in grants {
-            let _ = root.deployments.store_connection_revision(
-                connection,
-                1,
-                &digest_for(connection),
-                json!({}),
-                Default::default(),
-            );
+            let _ = root
+                .providers()
+                .deployment_store()
+                .store_connection_revision(
+                    connection,
+                    1,
+                    &digest_for(connection),
+                    json!({}),
+                    Default::default(),
+                );
             grant
                 .allowed_operations
                 .entry((*connection).to_string())
@@ -593,8 +607,9 @@ mod tests {
     /// next call before it reaches the provider.
     #[tokio::test]
     async fn retryable_failures_trip_the_connection_breaker() {
-        let root = CompositionRoot::community();
-        root.deployments
+        let root = community();
+        root.providers()
+            .deployment_store()
             .store_connection_revision(
                 "dead-db",
                 1,
@@ -604,7 +619,7 @@ mod tests {
             )
             .expect("revision stored");
         let func = ConnectorCallFunction {
-            providers: root.providers.clone(),
+            providers: root.providers().clone(),
             registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
                 crate::connector::circuit_breaker::CircuitBreakerConfig {
                     enabled: true,
@@ -645,9 +660,9 @@ mod tests {
     /// an invented context.
     #[tokio::test]
     async fn a_call_without_governed_facts_is_refused() {
-        let root = CompositionRoot::community();
+        let root = community();
         let func = ConnectorCallFunction {
-            providers: root.providers.clone(),
+            providers: root.providers().clone(),
             registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
                 Default::default(),
             )),
@@ -695,14 +710,14 @@ mod tests {
     /// compiles, so a caller's values reach the database only as binds.
     #[tokio::test]
     async fn a_statement_built_from_the_message_is_refused_at_load() {
-        let root = CompositionRoot::community();
+        let root = community();
         for target in [
             "org.orion.sqlite",
             "org.orion.postgresql",
             "org.orion.mysql",
         ] {
             let func = ConnectorCallFunction {
-                providers: root.providers.clone(),
+                providers: root.providers().clone(),
                 registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
                     Default::default(),
                 )),
@@ -736,9 +751,9 @@ mod tests {
     /// placeholders.
     #[tokio::test]
     async fn a_literal_statement_runs_with_the_message_bound_as_params() {
-        let root = CompositionRoot::community();
+        let root = community();
         let func = ConnectorCallFunction {
-            providers: root.providers.clone(),
+            providers: root.providers().clone(),
             registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
                 Default::default(),
             )),
@@ -777,9 +792,9 @@ mod tests {
 
     #[tokio::test]
     async fn connector_call_dispatches_memory_cache_provider_in_v4_engine() {
-        let root = CompositionRoot::community();
+        let root = community();
         let func = ConnectorCallFunction {
-            providers: root.providers.clone(),
+            providers: root.providers().clone(),
             registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
                 Default::default(),
             )),
@@ -851,9 +866,9 @@ mod tests {
         assert!(err.message().contains("CONNECTOR_OPERATION_FORBIDDEN"));
 
         // 4. TD-25: Verify revoked provider/connection is blocked by dispatch_attempt admission check!
-        let custom_policy = std::sync::Arc::new(crate::extensions::CommunityAdmissionPolicy::new());
-        custom_policy.revoke_provider("org.orion.memory-cache");
-        root.providers.set_admission_policy(custom_policy);
+        root.admission()
+            .ledger()
+            .revoke_provider("org.orion.memory-cache");
         let revoked_called = served(
             &root,
             &[("local-cache", "cache.set"), ("local-cache", "cache.get")],
@@ -885,9 +900,9 @@ mod tests {
     /// called as another: the revision says which provider serves it.
     #[tokio::test]
     async fn a_connection_is_served_only_by_the_builtin_driver_it_names() {
-        let root = CompositionRoot::community();
+        let root = community();
         let func = ConnectorCallFunction {
-            providers: root.providers.clone(),
+            providers: root.providers().clone(),
             registry: std::sync::Arc::new(crate::connector::ConnectorRegistry::new(
                 Default::default(),
             )),

@@ -361,17 +361,18 @@ impl<V: Clone> LruCache<V> {
     }
 }
 
+#[async_trait::async_trait]
 impl<V: Clone + Send + Sync + 'static> crate::extensions::ConnectionPoolCache for LruCache<V> {
     fn cache_id(&self) -> &str {
         self.cache_label
     }
 
-    fn evict<'a>(&'a self, connector_name: &'a str) -> crate::extensions::BoxPoolFuture<'a, ()> {
-        Box::pin(async move { LruCache::evict(self, connector_name).await })
+    async fn evict(&self, connector_name: &str) {
+        LruCache::evict(self, connector_name).await
     }
 
-    fn evict_all<'a>(&'a self) -> crate::extensions::BoxPoolFuture<'a, ()> {
-        Box::pin(async move { LruCache::evict_all(self).await })
+    async fn evict_all(&self) {
+        LruCache::evict_all(self).await
     }
 }
 

@@ -402,7 +402,11 @@ impl OfflineDeps {
             )),
             channel_loader: Arc::new(crate::channel::ChannelLoader::new()),
             sql_pool_cache: Arc::new(crate::connector::pool_cache::SqlPoolCache::new(entries)),
-            providers: crate::extensions::CompositionRoot::community().providers,
+            providers: crate::extensions::CompositionRoot::community()
+                .build_in_memory()
+                .unwrap_or_else(|e| unreachable!("community composes: {e}"))
+                .providers()
+                .clone(),
             client,
             engine_config,
         }

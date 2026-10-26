@@ -158,11 +158,14 @@ async fn test_state_inner(
     let pool_handle = pool.clone();
 
     // From here on the shared production sequence.
-    let assembled = orion::bootstrap::assemble(orion::bootstrap::AssembleParams {
-        config: Arc::new(config),
-        pool,
-        metrics_handle,
-    })
+    let assembled = orion::bootstrap::assemble(
+        orion::bootstrap::AssembleParams {
+            config: Arc::new(config),
+            pool,
+            metrics_handle,
+        },
+        orion::extensions::CompositionRoot::community(),
+    )
     .await
     .expect("assemble app state");
 
@@ -809,7 +812,6 @@ pub async fn store_definition(
         serde_json::from_value(definition).expect("a definition");
     let bytes = orion::runtime::definitions::canonical_bytes(&definition).expect("canonical");
     state
-        .composition
         .deployments
         .store_definition_artifact_in_db(&state.db_pool, bytes)
         .await

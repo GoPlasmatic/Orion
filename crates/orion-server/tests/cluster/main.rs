@@ -133,7 +133,7 @@ async fn eventually_n(
 
 /// The revision `state`'s node has built and serves.
 fn applied_revision(state: &AppState) -> u64 {
-    state.composition.reconciler.local_status().applied_revision
+    state.reconciler.local_status().applied_revision
 }
 
 /// POST an empty payload to `channel` on `node`, answering the status.
@@ -293,7 +293,7 @@ async fn plugin_activation_propagates_across_nodes() {
     // rebuilds the engine on every node.
     let revised = format!("{manifest}\n# revision 2\n");
     common::deploy_plugin(&h.node_a, &revised, component).await;
-    let (target, _) = h.state_a.composition.deployments.current_head();
+    let (target, _) = h.state_a.deployments.current_head();
 
     let on_v2 = eventually(h.poll, async || {
         applied_revision(&h.state_b) == target
@@ -1665,7 +1665,7 @@ async fn rollback_propagates_across_nodes() {
     };
 
     common::create_and_activate_channel(&h.node_a, "rollback-ch", marker_workflow("first")).await;
-    let (first, _) = h.state_a.composition.deployments.current_head();
+    let (first, _) = h.state_a.deployments.current_head();
     let on_first = eventually(h.poll, async || {
         version_on(h.node_b.clone()).await.as_deref() == Some("first")
     })
@@ -1673,7 +1673,7 @@ async fn rollback_propagates_across_nodes() {
     assert!(on_first, "node B must serve the first revision");
 
     common::create_and_activate_workflow(&h.node_a, marker_workflow("second")).await;
-    let (second, _) = h.state_a.composition.deployments.current_head();
+    let (second, _) = h.state_a.deployments.current_head();
     assert_eq!(
         version_on(h.node_a.clone()).await.as_deref(),
         Some("second")

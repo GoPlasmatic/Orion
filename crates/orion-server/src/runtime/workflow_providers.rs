@@ -1,9 +1,10 @@
 //! Which workflow provider packages this node serves.
 //!
 //! An uploaded package with `implementation.kind = "workflow"` becomes a
-//! [`WorkflowProviderBackend`] on the node's
+//! [`WorkflowProviderBackend`] in the admitted layer of the node's
 //! [`ProviderRegistry`](crate::extensions::ProviderRegistry), registered under
-//! its digest, while it is admitted and not revoked. [`sync`] makes the
+//! its digest, while it is admitted and not revoked. The composed layer (what
+//! the edition built in) is frozen and never touched here. [`sync`] makes the
 //! registry say exactly that, from the deployment store: it runs at boot
 //! after the store is read, after an admission or a revocation, whenever a
 //! cluster peer's changes are read in, and at the start of every deployment
@@ -23,7 +24,7 @@ use crate::server::state::AppState;
 /// What a workflow package's backend gets from this node.
 pub fn host(state: &AppState) -> WorkflowHost {
     WorkflowHost {
-        providers: state.composition.providers.clone(),
+        providers: state.composition.providers().clone(),
         jwks: state.jwks.clone(),
         ops_budget: state.config.engine.ops_budget,
     }
@@ -37,7 +38,7 @@ pub fn host(state: &AppState) -> WorkflowHost {
 ///
 /// The package's problems, one line.
 pub fn backend(state: &AppState, digest: &str) -> Result<Arc<WorkflowProviderBackend>, String> {
-    let store = &state.composition.deployments;
+    let store = &state.deployments;
     let row = store
         .get_package(digest)
         .ok_or_else(|| format!("package {digest} is not uploaded"))?;
@@ -54,8 +55,8 @@ pub fn backend(state: &AppState, digest: &str) -> Result<Arc<WorkflowProviderBac
 /// fails its checks stays unregistered, logged; a connection over it then
 /// fails the build that deploys it.
 pub fn sync(state: &AppState) {
-    let store = &state.composition.deployments;
-    let providers = &state.composition.providers;
+    let store = &state.deployments;
+    let providers = state.composition.providers();
     let serving: BTreeSet<String> = store
         .list_packages()
         .into_iter()
@@ -66,31 +67,35 @@ pub fn sync(state: &AppState) {
                 .is_some_and(|a| !a.revoked)
                 && !state
                     .composition
-                    .admission
+                    .admission()
+                    .ledger()
                     .is_digest_revoked(&p.package_digest)
         })
         .map(|p| p.package_digest)
         .collect();
-    let registered: BTreeSet<String> = providers
-        .registered_drivers()
-        .into_iter()
-        .filter(|(kind, _)| *kind == ImplementationKind::Workflow)
-        .map(|(_, id)| id)
-        .collect();
+    let registered = providers.admitted_ids(ImplementationKind::Workflow);
 
     for digest in registered.difference(&serving) {
-        providers.unregister(ImplementationKind::Workflow, digest);
+        providers.withdraw(ImplementationKind::Workflow, digest);
         tracing::info!(package = %digest, "workflow provider package unregistered");
     }
     for digest in serving.difference(&registered) {
         match backend(state, digest) {
             Ok(backend) => {
-                tracing::info!(
-                    package = %digest,
-                    provider = %backend.package().provider.provider_id,
-                    "workflow provider package registered"
-                );
-                providers.register(backend as Arc<dyn ProviderBackend>);
+                let provider = backend.package().provider.provider_id.clone();
+                match providers.admit(backend as Arc<dyn ProviderBackend>) {
+                    Ok(()) => tracing::info!(
+                        package = %digest,
+                        %provider,
+                        "workflow provider package registered"
+                    ),
+                    // A concurrent sync registered it first.
+                    Err(duplicate) => tracing::debug!(
+                        package = %digest,
+                        %duplicate,
+                        "workflow provider package already registered"
+                    ),
+                }
             }
             Err(reason) => tracing::error!(
                 package = %digest,
@@ -140,7 +145,7 @@ pub fn admission_problems(
     state: &AppState,
     digest: &str,
 ) -> Vec<crate::extensions::PackageProblem> {
-    let store = &state.composition.deployments;
+    let store = &state.deployments;
     let Some(row) = store
         .get_package(digest)
         .filter(|p| p.implementation == ImplementationKind::Workflow)

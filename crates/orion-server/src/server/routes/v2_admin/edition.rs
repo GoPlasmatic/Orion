@@ -27,10 +27,10 @@ pub(crate) async fn edition_transition_preflight(
     req: Option<Json<EditionTransitionPreflightRequest>>,
 ) -> impl IntoResponse {
     let requested_rev = req.and_then(|Json(r)| r.revision);
-    let (head_rev, _) = state.composition.deployments.current_head();
+    let (head_rev, _) = state.deployments.current_head();
     let target_rev = requested_rev.unwrap_or(head_rev);
 
-    let revisions = state.composition.deployments.list_revisions();
+    let revisions = state.deployments.list_revisions();
     let mut incompatible_providers = Vec::new();
     let incompatible_channels: Vec<String> = Vec::new();
     let mut findings = Vec::new();

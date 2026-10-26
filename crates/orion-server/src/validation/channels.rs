@@ -1093,8 +1093,10 @@ mod tests {
                     .collect()
             }
         }
-        let drivers = community();
-        drivers.register(std::sync::Arc::new(Kafka));
+        let mut with_kafka = crate::extensions::community_drivers();
+        with_kafka.push(std::sync::Arc::new(Kafka));
+        let drivers =
+            crate::extensions::ChannelDriverRegistry::new(with_kafka).expect("distinct protocols");
         let err = validate_create_channel(&req("KAFKA"), &drivers).expect_err("no topic");
         assert_eq!(err.field_errors()[0].path, "channel.topic");
         let mut with_topic = req("kafka");

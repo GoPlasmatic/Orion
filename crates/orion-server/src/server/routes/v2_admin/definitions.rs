@@ -48,7 +48,6 @@ pub(crate) async fn upload_definition(
     };
     let bytes = definitions::canonical_bytes(&definition)?;
     let row = match state
-        .composition
         .deployments
         .store_definition_artifact_in_db(&state.db_pool, bytes)
         .await
@@ -92,7 +91,6 @@ pub(crate) async fn get_definition(
     Path(digest): Path<String>,
 ) -> Result<Json<Definition>, OrionError> {
     let bytes = state
-        .composition
         .deployments
         .get_artifact(&digest)
         .and_then(|row| row.bytes)
@@ -350,7 +348,7 @@ fn channel_problems(state: &AppState, channel: &ChannelDefinition) -> Vec<FieldE
         priority: channel.priority,
         tags: channel.tags.clone(),
     };
-    match crate::validation::validate_create_channel(&request, &state.composition.channels) {
+    match crate::validation::validate_create_channel(&request, state.composition.channels()) {
         Ok(()) => Vec::new(),
         Err(e) => refusal_details(&e, "channel"),
     }

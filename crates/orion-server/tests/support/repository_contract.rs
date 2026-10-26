@@ -69,9 +69,7 @@ fn one_workflow_manifest(id: &str, digest: &str) -> orion::extensions::Canonical
 /// absent when nothing was committed (an idempotent replay, a lost race).
 async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPool) {
     use orion::extensions::deployment_store::Rollback;
-    use orion::extensions::{
-        CommunityAdmissionPolicy, DeploymentReceipt, ImmutableDeploymentStore,
-    };
+    use orion::extensions::{Admission, DeploymentReceipt, ImmutableDeploymentStore};
     use orion::storage::repositories::audit_logs::{
         AuditEvent, AuditLogFilter, AuditLogRepository, SqlAuditLogRepository,
     };
@@ -100,7 +98,7 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
             details: None,
         }
     };
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     let node_a = ImmutableDeploymentStore::new("contract-a");
     let node_b = ImmutableDeploymentStore::new("contract-b");
     let base = node_a.current_head().0;
@@ -416,9 +414,9 @@ async fn the_artifact_collector_judges_its_grace_on_the_database_clock(
     backend: &str,
     pool: &DbPool,
 ) {
-    use orion::extensions::{ArtifactState, CommunityAdmissionPolicy, ImmutableDeploymentStore};
+    use orion::extensions::{Admission, ArtifactState, ImmutableDeploymentStore};
 
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     let node_a = ImmutableDeploymentStore::new("contract-gc-a");
     let node_b = ImmutableDeploymentStore::new("contract-gc-b");
     let deployed = node_a

@@ -57,7 +57,7 @@ async fn run_shared_state_sweeper(
 /// Register the supervised v2 state reconciliation loop (`V2-06`, `TD-18`).
 ///
 /// Continuously hydrates `ImmutableDeploymentStore` from the state database,
-/// refreshes provider/package revocations into the active `AdmissionPolicy`,
+/// refreshes provider/package revocations into the node's `RevocationLedger`,
 /// reconciles desired `deployment_head` revisions with retry/backoff, renews
 /// the security lease, applies peers' circuit-breaker resets, and exchanges
 /// `runtime_nodes` status heartbeats.
@@ -85,21 +85,23 @@ fn unix_now_ms() -> u64 {
 }
 
 /// Synchronize revoked provider packages from the deployment store into the
-/// runtime `AdmissionPolicy` deny-set (`CTX-09`).
+/// node's `RevocationLedger` deny-set (`CTX-09`).
 pub fn sync_v2_revocations(state: &AppState) {
-    let packages = state.composition.deployments.list_packages();
-    let connections = state.composition.deployments.list_connections();
-    for adm in state.composition.deployments.list_admissions() {
+    let packages = state.deployments.list_packages();
+    let connections = state.deployments.list_connections();
+    for adm in state.deployments.list_admissions() {
         if adm.revoked {
             state
                 .composition
-                .admission
+                .admission()
+                .ledger()
                 .revoke_digest(&adm.package_digest);
             for pkg in &packages {
                 if pkg.package_digest == adm.package_digest {
                     state
                         .composition
-                        .admission
+                        .admission()
+                        .ledger()
                         .revoke_provider(&pkg.provider_id);
                 }
             }
@@ -107,7 +109,8 @@ pub fn sync_v2_revocations(state: &AppState) {
                 if conn.provider_digest == adm.package_digest {
                     state
                         .composition
-                        .admission
+                        .admission()
+                        .ledger()
                         .revoke_connection(&conn.connection_id);
                 }
             }
@@ -121,25 +124,20 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     // One row says whether anything committed has changed: every apply,
     // rollback and revocation moves the head or the epoch. The whole store
     // is re-read only when it did.
-    let hydrated =
-        match crate::extensions::ImmutableDeploymentStore::persisted_head(&state.db_pool).await {
-            Ok(persisted)
-                if persisted.unwrap_or((0, 0)) == state.composition.deployments.current_head() =>
-            {
-                Ok(())
-            }
-            Ok(_) => {
-                state
-                    .composition
-                    .deployments
-                    .load_from_db_pool(&state.db_pool)
-                    .await
-            }
-            Err(e) => Err(e),
-        };
+    let hydrated = match crate::extensions::ImmutableDeploymentStore::persisted_head(&state.db_pool)
+        .await
+    {
+        Ok(persisted) if persisted.unwrap_or((0, 0)) == state.deployments.current_head() => Ok(()),
+        Ok(_) => state.deployments.load_from_db_pool(&state.db_pool).await,
+        Err(e) => Err(e),
+    };
     if let Err(e) = hydrated {
-        if !state.composition.reconciler.is_security_lease_valid(now_ms) {
-            state.composition.admission.set_lease_valid(false);
+        if !state.reconciler.is_security_lease_valid(now_ms) {
+            state
+                .composition
+                .admission()
+                .ledger()
+                .set_lease_valid(false);
         }
         crate::metrics::record_error("v2_reconciler");
         tracing::warn!(error = %e, "V2 reconciler: failed to hydrate deployment store from DB");
@@ -149,14 +147,14 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     sync_v2_revocations(state);
     crate::runtime::workflow_providers::sync(state);
 
-    state.composition.reconciler.renew_security_lease(
+    state.reconciler.renew_security_lease(
         now_ms,
         crate::extensions::reconciler::DEFAULT_SECURITY_LEASE_MS,
     );
-    state.composition.admission.set_lease_valid(true);
+    state.composition.admission().ledger().set_lease_valid(true);
 
-    let desired_rev = state.composition.reconciler.observe_desired_head();
-    let local = state.composition.reconciler.local_status();
+    let desired_rev = state.reconciler.observe_desired_head();
+    let local = state.reconciler.local_status();
     let mut tick_ok = true;
 
     if desired_rev > 0
@@ -178,7 +176,6 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     }
 
     if let Err(e) = state
-        .composition
         .reconciler
         .persist_local_status_to_db_pool(&state.db_pool)
         .await
@@ -188,7 +185,6 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
     }
 
     if let Err(e) = state
-        .composition
         .reconciler
         .refresh_observed_nodes_from_db_pool(&state.db_pool)
         .await

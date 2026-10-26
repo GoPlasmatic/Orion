@@ -60,7 +60,7 @@ use super::contract::{
 use super::deployment_store::{
     ConnectionRevisionRow, ImmutableDeploymentStore, PackageSchema, ProviderPackageRow,
 };
-use super::provider_backend::{BoxProviderFuture, ProviderBackend, ProviderRegistry};
+use super::provider_backend::{ProviderBackend, ProviderRegistry};
 
 /// The Orion functions a package workflow may name. `crypto`, `jwt_sign` and
 /// `jwt_verify` need no connection; `connector_call` is the package's own,
@@ -764,6 +764,7 @@ fn workflow_failed(message: String, effect: EffectStatus) -> ConnectorError {
     }
 }
 
+#[async_trait::async_trait]
 impl ProviderBackend for WorkflowProviderBackend {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Workflow
@@ -784,84 +785,80 @@ impl ProviderBackend for WorkflowProviderBackend {
         }
     }
 
-    fn invoke<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        operation: &'a str,
+    async fn invoke(
+        &self,
+        ctx: &AttemptContext,
+        operation: &str,
         input: Value,
-    ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-        Box::pin(async move {
-            let effect = ctx.invocation().effect_status();
-            ctx.run_context().check_live(effect)?;
-            if !self.package.entries.contains_key(operation) {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    format!(
-                        "workflow package '{}' exports no operation '{operation}'",
-                        self.package.provider.provider_id
-                    ),
-                    effect,
-                ));
-            }
-            let generation = crate::runtime::generation::PINNED_GENERATION
-                .try_with(Arc::clone)
-                .map_err(|_| {
-                    ConnectorError::contract_violation(
-                        "dispatch",
-                        "a workflow package runs only inside a served run",
-                        effect,
-                    )
-                })?;
-            let engine = self.engine_for(&generation)?;
-            let remaining = ctx
-                .run_context()
-                .deadline()
-                .saturating_duration_since(Instant::now());
-            let opts = crate::engine::ExecOpts {
-                timeout_ms: Some(
-                    u64::try_from(remaining.as_millis())
-                        .unwrap_or(u64::MAX)
-                        .max(1),
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        let effect = ctx.invocation().effect_status();
+        ctx.run_context().check_live(effect)?;
+        if !self.package.entries.contains_key(operation) {
+            return Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!(
+                    "workflow package '{}' exports no operation '{operation}'",
+                    self.package.provider.provider_id
                 ),
-                ..Default::default()
-            };
-            let execution = PACKAGE_INVOCATION
-                .scope(
-                    ctx.invocation().clone(),
-                    crate::engine::execute::execute_on(
-                        &engine,
-                        operation,
-                        &input,
-                        &json!({}),
-                        opts,
-                        generation.run_budget_limits,
-                    ),
+                effect,
+            ));
+        }
+        let generation = crate::runtime::generation::PINNED_GENERATION
+            .try_with(Arc::clone)
+            .map_err(|_| {
+                ConnectorError::contract_violation(
+                    "dispatch",
+                    "a workflow package runs only inside a served run",
+                    effect,
                 )
-                .await;
-            let effect = ctx.invocation().effect_status();
-            match execution.outcome {
-                crate::engine::RunOutcome::Ok => {
-                    let mut metadata = BTreeMap::new();
-                    metadata.insert(
-                        "provider_digest".to_string(),
-                        json!(self.package.provider.package_digest),
-                    );
-                    Ok(ConnectorOutput::with_metadata(execution.data(), metadata))
-                }
-                crate::engine::RunOutcome::Timeout(_) => {
-                    Err(ConnectorError::deadline_exceeded(effect))
-                }
-                crate::engine::RunOutcome::WorkflowErrors(summary) => Err(workflow_failed(
-                    format!("operation '{operation}' failed: {summary}"),
-                    effect,
-                )),
-                crate::engine::RunOutcome::EngineError(e) => Err(workflow_failed(
-                    format!("operation '{operation}' failed: {e}"),
-                    effect,
-                )),
+            })?;
+        let engine = self.engine_for(&generation)?;
+        let remaining = ctx
+            .run_context()
+            .deadline()
+            .saturating_duration_since(Instant::now());
+        let opts = crate::engine::ExecOpts {
+            timeout_ms: Some(
+                u64::try_from(remaining.as_millis())
+                    .unwrap_or(u64::MAX)
+                    .max(1),
+            ),
+            ..Default::default()
+        };
+        let execution = PACKAGE_INVOCATION
+            .scope(
+                ctx.invocation().clone(),
+                crate::engine::execute::execute_on(
+                    &engine,
+                    operation,
+                    &input,
+                    &json!({}),
+                    opts,
+                    generation.run_budget_limits,
+                ),
+            )
+            .await;
+        let effect = ctx.invocation().effect_status();
+        match execution.outcome {
+            crate::engine::RunOutcome::Ok => {
+                let mut metadata = BTreeMap::new();
+                metadata.insert(
+                    "provider_digest".to_string(),
+                    json!(self.package.provider.package_digest),
+                );
+                Ok(ConnectorOutput::with_metadata(execution.data(), metadata))
             }
-        })
+            crate::engine::RunOutcome::Timeout(_) => Err(ConnectorError::deadline_exceeded(effect)),
+            crate::engine::RunOutcome::WorkflowErrors(summary) => Err(workflow_failed(
+                format!("operation '{operation}' failed: {summary}"),
+                effect,
+            )),
+            crate::engine::RunOutcome::EngineError(e) => Err(workflow_failed(
+                format!("operation '{operation}' failed: {e}"),
+                effect,
+            )),
+        }
     }
 }
 
@@ -979,15 +976,13 @@ async fn dispatch_dependency(
             effect,
         ));
     };
-    let Some(store) = providers.deployment_store() else {
-        return Err(ConnectorError::forbidden(
-            codes::CONNECTION_FORBIDDEN,
-            "dispatch",
-            "this node has no deployment store to resolve a dependency against",
-            effect,
-        ));
-    };
-    let target = dependency_target(&store, &bound, &cfg.operation, &input, effect)?;
+    let target = dependency_target(
+        providers.deployment_store(),
+        &bound,
+        &cfg.operation,
+        &input,
+        effect,
+    )?;
     let child = parent.derive_dependency(
         &key,
         target.identity,
@@ -996,14 +991,19 @@ async fn dispatch_dependency(
         parent.context().budget().limits(),
         2,
     )?;
+    let Some(backend) = providers.get(target.kind, &target.backend_id) else {
+        return Err(ConnectorError::forbidden(
+            codes::CONNECTION_FORBIDDEN,
+            "dispatch",
+            format!(
+                "No provider backend registered for ({}, '{}')",
+                target.kind, target.backend_id
+            ),
+            effect,
+        ));
+    };
     match providers
-        .dispatch_attempt(
-            providers.admission_policy().as_ref(),
-            &child,
-            target.kind,
-            &target.backend_id,
-            input,
-        )
+        .dispatch_attempt(&child, backend.as_ref(), input)
         .await
     {
         ConnectorResult::Success { data, .. } => Ok(data),
@@ -1430,7 +1430,13 @@ mod tests {
     #[test]
     fn the_package_registry_cannot_reach_the_deployment_or_its_secrets() {
         let host = WorkflowHost {
-            providers: ProviderRegistry::new(),
+            providers: crate::extensions::CompositionBuilder::new(
+                crate::extensions::EditionTier::Community,
+            )
+            .build_in_memory()
+            .expect("composes")
+            .providers()
+            .clone(),
             jwks: Arc::new(crate::jwt::jwks::JwksCache::new(
                 reqwest::Client::new(),
                 false,

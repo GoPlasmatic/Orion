@@ -652,11 +652,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bootstrap::Assembled {
         state,
         task_handles,
-    } = bootstrap::assemble(bootstrap::AssembleParams {
-        config: config.clone(),
-        pool,
-        metrics_handle,
-    })
+    } = bootstrap::assemble(
+        bootstrap::AssembleParams {
+            config: config.clone(),
+            pool,
+            metrics_handle,
+        },
+        orion::extensions::CompositionRoot::community(),
+    )
     .await?;
 
     // The readiness flag and the task supervisor live on `AppState`; keep the
@@ -723,7 +726,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // them on the same bound, and name any still running rather than
     // exiting as though the node drained.
     let native = state
-        .composition
         .native_scheduler
         .graceful_shutdown(std::time::Duration::from_secs(
             config.server.shutdown_force_timeout_secs,

@@ -211,7 +211,7 @@ pub async fn commit_unchecked(
     let manifest =
         serde_json::from_value(json!({"schema_version": 2, "providers": [], "members": members}))
             .expect("a manifest");
-    let store = &state.composition.deployments;
+    let store = &state.deployments;
     let plan = store
         .plan_candidate_in_db(&state.db_pool, base, manifest)
         .await
@@ -223,7 +223,7 @@ pub async fn commit_unchecked(
             &format!("unchecked-{}", KEYS.fetch_add(1, Ordering::Relaxed)),
             &plan,
             "committed past the build check",
-            state.composition.admission.as_ref(),
+            state.composition.admission(),
         )
         .await
         .expect("the store commits the candidate")

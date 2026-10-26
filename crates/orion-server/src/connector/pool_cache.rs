@@ -206,17 +206,18 @@ impl Default for SqlPoolCache {
     }
 }
 
+#[async_trait::async_trait]
 impl crate::extensions::ConnectionPoolCache for SqlPoolCache {
     fn cache_id(&self) -> &str {
         "sql_pool"
     }
 
-    fn evict<'a>(&'a self, connector_name: &'a str) -> crate::extensions::BoxPoolFuture<'a, ()> {
-        Box::pin(async move { SqlPoolCache::evict(self, connector_name).await })
+    async fn evict(&self, connector_name: &str) {
+        SqlPoolCache::evict(self, connector_name).await
     }
 
-    fn evict_all<'a>(&'a self) -> crate::extensions::BoxPoolFuture<'a, ()> {
-        Box::pin(async move { SqlPoolCache::evict_all(self).await })
+    async fn evict_all(&self) {
+        SqlPoolCache::evict_all(self).await
     }
 }
 

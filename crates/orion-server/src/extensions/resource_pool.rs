@@ -12,122 +12,123 @@
 
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::contract::{ConnectorError, EffectStatus, EffectiveConnectionIdentity};
 
-/// Boxed async future used by object-safe pool eviction hooks.
-pub type BoxPoolFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
 /// Open trait for any connection-pool cache that participates in per-connector
-/// and cluster-resync blanket eviction (`V2-11.1`).
+/// and cluster-resync blanket eviction (`V2-11.1`). Implement it with
+/// `#[async_trait::async_trait]`.
+#[async_trait]
 pub trait ConnectionPoolCache: Send + Sync {
-    /// Stable driver/cache identifier for diagnostics (e.g. `"orion.postgresql"`).
+    /// Stable driver/cache identifier, unique on a node (e.g. `"orion.postgresql"`).
     fn cache_id(&self) -> &str;
 
     /// Evict all cached sessions/pools belonging to `connector_name`.
-    fn evict<'a>(&'a self, connector_name: &'a str) -> BoxPoolFuture<'a, ()>;
+    async fn evict(&self, connector_name: &str);
 
     /// Evict every cached session/pool in this cache (used on cluster epoch resync).
-    fn evict_all<'a>(&'a self) -> BoxPoolFuture<'a, ()>;
+    async fn evict_all(&self);
 }
 
-type TypedPoolMap = BTreeMap<TypeId, Arc<dyn Any + Send + Sync>>;
-type TypedNamedPoolMap = BTreeMap<(TypeId, String), Arc<dyn Any + Send + Sync>>;
+/// One pool cache as the composition registers it: erased for eviction, and
+/// kept typed so [`ResourcePoolRegistry::get_by_id`] can hand it back.
+#[derive(Clone)]
+pub struct PoolEntry {
+    cache_id: String,
+    type_id: TypeId,
+    typed: Arc<dyn Any + Send + Sync>,
+    cache: Arc<dyn ConnectionPoolCache>,
+}
+
+impl PoolEntry {
+    pub fn of<C: ConnectionPoolCache + 'static>(cache: Arc<C>) -> Self {
+        Self {
+            cache_id: cache.cache_id().to_string(),
+            type_id: TypeId::of::<C>(),
+            typed: cache.clone(),
+            cache,
+        }
+    }
+
+    pub fn cache_id(&self) -> &str {
+        &self.cache_id
+    }
+}
 
 /// Registry of provider-owned connection-pool caches (`V2-11.1`).
 ///
-/// Allows Community foundation providers and Enterprise providers to register
-/// typed pool caches (`TypeId`) and receive per-connector and blanket eviction
+/// Lets Community foundation providers and Enterprise providers register
+/// typed pool caches and receive per-connector and blanket eviction
 /// notifications without adding variants to [`crate::connector::PoolSlot`].
+/// Built once, whole, by [`super::CompositionBuilder::build`], and frozen:
+/// a `cache_id` is unique on a node, so a typed lookup names the one pool it
+/// means.
 #[derive(Default, Clone)]
 pub struct ResourcePoolRegistry {
-    caches: Arc<RwLock<Vec<Arc<dyn ConnectionPoolCache>>>>,
-    typed: Arc<RwLock<TypedPoolMap>>,
-    typed_by_id: Arc<RwLock<TypedNamedPoolMap>>,
+    entries: Arc<BTreeMap<String, PoolEntry>>,
 }
 
 impl std::fmt::Debug for ResourcePoolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let count = self.caches.read().map(|g| g.len()).unwrap_or(0);
         f.debug_struct("ResourcePoolRegistry")
-            .field("registered_caches", &count)
+            .field("caches", &self.entries.keys().collect::<Vec<_>>())
             .finish()
     }
 }
 
 impl ResourcePoolRegistry {
-    pub fn new() -> Self {
-        Self::default()
+    /// A registry of `entries`, refusing the first `cache_id` seen twice.
+    pub fn new(entries: impl IntoIterator<Item = PoolEntry>) -> Result<Self, String> {
+        let mut map = BTreeMap::new();
+        for entry in entries {
+            if map.contains_key(&entry.cache_id) {
+                return Err(entry.cache_id);
+            }
+            map.insert(entry.cache_id.clone(), entry);
+        }
+        Ok(Self {
+            entries: Arc::new(map),
+        })
     }
 
-    /// Register a typed pool cache that also participates in lifecycle eviction.
-    pub fn register<C>(&self, cache: Arc<C>)
-    where
-        C: ConnectionPoolCache + 'static,
-    {
-        let cache_id = cache.cache_id().to_string();
-        if let Ok(mut caches) = self.caches.write() {
-            caches.push(cache.clone());
-        }
-        if let Ok(mut typed) = self.typed.write() {
-            typed.insert(TypeId::of::<C>(), cache.clone());
-        }
-        if let Ok(mut typed_by_id) = self.typed_by_id.write() {
-            typed_by_id.insert((TypeId::of::<C>(), cache_id), cache);
-        }
-    }
-
-    /// Retrieve a previously registered typed pool cache.
-    pub fn get<C: Send + Sync + 'static>(&self) -> Option<Arc<C>> {
-        let guard = self.typed.read().ok()?;
-        let any_arc = guard.get(&TypeId::of::<C>())?.clone();
-        Arc::downcast::<C>(any_arc).ok()
-    }
-
-    /// Retrieve a previously registered typed pool cache by its `cache_id` (`TD-28`).
+    /// The pool registered as `cache_id`, when it is a `C` (`TD-28`).
     pub fn get_by_id<C: Send + Sync + 'static>(&self, cache_id: &str) -> Option<Arc<C>> {
-        let guard = self.typed_by_id.read().ok()?;
-        let any_arc = guard
-            .get(&(TypeId::of::<C>(), cache_id.to_string()))?
-            .clone();
-        Arc::downcast::<C>(any_arc).ok()
+        let entry = self.entries.get(cache_id)?;
+        if entry.type_id != TypeId::of::<C>() {
+            return None;
+        }
+        Arc::downcast::<C>(entry.typed.clone()).ok()
+    }
+
+    /// The registered cache ids, sorted.
+    pub fn cache_ids(&self) -> BTreeSet<String> {
+        self.entries.keys().cloned().collect()
     }
 
     /// Number of registered pool caches.
     pub fn len(&self) -> usize {
-        self.caches.read().map(|g| g.len()).unwrap_or(0)
+        self.entries.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.entries.is_empty()
     }
 
     /// Evict `connector_name` across all registered provider pool caches.
     pub async fn evict_connector(&self, connector_name: &str) {
-        let snapshot: Vec<Arc<dyn ConnectionPoolCache>> = self
-            .caches
-            .read()
-            .map(|g| g.iter().cloned().collect())
-            .unwrap_or_default();
-        for cache in snapshot {
-            cache.evict(connector_name).await;
+        for entry in self.entries.values() {
+            entry.cache.evict(connector_name).await;
         }
     }
 
     /// Evict all entries across all registered provider pool caches.
     pub async fn evict_all(&self) {
-        let snapshot: Vec<Arc<dyn ConnectionPoolCache>> = self
-            .caches
-            .read()
-            .map(|g| g.iter().cloned().collect())
-            .unwrap_or_default();
-        for cache in snapshot {
-            cache.evict_all().await;
+        for entry in self.entries.values() {
+            entry.cache.evict_all().await;
         }
     }
 }
@@ -343,31 +344,28 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
     }
 }
 
+#[async_trait]
 impl<S: Clone + Send + Sync + 'static> ConnectionPoolCache for VersionedSessionPool<S> {
     fn cache_id(&self) -> &str {
         &self.cache_id
     }
 
-    fn evict<'a>(&'a self, connector_name: &'a str) -> BoxPoolFuture<'a, ()> {
-        Box::pin(async move {
-            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            let epoch = guard
-                .connector_eviction_epochs
-                .entry(connector_name.to_string())
-                .or_insert(0);
-            *epoch = epoch.saturating_add(1);
-            guard
-                .sessions
-                .retain(|k, _| k.connection_id != connector_name);
-        })
+    async fn evict(&self, connector_name: &str) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let epoch = guard
+            .connector_eviction_epochs
+            .entry(connector_name.to_string())
+            .or_insert(0);
+        *epoch = epoch.saturating_add(1);
+        guard
+            .sessions
+            .retain(|k, _| k.connection_id != connector_name);
     }
 
-    fn evict_all<'a>(&'a self) -> BoxPoolFuture<'a, ()> {
-        Box::pin(async move {
-            let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            guard.global_eviction_epoch = guard.global_eviction_epoch.saturating_add(1);
-            guard.sessions.clear();
-        })
+    async fn evict_all(&self) {
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        guard.global_eviction_epoch = guard.global_eviction_epoch.saturating_add(1);
+        guard.sessions.clear();
     }
 }
 
@@ -459,14 +457,35 @@ mod tests {
 
     #[tokio::test]
     async fn evict_fences_in_flight_creator_and_typed_registry_preserves_distinct_cache_ids() {
-        let registry = ResourcePoolRegistry::new();
         let pg_pool = Arc::new(VersionedSessionPool::<String>::new(
             "org.orion.postgresql",
             2,
         ));
         let sqlite_pool = Arc::new(VersionedSessionPool::<String>::new("org.orion.sqlite", 2));
-        registry.register(pg_pool.clone());
-        registry.register(sqlite_pool.clone());
+        let registry = ResourcePoolRegistry::new([
+            PoolEntry::of(pg_pool.clone()),
+            PoolEntry::of(sqlite_pool.clone()),
+        ])
+        .expect("distinct cache ids");
+        // A second pool under a cache id already held is refused.
+        assert_eq!(
+            ResourcePoolRegistry::new([
+                PoolEntry::of(pg_pool.clone()),
+                PoolEntry::of(Arc::new(VersionedSessionPool::<u8>::new(
+                    "org.orion.postgresql",
+                    1
+                ))),
+            ])
+            .err()
+            .as_deref(),
+            Some("org.orion.postgresql")
+        );
+        // The typed lookup checks the type as well as the id.
+        assert!(
+            registry
+                .get_by_id::<VersionedSessionPool<u8>>("org.orion.postgresql")
+                .is_none()
+        );
 
         // Both pools share TypeId::of::<VersionedSessionPool<String>>() and are retrievable by cache_id!
         assert_eq!(

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::http::StatusCode;
 use orion::extensions::context::AttemptContext;
-use orion::extensions::provider_backend::{BoxProviderFuture, ProviderBackend};
+use orion::extensions::provider_backend::ProviderBackend;
 use orion::extensions::{ConnectorError, ConnectorOutput, ImplementationKind};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -375,6 +375,7 @@ struct EchoProvider {
     digest: String,
 }
 
+#[async_trait::async_trait]
 impl ProviderBackend for EchoProvider {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Wasm
@@ -388,18 +389,16 @@ impl ProviderBackend for EchoProvider {
         Ok(())
     }
 
-    fn invoke<'a>(
-        &'a self,
-        _ctx: &'a AttemptContext,
-        _operation: &'a str,
+    async fn invoke(
+        &self,
+        _ctx: &AttemptContext,
+        _operation: &str,
         input: Value,
-    ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-        Box::pin(async move {
-            Ok(ConnectorOutput::new(json!({
-                "contact_id": input["contact_id"],
-                "display_name": "Ada",
-            })))
-        })
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        Ok(ConnectorOutput::new(json!({
+            "contact_id": input["contact_id"],
+            "display_name": "Ada",
+        })))
     }
 }
 
@@ -411,9 +410,13 @@ async fn connector_call_input_must_satisfy_the_declared_input_schema() {
     let state = test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
     let (digest, package) = helper_package(&app).await;
-    state.composition.providers.register(Arc::new(EchoProvider {
-        digest: digest.clone(),
-    }));
+    state
+        .composition
+        .providers()
+        .admit(Arc::new(EchoProvider {
+            digest: digest.clone(),
+        }))
+        .expect("the package's backend is admitted");
 
     let (status, body) = create(
         &app,

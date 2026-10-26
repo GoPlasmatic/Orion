@@ -163,11 +163,11 @@ pub(super) fn decode_files_map(
 )]
 pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> impl IntoResponse {
     let comp = &state.composition;
-    let (head_rev, epoch) = comp.deployments.current_head();
-    let local_status = comp.reconciler.local_status();
-    let policy_id = comp.admission.policy_id().to_string();
-    let edition = comp.admission.edition().as_str();
-    let drivers = comp.providers.registered_drivers();
+    let (head_rev, epoch) = state.deployments.current_head();
+    let local_status = state.reconciler.local_status();
+    let policy_id = comp.admission().policy_id().to_string();
+    let edition = comp.edition().as_str();
+    let drivers = comp.providers().registered_drivers();
     let mut rust_providers = Vec::new();
     let mut workflow_providers = Vec::new();
     let mut providers = Vec::new();
@@ -193,7 +193,7 @@ pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> i
         api_version: "v2".to_string(),
         edition: edition.to_string(),
         admission_policy_id: policy_id,
-        registered_channel_drivers: comp.channels.protocol_ids(),
+        registered_channel_drivers: comp.channels().protocol_ids(),
         schema_profiles: vec![crate::extensions::PROFILE_ID.to_string()],
         wasm_worlds: vec![crate::plugin::manifest::ABI.to_string()],
         provider_backends: providers,
@@ -209,8 +209,8 @@ pub(crate) async fn get_runtime_capabilities(State(state): State<AppState>) -> i
             "quarantined_entities": local_status.quarantined_entities,
         }),
         native_scheduler: json!({
-            "in_flight": comp.native_scheduler.in_flight(),
-            "max_in_flight": comp.native_scheduler.max_in_flight(),
+            "in_flight": state.native_scheduler.in_flight(),
+            "max_in_flight": state.native_scheduler.max_in_flight(),
         }),
         active_deployment_revision: local_status.applied_revision,
         node_status: serde_json::to_value(&local_status).unwrap_or(Value::Null),
@@ -224,16 +224,21 @@ mod tests {
 
     #[test]
     fn v2_admin_capabilities_and_dtos_match_wire_contract() {
-        let comp = crate::extensions::CompositionRoot::community();
-        let (head_rev, epoch) = comp.deployments.current_head();
-        let local_status = comp.reconciler.local_status();
-        let policy_id = comp.admission.policy_id();
+        let comp = crate::extensions::CompositionRoot::community()
+            .build_in_memory()
+            .unwrap();
+        let store = comp.providers().deployment_store();
+        let (head_rev, epoch) = store.current_head();
+        let reconciler = crate::extensions::NodeReconciler::new(store.clone(), "node-a", "boot-1");
+        let local_status = reconciler.local_status();
+        let policy_id = comp.admission().policy_id();
+        let scheduler = crate::extensions::NativeWorkScheduler::new(4);
         let payload = json!({
             "api_version": "v2",
             "edition": "community",
             "schema_profiles": [crate::extensions::PROFILE_ID],
             "wasm_worlds": [crate::plugin::manifest::ABI],
-            "channel_drivers": comp.channels.protocol_ids(),
+            "channel_drivers": comp.channels().protocol_ids(),
             "provider_backends": [],
             "admission_policy_id": policy_id,
             "deployment_head": { "revision": head_rev, "epoch": epoch },
@@ -243,8 +248,8 @@ mod tests {
                 "quarantined_entities": local_status.quarantined_entities,
             },
             "native_scheduler": {
-                "in_flight": comp.native_scheduler.in_flight(),
-                "max_in_flight": comp.native_scheduler.max_in_flight(),
+                "in_flight": scheduler.in_flight(),
+                "max_in_flight": scheduler.max_in_flight(),
             }
         });
 
@@ -279,11 +284,14 @@ mod tests {
         let metrics_handle = crate::metrics::init_metrics_with_instance(None);
         let mut config = crate::config::AppConfig::default();
         config.cluster.instance_id = "node-cli-test".to_string();
-        let assembled = crate::bootstrap::assemble(crate::bootstrap::AssembleParams {
-            config: std::sync::Arc::new(config),
-            pool: db_pool,
-            metrics_handle,
-        })
+        let assembled = crate::bootstrap::assemble(
+            crate::bootstrap::AssembleParams {
+                config: std::sync::Arc::new(config),
+                pool: db_pool,
+                metrics_handle,
+            },
+            crate::extensions::CompositionRoot::community(),
+        )
         .await
         .expect("assemble test server");
         let app = axum::Router::new()

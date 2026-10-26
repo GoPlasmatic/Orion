@@ -59,11 +59,14 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     let mut cfg_a = orion::config::AppConfig::default();
     cfg_a.cluster.instance_id = "replica-a".to_string();
     cfg_a.cluster.epoch_poll_interval_ms = 20;
-    let assembled_a = orion::bootstrap::assemble(orion::bootstrap::AssembleParams {
-        config: std::sync::Arc::new(cfg_a),
-        pool: db_pool.clone(),
-        metrics_handle: metrics_handle.clone(),
-    })
+    let assembled_a = orion::bootstrap::assemble(
+        orion::bootstrap::AssembleParams {
+            config: std::sync::Arc::new(cfg_a),
+            pool: db_pool.clone(),
+            metrics_handle: metrics_handle.clone(),
+        },
+        orion::extensions::CompositionRoot::community(),
+    )
     .await
     .expect("assemble replica A");
     let state_a = assembled_a.state;
@@ -71,11 +74,14 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     let mut cfg_b = orion::config::AppConfig::default();
     cfg_b.cluster.instance_id = "replica-b".to_string();
     cfg_b.cluster.epoch_poll_interval_ms = 20;
-    let assembled_b = orion::bootstrap::assemble(orion::bootstrap::AssembleParams {
-        config: std::sync::Arc::new(cfg_b),
-        pool: db_pool.clone(),
-        metrics_handle,
-    })
+    let assembled_b = orion::bootstrap::assemble(
+        orion::bootstrap::AssembleParams {
+            config: std::sync::Arc::new(cfg_b),
+            pool: db_pool.clone(),
+            metrics_handle,
+        },
+        orion::extensions::CompositionRoot::community(),
+    )
     .await
     .expect("assemble replica B");
     let state_b = assembled_b.state;
@@ -110,24 +116,21 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     // Ingest & admit provider package and create connection on Replica A
     let entries = sample_archive_entries();
     let pkg = state_a
-        .composition
         .deployments
         .ingest_verified_archive_in_db(&state_a.db_pool, &entries)
         .await
         .unwrap();
     state_a
-        .composition
         .deployments
         .admit_package_in_db(
             &state_a.db_pool,
             &pkg.package_digest,
-            state_a.composition.admission.as_ref(),
+            state_a.composition.admission(),
             None,
         )
         .await
         .unwrap();
     let conn = state_a
-        .composition
         .deployments
         .store_connection_revision_in_db(
             &state_a.db_pool,
@@ -191,13 +194,11 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         ],
     };
     let plan_rev1 = state_a
-        .composition
         .deployments
         .plan_candidate_in_db(&state_a.db_pool, 0, manifest_rev1)
         .await
         .unwrap();
     let receipt_rev1 = state_a
-        .composition
         .deployments
         .apply_candidate_in_db(
             &state_a.db_pool,
@@ -205,7 +206,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
             "idem-rev1",
             &plan_rev1,
             "deploy rev 1",
-            state_a.composition.admission.as_ref(),
+            state_a.composition.admission(),
         )
         .await
         .unwrap();
@@ -214,14 +215,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     orion::runtime::reconcile_deployment_revision(&state_a, 1)
         .await
         .expect("replica A reconciles revision 1");
-    assert_eq!(
-        state_a
-            .composition
-            .reconciler
-            .local_status()
-            .applied_revision,
-        1
-    );
+    assert_eq!(state_a.reconciler.local_status().applied_revision, 1);
     assert!(
         state_a
             .runtime
@@ -234,14 +228,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
 
     // Claim 4: Replica B reconciles automatically from the shared DB
     assert!(orion::cluster::reconcile_v2_state_once(&state_b).await);
-    assert_eq!(
-        state_b
-            .composition
-            .reconciler
-            .local_status()
-            .applied_revision,
-        1
-    );
+    assert_eq!(state_b.reconciler.local_status().applied_revision, 1);
     assert!(
         state_b
             .runtime
@@ -252,11 +239,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         "Claim 4: replica B must automatically learn and serve orders-ch@1"
     );
     assert!(
-        state_b
-            .composition
-            .deployments
-            .get_connection("crm-http", 1)
-            .is_some(),
+        state_b.deployments.get_connection("crm-http", 1).is_some(),
         "Claim 4: replica B must automatically learn connection crm-http@1"
     );
 
@@ -268,13 +251,11 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         members: Vec::new(),
     };
     let plan_rev2 = state_a
-        .composition
         .deployments
         .plan_candidate_in_db(&state_a.db_pool, 1, manifest_rev2)
         .await
         .unwrap();
     let receipt_rev2 = state_a
-        .composition
         .deployments
         .apply_candidate_in_db(
             &state_a.db_pool,
@@ -282,7 +263,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
             "idem-rev2",
             &plan_rev2,
             "remove channel",
-            state_a.composition.admission.as_ref(),
+            state_a.composition.admission(),
         )
         .await
         .unwrap();
@@ -301,14 +282,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     );
 
     assert!(orion::cluster::reconcile_v2_state_once(&state_b).await);
-    assert_eq!(
-        state_b
-            .composition
-            .reconciler
-            .local_status()
-            .applied_revision,
-        2
-    );
+    assert_eq!(state_b.reconciler.local_status().applied_revision, 2);
     assert!(
         state_b
             .runtime
@@ -321,7 +295,6 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
 
     // Rollback to revision 1 -> creates revision 3 and restores orders-ch@1
     let (rollback_receipt, _) = state_a
-        .composition
         .deployments
         .rollback_to_revision_in_db(
             &state_a.db_pool,
@@ -332,7 +305,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                 target_revision: 1,
                 reason: "rollback to rev 1",
             },
-            state_a.composition.admission.as_ref(),
+            state_a.composition.admission(),
         )
         .await
         .unwrap();
@@ -352,7 +325,6 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
 
     // Revoke package on Replica A and verify Replica B refreshes revocations on reconcile
     state_a
-        .composition
         .deployments
         .revoke_package_in_db(&state_a.db_pool, &pkg.package_digest)
         .await
@@ -361,9 +333,10 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
     assert!(
         state_b
             .composition
-            .admission
+            .admission()
+            .ledger()
             .is_digest_revoked(&pkg.package_digest),
-        "Claim 4: replica B must refresh package revocation into its AdmissionPolicy"
+        "Claim 4: replica B must refresh package revocation into its RevocationLedger"
     );
 
     state_a
@@ -397,11 +370,14 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
     let assemble = |instance: &str| {
         let mut cfg = orion::config::AppConfig::default();
         cfg.cluster.instance_id = instance.to_string();
-        orion::bootstrap::assemble(orion::bootstrap::AssembleParams {
-            config: std::sync::Arc::new(cfg),
-            pool: db_pool.clone(),
-            metrics_handle: metrics_handle.clone(),
-        })
+        orion::bootstrap::assemble(
+            orion::bootstrap::AssembleParams {
+                config: std::sync::Arc::new(cfg),
+                pool: db_pool.clone(),
+                metrics_handle: metrics_handle.clone(),
+            },
+            orion::extensions::CompositionRoot::community(),
+        )
     };
     let state_a = assemble("replica-a")
         .await

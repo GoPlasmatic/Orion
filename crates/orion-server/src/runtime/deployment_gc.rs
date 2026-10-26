@@ -60,7 +60,6 @@ pub fn start(state: &AppState) {
 pub async fn collect_once(state: &AppState) -> Result<u64, crate::errors::OrionError> {
     let storage = &state.config.storage;
     let outcome = state
-        .composition
         .deployments
         .mark_and_collect_garbage_in_db(
             &state.db_pool,

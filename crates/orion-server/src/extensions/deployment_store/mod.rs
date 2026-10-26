@@ -17,7 +17,7 @@ pub use manifest::{
     validate_rollout_partition,
 };
 
-use super::admission::{AdmissionPolicy, EditionTier, PackageAdmissionRequest};
+use super::admission::{Admission, EditionTier, PackageAdmissionRequest};
 use super::contract::{ImplementationKind, ProviderReference};
 use super::package_identity::{
     VerifiedArtifactMetadata, canonical_bytes, check_dependency_lock, sha256_digest,
@@ -974,7 +974,7 @@ impl ImmutableDeploymentStore {
     pub fn admit_package(
         &self,
         package_digest: &str,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
         lock: Option<&Value>,
     ) -> Result<ProviderAdmissionRow, DeploymentError> {
         let mut g = self.inner.lock().expect("store lock");
@@ -984,7 +984,7 @@ impl ImmutableDeploymentStore {
     pub(super) fn admit_package_into_state(
         g: &mut DeploymentState,
         package_digest: &str,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
         lock: Option<&Value>,
     ) -> Result<ProviderAdmissionRow, DeploymentError> {
         let Some(pkg) = g.packages.get(package_digest).cloned() else {
@@ -1509,7 +1509,7 @@ impl ImmutableDeploymentStore {
         idempotency_key: &str,
         plan: &CandidatePlan,
         reason: &str,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
     ) -> Result<DeploymentReceipt, DeploymentError> {
         let mut g = self.inner.lock().expect("store lock");
         Self::apply_candidate_into_state(&mut g, principal, idempotency_key, plan, reason, policy)
@@ -1521,7 +1521,7 @@ impl ImmutableDeploymentStore {
         idempotency_key: &str,
         plan: &CandidatePlan,
         reason: &str,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
     ) -> Result<DeploymentReceipt, DeploymentError> {
         let request_hash = plan.compute_request_hash("apply", reason)?;
 
@@ -1627,7 +1627,7 @@ impl ImmutableDeploymentStore {
     pub fn rollback_to_revision(
         &self,
         rollback: &Rollback<'_>,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
     ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
         let mut g = self.inner.lock().expect("store lock");
         Self::rollback_to_revision_into_state(&mut g, rollback, policy)
@@ -1636,7 +1636,7 @@ impl ImmutableDeploymentStore {
     pub(super) fn rollback_to_revision_into_state(
         g: &mut DeploymentState,
         rollback: &Rollback<'_>,
-        policy: &dyn AdmissionPolicy,
+        policy: &Admission,
     ) -> Result<(DeploymentReceipt, Vec<String>), DeploymentError> {
         let &Rollback {
             principal,

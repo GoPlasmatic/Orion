@@ -139,7 +139,15 @@ pub struct ServingComponents {
     /// sized from the ceilings before the first generation loads anything
     /// into it. `None` makes every stored plugin a load issue on this node.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
-    pub composition: crate::extensions::CompositionRoot,
+    /// What this node serves, frozen: built from the edition's
+    /// [`crate::extensions::CompositionBuilder`] over the node's services.
+    pub composition: crate::extensions::Composition,
+    /// The node's v2 deployment store, created with the node's identity.
+    pub deployments: crate::extensions::ImmutableDeploymentStore,
+    /// The node's deployment reconciler, over the same store and identity.
+    pub reconciler: crate::extensions::NodeReconciler,
+    /// Bounded host-owned native work, sized from the config.
+    pub native_scheduler: crate::extensions::NativeWorkScheduler,
 }
 
 /// The engine's serving components, built in one pass by
@@ -162,6 +170,7 @@ pub struct EngineComponents {
 pub async fn build_engine_components(
     config: &config::AppConfig,
     channel_loader: &Arc<crate::channel::ChannelLoader>,
+    composition: crate::extensions::CompositionBuilder,
 ) -> Result<EngineComponents, Box<dyn std::error::Error>> {
     // `[vars]` before the connectors that may reference them. Pure config —
     // no resolution, no I/O — so it costs nothing to have it early, and the
@@ -268,18 +277,28 @@ pub async fn build_engine_components(
         },
         ..Default::default()
     };
-    let composition = crate::extensions::CompositionRoot::community_with(
-        &foundation,
-        crate::extensions::NodeIdentity::new(
-            config.cluster.instance_id.clone(),
-            format!("boot-{}", uuid::Uuid::new_v4().simple()),
-        ),
-    )
-    .with_resource_pool(sql_pool_cache.clone())
-    .with_native_scheduler(crate::extensions::NativeWorkScheduler::new(
-        config.engine.native_work_max_in_flight,
-    ));
-    let providers = composition.providers.clone();
+    // The node's services, created once with its identity, then the
+    // edition's composition frozen over them. The identity is the configured
+    // instance id (resolved before `assemble` reaches here) and a fresh boot
+    // id: the deployment store's receipts and the reconciler's status rows
+    // both carry it.
+    let node = crate::extensions::NodeIdentity::new(
+        config.cluster.instance_id.clone(),
+        format!("boot-{}", uuid::Uuid::new_v4().simple()),
+    );
+    let deployments = crate::extensions::ImmutableDeploymentStore::new(node.node_id.clone());
+    let native_scheduler =
+        crate::extensions::NativeWorkScheduler::new(config.engine.native_work_max_in_flight);
+    let composition = composition
+        .with_resource_pool(sql_pool_cache.clone())
+        .build(crate::extensions::BuildContext {
+            deployments: deployments.clone(),
+            ledger: Arc::new(crate::extensions::RevocationLedger::new()),
+            foundation,
+        })?;
+    let reconciler =
+        crate::extensions::NodeReconciler::new(deployments.clone(), node.node_id, node.boot_id);
+    let providers = composition.providers().clone();
 
     // The node's live components, as every function gets them.
     let handler_deps = || crate::engine::HandlerDeps {
@@ -302,7 +321,7 @@ pub async fn build_engine_components(
         Some(
             crate::plugin::WasmRuntime::with_native_work(
                 &config.plugins,
-                composition.native_scheduler.clone(),
+                native_scheduler.clone(),
                 std::time::Duration::from_millis(config.engine.native_work_timeout_ms),
             )
             .map_err(|e| crate::errors::OrionError::Config {
@@ -327,6 +346,9 @@ pub async fn build_engine_components(
             sql_pool_cache,
             plugins,
             composition,
+            deployments,
+            reconciler,
+            native_scheduler,
         },
         registry,
     })
@@ -733,7 +755,15 @@ pub struct Assembled {
 /// prune, `[packages] apply`) and runs the server, because those are where
 /// production and the harness diverge — the harness leaves them to the test
 /// that wants them.
-pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::error::Error>> {
+///
+/// `composition` is what the node serves: Community passes
+/// [`crate::extensions::CompositionRoot::community`], an edition its own
+/// builder. It is frozen here, over the node's deployment store and
+/// revocation ledger; a duplicate registration fails the boot.
+pub async fn assemble(
+    params: AssembleParams,
+    composition: crate::extensions::CompositionBuilder,
+) -> Result<Assembled, Box<dyn std::error::Error>> {
     let AssembleParams {
         config,
         pool,
@@ -772,7 +802,7 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
 
     // Connector registry, shared HTTP client, runtime handle, cache pools and
     // custom function handlers.
-    let components = build_engine_components(&config, &channel_loader).await?;
+    let components = build_engine_components(&config, &channel_loader, composition).await?;
 
     // #268: hand the managed-OAuth2 token manager its runtime — the shared
     // client, the encrypted state store, and (in cluster mode) the refresh
@@ -862,14 +892,13 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     // failing stops the boot: a node that cannot read or build what is
     // committed must not report ready while serving something else.
     state
-        .composition
         .deployments
         .load_from_db_pool(&state.db_pool)
         .await
         .map_err(|e| format!("reading the committed deployments failed: {e}"))?;
     crate::cluster::reconcile::sync_v2_revocations(&state);
     crate::runtime::workflow_providers::sync(&state);
-    let (head_rev, _) = state.composition.deployments.current_head();
+    let (head_rev, _) = state.deployments.current_head();
     if head_rev > 0 {
         crate::runtime::reconcile_deployment_revision(&state, head_rev)
             .await
@@ -898,7 +927,6 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
     }
 
     if let Err(e) = state
-        .composition
         .reconciler
         .refresh_observed_nodes_from_db_pool(&state.db_pool)
         .await
@@ -906,7 +934,6 @@ pub async fn assemble(params: AssembleParams) -> Result<Assembled, Box<dyn std::
         tracing::warn!(error = %e, "could not read the other nodes' deployment status");
     }
     if let Err(e) = state
-        .composition
         .reconciler
         .persist_local_status_to_db_pool(&state.db_pool)
         .await
@@ -957,6 +984,9 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         sql_pool_cache,
         plugins,
         composition,
+        deployments,
+        reconciler,
+        native_scheduler,
     } = components;
     // Parsed once, unconditionally — not from `rate_limit_state`. Three
     // callers need it whether or not the platform limiter is enabled: the
@@ -964,7 +994,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     // limit, which applies with the platform limiter off (S15) and keys on
     // the same client identity. See `AppStateInner::trusted_proxies`.
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
-    let provider_pools = composition.pools.clone();
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         runtime,
         channel_loader,
@@ -978,7 +1007,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         caches: crate::server::state::Caches {
             cache_pool,
             sql_pool_cache,
-            provider_pools,
         },
         trace_queue,
         db_pool: pool,
@@ -1001,5 +1029,8 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         channel_auth_failures: Arc::new(Default::default()),
         trusted_proxies,
         composition,
+        deployments,
+        reconciler,
+        native_scheduler,
     })
 }

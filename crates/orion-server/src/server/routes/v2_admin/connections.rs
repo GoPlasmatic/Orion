@@ -53,7 +53,7 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
     )
 )]
 pub(crate) async fn list_connections(State(state): State<AppState>) -> impl IntoResponse {
-    let raw = state.composition.deployments.list_connections();
+    let raw = state.deployments.list_connections();
     let connections: Vec<ConnectionRevisionResponse> =
         raw.iter().map(connection_row_to_dto).collect();
     Json(ConnectionsListResponse {
@@ -92,7 +92,7 @@ pub(crate) async fn create_connection_revision(
     let mut problems = config_problems(&state, &req);
     problems.extend(
         crate::extensions::workflow_provider::binding_problems(
-            &state.composition.deployments,
+            &state.deployments,
             &req.connection_id,
             &req.provider_digest,
             &req.bindings,
@@ -112,7 +112,6 @@ pub(crate) async fn create_connection_revision(
         .into_response();
     }
     match state
-        .composition
         .deployments
         .store_connection_revision_with_bindings_in_db(
             &state.db_pool,
@@ -167,7 +166,7 @@ fn config_problems(state: &AppState, req: &CreateConnectionRevisionRequest) -> V
         &req.public_config,
         &req.secret_locators,
     );
-    match state.composition.deployments.check_package_instance(
+    match state.deployments.check_package_instance(
         &req.provider_digest,
         PackageSchema::Configuration,
         &config,
@@ -243,7 +242,6 @@ pub(crate) async fn probe_connection(
     let started = Instant::now();
 
     let stored_conn = state
-        .composition
         .deployments
         .list_connections()
         .into_iter()
@@ -277,7 +275,6 @@ pub(crate) async fn probe_connection(
 
     let stored_pkg = stored_conn.as_ref().and_then(|conn_row| {
         state
-            .composition
             .deployments
             .list_packages()
             .into_iter()
@@ -286,7 +283,6 @@ pub(crate) async fn probe_connection(
 
     if let Some(ref pkg) = stored_pkg {
         let is_revoked = state
-            .composition
             .deployments
             .list_admissions()
             .into_iter()
@@ -328,7 +324,7 @@ pub(crate) async fn probe_connection(
         .or_else(|| stored_pkg.as_ref().map(|p| p.backend_id().to_string()))
         .unwrap_or_else(|| connection_id.clone());
 
-    let Some(backend) = state.composition.providers.get(kind, &driver_id) else {
+    let Some(backend) = state.composition.providers().get(kind, &driver_id) else {
         let code = if stored_conn.is_none() && req.driver_id.is_none() {
             "CONNECTION_NOT_FOUND"
         } else {
@@ -486,7 +482,7 @@ fn probe_dependencies(
     conn: &ConnectionRevisionRow,
 ) -> BTreeMap<String, (ConnectionReference, BTreeSet<String>)> {
     use crate::extensions::workflow_provider::{declared_dependencies, dependency_key};
-    let store = &state.composition.deployments;
+    let store = &state.deployments;
     let Some(package) = store.get_package(&conn.provider_digest) else {
         return BTreeMap::new();
     };

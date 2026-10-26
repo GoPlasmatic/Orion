@@ -87,13 +87,13 @@ async fn a_node_recovers_a_committed_deployment_after_a_failed_reconcile() {
         common::echo_workflow("recover"),
     )
     .await;
-    let applied = state.composition.reconciler.local_status().applied_revision;
+    let applied = state.reconciler.local_status().applied_revision;
 
     // The other writer commits a revision without the channel.
     let other = common::test_state_with_config(config).await;
     let other_app = orion::server::build_router(other.clone());
     common::remove_member(&other_app, "channel", "recover-after-commit").await;
-    let (committed, _) = other.composition.deployments.current_head();
+    let (committed, _) = other.deployments.current_head();
     assert!(committed > applied);
 
     // Break this node's reads of the deployment store before its reconciler
@@ -112,7 +112,7 @@ async fn a_node_recovers_a_committed_deployment_after_a_failed_reconcile() {
         );
     }
     assert_eq!(
-        state.composition.reconciler.local_status().applied_revision,
+        state.reconciler.local_status().applied_revision,
         applied,
         "a node that cannot read the store applies nothing"
     );
@@ -131,7 +131,7 @@ async fn a_node_recovers_a_committed_deployment_after_a_failed_reconcile() {
         .await
         .expect("restore deployment reads");
     tokio::time::timeout(Duration::from_secs(3), async {
-        while state.composition.reconciler.local_status().applied_revision < committed {
+        while state.reconciler.local_status().applied_revision < committed {
             orion::cluster::reconcile_v2_state_once(&state).await;
         }
     })
@@ -166,7 +166,7 @@ async fn a_definition_read_snapshot_holds_across_a_concurrent_commit() {
         common::echo_workflow("snapshot"),
     )
     .await;
-    let (first_head, _) = state.composition.deployments.current_head();
+    let (first_head, _) = state.deployments.current_head();
     let revisions = "SELECT revision FROM deployment_revisions ORDER BY revision";
     let empty = || sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new()));
     let mut snapshot = pool.begin_snapshot_tx().await.expect("snapshot");
@@ -177,7 +177,7 @@ async fn a_definition_read_snapshot_holds_across_a_concurrent_commit() {
     assert_eq!(first.last(), Some(&(first_head as i64,)));
 
     common::remove_member(&app, "channel", "consistent-definitions").await;
-    let (second_head, _) = state.composition.deployments.current_head();
+    let (second_head, _) = state.deployments.current_head();
     assert!(second_head > first_head);
 
     let pinned: Vec<(i64,)> = snapshot

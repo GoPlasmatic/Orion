@@ -63,6 +63,6 @@ pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::Ha
         cache_pool: state.caches.cache_pool.clone(),
         channel_loader: state.channel_loader.clone(),
         sql_pool_cache: state.caches.sql_pool_cache.clone(),
-        providers: state.composition.providers.clone(),
+        providers: state.composition.providers().clone(),
     }
 }

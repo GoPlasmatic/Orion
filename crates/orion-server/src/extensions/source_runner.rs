@@ -30,7 +30,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::admission::AdmissionPolicy;
 use super::context::RunContext;
 use super::contract::{
     ConnectionReference, ConnectorError, EffectStatus, EffectiveConnectionIdentity,
@@ -889,23 +888,17 @@ impl Default for SourceRunnerLimits {
 ///
 /// Drives any registered connector (`rust`, `workflow`, or `wasm`) that exposes
 /// [`super::provider_backend::SourceConnectorFacet`].
+///
+/// Revocation and the security lease are checked on the registry's
+/// [`super::RevocationLedger`] before every facet call.
 pub struct SourceChannelRunner {
     providers: ProviderRegistry,
-    admission: Arc<dyn AdmissionPolicy>,
     limits: SourceRunnerLimits,
 }
 
 impl SourceChannelRunner {
-    pub fn new(
-        providers: ProviderRegistry,
-        admission: Arc<dyn AdmissionPolicy>,
-        limits: SourceRunnerLimits,
-    ) -> Self {
-        Self {
-            providers,
-            admission,
-            limits,
-        }
+    pub fn new(providers: ProviderRegistry, limits: SourceRunnerLimits) -> Self {
+        Self { providers, limits }
     }
 
     fn check_cursor_size(&self, cursor: &Value) -> Result<(), ConnectorError> {
@@ -940,7 +933,7 @@ impl SourceChannelRunner {
         driver_id: &str,
         checkpoint: Option<Value>,
     ) -> Result<Value, ConnectorError> {
-        self.admission.check_runtime_lease(
+        self.providers.ledger().check_runtime_lease(
             run_ctx.generation_id(),
             &connection.provider.provider_id,
             &connection.connection_id,
@@ -987,7 +980,7 @@ impl SourceChannelRunner {
         requested_max_items: u32,
     ) -> Result<SourcePollBatch, ConnectorError> {
         self.check_cursor_size(cursor)?;
-        self.admission.check_runtime_lease(
+        self.providers.ledger().check_runtime_lease(
             run_ctx.generation_id(),
             &connection.provider.provider_id,
             &connection.connection_id,
@@ -1046,7 +1039,7 @@ impl SourceChannelRunner {
         delivery_id: &str,
         settlement: SourceSettlement,
     ) -> Result<(), ConnectorError> {
-        self.admission.check_runtime_lease(
+        self.providers.ledger().check_runtime_lease(
             run_ctx.generation_id(),
             &connection.provider.provider_id,
             &connection.connection_id,
@@ -1087,9 +1080,7 @@ mod tests {
     use crate::extensions::context::AttemptContext;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
     use crate::extensions::contract::{ConnectorOutput, ProviderReference};
-    use crate::extensions::provider_backend::{
-        BoxProviderFuture, ProviderBackend, SourceConnectorFacet,
-    };
+    use crate::extensions::provider_backend::{ProviderBackend, SourceConnectorFacet};
     use serde_json::json;
     use std::collections::BTreeSet;
     use std::time::{Duration, Instant};
@@ -1100,6 +1091,7 @@ mod tests {
     /// an item: enough to drive the runner's privileged facet calls.
     struct EchoSource;
 
+    #[async_trait::async_trait]
     impl ProviderBackend for EchoSource {
         fn kind(&self) -> ImplementationKind {
             ImplementationKind::Rust
@@ -1113,13 +1105,13 @@ mod tests {
             Ok(())
         }
 
-        fn invoke<'a>(
-            &'a self,
-            _ctx: &'a AttemptContext,
-            _operation: &'a str,
+        async fn invoke(
+            &self,
+            _ctx: &AttemptContext,
+            _operation: &str,
             _input: Value,
-        ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-            Box::pin(async { Ok(ConnectorOutput::new(json!({}))) })
+        ) -> Result<ConnectorOutput, ConnectorError> {
+            Ok(ConnectorOutput::new(json!({})))
         }
 
         fn as_source(&self) -> Option<&dyn SourceConnectorFacet> {
@@ -1127,44 +1119,39 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl SourceConnectorFacet for EchoSource {
-        fn open<'a>(
-            &'a self,
-            _ctx: &'a AttemptContext,
+        async fn open(
+            &self,
+            _ctx: &AttemptContext,
             checkpoint: Option<Value>,
-        ) -> BoxProviderFuture<'a, Result<Value, ConnectorError>> {
-            Box::pin(async move { Ok(json!({ "checkpoint": checkpoint })) })
+        ) -> Result<Value, ConnectorError> {
+            Ok(json!({ "checkpoint": checkpoint }))
         }
 
-        fn poll<'a>(
-            &'a self,
-            _ctx: &'a AttemptContext,
-            cursor: &'a Value,
+        async fn poll(
+            &self,
+            _ctx: &AttemptContext,
+            cursor: &Value,
             _max_items: u32,
-        ) -> BoxProviderFuture<'a, Result<SourcePollBatch, ConnectorError>> {
-            Box::pin(async move {
-                Ok(SourcePollBatch {
-                    items: Vec::new(),
-                    next_checkpoint: cursor.get("checkpoint").cloned(),
-                })
+        ) -> Result<SourcePollBatch, ConnectorError> {
+            Ok(SourcePollBatch {
+                items: Vec::new(),
+                next_checkpoint: cursor.get("checkpoint").cloned(),
             })
         }
 
-        fn settle<'a>(
-            &'a self,
-            _ctx: &'a AttemptContext,
-            _delivery_id: &'a str,
+        async fn settle(
+            &self,
+            _ctx: &AttemptContext,
+            _delivery_id: &str,
             _settlement: SourceSettlement,
-        ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-            Box::pin(async { Ok(()) })
+        ) -> Result<(), ConnectorError> {
+            Ok(())
         }
 
-        fn close<'a>(
-            &'a self,
-            _ctx: &'a AttemptContext,
-            _cursor: Value,
-        ) -> BoxProviderFuture<'a, Result<(), ConnectorError>> {
-            Box::pin(async { Ok(()) })
+        async fn close(&self, _ctx: &AttemptContext, _cursor: Value) -> Result<(), ConnectorError> {
+            Ok(())
         }
     }
 
@@ -1381,12 +1368,12 @@ mod tests {
 
     #[tokio::test]
     async fn source_runner_executes_privileged_facet_while_app_boundary_blocks_it() {
-        let root = CompositionRoot::community().with_provider_backend(Arc::new(EchoSource));
-        let runner = SourceChannelRunner::new(
-            root.providers.clone(),
-            root.admission.clone(),
-            SourceRunnerLimits::default(),
-        );
+        let root = CompositionRoot::community()
+            .with_provider_backend(Arc::new(EchoSource))
+            .build_in_memory()
+            .expect("composes");
+        let runner =
+            SourceChannelRunner::new(root.providers().clone(), SourceRunnerLimits::default());
 
         let provider = ProviderReference {
             provider_id: TEST_SOURCE.to_string(),

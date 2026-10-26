@@ -1,5 +1,4 @@
 use super::*;
-use crate::extensions::admission::CommunityAdmissionPolicy;
 use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
 use crate::extensions::contract::{ConnectionReference, ConnectorResult, ProviderReference};
 use std::collections::BTreeSet;
@@ -289,35 +288,34 @@ async fn mysql_provider_refuses_input_targets_and_non_literal_statements() {
 
 #[tokio::test]
 async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts() {
-    let providers = ProviderRegistry::new();
-    let pools = ResourcePoolRegistry::new();
-    register_community_foundation_providers(&providers, &pools);
-    let policy = CommunityAdmissionPolicy::new();
+    let comp = crate::extensions::CompositionRoot::community()
+        .build_in_memory()
+        .unwrap();
+    let providers = comp.providers().clone();
+    let pools = comp.pools().clone();
 
     // Write key "k1" on conn-a revision 1.
     let inv_set = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "set");
-    let res = providers
-        .dispatch_attempt(
-            &policy,
-            &inv_set,
-            ImplementationKind::Rust,
-            DRIVER_MEMORY_CACHE,
-            json!({"key": "k1", "value": "v1", "ttl_secs": 60}),
-        )
-        .await;
+    let res = dispatch(
+        &providers,
+        &inv_set,
+        ImplementationKind::Rust,
+        DRIVER_MEMORY_CACHE,
+        json!({"key": "k1", "value": "v1", "ttl_secs": 60}),
+    )
+    .await;
     assert!(matches!(res, ConnectorResult::Success { .. }));
 
     // Read key "k1" on conn-a revision 1 -> hit!
     let inv_get_r1 = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "get");
-    let res_r1 = providers
-        .dispatch_attempt(
-            &policy,
-            &inv_get_r1,
-            ImplementationKind::Rust,
-            DRIVER_MEMORY_CACHE,
-            json!({"key": "k1"}),
-        )
-        .await;
+    let res_r1 = dispatch(
+        &providers,
+        &inv_get_r1,
+        ImplementationKind::Rust,
+        DRIVER_MEMORY_CACHE,
+        json!({"key": "k1"}),
+    )
+    .await;
     assert_eq!(
         res_r1,
         ConnectorResult::Success {
@@ -328,15 +326,14 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
 
     // Read key "k1" on conn-a revision 2 -> isolated (miss)!
     let inv_get_r2 = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 2, "get");
-    let res_r2 = providers
-        .dispatch_attempt(
-            &policy,
-            &inv_get_r2,
-            ImplementationKind::Rust,
-            DRIVER_MEMORY_CACHE,
-            json!({"key": "k1"}),
-        )
-        .await;
+    let res_r2 = dispatch(
+        &providers,
+        &inv_get_r2,
+        ImplementationKind::Rust,
+        DRIVER_MEMORY_CACHE,
+        json!({"key": "k1"}),
+    )
+    .await;
     assert_eq!(
         res_r2,
         ConnectorResult::Success {
@@ -347,15 +344,14 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
 
     // Read key "k1" on conn-b revision 1 -> isolated (miss)!
     let inv_get_b = make_invocation(DRIVER_MEMORY_CACHE, "conn-b", 1, "get");
-    let res_b = providers
-        .dispatch_attempt(
-            &policy,
-            &inv_get_b,
-            ImplementationKind::Rust,
-            DRIVER_MEMORY_CACHE,
-            json!({"key": "k1"}),
-        )
-        .await;
+    let res_b = dispatch(
+        &providers,
+        &inv_get_b,
+        ImplementationKind::Rust,
+        DRIVER_MEMORY_CACHE,
+        json!({"key": "k1"}),
+    )
+    .await;
     assert_eq!(
         res_b,
         ConnectorResult::Success {
@@ -367,15 +363,14 @@ async fn memory_cache_provider_partitions_by_connection_and_revision_and_evicts(
     // Evicting "conn-a" via ResourcePoolRegistry clears revision 1.
     pools.evict_connector("conn-a").await;
     let inv_get_after = make_invocation(DRIVER_MEMORY_CACHE, "conn-a", 1, "get");
-    let res_after = providers
-        .dispatch_attempt(
-            &policy,
-            &inv_get_after,
-            ImplementationKind::Rust,
-            DRIVER_MEMORY_CACHE,
-            json!({"key": "k1"}),
-        )
-        .await;
+    let res_after = dispatch(
+        &providers,
+        &inv_get_after,
+        ImplementationKind::Rust,
+        DRIVER_MEMORY_CACHE,
+        json!({"key": "k1"}),
+    )
+    .await;
     assert_eq!(
         res_after,
         ConnectorResult::Success {
@@ -741,4 +736,18 @@ fn locators_are_placed_at_their_paths() {
             .expect_err("refused");
         assert_eq!(err.code, "CONNECTION_SECRET_LOCATOR_INVALID", "{path}");
     }
+}
+
+/// One attempt on the backend registered as `(kind, driver_id)`.
+async fn dispatch(
+    providers: &crate::extensions::ProviderRegistry,
+    invocation: &crate::extensions::Invocation,
+    kind: ImplementationKind,
+    driver_id: &str,
+    input: Value,
+) -> ConnectorResult {
+    let backend = providers.get(kind, driver_id).expect("registered");
+    providers
+        .dispatch_attempt(invocation, backend.as_ref(), input)
+        .await
 }

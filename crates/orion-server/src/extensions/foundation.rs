@@ -23,10 +23,8 @@ use super::contract::{
     ConnectorError, ConnectorOutput, EffectStatus, EffectiveConnectionIdentity, ImplementationKind,
     codes,
 };
-use super::provider_backend::{BoxProviderFuture, ProviderBackend, ProviderRegistry};
-use super::resource_pool::{
-    BoxPoolFuture, ConnectionPoolCache, ResourcePoolRegistry, VersionedSessionPool,
-};
+use super::provider_backend::ProviderBackend;
+use super::resource_pool::{ConnectionPoolCache, VersionedSessionPool};
 
 /// Canonical driver IDs for the five Community foundation Direct Rust providers.
 pub const DRIVER_HTTP: &str = "org.orion.http";
@@ -607,6 +605,7 @@ fn authorize(
     })
 }
 
+#[async_trait::async_trait]
 impl ProviderBackend for HttpProviderBackend {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Rust
@@ -657,149 +656,146 @@ impl ProviderBackend for HttpProviderBackend {
         Ok(())
     }
 
-    fn invoke<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        operation: &'a str,
+    async fn invoke(
+        &self,
+        ctx: &AttemptContext,
+        operation: &str,
         input: Value,
-    ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        ctx.run_context()
+            .check_live(ctx.invocation().effect_status())?;
 
-            let method = match operation.to_ascii_lowercase().as_str() {
-                "get" | "post" | "put" | "patch" | "delete" => operation.to_ascii_uppercase(),
-                "request" => input
-                    .get("method")
-                    .and_then(Value::as_str)
-                    .unwrap_or("GET")
-                    .to_ascii_uppercase(),
-                other => {
-                    return Err(ConnectorError::forbidden(
-                        codes::OPERATION_FORBIDDEN,
-                        "dispatch",
-                        format!("Unsupported HTTP operation '{other}'"),
-                        ctx.invocation().effect_status(),
-                    ));
-                }
-            };
-
-            if !crate::connector::VALID_HTTP_METHODS.contains(&method.as_str()) {
-                return Err(ConnectorError::invalid_input(
-                    format!("Unsupported HTTP method '{method}'"),
-                    Some(json!({"pointer": "/method"})),
-                ));
-            }
-
-            refuse_input_target(&input, &["url", "base_url"])?;
-            let path = input.get("path").and_then(Value::as_str).unwrap_or("/");
-            if !path.starts_with('/') {
-                return Err(ConnectorError::invalid_input(
-                    "HTTP request 'path' must start with '/'",
-                    Some(json!({"pointer": "/path"})),
-                ));
-            }
-
-            let identity = ctx.invocation().effective_identity();
-            let conn = governed_connection(self.deployments.as_ref(), identity);
-            let url = conn.as_ref().and_then(|conn| {
-                conn.public_config
-                    .get("url")
-                    .or_else(|| conn.public_config.get("base_url"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
-            let Some((url, conn)) = url.zip(conn) else {
-                return Err(ConnectorError::invalid_input(
-                    format!(
-                        "HTTP connector invocation on '{}' requires a connection revision with a 'url'",
-                        identity.connection_id
-                    ),
-                    Some(json!({"pointer": "/url"})),
-                ));
-            };
-
-            // The credential is settled before anything leaves the node: a
-            // revision whose `auth` has no secret locator for its credential is refused
-            // without a DNS lookup.
-            let credential = match http_auth(&conn.public_config)? {
-                None => None,
-                Some(auth) => {
-                    let path = auth.secret_path();
-                    let Some(secret) = governed_secret(&conn, path, identity, DRIVER_HTTP).await?
-                    else {
-                        return Err(ConnectorError::invalid_input(
-                            format!(
-                                "HTTP connection '{}' declares 'auth' but has no secret \
-                                 locator for '{path}'",
-                                identity.connection_id
-                            ),
-                            Some(json!({"pointer": "/auth"})),
-                        ));
-                    };
-                    Some((auth, secret))
-                }
-            };
-
-            if let Err(ssrf_reason) = crate::validation::ssrf::validate_url_not_private(&url).await
-            {
+        let method = match operation.to_ascii_lowercase().as_str() {
+            "get" | "post" | "put" | "patch" | "delete" => operation.to_ascii_uppercase(),
+            "request" => input
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("GET")
+                .to_ascii_uppercase(),
+            other => {
                 return Err(ConnectorError::forbidden(
-                    codes::CAPABILITY_INVALID,
-                    "ssrf_validation",
-                    format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
+                    codes::OPERATION_FORBIDDEN,
+                    "dispatch",
+                    format!("Unsupported HTTP operation '{other}'"),
                     ctx.invocation().effect_status(),
                 ));
             }
+        };
 
-            let base = url.trim_end_matches('/');
-            let full_url = format!("{base}{path}");
-            let req_method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| {
-                ConnectorError::invalid_input(
-                    format!("Invalid HTTP method '{method}': {e}"),
-                    Some(json!({"pointer": "/method"})),
-                )
-            })?;
-            let mut req_builder = self.options.http_client.request(req_method, &full_url);
-            if let Some((auth, secret)) = &credential {
-                req_builder = authorize(req_builder, auth, secret)?;
+        if !crate::connector::VALID_HTTP_METHODS.contains(&method.as_str()) {
+            return Err(ConnectorError::invalid_input(
+                format!("Unsupported HTTP method '{method}'"),
+                Some(json!({"pointer": "/method"})),
+            ));
+        }
+
+        refuse_input_target(&input, &["url", "base_url"])?;
+        let path = input.get("path").and_then(Value::as_str).unwrap_or("/");
+        if !path.starts_with('/') {
+            return Err(ConnectorError::invalid_input(
+                "HTTP request 'path' must start with '/'",
+                Some(json!({"pointer": "/path"})),
+            ));
+        }
+
+        let identity = ctx.invocation().effective_identity();
+        let conn = governed_connection(self.deployments.as_ref(), identity);
+        let url = conn.as_ref().and_then(|conn| {
+            conn.public_config
+                .get("url")
+                .or_else(|| conn.public_config.get("base_url"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        let Some((url, conn)) = url.zip(conn) else {
+            return Err(ConnectorError::invalid_input(
+                format!(
+                    "HTTP connector invocation on '{}' requires a connection revision with a 'url'",
+                    identity.connection_id
+                ),
+                Some(json!({"pointer": "/url"})),
+            ));
+        };
+
+        // The credential is settled before anything leaves the node: a
+        // revision whose `auth` has no secret locator for its credential is refused
+        // without a DNS lookup.
+        let credential = match http_auth(&conn.public_config)? {
+            None => None,
+            Some(auth) => {
+                let path = auth.secret_path();
+                let Some(secret) = governed_secret(&conn, path, identity, DRIVER_HTTP).await?
+                else {
+                    return Err(ConnectorError::invalid_input(
+                        format!(
+                            "HTTP connection '{}' declares 'auth' but has no secret \
+                             locator for '{path}'",
+                            identity.connection_id
+                        ),
+                        Some(json!({"pointer": "/auth"})),
+                    ));
+                };
+                Some((auth, secret))
             }
-            if let Some(body_val) = input.get("body")
-                && !body_val.is_null()
-            {
-                req_builder = req_builder.json(body_val);
-            }
-            ctx.invocation().record_effect(EffectStatus::Unknown);
-            let resp = req_builder.send().await.map_err(|e| {
+        };
+
+        if let Err(ssrf_reason) = crate::validation::ssrf::validate_url_not_private(&url).await {
+            return Err(ConnectorError::forbidden(
+                codes::CAPABILITY_INVALID,
+                "ssrf_validation",
+                format!("Outbound HTTP target blocked by SSRF guard: {ssrf_reason}"),
+                ctx.invocation().effect_status(),
+            ));
+        }
+
+        let base = url.trim_end_matches('/');
+        let full_url = format!("{base}{path}");
+        let req_method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| {
+            ConnectorError::invalid_input(
+                format!("Invalid HTTP method '{method}': {e}"),
+                Some(json!({"pointer": "/method"})),
+            )
+        })?;
+        let mut req_builder = self.options.http_client.request(req_method, &full_url);
+        if let Some((auth, secret)) = &credential {
+            req_builder = authorize(req_builder, auth, secret)?;
+        }
+        if let Some(body_val) = input.get("body")
+            && !body_val.is_null()
+        {
+            req_builder = req_builder.json(body_val);
+        }
+        ctx.invocation().record_effect(EffectStatus::Unknown);
+        let resp = req_builder.send().await.map_err(|e| {
+            ConnectorError::unavailable(
+                format!("HTTP request failed: {}", e.without_url()),
+                EffectStatus::Unknown,
+            )
+        })?;
+        let status_code = resp.status().as_u16();
+        let bytes = crate::http_body::read_bounded(resp, self.options.http_max_response_bytes)
+            .await
+            .map_err(|e| {
                 ConnectorError::unavailable(
-                    format!("HTTP request failed: {}", e.without_url()),
-                    EffectStatus::Unknown,
+                    format!("Failed to read HTTP response body: {e}"),
+                    EffectStatus::Completed,
                 )
             })?;
-            let status_code = resp.status().as_u16();
-            let bytes = crate::http_body::read_bounded(resp, self.options.http_max_response_bytes)
-                .await
-                .map_err(|e| {
-                    ConnectorError::unavailable(
-                        format!("Failed to read HTTP response body: {e}"),
-                        EffectStatus::Completed,
-                    )
-                })?;
-            ctx.invocation().record_effect(EffectStatus::Completed);
-            let parsed_body: Value = serde_json::from_slice(&bytes)
-                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
-            let mut metadata = BTreeMap::new();
-            metadata.insert("driver".to_string(), json!(DRIVER_HTTP));
-            metadata.insert("attempt".to_string(), json!(ctx.attempt_number()));
-            Ok(ConnectorOutput::with_metadata(
-                json!({
-                    "status_code": status_code,
-                    "method": method,
-                    "path": path,
-                    "body": parsed_body,
-                }),
-                metadata,
-            ))
-        })
+        ctx.invocation().record_effect(EffectStatus::Completed);
+        let parsed_body: Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
+        let mut metadata = BTreeMap::new();
+        metadata.insert("driver".to_string(), json!(DRIVER_HTTP));
+        metadata.insert("attempt".to_string(), json!(ctx.attempt_number()));
+        Ok(ConnectorOutput::with_metadata(
+            json!({
+                "status_code": status_code,
+                "method": method,
+                "path": path,
+                "body": parsed_body,
+            }),
+            metadata,
+        ))
     }
 }
 
@@ -929,6 +925,7 @@ impl Default for PostgresProviderBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl ProviderBackend for PostgresProviderBackend {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Rust
@@ -955,63 +952,56 @@ impl ProviderBackend for PostgresProviderBackend {
         Ok(())
     }
 
-    fn invoke<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        operation: &'a str,
+    async fn invoke(
+        &self,
+        ctx: &AttemptContext,
+        operation: &str,
         input: Value,
-    ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        ctx.run_context()
+            .check_live(ctx.invocation().effect_status())?;
 
-            let identity = ctx.invocation().effective_identity();
-            let handle = self
-                .sessions
-                .acquire(identity, || async move {
-                    Ok(format!(
-                        "pg-session:{}:r{}",
-                        identity.connection_id, identity.revision
-                    ))
-                })
-                .await?;
+        let identity = ctx.invocation().effective_identity();
+        let handle = self
+            .sessions
+            .acquire(identity, || async move {
+                Ok(format!(
+                    "pg-session:{}:r{}",
+                    identity.connection_id, identity.revision
+                ))
+            })
+            .await?;
 
-            let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
-            let Some(sql_op) = SqlOperation::parse(operation) else {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    format!("Unsupported PostgreSQL operation '{operation}'"),
-                    ctx.invocation().effect_status(),
-                ));
-            };
-            refuse_input_target(&input, &["connection_string"])?;
-            let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_POSTGRESQL)?;
-            let params = sql_params(&input)?;
-            let conn_str = self.resolve_connection_string(identity).await?;
-            ctx.invocation().record_effect(EffectStatus::Unknown);
-            let data = self
-                .execute_live_postgres(&conn_key, &conn_str, sql_op, statement, &params)
-                .await?;
-            ctx.invocation().record_effect(EffectStatus::Completed);
-            let mut metadata = BTreeMap::new();
-            metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
-            metadata.insert("session".to_string(), json!(handle.session()));
-            Ok(ConnectorOutput::with_metadata(data, metadata))
-        })
+        let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
+        let Some(sql_op) = SqlOperation::parse(operation) else {
+            return Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!("Unsupported PostgreSQL operation '{operation}'"),
+                ctx.invocation().effect_status(),
+            ));
+        };
+        refuse_input_target(&input, &["connection_string"])?;
+        let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_POSTGRESQL)?;
+        let params = sql_params(&input)?;
+        let conn_str = self.resolve_connection_string(identity).await?;
+        ctx.invocation().record_effect(EffectStatus::Unknown);
+        let data = self
+            .execute_live_postgres(&conn_key, &conn_str, sql_op, statement, &params)
+            .await?;
+        ctx.invocation().record_effect(EffectStatus::Completed);
+        let mut metadata = BTreeMap::new();
+        metadata.insert("driver".to_string(), json!(DRIVER_POSTGRESQL));
+        metadata.insert("session".to_string(), json!(handle.session()));
+        Ok(ConnectorOutput::with_metadata(data, metadata))
     }
 
     fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
         SQL_STATEMENT_KEYS
     }
 
-    fn dispose<'a>(
-        &'a self,
-        identity: &'a EffectiveConnectionIdentity,
-    ) -> BoxProviderFuture<'a, ()> {
-        Box::pin(async move {
-            self.sessions.invalidate(identity, None);
-        })
+    async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
+        self.sessions.invalidate(identity, None);
     }
 }
 
@@ -1239,6 +1229,7 @@ impl Default for SqliteProviderBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl ProviderBackend for SqliteProviderBackend {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Rust
@@ -1259,69 +1250,62 @@ impl ProviderBackend for SqliteProviderBackend {
         Ok(())
     }
 
-    fn invoke<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        operation: &'a str,
+    async fn invoke(
+        &self,
+        ctx: &AttemptContext,
+        operation: &str,
         input: Value,
-    ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        ctx.run_context()
+            .check_live(ctx.invocation().effect_status())?;
 
-            let identity = ctx.invocation().effective_identity();
-            let handle = self
-                .sessions
-                .acquire(identity, || async move {
-                    Ok(format!(
-                        "sqlite-session:{}:r{}",
-                        identity.connection_id, identity.revision
-                    ))
-                })
-                .await?;
+        let identity = ctx.invocation().effective_identity();
+        let handle = self
+            .sessions
+            .acquire(identity, || async move {
+                Ok(format!(
+                    "sqlite-session:{}:r{}",
+                    identity.connection_id, identity.revision
+                ))
+            })
+            .await?;
 
-            let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
-            let Some(sql_op) = SqlOperation::parse(operation) else {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    format!("Unsupported SQLite operation '{operation}'"),
-                    ctx.invocation().effect_status(),
-                ));
-            };
-            refuse_input_target(&input, &["connection_string"])?;
-            let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_SQLITE)?;
-            let params = sql_params(&input)?;
-            let target_conn = self.resolve_connection_string(identity).await?;
-            ctx.invocation().record_effect(EffectStatus::Unknown);
-            let data = self
-                .execute_live_sqlite_for_connection(
-                    Some(&conn_key),
-                    &target_conn,
-                    operation,
-                    statement,
-                    &params,
-                )
-                .await?;
-            ctx.invocation().record_effect(EffectStatus::Completed);
-            let mut metadata = BTreeMap::new();
-            metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
-            metadata.insert("session".to_string(), json!(handle.session()));
-            Ok(ConnectorOutput::with_metadata(data, metadata))
-        })
+        let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
+        let Some(sql_op) = SqlOperation::parse(operation) else {
+            return Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!("Unsupported SQLite operation '{operation}'"),
+                ctx.invocation().effect_status(),
+            ));
+        };
+        refuse_input_target(&input, &["connection_string"])?;
+        let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_SQLITE)?;
+        let params = sql_params(&input)?;
+        let target_conn = self.resolve_connection_string(identity).await?;
+        ctx.invocation().record_effect(EffectStatus::Unknown);
+        let data = self
+            .execute_live_sqlite_for_connection(
+                Some(&conn_key),
+                &target_conn,
+                operation,
+                statement,
+                &params,
+            )
+            .await?;
+        ctx.invocation().record_effect(EffectStatus::Completed);
+        let mut metadata = BTreeMap::new();
+        metadata.insert("driver".to_string(), json!(DRIVER_SQLITE));
+        metadata.insert("session".to_string(), json!(handle.session()));
+        Ok(ConnectorOutput::with_metadata(data, metadata))
     }
 
     fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
         SQL_STATEMENT_KEYS
     }
 
-    fn dispose<'a>(
-        &'a self,
-        identity: &'a EffectiveConnectionIdentity,
-    ) -> BoxProviderFuture<'a, ()> {
-        Box::pin(async move {
-            self.sessions.invalidate(identity, None);
-        })
+    async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
+        self.sessions.invalidate(identity, None);
     }
 }
 
@@ -1446,6 +1430,7 @@ impl Default for MysqlProviderBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl ProviderBackend for MysqlProviderBackend {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Rust
@@ -1472,63 +1457,56 @@ impl ProviderBackend for MysqlProviderBackend {
         Ok(())
     }
 
-    fn invoke<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        operation: &'a str,
+    async fn invoke(
+        &self,
+        ctx: &AttemptContext,
+        operation: &str,
         input: Value,
-    ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        ctx.run_context()
+            .check_live(ctx.invocation().effect_status())?;
 
-            let identity = ctx.invocation().effective_identity();
-            let handle = self
-                .sessions
-                .acquire(identity, || async move {
-                    Ok(format!(
-                        "mysql-session:{}:r{}",
-                        identity.connection_id, identity.revision
-                    ))
-                })
-                .await?;
+        let identity = ctx.invocation().effective_identity();
+        let handle = self
+            .sessions
+            .acquire(identity, || async move {
+                Ok(format!(
+                    "mysql-session:{}:r{}",
+                    identity.connection_id, identity.revision
+                ))
+            })
+            .await?;
 
-            let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
-            let Some(sql_op) = SqlOperation::parse(operation) else {
-                return Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    format!("Unsupported MySQL operation '{operation}'"),
-                    ctx.invocation().effect_status(),
-                ));
-            };
-            refuse_input_target(&input, &["connection_string"])?;
-            let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_MYSQL)?;
-            let params = sql_params(&input)?;
-            let conn_str = self.resolve_connection_string(identity).await?;
-            ctx.invocation().record_effect(EffectStatus::Unknown);
-            let data = self
-                .execute_live_mysql(&conn_key, &conn_str, sql_op, statement, &params)
-                .await?;
-            ctx.invocation().record_effect(EffectStatus::Completed);
-            let mut metadata = BTreeMap::new();
-            metadata.insert("driver".to_string(), json!(DRIVER_MYSQL));
-            metadata.insert("session".to_string(), json!(handle.session()));
-            Ok(ConnectorOutput::with_metadata(data, metadata))
-        })
+        let conn_key = format!("{}:r{}", identity.connection_id, identity.revision);
+        let Some(sql_op) = SqlOperation::parse(operation) else {
+            return Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!("Unsupported MySQL operation '{operation}'"),
+                ctx.invocation().effect_status(),
+            ));
+        };
+        refuse_input_target(&input, &["connection_string"])?;
+        let statement = sql_statement(&input, sql_op.statement_keys(), DRIVER_MYSQL)?;
+        let params = sql_params(&input)?;
+        let conn_str = self.resolve_connection_string(identity).await?;
+        ctx.invocation().record_effect(EffectStatus::Unknown);
+        let data = self
+            .execute_live_mysql(&conn_key, &conn_str, sql_op, statement, &params)
+            .await?;
+        ctx.invocation().record_effect(EffectStatus::Completed);
+        let mut metadata = BTreeMap::new();
+        metadata.insert("driver".to_string(), json!(DRIVER_MYSQL));
+        metadata.insert("session".to_string(), json!(handle.session()));
+        Ok(ConnectorOutput::with_metadata(data, metadata))
     }
 
     fn literal_input_keys(&self, _operation: &str) -> &'static [&'static str] {
         SQL_STATEMENT_KEYS
     }
 
-    fn dispose<'a>(
-        &'a self,
-        identity: &'a EffectiveConnectionIdentity,
-    ) -> BoxProviderFuture<'a, ()> {
-        Box::pin(async move {
-            self.sessions.invalidate(identity, None);
-        })
+    async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
+        self.sessions.invalidate(identity, None);
     }
 }
 
@@ -1659,23 +1637,20 @@ impl PartitionedMemoryCache {
     }
 }
 
+#[async_trait::async_trait]
 impl ConnectionPoolCache for PartitionedMemoryCache {
     fn cache_id(&self) -> &str {
         DRIVER_MEMORY_CACHE
     }
 
-    fn evict<'a>(&'a self, connector_name: &'a str) -> BoxPoolFuture<'a, ()> {
-        Box::pin(async move {
-            let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
-            guard.retain(|k, _| k.connection_id != connector_name);
-        })
+    async fn evict(&self, connector_name: &str) {
+        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        guard.retain(|k, _| k.connection_id != connector_name);
     }
 
-    fn evict_all<'a>(&'a self) -> BoxPoolFuture<'a, ()> {
-        Box::pin(async move {
-            let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
-            guard.clear();
-        })
+    async fn evict_all(&self) {
+        let mut guard = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
     }
 }
 
@@ -1702,6 +1677,7 @@ impl Default for MemoryCacheProviderBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl ProviderBackend for MemoryCacheProviderBackend {
     fn kind(&self) -> ImplementationKind {
         ImplementationKind::Rust
@@ -1726,174 +1702,133 @@ impl ProviderBackend for MemoryCacheProviderBackend {
         Ok(())
     }
 
-    fn invoke<'a>(
-        &'a self,
-        ctx: &'a AttemptContext,
-        operation: &'a str,
+    async fn invoke(
+        &self,
+        ctx: &AttemptContext,
+        operation: &str,
         input: Value,
-    ) -> BoxProviderFuture<'a, Result<ConnectorOutput, ConnectorError>> {
-        Box::pin(async move {
-            ctx.run_context()
-                .check_live(ctx.invocation().effect_status())?;
-            let identity = ctx.invocation().effective_identity();
+    ) -> Result<ConnectorOutput, ConnectorError> {
+        ctx.run_context()
+            .check_live(ctx.invocation().effect_status())?;
+        let identity = ctx.invocation().effective_identity();
 
-            let Some(key) = input.get("key").and_then(Value::as_str) else {
-                return Err(ConnectorError::invalid_input(
-                    "Memory cache operation requires a string 'key'",
-                    Some(json!({"pointer": "/key"})),
-                ));
-            };
+        let Some(key) = input.get("key").and_then(Value::as_str) else {
+            return Err(ConnectorError::invalid_input(
+                "Memory cache operation requires a string 'key'",
+                Some(json!({"pointer": "/key"})),
+            ));
+        };
 
-            match operation {
-                "get" | "cache_read" | "cache.get" => {
-                    let val = self.store.get(identity, key);
-                    Ok(ConnectorOutput::new(json!({
-                        "hit": val.is_some(),
-                        "value": val.unwrap_or(Value::Null),
-                    })))
-                }
-                "set" | "cache_write" | "cache.set" => {
-                    let value = input.get("value").cloned().unwrap_or(Value::Null);
-                    let approx_bytes =
-                        crate::connector::sql_decode::approx_json_value_bytes(&value);
-                    if approx_bytes > self.store.max_value_bytes() {
-                        return Err(ConnectorError::invalid_input(
-                            format!(
-                                "Memory cache value size ({approx_bytes} bytes) exceeds maximum allowed ({} bytes)",
-                                self.store.max_value_bytes()
-                            ),
-                            Some(json!({"pointer": "/value"})),
-                        ));
-                    }
-                    let ttl = if let Some(raw_ms) = input.get("ttl_ms") {
-                        if raw_ms.is_null() {
-                            None
-                        } else {
-                            let ms = raw_ms.as_u64().filter(|&v| v > 0).ok_or_else(|| {
-                                ConnectorError::invalid_input(
-                                    "Memory cache 'ttl_ms' must be a positive integer",
-                                    Some(json!({"pointer": "/ttl_ms"})),
-                                )
-                            })?;
-                            Some(Duration::from_millis(ms))
-                        }
-                    } else if let Some(raw_secs) = input.get("ttl_secs") {
-                        if raw_secs.is_null() {
-                            None
-                        } else {
-                            let secs = raw_secs.as_u64().filter(|&v| v > 0).ok_or_else(|| {
-                                ConnectorError::invalid_input(
-                                    "Memory cache 'ttl_secs' must be a positive integer",
-                                    Some(json!({"pointer": "/ttl_secs"})),
-                                )
-                            })?;
-                            Some(Duration::from_secs(secs))
-                        }
-                    } else {
-                        None
-                    };
-                    self.store.set(identity, key.to_string(), value, ttl);
-                    Ok(ConnectorOutput::new(json!({
-                        "stored": true,
-                        "key": key,
-                    })))
-                }
-                "delete" | "cache.delete" => {
-                    let deleted = self.store.delete(identity, key);
-                    Ok(ConnectorOutput::new(json!({
-                        "deleted": deleted,
-                        "key": key,
-                    })))
-                }
-                other => Err(ConnectorError::forbidden(
-                    codes::OPERATION_FORBIDDEN,
-                    "dispatch",
-                    format!("Unsupported memory-cache operation '{other}'"),
-                    ctx.invocation().effect_status(),
-                )),
+        match operation {
+            "get" | "cache_read" | "cache.get" => {
+                let val = self.store.get(identity, key);
+                Ok(ConnectorOutput::new(json!({
+                    "hit": val.is_some(),
+                    "value": val.unwrap_or(Value::Null),
+                })))
             }
-        })
-    }
-
-    fn dispose<'a>(
-        &'a self,
-        identity: &'a EffectiveConnectionIdentity,
-    ) -> BoxProviderFuture<'a, ()> {
-        Box::pin(async move {
-            let mut guard = self
-                .store
-                .partitions
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            guard.remove(identity);
-        })
-    }
-}
-
-/// Register all five Community foundation Direct Rust providers and their session/cache
-/// pools into `providers` and `pools` (`V2-11.1`, `V2-14.2`–`V2-14.4`).
-pub fn register_community_foundation_providers(
-    providers: &ProviderRegistry,
-    pools: &ResourcePoolRegistry,
-) {
-    register_community_foundation_providers_with_store(providers, pools, None);
-}
-
-/// Register all five Community foundation Direct Rust providers bound to `deployments` (`V2-14.2`–`V2-14.4`).
-pub fn register_community_foundation_providers_with_store(
-    providers: &ProviderRegistry,
-    pools: &ResourcePoolRegistry,
-    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
-) {
-    register_community_foundation_providers_with(
-        providers,
-        pools,
-        deployments,
-        &FoundationOptions::default(),
-    );
-}
-
-/// [`register_community_foundation_providers_with_store`], bounded by `options`.
-pub fn register_community_foundation_providers_with(
-    providers: &ProviderRegistry,
-    pools: &ResourcePoolRegistry,
-    deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
-    options: &FoundationOptions,
-) {
-    let http = match deployments.clone() {
-        Some(store) => HttpProviderBackend::with_deployment_store(store),
-        None => HttpProviderBackend::new(),
-    };
-    let http = Arc::new(http.with_options(options));
-    let pg = match deployments.clone() {
-        Some(store) => PostgresProviderBackend::with_deployment_store(16, store),
-        None => PostgresProviderBackend::default(),
-    };
-    let pg = Arc::new(pg.with_limits(options.sql));
-    let mysql = match deployments.clone() {
-        Some(store) => MysqlProviderBackend::with_deployment_store(16, store),
-        None => MysqlProviderBackend::default(),
-    };
-    let mysql = Arc::new(mysql.with_limits(options.sql));
-    let sqlite = match deployments {
-        Some(store) => {
-            SqliteProviderBackend::with_deployment_store(options.sqlite_root.clone(), 8, store)
+            "set" | "cache_write" | "cache.set" => {
+                let value = input.get("value").cloned().unwrap_or(Value::Null);
+                let approx_bytes = crate::connector::sql_decode::approx_json_value_bytes(&value);
+                if approx_bytes > self.store.max_value_bytes() {
+                    return Err(ConnectorError::invalid_input(
+                        format!(
+                            "Memory cache value size ({approx_bytes} bytes) exceeds maximum allowed ({} bytes)",
+                            self.store.max_value_bytes()
+                        ),
+                        Some(json!({"pointer": "/value"})),
+                    ));
+                }
+                let ttl = if let Some(raw_ms) = input.get("ttl_ms") {
+                    if raw_ms.is_null() {
+                        None
+                    } else {
+                        let ms = raw_ms.as_u64().filter(|&v| v > 0).ok_or_else(|| {
+                            ConnectorError::invalid_input(
+                                "Memory cache 'ttl_ms' must be a positive integer",
+                                Some(json!({"pointer": "/ttl_ms"})),
+                            )
+                        })?;
+                        Some(Duration::from_millis(ms))
+                    }
+                } else if let Some(raw_secs) = input.get("ttl_secs") {
+                    if raw_secs.is_null() {
+                        None
+                    } else {
+                        let secs = raw_secs.as_u64().filter(|&v| v > 0).ok_or_else(|| {
+                            ConnectorError::invalid_input(
+                                "Memory cache 'ttl_secs' must be a positive integer",
+                                Some(json!({"pointer": "/ttl_secs"})),
+                            )
+                        })?;
+                        Some(Duration::from_secs(secs))
+                    }
+                } else {
+                    None
+                };
+                self.store.set(identity, key.to_string(), value, ttl);
+                Ok(ConnectorOutput::new(json!({
+                    "stored": true,
+                    "key": key,
+                })))
+            }
+            "delete" | "cache.delete" => {
+                let deleted = self.store.delete(identity, key);
+                Ok(ConnectorOutput::new(json!({
+                    "deleted": deleted,
+                    "key": key,
+                })))
+            }
+            other => Err(ConnectorError::forbidden(
+                codes::OPERATION_FORBIDDEN,
+                "dispatch",
+                format!("Unsupported memory-cache operation '{other}'"),
+                ctx.invocation().effect_status(),
+            )),
         }
-        None => SqliteProviderBackend::new(options.sqlite_root.clone(), 8),
-    };
-    let sqlite = Arc::new(sqlite.with_limits(options.sql));
+    }
+
+    async fn dispose(&self, identity: &EffectiveConnectionIdentity) {
+        let mut guard = self
+            .store
+            .partitions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.remove(identity);
+    }
+}
+
+/// Register the five Community foundation Direct Rust providers and their
+/// session/cache pools, bound to the node's deployment store and bounded by
+/// its options (`V2-11.1`, `V2-14.2`–`V2-14.4`). What
+/// [`super::CompositionBuilder::community`] composes.
+pub fn register_community_foundation(r: &mut super::ProviderRegistrar<'_>) {
+    let options = r.options().clone();
+    let store = r.deployments().clone();
+    let http =
+        Arc::new(HttpProviderBackend::with_deployment_store(store.clone()).with_options(&options));
+    let pg = Arc::new(
+        PostgresProviderBackend::with_deployment_store(16, store.clone()).with_limits(options.sql),
+    );
+    let mysql = Arc::new(
+        MysqlProviderBackend::with_deployment_store(16, store.clone()).with_limits(options.sql),
+    );
+    let sqlite = Arc::new(
+        SqliteProviderBackend::with_deployment_store(options.sqlite_root.clone(), 8, store)
+            .with_limits(options.sql),
+    );
     let mem_cache = Arc::new(MemoryCacheProviderBackend::default());
 
-    pools.register(pg.session_pool());
-    pools.register(mysql.session_pool());
-    pools.register(sqlite.session_pool());
-    pools.register(mem_cache.store());
+    r.pool(pg.session_pool());
+    r.pool(mysql.session_pool());
+    r.pool(sqlite.session_pool());
+    r.pool(mem_cache.store());
 
-    providers.register(http);
-    providers.register(pg);
-    providers.register(mysql);
-    providers.register(sqlite);
-    providers.register(mem_cache);
+    r.provider(http);
+    r.provider(pg);
+    r.provider(mysql);
+    r.provider(sqlite);
+    r.provider(mem_cache);
 }
 
 #[cfg(test)]

@@ -214,14 +214,14 @@ async fn concurrent_reloads_converge_on_the_latest_rows() {
     let app = orion::server::build_router(state.clone());
 
     common::create_and_activate_workflow(&app, common::simple_log_workflow("Older Workflow")).await;
-    let (older, _) = state.composition.deployments.current_head();
+    let (older, _) = state.deployments.current_head();
     common::create_and_activate_channel(
         &app,
         "converge-ch",
         common::simple_log_workflow("Converge Workflow"),
     )
     .await;
-    let (latest, _) = state.composition.deployments.current_head();
+    let (latest, _) = state.deployments.current_head();
     assert!(latest > older);
     let published = state.runtime.load().id;
 

@@ -86,7 +86,6 @@ pub(crate) async fn create_deployment_plan(
         }
     };
     let plan = state
-        .composition
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
         .await;
@@ -147,9 +146,9 @@ pub(crate) async fn create_deployment_plan(
     )
 )]
 pub(crate) async fn get_deployments_summary(State(state): State<AppState>) -> impl IntoResponse {
-    let store = &state.composition.deployments;
+    let store = &state.deployments;
     let (head_rev, epoch) = store.current_head();
-    let local_status = state.composition.reconciler.local_status();
+    let local_status = state.reconciler.local_status();
     let revisions = store
         .list_revisions()
         .iter()
@@ -197,7 +196,6 @@ pub(crate) async fn apply_deployment(
         }
     };
     let plan = match state
-        .composition
         .deployments
         .plan_candidate_in_db(&state.db_pool, req.base_revision, manifest)
         .await
@@ -226,7 +224,6 @@ pub(crate) async fn apply_deployment(
     // the head move or not at all, and a replay that commits nothing writes
     // none.
     let receipt = match state
-        .composition
         .deployments
         .apply_candidate_audited_in_db(
             &state.db_pool,
@@ -234,7 +231,7 @@ pub(crate) async fn apply_deployment(
             &req.idempotency_key,
             &plan,
             &req.reason,
-            state.composition.admission.as_ref(),
+            state.composition.admission(),
             |receipt| {
                 crate::server::routes::admin::audit_record(
                     &principal,
@@ -297,9 +294,8 @@ async fn reconcile_locally(
             Some(e.to_string())
         }
     };
-    let node = state.composition.reconciler.local_status().identity.node_id;
+    let node = state.reconciler.local_status().identity.node_id;
     let report = state
-        .composition
         .reconciler
         .evaluate_convergence(revision, &ConvergenceTarget::ThisNode(node));
     let evaluation = ConvergenceStatusResponse {
@@ -331,7 +327,7 @@ pub(crate) async fn get_deployment_revision(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
 ) -> impl IntoResponse {
-    let revisions = state.composition.deployments.list_revisions();
+    let revisions = state.deployments.list_revisions();
     match revisions.into_iter().find(|r| r.revision == revision) {
         Some(rev) => {
             let dto = revision_row_to_dto(&rev);
@@ -374,23 +370,19 @@ pub(crate) async fn get_deployment_convergence(
     Path(revision): Path<u64>,
     Query(query): Query<ConvergenceQuery>,
 ) -> impl IntoResponse {
-    let local_node_id = state.composition.reconciler.local_status().identity.node_id;
+    let local_node_id = state.reconciler.local_status().identity.node_id;
     let target = match query.target.as_deref().unwrap_or("this-node") {
         "observed" => {
             let observed = state
-                .composition
                 .reconciler
                 .refresh_observed_nodes_from_db_pool(&state.db_pool)
                 .await
-                .unwrap_or_else(|_| state.composition.reconciler.observed_node_ids());
+                .unwrap_or_else(|_| state.reconciler.observed_node_ids());
             ConvergenceTarget::ObservedNodes(observed)
         }
         _ => ConvergenceTarget::ThisNode(local_node_id),
     };
-    let report = state
-        .composition
-        .reconciler
-        .evaluate_convergence(revision, &target);
+    let report = state.reconciler.evaluate_convergence(revision, &target);
     let dto = ConvergenceStatusResponse {
         converged: report.converged,
         target_revision: report.target_revision,
@@ -423,7 +415,6 @@ pub(crate) async fn rollback_deployment(
 ) -> impl IntoResponse {
     let actor = principal_id(&principal);
     match state
-        .composition
         .deployments
         .rollback_to_revision_audited_in_db(
             &state.db_pool,
@@ -434,7 +425,7 @@ pub(crate) async fn rollback_deployment(
                 target_revision: req.target_revision,
                 reason: &req.reason,
             },
-            state.composition.admission.as_ref(),
+            state.composition.admission(),
             // In the commit's transaction, as an apply's is.
             |receipt| {
                 crate::server::routes::admin::audit_record(

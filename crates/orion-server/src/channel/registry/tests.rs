@@ -276,8 +276,11 @@ async fn a_registered_driver_that_registers_routes_is_routed() {
         protocol: "graphql".to_string(),
         ..rest_channel("graph", "/graph")
     };
-    let deps = TestDeps::new();
-    deps.channel_drivers.register(Arc::new(Graphql));
+    let mut deps = TestDeps::new();
+    let mut drivers = crate::extensions::community_drivers();
+    drivers.push(Arc::new(Graphql));
+    deps.channel_drivers =
+        crate::extensions::ChannelDriverRegistry::new(drivers).expect("distinct protocols");
     deps.reload(&registry, &[channel]).await;
 
     assert!(

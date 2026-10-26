@@ -1,7 +1,7 @@
 //! Community Edition boundary verifier (`V2-11.3`, `DEC-005`), compiled for tests only.
 //!
 //! The tests below assert that the public Community Edition assembly
-//! ([`CompositionRoot::community`]):
+//! ([`super::CompositionRoot::community`], built):
 //!
 //! 1. Registers **only** the 3 foundational native Rust channel drivers
 //!    (`cron`, `http`, `rest`) and zero Enterprise-only channel
@@ -10,7 +10,7 @@
 //!    (`org.orion.http`, `org.orion.memory-cache`, `org.orion.mysql`,
 //!    `org.orion.postgresql`, `org.orion.sqlite`) and zero Enterprise-only
 //!    Direct Rust providers.
-//! 3. Uses [`CommunityAdmissionPolicy`](super::admission::CommunityAdmissionPolicy)
+//! 3. Uses [`CommunityPackageVerifier`](super::admission::CommunityPackageVerifier)
 //!    (`orion.community.admission/1`) which rejects `tier: "enterprise"` packages
 //!    with `ENTERPRISE_TIER_NOT_ENABLED`.
 //! 4. Supports registering and executing a custom `workflow` connector package
@@ -18,14 +18,14 @@
 
 use serde::Serialize;
 
-use super::CompositionRoot;
+use super::Composition;
 use super::contract::ImplementationKind;
 use super::foundation::COMMUNITY_RUST_DRIVERS;
 
 /// Canonical Community Edition native Rust channel driver protocol IDs (`DEC-003`).
 pub const COMMUNITY_CHANNEL_PROTOCOLS: [&str; 3] = ["cron", "http", "rest"];
 
-/// Boundary violation discovered while auditing a [`CompositionRoot`] against the
+/// Boundary violation discovered while auditing a [`Composition`] against the
 /// Community Edition contract (`V2-11.3`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoundaryViolation {
@@ -62,9 +62,9 @@ impl CommunityAssemblyReport {
 ///   registered.
 /// - Allows any number of user-installed `workflow` providers.
 /// - Checks that `orion.community.admission/1` is active.
-pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyReport {
+pub fn verify_community_assembly(root: &Composition) -> CommunityAssemblyReport {
     let mut violations = Vec::new();
-    let admission_policy_id = root.admission.policy_id().to_string();
+    let admission_policy_id = root.admission().policy_id().to_string();
 
     if admission_policy_id != "orion.community.admission/1" {
         violations.push(BoundaryViolation {
@@ -76,7 +76,7 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
         });
     }
 
-    let registered_channels: Vec<String> = root.channels.protocol_ids();
+    let registered_channels: Vec<String> = root.channels().protocol_ids();
 
     for expected_channel in COMMUNITY_CHANNEL_PROTOCOLS {
         if !registered_channels.iter().any(|c| c == expected_channel) {
@@ -105,7 +105,7 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
     let mut registered_rust_providers = Vec::new();
     let mut registered_workflow_providers = Vec::new();
 
-    for (kind, id) in root.providers.registered_drivers() {
+    for (kind, id) in root.providers().registered_drivers() {
         match kind {
             ImplementationKind::Rust => registered_rust_providers.push(id),
             ImplementationKind::Workflow => registered_workflow_providers.push(id),
@@ -147,7 +147,7 @@ pub fn verify_community_assembly(root: &CompositionRoot) -> CommunityAssemblyRep
         registered_channels,
         registered_rust_providers,
         registered_workflow_providers,
-        resource_pool_count: root.pools.len(),
+        resource_pool_count: root.pools().len(),
         violations,
     }
 }
@@ -164,9 +164,15 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
+    fn community() -> Composition {
+        crate::extensions::CompositionRoot::community()
+            .build_in_memory()
+            .unwrap()
+    }
+
     #[test]
     fn default_community_assembly_passes_boundary_audit() {
-        let root = CompositionRoot::community();
+        let root = community();
         let report = verify_community_assembly(&root);
         assert!(
             report.is_compliant(),
@@ -216,8 +222,10 @@ mod tests {
 
     #[test]
     fn detects_enterprise_channel_leak_in_community_audit() {
-        let root =
-            CompositionRoot::community().with_channel_driver(Arc::new(EnterpriseKafkaDriver));
+        let root = crate::extensions::CompositionRoot::community()
+            .with_channel_driver(Arc::new(EnterpriseKafkaDriver))
+            .build_in_memory()
+            .unwrap();
         let report = verify_community_assembly(&root);
         assert!(!report.is_compliant());
         assert!(report.violations.iter().any(|v| v.code
@@ -227,7 +235,7 @@ mod tests {
 
     #[test]
     fn a_workflow_package_backend_keeps_the_assembly_compliant() {
-        let root = CompositionRoot::community();
+        let root = community();
         let provider = ProviderReference {
             provider_id: "community.composite-cache".to_string(),
             version: "2.0.0".to_string(),
@@ -251,7 +259,7 @@ mod tests {
         let backend = Arc::new(WorkflowProviderBackend::new(
             package,
             WorkflowHost {
-                providers: root.providers.clone(),
+                providers: root.providers().clone(),
                 jwks: Arc::new(crate::jwt::jwks::JwksCache::new(
                     reqwest::Client::new(),
                     false,
@@ -259,7 +267,7 @@ mod tests {
                 ops_budget: 0,
             },
         ));
-        let root = root.with_provider_backend(backend);
+        root.providers().admit(backend).unwrap();
 
         // The assembly stays Community-compliant with a custom workflow provider.
         let report = verify_community_assembly(&root);

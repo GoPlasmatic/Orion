@@ -501,13 +501,13 @@ impl NodeReconciler {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::extensions::CommunityAdmissionPolicy;
+    use crate::extensions::Admission;
     use crate::extensions::deployment_store::{CanonicalManifest, EntityKind, ManifestMember};
 
     #[test]
     fn reconciler_quarantines_per_entity_discards_superseded_and_enforces_lease() {
         let store = ImmutableDeploymentStore::new("node-a");
-        let policy = CommunityAdmissionPolicy::new();
+        let policy = Admission::community();
         let reconciler = NodeReconciler::new(store.clone(), "node-a", "boot-1");
 
         // Commit revisions 1 and 2
@@ -605,37 +605,25 @@ mod tests {
             .unwrap();
         let db_pool = crate::storage::DbPool::Sqlite(pool);
 
-        let root_a = crate::extensions::CompositionRoot::community_with(
-            &crate::extensions::FoundationOptions::default(),
-            NodeIdentity::new("node-alpha", "boot-alpha"),
-        );
-        assert_eq!(
-            root_a.deployments.node_id(),
-            "node-alpha",
-            "the identity a root is built with is the store's and the reconciler's"
-        );
+        let store_a = ImmutableDeploymentStore::new("node-alpha");
+        let rec_a = NodeReconciler::new(store_a.clone(), "node-alpha", "boot-alpha");
 
-        let policy = CommunityAdmissionPolicy::new();
+        let policy = Admission::community();
         let m = CanonicalManifest {
             schema_version: 2,
             providers: Vec::new(),
             provider_lock_digest: None,
             members: Vec::new(),
         };
-        let plan = root_a.deployments.plan_candidate(0, m).unwrap();
-        let receipt = root_a
-            .deployments
+        let plan = store_a.plan_candidate(0, m).unwrap();
+        let receipt = store_a
             .apply_candidate("admin", "idem-obs", &plan, "deploy", &policy)
             .unwrap();
         assert_eq!(receipt.receiving_node_id, "node-alpha");
 
-        root_a.reconciler.observe_desired_head();
-        root_a
-            .reconciler
-            .build_and_publish_candidate(1, Vec::new())
-            .unwrap();
-        root_a
-            .reconciler
+        rec_a.observe_desired_head();
+        rec_a.build_and_publish_candidate(1, Vec::new()).unwrap();
+        rec_a
             .persist_local_status_to_db_pool(&db_pool)
             .await
             .unwrap();
@@ -648,17 +636,15 @@ mod tests {
             .await
             .unwrap();
 
-        let observed = root_a
-            .reconciler
+        let observed = rec_a
             .refresh_observed_nodes_from_db_pool(&db_pool)
             .await
             .unwrap();
         assert!(observed.contains("node-alpha"));
         assert!(observed.contains("node-beta"));
 
-        let conv_pending = root_a
-            .reconciler
-            .evaluate_convergence(1, &ConvergenceTarget::ObservedNodes(observed.clone()));
+        let conv_pending =
+            rec_a.evaluate_convergence(1, &ConvergenceTarget::ObservedNodes(observed.clone()));
         assert!(!conv_pending.converged);
         assert_eq!(conv_pending.pending_nodes, vec!["node-beta".to_string()]);
     }

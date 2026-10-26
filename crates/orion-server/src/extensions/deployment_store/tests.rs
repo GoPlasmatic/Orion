@@ -1,5 +1,5 @@
 use super::*;
-use crate::extensions::CommunityAdmissionPolicy;
+use crate::extensions::Admission;
 use std::path::PathBuf;
 
 fn sample_archive_entries() -> Vec<ArchiveEntryInput> {
@@ -81,7 +81,7 @@ fn typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
 #[test]
 fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
     let store = ImmutableDeploymentStore::new("node-test-1");
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
 
     // 1. Reject symlink in archive (V2-04.1)
     let mut bad_entries = sample_archive_entries();
@@ -249,7 +249,7 @@ async fn sqlite_migration_and_persistence_roundtrip() {
         .expect("the sqlite v2 baseline must apply");
 
     let store = ImmutableDeploymentStore::new("node-sql-1");
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     let entries = sample_archive_entries();
     let pkg = store.ingest_verified_archive(&entries).unwrap();
     store
@@ -389,7 +389,7 @@ async fn sqlite_migration_and_persistence_roundtrip() {
 #[test]
 fn connection_secret_rejection_canonical_digests_and_staged_gc_protection() {
     let store = ImmutableDeploymentStore::new("node-sec-1");
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     let entries = sample_archive_entries();
     let pkg = store.ingest_verified_archive(&entries).unwrap();
     store
@@ -488,7 +488,7 @@ async fn cross_replica_db_transactional_cas_and_revocation_enforcement() {
 
     let store_a = ImmutableDeploymentStore::new("replica-a");
     let store_b = ImmutableDeploymentStore::new("replica-b");
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
 
     let entries = sample_archive_entries();
     let pkg = store_a
@@ -612,7 +612,7 @@ async fn failed_persistence_never_undoes_committed_in_memory_state() {
         .ingest_verified_archive_in_db(&db_pool, &entries)
         .await
         .unwrap();
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     store
         .admit_package_in_db(&db_pool, &pkg.package_digest, &policy, None)
         .await
@@ -664,7 +664,7 @@ async fn failed_persistence_never_undoes_committed_in_memory_state() {
 #[test]
 fn a_builtin_provider_needs_no_declaration_and_an_uploaded_one_does() {
     let store = ImmutableDeploymentStore::new("node-builtin");
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     let pkg = store
         .ingest_verified_archive(&sample_archive_entries())
         .unwrap();
@@ -771,7 +771,7 @@ fn an_endpoint_key_is_public_and_a_token_key_is_not() {
 #[test]
 fn collection_never_takes_what_is_referenced_retained_admitted_or_recent() {
     let store = ImmutableDeploymentStore::new("node-gc");
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     let manifest = |id: &str, digest: &str| CanonicalManifest {
         schema_version: 2,
         providers: Vec::new(),
@@ -912,7 +912,7 @@ fn collection_never_takes_what_is_referenced_retained_admitted_or_recent() {
 #[test]
 fn a_draining_artifact_a_retained_revision_names_is_revived() {
     let store = ImmutableDeploymentStore::new("node-gc-revive");
-    let policy = CommunityAdmissionPolicy::new();
+    let policy = Admission::community();
     let d = store
         .store_definition_artifact(b"wf".to_vec())
         .unwrap()
