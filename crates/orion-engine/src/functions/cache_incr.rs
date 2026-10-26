@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::sync::Arc;
 
 use dataflow_rs::datavalue::OwnedDataValue;
@@ -7,7 +8,7 @@ use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 
 use super::cache_write::rendered_ttl_secs;
 use super::connector_helpers::{to_connect_error, to_exec_error};
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::HandlerError;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
@@ -49,15 +50,18 @@ const ROOT_OUTPUT: &str = "`cache_incr` writes a number, and a context root take
 /// is optional: unset, nothing is written (I190's primary output).
 #[derive(Debug, FunctionConfig)]
 pub struct CacheIncrConfig {
-    /// The cache connector holding the counter.
+    /// Name of the cache connector holding the counter.
     connector: String,
-    /// The counter's key; a missing key counts as 0 and is created.
+    /// Counter key. A missing key counts as 0 and is created. JSONLogic: a literal, or an
+    /// expression over the message.
     key: Expr<OwnedDataValue>,
-    /// The whole number added, 1 when unset; a negative one decrements.
+    /// Amount to add, a whole number; negative decrements. Defaults to 1. JSONLogic: a literal,
+    /// or an expression over the message.
     by: Option<Expr<OwnedDataValue>>,
-    /// The seconds a key this call creates lives; later bumps keep it.
+    /// Time-to-live in seconds, applied only when this call creates the key; later bumps keep
+    /// its expiry. Omit for no expiry. JSONLogic: a literal, or an expression over the message.
     ttl_secs: Option<Interpolated>,
-    /// Where the new value is written; unset, nothing is.
+    /// Dotted path where the new value is stored. Omit to record nothing.
     output: Option<Output>,
 }
 
@@ -68,11 +72,50 @@ pub struct CacheIncrFunction {
     pub registry: Arc<ConnectorRegistry>,
 }
 
+impl OrionFunction for CacheIncrFunction {
+    type Connector = crate::connector::kind::Cache;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Atomically increment an integer on a cache connector.",
+        category: "connector",
+        retry_safety: RetrySafety::UnsafeWrite,
+        fields: &[
+            FieldOverlay {
+                name: "key",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "by",
+                kind: Some(FieldKind::Number),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "ttl_secs",
+                kind: Some(FieldKind::Number),
+                template_at: Some(&[""]),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            cache_pool: deps.cache_pool.clone(),
+            registry: deps.registry.clone(),
+        }
+    }
+}
+
 impl Function for CacheIncrFunction {
     type Config = CacheIncrConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     /// I185: the value is never an object, so an `output` set to a literal
@@ -93,7 +136,7 @@ impl Function for CacheIncrFunction {
         let output = cfg
             .output
             .as_ref()
-            .map(|out| kit::output_path(ctx, out, Some(&kit::DATA)))
+            .map(|out| Self::DEFINITION.output_path(ctx, out))
             .transpose()?;
         let key = ctx.eval(&cfg.key)?;
         let key = read::required_str(Some(&key), "key", NAME)?;
@@ -103,8 +146,10 @@ impl Function for CacheIncrFunction {
         let mut value = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn =
-                kit::require_connector::<crate::connector::kind::Cache>(&config, &cfg.connector)?;
+            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             kit::require_op(conn.operations.write, "write", &cfg.connector)?;
             value = Some(bump(&self.cache_pool, &cfg.connector, conn, &key, by, ttl).await?);
             Ok(Outcome::Ok)
@@ -116,47 +161,6 @@ impl Function for CacheIncrFunction {
         Ok(Outcome::Ok)
     }
 }
-
-// -- Input schema (F53) --
-
-pub(super) const CACHE_INCR_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the cache connector holding the counter.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "key",
-        description: "Counter key. A missing key counts as 0 and is created. JSONLogic: a literal, or an expression over the message.",
-        kind: FieldKind::String,
-        required: true,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "by",
-        description: "Amount to add, a whole number; negative decrements. Defaults to 1. JSONLogic: a literal, or an expression over the message.",
-        kind: FieldKind::Number,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "ttl_secs",
-        description: "Time-to-live in seconds, applied only when this call creates the key; later bumps keep its expiry. Omit for no expiry. JSONLogic: a literal, or an expression over the message.",
-        kind: FieldKind::Number,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where the new value is stored. Omit to record nothing.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -199,11 +203,7 @@ mod tests {
     /// connector and the key are required (I183); `output` is optional and
     /// the primary output; an unknown key is refused (break 2a).
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = CacheIncrConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = CACHE_INCR_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let compile =
             |input: Value| testing::config_with::<CacheIncrConfig>(&kit::test_exprs(), input);
         let cfg = compile(json!({

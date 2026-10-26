@@ -12,6 +12,7 @@
 //! write a response body: the response cache's keyspace stays one only Orion
 //! writes to (S19), and a workflow can move a counter in it, nothing else.
 
+use super::definition::{Definition, FieldOverlay, NoConnector, OrionFunction};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -21,10 +22,12 @@ use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome, Path};
 
 use super::connector_helpers::to_exec_error;
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::connector::cache_backend::CachePool;
 use crate::connector::cache_namespace;
-use crate::kit::{self, read};
+#[cfg(test)]
+use crate::kit;
+use crate::kit::read;
 use crate::{ErrorClass, HandlerError};
 
 /// This function's name, written once (F48): both engines register it
@@ -86,9 +89,11 @@ async fn invalidate(
 /// (I190's primary output).
 #[derive(Debug, FunctionConfig)]
 pub struct CacheInvalidateConfig {
-    /// The response-cache namespaces bumped.
+    /// Response-cache namespaces to invalidate (at most 64), as declared in channels'
+    /// `cache.namespaces`. JSONLogic: an array of literals or expressions, or an expression
+    /// evaluating to one.
     namespaces: Expr<OwnedDataValue>,
-    /// Where `{"namespaces": n, "stores": m}` is written; unset, nothing is.
+    /// Dotted path where `{"namespaces": n, "stores": m}` is stored. Omit to record nothing.
     output: Option<Output>,
 }
 
@@ -120,7 +125,7 @@ impl CacheInvalidateFunction {
         let output = cfg
             .output
             .as_ref()
-            .map(|out| kit::output_path(ctx, out, Some(&kit::DATA)))
+            .map(|out| Self::DEFINITION.output_path(ctx, out))
             .transpose()?;
         let stores = invalidate(&*self.channel_loader, &self.cache_pool, &namespaces).await?;
         Ok(output.map(|path| {
@@ -133,11 +138,46 @@ impl CacheInvalidateFunction {
     }
 }
 
+impl OrionFunction for CacheInvalidateFunction {
+    type Connector = NoConnector;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Invalidate channel response-cache namespaces, on every store and every node.",
+        category: "utility",
+        retry_safety: RetrySafety::IdempotentWrite,
+        fields: &[FieldOverlay {
+            name: "namespaces",
+            kind: Some(FieldKind::Array),
+            ..FieldOverlay::DEFAULT
+        }],
+        stub_target: Some(""),
+        stub_default: Some(offline_result),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            channel_loader: deps.namespaces.clone(),
+            cache_pool: deps.cache_pool.clone(),
+        }
+    }
+}
+
+// An offline run has no response-cache stores to invalidate.
+fn offline_result(input: &serde_json::Value) -> serde_json::Value {
+    let namespaces = input
+        .get("namespaces")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    serde_json::json!({ "namespaces": namespaces, "stores": 0 })
+}
+
 impl Function for CacheInvalidateFunction {
     type Config = CacheInvalidateConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     async fn call(
@@ -155,26 +195,6 @@ impl Function for CacheInvalidateFunction {
         Ok(Outcome::Ok)
     }
 }
-
-// -- Input schema (F53) --
-
-pub(super) const CACHE_INVALIDATE_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "namespaces",
-        description: "Response-cache namespaces to invalidate (at most 64), as declared in channels' `cache.namespaces`. JSONLogic: an array of literals or expressions, or an expression evaluating to one.",
-        kind: FieldKind::Array,
-        required: true,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where `{\"namespaces\": n, \"stores\": m}` is stored. Omit to record nothing.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -238,14 +258,7 @@ mod tests {
     /// output; an unknown key is refused, as 1.12's `deny_unknown` refused it
     /// at authoring.
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = CacheInvalidateConfig::fields()
-            .iter()
-            .map(|f| &*f.name)
-            .collect();
-        let table: Vec<&str> = CACHE_INVALIDATE_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let compile =
             |input: Value| testing::config_with::<CacheInvalidateConfig>(&kit::test_exprs(), input);
         let cfg = compile(json!({"namespaces": {"var": "data.ns"}})).expect("compiles");

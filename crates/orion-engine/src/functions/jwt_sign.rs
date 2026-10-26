@@ -6,6 +6,7 @@
 //! and dry-run executes it for real. The signing key resolves through the
 //! secret registry per call and never enters context, errors, or traces.
 
+use super::definition::{Definition, FieldOverlay, NoConnector, OrionFunction};
 use std::borrow::Cow;
 
 use dataflow_rs::datavalue::OwnedDataValue;
@@ -15,7 +16,7 @@ use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 use serde_json::{Map, Value};
 
 use super::connector_helpers::parse_duration_secs;
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::kit::{self, KeyMaterial, read};
 use crate::{ErrorClass, HandlerError};
 
@@ -135,25 +136,29 @@ const ROOT_OUTPUT: &str = "`jwt_sign` writes a token string, and a context root 
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct JwtSignConfig {
-    /// The signing algorithm: HS/RS/PS 256-512, ES256/384 or EdDSA.
+    /// Signing algorithm: HS/RS/PS 256-512, ES256/384, or EdDSA.
     algorithm: String,
-    /// The HS secret or the private-key PEM.
+    /// HS secret or RS/ES/Ed private-key PEM: {"secret": "name"} reads the engine's [secrets]
+    /// store; a string is a literal or a reference (env://NAME). Never appears in traces or
+    /// errors.
     key: KeyMaterial,
-    /// How an HS secret becomes bytes: utf8, base64 or hex.
+    /// How an HS secret becomes bytes: utf8 (default), base64, hex.
     key_encoding: Option<String>,
-    /// The claims, `var` holes filled from the message.
+    /// The claims object; values fold {"var": ..} nodes (compose computed claims with a map
+    /// task first). iat is stamped automatically.
     claims: Option<Interpolated>,
-    /// The token's lifetime: seconds or `"<n>s|m|h|d"`, setting `exp`.
+    /// Token lifetime: integer seconds or `"<n>s|m|h|d"`; sets exp from now. Required unless
+    /// claims carries an explicit exp.
     expires_in: Option<Expr<OwnedDataValue>>,
-    /// The `iss` claim.
+    /// Convenience for the iss claim.
     issuer: Option<Expr<OwnedDataValue>>,
-    /// The `aud` claim, `var` holes filled from the message.
+    /// Convenience for the aud claim (string or array; resolvable).
     audience: Option<Interpolated>,
-    /// The offset from now for the `nbf` claim.
+    /// Offset from now for the nbf claim: integer seconds or `"<n>s|m|h|d"`.
     not_before: Option<Expr<OwnedDataValue>>,
-    /// The key id stamped into the token's header.
+    /// Key id stamped into the token header, for rotation-aware verifiers.
     kid: Option<Expr<OwnedDataValue>>,
-    /// Where the token is written.
+    /// Dotted path where the compact JWS (string) is stored. Defaults to "data".
     #[output(default = "data")]
     output: Output,
 }
@@ -182,11 +187,56 @@ fn check(cfg: &JwtSignConfig, cx: &mut CompileCx<'_>) {
 /// read in the same order, the key last.
 pub struct JwtSignFunction;
 
+impl OrionFunction for JwtSignFunction {
+    type Connector = NoConnector;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Mint a signed JWT (login, refresh, client assertions).",
+        category: "utility",
+        retry_safety: RetrySafety::Pure,
+        fields: &[
+            FieldOverlay {
+                name: "key",
+                secret_at: &[""],
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "claims",
+                kind: Some(FieldKind::Object),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "issuer",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "audience",
+                template_at: Some(&[""]),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "kid",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        validate_static: Some(validate_static_input),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(_deps: &crate::HandlerDeps<'_>) -> Self {
+        Self
+    }
+}
+
 impl Function for JwtSignFunction {
     type Config = JwtSignConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     /// I185: the token is never an object, so an `output` that is a literal
@@ -243,7 +293,7 @@ async fn token<'c>(
     }
     let key_encoding = cfg.key_encoding.as_deref();
     let kid = optional_str(ctx, &cfg.kid, "kid")?;
-    let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+    let output = JwtSignFunction::DEFINITION.output_path(ctx, &cfg.output)?;
 
     let mut claims = match &cfg.claims {
         None => Map::new(),
@@ -314,92 +364,6 @@ pub(super) fn validate_static_input(
     errors
 }
 
-// -- Input schema (F53) --
-
-pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "algorithm",
-        description: "Signing algorithm: HS/RS/PS 256-512, ES256/384, or EdDSA.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "key",
-        description: "HS secret or RS/ES/Ed private-key PEM: {\"secret\": \"name\"} \
-                      reads the engine's [secrets] store; a string is a literal or a \
-                      reference (env://NAME). Never appears in traces or errors.",
-        kind: FieldKind::String,
-        required: true,
-        secret_at: &[""],
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "key_encoding",
-        description: "How an HS secret becomes bytes: utf8 (default), base64, hex.",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "claims",
-        description: "The claims object; values fold {\"var\": ..} nodes (compose \
-                      computed claims with a map task first). iat is stamped \
-                      automatically.",
-        kind: FieldKind::Object,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "expires_in",
-        description: "Token lifetime: integer seconds or \"<n>s|m|h|d\"; sets exp from \
-                      now. Required unless claims carries an explicit exp.",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "issuer",
-        description: "Convenience for the iss claim.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "audience",
-        description: "Convenience for the aud claim (string or array; resolvable).",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "not_before",
-        description: "Offset from now for the nbf claim: integer seconds or \
-                      \"<n>s|m|h|d\".",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "kid",
-        description: "Key id stamped into the token header, for rotation-aware \
-                      verifiers.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where the compact JWS (string) is stored. Defaults \
-                      to \"data\".",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
-/// `jwt_sign` against 1.12's records of the same input (the round trips
-/// through `jwt_verify` live beside it, in `jwt_verify.rs`).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,14 +408,6 @@ mod tests {
             .decode(payload)
             .expect("base64url");
         serde_json::from_slice(&bytes).expect("a claims object")
-    }
-
-    /// Declaration order is the field table's (I179).
-    #[test]
-    fn the_config_declares_the_field_table_in_its_order() {
-        let fields: Vec<&str> = JwtSignConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = JWT_SIGN_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
     }
 
     /// Each field compiles in the position 1.12 executed it in (I183): the

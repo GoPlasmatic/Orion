@@ -5,6 +5,7 @@
 //! [`HttpCallConfig`] (break 10), resolving its fields in 1.12's order, and
 //! hands the request to one `send`.
 
+use super::definition::{Definition, FieldOverlay, NullOutput, OrionFunction};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +18,7 @@ use dataflow_rs::{Ctx, Expr, Function, Outcome};
 use serde_json::Value;
 
 use super::http_common::{self, BodyFormat, ResponseFormat, build_url};
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::connector::{ConnectorRegistry, HttpConnectorConfig};
 use crate::kit::{self, read};
 use crate::retry::{RetryPolicy, retry_with_attempts};
@@ -169,27 +170,31 @@ async fn send(
 #[derive(Debug, FunctionConfig)]
 #[config(check = HttpCallConfig::check)]
 pub struct HttpCallConfig {
-    /// The HTTP connector called.
+    /// Name of the HTTP connector to call (JSONLogic; a computed name is not yet supported).
     connector: String,
-    /// The request method.
+    /// HTTP method (GET, POST, PUT, DELETE, PATCH). Defaults to GET. The one parameter that is
+    /// not JSONLogic — the connector's method allow-list is checked before the message is
+    /// consulted.
     #[config(default = "GET")]
     method: String,
-    /// The path appended to the connector's base URL.
+    /// Path appended to the connector's base URL (JSONLogic).
     path: Option<Expr<OwnedDataValue>>,
-    /// Extra request headers, each value computed from the message. A map
-    /// with a default, not an `Option`, so `"headers": null` is refused as
-    /// 3.15's serde refused it.
+    /// Additional request headers. Each value is JSONLogic, so a bearer token or a correlation
+    /// id can be computed from the message.
     #[config(default_json = "{}")]
     headers: BTreeMap<String, Expr<OwnedDataValue>>,
-    /// The request body.
+    /// Request body, any JSON value (JSONLogic).
     body: Option<Expr<OwnedDataValue>>,
-    /// How the body becomes bytes: `json`, `form` or `text`.
+    /// How the body becomes request bytes: 'json' (default), 'form' (URL-encoded key/value
+    /// pairs), or 'text' (string sent verbatim). Sets the content-type unless a header names
+    /// one explicitly. (JSONLogic.)
     body_format: Option<Expr<OwnedDataValue>>,
-    /// Where the response body is written; unset discards it.
+    /// Dotted path where the response body is written (JSONLogic). Omit to discard it.
     output: Option<Output>,
-    /// How the response becomes a value: `json` or `text`.
+    /// How the response bytes are captured at `output`: 'json' (default, parsed) or 'text' (a
+    /// plain string). (JSONLogic.)
     response_format: Option<Expr<OwnedDataValue>>,
-    /// The timeout of one attempt, in milliseconds.
+    /// Request timeout in milliseconds (JSONLogic). Defaults to 30000.
     #[config(default = 30000)]
     timeout_ms: Expr<OwnedDataValue>,
 }
@@ -241,11 +246,54 @@ fn plain(
     Ok(Some(read::plain_str(&value).into_owned()))
 }
 
+impl OrionFunction for HttpCallFunction {
+    type Connector = crate::connector::kind::Http;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "HTTP request to an HTTP connector with retry + circuit breaker.",
+        category: "connector",
+        retry_safety: RetrySafety::DependsOn { input: "method" },
+        fields: &[
+            FieldOverlay {
+                name: "path",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "body_format",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "response_format",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "timeout_ms",
+                kind: Some(FieldKind::Number),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        null_output: NullOutput::Reject,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            registry: deps.registry.clone(),
+            client: deps.client.clone(),
+        }
+    }
+}
+
 impl Function for HttpCallFunction {
     type Config = HttpCallConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &HttpCallConfig) -> dataflow_rs::Result<Outcome> {
@@ -255,7 +303,7 @@ impl Function for HttpCallFunction {
         let output = cfg
             .output
             .as_ref()
-            .map(|out| kit::output_path(ctx, out, None))
+            .map(|out| Self::DEFINITION.output_path(ctx, out))
             .transpose()?;
         // `parse`'s half, before the connector is looked up (F58): the
         // formats, the timeout and the headers, in that order.
@@ -279,8 +327,10 @@ impl Function for HttpCallFunction {
         let mut response = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let http_config =
-                kit::require_connector::<crate::connector::kind::Http>(&config, &cfg.connector)?;
+            let http_config = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             kit::require_method_allowed(&http_config.operations, method.as_str(), &cfg.connector)?;
             // The only message-dependent reads after the gate (F58).
             let path = plain(ctx, &cfg.path)?;
@@ -318,88 +368,6 @@ impl Function for HttpCallFunction {
     }
 }
 
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the HTTP connector to call (JSONLogic; a computed name is \
-                      not yet supported).",
-        kind: FieldKind::String,
-        required: true,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "method",
-        description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Defaults to GET. \
-                      The one parameter that is not JSONLogic — the connector's method \
-                      allow-list is checked before the message is consulted.",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "path",
-        description: "Path appended to the connector's base URL (JSONLogic).",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "headers",
-        description: "Additional request headers. Each value is JSONLogic, so a bearer \
-                      token or a correlation id can be computed from the message.",
-        kind: FieldKind::Object,
-        template_at: &["*"],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "body",
-        description: "Request body, any JSON value (JSONLogic).",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "body_format",
-        description: "How the body becomes request bytes: 'json' (default), 'form' \
-                      (URL-encoded key/value pairs), or 'text' (string sent verbatim). \
-                      Sets the content-type unless a header names one explicitly. \
-                      (JSONLogic.)",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where the response body is written (JSONLogic). Omit to discard it.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "response_format",
-        description: "How the response bytes are captured at `output`: 'json' \
-                      (default, parsed) or 'text' (a plain string). (JSONLogic.)",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "timeout_ms",
-        description: "Request timeout in milliseconds (JSONLogic). Defaults to 30000.",
-        kind: FieldKind::Number,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,14 +392,6 @@ mod tests {
     }
 
     // -- The config --
-
-    /// Declaration order is the field table's (I179), which is the docs page's.
-    #[test]
-    fn the_config_declares_the_field_table_in_its_order() {
-        let fields: Vec<&str> = HttpCallConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = HTTP_CALL_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-    }
 
     #[test]
     fn every_field_kind_compiles() {
@@ -935,7 +895,8 @@ mod tests {
     }
 
     /// The run's deadline (`ctx.deadline()`) ends a call still waiting on its
-    /// upstream, as 1.12's channel timeout ended one: the call ends `TimedOut`, well before its own `timeout_ms`, and
+    /// upstream, as 1.12's channel timeout ended one: the call ends `TimedOut`, well before its
+    /// own `timeout_ms`, and
     /// nothing is written.
     #[tokio::test]
     async fn the_runs_deadline_ends_a_waiting_call() {

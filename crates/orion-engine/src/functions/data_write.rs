@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use super::connector_helpers::{
     require_op_allowed, to_connect_error, to_exec_error,
 };
 use super::db_read::rendered_row_format;
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, FieldSchema, RetrySafety};
 use crate::HandlerError;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
@@ -121,19 +122,27 @@ async fn run_write(
 /// documents of `var` holes, as 1.12 folded them.
 #[derive(Debug, FunctionConfig)]
 pub struct DataWriteConfig {
-    /// The `db` connector written through.
+    /// Name of the db (SQL) connector to write to.
     connector: String,
-    /// The backend-neutral mutation envelope.
+    /// Backend-neutral mutation envelope: op/target/values/set/filter/on_conflict/returning/all.
     write: Value,
-    /// The named values folded into the envelope's `{"param": …}` nodes.
+    /// Object of named values folded into {"param": ..} nodes in values/set/filter. A value of
+    /// {"var": "path"} is read from the message context.
     params: Option<Interpolated>,
-    /// The inline entity schema.
+    /// Inline entity schema (renames, allowlist, writable flag). Undeclared entities and
+    /// columns are rejected, so a write without one reaches nothing; pass {"unmapped":
+    /// "identity"} for pre-1.0 pass-through.
     schema: Option<Value>,
-    /// How a decimal column in a `returning` row renders. SQL backends only.
+    /// How an arbitrary-precision decimal column is rendered: "number" (default) or "string". A
+    /// number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a
+    /// string keeps every digit, which is what a money column needs. SQL backends only.
     numeric_as: Option<Interpolated>,
-    /// How a binary column in a `returning` row renders. SQL backends only.
+    /// How a binary column is rendered: "auto" (default), "hex", "base64" or "text". Auto reads
+    /// the bytes as text when they are valid UTF-8 and as hex when they are not, so its result
+    /// shape depends on the data; name an encoding for a column that is genuinely binary. SQL
+    /// backends only.
     binary_as: Option<Interpolated>,
-    /// Where the write's answer is written.
+    /// Dotted path in the message where the write result is written. Defaults to "data".
     #[output(default = "data")]
     output: Output,
 }
@@ -150,18 +159,71 @@ pub struct DataWriteFunction {
     pub max_returning: usize,
 }
 
+impl OrionFunction for DataWriteFunction {
+    type Connector = crate::connector::DataBackend;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Run a backend-neutral mutation (insert/update/delete/upsert) against a SQL connector.",
+        category: "connector",
+        retry_safety: RetrySafety::DependsOn { input: "op" },
+        fields: &[
+            FieldOverlay {
+                name: "write",
+                kind: Some(FieldKind::Object),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "params",
+                kind: Some(FieldKind::Object),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "schema",
+                kind: Some(FieldKind::Object),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "numeric_as",
+                kind: Some(FieldKind::String),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "binary_as",
+                kind: Some(FieldKind::String),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            pool_cache: deps.sql_pool_cache.clone(),
+            registry: deps.registry.clone(),
+            write_config: deps.write_config.clone(),
+            max_returning: deps.query_config.max_limit as usize,
+        }
+    }
+}
+
 impl Function for DataWriteFunction {
     type Config = DataWriteConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &DataWriteConfig) -> dataflow_rs::Result<Outcome> {
         let channel = kit::channel(ctx);
         // The prologue's output, then `parse`'s order: `params`, the
         // rendering choices, the literals.
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let params = cfg
             .params
             .as_ref()
@@ -182,8 +244,10 @@ impl Function for DataWriteFunction {
         let mut answer = None;
         let done = kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn =
-                kit::require_connector::<crate::connector::DataBackend>(&config, &cfg.connector)?;
+            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             let backends = Backends {
                 pool_cache: &self.pool_cache,
                 write_config: &self.write_config,
@@ -395,73 +459,6 @@ where
     }
 }
 
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the db (SQL) connector to write to.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "write",
-        description: "Backend-neutral mutation envelope: op/target/values/set/filter/on_conflict/returning/all.",
-        kind: FieldKind::Object,
-        // W7: required. The pre-1.0 flat form (envelope keys at the top level)
-        // is gone, so there is exactly one shape and the generic
-        // missing-required-field rule reports it — at create, update, import,
-        // `POST /admin/workflows/validate` and `orion-cli lint`, rather than
-        // at the task's first request.
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "params",
-        description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
-                      A value of {\"var\": \"path\"} is read from the message context.",
-        kind: FieldKind::Object,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "schema",
-        description: "Inline entity schema (renames, allowlist, writable flag). Undeclared \
-                      entities and columns are rejected, so a write without one reaches \
-                      nothing; pass {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
-        kind: FieldKind::Object,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "numeric_as",
-        description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs. SQL backends only.",
-        kind: FieldKind::String,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "binary_as",
-        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary. SQL backends only.",
-        kind: FieldKind::String,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
 pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "op",
@@ -585,11 +582,7 @@ mod tests {
     /// them; an unknown key is refused (break 2a), the flat pre-1.0 envelope
     /// included.
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = DataWriteConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = DATA_WRITE_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let envelope = json!({
             "op": "update", "target": "users",
             "set": {"status": {"param": "s"}, "$meta": {"var": "data.x"}},

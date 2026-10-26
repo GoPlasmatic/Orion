@@ -3,13 +3,14 @@
 //! assertions. The same shared core and JWKS cache as the channel mode, with
 //! task-error semantics so workflows can branch on failure.
 
+use super::definition::{Definition, FieldOverlay, NoConnector, OrionFunction};
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec};
 use dataflow_rs::{Ctx, Expr, Function, Outcome};
 use serde_json::{Map, Value};
 
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::kit::{self, KeyMaterialList, KeyRef, read};
 use crate::{ErrorClass, HandlerError};
 
@@ -63,23 +64,27 @@ pub struct JwtKey {
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct JwtVerifyConfig {
-    /// The compact JWS verified.
+    /// The compact JWS to verify.
     token: Expr<OwnedDataValue>,
-    /// The allowlist of algorithms a token may be signed with.
+    /// Mandatory non-empty allowlist (HS/RS/PS 256-512, ES256/384, EdDSA); alg: none is unrepresentable.
     algorithms: Vec<String>,
-    /// The static verification keys.
+    /// Static verification keys: [{algorithm, key, kid?, key_encoding?}]. Each entry's key
+    /// takes {"secret": "name"} or a string; the field itself is always an array. At least one
+    /// of keys/jwks_url.
     keys: Option<Vec<JwtKey>>,
-    /// The HTTPS JWKS endpoint, cached with the channel mode's.
+    /// HTTPS JWKS URL; cached process-wide with single-flight refresh and stale-serve — the
+    /// same cache as the jwt channel mode.
     jwks_url: Option<String>,
-    /// The accepted `iss` values.
+    /// Accepted iss value(s); string or array. {"secret": "name"} and env:// references resolve.
     issuer: Option<KeyMaterialList>,
-    /// The accepted `aud` values.
+    /// Accepted aud value(s); string or array. {"secret": "name"} and env:// references resolve (OAuth client ids).
     audience: Option<KeyMaterialList>,
-    /// The clock-skew allowance for `exp` and `nbf`, capped.
+    /// Clock-skew allowance for exp/nbf. Default 30, capped at 300.
     leeway_secs: Option<Expr<OwnedDataValue>>,
-    /// Whether a token must carry `exp`.
+    /// Whether the token must carry exp. Default true (RFC 8725).
     require_exp: Option<bool>,
-    /// Where the verified claims are written.
+    /// Dotted path where the verified claims object is stored. Defaults to "data". Rejections
+    /// are typed task errors (continue_on_error branches on them).
     #[output(default = "data")]
     output: Output,
 }
@@ -112,11 +117,57 @@ pub struct JwtVerifyFunction {
     pub jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
 }
 
+impl OrionFunction for JwtVerifyFunction {
+    type Connector = NoConnector;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Verify a JWT mid-workflow (provider id_tokens, refresh tokens) against static keys or a JWKS.",
+        category: "utility",
+        retry_safety: RetrySafety::Read,
+        fields: &[
+            FieldOverlay {
+                name: "token",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "keys",
+                secret_at: &["[].key"],
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "issuer",
+                secret_at: &[""],
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "audience",
+                secret_at: &[""],
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "leeway_secs",
+                kind: Some(FieldKind::Number),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        validate_static: Some(validate_static_input),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            jwks: deps.jwks.clone(),
+        }
+    }
+}
+
 impl Function for JwtVerifyFunction {
     type Config = JwtVerifyConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     // No `prepare`: the claims are an object, which any root takes.
@@ -138,7 +189,7 @@ impl JwtVerifyFunction {
         cfg: &'c JwtVerifyConfig,
     ) -> Result<(std::borrow::Cow<'c, dataflow_rs::Path>, Value), HandlerError> {
         let algorithms = algorithms_v4(&cfg.algorithms)?;
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let token = ctx.eval(&cfg.token)?;
         let token = read::required_str(Some(&token), "token", NAME)?.into_owned();
 
@@ -263,86 +314,6 @@ pub(super) fn validate_static_input(
     }
     errors
 }
-
-// -- Input schema (F53) --
-
-pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "token",
-        description: "The compact JWS to verify.",
-        kind: FieldKind::String,
-        required: true,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "algorithms",
-        description: "Mandatory non-empty allowlist (HS/RS/PS 256-512, ES256/384, \
-                      EdDSA); alg: none is unrepresentable.",
-        kind: FieldKind::Array,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "keys",
-        description: "Static verification keys: [{algorithm, key, kid?, \
-                      key_encoding?}]. Each entry's key takes {\"secret\": \"name\"} \
-                      or a string; the field itself is always an array. At least one \
-                      of keys/jwks_url.",
-        kind: FieldKind::Array,
-        // Each entry's `key`, and nothing else: `kid` and `key_encoding` are
-        // read verbatim, so a reference in either is as stray as anywhere else.
-        secret_at: &["[].key"],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "jwks_url",
-        description: "HTTPS JWKS URL; cached process-wide with single-flight refresh \
-                      and stale-serve — the same cache as the jwt channel mode.",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "issuer",
-        description: "Accepted iss value(s); string or array. {\"secret\": \"name\"} \
-                      and env:// references resolve.",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        secret_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "audience",
-        description: "Accepted aud value(s); string or array. {\"secret\": \"name\"} \
-                      and env:// references resolve (OAuth client ids).",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        secret_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "leeway_secs",
-        description: "Clock-skew allowance for exp/nbf. Default 30, capped at 300.",
-        kind: FieldKind::Number,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "require_exp",
-        description: "Whether the token must carry exp. Default true (RFC 8725).",
-        kind: FieldKind::Bool,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where the verified claims object is stored. \
-                      Defaults to \"data\". Rejections are typed task errors \
-                      (continue_on_error branches on them).",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -963,9 +934,6 @@ mod tests {
     /// plan's: kid, algorithm, key, key_encoding.
     #[test]
     fn the_config_declares_the_field_table_in_its_order() {
-        let fields: Vec<&str> = JwtVerifyConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = JWT_VERIFY_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
         let key: Vec<&str> = JwtKey::fields().iter().map(|f| &*f.name).collect();
         assert_eq!(key, ["kid", "algorithm", "key", "key_encoding"]);
     }
@@ -1064,7 +1032,8 @@ mod tests {
         }
     }
 
-    /// A static key reads as 1.12's element reader read it: a non-string `kid` or `key_encoding` is unset, the key is a
+    /// A static key reads as 1.12's element reader read it: a non-string `kid` or
+    /// `key_encoding` is unset, the key is a
     /// string or a `{"secret": …}` node read as written, and anything else,
     /// an expression included, is refused at the call in 1.12's words,
     /// never evaluated.

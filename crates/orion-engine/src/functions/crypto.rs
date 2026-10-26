@@ -18,6 +18,7 @@
 //! configured). The resolved key and the submitted password exist only inside
 //! this handler — never written to context, never quoted in an error.
 
+use super::definition::{Definition, FieldOverlay, NoConnector, OrionFunction};
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{CompileCx, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
@@ -28,7 +29,7 @@ use serde_json::{Map, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
 use crate::kit::{self, KeyMaterial, read};
 use crate::{ErrorClass, HandlerError};
@@ -607,31 +608,36 @@ const ROOT_OUTPUT: &str = "`crypto` writes a string or a boolean, and a context 
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct CryptoConfig {
-    /// The operation: hash, hmac, hmac_verify, password_hash or
-    /// password_verify.
+    /// Operation: hash, hmac, hmac_verify, password_hash, or password_verify.
     op: String,
-    /// The algorithm within the op's capability table; per-op default.
+    /// Algorithm within the op's capability table (e.g. sha256, sha512, argon2id). Per-op
+    /// default; password_verify auto-detects from the stored hash.
     algorithm: Option<String>,
-    /// The bytes digested: a string per `input_encoding`, anything else its
-    /// compact JSON.
+    /// Bytes to digest (hash/hmac/hmac_verify). A string is used as UTF-8 (see input_encoding);
+    /// any other JSON value is hashed as its compact serialization.
     data: Option<Expr<OwnedDataValue>>,
-    /// How a string `data` becomes bytes: utf8, hex or base64.
+    /// How a string 'data' becomes bytes: utf8 (default), hex, or base64.
     input_encoding: Option<String>,
-    /// The HMAC key.
+    /// HMAC key (hmac/hmac_verify): {"secret": "name"} reads the engine's [secrets] store; a
+    /// string is a literal or a reference like env://NAME. Never appears in traces or errors.
     key: Option<KeyMaterial>,
-    /// How the resolved key becomes bytes: utf8, hex or base64.
+    /// How the resolved key becomes bytes: utf8 (default), hex, or base64 — for APIs that issue binary signing keys.
     key_encoding: Option<String>,
-    /// The presented MAC an `hmac_verify` checks.
+    /// The presented MAC to check (hmac_verify); hex, base64, or base64url, auto-detected.
+    /// Compared in constant time.
     signature: Option<Expr<OwnedDataValue>>,
-    /// The submitted password.
+    /// The submitted password (password_hash/password_verify).
     password: Option<Expr<OwnedDataValue>>,
-    /// The stored password hash a `password_verify` checks against.
+    /// The stored password hash to verify against (password_verify); scheme auto-detected from
+    /// its $argon2*$/$2*$ prefix.
     hash: Option<Expr<OwnedDataValue>>,
-    /// The encoding of a hash or MAC result: hex, base64 or base64url.
+    /// Output encoding for hash/hmac results: hex (default), base64, or base64url (unpadded).
     encoding: Option<String>,
-    /// A `password_hash`'s cost knobs.
+    /// password_hash cost tuning: argon2id takes memory_kib/iterations/parallelism, bcrypt
+    /// takes cost. Safe defaults; bounded ranges.
     params: Option<Value>,
-    /// Where the result is written.
+    /// Dotted path where the result is stored. Defaults to "data". String for
+    /// hash/hmac/password_hash; boolean for hmac_verify/password_verify.
     #[output(default = "data")]
     output: Output,
 }
@@ -692,11 +698,55 @@ fn check(cfg: &CryptoConfig, cx: &mut CompileCx<'_>) {
 /// hashing on the blocking pool.
 pub struct CryptoFunction;
 
+impl OrionFunction for CryptoFunction {
+    type Connector = NoConnector;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Digests, HMAC compute/verify, and password hashing — a self-contained operation envelope.",
+        category: "utility",
+        retry_safety: RetrySafety::Pure,
+        fields: &[
+            FieldOverlay {
+                name: "key",
+                secret_at: &[""],
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "signature",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "password",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "hash",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "params",
+                kind: Some(FieldKind::Object),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        validate_static: Some(validate_static_input),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(_deps: &crate::HandlerDeps<'_>) -> Self {
+        Self
+    }
+}
+
 impl Function for CryptoFunction {
     type Config = CryptoConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     /// I185: no op's result is an object, so an `output` that is a literal
@@ -710,7 +760,7 @@ impl Function for CryptoFunction {
     /// named once with the handler's name, as 1.12 named them; then the one
     /// write.
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &CryptoConfig) -> dataflow_rs::Result<Outcome> {
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let result = compute(ctx, cfg).await.map_err(|e| e.prefixed(NAME))?;
         ctx.set(&output, OwnedDataValue::from(&result))?;
         Ok(Outcome::Ok)
@@ -944,113 +994,12 @@ fn is_resolvable(v: &Value) -> bool {
 }
 
 fn field_name(key: &str) -> &'static str {
-    super::schema::static_field_name(CRYPTO_FIELDS, key, "op")
+    super::schema::static_field_name(CryptoConfig::fields(), key, "op")
 }
 
 fn field_exists(key: &str) -> bool {
-    CRYPTO_FIELDS.iter().any(|f| f.name == key)
+    CryptoConfig::fields().iter().any(|f| f.name == key)
 }
-
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes, like every other function's.
-
-pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "op",
-        description: "Operation: hash, hmac, hmac_verify, password_hash, or password_verify.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "algorithm",
-        description: "Algorithm within the op's capability table (e.g. sha256, sha512, \
-                      argon2id). Per-op default; password_verify auto-detects from the \
-                      stored hash.",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "data",
-        description: "Bytes to digest (hash/hmac/hmac_verify). A string is used as UTF-8 \
-                      (see input_encoding); any other JSON value is hashed as its compact \
-                      serialization.",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "input_encoding",
-        description: "How a string 'data' becomes bytes: utf8 (default), hex, or base64.",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "key",
-        description: "HMAC key (hmac/hmac_verify): {\"secret\": \"name\"} reads the \
-                      engine's [secrets] store; a string is a literal or a reference \
-                      like env://NAME. Never appears in traces or errors.",
-        kind: FieldKind::String,
-        secret_at: &[""],
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "key_encoding",
-        description: "How the resolved key becomes bytes: utf8 (default), hex, or base64 \
-                      — for APIs that issue binary signing keys.",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "signature",
-        description: "The presented MAC to check (hmac_verify); hex, base64, or \
-                      base64url, auto-detected. Compared in constant time.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "password",
-        description: "The submitted password (password_hash/password_verify).",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "hash",
-        description: "The stored password hash to verify against (password_verify); \
-                      scheme auto-detected from its $argon2*$/$2*$ prefix.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "encoding",
-        description: "Output encoding for hash/hmac results: hex (default), base64, or \
-                      base64url (unpadded).",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "params",
-        description: "password_hash cost tuning: argon2id takes memory_kib/iterations/\
-                      parallelism, bcrypt takes cost. Safe defaults; bounded ranges.",
-        kind: FieldKind::Object,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where the result is stored. Defaults to \"data\". \
-                      String for hash/hmac/password_hash; boolean for \
-                      hmac_verify/password_verify.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -1119,14 +1068,6 @@ mod tests {
         let v4 = twin::v4(NAME, CryptoFunction, input.clone(), data.clone()).await;
         twin::pinned(&v4, format!("{input} {data}"));
         v4
-    }
-
-    /// Declaration order is the field table's (I179).
-    #[test]
-    fn the_config_declares_the_field_table_in_its_order() {
-        let fields: Vec<&str> = CryptoConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = CRYPTO_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
     }
 
     /// Each field compiles in the position 1.12 executed it in (I183): the

@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::sync::Arc;
 
 use dataflow_rs::datavalue::OwnedDataValue;
@@ -7,7 +8,7 @@ use dataflow_rs::{Ctx, Expr, Function, Outcome};
 use serde_json::Value;
 
 use super::connector_helpers::{json_type_name, to_connect_error, to_exec_error};
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
@@ -125,13 +126,13 @@ fn ttl_secs(value: Value, name: &str) -> Result<Option<u64>, HandlerError> {
 /// (I183). It has no `output`: the write is the whole effect.
 #[derive(Debug, FunctionConfig)]
 pub struct CacheWriteConfig {
-    /// The cache connector written to.
+    /// Name of the cache connector to write to.
     connector: String,
-    /// The key set.
+    /// Cache key to set. JSONLogic: a literal, or an expression over the message.
     key: Expr<OwnedDataValue>,
-    /// The value stored, any JSON.
+    /// Value to store. May be any JSON value. Accepts {"var": "path"} to read the value from the message.
     value: Interpolated,
-    /// The seconds the key lives; unset, it never expires.
+    /// Time-to-live in seconds. Omit for no expiry. JSONLogic: a literal, or an expression over the message.
     ttl_secs: Option<Interpolated>,
 }
 
@@ -142,11 +143,50 @@ pub struct CacheWriteFunction {
     pub registry: Arc<ConnectorRegistry>,
 }
 
+impl OrionFunction for CacheWriteFunction {
+    type Connector = crate::connector::kind::Cache;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Write a value to a cache connector.",
+        category: "connector",
+        retry_safety: RetrySafety::IdempotentWrite,
+        fields: &[
+            FieldOverlay {
+                name: "key",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "value",
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "ttl_secs",
+                kind: Some(FieldKind::Number),
+                template_at: Some(&[""]),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            cache_pool: deps.cache_pool.clone(),
+            registry: deps.registry.clone(),
+        }
+    }
+}
+
 impl Function for CacheWriteFunction {
     type Config = CacheWriteConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     async fn call(
@@ -163,8 +203,10 @@ impl Function for CacheWriteFunction {
         let ctx = &*ctx;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn =
-                kit::require_connector::<crate::connector::kind::Cache>(&config, &cfg.connector)?;
+            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             // F22e: a cache connector can be made read-only in its config.
             kit::require_op(conn.operations.write, "write", &cfg.connector)?;
             let encoded = encode(&ctx.render(&cfg.value))?;
@@ -174,47 +216,6 @@ impl Function for CacheWriteFunction {
         .await
     }
 }
-
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the cache connector to write to.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "key",
-        description: "Cache key to set. JSONLogic: a literal, or an expression over the message.",
-        kind: FieldKind::String,
-        required: true,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "value",
-        description: "Value to store. May be any JSON value. Accepts {\"var\": \"path\"} to read the value from the message.",
-        kind: FieldKind::Any,
-        required: true,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "ttl_secs",
-        description: "Time-to-live in seconds. Omit for no expiry. JSONLogic: a literal, or an expression over the message.",
-        kind: FieldKind::Number,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -258,14 +259,7 @@ mod tests {
     /// connector a literal; an unknown key, an `output` among them, is
     /// refused (break 2a).
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = CacheWriteConfig::fields()
-            .iter()
-            .map(|f| &*f.name)
-            .collect();
-        let table: Vec<&str> = CACHE_WRITE_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let compile =
             |input: Value| testing::config_with::<CacheWriteConfig>(&kit::test_exprs(), input);
         let value =

@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -8,7 +9,7 @@ use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 use serde_json::{Map, Value};
 
 use super::connector_helpers::{to_connect_error, to_exec_error};
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
 use crate::kit::{self, read};
@@ -91,14 +92,16 @@ const ONE_AT_ROOT: &str = "`cache_read` writes one key's cached value at `output
 #[derive(Debug, FunctionConfig)]
 #[config(check = check)]
 pub struct CacheReadConfig {
-    /// The cache connector read from.
+    /// Name of the cache connector to read from.
     connector: String,
-    /// The key looked up.
+    /// Cache key to look up. JSONLogic: a literal, or an expression over the message. One of
+    /// `key` and `keys` is required.
     key: Option<Expr<OwnedDataValue>>,
-    /// Several keys looked up in one round trip, answered as an array in
-    /// the same order.
+    /// Several keys to look up in one round trip (at most 1000). The result is an array in the
+    /// same order, null for a miss. JSONLogic: an array of literals or expressions, or an
+    /// expression evaluating to one.
     keys: Option<Expr<OwnedDataValue>>,
-    /// Where the value, or the array of values, is written.
+    /// Dotted path in the message where the result is stored. Defaults to "data".
     #[output(default = "data")]
     output: Output,
 }
@@ -125,11 +128,45 @@ pub struct CacheReadFunction {
     pub registry: Arc<ConnectorRegistry>,
 }
 
+impl OrionFunction for CacheReadFunction {
+    type Connector = crate::connector::kind::Cache;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Read a value from a cache connector (per-node, in memory).",
+        category: "connector",
+        retry_safety: RetrySafety::Read,
+        fields: &[
+            FieldOverlay {
+                name: "key",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "keys",
+                kind: Some(FieldKind::Array),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        validate_static: Some(validate_static_input),
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            cache_pool: deps.cache_pool.clone(),
+            registry: deps.registry.clone(),
+        }
+    }
+}
+
 impl Function for CacheReadFunction {
     type Config = CacheReadConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     /// An `output` that is a literal context root, the default `data`
@@ -149,7 +186,7 @@ impl Function for CacheReadFunction {
         let channel = kit::channel(ctx);
         // The prologue's output, before the keys are read: an output that
         // names no path reads nothing.
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let key = cfg.key.as_ref().map(|key| ctx.eval(key)).transpose()?;
         let keys = cfg.keys.as_ref().map(|keys| ctx.eval(keys)).transpose()?;
         let lookup = match (&key, &keys) {
@@ -167,8 +204,10 @@ impl Function for CacheReadFunction {
         let mut value = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn =
-                kit::require_connector::<crate::connector::kind::Cache>(&config, &cfg.connector)?;
+            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             // F22e: a cache connector can be made write-only in its config.
             kit::require_op(conn.operations.read, "read", &cfg.connector)?;
             value = Some(look_up(&self.cache_pool, &cfg.connector, conn, &lookup).await?);
@@ -228,45 +267,6 @@ pub(super) fn validate_static_input(
     }
 }
 
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the cache connector to read from.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "key",
-        description: "Cache key to look up. JSONLogic: a literal, or an expression over the message. One of `key` and `keys` is required.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "keys",
-        description: "Several keys to look up in one round trip (at most 1000). The result is an array in the same order, null for a miss. JSONLogic: an array of literals or expressions, or an expression evaluating to one.",
-        kind: FieldKind::Array,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path in the message where the result is stored. Defaults to \"data\".",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,11 +311,7 @@ mod tests {
     /// read it; `connector` is a required literal (I183); an unknown key is
     /// refused (break 2a); `output` defaults to `data`.
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = CacheReadConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = CACHE_READ_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let cfg = compile(json!({"connector": "c", "key": {"cat": ["user:", {"var": "data.id"}]}}))
             .expect("compiles");
         assert!(cfg.key.as_ref().expect("set").constant().is_none());

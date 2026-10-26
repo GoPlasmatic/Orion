@@ -1,7 +1,7 @@
 //! The one registry of every function a workflow may name.
 //!
 //! Three static tables used to answer "may a workflow name this, and what does
-//! it accept?": `schema::REGISTRY` (the Orion handlers' field tables),
+//! it accept?": `schema::registry()` (the Orion handlers' schemas),
 //! `ENGINE_BUILTINS` (the engine's own eight) and `CUSTOM_HANDLER_FUNCTIONS`
 //! (the names `register_functions` registers) — plus three more keyed by
 //! name in `handlers.rs` for the connector rules. Nine readers consulted them
@@ -13,8 +13,9 @@
 //! component has been loaded — so the lookup has to be a *value*: built once
 //! per `orion_server::runtime::RuntimeGeneration` from the static tables plus
 //! whatever that generation loaded, and handed to every reader. The static
-//! tables stay where they are, next to the handlers they describe (F53);
-//! [`FunctionRegistry::builtin`] converts them into owned entries once and is
+//! declarations live with the handlers; one inventory in `functions/mod.rs`
+//! drives their registration and derives their schemas from the typed configs.
+//! [`FunctionRegistry::builtin`] converts those schemas into owned entries once and is
 //! what every offline surface and the boot generation read.
 //!
 //! What the registry deliberately does **not** own is the functions. A
@@ -532,39 +533,19 @@ impl FunctionEntry {
             }
         }
 
-        // A connector must be named, not computed.
-        //
-        // dataflow-rs 3.9 made `http_call`'s `connector` a
-        // `Template` like every other parameter, so the kind check above no
-        // longer refuses an object there — a template field's kind describes
-        // what it evaluates to. Orion needs this one to fold to a name it can
-        // read *without* a message, and not because the handler is lazy: the
-        // connector is looked up before the message is consulted (F58), and
-        // the same static name is what `GET /workflows/{id}/dependencies`
-        // reports, what the activation gate checks exists, what refuses a
-        // rename or delete of a connector still in use, and what a package's
-        // `requires` list is built from. A computed name is invisible to all
-        // five, so admitting one means teaching all five, not relaxing one
-        // check.
-        //
-        // Driven off the schema rather than a function list, so a connector
-        // handler added later inherits the rule with the field table it
-        // already fills in. A string is the test upstream's own
-        // `ConnectorName` uses to answer `Static` vs `Computed`, so the two
-        // agree by construction.
-        //
-        // Exactly the complement of what `check_fields` still checks: it
-        // reports a *scalar* of the wrong type itself, so this fires only for
-        // the object and array it now waves through, and one wrong connector
-        // is one error.
-        if let Some(field) = fields.iter().find(|f| f.name == "connector")
-            && field.is_template()
-            && let Some(value) = obj.get(field.name.as_str())
+        // Connector targets are literals: dependency checks and runtime lookup
+        // must identify them before evaluating a message. Keep the specific
+        // explanation for a computed name, replacing the generic kind error
+        // so this remains one refusal even when the config declares a literal.
+        if entry.takes_connector()
+            && let Some(value) = obj.get("connector")
             && (value.is_object() || value.is_array())
         {
+            let path = format!("{input_path}.connector");
+            errors.retain(|error| error.path != path);
             errors.push(
                 FieldError::new(
-                    format!("{input_path}.connector"),
+                    path,
                     "TYPE_MISMATCH",
                     format!(
                         "function '{function_name}' needs a literal connector name — the \
@@ -1126,7 +1107,7 @@ mod registry_tests {
     #[test]
     fn an_owned_field_serialises_like_the_static_row() {
         for schema in schema::registry() {
-            for field in schema.input_fields {
+            for field in &schema.input_fields {
                 let from_row = serde_json::to_value(field).expect("row");
                 let from_spec = serde_json::to_value(FieldSpec::from(field)).expect("spec");
                 assert_eq!(from_row, from_spec, "{}.{}", schema.name, field.name);
@@ -1196,7 +1177,20 @@ mod write_shape_tests {
         );
         assert_eq!(
             write_shape("db_read"),
+            Some(WriteShape::OutputPath {
+                default_root: Some("data")
+            })
+        );
+        assert_eq!(write_shape("cache_write"), Some(WriteShape::Nothing));
+        assert_eq!(
+            write_shape("http_call"),
             Some(WriteShape::OutputPath { default_root: None })
+        );
+        assert_eq!(
+            write_shape("channel_call"),
+            Some(WriteShape::OutputPath {
+                default_root: Some("data")
+            })
         );
     }
 }
@@ -1321,9 +1315,8 @@ mod validate_input_tests {
         assert_eq!(errs[0].got.as_ref().expect("test"), &json!(42));
     }
 
-    /// A computed connector is refused, and refused *once*: the ordinary kind
-    /// check no longer sees it (a template field's kind describes what it
-    /// evaluates to), so the rule that needs it literal is the only reporter.
+    /// A computed connector is refused once with the reason a static name is
+    /// required, even when the ordinary kind check also sees a non-string.
     #[test]
     fn a_computed_connector_is_refused_with_the_reason() {
         let errs = validate_input(

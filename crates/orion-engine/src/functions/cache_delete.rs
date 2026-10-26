@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::sync::Arc;
 
 use dataflow_rs::datavalue::OwnedDataValue;
@@ -7,7 +8,7 @@ use dataflow_rs::{Ctx, Expr, Function, Outcome};
 
 use super::cache_read::MAX_KEYS;
 use super::connector_helpers::{to_connect_error, to_exec_error};
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::HandlerError;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::connector::{CacheConnectorConfig, ConnectorRegistry};
@@ -44,12 +45,12 @@ async fn delete(
 /// unset, nothing is written (I190's primary output).
 #[derive(Debug, FunctionConfig)]
 pub struct CacheDeleteConfig {
-    /// The cache connector deleted from.
+    /// Name of the cache connector to delete from.
     connector: String,
-    /// The exact keys deleted.
+    /// Exact keys to delete (at most 1000). A key that is not present is not an error.
+    /// JSONLogic: an array of literals or expressions, or an expression evaluating to one.
     keys: Expr<OwnedDataValue>,
-    /// Where `{"deleted": n}`, the number of keys that existed, is written;
-    /// unset, nothing is.
+    /// Dotted path where `{"deleted": n}`, the number of keys that existed, is stored. Omit to record nothing.
     output: Option<Output>,
 }
 
@@ -60,11 +61,37 @@ pub struct CacheDeleteFunction {
     pub registry: Arc<ConnectorRegistry>,
 }
 
+impl OrionFunction for CacheDeleteFunction {
+    type Connector = crate::connector::kind::Cache;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Delete exact keys from a cache connector.",
+        category: "connector",
+        retry_safety: RetrySafety::IdempotentWrite,
+        fields: &[FieldOverlay {
+            name: "keys",
+            kind: Some(FieldKind::Array),
+            ..FieldOverlay::DEFAULT
+        }],
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            cache_pool: deps.cache_pool.clone(),
+            registry: deps.registry.clone(),
+        }
+    }
+}
+
 impl Function for CacheDeleteFunction {
     type Config = CacheDeleteConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     async fn call(
@@ -78,15 +105,17 @@ impl Function for CacheDeleteFunction {
         let output = cfg
             .output
             .as_ref()
-            .map(|out| kit::output_path(ctx, out, Some(&kit::DATA)))
+            .map(|out| Self::DEFINITION.output_path(ctx, out))
             .transpose()?;
         let keys = ctx.eval(&cfg.keys)?;
         let keys = read::required_str_list(Some(&keys), "keys", NAME, MAX_KEYS)?;
         let mut deleted = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn =
-                kit::require_connector::<crate::connector::kind::Cache>(&config, &cfg.connector)?;
+            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             // A delete changes what later reads see, so a read-only connector
             // refuses it exactly as it refuses `cache_write`.
             kit::require_op(conn.operations.write, "write", &cfg.connector)?;
@@ -101,33 +130,6 @@ impl Function for CacheDeleteFunction {
         Ok(Outcome::Ok)
     }
 }
-
-// -- Input schema (F53) --
-
-pub(super) const CACHE_DELETE_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the cache connector to delete from.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "keys",
-        description: "Exact keys to delete (at most 1000). A key that is not present is not an error. JSONLogic: an array of literals or expressions, or an expression evaluating to one.",
-        kind: FieldKind::Array,
-        required: true,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where `{\"deleted\": n}`, the number of keys that existed, is stored. Omit to record nothing.",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -174,14 +176,7 @@ mod tests {
     /// optional and the primary output, unset when absent or `null`; an
     /// unknown key is refused (break 2a).
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = CacheDeleteConfig::fields()
-            .iter()
-            .map(|f| &*f.name)
-            .collect();
-        let table: Vec<&str> = CACHE_DELETE_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let compile =
             |input: Value| testing::config_with::<CacheDeleteConfig>(&kit::test_exprs(), input);
         let cfg =

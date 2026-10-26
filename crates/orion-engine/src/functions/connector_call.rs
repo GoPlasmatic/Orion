@@ -7,6 +7,7 @@
 //! the task's input, reserved-operation denial (`orion.internal.*`) and how a
 //! [`ConnectorError`] is reported.
 
+use super::definition::{Definition, FieldOverlay, NoConnector, OrionFunction};
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{Interpolated, Output};
 use dataflow_rs::function::{FunctionConfig, FunctionSpec, Prepare};
@@ -14,79 +15,29 @@ use dataflow_rs::program::{AuthoredPath, IssueCode};
 use dataflow_rs::{Ctx, Expr, Function, Issue, Outcome};
 use serde_json::{Value, json};
 
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::kit::{self, read};
 use crate::{ErrorClass, HandlerError};
 use orion_extension_api::{ConnectorError, ConnectorErrorClass, ImplementationKind, RetryAdvice};
 
 pub const NAME: &str = "connector_call";
 
-pub(super) const CONNECTOR_CALL_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connection",
-        description: "Logical connection ID or driver identifier",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "operation",
-        description: "Public operation name (e.g. `http.request`, `sql.query`, `cache.get`)",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "kind",
-        description: "Provider implementation kind (`rust`, `workflow`, or `wasm`; default `rust`)",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "target_id",
-        description: "Optional provider target ID (`driver_id` for `rust`, `package_digest` for `workflow`/`wasm`; default `connection`)",
-        kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "input",
-        description: "Operation input object (`{\"var\": ...}` references are resolved from the message context)",
-        kind: FieldKind::Object,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "idempotency_key",
-        description: "Optional idempotency key expression for retry-capable write operations",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted context path where the operation result is written (default `data`)",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
 #[derive(Debug, FunctionConfig)]
 pub struct ConnectorCallConfig {
-    /// Logical connection ID or driver identifier.
+    /// Logical connection ID or driver identifier
     pub connection: String,
-    /// Public operation name (e.g. `"http.request"`, `"sql.query"`, `"cache.get"`).
+    /// Public operation name (e.g. `http.request`, `sql.query`, `cache.get`)
     pub operation: String,
-    /// Optional implementation kind (`"rust"`, `"workflow"`, `"wasm"`). Defaults to `"rust"`.
+    /// Provider implementation kind (`rust`, `workflow`, or `wasm`; default `rust`)
     pub kind: Option<String>,
-    /// Optional provider target ID (`driver_id` for `rust`, `package_digest` for `workflow`/`wasm`).
-    /// Defaults to `connection`.
+    /// Optional provider target ID (`driver_id` for `rust`, `package_digest` for
+    /// `workflow`/`wasm`; default `connection`)
     pub target_id: Option<String>,
-    /// Operation input object with JSONLogic/`var` interpolation.
+    /// Operation input object (`{"var": ...}` references are resolved from the message context)
     pub input: Option<Interpolated>,
-    /// Optional idempotency key expression for retry-capable write operations.
+    /// Optional idempotency key expression for retry-capable write operations
     pub idempotency_key: Option<Expr<OwnedDataValue>>,
-    /// Dotted context path where the operation's `data` result is written.
+    /// Dotted context path where the operation result is written (default `data`)
     #[output(default = "data")]
     pub output: Output,
 }
@@ -131,11 +82,44 @@ pub struct ConnectorCallFunction {
     pub registry: std::sync::Arc<crate::connector::ConnectorRegistry>,
 }
 
+impl OrionFunction for ConnectorCallFunction {
+    type Connector = NoConnector;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Invoke a v2 connector provider operation under an owned RunContext.",
+        category: "connector",
+        retry_safety: RetrySafety::DependsOn { input: "operation" },
+        fields: &[
+            FieldOverlay {
+                name: "input",
+                kind: Some(FieldKind::Object),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "idempotency_key",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        stub_target: Some("connection"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            host: deps.connector_calls.clone(),
+            registry: deps.registry.clone(),
+        }
+    }
+}
+
 impl Function for ConnectorCallFunction {
     type Config = ConnectorCallConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     /// The input keys the provider names as statements
@@ -188,7 +172,7 @@ impl Function for ConnectorCallFunction {
         ctx: &mut Ctx<'_>,
         cfg: &ConnectorCallConfig,
     ) -> dataflow_rs::Result<Outcome> {
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let input_val = match &cfg.input {
             Some(doc) => kit::rendered(ctx, doc)?,
             None => json!({}),

@@ -1,23 +1,14 @@
-//! The static tables: what Orion's own handlers and the engine's built-ins
-//! declare about themselves.
+//! Authoring schemas derived from Orion's compiled function configs.
 //!
-//! Each [`FunctionSchema`] describes the JSON `function.input` object a
-//! workflow author must provide for one Orion handler — its field table, where
-//! it writes, whether a retry repeats work, what connector it needs. The eight
-//! engine built-ins are declared beside them in `ENGINE_BUILTINS`.
+//! Each handler owns an `OrionFunction::DEFINITION` beside its typed config.
+//! The inventory in `functions/mod.rs` uses that declaration for both serving
+//! registration and this catalogue. Field names, order, descriptions,
+//! requiredness and output defaults come from `FunctionConfig::fields()`;
+//! sparse overlays supply Orion's resolution, secret and semantic type rules.
 //!
-//! **Nothing reads these tables directly except the formatter and the
-//! handlers' own runtime helpers.** Every other reader — create-time
-//! validation, the catalogue, the authoring analysis, the offline tools — goes
-//! through [`super::registry::FunctionRegistry`], which converts this file's
-//! `'static` rows into owned entries at construction and can hold entries these
-//! tables never will (a plugin's). `fmt` keeps reading the static form on
-//! purpose: one style everywhere is its whole value, so a plugin function's
-//! input keeps author order.
-//!
-//! Schemas are intentionally hand-rolled rather than derived: the dataflow-rs
-//! input structs use deserialize-time defaults that don't show up in derived
-//! schemas, and we want to keep the validator dependency-free.
+//! The formatter reads these schemas for field order. Other authoring tools,
+//! validation and runtime discovery read `FunctionRegistry`, which combines
+//! these schemas with the engine's built-ins and a generation's plugins.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -143,14 +134,8 @@ impl FieldSchema {
     /// The neutral row every field table builds on: not required, not
     /// resolvable, not secret, not templated.
     ///
-    /// The tables are `const` slices, so without this every field on this
-    /// struct has to be spelled at all ~137 sites — and adding one costs a
-    /// mechanical diff long enough to hide the handful of rows where the new
-    /// value is not the default. With it, a row states only what is true of
-    /// it: `FieldSchema { name: "key", …, secret_at: &[""], ..FieldSchema::DEFAULT }`.
-    ///
-    /// `name`, `description` and `kind` have no meaningful default; every row
-    /// spells them.
+    /// Used when converting config fields and by the nested mutation-envelope
+    /// schema. Function-specific metadata lives in `FieldOverlay` instead.
     pub const DEFAULT: Self = FieldSchema {
         name: "",
         description: "",
@@ -181,8 +166,9 @@ pub type StaticValidator =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum WriteShape {
     /// The dotted path in `output` (or its pre-1.0 spelling `response_path`).
-    /// `default_root` is what the write lands on when neither is given — `None`
-    /// for a function that writes nothing without being told where.
+    /// `default_root` comes from the primary output's config default. `None`
+    /// means an omitted optional output writes nothing. A function with no
+    /// output field is [`Self::Nothing`].
     OutputPath { default_root: Option<&'static str> },
     /// `data.{target}` — the engine's parse/publish built-ins, whose `target`
     /// is a key under `data` rather than a full path.
@@ -262,8 +248,12 @@ pub struct ConnectorRule {
 }
 
 impl ConnectorRule {
-    const fn of(types: &'static [ConnectorType]) -> Option<Self> {
-        Some(Self { types })
+    pub(crate) const fn of(types: &'static [ConnectorType]) -> Option<Self> {
+        if types.is_empty() {
+            None
+        } else {
+            Some(Self { types })
+        }
     }
 }
 
@@ -272,7 +262,7 @@ pub struct FunctionSchema {
     pub name: &'static str,
     pub description: &'static str,
     pub category: &'static str,
-    pub input_fields: &'static [FieldSchema],
+    pub input_fields: Vec<FieldSchema>,
     /// Where this function's output lands. Read by the authoring analysis, so
     /// a new handler cannot reach the clippy rules with its writes unknown —
     /// `every_function_declares_where_it_writes` refuses one that tries.
@@ -288,12 +278,8 @@ pub struct FunctionSchema {
     pub connector: Option<ConnectorRule>,
     /// Whether a key outside `input_fields` is an error rather than ignored.
     ///
-    /// True for the functions dataflow-rs owns the config struct for
-    /// (`http_call`), whose struct is `deny_unknown_fields`
-    /// as of 3.1: a misspelled key there fails `Workflow::from_json`, which for
-    /// Orion means the channel is quarantined at load. Catching it at authoring
-    /// time turns that into a 400 naming the field. Orion's own handlers take
-    /// freeform `serde_json::Value` inputs and keep ignoring extra keys.
+    /// This is the authoring validator's policy. The compiled configs also
+    /// refuse unknown fields through dataflow-rs, including likely typos.
     pub deny_unknown: bool,
     /// Cross-field rules beyond the per-field table (op × algorithm tables,
     /// key-source rules, stage allowlists, …), registered here so
@@ -302,214 +288,15 @@ pub struct FunctionSchema {
     /// hand-copied block.
     #[serde(skip)]
     pub validate_static: Option<StaticValidator>,
+    #[serde(skip)]
+    pub(crate) definition: &'static super::definition::Definition,
 }
 
-// F53: each function's field table lives in the module implementing it, so a
-// handler and the schema describing it are edited in one place. Every
-// schema/handler divergence this audit found — F23's `channel_call` input, the
-// `method` casing, the Mongo `database` rule — was a table that drifted because
-// it was in a different file from the code it described.
-use super::cache_delete::CACHE_DELETE_FIELDS;
-use super::cache_incr::CACHE_INCR_FIELDS;
-use super::cache_invalidate::CACHE_INVALIDATE_FIELDS;
-use super::cache_read::CACHE_READ_FIELDS;
-use super::cache_write::CACHE_WRITE_FIELDS;
-use super::channel_call::CHANNEL_CALL_FIELDS;
-use super::connector_call::CONNECTOR_CALL_FIELDS;
-use super::crypto::CRYPTO_FIELDS;
-use super::data_query::DATA_QUERY_FIELDS;
-use super::data_write::DATA_WRITE_FIELDS;
-use super::db_read::DB_READ_FIELDS;
-use super::db_write::DB_WRITE_FIELDS;
-use super::http_call::HTTP_CALL_FIELDS;
-use super::jwt_sign::JWT_SIGN_FIELDS;
-use super::jwt_verify::JWT_VERIFY_FIELDS;
-
-const REGISTRY: &[FunctionSchema] = &[
-    FunctionSchema {
-        name: "cache_read",
-        description: "Read a value from a cache connector (per-node, in memory).",
-        category: "connector",
-        input_fields: CACHE_READ_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Read,
-        connector: ConnectorRule::of(&[ConnectorType::Cache]),
-        deny_unknown: false,
-        validate_static: Some(super::cache_read::validate_static_input),
-    },
-    FunctionSchema {
-        name: "cache_write",
-        description: "Write a value to a cache connector.",
-        category: "connector",
-        input_fields: CACHE_WRITE_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::IdempotentWrite,
-        connector: ConnectorRule::of(&[ConnectorType::Cache]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "cache_delete",
-        description: "Delete exact keys from a cache connector.",
-        category: "connector",
-        input_fields: CACHE_DELETE_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::IdempotentWrite,
-        connector: ConnectorRule::of(&[ConnectorType::Cache]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "cache_incr",
-        description: "Atomically increment an integer on a cache connector.",
-        category: "connector",
-        input_fields: CACHE_INCR_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::UnsafeWrite,
-        connector: ConnectorRule::of(&[ConnectorType::Cache]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "db_read",
-        description: "Execute a SELECT against a SQL connector.",
-        category: "connector",
-        input_fields: DB_READ_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Read,
-        connector: ConnectorRule::of(&[ConnectorType::Db]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "db_write",
-        description: "Execute INSERT/UPDATE/DELETE against a SQL connector.",
-        category: "connector",
-        input_fields: DB_WRITE_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::DependsOn { input: "sql" },
-        connector: ConnectorRule::of(&[ConnectorType::Db]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "data_query",
-        description: "Run a backend-neutral query (filter + envelope) against a SQL connector.",
-        category: "connector",
-        input_fields: DATA_QUERY_FIELDS,
-        writes: WriteShape::OutputPath {
-            default_root: Some("data"),
-        },
-        retry_safety: RetrySafety::Read,
-        connector: ConnectorRule::of(&[ConnectorType::Db]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "data_write",
-        description: "Run a backend-neutral mutation (insert/update/delete/upsert) against a SQL connector.",
-        category: "connector",
-        input_fields: DATA_WRITE_FIELDS,
-        writes: WriteShape::OutputPath {
-            default_root: Some("data"),
-        },
-        retry_safety: RetrySafety::DependsOn { input: "op" },
-        connector: ConnectorRule::of(&[ConnectorType::Db]),
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "cache_invalidate",
-        description: "Invalidate channel response-cache namespaces, on every store and every node.",
-        category: "utility",
-        input_fields: CACHE_INVALIDATE_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::IdempotentWrite,
-        connector: None,
-        deny_unknown: true,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "channel_call",
-        description: "Invoke another channel's workflow in-process (no HTTP hop).",
-        category: "control",
-        input_fields: CHANNEL_CALL_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::DependsOn { input: "channel" },
-        connector: None,
-        deny_unknown: false,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "crypto",
-        description: "Digests, HMAC compute/verify, and password hashing — a self-contained operation envelope.",
-        category: "utility",
-        // The handler itself tolerates extra keys, but strictness matters
-        // more here than anywhere: a typoed field on a crypto op would
-        // silently mean "use the default".
-        input_fields: CRYPTO_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Pure,
-        connector: None,
-        deny_unknown: true,
-        validate_static: Some(super::crypto::validate_static_input),
-    },
-    FunctionSchema {
-        name: "jwt_sign",
-        description: "Mint a signed JWT (login, refresh, client assertions).",
-        category: "utility",
-        input_fields: JWT_SIGN_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Pure,
-        connector: None,
-        deny_unknown: true,
-        validate_static: Some(super::jwt_sign::validate_static_input),
-    },
-    FunctionSchema {
-        name: "jwt_verify",
-        description: "Verify a JWT mid-workflow (provider id_tokens, refresh tokens) against static keys or a JWKS.",
-        category: "utility",
-        input_fields: JWT_VERIFY_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::Read,
-        connector: None,
-        deny_unknown: true,
-        validate_static: Some(super::jwt_verify::validate_static_input),
-    },
-    FunctionSchema {
-        name: "http_call",
-        description: "HTTP request to an HTTP connector with retry + circuit breaker.",
-        category: "connector",
-        input_fields: HTTP_CALL_FIELDS,
-        writes: WriteShape::OutputPath { default_root: None },
-        retry_safety: RetrySafety::DependsOn { input: "method" },
-        connector: ConnectorRule::of(&[ConnectorType::Http]),
-        deny_unknown: true,
-        validate_static: None,
-    },
-    FunctionSchema {
-        name: "connector_call",
-        description: "Invoke a v2 connector provider operation under an owned RunContext.",
-        category: "connector",
-        input_fields: CONNECTOR_CALL_FIELDS,
-        writes: WriteShape::OutputPath {
-            default_root: Some("data"),
-        },
-        retry_safety: RetrySafety::DependsOn { input: "operation" },
-        connector: None,
-        deny_unknown: true,
-        validate_static: None,
-    },
-];
-
-/// Every Orion handler's declaration, in implementation order.
-///
-/// The static half of [`super::registry::FunctionRegistry::builtin`], which is
-/// what every reader but the formatter consults. Accepted function names
-/// without an entry here (e.g. `map`, `log`, `filter`) are the engine's own,
-/// declared in `ENGINE_BUILTINS`.
+/// Every Orion function, generated from the same inventory that registers it.
 pub fn registry() -> &'static [FunctionSchema] {
-    REGISTRY
+    static SCHEMAS: std::sync::LazyLock<Vec<FunctionSchema>> =
+        std::sync::LazyLock::new(super::schemas);
+    &SCHEMAS
 }
 
 // ============================================================
@@ -630,13 +417,13 @@ pub(super) const ENGINE_BUILTINS: &[(&str, &str, WriteShape, RetrySafety)] = &[
 /// `fallback` covers keys outside the table (unreachable for real inputs,
 /// merely safe for arbitrary ones).
 pub(super) fn static_field_name(
-    fields: &[FieldSchema],
+    fields: &'static [dataflow_rs::expr::FieldSpec],
     key: &str,
     fallback: &'static str,
 ) -> &'static str {
     fields
         .iter()
-        .map(|f| f.name)
+        .map(|f| f.name.as_ref())
         .find(|n| *n == key)
         .unwrap_or(fallback)
 }

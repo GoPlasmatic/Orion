@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use super::connector_helpers::{
     require_op_allowed, to_connect_error, to_exec_error,
 };
 use super::db_read::rendered_row_format;
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
 use crate::connector::{ConnectorConfig, ConnectorRegistry};
@@ -153,19 +154,32 @@ const ROOT_OUTPUT: &str = "`data_query` writes an array of rows, and a context r
 /// documents of `var` holes, as 1.12 folded them.
 #[derive(Debug, FunctionConfig)]
 pub struct DataQueryConfig {
-    /// The `db` connector queried.
+    /// Name of the db (SQL) connector to query.
     connector: String,
-    /// The backend-neutral query envelope.
+    /// Backend-neutral query envelope:
+    /// source/filter/fields/sort/limit/skip/after/include/count. An include selection is
+    /// {fields, sort, limit}; `sort` is required because the per-parent page is cut in the
+    /// database. "after" is a keyset cursor — the previous page's last row, one value per sort
+    /// key — which pages without an offset and so is not bounded by query.max_skip. "count":
+    /// true answers {"count": n} instead of rows, and refuses the keys that shape a row set.
     query: Value,
-    /// The named values folded into the filter's `{"param": …}` nodes.
+    /// Object of named values folded into the filter's {"param": ..} nodes. A value of {"var":
+    /// "path"} is read from the message context.
     params: Option<Interpolated>,
-    /// The inline entity schema.
+    /// Inline entity schema (renames, type hints, allowlist, relations) enabling some/all/none
+    /// and typed coercion. Undeclared entities and columns are rejected, so a query without one
+    /// reaches nothing; pass {"unmapped": "identity"} for pre-1.0 pass-through.
     schema: Option<Value>,
-    /// How a decimal column renders. SQL backends only.
+    /// How an arbitrary-precision decimal column is rendered: "number" (default) or "string". A
+    /// number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a
+    /// string keeps every digit, which is what a money column needs. SQL backends only.
     numeric_as: Option<Interpolated>,
-    /// How a binary column renders. SQL backends only.
+    /// How a binary column is rendered: "auto" (default), "hex", "base64" or "text". Auto reads
+    /// the bytes as text when they are valid UTF-8 and as hex when they are not, so its result
+    /// shape depends on the data; name an encoding for a column that is genuinely binary. SQL
+    /// backends only.
     binary_as: Option<Interpolated>,
-    /// Where the rows, or `{"count": n}`, are written.
+    /// Dotted path in the message where rows are written. Defaults to "data".
     #[output(default = "data")]
     output: Output,
 }
@@ -179,11 +193,63 @@ pub struct DataQueryFunction {
     pub limits: crate::config::QueryConfig,
 }
 
+impl OrionFunction for DataQueryFunction {
+    type Connector = crate::connector::DataBackend;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Run a backend-neutral query (filter + envelope) against a SQL connector.",
+        category: "connector",
+        retry_safety: RetrySafety::Read,
+        fields: &[
+            FieldOverlay {
+                name: "query",
+                kind: Some(FieldKind::Object),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "params",
+                kind: Some(FieldKind::Object),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "schema",
+                kind: Some(FieldKind::Object),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "numeric_as",
+                kind: Some(FieldKind::String),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "binary_as",
+                kind: Some(FieldKind::String),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            pool_cache: deps.sql_pool_cache.clone(),
+            registry: deps.registry.clone(),
+            limits: deps.query_config.clone(),
+        }
+    }
+}
+
 impl Function for DataQueryFunction {
     type Config = DataQueryConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     /// I185: a row read whose `output` is a literal context root, the
@@ -201,7 +267,7 @@ impl Function for DataQueryFunction {
         let channel = kit::channel(ctx);
         // The prologue's output, then `parse`'s order: `params`, the
         // rendering choices, the literals.
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let params = cfg
             .params
             .as_ref()
@@ -222,8 +288,10 @@ impl Function for DataQueryFunction {
         let mut answer = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let conn =
-                kit::require_connector::<crate::connector::DataBackend>(&config, &cfg.connector)?;
+            let conn = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             gate(conn, &cfg.connector)?;
             let backends = Backends {
                 pool_cache: &self.pool_cache,
@@ -490,75 +558,6 @@ async fn run_sql_with_includes(
     Ok(Value::Array(parents))
 }
 
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the db (SQL) connector to query.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "query",
-        description: "Backend-neutral query envelope: \
-                      source/filter/fields/sort/limit/skip/after/include/count. \
-                      An include selection is {fields, sort, limit}; `sort` is required because \
-                      the per-parent page is cut in the database. \"after\" is a keyset cursor — \
-                      the previous page's last row, one value per sort key — which pages without \
-                      an offset and so is not bounded by query.max_skip. \"count\": true answers \
-                      {\"count\": n} instead of rows, and refuses the keys that shape a row set.",
-        kind: FieldKind::Object,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "params",
-        description: "Object of named values folded into the filter's {\"param\": ..} nodes. \
-                      A value of {\"var\": \"path\"} is read from the message context.",
-        kind: FieldKind::Object,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "schema",
-        description: "Inline entity schema (renames, type hints, allowlist, relations) enabling \
-                      some/all/none and typed coercion. Undeclared entities and columns are \
-                      rejected, so a query without one reaches nothing; pass \
-                      {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
-        kind: FieldKind::Object,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "numeric_as",
-        description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs. SQL backends only.",
-        kind: FieldKind::String,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "binary_as",
-        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary. SQL backends only.",
-        kind: FieldKind::String,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path in the message where rows are written. Defaults to \"data\".",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -618,11 +617,7 @@ mod tests {
     /// are required (I183); an unknown key is refused (break 2a), the
     /// removed `database` field included.
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = DataQueryConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = DATA_QUERY_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let envelope = json!({
             "source": "users",
             "filter": {">": [{"field": "age"}, {"param": "min"}], "$note": {"var": "data.x"}},

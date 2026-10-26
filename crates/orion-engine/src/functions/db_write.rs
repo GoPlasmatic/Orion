@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::sync::Arc;
 
 use dataflow_rs::expr::{Interpolated, Output};
@@ -8,7 +9,7 @@ use super::connector_helpers::{
     QueryBudget, QueryFailure, acquire_conn, encode_failure, require_op_allowed, to_connect_error,
 };
 use super::db_read::DbRead;
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::HandlerError;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
@@ -113,13 +114,17 @@ async fn write_rows(
 /// binds a document of `var` holes, as 1.12 folded them.
 #[derive(Debug, FunctionConfig)]
 pub struct DbWriteConfig {
-    /// The SQL connector written through.
+    /// Name of the SQL connector to execute against.
     connector: String,
-    /// The write statement. Only `params` come from the message.
+    /// INSERT/UPDATE/DELETE statement. Bind placeholders are the backend's own spelling: ? for
+    /// SQLite and MySQL, $1, $2, ... for PostgreSQL.
     query: String,
-    /// The values bound to the statement's placeholders, in order.
+    /// Array of values to bind to query placeholders, in order. Accepts {"var": "path"} to read
+    /// the value from the message.
     params: Option<Interpolated>,
-    /// Where `{"rows_affected": n}` (and `"last_insert_id"`) is written.
+    /// Dotted path where the write result is written: {"rows_affected": n}, plus
+    /// "last_insert_id" for an INSERT on MySQL or SQLite (PostgreSQL reports generated columns
+    /// through RETURNING instead).
     #[output(default = "data")]
     output: Output,
 }
@@ -131,22 +136,52 @@ pub struct DbWriteFunction {
     pub registry: Arc<ConnectorRegistry>,
 }
 
+impl OrionFunction for DbWriteFunction {
+    type Connector = crate::connector::kind::Db;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Execute INSERT/UPDATE/DELETE against a SQL connector.",
+        category: "connector",
+        retry_safety: RetrySafety::DependsOn { input: "sql" },
+        fields: &[FieldOverlay {
+            name: "params",
+            kind: Some(FieldKind::Array),
+            resolvable: true,
+            ..FieldOverlay::DEFAULT
+        }],
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            pool_cache: deps.sql_pool_cache.clone(),
+            registry: deps.registry.clone(),
+        }
+    }
+}
+
 impl Function for DbWriteFunction {
     type Config = DbWriteConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     async fn call(&self, ctx: &mut Ctx<'_>, cfg: &DbWriteConfig) -> dataflow_rs::Result<Outcome> {
         let channel = kit::channel(ctx);
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let write = DbRead::statement(ctx, &cfg.query, cfg.params.as_ref(), NAME)?;
         let run_deadline = ctx.deadline();
         let mut answer = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let db = kit::require_connector::<crate::connector::kind::Db>(&config, &cfg.connector)?;
+            let db = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             gate(db, &cfg.connector)?;
             answer =
                 Some(write_rows(&self.pool_cache, &cfg.connector, db, &write, run_deadline).await?);
@@ -162,45 +197,6 @@ impl Function for DbWriteFunction {
         Ok(Outcome::Ok)
     }
 }
-
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the SQL connector to execute against.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "query",
-        description: "INSERT/UPDATE/DELETE statement. Bind placeholders are the backend's own spelling: ? for SQLite and MySQL, $1, $2, ... for PostgreSQL.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "params",
-        description: "Array of values to bind to query placeholders, in order. Accepts {\"var\": \"path\"} to read the value from the message.",
-        kind: FieldKind::Array,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where the write result is written: {\"rows_affected\": n}, plus \"last_insert_id\" for an INSERT on MySQL or SQLite (PostgreSQL reports generated columns through RETURNING instead).",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -248,11 +244,7 @@ mod tests {
     /// of `var` holes; `connector` and `query` are literals, required (I183);
     /// a key the table does not declare is refused (break 2a).
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = DbWriteConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = DB_WRITE_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let params = json!([{"var": "data.name"}, {"$k": [1, {"var": "data.n"}]}]);
         let cfg = testing::config_with::<DbWriteConfig>(
             &crate::kit::test_exprs(),

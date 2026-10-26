@@ -36,10 +36,11 @@
 //!
 //! ## What is never stubbed
 //!
-//! The self-contained functions (`SELF_CONTAINED` below) always run for real. A
+//! Functions whose declaration specifies no stub target always run for real. A
 //! plugin function always runs for real too — its component is loaded from a
 //! `--plugin-dir` — and is refused by name when the component is absent.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -48,7 +49,6 @@ use dataflow_rs::function::{BoxFuture, CallLayer, Next};
 use dataflow_rs::{Ctx, Outcome};
 use serde_json::Value;
 
-use crate::kit;
 use crate::{ErrorClass, HandlerError};
 
 /// Wildcard target: matches whatever connector or channel the task names.
@@ -56,16 +56,6 @@ const ANY_TARGET: &str = "*";
 
 /// Parsed stub file: `function -> target -> response`.
 pub type StubTable = HashMap<String, HashMap<String, Value>>;
-
-/// The functions that execute for real offline rather than through a stub, and
-/// are therefore absent from the [`CallLog`].
-///
-/// They are deterministic and make no egress, so stubbing them would only hide
-/// behaviour — and their inputs can carry inline key material and passwords,
-/// which a recorded payload has no business holding. The boundary this draws is
-/// also the honest description of the log: it records the calls that *would
-/// have left the process*.
-const SELF_CONTAINED: [&str; 3] = ["crypto", "jwt_sign", "jwt_verify"];
 
 /// One connector call a stubbed run would have made.
 ///
@@ -302,14 +292,16 @@ pub fn stubbable_functions() -> impl Iterator<Item = &'static str> {
 pub struct StubLayer {
     stubs: StubTable,
     log: Arc<CallLog>,
-    stubbed: Vec<&'static str>,
+    stubbed: HashMap<&'static str, &'static super::schema::FunctionSchema>,
 }
 
 impl StubLayer {
     /// Stubs every connector-backed function.
     pub fn new(stubs: StubTable, log: Arc<CallLog>) -> Self {
-        let stubbed = stubbable_functions()
-            .filter(|name| !SELF_CONTAINED.contains(name))
+        let stubbed = super::schema::registry()
+            .iter()
+            .filter(|schema| schema.definition.stub_target.is_some())
+            .map(|schema| (schema.name, schema))
             .collect();
         Self {
             stubs,
@@ -319,58 +311,45 @@ impl StubLayer {
     }
 
     /// The canned answer to one call, written at its output.
-    fn answer(&self, ctx: &mut Ctx<'_>, function: &'static str) -> dataflow_rs::Result<Outcome> {
+    fn answer(
+        &self,
+        ctx: &mut Ctx<'_>,
+        schema: &'static super::schema::FunctionSchema,
+    ) -> dataflow_rs::Result<Outcome> {
+        let function = schema.name;
+        let definition = schema.definition;
         // The destination first, since it can be an expression like any other
         // field and a call whose output names no path fails before it is made.
-        let output = match ctx.primary_output() {
-            Some(out) => Some(kit::output_path(ctx, out, on_null(function))?.into_owned()),
-            None => None,
+        let output = match schema.writes {
+            super::schema::WriteShape::OutputPath { .. } => ctx
+                .primary_output()
+                .map(|out| definition.output_path(ctx, out).map(Cow::into_owned))
+                .transpose()?,
+            _ => None,
         };
         let input = Value::from(&ctx.input()?);
-        let target_key = if function == super::channel_call::NAME {
-            "channel"
-        } else if input.get("connector").is_some() {
-            "connector"
-        } else {
-            "connection"
-        };
-        let target = input
-            .get(target_key)
+        let target = definition
+            .stub_target
+            .and_then(|field| input.get(field))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let namespaces = input
-            .get("namespaces")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
         // Recorded before the stub is resolved, so a call that fails for want
         // of a stub still appears in the log — that is the run you most want
         // to see the payload of.
+        let fallback = definition.stub_default.map(|default| default(&input));
         self.log
             .record(ctx.info().task_id, function, target.clone(), input);
         let response = match resolve(&self.stubs, function, target.as_deref()) {
             Ok(response) => response.clone(),
-            // Offline there is no response cache to invalidate, so the call
-            // has no effect to stand in for and needs no stub: it reaches no
-            // store. A stub, when given, still wins.
-            Err(_) if function == "cache_invalidate" => {
-                serde_json::json!({ "namespaces": namespaces, "stores": 0 })
-            }
-            Err(e) => return Err(e.into()),
+            Err(e) => match fallback {
+                Some(value) => value,
+                None => return Err(e.into()),
+            },
         };
         if let Some(path) = output {
             ctx.set(&path, OwnedDataValue::from(&response))?;
         }
         Ok(Outcome::Ok)
-    }
-}
-
-/// Where a computed output that evaluates to `null` writes, as the real
-/// function decides it: nowhere for the two whose output is optional, the
-/// data root for the rest.
-fn on_null(function: &str) -> Option<&'static dataflow_rs::Path> {
-    match function {
-        "http_call" | "channel_call" => None,
-        _ => Some(&kit::DATA),
     }
 }
 
@@ -381,10 +360,10 @@ impl CallLayer for StubLayer {
         next: Next<'a>,
     ) -> BoxFuture<'a, dataflow_rs::Result<Outcome>> {
         let called = ctx.info().function;
-        let Some(function) = self.stubbed.iter().copied().find(|name| *name == called) else {
+        let Some(schema) = self.stubbed.get(called) else {
             return next.run(ctx);
         };
-        Box::pin(async move { self.answer(ctx, function) })
+        Box::pin(async move { self.answer(ctx, schema) })
     }
 }
 
@@ -488,8 +467,8 @@ mod tests {
         assert_eq!(stubbable.len(), 15, "every Orion function is stubbable");
         for name in &stubbable {
             assert_eq!(
-                layer.stubbed.contains(name),
-                !SELF_CONTAINED.contains(name),
+                layer.stubbed.contains_key(name),
+                !["crypto", "jwt_sign", "jwt_verify"].contains(name),
                 "{name}"
             );
         }
@@ -539,6 +518,60 @@ mod tests {
             json!({"kept": true}),
             "an unset optional output writes nothing"
         );
+    }
+
+    // Ctx::input resolves the output again when building the call log. This
+    // preserves the existing offline refusal even for handlers that allow a
+    // null destination to fall back to data. See improvements §7.5.
+    #[tokio::test]
+    async fn a_computed_null_output_is_refused_before_recording() {
+        for (name, mut input, target) in [
+            ("http_call", json!({"connector": "api"}), "api"),
+            ("channel_call", json!({"channel": "child"}), "child"),
+            (
+                "cache_read",
+                json!({"connector": "cache", "key": "k"}),
+                "cache",
+            ),
+            (
+                "cache_delete",
+                json!({"connector": "cache", "keys": ["k"]}),
+                "cache",
+            ),
+        ] {
+            input["output"] = json!({"var": "data.missing"});
+            let (_, calls, error) = run(
+                json!([{"id": "call", "name": "call", "function": {"name": name, "input": input}}]),
+                stub(name, target, json!({"answer": 1})),
+                json!({}),
+            )
+            .await;
+            assert!(error.is_some(), "{name}");
+            assert!(calls.is_empty(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_invalidation_needs_no_stub_but_an_explicit_stub_wins() {
+        for (stubs, expected) in [
+            (StubTable::new(), json!({"namespaces": 2, "stores": 0})),
+            (
+                stub("cache_invalidate", "*", json!({"stores": 7})),
+                json!({"stores": 7}),
+            ),
+        ] {
+            let (message, calls, error) = run(
+                json!([{"id": "invalidate", "name": "invalidate", "function": {
+                    "name": "cache_invalidate", "input": {"namespaces": ["a", "b"], "output": "data.result"}
+                }}]),
+                stubs,
+                json!({}),
+            ).await;
+            assert!(error.is_none(), "{error:?}");
+            assert_eq!(data(&message)["result"], expected);
+            assert_eq!(calls.len(), 1);
+            assert!(calls[0].stub_target.is_none());
+        }
     }
 
     /// The path validator and the lookup must agree about what a root is.

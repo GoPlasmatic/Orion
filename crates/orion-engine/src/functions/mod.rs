@@ -1,25 +1,58 @@
-pub mod channel_call;
-pub mod connector_call;
-pub mod connector_helpers;
-pub mod http_call;
-pub mod http_common;
-pub mod registry;
-pub mod schema;
-pub mod secret_ref;
-pub mod stub;
-
 pub mod cache_delete;
 pub mod cache_incr;
 pub mod cache_invalidate;
 pub mod cache_read;
 pub mod cache_write;
+pub mod channel_call;
+pub mod connector_call;
 pub mod crypto;
 pub mod data_query;
 pub mod data_write;
 pub mod db_read;
 pub mod db_write;
+pub mod definition;
+pub mod http_call;
 pub mod jwt_sign;
 pub mod jwt_verify;
+
+// One inventory drives the schemas and handler registration.
+macro_rules! functions {
+    ($($module:ident::$handler:ident),* $(,)?) => {
+        pub(super) fn schemas() -> Vec<schema::FunctionSchema> {
+            vec![$(definition::schema::<$module::$handler>()),*]
+        }
+
+        pub(crate) fn register(registry: &mut dataflow_rs::Registry, deps: &crate::HandlerDeps<'_>) {
+            use definition::OrionFunction;
+            $(registry.register($module::$handler::DEFINITION.name, $module::$handler::from_deps(deps));)*
+        }
+    };
+}
+
+functions! {
+    cache_read::CacheReadFunction,
+    cache_write::CacheWriteFunction,
+    cache_delete::CacheDeleteFunction,
+    cache_incr::CacheIncrFunction,
+    db_read::DbReadFunction,
+    db_write::DbWriteFunction,
+    data_query::DataQueryFunction,
+    data_write::DataWriteFunction,
+    cache_invalidate::CacheInvalidateFunction,
+    channel_call::ChannelCallFunction,
+    crypto::CryptoFunction,
+    jwt_sign::JwtSignFunction,
+    jwt_verify::JwtVerifyFunction,
+    http_call::HttpCallFunction,
+    connector_call::ConnectorCallFunction,
+}
+
+pub mod connector_helpers;
+pub mod http_common;
+pub mod registry;
+pub mod schema;
+pub mod secret_ref;
+pub mod stub;
 
 /// A `validate_static_input`'s refusals as a dataflow-rs 4 config check's
 /// issues: each Rejected, `INPUT_PARSE`, at the field it names, with its

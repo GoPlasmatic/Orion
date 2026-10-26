@@ -415,14 +415,13 @@ mod tests {
         assert!(facts.paths.is_empty(), "{facts:?}");
         assert!(facts.uncertain(), "{facts:?}");
 
-        // An *omitted* destination is certain — `cache_read` declares no
-        // default root, so it contributes no write and the analysis knows that
-        // for a fact. Absence and computation must not collapse into one answer.
+        // An omitted destination is certain: the compiled config defaults
+        // `cache_read` to data. Absence and computation must remain distinct.
         let omitted = serde_json::json!({
             "function": {"name": "cache_read", "input": {"connector": "c", "key": "k"}}
         });
         let facts = task_write_facts(&omitted, FunctionRegistry::builtin());
-        assert!(facts.paths.is_empty());
+        assert_eq!(facts.paths, ["data"]);
         assert!(
             !facts.uncertain(),
             "an omitted destination is not an unknown one"

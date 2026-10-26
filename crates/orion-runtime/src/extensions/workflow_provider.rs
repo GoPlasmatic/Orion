@@ -896,7 +896,9 @@ impl Function for DependencyCall {
     type Config = DependencyCallConfig;
 
     fn spec(&self) -> FunctionSpec {
-        crate::engine::kit::spec(crate::engine::functions::connector_call::NAME)
+        crate::engine::functions::definition::spec::<
+            crate::engine::functions::connector_call::ConnectorCallFunction,
+        >()
     }
 
     /// The alias and the operation, refused here too: a document that

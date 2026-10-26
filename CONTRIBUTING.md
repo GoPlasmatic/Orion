@@ -268,6 +268,23 @@ cargo test --test integration           # Run the whole integration binary
 - **Error handling** — use `OrionError` variants from `src/errors.rs` for new error cases
 - **Async** — all repository traits use `async_trait`; keep I/O operations async
 
+### Adding a workflow function
+
+Implement the typed `FunctionConfig`, `dataflow_rs::Function` and
+`functions::definition::OrionFunction` in one module under `orion-engine`.
+The config supplies field names, order, descriptions, requiredness and output
+defaults. Put retry policy, static validation and sparse field metadata in
+`OrionFunction::DEFINITION`, and construct the handler in `from_deps`.
+The associated `Connector` type supplies both the authoring rule and the
+runtime's typed connector lookup.
+
+Declare the module and add `module::FunctionType` to the `functions!`
+inventory in `functions/mod.rs`. That inventory registers the handler and
+builds its catalogue entry. Declare its offline stub target when it needs a backend; use the
+declaration's `output_path` helper so real calls and stubs share null handling.
+Add behavior tests beside the implementation and document the function under
+`docs/src/reference/functions/`.
+
 ### Comments citing an item ID
 
 Around 900 comments across `src/` open with a short code — `N10`, `R13`, `F35`,

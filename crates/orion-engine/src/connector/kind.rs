@@ -56,6 +56,9 @@ pub trait ConnectorTarget {
     /// The typed config a handler binds once the connector is acceptable.
     type Config;
 
+    /// The connector variants accepted by both authoring and runtime lookup.
+    const TYPES: &'static [ConnectorType];
+
     /// Borrow this target's config out of a parsed connector, or `None` when
     /// the connector is one this target does not accept.
     fn extract(config: &ConnectorConfig) -> Option<&Self::Config>;
@@ -81,6 +84,7 @@ macro_rules! kinds {
 
             impl ConnectorTarget for $kind {
                 type Config = $config;
+                const TYPES: &'static [ConnectorType] = &[ConnectorType::$variant];
 
                 fn extract(config: &ConnectorConfig) -> Option<&Self::Config> {
                     match config {
@@ -116,6 +120,7 @@ pub struct DataBackend;
 
 impl ConnectorTarget for DataBackend {
     type Config = ConnectorConfig;
+    const TYPES: &'static [ConnectorType] = &[ConnectorType::Db];
 
     fn extract(config: &ConnectorConfig) -> Option<&Self::Config> {
         matches!(config, ConnectorConfig::Db(_)).then_some(config)

@@ -8,8 +8,8 @@
 //! - [`resolve_connector`] and [`require_connector`]: the connector lookups,
 //!   on dataflow-rs 4's error, and [`require_op`] and
 //!   [`require_method_allowed`], the connector's operation gates.
-//! - [`spec`]: a function's `schema.rs` row as its `FunctionSpec`, and
-//!   [`retry`], its retry safety on dataflow-rs 4's answers.
+//! - [`retry`]: Orion's retry safety on dataflow-rs 4's answers; each
+//!   function owns its spec in `functions::definition`.
 //! - [`output_path`]: where a call's result goes, resolved before its work,
 //!   as 1.12's connector shell resolved it; [`root_output_defect`], I185's
 //!   Defect for a result no context root takes; and [`root_output_advisory`]
@@ -35,7 +35,7 @@ use std::sync::{Arc, LazyLock};
 use dataflow_rs::Path;
 use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::expr::{ExprEngine, Interpolated, Output};
-use dataflow_rs::function::{BoxFuture, CallLayer, FunctionSpec, Next, Reference};
+use dataflow_rs::function::{BoxFuture, CallLayer, Next};
 use dataflow_rs::program::{AuthoredPath, IssueCode, Severity};
 use dataflow_rs::{Ctx, Issue, Outcome};
 
@@ -180,39 +180,10 @@ pub fn rendered(
         .map_err(|e| crate::HandlerError::new(crate::ErrorClass::Backend, e))
 }
 
-/// What `name`'s row in `schema.rs` says about the function, as its
-/// [`FunctionSpec`] (I179): the row's description and category, its retry
-/// safety on dataflow-rs 4's three answers (`Pure`, `Read` and
-/// `IdempotentWrite` are `Idempotent`, `UnsafeWrite` is `NotIdempotent`,
-/// `DependsOn` is `Unknown`), and, for a function that takes a connector,
-/// its `connector` field as a reference of the function's own kind (I187),
-/// which the authoring oracle judges by that function's `ConnectorRule`.
-///
-/// # Panics
-///
-/// When `schema.rs` has no row named `name`: a function registered under a
-/// name Orion does not declare, which `kit`'s tests refuse for every
-/// function `register_functions` registers.
-pub fn spec(name: &str) -> FunctionSpec {
-    let row = schema::registry()
-        .iter()
-        .find(|row| row.name == name)
-        .expect("every function Orion registers has its schema.rs row");
-    let references = match row.connector {
-        Some(_) => vec![Reference::new("connector", row.name)],
-        None => Vec::new(),
-    };
-    FunctionSpec::default()
-        .with_description(row.description)
-        .with_category(row.category)
-        .with_retry(retry(row.retry_safety))
-        .with_references(references)
-}
-
 /// Orion's retry safety on dataflow-rs 4's three answers (I179): `Pure`,
 /// `Read` and `IdempotentWrite` are `Idempotent`, `UnsafeWrite` is
-/// `NotIdempotent`, `DependsOn` is `Unknown`. [`spec`] reads it off a
-/// `schema.rs` row, and a plugin function off its registry entry.
+/// `NotIdempotent`, `DependsOn` is `Unknown`. A host function reads it from
+/// its declaration, and a plugin function from its registry entry.
 pub fn retry(safety: schema::RetrySafety) -> dataflow_rs::function::RetrySafety {
     match safety {
         schema::RetrySafety::Pure
@@ -948,25 +919,6 @@ mod tests {
         assert!(seen > 0, "register_functions registered nothing");
     }
 
-    /// The host functions `register_functions` registers.
-    const PORTED: &[&str] = &[
-        "http_call",
-        "channel_call",
-        "crypto",
-        "jwt_sign",
-        "jwt_verify",
-        "db_read",
-        "db_write",
-        "data_query",
-        "data_write",
-        "cache_read",
-        "cache_write",
-        "cache_delete",
-        "cache_incr",
-        "cache_invalidate",
-        "connector_call",
-    ];
-
     /// `register_functions` registers every host function over the inert
     /// dependencies, each under its 1.12 name.
     #[tokio::test]
@@ -979,7 +931,7 @@ mod tests {
             .filter(|info| !info.builtin)
             .map(|info| info.name)
             .collect();
-        let mut ported = PORTED.to_vec();
+        let mut ported: Vec<_> = schema::registry().iter().map(|row| row.name).collect();
         ported.sort_unstable();
         assert_eq!(hosts, ported, "the catalogue lists host functions by name");
         // The engine every test compiles on: Orion's operators, no secrets.

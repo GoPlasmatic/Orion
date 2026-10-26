@@ -6,6 +6,7 @@
 //! (I184). It reads the call position, judges the target and words every
 //! refusal through the helpers below, in 1.12's order and words.
 
+use super::definition::{Definition, FieldOverlay, NoConnector, NullOutput, OrionFunction};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -18,8 +19,10 @@ use dataflow_rs::run::{AuditMode, CancelToken, Instant, RunStatus};
 use dataflow_rs::{Ctx, Expr, Function, Message, Outcome, RunOptions};
 use serde_json::Value;
 
-use super::schema::{FieldKind, FieldSchema};
-use crate::kit::{self, read};
+use super::schema::{FieldKind, RetrySafety};
+#[cfg(test)]
+use crate::kit;
+use crate::kit::read;
 use crate::{ErrorClass, HandlerError};
 
 /// This function's name: the one place it is written (F48).
@@ -110,7 +113,7 @@ static METADATA: LazyLock<Path> =
     LazyLock::new(|| "metadata".parse().expect("`metadata` is a path"));
 
 /// `channel_call`'s input on dataflow-rs 4, its fields in
-/// `CHANNEL_CALL_FIELDS`' order (I179), each read as 1.12 read it (I183).
+/// `ChannelCallConfig::fields()`' order (I179), each read as 1.12 read it (I183).
 ///
 /// The keys are the canonical ones. `channel_logic`, `data_logic` and
 /// `response_path`, 1.12's serde aliases, are rewritten by the loader
@@ -123,16 +126,14 @@ static METADATA: LazyLock<Path> =
 #[derive(Debug, FunctionConfig)]
 #[config(check = ChannelCallConfig::check)]
 pub struct ChannelCallConfig {
-    /// The target channel: its name, or an expression giving one.
+    /// Target channel to invoke (JSONLogic), so one task can route by message content.
     channel: Expr<OwnedDataValue>,
-    /// The payload sent; unset forwards the caller's own payload.
+    /// Payload to pass to the target channel (JSONLogic). Omit to forward the caller's own payload.
     data: Option<Expr<OwnedDataValue>>,
-    /// Where the called channel's `data` is written.
+    /// Dotted path where the called channel's response is stored. Defaults to "data".
     #[output(default = "data")]
     output: Output,
-    /// The call's own timeout, in milliseconds, read by
-    /// [`read::template_u64`] (1.12's `Template::resolve_u64`); unset takes
-    /// the target channel's, then `engine.default_channel_call_timeout_ms`.
+    /// Per-call timeout in milliseconds.
     timeout_ms: Option<Expr<OwnedDataValue>>,
 }
 
@@ -177,11 +178,46 @@ pub struct ChannelCallFunction {
     pub default_timeout_ms: u64,
 }
 
+impl OrionFunction for ChannelCallFunction {
+    type Connector = NoConnector;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Invoke another channel's workflow in-process (no HTTP hop).",
+        category: "control",
+        retry_safety: RetrySafety::DependsOn { input: "channel" },
+        fields: &[
+            FieldOverlay {
+                name: "channel",
+                kind: Some(FieldKind::String),
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "timeout_ms",
+                kind: Some(FieldKind::Number),
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        deny_unknown: false,
+        null_output: NullOutput::Reject,
+        stub_target: Some("channel"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            host: deps.channel_calls.clone(),
+            max_call_depth: deps.engine_config.max_channel_call_depth,
+            default_timeout_ms: deps.engine_config.default_channel_call_timeout_ms,
+        }
+    }
+}
+
 impl Function for ChannelCallFunction {
     type Config = ChannelCallConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     async fn call(
@@ -239,7 +275,7 @@ impl Function for ChannelCallFunction {
         // Where the answer goes, before the guards spend anything on the
         // call: an output that names no path (`null` included, which 1.12
         // wrote to a key no response shows) runs nothing.
-        let output = kit::output_path(ctx, &cfg.output, None)?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
 
         let admission = resolved
             .admit(ChildRequest {
@@ -507,48 +543,6 @@ pub fn timed_out(target: &str, ms: u64) -> HandlerError {
     )
 }
 
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "channel",
-        description: "Target channel to invoke (JSONLogic), so one task can route by \
-                      message content.",
-        kind: FieldKind::String,
-        required: true,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "data",
-        description: "Payload to pass to the target channel (JSONLogic). Omit to forward \
-                      the caller's own payload.",
-        kind: FieldKind::Any,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path where the called channel's response is stored. Defaults to \"data\".",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "timeout_ms",
-        description: "Per-call timeout in milliseconds.",
-        kind: FieldKind::Number,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
 #[cfg(test)]
 mod tests {
     use dataflow_rs::function::testing;
@@ -566,14 +560,7 @@ mod tests {
     /// `timeout_ms` written as `null` are unset, as serde read 1.12's
     /// `Option<Template>`.
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = ChannelCallConfig::fields()
-            .iter()
-            .map(|f| &*f.name)
-            .collect();
-        let table: Vec<&str> = CHANNEL_CALL_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let compile =
             |input: Value| testing::config_with::<ChannelCallConfig>(&kit::test_exprs(), input);
         let cfg = compile(json!({"channel": "orders"})).expect("compiles");

@@ -1,3 +1,4 @@
+use super::definition::{Definition, FieldOverlay, OrionFunction};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use super::connector_helpers::{
     QueryBudget, QueryFailure, acquire_conn, decode_failure, encode_failure, require_op_allowed,
     to_connect_error,
 };
-use super::schema::{FieldKind, FieldSchema};
+use super::schema::{FieldKind, RetrySafety};
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::sql_decode::RowFormat;
 use crate::connector::{ConnectorRegistry, DbConnectorConfig};
@@ -232,18 +233,24 @@ const ROOT_OUTPUT: &str = "`db_read` writes an array of rows, and a context root
 /// folded them, read by `kit::read`'s twins of 1.12's readers.
 #[derive(Debug, FunctionConfig)]
 pub struct DbReadConfig {
-    /// The SQL connector queried.
+    /// Name of the SQL connector to query.
     connector: String,
-    /// The read statement. Only `params` come from the message.
+    /// Read statement — SELECT, WITH, VALUES or TABLE; a write belongs in db_write, which has
+    /// its own 'raw_write' connector gate. Bind placeholders are the backend's own spelling: ?
+    /// for SQLite and MySQL, $1, $2, ... for PostgreSQL.
     query: String,
-    /// The values bound to the statement's placeholders, in order.
+    /// Array of values to bind to query placeholders, in order. Accepts {"var": "path"} to read
+    /// the value from the message.
     params: Option<Interpolated>,
-    /// How a decimal column renders: `number` (the default) or `string`.
+    /// How an arbitrary-precision decimal column is rendered: "number" (default) or "string". A
+    /// number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a
+    /// string keeps every digit, which is what a money column needs.
     numeric_as: Option<Interpolated>,
-    /// How a binary column renders: `auto` (the default), `hex`, `base64`
-    /// or `text`.
+    /// How a binary column is rendered: "auto" (default), "hex", "base64" or "text". Auto reads
+    /// the bytes as text when they are valid UTF-8 and as hex when they are not, so its result
+    /// shape depends on the data; name an encoding for a column that is genuinely binary.
     binary_as: Option<Interpolated>,
-    /// Where the rows are written.
+    /// Dotted path in the message where rows are written. Defaults to "data".
     #[output(default = "data")]
     output: Output,
 }
@@ -260,11 +267,54 @@ pub struct DbReadFunction {
     pub max_result_bytes: usize,
 }
 
+impl OrionFunction for DbReadFunction {
+    type Connector = crate::connector::kind::Db;
+
+    const DEFINITION: Definition = Definition {
+        name: NAME,
+        description: "Execute a SELECT against a SQL connector.",
+        category: "connector",
+        retry_safety: RetrySafety::Read,
+        fields: &[
+            FieldOverlay {
+                name: "params",
+                kind: Some(FieldKind::Array),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "numeric_as",
+                kind: Some(FieldKind::String),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+            FieldOverlay {
+                name: "binary_as",
+                kind: Some(FieldKind::String),
+                resolvable: true,
+                ..FieldOverlay::DEFAULT
+            },
+        ],
+        deny_unknown: false,
+        stub_target: Some("connector"),
+        ..Definition::DEFAULT
+    };
+
+    fn from_deps(deps: &crate::HandlerDeps<'_>) -> Self {
+        Self {
+            pool_cache: deps.sql_pool_cache.clone(),
+            registry: deps.registry.clone(),
+            max_rows: deps.query_config.max_limit as usize,
+            max_result_bytes: deps.query_config.max_result_bytes,
+        }
+    }
+}
+
 impl Function for DbReadFunction {
     type Config = DbReadConfig;
 
     fn spec(&self) -> FunctionSpec {
-        kit::spec(NAME)
+        super::definition::spec::<Self>()
     }
 
     /// I185: an `output` that is a literal context root, the default `data`
@@ -277,7 +327,7 @@ impl Function for DbReadFunction {
         let channel = kit::channel(ctx);
         // The prologue's output, then `parse_read`'s order: the rendering
         // choices, the binds, the read-only check.
-        let output = kit::output_path(ctx, &cfg.output, Some(&kit::DATA))?;
+        let output = Self::DEFINITION.output_path(ctx, &cfg.output)?;
         let format =
             rendered_row_format(ctx, cfg.numeric_as.as_ref(), cfg.binary_as.as_ref(), NAME)?;
         let read = DbRead {
@@ -289,7 +339,10 @@ impl Function for DbReadFunction {
         let mut rows = None;
         kit::guarded(NAME, &self.registry, &cfg.connector, channel, async {
             let config = kit::resolve_connector(&self.registry, &cfg.connector).await?;
-            let db = kit::require_connector::<crate::connector::kind::Db>(&config, &cfg.connector)?;
+            let db = kit::require_connector::<<Self as OrionFunction>::Connector>(
+                &config,
+                &cfg.connector,
+            )?;
             gate(db, &cfg.connector)?;
             rows = Some(
                 read_rows(
@@ -313,87 +366,6 @@ impl Function for DbReadFunction {
     }
 }
 
-// -- Input schema (F53) --
-//
-// The table describing this handler's `function.input` lives next to the
-// handler it describes. It used to sit in `schema.rs` with the other nine,
-// which is how every schema/handler divergence in the 1.0 audit happened:
-// a field was added, renamed or made conditional here and the table saying
-// so was in a different file.
-
-pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
-    FieldSchema {
-        name: "connector",
-        description: "Name of the SQL connector to query.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "query",
-        description: "Read statement — SELECT, WITH, VALUES or TABLE; a write belongs in db_write, which has its own 'raw_write' connector gate. Bind placeholders are the backend's own spelling: ? for SQLite and MySQL, $1, $2, ... for PostgreSQL.",
-        kind: FieldKind::String,
-        required: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "params",
-        description: "Array of values to bind to query placeholders, in order. Accepts {\"var\": \"path\"} to read the value from the message.",
-        kind: FieldKind::Array,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "numeric_as",
-        description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs.",
-        kind: FieldKind::String,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "binary_as",
-        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary.",
-        kind: FieldKind::String,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path in the message where rows are written. Defaults to \"data\".",
-        kind: FieldKind::String,
-        template_at: &[""],
-        ..FieldSchema::DEFAULT
-    },
-];
-
-// -- Read-only statement check --
-//
-// `db_read` gates on the connector's `read` operation and then runs whatever
-// statement the task carries. `fetch` executes any statement — it merely
-// streams whatever rows come back — so `DELETE FROM t RETURNING id` ran here on
-// PostgreSQL and SQLite, and a bare `DELETE`/`UPDATE`/`INSERT` ran (returning no
-// rows) on all three, while `raw_write: false` was set on the connector.
-//
-// That made the operation gates advertise more than they enforced. The gate
-// table's own claim — "SQL writes are fully bounded by allowed_entities once
-// `raw_write: false` leaves `data_write` as the only write path" — is only true
-// with this check in place, because `db_read` was the second write path.
-//
-// The statement is a workflow-authored literal, never caller-supplied, so this
-// is not an injection guard; it is what makes "delete-proof connector" a
-// property an operator can rely on rather than a convention authors are asked
-// to keep.
-
-/// Refuse a `db_read` statement that is not a read, in the words the
-/// handler has always used. The judgement is [`crate::sql_lex`]'s — the one
-/// lexer every surface reads SQL with — read lossily, as the run-time check
-/// always has been.
-///
-/// # Errors
-///
-/// [`DataflowError::Validation`] when the statement does not open with one of
-/// [`crate::sql_lex::READ_STATEMENTS`], or when it carries a data-modifying
-/// CTE.
 fn require_read_only(query: &str, handler_name: &str) -> Result<(), HandlerError> {
     use crate::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
     let message = match crate::sql_lex::read_only_violation(query) {
@@ -550,11 +522,7 @@ mod tests {
     /// kept as data; `connector` and `query` are literals, required (I183);
     /// an unknown key is refused (break 2a); `output` defaults to `data`.
     #[test]
-    fn the_config_is_the_field_table() {
-        let fields: Vec<&str> = DbReadConfig::fields().iter().map(|f| &*f.name).collect();
-        let table: Vec<&str> = DB_READ_FIELDS.iter().map(|f| f.name).collect();
-        assert_eq!(fields, table);
-
+    fn the_config_compiles_and_checks_its_inputs() {
         let params = json!([
             {"var": "data.id"},
             {"$oid": {"var": ["data.oid", "none"]}},
