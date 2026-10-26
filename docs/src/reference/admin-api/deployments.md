@@ -24,6 +24,19 @@ A deployment states everything a node serves in one manifest. You store the defi
 
 A refusal answers the error envelope with a code from [the v2 admin code registry](../errors.md#the-v2-admin-code-registry), at the status its kind names.
 
+## The contract and its version
+
+These endpoints, and the connector package and authoring endpoints beside them, are one strict, versioned contract. Every field of an answer is present unless its description says what its absence means. A request carrying a field the endpoint does not read is refused with a `400`, so a misspelled field is never silently ignored. A closed set of values, such as a member `kind` or a package `implementation`, is refused when the value is not one of them.
+
+`GET /api/v2/admin/runtime-capabilities` reports the contract's revision as `api_version`, an integer, `1` for this release. It moves when a change could make a client built against the previous revision misread an answer or send a request that is refused: a field removed, renamed, retyped or made required, a request field added, or a value added to a closed set an answer carries. An answer gaining a field does not move it. `orion-cli` speaks exactly one revision. Before each `deployments`, `provider` and `connections` command it reads the server's, and it refuses to go on against a server that reports another, or none, naming both: use the CLI from the same Orion release as the server.
+
+```bash
+curl -s http://localhost:8080/api/v2/admin/runtime-capabilities | jq '{api_version, edition, node: .node_status.applied_revision}'
+# {"api_version": 1, "edition": "community", "node": 3}
+```
+
+The same answer lists the channel drivers (`channel_drivers`), every registered provider backend with its `kind` and `driver_id` (`provider_backends`, a built-in driver with its `package_digest`), the deployment head (`deployment_head.revision`, `deployment_head.epoch`), the native work scheduler's load (`native_scheduler`) and this node's reconciler status (`node_status`: the desired and applied revisions, quarantined members, the last build error and its backoff).
+
 Once a deployment is committed, the node builds what it serves from the head manifest alone.
 
 ## Definitions
@@ -136,15 +149,14 @@ Over a built-in driver, the configuration is first resolved exactly as the node 
 | `org.orion.http` | The URL's host is resolved and a TCP connection opened to it (`TCP connect to the URL's host`). No HTTP request is sent and no credential is presented. A private or internal address is refused unless `allow_private_urls` is set |
 | `org.orion.memory-cache` | A read of a probe key |
 
-A probe that ran answers `200`, whatever it found: `"healthy": true`, or `"healthy": false` with `details.error`, the stage that failed (`configuration`, `secret_resolution`, …) or what the backend did. A resolved secret never appears in the answer; a driver error that could carry one is written to the server log instead.
+A probe that ran answers `200`, whatever it found: `"healthy": true`, or `"healthy": false` with `details.error`, the stage that failed (`configuration`, `secret_resolution`, …) or what the backend did. When an uploaded provider answered the failure, `details.error_class` carries its normalised class (`unavailable`, `unauthorized`, …) and `details.effect_status` whether the check may have reached the backend (`not_started`, `completed`, `unknown`). A resolved secret never appears in the answer; a driver error that could carry one is written to the server log instead.
 
 Over an uploaded provider package, the probe validates the configuration and runs the provider's health check within an admitted run budget. A revoked package answers `403 PROVIDER_REVOKED`, and one this node has no backend for `404 PROVIDER_NOT_FOUND`.
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v2/admin/connections/orders-db/revisions/1/probes
 # {"connection_id": "orders-db", "revision": 1, "driver_id": "org.orion.postgresql",
-#  "healthy": true, "status": "healthy", "latency_ms": 4,
-#  "details": {"probe": "SELECT 1", "status": "ok"}}
+#  "healthy": true, "latency_ms": 4, "details": {"probe": "SELECT 1"}}
 ```
 
 `orion-cli connections probe <id>` probes the latest revision, or `--revision N`, and exits `2` when the backend is unhealthy.
