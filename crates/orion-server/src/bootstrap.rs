@@ -1106,14 +1106,14 @@ pub async fn assemble(
 
     if let Err(e) = state
         .reconciler
-        .refresh_observed_nodes_from_db_pool(&state.db_pool)
+        .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
         .await
     {
         tracing::warn!(error = %e, "could not read the other nodes' deployment status");
     }
     if let Err(e) = state
         .reconciler
-        .persist_local_status_to_db_pool(&state.db_pool)
+        .persist_local_status(state.repos.runtime_nodes.as_ref())
         .await
     {
         tracing::warn!(error = %e, "could not record this node's deployment status");

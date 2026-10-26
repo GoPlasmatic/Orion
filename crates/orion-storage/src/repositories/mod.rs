@@ -4,6 +4,7 @@ pub mod cron;
 pub mod helpers;
 pub mod job_lease;
 pub mod oauth_state;
+pub mod runtime_nodes;
 pub mod shared_state;
 pub mod trace_dlq;
 pub mod traces;
@@ -27,6 +28,8 @@ pub struct Repositories {
     pub cron: Arc<dyn cron::CronRepository>,
     /// Managed-OAuth2 token state, per connector name.
     pub oauth_state: Arc<dyn oauth_state::OAuthStateRepository>,
+    /// Each node's reported deployment status.
+    pub runtime_nodes: Arc<dyn runtime_nodes::RuntimeNodeRepository>,
 }
 
 impl Repositories {
@@ -55,6 +58,7 @@ impl Repositories {
                 pool.clone(),
                 cipher,
             )),
+            runtime_nodes: Arc::new(runtime_nodes::SqlRuntimeNodeRepository::new(pool.clone())),
         })
     }
 }

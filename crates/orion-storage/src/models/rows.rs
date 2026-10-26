@@ -163,6 +163,20 @@ pub struct ConnectorOauthStateRow {
     pub state_json: String,
 }
 
+/// One node's last reported deployment status, as `runtime_nodes` holds it.
+/// Revisions are stored signed (every backend's integer type); the
+/// retained set is a JSON array of revision numbers.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct RuntimeNodeRow {
+    pub node_id: String,
+    pub boot_id: String,
+    pub desired_revision: i64,
+    pub applied_revision: i64,
+    pub applied_manifest_digest: Option<String>,
+    pub configuration_degraded: bool,
+    pub retained_revisions_json: String,
+}
+
 // ============================================================
 // Connector
 // ============================================================

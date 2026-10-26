@@ -41,6 +41,6 @@ pub use enums::{
 };
 pub use rows::{
     AuditLogEntry, Channel, Connector, ConnectorOauthStateRow, CronOccurrence, CronScheduleState,
-    CronSingleton, Plugin, PluginArtifact, Trace, TraceDlqEntry, TraceDlqSummary, TraceListRow,
-    Workflow,
+    CronSingleton, Plugin, PluginArtifact, RuntimeNodeRow, Trace, TraceDlqEntry, TraceDlqSummary,
+    TraceListRow, Workflow,
 };

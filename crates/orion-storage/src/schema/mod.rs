@@ -32,8 +32,8 @@ pub use entities::{
 };
 pub use runtime::{
     AuditLogs, ClusterKv, ClusterRateWindows, ConfigEpoch, CronOccurrences, CronScheduleState,
-    CronSingletonSlots, CronSingletons, JobLeases, SourceCheckpoints, SourceClaims, TraceDlq,
-    Traces,
+    CronSingletonSlots, CronSingletons, JobLeases, RuntimeNodes, SourceCheckpoints, SourceClaims,
+    TraceDlq, Traces,
 };
 
 #[cfg(test)]

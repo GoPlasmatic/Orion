@@ -204,3 +204,21 @@ pub enum AuditLogs {
     Details,
     CreatedAt,
 }
+
+// ============================================================
+// Runtime nodes (each node's reported deployment status)
+// ============================================================
+
+#[derive(Iden)]
+pub enum RuntimeNodes {
+    Table,
+    NodeId,
+    BootId,
+    DesiredRevision,
+    AppliedRevision,
+    AppliedManifestDigest,
+    ConfigurationDegraded,
+    RetainedRevisionsJson,
+    SecurityLeaseUntil,
+    UpdatedAt,
+}

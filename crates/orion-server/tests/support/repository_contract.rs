@@ -44,6 +44,52 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     the_artifact_collector_judges_its_grace_on_the_database_clock(backend, pool).await;
     source_leases_are_won_once_and_judged_on_the_database_clock(backend, pool).await;
     every_update_moves_updated_at(backend, pool).await;
+    a_runtime_node_upserts_and_reads_back(backend, pool).await;
+}
+
+/// A node's status row upserts in place — one row per node however often it
+/// reports — and reads back field for field, the nullable digest and the
+/// boolean included.
+async fn a_runtime_node_upserts_and_reads_back(backend: &str, pool: &DbPool) {
+    use orion::storage::models::RuntimeNodeRow;
+    use orion::storage::repositories::runtime_nodes::{
+        RuntimeNodeRepository, SqlRuntimeNodeRepository,
+    };
+
+    let repo = SqlRuntimeNodeRepository::new(pool.clone());
+    let node = |id: &str, applied: i64, degraded: bool, digest: Option<&str>| RuntimeNodeRow {
+        node_id: format!("contract-{id}"),
+        boot_id: "boot-1".into(),
+        desired_revision: applied + 1,
+        applied_revision: applied,
+        applied_manifest_digest: digest.map(str::to_string),
+        configuration_degraded: degraded,
+        retained_revisions_json: format!("[{applied}]"),
+    };
+    repo.upsert_node(&node("a", 1, false, Some("sha256:1")))
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: first upsert: {e}"));
+    repo.upsert_node(&node("b", 1, false, Some("sha256:1")))
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: peer upsert: {e}"));
+    let moved = node("a", 2, true, None);
+    repo.upsert_node(&moved)
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: second upsert: {e}"));
+
+    let mut rows: Vec<RuntimeNodeRow> = repo
+        .list_nodes()
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: list: {e}"))
+        .into_iter()
+        .filter(|r| r.node_id.starts_with("contract-"))
+        .collect();
+    rows.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    assert_eq!(
+        rows,
+        vec![moved, node("b", 1, false, Some("sha256:1"))],
+        "{backend}: one row per node, replaced in place"
+    );
 }
 
 /// A deployment store manifest of one workflow member over `digest`.

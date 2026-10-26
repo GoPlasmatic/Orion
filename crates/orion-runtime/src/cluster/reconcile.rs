@@ -177,7 +177,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
 
     if let Err(e) = state
         .reconciler
-        .persist_local_status_to_db_pool(&state.db_pool)
+        .persist_local_status(state.repos.runtime_nodes.as_ref())
         .await
     {
         tracing::warn!(error = %e, "V2 reconciler: failed to persist local status heartbeat");
@@ -186,7 +186,7 @@ pub async fn reconcile_v2_state_once(state: &AppState) -> bool {
 
     if let Err(e) = state
         .reconciler
-        .refresh_observed_nodes_from_db_pool(&state.db_pool)
+        .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
         .await
     {
         tracing::warn!(error = %e, "V2 reconciler: failed to refresh observed cluster nodes");

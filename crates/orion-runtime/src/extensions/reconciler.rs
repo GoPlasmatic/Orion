@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use super::deployment_store::{
     DeploymentError, DeploymentErrorKind, EntityRef, ImmutableDeploymentStore,
 };
+use crate::storage::models::RuntimeNodeRow;
+use crate::storage::repositories::runtime_nodes::RuntimeNodeRepository;
 
 pub const MIN_BACKOFF_MS: u64 = 250;
 pub const MAX_BACKOFF_MS: u64 = 30_000;
@@ -326,161 +328,53 @@ impl NodeReconciler {
             .is_some_and(|node| now_ms <= node.security_lease_expires_at_ms)
     }
 
-    /// Persist this node's [`RuntimeNodeStatus`] to the `runtime_nodes` table across
-    /// any configured [`crate::storage::DbPool`] (`TD-18`).
-    pub async fn persist_local_status_to_db_pool(
+    /// Persist this node's [`RuntimeNodeStatus`] to `runtime_nodes` (`TD-18`).
+    pub async fn persist_local_status(
         &self,
-        pool: &crate::storage::DbPool,
+        nodes: &dyn RuntimeNodeRepository,
     ) -> Result<(), DeploymentError> {
         let status = self.local_status();
         let retained_vec: Vec<u64> = status.retained_revisions.iter().copied().collect();
-        let retained_json =
-            serde_json::to_string(&retained_vec).unwrap_or_else(|_| "[]".to_string());
-
-        match pool {
-            crate::storage::DbPool::Sqlite(p) => {
-                sqlx::query(
-                    "INSERT INTO runtime_nodes (node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json, security_lease_until, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
-                     ON CONFLICT(node_id) DO UPDATE SET \
-                       boot_id = excluded.boot_id, \
-                       desired_revision = excluded.desired_revision, \
-                       applied_revision = excluded.applied_revision, \
-                       applied_manifest_digest = excluded.applied_manifest_digest, \
-                       configuration_degraded = excluded.configuration_degraded, \
-                       retained_revisions_json = excluded.retained_revisions_json, \
-                       security_lease_until = CURRENT_TIMESTAMP, \
-                       updated_at = CURRENT_TIMESTAMP",
-                )
-                .bind(&status.identity.node_id)
-                .bind(&status.identity.boot_id)
-                .bind(status.desired_revision as i64)
-                .bind(status.applied_revision as i64)
-                .bind(status.applied_manifest_digest.as_deref())
-                .bind(status.configuration_degraded)
-                .bind(&retained_json)
-                .execute(p)
-                .await
-                .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbWrite, e.to_string()))?;
-            }
-            crate::storage::DbPool::Postgres(p) => {
-                sqlx::query(
-                    "INSERT INTO runtime_nodes (node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json, security_lease_until, updated_at) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
-                     ON CONFLICT(node_id) DO UPDATE SET \
-                       boot_id = EXCLUDED.boot_id, \
-                       desired_revision = EXCLUDED.desired_revision, \
-                       applied_revision = EXCLUDED.applied_revision, \
-                       applied_manifest_digest = EXCLUDED.applied_manifest_digest, \
-                       configuration_degraded = EXCLUDED.configuration_degraded, \
-                       retained_revisions_json = EXCLUDED.retained_revisions_json, \
-                       security_lease_until = CURRENT_TIMESTAMP, \
-                       updated_at = CURRENT_TIMESTAMP",
-                )
-                .bind(&status.identity.node_id)
-                .bind(&status.identity.boot_id)
-                .bind(status.desired_revision as i64)
-                .bind(status.applied_revision as i64)
-                .bind(status.applied_manifest_digest.as_deref())
-                .bind(status.configuration_degraded)
-                .bind(&retained_json)
-                .execute(p)
-                .await
-                .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbWrite, e.to_string()))?;
-            }
-            crate::storage::DbPool::Mysql(p) => {
-                sqlx::query(
-                    "INSERT INTO runtime_nodes (node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json, security_lease_until, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) \
-                     ON DUPLICATE KEY UPDATE \
-                       boot_id = VALUES(boot_id), \
-                       desired_revision = VALUES(desired_revision), \
-                       applied_revision = VALUES(applied_revision), \
-                       applied_manifest_digest = VALUES(applied_manifest_digest), \
-                       configuration_degraded = VALUES(configuration_degraded), \
-                       retained_revisions_json = VALUES(retained_revisions_json), \
-                       security_lease_until = CURRENT_TIMESTAMP, \
-                       updated_at = CURRENT_TIMESTAMP",
-                )
-                .bind(&status.identity.node_id)
-                .bind(&status.identity.boot_id)
-                .bind(status.desired_revision as i64)
-                .bind(status.applied_revision as i64)
-                .bind(status.applied_manifest_digest.as_deref())
-                .bind(status.configuration_degraded)
-                .bind(&retained_json)
-                .execute(p)
-                .await
-                .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbWrite, e.to_string()))?;
-            }
-        }
-        Ok(())
+        let row = RuntimeNodeRow {
+            node_id: status.identity.node_id,
+            boot_id: status.identity.boot_id,
+            desired_revision: status.desired_revision as i64,
+            applied_revision: status.applied_revision as i64,
+            applied_manifest_digest: status.applied_manifest_digest,
+            configuration_degraded: status.configuration_degraded,
+            retained_revisions_json: serde_json::to_string(&retained_vec)
+                .unwrap_or_else(|_| "[]".to_string()),
+        };
+        nodes
+            .upsert_node(&row)
+            .await
+            .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbWrite, e.to_string()))
     }
 
-    /// Load all observed cluster nodes from the `runtime_nodes` table into `self.nodes`
-    /// and update `self.store`'s retained revision sets (`TD-18`).
-    pub async fn refresh_observed_nodes_from_db_pool(
+    /// Load every observed cluster node from `runtime_nodes` into
+    /// `self.nodes` and update `self.store`'s retained revision sets
+    /// (`TD-18`).
+    pub async fn refresh_observed_nodes(
         &self,
-        pool: &crate::storage::DbPool,
+        nodes: &dyn RuntimeNodeRepository,
     ) -> Result<BTreeSet<String>, DeploymentError> {
-        type PersistedNodeTuple = (String, String, i64, i64, Option<String>, bool, String);
-        let query_sql = "SELECT node_id, boot_id, desired_revision, applied_revision, applied_manifest_digest, configuration_degraded, retained_revisions_json FROM runtime_nodes";
-        let rows: Vec<PersistedNodeTuple> = match pool {
-            crate::storage::DbPool::Sqlite(p) => match sqlx::query_as(query_sql).fetch_all(p).await
-            {
-                Ok(r) => r,
-                Err(e) if crate::storage::is_undefined_table(&e) => {
-                    return Ok(self.observed_node_ids());
-                }
-                Err(e) => {
-                    return Err(DeploymentError::new(
-                        DeploymentErrorKind::DbRead,
-                        e.to_string(),
-                    ));
-                }
-            },
-            crate::storage::DbPool::Postgres(p) => {
-                match sqlx::query_as(query_sql).fetch_all(p).await {
-                    Ok(r) => r,
-                    Err(e) if crate::storage::is_undefined_table(&e) => {
-                        return Ok(self.observed_node_ids());
-                    }
-                    Err(e) => {
-                        return Err(DeploymentError::new(
-                            DeploymentErrorKind::DbRead,
-                            e.to_string(),
-                        ));
-                    }
-                }
-            }
-            crate::storage::DbPool::Mysql(p) => {
-                match sqlx::query_as(query_sql).fetch_all(p).await {
-                    Ok(r) => r,
-                    Err(e) if crate::storage::is_undefined_table(&e) => {
-                        return Ok(self.observed_node_ids());
-                    }
-                    Err(e) => {
-                        return Err(DeploymentError::new(
-                            DeploymentErrorKind::DbRead,
-                            e.to_string(),
-                        ));
-                    }
-                }
-            }
-        };
+        let rows = nodes
+            .list_nodes()
+            .await
+            .map_err(|e| DeploymentError::new(DeploymentErrorKind::DbRead, e.to_string()))?;
 
         let mut retained_updates = Vec::new();
         {
             let mut g = self.nodes.lock().expect("nodes lock");
-            for (
+            for RuntimeNodeRow {
                 node_id,
                 boot_id,
-                desired_rev,
-                applied_rev,
-                manifest_digest,
-                degraded,
-                retained_str,
-            ) in rows
+                desired_revision: desired_rev,
+                applied_revision: applied_rev,
+                applied_manifest_digest: manifest_digest,
+                configuration_degraded: degraded,
+                retained_revisions_json: retained_str,
+            } in rows
             {
                 let retained: BTreeSet<u64> = serde_json::from_str::<Vec<u64>>(&retained_str)
                     .unwrap_or_default()
@@ -637,6 +531,9 @@ mod tests {
             .await
             .unwrap();
         let db_pool = crate::storage::DbPool::Sqlite(pool);
+        let nodes = crate::storage::repositories::runtime_nodes::SqlRuntimeNodeRepository::new(
+            db_pool.clone(),
+        );
 
         let store_a = ImmutableDeploymentStore::new("node-alpha");
         let rec_a = NodeReconciler::new(store_a.clone(), "node-alpha", "boot-alpha");
@@ -657,23 +554,14 @@ mod tests {
 
         rec_a.observe_desired_head();
         rec_a.build_and_publish_candidate(1, Vec::new()).unwrap();
-        rec_a
-            .persist_local_status_to_db_pool(&db_pool)
-            .await
-            .unwrap();
+        rec_a.persist_local_status(&nodes).await.unwrap();
 
         // Second node ("node-beta") has not yet applied revision 1
         let store_b = ImmutableDeploymentStore::new("node-beta");
         let rec_b = NodeReconciler::new(store_b, "node-beta", "boot-beta");
-        rec_b
-            .persist_local_status_to_db_pool(&db_pool)
-            .await
-            .unwrap();
+        rec_b.persist_local_status(&nodes).await.unwrap();
 
-        let observed = rec_a
-            .refresh_observed_nodes_from_db_pool(&db_pool)
-            .await
-            .unwrap();
+        let observed = rec_a.refresh_observed_nodes(&nodes).await.unwrap();
         assert!(observed.contains("node-alpha"));
         assert!(observed.contains("node-beta"));
 

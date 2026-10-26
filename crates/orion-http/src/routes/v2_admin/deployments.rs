@@ -448,7 +448,7 @@ pub(crate) async fn get_deployment_convergence(
         "observed" => {
             let observed = state
                 .reconciler
-                .refresh_observed_nodes_from_db_pool(&state.db_pool)
+                .refresh_observed_nodes(state.repos.runtime_nodes.as_ref())
                 .await
                 .unwrap_or_else(|_| state.reconciler.observed_node_ids());
             ConvergenceTarget::ObservedNodes(observed)

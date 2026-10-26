@@ -64,7 +64,7 @@ pub async fn reconcile_deployment_revision(
         .build_and_publish_candidate(target_revision, build_issues);
     let _ = state
         .reconciler
-        .persist_local_status_to_db_pool(&state.db_pool)
+        .persist_local_status(state.repos.runtime_nodes.as_ref())
         .await;
     status_res
 }
