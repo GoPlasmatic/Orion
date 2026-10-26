@@ -36,7 +36,7 @@
 
 use dataflow_rs::ErrorKind;
 
-use crate::errors::service::{ServiceDetail, detail_of};
+use crate::service::{ServiceDetail, detail_of};
 
 /// What kind of failure a handler hit.
 ///
@@ -503,13 +503,10 @@ mod tests {
             (budget_error(), ErrorClass::Limit),
             (eval_error(), ErrorClass::Backend),
             (
-                crate::errors::service::circuit_open("c", "ch"),
+                crate::service::circuit_open("c", "ch"),
                 ErrorClass::Connector,
             ),
-            (
-                crate::errors::service::connector_detail("d"),
-                ErrorClass::Backend,
-            ),
+            (crate::service::connector_detail("d"), ErrorClass::Backend),
         ];
         for (e, class) in cases {
             assert_eq!(HandlerError::from(e).class, class);
@@ -548,7 +545,7 @@ mod tests {
                 ),
             ),
             (
-                crate::errors::service::connector_detail("nope"),
+                crate::service::connector_detail("nope"),
                 "FUNCTION_ERROR",
                 false,
                 // The detail stays the operator's; the message is the
@@ -578,12 +575,12 @@ mod tests {
     #[test]
     fn a_service_error_survives_the_round_trip() {
         let back: dataflow_rs::Error =
-            HandlerError::from(crate::errors::service::connector_detail("disabled")).into();
+            HandlerError::from(crate::service::connector_detail("disabled")).into();
         assert_eq!(back.code(), crate::errors::kind::CONNECTOR_DETAIL);
         assert_eq!(detail_of(&back), Some("disabled"));
 
-        let back: dataflow_rs::Error = HandlerError::from(crate::errors::service::integrity(
-            crate::errors::IntegrityKind::ForeignKey,
+        let back: dataflow_rs::Error = HandlerError::from(crate::service::integrity(
+            crate::service::IntegrityKind::ForeignKey,
             "FOREIGN KEY constraint failed",
         ))
         .into();
@@ -595,7 +592,7 @@ mod tests {
     /// error that message came from.
     #[test]
     fn prefixing_gives_up_the_round_trip() {
-        let original = crate::errors::service::connector_detail("nope");
+        let original = crate::service::connector_detail("nope");
         let back: dataflow_rs::Error = HandlerError::from(original).prefixed("crypto").into();
         assert_eq!(back.code(), "FUNCTION_ERROR", "rebuilt from its class");
     }

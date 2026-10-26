@@ -149,7 +149,7 @@ impl QueryError {
 impl From<QueryError> for HandlerError {
     fn from(e: QueryError) -> Self {
         if e.is_connector_detail() {
-            return HandlerError::from(crate::errors::service::connector_detail(e));
+            return HandlerError::from(crate::service::connector_detail(e));
         }
         HandlerError::new(ErrorClass::CallerInput, e)
     }

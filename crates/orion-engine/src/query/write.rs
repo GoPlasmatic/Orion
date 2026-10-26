@@ -244,7 +244,7 @@ impl From<WriteError> for crate::HandlerError {
         // A wrapped `QueryError` keeps its redaction class (G3) — the write
         // path reaches `EntityNotAllowed` through exactly the same lowering.
         if matches!(&e, WriteError::Query(q) if q.is_connector_detail()) {
-            return Self::from(crate::errors::service::connector_detail(e));
+            return Self::from(crate::service::connector_detail(e));
         }
         Self::new(crate::ErrorClass::CallerInput, e)
     }

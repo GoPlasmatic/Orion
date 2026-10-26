@@ -502,7 +502,7 @@ async fn a_rejected_query_does_not_trip_the_breaker() {
 /// *why* the task failed is the recorded code.
 ///
 /// That code is the connector's own service kind, verbatim. `circuit_open` is
-/// minted by `errors::service::circuit_open` as a service error whose code is
+/// minted by `orion_engine::service::circuit_open` as a service error whose code is
 /// that kind — so shedding a dependency stays distinguishable from the
 /// `IO_ERROR` of a genuine connection failure and the `TIMEOUT_ERROR` of a slow
 /// one. Before 3.5.0 all three flattened to `TASK_ERROR` here, which is why

@@ -240,7 +240,7 @@ where
     let breaker = registry.get_or_create_breaker(channel, connector).await;
     if !breaker.check() {
         crate::metrics::record_circuit_breaker_rejection(connector, channel);
-        return Err(crate::errors::service::circuit_open(connector, channel));
+        return Err(crate::service::circuit_open(connector, channel));
     }
 
     let result = observed(connector, channel, fut).await;
@@ -684,7 +684,7 @@ mod tests {
             e.code().to_string(),
             e.is_retryable(),
             e.message().to_string(),
-            crate::errors::service::detail_of(e).map(str::to_string),
+            crate::service::detail_of(e).map(str::to_string),
         )
     }
 

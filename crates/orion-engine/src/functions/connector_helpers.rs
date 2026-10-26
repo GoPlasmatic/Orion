@@ -41,7 +41,7 @@ pub fn build_entity_registry(
 /// A refusal whose text names connector topology: the caller is told the
 /// request failed validation, and `detail` rides as the operator-only text.
 fn connector_detail(detail: impl std::fmt::Display) -> HandlerError {
-    HandlerError::from(crate::errors::service::connector_detail(detail))
+    HandlerError::from(crate::service::connector_detail(detail))
 }
 
 /// Reject the call when the connector's operation gates disable `op` — the
@@ -152,7 +152,7 @@ pub enum QueryFailure {
     /// failure), and fixable by the caller — a duplicate submission is a
     /// routine 409, not a 500. The `String` is the driver's text and reaches
     /// the operator-only `detail` alone, never a caller.
-    Integrity(crate::errors::IntegrityKind, String),
+    Integrity(crate::service::IntegrityKind, String),
     /// The operation classified the failure itself and handed back a
     /// finished [`HandlerError`].
     ///
@@ -196,7 +196,7 @@ impl From<sqlx::Error> for QueryFailure {
         // predicate for a NOT NULL violation, which every driver reports and
         // which is as caller-fixable as the other three.
         if let Some(db) = e.as_database_error() {
-            use crate::errors::IntegrityKind as K;
+            use crate::service::IntegrityKind as K;
             let integrity = match db.kind() {
                 sqlx::error::ErrorKind::UniqueViolation => Some(K::Unique),
                 sqlx::error::ErrorKind::ForeignKeyViolation => Some(K::ForeignKey),
@@ -401,7 +401,7 @@ impl QueryBudget {
                     // the caller sees is the generic sentence the builder
                     // picks by kind.
                     QueryFailure::Integrity(integrity, text) => {
-                        HandlerError::from(crate::errors::service::integrity(
+                        HandlerError::from(crate::service::integrity(
                             integrity,
                             format!("{handler_name} query failed: {text}"),
                         ))
@@ -622,9 +622,9 @@ mod error_taxonomy_tests {
     /// `HandlerError` on the way out.
     #[test]
     fn an_integrity_failure_keeps_its_kind_through_the_conversion() {
-        use crate::errors::IntegrityKind;
+        use crate::service::IntegrityKind;
 
-        let err: DataflowError = crate::errors::service::integrity(
+        let err: DataflowError = crate::service::integrity(
             IntegrityKind::Unique,
             "db_write query failed: UNIQUE constraint failed: models.id",
         );

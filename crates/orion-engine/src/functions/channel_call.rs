@@ -441,7 +441,7 @@ pub fn guard_refused(target: &str, e: crate::errors::OrionError) -> dataflow_rs:
     if status == axum::http::StatusCode::BAD_REQUEST {
         HandlerError::new(ErrorClass::CallerInput, message).into()
     } else {
-        crate::errors::service::channel_refused(status, message)
+        crate::service::channel_refused(status, message)
     }
 }
 
@@ -487,13 +487,13 @@ fn check_position(
     target: &str,
 ) -> dataflow_rs::Result<()> {
     if depth >= u64::from(max_depth) {
-        return Err(crate::errors::service::channel_loop(format!(
+        return Err(crate::service::channel_loop(format!(
             "channel_call: max call depth {max_depth} exceeded (chain: {})",
             format_chain(chain, target),
         )));
     }
     if chain.iter().any(|called| called == target) {
-        return Err(crate::errors::service::channel_loop(format!(
+        return Err(crate::service::channel_loop(format!(
             "channel_call: cycle detected: {}",
             format_chain(chain, target)
         )));

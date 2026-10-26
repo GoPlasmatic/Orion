@@ -140,7 +140,7 @@ pub fn oauth_error_to_dataflow(e: crate::connector::oauth::OAuthError) -> datafl
     if e.retryable() {
         connect_failure(e)
     } else {
-        crate::errors::service::connector_detail(e)
+        crate::service::connector_detail(e)
     }
 }
 

@@ -285,7 +285,7 @@ pub mod twin {
             code: e.code().to_string(),
             message: format!("{label}{}", e.message()),
             retryable: e.is_retryable(),
-            detail: crate::errors::service::detail_of(e).map(str::to_string),
+            detail: crate::service::detail_of(e).map(str::to_string),
         }
     }
 
