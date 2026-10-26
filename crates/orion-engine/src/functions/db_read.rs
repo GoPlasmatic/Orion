@@ -367,8 +367,8 @@ impl Function for DbReadFunction {
 }
 
 fn require_read_only(query: &str, handler_name: &str) -> Result<(), HandlerError> {
-    use crate::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
-    let message = match crate::sql_lex::read_only_violation(query) {
+    use orion_definitions::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
+    let message = match orion_definitions::sql_lex::read_only_violation(query) {
         None => return Ok(()),
         Some(ReadOnlyViolation::Empty) => format!("{handler_name} 'query' has no statement to run"),
         Some(ReadOnlyViolation::NotARead { keyword }) => format!(

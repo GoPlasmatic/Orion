@@ -10,7 +10,6 @@
 // The crates below under their `crate::` names, so the authoring paths read
 // as they did inside `orion-server`.
 pub(crate) use orion_common::{canonical, config, crypto, errors, signatures, text, version};
-pub(crate) use orion_definitions::sql_lex;
 pub(crate) use orion_engine::{self as engine, connector};
 pub(crate) use orion_plugin_host as plugin;
 pub(crate) use orion_runtime::{channel, extensions, runtime};

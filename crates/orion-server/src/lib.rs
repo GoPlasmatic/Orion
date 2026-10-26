@@ -73,7 +73,6 @@ pub use orion_plugin_host as plugin;
 pub use orion_runtime::queue;
 pub use orion_runtime::runtime;
 #[doc(hidden)]
-pub mod sql_lex;
 pub use orion_storage as storage;
 #[doc(hidden)]
 pub mod test_support;

@@ -99,7 +99,7 @@ async fn write_rows(
     // keyword is enough to know whether an id was generated at all.
     if let Some(id) = last_insert_id
         && matches!(
-            crate::sql_lex::leading_keyword(query).as_deref(),
+            orion_definitions::sql_lex::leading_keyword(query).as_deref(),
             Some("INSERT" | "REPLACE")
         )
     {

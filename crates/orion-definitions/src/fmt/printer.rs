@@ -8,9 +8,10 @@
 //! "try flat, fall back" printer from going quadratic on wide trees: nothing
 //! is rendered twice.
 
+use super::Formatter;
 use super::roles::{self, EntryKind, OperatorShape, Role};
 use super::style::STYLE;
-use crate::definitions::json::{Member, Node, Spanned};
+use crate::json::{Member, Node, Spanned};
 
 /// How a container may be laid out. Decided by role, refined by content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,8 +58,8 @@ impl Doc {
 }
 
 /// Format a root node.
-pub fn print(root: &Node) -> String {
-    let doc = layout(root, roles::root_role(root), 0);
+pub fn print(root: &Node, formatter: &Formatter) -> String {
+    let doc = layout(root, roles::root_role(root, formatter), 0, formatter);
     let mut out = String::new();
     emit(&doc, 0, 0, 0, &mut out);
     out.push('\n');
@@ -69,25 +70,26 @@ pub fn print(root: &Node) -> String {
 // Measure
 // ============================================================
 
-fn layout(node: &Node, role: Role, depth: usize) -> Doc {
+fn layout(node: &Node, role: Role, depth: usize, formatter: &Formatter) -> Doc {
     match node {
-        Node::Array(items) => layout_array(items, role, depth),
+        Node::Array(items) => layout_array(items, role, depth, formatter),
         Node::Object(members) => layout_object(
             members,
             role,
             depth,
             roles::key_order(role).map(<[_]>::to_vec),
+            formatter,
         ),
         scalar => Doc::Scalar(render_scalar(scalar)),
     }
 }
 
-fn layout_array(items: &[Spanned<Node>], role: Role, depth: usize) -> Doc {
+fn layout_array(items: &[Spanned<Node>], role: Role, depth: usize, formatter: &Formatter) -> Doc {
     let children: Vec<(Option<String>, Doc)> = items
         .iter()
         .map(|item| {
-            let child_role = roles::child_role(role, None, &item.node, depth + 1);
-            (None, layout(&item.node, child_role, depth + 1))
+            let child_role = roles::child_role(role, None, &item.node, depth + 1, formatter);
+            (None, layout(&item.node, child_role, depth + 1, formatter))
         })
         .collect();
     let mode = match role {
@@ -109,7 +111,8 @@ fn layout_object(
     members: &[Member],
     role: Role,
     depth: usize,
-    order: Option<Vec<&'static str>>,
+    order: Option<Vec<&str>>,
+    formatter: &Formatter,
 ) -> Doc {
     // An operator node's single argument takes the operator's shape with it,
     // so a compound argument array breaks one argument per line and a unary
@@ -118,9 +121,9 @@ fn layout_object(
         let member = &members[0];
         let arg_role = match &member.value.node {
             Node::Array(_) => Role::OperatorArgs(shape),
-            other => roles::child_role(role, Some(&member.key.node), other, depth + 1),
+            other => roles::child_role(role, Some(&member.key.node), other, depth + 1, formatter),
         };
-        let child = layout(&member.value.node, arg_role, depth + 1);
+        let child = layout(&member.value.node, arg_role, depth + 1, formatter);
         let mode = match shape {
             OperatorShape::Unary => Mode::AlwaysInline,
             OperatorShape::Leaf => Mode::InlineIfFits,
@@ -155,12 +158,14 @@ fn layout_object(
                     input,
                     roles::input_role(function_name),
                     depth + 1,
-                    roles::input_key_order(function_name),
+                    formatter.input_key_order(function_name),
+                    formatter,
                 ),
                 _ => layout(
                     value,
-                    roles::child_role(role, Some(key), value, depth + 1),
+                    roles::child_role(role, Some(key), value, depth + 1, formatter),
                     depth + 1,
+                    formatter,
                 ),
             };
             (Some(render_string(key)), child)

@@ -80,7 +80,7 @@ fn schema_diagnostics(
 /// Offline only: the admin API's validator is unchanged. A templated
 /// statement is skipped, since what runs is only known then.
 fn check_read_only_statements(def: &Definition, name: &str, findings: &mut Vec<Diagnostic>) {
-    use crate::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
+    use orion_definitions::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
     let Some(tasks) = def.doc.get("tasks") else {
         return;
     };
@@ -97,7 +97,7 @@ fn check_read_only_statements(def: &Definition, name: &str, findings: &mut Vec<D
         else {
             continue;
         };
-        let message = match crate::sql_lex::read_only_violation(query) {
+        let message = match orion_definitions::sql_lex::read_only_violation(query) {
             None | Some(ReadOnlyViolation::Empty) => continue,
             Some(ReadOnlyViolation::NotARead { keyword }) => format!(
                 "db_read runs read statements only, but this one starts with '{keyword}' — use \

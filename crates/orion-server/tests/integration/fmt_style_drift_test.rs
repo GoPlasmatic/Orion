@@ -192,7 +192,8 @@ fn documented_field_order_is_the_formatters() {
             // Top-level fields only: `mappings[].path` describes a member.
             .filter(|f| !f.contains('[') && !f.contains('.'))
             .collect();
-        let Some(formatter) = orion::definitions::fmt::roles::input_key_order(Some(name)) else {
+        let Some(formatter) = orion::definitions::fmt::formatter().input_key_order(Some(name))
+        else {
             continue;
         };
         if documented.is_empty() {

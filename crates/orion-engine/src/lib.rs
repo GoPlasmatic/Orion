@@ -195,7 +195,6 @@ pub mod query;
 pub(crate) use orion_common::{
     config, crypto, errors, http_body, metrics, text, trace_context, version,
 };
-pub(crate) use orion_definitions::sql_lex;
 pub(crate) use orion_storage as storage;
 
 pub mod budget;

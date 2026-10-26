@@ -15,8 +15,8 @@
 //! generic layout never disagree except that a compound operator always
 //! breaks — which is the readable choice for a data object of that shape too.
 
-use super::style;
-use crate::definitions::json::{Member, Node};
+use super::{Formatter, style};
+use crate::json::{Member, Node};
 
 /// The role of a node, which decides its key order and its layout mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,8 +122,8 @@ const READ_OPERATORS: &[&str] = &["var", "val", "secret", "missing", "missing_so
 /// `tasks` array through `--stdin` gets the layout it would have inside its
 /// workflow, rather than a generic array whose first group is mistaken for
 /// a workflow of its own.
-pub fn root_role(node: &Node) -> Role {
-    if let Some(shape) = operator_shape(node) {
+pub fn root_role(node: &Node, formatter: &Formatter) -> Role {
+    if let Some(shape) = operator_shape(node, formatter) {
         return Role::Operator(shape);
     }
     if let Some(items) = node.as_array()
@@ -147,8 +147,14 @@ fn is_step_like(node: &Node) -> bool {
 /// The role of `child`, found under `parent` at `key` (an object member) or
 /// at no key (an array element). `depth` is the child's container depth from
 /// the root, for the entity-shape cutoff.
-pub fn child_role(parent: Role, key: Option<&str>, child: &Node, depth: usize) -> Role {
-    if let Some(shape) = operator_shape(child) {
+pub fn child_role(
+    parent: Role,
+    key: Option<&str>,
+    child: &Node,
+    depth: usize,
+    formatter: &Formatter,
+) -> Role {
+    if let Some(shape) = operator_shape(child, formatter) {
         return Role::Operator(shape);
     }
     match parent {
@@ -236,23 +242,6 @@ pub fn input_role(function_name: Option<&str>) -> Role {
         Some("validation") => InputKind::Validation,
         _ => InputKind::Other,
     })
-}
-
-/// The canonical key order of a `function.input`: the registry's field
-/// table for an Orion function, the documented order for an engine built-in,
-/// author order for a name neither knows.
-pub fn input_key_order(function_name: Option<&str>) -> Option<Vec<&'static str>> {
-    let name = function_name?;
-    if let Some(schema) = crate::engine::functions::schema::registry()
-        .iter()
-        .find(|s| s.name == name)
-    {
-        return Some(schema.input_fields.iter().map(|f| f.name).collect());
-    }
-    style::BUILTIN_INPUT_KEYS
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, keys)| keys.to_vec())
 }
 
 /// The canonical key order for a role, or `None` for author order.
@@ -349,12 +338,12 @@ fn generic_or_scalar_array(node: &Node) -> Role {
 
 /// `Some(shape)` when `node` is an operator node: a single-member object
 /// whose key the engine evaluates.
-pub fn operator_shape(node: &Node) -> Option<OperatorShape> {
+pub fn operator_shape(node: &Node, formatter: &Formatter) -> Option<OperatorShape> {
     let [member] = node.as_object()? else {
         return None;
     };
     let op = member.key.node.as_str();
-    if !crate::engine::operators::is_operator(op) {
+    if !formatter.operators.contains(op) {
         return None;
     }
     let arg = &member.value.node;
@@ -363,8 +352,8 @@ pub fn operator_shape(node: &Node) -> Option<OperatorShape> {
     }
     Some(match arg {
         Node::Array(items) => match items.as_slice() {
-            [single] if is_leafish(&single.node) => OperatorShape::Unary,
-            _ if items.iter().all(|i| is_leafish(&i.node)) => OperatorShape::Leaf,
+            [single] if is_leafish(&single.node, formatter) => OperatorShape::Unary,
+            _ if items.iter().all(|i| is_leafish(&i.node, formatter)) => OperatorShape::Leaf,
             _ => OperatorShape::Compound,
         },
         // A single object argument: `{ "!": { "var": "x" } }` is a read and
@@ -372,7 +361,7 @@ pub fn operator_shape(node: &Node) -> Option<OperatorShape> {
         // it inlines when it fits rather than unconditionally; anything
         // deeper is compound.
         Node::Object(_) if is_read_node(arg) => OperatorShape::Unary,
-        Node::Object(_) => match operator_shape(arg) {
+        Node::Object(_) => match operator_shape(arg, formatter) {
             Some(OperatorShape::Unary | OperatorShape::Leaf) => OperatorShape::Leaf,
             Some(OperatorShape::Compound) => OperatorShape::Compound,
             None if is_atom(arg) => OperatorShape::Unary,
@@ -407,8 +396,8 @@ fn is_scalar_or_scalar_array(node: &Node) -> bool {
 }
 
 /// An argument that keeps its operator a leaf: an atom, or a unary node.
-fn is_leafish(node: &Node) -> bool {
-    is_atom(node) || operator_shape(node) == Some(OperatorShape::Unary)
+fn is_leafish(node: &Node, formatter: &Formatter) -> bool {
+    is_atom(node) || operator_shape(node, formatter) == Some(OperatorShape::Unary)
 }
 
 /// A `{ "var": … }`-family node: single member, read operator.
@@ -460,7 +449,19 @@ pub fn order_members<'a>(members: &'a [Member], order: Option<&[&str]>) -> Vec<&
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::definitions::json::Document;
+    use crate::json::Document;
+
+    fn root_role(node: &Node) -> Role {
+        super::root_role(node, super::super::test_formatter())
+    }
+
+    fn child_role(parent: Role, key: Option<&str>, child: &Node, depth: usize) -> Role {
+        super::child_role(parent, key, child, depth, super::super::test_formatter())
+    }
+
+    fn operator_shape(node: &Node) -> Option<OperatorShape> {
+        super::operator_shape(node, super::super::test_formatter())
+    }
 
     fn node(text: &str) -> Node {
         Document::parse(text)

@@ -5,7 +5,7 @@
 //! [`printer`] for the layout itself. This module is the entry point and,
 //! more importantly, the **guards**: a formatter that runs unattended in a
 //! pre-commit hook must never change what a document means, so
-//! [`format_str`] re-parses its own output and compares it with the input as
+//! [`Formatter::format_str`] re-parses its own output and compares it with the input as
 //! `serde_json::Value` — the runtime's view — before anything is returned.
 //! A mismatch is a formatter bug, and it is reported as one rather than
 //! written.
@@ -19,7 +19,47 @@ pub mod printer;
 pub mod roles;
 pub mod style;
 
-use crate::definitions::json::{Document, ParseError};
+use crate::json::{Document, ParseError};
+use std::collections::{BTreeSet, HashMap};
+
+/// The house formatter with the operator names and function-field order of
+/// the language being edited. This vocabulary is data, not a style override;
+/// indentation, width and structural key order always come from [`style`].
+/// Unknown function inputs keep their author order.
+#[derive(Debug, Clone)]
+pub struct Formatter {
+    operators: BTreeSet<String>,
+    function_inputs: HashMap<String, Vec<String>>,
+}
+
+impl Formatter {
+    /// Build from the language's operator names and canonical function-input
+    /// fields. Neither list loads or executes any function.
+    pub fn new(
+        operators: impl IntoIterator<Item = String>,
+        function_inputs: impl IntoIterator<Item = (String, Vec<String>)>,
+    ) -> Self {
+        Self {
+            operators: operators.into_iter().collect(),
+            function_inputs: function_inputs.into_iter().collect(),
+        }
+    }
+
+    /// A known function's input-field order. Engine built-ins use the fixed
+    /// order documented in the house style when no vocabulary entry supplies it.
+    pub fn input_key_order(&self, function_name: Option<&str>) -> Option<Vec<&str>> {
+        let name = function_name?;
+        self.function_inputs
+            .get(name)
+            .map(|fields| fields.iter().map(String::as_str).collect())
+            .or_else(|| {
+                style::BUILTIN_INPUT_KEYS
+                    .iter()
+                    .find(|(builtin, _)| *builtin == name)
+                    .map(|(_, fields)| fields.to_vec())
+            })
+    }
+}
 
 /// What formatting one document produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,46 +108,67 @@ impl From<ParseError> for FmtError {
     }
 }
 
-/// Format one document. `origin` names it in an error.
-pub fn format_str(text: &str, origin: &str) -> Result<Outcome, FmtError> {
-    let doc = Document::parse(text)?;
-    let formatted = format_document(&doc);
+impl Formatter {
+    /// Format one document. `origin` names it in an error.
+    pub fn format_str(&self, text: &str, origin: &str) -> Result<Outcome, FmtError> {
+        let doc = Document::parse(text)?;
+        let formatted = self.format_document(&doc);
 
-    // The guard. One extra parse of a small file, every time, in every
-    // build: this is the line between "the formatter has a bug" and "the
-    // formatter corrupted a workflow".
-    let reparsed = Document::parse(&formatted).map_err(|_| FmtError::RoundTrip {
-        origin: origin.to_string(),
-    })?;
-    if reparsed.to_value() != doc.to_value() {
-        return Err(FmtError::RoundTrip {
+        // The guard. One extra parse of a small file, every time, in every
+        // build: this is the line between "the formatter has a bug" and "the
+        // formatter corrupted a workflow".
+        let reparsed = Document::parse(&formatted).map_err(|_| FmtError::RoundTrip {
             origin: origin.to_string(),
-        });
-    }
-    if cfg!(any(test, debug_assertions)) && format_document(&reparsed) != formatted {
-        return Err(FmtError::NotIdempotent {
-            origin: origin.to_string(),
-        });
+        })?;
+        if reparsed.to_value() != doc.to_value() {
+            return Err(FmtError::RoundTrip {
+                origin: origin.to_string(),
+            });
+        }
+        if cfg!(any(test, debug_assertions)) && self.format_document(&reparsed) != formatted {
+            return Err(FmtError::NotIdempotent {
+                origin: origin.to_string(),
+            });
+        }
+
+        // Byte-for-byte against what was read, so `--check` is exact about BOMs
+        // and line endings — they are part of what `fmt` fixes.
+        if text == formatted {
+            Ok(Outcome::Unchanged)
+        } else {
+            Ok(Outcome::Changed(formatted))
+        }
     }
 
-    // Byte-for-byte against what was read, so `--check` is exact about BOMs
-    // and line endings — they are part of what `fmt` fixes.
-    if text == formatted {
-        Ok(Outcome::Unchanged)
-    } else {
-        Ok(Outcome::Changed(formatted))
+    /// Lay out an already-parsed document. No guard: [`Formatter::format_str`] is the
+    /// entry point that promises correctness.
+    pub fn format_document(&self, doc: &Document) -> String {
+        printer::print(&doc.root.node, self)
     }
 }
 
-/// Lay out an already-parsed document. No guard: [`format_str`] is the
-/// entry point that promises correctness.
-pub fn format_document(doc: &Document) -> String {
-    printer::print(&doc.root.node)
+#[cfg(test)]
+fn test_formatter() -> &'static Formatter {
+    static FORMATTER: std::sync::LazyLock<Formatter> = std::sync::LazyLock::new(|| {
+        Formatter::new(
+            [
+                "var", "secret", "!", "!!", "length", "now", ">=", ">", "<", "and", "cat", "in",
+                "==",
+            ]
+            .map(str::to_string),
+            [],
+        )
+    });
+    &FORMATTER
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn format_str(text: &str, origin: &str) -> Result<Outcome, FmtError> {
+        super::test_formatter().format_str(text, origin)
+    }
 
     fn fmt(text: &str) -> String {
         match format_str(text, "test").expect("test input is valid") {
@@ -252,5 +313,53 @@ mod tests {
             format_str("{\n  \"a\": 1,\n  \"a\": 2\n}", "dup.json").expect_err("must be refused");
         assert!(matches!(err, FmtError::Parse(_)));
         assert!(err.to_string().starts_with("line 3, column 3"), "{err}");
+    }
+
+    #[test]
+    fn injected_function_fields_order_known_keys_and_preserve_unknown_keys() {
+        let formatter = Formatter::new(
+            [],
+            [(
+                "custom".to_string(),
+                vec!["source".to_string(), "output".to_string()],
+            )],
+        );
+        let doc = Document::parse(r#"[{"id":"t","function":{"name":"custom","input":{"z":1,"output":"data.x","source":"s","a":2}}}]"#)
+            .expect("valid JSON");
+        let text = formatter.format_document(&doc);
+        assert!(
+            text.contains(r#""input": { "source": "s", "output": "data.x", "z": 1, "a": 2 }"#),
+            "{text}"
+        );
+        assert_eq!(
+            formatter.format_str(&text, "custom").expect("formats"),
+            Outcome::Unchanged
+        );
+
+        let unknown = Formatter::new([], []);
+        let text = unknown.format_document(&doc);
+        assert!(
+            text.contains(r#""input": { "z": 1, "output": "data.x", "source": "s", "a": 2 }"#),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn only_injected_operator_names_receive_operator_layout() {
+        let known = Formatter::new(["custom".to_string()], []);
+        let unknown = Formatter::new([], []);
+        let input = format!(r#"{{"custom":"{}"}}"#, "x".repeat(120));
+        let doc = Document::parse(&input).expect("valid JSON");
+        let text = known.format_document(&doc);
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "a known unary operator stays inline"
+        );
+        assert_eq!(
+            known.format_str(&text, "custom").expect("formats"),
+            Outcome::Unchanged
+        );
+        assert!(unknown.format_document(&doc).lines().count() > 1);
     }
 }

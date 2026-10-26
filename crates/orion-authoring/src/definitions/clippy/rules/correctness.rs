@@ -1254,7 +1254,7 @@ impl Rule for SqlBindCount {
                     Some(Value::Array(items)) => items.len(),
                     Some(_) => continue,
                 };
-                let scan = crate::sql_lex::placeholders(query);
+                let scan = orion_definitions::sql_lex::placeholders(query);
                 let Some(highest) = scan.max_numbered() else {
                     continue;
                 };

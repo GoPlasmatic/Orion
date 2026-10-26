@@ -677,7 +677,7 @@ fn resolve_sql(
             return None;
         }
     };
-    match crate::sql_lex::normalize(&source) {
+    match orion_definitions::sql_lex::normalize(&source) {
         Ok(normalized) if normalized.text.is_empty() => {
             report(
                 findings,
@@ -688,7 +688,7 @@ fn resolve_sql(
         }
         Ok(normalized) => Some((shown, normalized.text)),
         Err(e) => {
-            let (line, col) = crate::sql_lex::line_col(&source, e.offset);
+            let (line, col) = orion_definitions::sql_lex::line_col(&source, e.offset);
             // Located in the `.sql` file, where the fix is; the entity names
             // the document that referenced it.
             findings.push(
