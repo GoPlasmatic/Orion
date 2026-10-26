@@ -138,14 +138,14 @@ CLI args → config (TOML + `ORION_SECTION__KEY` env overrides, `env://` referen
 1. CatchPanicLayer (outermost — panic recovery)
 2. OTel trace context extraction (if `tracing.enabled`)
 3. HTTP metrics middleware
-4. Admin auth middleware (if enabled)
-5. Rate limiting middleware (if enabled)
-6. Body limit (max payload size)
-7. Compression (gzip/brotli)
-8. Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS)
-9. Request ID layer (generate/propagate x-request-id)
-10. Trace layer (request/response tracing)
-11. CORS layer
+4. Body limit (max payload size)
+5. Compression (gzip/brotli)
+6. Security headers (CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, HSTS)
+7. Request ID layer (generate/propagate x-request-id)
+8. Trace layer (request/response tracing)
+9. CORS layer
+
+Admin auth and the platform rate limits are not global layers: `routes::api_routes` attaches them to each route group when the router is built — the admin router (every admin route plus its own `/api/v2/admin/{*rest}` catch-all, so an unregistered admin path is answered there and never by a root data mount) gets the admin limit outside admin auth; the self-authenticating single-trace read the admin limit only; the data plane (`/api/v2/data` and every `server.data_mounts` prefix) the data limit; the operational routes and the 404/405 fallbacks the default limit, with admin auth on `/metrics` where it is served. Nothing classifies a request by its path at runtime, and `admin_guard_test` holds every documented operation's `security` block to what an anonymous caller is actually answered.
 
 ### Request Processing Flow
 

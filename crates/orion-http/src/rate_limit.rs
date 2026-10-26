@@ -6,11 +6,15 @@
 //! an in-process `channel_call` or a cron occurrence has. It moved to
 //! `channel::guards`, where [`crate::channel::guards::apply_guards`] runs it
 //! on every transport. What is left here is the platform budget
-//! (`[rate_limit]`), keyed by client IP and applied per route group.
+//! (`[rate_limit]`), keyed by client IP and applied per route group: each
+//! group's router carries its own [`GroupLimit`], chosen when the router is
+//! built, so no request is classified by its path at runtime.
 
 use std::net::{IpAddr, SocketAddr};
 
-use axum::extract::{ConnectInfo, MatchedPath, Request, State};
+use std::sync::Arc;
+
+use axum::extract::{ConnectInfo, Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use ipnet::IpNet;
@@ -137,103 +141,73 @@ fn forwarded_client_ip(
         .map(|ip| ip.to_canonical())
 }
 
-/// Determine the route group from the matched path.
-enum RouteGroup {
-    Admin,
-    Data,
-    Operational,
-}
-
-impl RouteGroup {
+/// One route group's platform budget, chosen when the router is built: the
+/// admin plane meters against `rate_limit.endpoints.admin_rps`, the data plane
+/// (`/api/v2/data` and every `server.data_mounts` prefix) against
+/// `data_rps`, each falling back to the default limiter, and everything else —
+/// the operational routes and the 404/405 fallbacks — against the default.
+#[derive(Clone)]
+pub struct GroupLimit {
+    limiter: Arc<crate::channel::KeyedLimiter>,
     /// Bounded label for rejection metrics (O1) — never client-derived.
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Admin => "admin",
-            Self::Data => "data",
-            Self::Operational => "operational",
-        }
+    label: &'static str,
+    trusted_proxies: Arc<Vec<IpNet>>,
+}
+
+impl GroupLimit {
+    /// The admin plane's budget, or `None` when `[rate_limit]` is off.
+    pub fn admin(state: &crate::runtime::state::AppState) -> Option<Self> {
+        Self::pick(state, "admin", |l| l.admin_limiter.as_ref())
+    }
+
+    /// The data plane's budget, or `None` when `[rate_limit]` is off.
+    pub fn data(state: &crate::runtime::state::AppState) -> Option<Self> {
+        Self::pick(state, "data", |l| l.data_limiter.as_ref())
+    }
+
+    /// The default budget, or `None` when `[rate_limit]` is off.
+    pub fn operational(state: &crate::runtime::state::AppState) -> Option<Self> {
+        Self::pick(state, "operational", |_| None)
+    }
+
+    fn pick(
+        state: &crate::runtime::state::AppState,
+        label: &'static str,
+        group: impl Fn(&RateLimitState) -> Option<&Arc<crate::channel::KeyedLimiter>>,
+    ) -> Option<Self> {
+        let limits = state.rate_limit_state.as_ref()?;
+        Some(Self {
+            limiter: group(limits).unwrap_or(&limits.default_limiter).clone(),
+            label,
+            trusted_proxies: state.trusted_proxies.clone(),
+        })
     }
 }
 
-/// Which platform budget a request is metered against.
+/// Platform rate limiting middleware: meter the request against its route
+/// group's budget ([`GroupLimit`]), keyed by client IP.
 ///
-/// `data_mounts` participates because the data plane may answer outside
-/// `/api/v2/data`: without it, root-mounted data traffic falls through to
-/// `Operational` and is metered against the default limiter rather than
-/// `rate_limit.endpoints.data_rps` — the channel's own limit still applies,
-/// but the platform budget the operator configured does not.
-fn classify_route(path: &str, data_mounts: &[String]) -> RouteGroup {
-    if path.starts_with("/api/v2/admin") {
-        RouteGroup::Admin
-    } else if path.starts_with("/api/v2/data") || under_a_data_mount(path, data_mounts) {
-        RouteGroup::Data
-    } else {
-        RouteGroup::Operational
-    }
-}
-
-/// Whether `path` is served by one of the configured data mounts.
-///
-/// `"/"` matches everything except the platform routes, which are checked
-/// first by the caller — a static route always wins over the catch-all, so a
-/// request reaching here under a root mount really is data-plane traffic.
-fn under_a_data_mount(path: &str, data_mounts: &[String]) -> bool {
-    data_mounts
-        .iter()
-        .any(|m| m == "/" || crate::routes::path_claims(m, path))
-}
-
-/// Platform rate limiting middleware.
-///
-/// Applies the config-file budget (`[rate_limit]`) keyed by client IP, per
-/// route group. Per-channel limits are enforced by the ingress guards, on
-/// every transport rather than only this one (S15) — a data request is
-/// therefore metered twice: once here against the platform budget, once in
-/// `apply_guards` against its channel's own limit.
+/// Per-channel limits are enforced by the ingress guards, on every transport
+/// rather than only this one (S15) — a data request is therefore metered
+/// twice: once here against the platform budget, once in `apply_guards`
+/// against its channel's own limit.
 pub async fn rate_limit_middleware(
-    State(state): State<crate::runtime::state::AppState>,
-    matched_path: Option<MatchedPath>,
+    State(limit): State<GroupLimit>,
     req: Request,
     next: Next,
 ) -> Response {
-    let rate_limit_state = match &state.rate_limit_state {
-        Some(rls) => rls,
-        None => return next.run(req).await,
-    };
-
-    // Same rule as admin auth: under `server.data_mounts` the matched path is
-    // a catch-all, which classifies as `Operational` and would meter
-    // root-mounted data traffic against the default limiter instead of
-    // `rate_limit.endpoints.data_rps`.
-    let path = match matched_path.as_ref().map(|m: &MatchedPath| m.as_str()) {
-        Some(p) if !crate::admin_auth::is_data_catch_all(p) => p,
-        _ => req.uri().path(),
-    };
-    let route_group = classify_route(path, &state.config.server.data_mounts);
-
-    let limiter = match route_group {
-        RouteGroup::Admin => rate_limit_state
-            .admin_limiter
-            .as_ref()
-            .unwrap_or(&rate_limit_state.default_limiter),
-        RouteGroup::Data => rate_limit_state
-            .data_limiter
-            .as_ref()
-            .unwrap_or(&rate_limit_state.default_limiter),
-        RouteGroup::Operational => &rate_limit_state.default_limiter,
-    };
-
     // The address the request context resolved, borrowed in place; resolved
     // here only outside one.
     let refused =
-        orion_common::request_context::with_client_ip(|ip| limiter.check_key(ip).is_err())
+        orion_common::request_context::with_client_ip(|ip| limit.limiter.check_key(ip).is_err())
             .unwrap_or_else(|| {
-                limiter
-                    .check_key(&extract_client_ip(&req, state.trusted_proxies()))
+                limit
+                    .limiter
+                    .check_key(&extract_client_ip(&req, &limit.trusted_proxies))
                     .is_err()
             });
     if refused {
-        metrics::record_rate_limit_rejected(route_group.label());
+        metrics::record_rate_limit_rejected(limit.label);
         return rate_limited_response();
     }
 
@@ -473,34 +447,6 @@ mod tests {
             .body(Body::empty())
             .expect("test");
         assert_eq!(extract_client_ip(&req, &[]), "203.0.113.5");
-    }
-
-    #[test]
-    fn test_classify_route_admin() {
-        assert!(matches!(
-            classify_route("/api/v2/admin/workflows", &[]),
-            RouteGroup::Admin
-        ));
-    }
-
-    #[test]
-    fn test_classify_route_data() {
-        assert!(matches!(
-            classify_route("/api/v2/data/orders", &[]),
-            RouteGroup::Data
-        ));
-    }
-
-    #[test]
-    fn test_classify_route_operational() {
-        assert!(matches!(
-            classify_route("/health", &[]),
-            RouteGroup::Operational
-        ));
-        assert!(matches!(
-            classify_route("/metrics", &[]),
-            RouteGroup::Operational
-        ));
     }
 
     #[test]

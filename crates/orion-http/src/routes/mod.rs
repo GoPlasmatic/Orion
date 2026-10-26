@@ -45,10 +45,22 @@ pub struct RouteOptions {
     pub data_mounts: Vec<String>,
 }
 
-pub(crate) use orion_common::platform_routes::path_claims;
-
-/// The main listener's router.
-pub fn api_routes(options: RouteOptions) -> Router<AppState> {
+/// The main listener's router: four groups, each carrying its own platform
+/// rate limit and, for the admin plane, admin authentication.
+///
+/// | Group | Routes | Limit | Admin auth |
+/// |---|---|---|---|
+/// | admin | `/api/v2/admin/**` and its fallback | `admin_rps` | yes |
+/// | single-trace read | `/api/v2/admin/traces/{id}` | `admin_rps` | no — it authenticates itself |
+/// | data | `/api/v2/data/**`, every `server.data_mounts` prefix | `data_rps` | no |
+/// | operational | `/health`, `/healthz`, `/readyz`, `/metrics`, the docs, the 404/405 fallbacks | default | `/metrics` only |
+///
+/// Each layer is attached to its group's router, so what guards a request is
+/// decided by the route it matched, never by re-reading its path. Rate
+/// limiting is outer to admin auth, so a rejected key has been counted by the
+/// limiter: the reverse left credential guessing unthrottled, because auth
+/// answers 401 without calling the next layer.
+pub fn api_routes(state: &AppState, options: RouteOptions) -> Router<AppState> {
     let RouteOptions {
         max_admin_body_size,
         plugin_body_size,
@@ -56,21 +68,42 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
         metrics_enabled,
         data_mounts,
     } = options;
-    let router = Router::new()
-        .route("/health", get(health_check))
-        .route("/healthz", get(liveness_check))
-        .route("/readyz", get(readiness_check))
-        .nest(
-            "/api/v2/admin",
-            admin::admin_routes(max_admin_body_size).merge(v2_admin::v2_admin_routes(
-                max_admin_body_size,
-                plugin_body_size.max(max_admin_body_size),
-            )),
-        )
-        .nest("/api/v2/data", data::data_routes());
+    let auth = state.config.admin_auth.enabled;
+    let admin_limit = crate::rate_limit::GroupLimit::admin(state);
+    let data_limit = crate::rate_limit::GroupLimit::data(state);
+    let operational_limit = crate::rate_limit::GroupLimit::operational(state);
 
-    // Extra data-plane mounts (`server.data_mounts`). `.route`, never
-    // `.nest` or `.fallback`:
+    // The admin plane, with its own catch-all inside the guard. A nested
+    // router's fallback is not a route: axum flattens the nest, so under a
+    // root data mount an unregistered admin path matched the mount's
+    // `/{*path}` and reached the unauthenticated data plane, where a channel
+    // could claim it. `/api/v2/admin` and `/api/v2/admin/{*rest}` as real
+    // routes are more specific than any mount, so every admin path is
+    // answered here — 401 to an anonymous caller, 404 to an authenticated
+    // one — and never by a channel.
+    let admin = admin::admin_routes(max_admin_body_size)
+        .merge(v2_admin::v2_admin_routes(
+            max_admin_body_size,
+            plugin_body_size.max(max_admin_body_size),
+        ))
+        .route("/", any(not_found))
+        .route("/{*rest}", any(not_found))
+        .method_not_allowed_fallback(method_not_allowed);
+    let admin = with_admin_auth(admin, state, auth);
+    let admin = with_limit(admin, admin_limit.clone());
+
+    // The single-trace read authenticates itself (admin credential, or the
+    // per-submission capability token from the async 202), so it is outside
+    // the admin guard and inside the admin budget.
+    let single_trace = Router::new().route(
+        crate::admin_auth::SINGLE_TRACE_PATH,
+        get(data::traces::get_trace).fallback(method_not_allowed),
+    );
+    let single_trace = with_limit(single_trace, admin_limit);
+
+    // The data plane, at `/api/v2/data` and at every extra mount
+    // (`server.data_mounts`). A mount is `.route`, never `.nest` or
+    // `.fallback`:
     //
     // - `.nest("/", …)` panics outright ("Nesting at the root is no longer
     //   supported"), and a nested handler would see the path with the prefix
@@ -84,49 +117,96 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
     // Static platform routes win over a catch-all in matchit regardless of
     // registration order, so `/health` and friends keep their own handlers
     // even under a `"/"` mount.
-    let router = data_mounts.iter().fold(router, |router, mount| {
-        let pattern = if mount == "/" {
-            "/{*path}".to_string()
-        } else {
-            format!("{mount}/{{*path}}")
-        };
-        router.route(&pattern, any(data::dynamic_handler))
-    });
+    let data_plane = data_mounts.iter().fold(
+        Router::new().nest("/api/v2/data", data::data_routes()),
+        |router, mount| {
+            let pattern = if mount == "/" {
+                "/{*path}".to_string()
+            } else {
+                format!("{mount}/{{*path}}")
+            };
+            router.route(&pattern, any(data::dynamic_handler))
+        },
+    );
+    let data_plane = with_limit(data_plane, data_limit);
 
+    // The operational routes and the platform's 404/405 fallbacks.
+    let operational = Router::new()
+        .route("/health", get(health_check))
+        .route("/healthz", get(liveness_check))
+        .route("/readyz", get(readiness_check));
     // O12: registered only when this listener actually serves metrics.
     // Unconditional registration meant `metrics.enabled = false` answered 200
     // with an empty body from an orphan recorder — a scrape target that looked
-    // healthy and reported nothing, forever.
-    let router = if metrics_enabled {
-        router.route("/metrics", get(metrics_endpoint))
+    // healthy and reported nothing, forever. Admin-guarded where it is served.
+    let operational = if metrics_enabled {
+        operational.merge(with_admin_auth(
+            Router::new().route(crate::admin_auth::METRICS_PATH, get(metrics_endpoint)),
+            state,
+            auth,
+        ))
     } else {
-        router
+        operational
     };
-
-    let router = if docs_enabled {
-        router.merge(
+    let operational = if docs_enabled {
+        operational.merge(
             utoipa_swagger_ui::SwaggerUi::new("/docs")
                 .url("/api/v2/openapi.json", openapi::ApiDoc::openapi()),
         )
     } else {
-        router
+        operational
     };
+    // R9: without these, an unmatched path and every method mismatch
+    // returned a zero-length body, violating the documented contract that
+    // "every non-2xx response uses the ErrorResponse envelope". Clients that
+    // parse the body on error saw a JSON decode failure instead of an error
+    // code. Registered inside the request-id scope (see the layer order in
+    // `build_router`) so both carry `x-request-id`.
+    let operational = operational
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed);
+    let operational = with_limit(operational, operational_limit);
 
-    router
-        // R9: without these, an unmatched path and every method mismatch
-        // returned a zero-length body, violating the documented contract that
-        // "every non-2xx response uses the ErrorResponse envelope". Clients
-        // that parse the body on error saw a JSON decode failure instead of an
-        // error code. Registered inside the request-id scope (see server::mod
-        // layer order) so both carry `x-request-id`.
-        .fallback(|| async {
-            crate::errors::OrionError::NotFound("No route matches this path".to_string())
-        })
-        .method_not_allowed_fallback(|| async {
-            crate::errors::OrionError::MethodNotAllowed(
-                "The HTTP method is not allowed for this path".to_string(),
-            )
-        })
+    operational
+        .nest("/api/v2/admin", admin)
+        .merge(single_trace)
+        .merge(data_plane)
+}
+
+/// `router` behind admin authentication, when it is enabled.
+fn with_admin_auth(router: Router<AppState>, state: &AppState, enabled: bool) -> Router<AppState> {
+    if enabled {
+        router.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::admin_auth::admin_auth_middleware,
+        ))
+    } else {
+        router
+    }
+}
+
+/// `router` metered against `limit`, when `[rate_limit]` is on.
+fn with_limit(
+    router: Router<AppState>,
+    limit: Option<crate::rate_limit::GroupLimit>,
+) -> Router<AppState> {
+    match limit {
+        Some(limit) => router.layer(axum::middleware::from_fn_with_state(
+            limit,
+            crate::rate_limit::rate_limit_middleware,
+        )),
+        None => router,
+    }
+}
+
+async fn not_found() -> crate::errors::OrionError {
+    crate::errors::OrionError::NotFound("No route matches this path".to_string())
+}
+
+async fn method_not_allowed() -> crate::errors::OrionError {
+    crate::errors::OrionError::MethodNotAllowed(
+        "The HTTP method is not allowed for this path".to_string(),
+    )
 }
 
 #[utoipa::path(

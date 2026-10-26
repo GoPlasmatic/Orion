@@ -74,8 +74,6 @@ pub fn build_router(state: AppState) -> Router {
 
     let otel_enabled = state.config.tracing.enabled;
 
-    let rate_limit_enabled = state.rate_limit_state.is_some();
-
     // LAYER ORDER — read this before touching anything below.
     //
     // `Router::layer` wraps: the layer added LAST is the OUTERMOST, so it sees
@@ -93,14 +91,18 @@ pub fn build_router(state: AppState) -> Router {
     //
     // Request order is: set/propagate request id -> request-id scope ->
     // security headers -> catch panic -> CORS -> HSTS -> OTel -> trace ->
-    // metrics -> rate limit -> admin auth -> compression -> body limit -> route.
-    let router = routes::api_routes(routes::RouteOptions {
-        max_admin_body_size: state.config.server.max_admin_body_size,
-        plugin_body_size: plugin_body_size(&state.config),
-        docs_enabled: state.config.docs_enabled(),
-        metrics_enabled: state.config.metrics.on_main_listener(),
-        data_mounts: state.config.server.data_mounts.clone(),
-    })
+    // metrics -> compression -> body limit -> (the route group's rate limit ->
+    // admin auth) -> route.
+    let router = routes::api_routes(
+        &state,
+        routes::RouteOptions {
+            max_admin_body_size: state.config.server.max_admin_body_size,
+            plugin_body_size: plugin_body_size(&state.config),
+            docs_enabled: state.config.docs_enabled(),
+            metrics_enabled: state.config.metrics.on_main_listener(),
+            data_mounts: state.config.server.data_mounts.clone(),
+        },
+    )
     // Innermost: bound the body before a handler ever reads it. This is the
     // data-plane bound; `admin_routes` re-applies its own, closer to the
     // handler, so raising one does not raise the other (R16).
@@ -115,29 +117,9 @@ pub fn build_router(state: AppState) -> Router {
         router
     };
 
-    // Admin auth — INNER to rate limiting, so a rejected key has already been
-    // counted by the limiter. The reverse (the previous order) left credential
-    // guessing completely unthrottled, because this layer returns 401 without
-    // calling `next.run`.
-    let router = if state.config.admin_auth.enabled {
-        router.layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            admin_auth::admin_auth_middleware,
-        ))
-    } else {
-        router
-    };
-
-    // Rate limiting — OUTER to admin auth (see above), inner to observability
-    // so throttled requests are still traced and counted.
-    let router = if rate_limit_enabled {
-        router.layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit::rate_limit_middleware,
-        ))
-    } else {
-        router
-    };
+    // Admin auth and the platform rate limits are not here: each route group
+    // carries its own (`routes::api_routes`), inner to everything below, with
+    // the limit outer to the auth.
 
     // HTTP metrics layer (gated by metrics.enabled — when disabled the no-op
     // recorder still costs label hashing + indexmap lookups per request via the

@@ -160,13 +160,11 @@ pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
     let function_routes = Router::new().route("/", get(functions::list_functions));
 
     // R8: the trace reads live on the admin plane because that is what they
-    // are. `GET /traces` is admin-only, and `GET /traces/{id}` authenticates
+    // are. `GET /traces` is admin-only. `GET /traces/{id}` authenticates
     // itself (admin credential, or the per-submission capability token from
-    // the async 202) — see `admin_auth::is_guarded_path`, which exempts it
-    // from the blanket admin guard for exactly that reason.
-    let trace_routes = Router::new()
-        .route("/", get(crate::routes::data::traces::list_traces))
-        .route("/{id}", get(crate::routes::data::traces::get_trace));
+    // the async 202), so `api_routes` registers it outside this router and
+    // its guard — see `admin_auth::is_guarded_path`.
+    let trace_routes = Router::new().route("/", get(crate::routes::data::traces::list_traces));
 
     let trace_dlq_routes = Router::new()
         .route("/", get(trace_dlq::list_trace_dlq))

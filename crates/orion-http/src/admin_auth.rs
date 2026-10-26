@@ -6,7 +6,7 @@
 //! listener is the one serving it (O12). Supports `Authorization: Bearer
 //! <token>` or a custom header (e.g. `X-API-Key: <token>`).
 
-use axum::extract::{MatchedPath, Request, State};
+use axum::extract::{Request, State};
 use axum::http::Method;
 use axum::middleware::Next;
 use axum::response::Response;
@@ -118,23 +118,6 @@ pub(crate) fn is_guarded_path(path: &str, metrics_on_this_listener: bool) -> boo
     path.starts_with("/api/v2/admin")
 }
 
-/// Whether a `MatchedPath` is a data-plane catch-all rather than a real route.
-///
-/// **This is a security predicate, not a convenience.** `server.data_mounts`
-/// registers `{mount}/{*path}` handlers, so under a mount a request to an
-/// unregistered admin path — `GET /api/v2/admin/nonexistent` — *does* match a
-/// route, and `MatchedPath` becomes the literal `/{*path}`. That does not start
-/// with `/api/v2/admin`, so [`is_guarded_path`] would answer `false` and the
-/// request would reach the **unauthenticated** data plane. A channel could then
-/// claim any unregistered path under `/api/v2/admin/` and be served anonymously.
-///
-/// When the matched path is one of these, the raw URI is the only thing that
-/// says what the caller actually asked for, so both this middleware and the
-/// rate-limit classifier resolve against it instead.
-pub(crate) fn is_data_catch_all(matched: &str) -> bool {
-    matched.ends_with("/{*path}")
-}
-
 /// The one admin-plane path that authenticates itself rather than through the
 /// middleware. Named so [`is_guarded_path`] and the route registration cannot
 /// drift apart silently.
@@ -145,33 +128,16 @@ pub(crate) const METRICS_PATH: &str = "/metrics";
 
 /// Middleware that authenticates admin API requests.
 ///
-/// Skips authentication for non-admin routes and when auth is disabled.
+/// Attached, when `admin_auth.enabled`, to exactly the routes
+/// [`is_guarded_path`] names: the admin router (its routes and its fallback,
+/// so an unregistered admin path answers 401 rather than reaching a data
+/// mount's catch-all) and `/metrics` on a listener that serves it. The
+/// router decides what is guarded; this decides whether the caller may pass.
 pub async fn admin_auth_middleware(
     State(state): State<AppState>,
-    matched_path: Option<MatchedPath>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, OrionError> {
-    if !state.config.admin_auth.enabled {
-        return Ok(next.run(req).await);
-    }
-
-    // No `MatchedPath` means no route matched — the request is on its way to
-    // the 404 fallback, which this layer wraps. The raw URI is the best
-    // available answer, and `is_guarded_path` is responsible for not claiming
-    // an unregistered path (O12's `/metrics`).
-    // A data-mount catch-all says nothing about whether this is an admin
-    // path — see `is_data_catch_all`. Resolve against the raw URI in that
-    // case, which is also what happens when nothing matched at all.
-    let path = match matched_path.as_ref().map(|m| m.as_str()) {
-        Some(p) if !is_data_catch_all(p) => p,
-        _ => req.uri().path(),
-    };
-
-    if !is_guarded_path(path, state.config.metrics.on_main_listener()) {
-        return Ok(next.run(req).await);
-    }
-
     // Identify the caller with the same policy the rate limiter uses, so a
     // spoofed `X-Forwarded-For` cannot mint a fresh lockout budget per request.
     let client = crate::rate_limit::request_client_ip(&req, state.trusted_proxies());
