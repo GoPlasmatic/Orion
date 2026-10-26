@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -23,6 +23,7 @@ use super::contract::{
     ConnectorError, ConnectorOutput, EffectStatus, EffectiveConnectionIdentity, ImplementationKind,
     codes,
 };
+use super::identity::{Digest, ProviderId, ProviderRef};
 use super::provider_backend::ProviderBackend;
 use super::resource_pool::{ConnectionPoolCache, VersionedSessionPool};
 
@@ -70,28 +71,54 @@ pub fn builtin_connector(driver_id: &str, mut config: Value) -> Option<(&'static
 /// across upgrades.
 const BUILTIN_PROVIDER_CONTRACT: u32 = 1;
 
+/// The publisher a built-in driver's [`ProviderRef`] names.
+pub const BUILTIN_PUBLISHER: &str = "org.orion";
+
+/// Each built-in driver and the digest it answers to, computed once.
+static BUILTIN_DIGESTS: LazyLock<Vec<(&'static str, Digest)>> = LazyLock::new(|| {
+    COMMUNITY_RUST_DRIVERS
+        .iter()
+        .map(|driver| {
+            let digest = crate::crypto::sha256_digest(
+                format!("orion-builtin-provider:{driver}@{BUILTIN_PROVIDER_CONTRACT}").as_bytes(),
+            );
+            (*driver, digest)
+        })
+        .collect()
+});
+
 /// The package digest a built-in driver answers to: a connection revision
 /// names a provider by digest, and a built-in driver has no uploaded
 /// package, so this stable digest of its id and contract stands in for one.
 /// `None` for an id this build does not ship.
-pub fn builtin_provider_digest(driver_id: &str) -> Option<String> {
-    COMMUNITY_RUST_DRIVERS
-        .contains(&driver_id)
-        .then(|| builtin_digest_of(driver_id))
+///
+/// The table is Community's: a `rust` backend an edition composes beyond
+/// [`COMMUNITY_RUST_DRIVERS`] has no built-in digest, so a connection
+/// reaches it through an uploaded `rust` package naming its id.
+pub fn builtin_provider_digest(driver_id: &str) -> Option<Digest> {
+    BUILTIN_DIGESTS
+        .iter()
+        .find(|(driver, _)| *driver == driver_id)
+        .map(|(_, digest)| digest.clone())
 }
 
 /// The built-in driver whose [`builtin_provider_digest`] is `digest`.
 pub fn builtin_driver(digest: &str) -> Option<&'static str> {
-    COMMUNITY_RUST_DRIVERS
+    BUILTIN_DIGESTS
         .iter()
-        .copied()
-        .find(|driver| builtin_digest_of(driver) == digest)
+        .find(|(_, d)| d == digest)
+        .map(|(driver, _)| *driver)
 }
 
-fn builtin_digest_of(driver_id: &str) -> String {
-    super::package_identity::sha256_digest(
-        format!("orion-builtin-provider:{driver_id}@{BUILTIN_PROVIDER_CONTRACT}").as_bytes(),
-    )
+/// The synthetic [`ProviderRef`] of the built-in driver `digest` names:
+/// [`BUILTIN_PUBLISHER`], the driver id, and this build's version.
+pub fn builtin_provider_ref(digest: &Digest) -> Option<ProviderRef> {
+    builtin_driver(digest).map(|driver| ProviderRef {
+        publisher: BUILTIN_PUBLISHER.to_string(),
+        provider_id: ProviderId::from(driver),
+        version: crate::version::ORION_VERSION.to_string(),
+        digest: digest.clone(),
+    })
 }
 
 /// What the foundation providers are bounded by. Built from the node's

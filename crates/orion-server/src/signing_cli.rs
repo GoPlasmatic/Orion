@@ -189,7 +189,7 @@ fn resolve(kind: Kind, path: &str) -> Result<Vec<Target>, CliError> {
             Ok(vec![Target {
                 id: None,
                 file: p.to_path_buf(),
-                digest: orion::crypto::sha256_digest(&bytes),
+                digest: orion::crypto::sha256_digest(&bytes).into_string(),
             }])
         }
     }

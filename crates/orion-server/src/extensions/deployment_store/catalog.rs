@@ -31,6 +31,7 @@ use super::{
     ConnectionRevisionRow, DeploymentError, DeploymentRevisionRow, ImmutableDeploymentStore,
     ProviderAdmissionRow, ProviderPackageRow, rules, sql,
 };
+use crate::extensions::identity::Digest;
 use crate::extensions::schema_profile::CompiledSchemaBundle;
 use crate::storage::{DbPool, DbTransaction};
 
@@ -44,14 +45,16 @@ pub(super) struct Catalog {
     /// Every revision at or below this is in `revisions`.
     pub revisions_through: u64,
     pub revisions: BTreeMap<u64, Arc<DeploymentRevisionRow>>,
-    pub packages: BTreeMap<String, Arc<ProviderPackageRow>>,
-    pub admissions: BTreeMap<String, Arc<ProviderAdmissionRow>>,
+    pub packages: BTreeMap<Digest, Arc<ProviderPackageRow>>,
+    pub admissions: BTreeMap<Digest, Arc<ProviderAdmissionRow>>,
+    /// By `(connection_id, revision)` ([`ConnectionRevisionRow::key`]), so
+    /// one connection's revisions are a range.
     pub connections: BTreeMap<(String, u64), Arc<ConnectionRevisionRow>>,
     /// Each package's schemas, compiled once when the package enters the
     /// catalog: a package is immutable by digest, so its bundle never goes
     /// stale. A bundle that failed (a schema file no longer stored) is
     /// retried on the next refresh.
-    pub bundles: HashMap<String, BundleEntry>,
+    pub bundles: HashMap<Digest, BundleEntry>,
 }
 
 impl Catalog {
@@ -62,8 +65,7 @@ impl Catalog {
     }
 
     pub fn insert_connection(&mut self, row: ConnectionRevisionRow) {
-        self.connections
-            .insert((row.connection_id.clone(), row.revision), Arc::new(row));
+        self.connections.insert(row.key(), Arc::new(row));
     }
 
     pub fn insert_admission(&mut self, row: ProviderAdmissionRow) {
@@ -185,7 +187,7 @@ impl ImmutableDeploymentStore {
                 m.entity.kind == super::EntityKind::Connection
                     && !c
                         .connections
-                        .contains_key(&(m.entity.id.clone(), m.entity.revision))
+                        .contains_key(&(m.entity.id.clone(), m.entity.revision.get()))
             })
         };
         if missing {
@@ -203,7 +205,7 @@ impl ImmutableDeploymentStore {
                 .packages
                 .keys()
                 .filter(|d| c.bundles.get(*d).is_some_and(Result::is_ok))
-                .cloned()
+                .map(|d| d.to_string())
                 .collect();
             let connections: BTreeSet<(String, u64)> = c.connections.keys().cloned().collect();
             (c.revisions_through, packages, connections)
@@ -224,8 +226,8 @@ impl ImmutableDeploymentStore {
         let admissions: Vec<ProviderAdmissionRow> = sql::all_admissions(&mut tx)
             .await?
             .into_iter()
-            .map(Into::into)
-            .collect();
+            .map(ProviderAdmissionRow::try_from)
+            .collect::<Result<_, _>>()?;
 
         let new_packages: Vec<String> = sql::package_digests(&mut tx)
             .await?
@@ -255,7 +257,7 @@ impl ImmutableDeploymentStore {
         let mut connections = Vec::new();
         for record in sql::connections_of(&mut tx, &ids).await? {
             let row = record.into_row()?;
-            if new_keys.contains(&(row.connection_id.clone(), row.revision)) {
+            if new_keys.contains(&row.key()) {
                 connections.push(row);
             }
         }

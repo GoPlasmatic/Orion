@@ -206,7 +206,7 @@ impl WasmRuntime {
     /// The identity of a component: `sha256:<hex>` of its bytes — the one
     /// spelling every stored artifact uses ([`crate::crypto::sha256_digest`]).
     pub fn digest(bytes: &[u8]) -> String {
-        crate::crypto::sha256_digest(bytes)
+        crate::crypto::sha256_digest(bytes).into_string()
     }
 
     pub fn engine(&self) -> &Engine {

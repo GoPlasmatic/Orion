@@ -156,7 +156,6 @@ pub fn verify_community_assembly(root: &Composition) -> CommunityAssemblyReport 
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::extensions::contract::ProviderReference;
     use crate::extensions::workflow_provider::{
         WorkflowHost, WorkflowPackage, WorkflowProviderBackend,
     };
@@ -236,10 +235,12 @@ mod tests {
     #[test]
     fn a_workflow_package_backend_keeps_the_assembly_compliant() {
         let root = community();
-        let provider = ProviderReference {
-            provider_id: "community.composite-cache".to_string(),
+        let provider = crate::extensions::ProviderRef {
+            publisher: "community".to_string(),
+            provider_id: "community.composite-cache".into(),
             version: "2.0.0".to_string(),
-            package_digest: format!("sha256:{}", "88".repeat(32)),
+            digest: crate::extensions::Digest::parse(&format!("sha256:{}", "88".repeat(32)))
+                .unwrap(),
         };
         let manifest = json!({
             "implementation": {
@@ -278,7 +279,7 @@ mod tests {
         );
         assert_eq!(
             report.registered_workflow_providers,
-            vec![provider.package_digest]
+            vec![provider.digest.to_string()]
         );
     }
 }

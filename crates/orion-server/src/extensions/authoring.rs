@@ -38,7 +38,7 @@ pub struct PackageLintReport {
 /// Packed provider inventory and canonical package digest (`V2-07.2`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackedPackageInventory {
-    pub package_digest: String,
+    pub package_digest: super::identity::Digest,
     pub inventory: Value,
     pub inventory_bytes: Vec<u8>,
 }
@@ -267,10 +267,13 @@ pub fn lint_provider_package(files: &BTreeMap<String, Vec<u8>>) -> PackageLintRe
 
     if implementation == "workflow"
         && let Err(problems) = super::workflow_provider::WorkflowPackage::from_files(
-            super::contract::ProviderReference {
-                provider_id: provider_id.clone(),
+            // Not packed yet, so the package has no digest of its own: the
+            // check is handed its manifest's, which only labels it.
+            super::identity::ProviderRef {
+                publisher: String::new(),
+                provider_id: provider_id.as_str().into(),
                 version: version.clone(),
-                package_digest: String::new(),
+                digest: crate::crypto::sha256_digest(manifest_bytes),
             },
             &manifest,
             files,

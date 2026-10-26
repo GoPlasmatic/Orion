@@ -96,9 +96,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }
 
-pub fn sha256_digest(data: &[u8]) -> String {
-    format!("sha256:{}", sha256_hex(data))
-}
+pub use crate::crypto::sha256_digest;
 
 pub fn validate_payload_path(path: &str) -> Result<(), PackageIdentityFinding> {
     if path.is_empty()
@@ -143,7 +141,7 @@ pub fn verify_inventory(
     inventory: &Value,
     payloads: &BTreeMap<String, Vec<u8>>,
     raw_inventory: Option<&[u8]>,
-) -> Result<String, PackageIdentityFinding> {
+) -> Result<crate::crypto::Digest, PackageIdentityFinding> {
     validate_inventory_shape(inventory)?;
 
     let files = inventory["files"]
@@ -293,7 +291,7 @@ pub struct VerifiedArtifactMetadata {
 pub fn check_dependency_lock(
     lock: &Value,
     artifacts: &BTreeMap<(String, String), VerifiedArtifactMetadata>,
-) -> Result<String, PackageIdentityFinding> {
+) -> Result<crate::crypto::Digest, PackageIdentityFinding> {
     validate_lock_shape(lock)?;
 
     let packages = lock["packages"].as_array().expect("lock packages array");
@@ -565,13 +563,7 @@ pub fn check_dependency_lock(
 }
 
 fn is_sha256_digest(s: &str) -> bool {
-    let Some(hex_part) = s.strip_prefix("sha256:") else {
-        return false;
-    };
-    hex_part.len() == 64
-        && hex_part
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    crate::crypto::Digest::parse(s).is_ok()
 }
 
 fn validate_lock_shape(lock: &Value) -> Result<(), PackageIdentityFinding> {
@@ -813,7 +805,7 @@ mod tests {
                 .collect();
 
             artifacts.insert(
-                ("provider".to_string(), actual_digest),
+                ("provider".to_string(), actual_digest.into_string()),
                 VerifiedArtifactMetadata {
                     publisher: distribution["publisher"].as_str().unwrap().to_string(),
                     id: manifest["id"].as_str().unwrap().to_string(),

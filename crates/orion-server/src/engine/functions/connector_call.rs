@@ -16,8 +16,7 @@ use super::schema::{FieldKind, FieldSchema};
 use crate::engine::kit::{self, read};
 use crate::engine::{ErrorClass, HandlerError};
 use crate::extensions::{
-    ConnectionReference, ConnectorErrorClass, EffectiveConnectionIdentity, ImplementationKind,
-    ProviderReference, ProviderRegistry, RetryAdvice, RunContext, sha256_digest,
+    ConnectorErrorClass, ImplementationKind, ProviderRef, ProviderRegistry, RetryAdvice, RunContext,
 };
 
 pub const NAME: &str = "connector_call";
@@ -347,45 +346,41 @@ async fn execute_connector_call(
                     ),
                 ));
             }
-            ProviderReference {
-                provider_id: pkg.provider_id.clone(),
-                version: pkg.version.clone(),
-                package_digest: pkg.package_digest.clone(),
-            }
+            pkg.provider_ref()
         }
         // A provider built into this binary has no uploaded package: the
         // revision names it by its built-in digest, which must be the
         // driver this call targets.
-        None => match crate::extensions::foundation::builtin_driver(&conn_row.provider_digest) {
-            Some(driver) if impl_kind == ImplementationKind::Rust && driver == target_id => {
-                ProviderReference {
-                    provider_id: driver.to_string(),
-                    version: crate::version::ORION_VERSION.to_string(),
-                    package_digest: conn_row.provider_digest.clone(),
+        None => {
+            match crate::extensions::foundation::builtin_provider_ref(&conn_row.provider_digest) {
+                Some(builtin)
+                    if impl_kind == ImplementationKind::Rust
+                        && builtin.provider_id == target_id =>
+                {
+                    builtin
+                }
+                Some(ProviderRef {
+                    provider_id: driver,
+                    ..
+                }) => {
+                    return Err(forbidden(format!(
+                        "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names the \
+                     built-in provider '{driver}', not ({impl_kind:?}, '{target_id}')"
+                    )));
+                }
+                None => {
+                    return Err(forbidden(format!(
+                        "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names provider \
+                     package '{}', which is not uploaded",
+                        conn_row.provider_digest
+                    )));
                 }
             }
-            Some(driver) => {
-                return Err(forbidden(format!(
-                    "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names the \
-                     built-in provider '{driver}', not ({impl_kind:?}, '{target_id}')"
-                )));
-            }
-            None => {
-                return Err(forbidden(format!(
-                    "CONNECTOR_CONNECTION_FORBIDDEN: connection '{connection}' names provider \
-                     package '{}', which is not uploaded",
-                    conn_row.provider_digest
-                )));
-            }
-        },
+        }
     };
 
-    let effective_conn = effective_identity(&conn_row);
-    let conn_ref = ConnectionReference {
-        connection_id: connection.to_string(),
-        revision: conn_row.revision,
-        provider,
-    };
+    let effective_conn = conn_row.effective_identity();
+    let conn_ref = conn_row.reference(provider);
 
     let invocation = run_ctx
         .start_invocation(conn_ref, effective_conn, operation, idempotency_key, 2)
@@ -403,28 +398,6 @@ async fn execute_connector_call(
     {
         Ok(output) => Ok(output.data),
         Err(error) => Err(connector_error(error)),
-    }
-}
-
-/// The identity a call over `conn_row` runs under: its provider, the
-/// connection and revision, and a hash of where its secrets come from —
-/// never of a secret, and a revision reading another vault path is another
-/// identity.
-pub(crate) fn effective_identity(
-    conn_row: &crate::extensions::deployment_store::ConnectionRevisionRow,
-) -> EffectiveConnectionIdentity {
-    EffectiveConnectionIdentity {
-        provider_digest: conn_row.provider_digest.clone(),
-        connection_id: conn_row.connection_id.clone(),
-        revision: conn_row.revision,
-        secret_hash: if conn_row.secret_locators.is_empty() {
-            String::new()
-        } else {
-            sha256_digest(
-                crate::canonical::canonical_json(&serde_json::json!(conn_row.secret_locators))
-                    .as_bytes(),
-            )
-        },
     }
 }
 
@@ -522,7 +495,9 @@ mod tests {
             "local-db" | "bound-params-db" => DRIVER_SQLITE,
             _ => DRIVER_MEMORY_CACHE,
         };
-        builtin_provider_digest(driver).expect("a built-in driver")
+        builtin_provider_digest(driver)
+            .expect("a built-in driver")
+            .into_string()
     }
 
     /// Run `call` as a served run would: inside a run context and a
@@ -539,7 +514,10 @@ mod tests {
             // A revision the test stored itself is kept: revisions are
             // immutable, and a second store of revision 1 would be refused.
             let store = root.providers().deployment_store();
-            if store.get_connection(connection, 1).is_some() {
+            if store
+                .get_connection(connection, crate::extensions::Revision::FIRST)
+                .is_some()
+            {
                 grant
                     .allowed_operations
                     .entry((*connection).to_string())
@@ -882,7 +860,7 @@ mod tests {
         // 4. TD-25: Verify revoked provider/connection is blocked by dispatch_attempt admission check!
         root.admission()
             .ledger()
-            .revoke_provider("org.orion.memory-cache");
+            .revoke_provider(&"org.orion.memory-cache".into());
         let revoked_called = served(
             &root,
             &[("local-cache", "cache.set"), ("local-cache", "cache.get")],

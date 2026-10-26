@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::extensions::ConnectionReference;
 use crate::extensions::context::AuthorityGrant;
 use crate::extensions::deployment_store::{CanonicalManifest, EntityKind};
+use crate::extensions::{ConnectionReference, Revision};
 use crate::storage::models::Workflow;
 
 /// Per engine workflow id, the `(connection, operation)` pairs its
@@ -23,7 +23,7 @@ pub struct ConnectorAuthority {
     by_workflow: BTreeMap<String, AuthorityGrant>,
     /// The revision of each connection the manifest deploys: the one a call
     /// resolves, never a later revision stored since.
-    connections: BTreeMap<String, u64>,
+    connections: BTreeMap<String, Revision>,
     /// What each connection over a workflow provider package may call as
     /// its dependencies, keyed by
     /// [`dependency_key`](crate::extensions::workflow_provider::dependency_key):
@@ -42,7 +42,7 @@ impl ConnectorAuthority {
         for member in &manifest.members {
             if member.entity.kind == EntityKind::Workflow {
                 required
-                    .entry((member.entity.id.as_str(), member.entity.revision))
+                    .entry((member.entity.id.as_str(), member.entity.revision.get()))
                     .or_default()
                     .extend(
                         member
@@ -100,7 +100,7 @@ impl ConnectorAuthority {
             connections: grant
                 .allowed_operations
                 .keys()
-                .map(|c| (c.clone(), 1))
+                .map(|c| (c.clone(), Revision::FIRST))
                 .collect(),
             by_workflow: BTreeMap::from([(engine_id.to_string(), grant)]),
             dependencies: BTreeMap::new(),
@@ -108,7 +108,7 @@ impl ConnectorAuthority {
     }
 
     /// The revision of `connection` the manifest deploys, if it deploys one.
-    pub fn connection_revision(&self, connection: &str) -> Option<u64> {
+    pub fn connection_revision(&self, connection: &str) -> Option<Revision> {
         self.connections.get(connection).copied()
     }
 
@@ -206,7 +206,7 @@ mod tests {
             entity: EntityRef {
                 kind,
                 id: id.to_string(),
-                revision: 1,
+                revision: crate::extensions::Revision::FIRST,
             },
             definition_digest: format!("sha256:{}", "0".repeat(64)),
             owning_package: None,
@@ -215,7 +215,7 @@ mod tests {
                 .map(|c| EntityRef {
                     kind: EntityKind::Connection,
                     id: (*c).to_string(),
-                    revision: 1,
+                    revision: crate::extensions::Revision::FIRST,
                 })
                 .collect(),
             rollouts: Vec::new(),

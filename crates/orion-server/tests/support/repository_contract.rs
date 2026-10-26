@@ -57,7 +57,7 @@ fn one_workflow_manifest(id: &str, digest: &str) -> orion::extensions::Canonical
             entity: EntityRef {
                 kind: EntityKind::Workflow,
                 id: id.to_string(),
-                revision: 1,
+                revision: orion::extensions::Revision::FIRST,
             },
             definition_digest: digest.to_string(),
             owning_package: None,
@@ -385,7 +385,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
         entity: EntityRef {
             kind,
             id: id.to_string(),
-            revision: 1,
+            revision: orion::extensions::Revision::FIRST,
         },
         definition_digest: digest.to_string(),
         owning_package: None,
@@ -429,7 +429,7 @@ async fn a_package_admission_connection_and_revocation_read_back(backend: &str, 
     );
     assert_eq!(
         *fresh
-            .get_connection("contract-pkg-conn", 1)
+            .get_connection("contract-pkg-conn", orion::extensions::Revision::FIRST)
             .expect("connection"),
         conn,
         "{backend}: the connection reads back whole"

@@ -277,7 +277,7 @@ mod tests {
             kind: Kind::Plugin,
             id: id.to_string(),
             file_names: files.iter().map(|f| (*f).to_string()).collect(),
-            digest: crate::crypto::sha256_digest(b"x"),
+            digest: crate::crypto::sha256_digest(b"x").into_string(),
             carried: None,
         }
     }

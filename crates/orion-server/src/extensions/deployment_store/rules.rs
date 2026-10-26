@@ -15,7 +15,7 @@ use super::{
     ProviderPackageRow, extract_inventory_file_digests,
 };
 use crate::extensions::admission::{Admission, EditionTier, PackageAdmissionRequest};
-use crate::extensions::contract::ProviderReference;
+use crate::extensions::identity::{ConnectionId, Digest, ProviderId, Revision};
 use crate::extensions::package_identity::{
     VerifiedArtifactMetadata, canonical_bytes, check_dependency_lock, sha256_digest,
     verify_inventory,
@@ -34,7 +34,7 @@ use crate::extensions::schema_profile::{
 pub(super) struct PreparedPackage {
     pub row: ProviderPackageRow,
     pub inventory_bytes: Vec<u8>,
-    pub payloads: Vec<(String, Vec<u8>)>,
+    pub payloads: Vec<(Digest, Vec<u8>)>,
     pub bundle: CompiledSchemaBundle,
 }
 
@@ -146,7 +146,7 @@ pub(super) fn prepare_archive(
         row: ProviderPackageRow {
             package_digest,
             publisher,
-            provider_id,
+            provider_id: ProviderId::from(provider_id),
             version,
             implementation,
             manifest_json,
@@ -227,20 +227,26 @@ pub(super) fn prepare_connection(
     secret_locators: BTreeMap<String, String>,
     bindings: BTreeMap<String, String>,
 ) -> Result<PreparedConnection, DeploymentError> {
-    if revision == 0 {
+    let Some(revision) = Revision::new(revision) else {
         return Err(DeploymentError::new(
             Kind::ConnectionRevisionInvalid,
             "revision must be >= 1",
         ));
-    }
+    };
+    let provider_digest = Digest::parse(provider_digest).map_err(|e| {
+        DeploymentError::new(
+            Kind::ConnectionRevisionInvalid,
+            format!("provider_digest: {e}"),
+        )
+    })?;
     super::check_connection_config(&public_config, &secret_locators)?;
     let config_bytes = super::connection_config_bytes(&public_config, &secret_locators, &bindings);
     let configuration_digest = sha256_digest(&config_bytes);
     Ok(PreparedConnection {
         row: ConnectionRevisionRow {
-            connection_id: connection_id.to_string(),
+            connection_id: ConnectionId::from(connection_id),
             revision,
-            provider_digest: provider_digest.to_string(),
+            provider_digest,
             public_config,
             secret_locators,
             bindings,
@@ -285,10 +291,10 @@ pub(super) fn verified_metadata(
             None
         };
         verified.insert(
-            ("provider".to_string(), p.package_digest.clone()),
+            ("provider".to_string(), p.package_digest.to_string()),
             VerifiedArtifactMetadata {
                 publisher: p.publisher.clone(),
-                id: p.provider_id.clone(),
+                id: p.provider_id.to_string(),
                 version: p.version.clone(),
                 contract: "orion:connector@1.0.0".to_string(),
                 schema_profile: Some("orion-json-schema/1".to_string()),
@@ -345,13 +351,9 @@ pub(super) fn admit(
 
     let verdict = policy
         .verify_package(&PackageAdmissionRequest {
-            provider: ProviderReference {
-                provider_id: pkg.provider_id.clone(),
-                version: pkg.version.clone(),
-                package_digest: pkg.package_digest.clone(),
-            },
+            provider: pkg.provider_ref(),
             implementation: pkg.implementation,
-            target_id: pkg.provider_id.clone(),
+            target_id: pkg.provider_id.to_string(),
             tier,
             signature: None,
         })
@@ -365,7 +367,8 @@ pub(super) fn admit(
             "schema_profile": "orion-json-schema/1",
         }))
         .expect("canonical fingerprint bytes serialize"),
-    );
+    )
+    .into_string();
     Ok(ProviderAdmissionRow {
         package_digest: pkg.package_digest.clone(),
         admission_fingerprint: fingerprint,
@@ -382,8 +385,8 @@ pub(super) fn admit(
 /// that judges it.
 #[derive(Default)]
 pub(super) struct ClosureFacts {
-    pub admissions: HashMap<String, ProviderAdmissionRow>,
-    pub packages: HashMap<String, ProviderPackageRow>,
+    pub admissions: HashMap<Digest, ProviderAdmissionRow>,
+    pub packages: HashMap<Digest, ProviderPackageRow>,
     /// Each named artifact's state. A package and a connection's
     /// configuration count as stored and active even without an
     /// `artifact_objects` row: their rows hold what the artifact would.
@@ -396,7 +399,7 @@ impl ClosureFacts {
     /// members' definitions and their owning packages.
     pub fn digests_named_by(manifest: &CanonicalManifest) -> Vec<String> {
         let mut out: BTreeSet<String> = BTreeSet::new();
-        out.extend(manifest.providers.iter().map(|p| p.digest.clone()));
+        out.extend(manifest.providers.iter().map(|p| p.digest.to_string()));
         for m in &manifest.members {
             out.insert(m.definition_digest.clone());
             if let Some(pkg) = &m.owning_package {
@@ -446,9 +449,7 @@ pub(super) fn verify_closure(
             ));
         }
         if let Some(pkg) = facts.packages.get(&p.digest)
-            && (pkg.publisher != p.publisher
-                || pkg.provider_id != p.provider_id
-                || pkg.version != p.version)
+            && pkg.provider_ref() != *p
         {
             return Err(DeploymentError::new(
                 Kind::ProviderMetadataMismatch,
@@ -513,7 +514,7 @@ pub(super) fn verify_closure(
                     ),
                 ));
             }
-            if let Some(pkg) = facts.packages.get(owning) {
+            if let Some(pkg) = facts.packages.get(owning.as_str()) {
                 let files = extract_inventory_file_digests(&pkg.inventory_json);
                 if !files.is_empty() && !files.contains(&m.definition_digest) {
                     return Err(DeploymentError::new(
@@ -529,7 +530,7 @@ pub(super) fn verify_closure(
         if m.entity.kind == EntityKind::Connection {
             let Some(conn) = facts
                 .connections
-                .get(&(m.entity.id.clone(), m.entity.revision))
+                .get(&(m.entity.id.clone(), m.entity.revision.get()))
             else {
                 return Err(DeploymentError::new(
                     Kind::ConnectionRevisionNotFound,
@@ -610,7 +611,7 @@ pub(super) fn recheck_admissions(
             .check_runtime_lease(
                 0,
                 &p.provider_id,
-                "",
+                &ConnectionId::new(String::new()),
                 crate::extensions::contract::EffectStatus::NotStarted,
             )
             .is_err()

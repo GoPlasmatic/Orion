@@ -56,7 +56,7 @@ use serde_json::{Value, json};
 use super::context::{AttemptContext, Invocation};
 use super::contract::{
     ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus,
-    ErrorOrigin, ImplementationKind, ProviderReference, RetryAdvice, codes,
+    ErrorOrigin, ImplementationKind, ProviderRef, RetryAdvice, codes,
 };
 use super::deployment_store::{
     ConnectionRevisionRow, ImmutableDeploymentStore, PackageSchema, ProviderPackageRow,
@@ -130,7 +130,7 @@ pub struct PackageWorkflow {
 /// within the hermetic set.
 #[derive(Debug, Clone)]
 pub struct WorkflowPackage {
-    pub provider: ProviderReference,
+    pub provider: ProviderRef,
     pub entries: BTreeMap<String, PackageWorkflow>,
     pub dependencies: BTreeMap<String, PackageDependency>,
 }
@@ -168,7 +168,7 @@ impl WorkflowPackage {
     ///
     /// Every problem found, each naming where it was written.
     pub fn from_files(
-        provider: ProviderReference,
+        provider: ProviderRef,
         manifest: &Value,
         files: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Self, Vec<PackageProblem>> {
@@ -370,15 +370,7 @@ impl WorkflowPackage {
                     format!("the package's files could not be read: {e}"),
                 )]
             })?;
-        Self::from_files(
-            ProviderReference {
-                provider_id: row.provider_id.clone(),
-                version: row.version.clone(),
-                package_digest: row.package_digest.clone(),
-            },
-            &row.manifest_json,
-            &files,
-        )
+        Self::from_files(row.provider_ref(), &row.manifest_json, &files)
     }
 }
 
@@ -778,7 +770,7 @@ impl ProviderBackend for WorkflowProviderBackend {
     }
 
     fn driver_id(&self) -> &str {
-        &self.package.provider.package_digest
+        &self.package.provider.digest
     }
 
     fn validate_config(&self, config: &Value) -> Result<(), ConnectorError> {
@@ -852,7 +844,7 @@ impl ProviderBackend for WorkflowProviderBackend {
                 let mut metadata = BTreeMap::new();
                 metadata.insert(
                     "provider_digest".to_string(),
-                    json!(self.package.provider.package_digest),
+                    json!(self.package.provider.digest),
                 );
                 Ok(ConnectorOutput::with_metadata(execution.data(), metadata))
             }
@@ -1041,8 +1033,8 @@ fn dependency_target(
             effect,
         ));
     };
-    let identity = crate::engine::functions::connector_call::effective_identity(&row);
-    let digest = &bound.provider.package_digest;
+    let identity = row.effective_identity();
+    let digest = &bound.provider.digest;
     if let Some(driver) = super::foundation::builtin_driver(digest) {
         return Ok(DependencyTarget {
             kind: ImplementationKind::Rust,
@@ -1186,7 +1178,7 @@ fn target_problem(
                     target.connection_id, pkg.provider_id
                 ));
             }
-            Some(pkg) => pkg.provider_id.clone(),
+            Some(pkg) => pkg.provider_id.to_string(),
             None => {
                 return Some(format!(
                     "connection '{}' names provider '{}', which is not uploaded",
@@ -1256,25 +1248,11 @@ pub fn manifest_dependencies(
                     row.connection_id, required.revision
                 ));
             };
-            let provider = match super::foundation::builtin_driver(&target_row.provider_digest) {
-                Some(driver) => ProviderReference {
-                    provider_id: driver.to_string(),
-                    version: crate::version::ORION_VERSION.to_string(),
-                    package_digest: target_row.provider_digest.clone(),
-                },
-                None => match store.get_package(&target_row.provider_digest) {
-                    Some(pkg) => ProviderReference {
-                        provider_id: pkg.provider_id.clone(),
-                        version: pkg.version.clone(),
-                        package_digest: pkg.package_digest.clone(),
-                    },
-                    None => {
-                        return Err(format!(
-                            "connection '{target}' names provider '{}', which is not uploaded",
-                            target_row.provider_digest
-                        ));
-                    }
-                },
+            let Some(provider) = store.provider_ref(&target_row.provider_digest) else {
+                return Err(format!(
+                    "connection '{target}' names provider '{}', which is not uploaded",
+                    target_row.provider_digest
+                ));
             };
             let operations = dependencies
                 .get(alias)
@@ -1282,14 +1260,7 @@ pub fn manifest_dependencies(
                 .unwrap_or_default();
             out.insert(
                 dependency_key(&row.connection_id, alias),
-                (
-                    ConnectionReference {
-                        connection_id: target.clone(),
-                        revision: required.revision,
-                        provider,
-                    },
-                    operations,
-                ),
+                (target_row.reference(provider), operations),
             );
         }
     }
@@ -1300,12 +1271,14 @@ pub fn manifest_dependencies(
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::extensions::identity::Digest;
 
-    fn provider() -> ProviderReference {
-        ProviderReference {
-            provider_id: "acme.crm".to_string(),
+    fn provider() -> ProviderRef {
+        ProviderRef {
+            publisher: "acme".to_string(),
+            provider_id: "acme.crm".into(),
             version: "1.0.0".to_string(),
-            package_digest: format!("sha256:{}", "ab".repeat(32)),
+            digest: Digest::parse(&format!("sha256:{}", "ab".repeat(32))).unwrap(),
         }
     }
 

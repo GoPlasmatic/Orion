@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{DeploymentError, DeploymentErrorKind};
-use crate::extensions::package_identity::{canonical_bytes, sha256_digest};
+pub use crate::extensions::identity::ProviderRef;
+use crate::extensions::identity::{Digest, Revision};
+use crate::extensions::package_identity::canonical_bytes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,37 +39,25 @@ impl EntityKind {
 pub struct EntityRef {
     pub kind: EntityKind,
     pub id: String,
-    pub revision: u64,
+    pub revision: Revision,
 }
 
 impl EntityRef {
     pub fn validate(&self) -> Result<(), DeploymentError> {
-        if self.id.is_empty() || self.id.starts_with("sha256:") {
+        if self.id.is_empty() || self.id.starts_with(Digest::PREFIX) {
             return Err(DeploymentError::new(
                 DeploymentErrorKind::EntityRefInvalid,
                 "entity id must be non-empty and must not be a digest",
-            ));
-        }
-        if self.revision == 0 {
-            return Err(DeploymentError::new(
-                DeploymentErrorKind::EntityRefInvalid,
-                "entity integer revision must be >= 1",
             ));
         }
         Ok(())
     }
 }
 
-/// Semantic-version + content-digest reference to a provider package (`V2-03.1`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ProviderRef {
-    pub publisher: String,
-    pub provider_id: String,
-    pub version: String,
-    pub digest: String,
-}
-
 impl ProviderRef {
+    /// A manifest's provider entry: a publisher and an id, and a semantic
+    /// version (not an integer revision or a digest). The digest's shape is
+    /// the type's.
     pub fn validate(&self) -> Result<(), DeploymentError> {
         if self.publisher.is_empty() || self.provider_id.is_empty() {
             return Err(DeploymentError::new(
@@ -75,17 +65,10 @@ impl ProviderRef {
                 "publisher and provider_id are required",
             ));
         }
-        // Reject integer revision confusion: version must contain '.' (SemVer) and not be a bare integer or digest.
-        if !self.version.contains('.') || self.version.starts_with("sha256:") {
+        if !self.version.contains('.') || self.version.starts_with(Digest::PREFIX) {
             return Err(DeploymentError::new(
                 DeploymentErrorKind::ProviderRefInvalid,
                 "provider version must be a semantic version string, not an integer revision or digest",
-            ));
-        }
-        if !self.digest.starts_with("sha256:") || self.digest.len() != 71 {
-            return Err(DeploymentError::new(
-                DeploymentErrorKind::ProviderRefInvalid,
-                "provider digest must be sha256:<64 hex chars>",
             ));
         }
         Ok(())
@@ -170,6 +153,19 @@ pub struct CanonicalManifest {
 }
 
 impl CanonicalManifest {
+    /// The manifest `value` spells, read once at the API boundary. A digest
+    /// and a revision are checked types, so a malformed one is refused here
+    /// rather than by [`Self::canonicalize_and_verify`]; it is still named
+    /// as the reference it is (`PROVIDER_REF_INVALID`, `ENTITY_REF_INVALID`),
+    /// and anything else unreadable is `INVALID_MANIFEST_JSON`.
+    pub fn from_json(value: &Value) -> Result<Self, DeploymentError> {
+        Self::deserialize(value).map_err(|e| {
+            malformed_ref(value).unwrap_or_else(|| {
+                DeploymentError::new(DeploymentErrorKind::InvalidManifestJson, e.to_string())
+            })
+        })
+    }
+
     /// Validate ownership, singleton constraints, rollout partitions, and
     /// `requires` closure, returning canonical JSON bytes and `sha256:` digest.
     pub fn canonicalize_and_verify(&self) -> Result<(Vec<u8>, String), DeploymentError> {
@@ -201,14 +197,14 @@ impl CanonicalManifest {
         }
 
         // Singleton entity check (except workflows under rollout, which are referenced via Channel rollouts)
-        let mut member_set: HashMap<(EntityKind, String), u64> = HashMap::new();
+        let mut member_set: HashMap<(EntityKind, String), Revision> = HashMap::new();
         let mut all_entities: HashSet<EntityRef> = HashSet::new();
         let mut owner_by_id: HashMap<(EntityKind, String), Option<String>> = HashMap::new();
 
         for m in &self.members {
             m.entity.validate()?;
             if let Some(pkg) = &m.owning_package
-                && !provider_digests.contains(pkg)
+                && !provider_digests.contains(pkg.as_str())
             {
                 return Err(DeploymentError::new(
                     DeploymentErrorKind::ManifestOwnerMissing,
@@ -358,7 +354,41 @@ impl CanonicalManifest {
         let bytes = canonical_bytes(&Value::Object(root)).map_err(|e| {
             DeploymentError::new(DeploymentErrorKind::ManifestCanonicalError, e.code)
         })?;
-        let digest = sha256_digest(&bytes);
+        let digest = crate::crypto::sha256_digest(&bytes).into_string();
         Ok((bytes, digest))
     }
+}
+
+/// The reference `value` holds that its types refuse: a provider digest
+/// that is not one, or an entity revision of `0`. `None` when the problem is
+/// elsewhere.
+fn malformed_ref(value: &Value) -> Option<DeploymentError> {
+    let providers = value.get("providers").and_then(Value::as_array);
+    for provider in providers.into_iter().flatten() {
+        if let Some(digest) = provider.get("digest").and_then(Value::as_str)
+            && Digest::parse(digest).is_err()
+        {
+            return Some(DeploymentError::new(
+                DeploymentErrorKind::ProviderRefInvalid,
+                format!("provider digest must be sha256:<64 lowercase hex>, not '{digest}'"),
+            ));
+        }
+    }
+    let members = value.get("members").and_then(Value::as_array);
+    let refs = members.into_iter().flatten().flat_map(|member| {
+        let requires = member.get("requires").and_then(Value::as_array);
+        member
+            .get("entity")
+            .into_iter()
+            .chain(requires.into_iter().flatten())
+    });
+    for entity in refs {
+        if entity.get("revision").and_then(Value::as_u64) == Some(0) {
+            return Some(DeploymentError::new(
+                DeploymentErrorKind::EntityRefInvalid,
+                "entity integer revision must be >= 1",
+            ));
+        }
+    }
+    None
 }

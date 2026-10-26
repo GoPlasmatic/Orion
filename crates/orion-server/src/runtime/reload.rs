@@ -39,7 +39,7 @@ pub async fn reconcile_deployment_revision(
                             m.entity.kind == EntityKind::Channel && m.entity.id == q.channel_id
                         })
                         .map(|m| m.entity.revision)
-                        .unwrap_or(1);
+                        .unwrap_or(crate::extensions::Revision::FIRST);
                     build_issues.push(CandidateBuildIssue::PerEntityExternal {
                         entity: EntityRef {
                             kind: EntityKind::Channel,
@@ -216,7 +216,7 @@ async fn manifest_definitions(
                 active_channels.push(super::definitions::channel_row(
                     &def,
                     &m.entity.id,
-                    m.entity.revision,
+                    m.entity.revision.get(),
                     workflow_id,
                 )?);
             }
@@ -226,7 +226,7 @@ async fn manifest_definitions(
                     unreachable!("kind checked above")
                 };
                 let (row, bytes) =
-                    super::definitions::plugin_row(&def, &m.entity.id, m.entity.revision)?;
+                    super::definitions::plugin_row(&def, &m.entity.id, m.entity.revision.get())?;
                 plugin_components.insert(row.digest.clone(), bytes);
                 active_plugins.push(row);
             }
@@ -265,8 +265,8 @@ async fn manifest_definitions(
         let Definition::Workflow(def) = definition(m)? else {
             unreachable!("kind checked above")
         };
-        let mut wf = super::definitions::workflow_row(&def, &m.entity.id, m.entity.revision)?;
-        if let Some(&pct) = rollout_overrides.get(&(m.entity.id.clone(), m.entity.revision)) {
+        let mut wf = super::definitions::workflow_row(&def, &m.entity.id, m.entity.revision.get())?;
+        if let Some(&pct) = rollout_overrides.get(&(m.entity.id.clone(), m.entity.revision.get())) {
             wf.rollout_percentage = pct;
         } else if workflow_counts.get(&m.entity.id).copied().unwrap_or(1) == 1 {
             wf.rollout_percentage = 100;
@@ -453,7 +453,7 @@ fn manifest_connectors(
         };
         connectors.push(crate::connector::StoredConnector {
             id: format!("{}@{}", row.connection_id, row.revision),
-            name: row.connection_id.clone(),
+            name: row.connection_id.to_string(),
             connector_type: connector_type.to_string(),
             config_json: serde_json::to_string(&config)?,
         });

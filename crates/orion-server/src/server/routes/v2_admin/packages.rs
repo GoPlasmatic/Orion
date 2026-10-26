@@ -12,6 +12,7 @@ use orion_api::v2::{
 use serde_json::{Value, json};
 
 use super::{decode_files_map, deployment_err_response};
+use crate::extensions::Digest;
 use crate::extensions::authoring::pack_provider_package;
 use crate::extensions::deployment_store::{ArchiveEntryInput, ArtifactState, ProviderPackageRow};
 use crate::server::admin_auth::AdminPrincipal;
@@ -31,10 +32,10 @@ fn package_row_to_summary(
         .to_string();
     ConnectorPackageSummary {
         publisher: row.publisher.clone(),
-        provider_id: row.provider_id.clone(),
+        provider_id: row.provider_id.to_string(),
         version: row.version.clone(),
-        digest: row.package_digest.clone(),
-        package_digest: row.package_digest.clone(),
+        digest: row.package_digest.to_string(),
+        package_digest: row.package_digest.to_string(),
         implementation: row.implementation.as_str().to_string(),
         tier,
         admitted,
@@ -62,7 +63,7 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
     let raw_admissions = state.deployments.list_admissions();
     let digests: Vec<String> = raw_packages
         .iter()
-        .map(|p| p.package_digest.clone())
+        .map(|p| p.package_digest.to_string())
         .collect();
     // One read for every package's artifact state; a failed read answers
     // each as active, as a package with no artifact row does.
@@ -74,7 +75,7 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
     let admissions: Vec<ProviderAdmissionDto> = raw_admissions
         .iter()
         .map(|a| ProviderAdmissionDto {
-            package_digest: a.package_digest.clone(),
+            package_digest: a.package_digest.to_string(),
             policy_id: a.policy_id.clone(),
             admission_fingerprint: a.admission_fingerprint.clone(),
             revoked: a.revoked,
@@ -88,7 +89,7 @@ pub(crate) async fn list_connector_packages(State(state): State<AppState>) -> im
                 .find(|a| a.package_digest == p.package_digest);
             let admitted = adm.is_some_and(|a| !a.revoked);
             let revoked = adm.is_some_and(|a| a.revoked);
-            let artifact_state = match states.get(&p.package_digest) {
+            let artifact_state = match states.get(p.package_digest.as_str()) {
                 Some(ArtifactState::Draining) => "draining",
                 Some(ArtifactState::Deleted) => "deleted",
                 _ => "active",
@@ -185,7 +186,7 @@ pub(crate) async fn upload_connector_package(
         {
             Ok(adm) => {
                 admission_dto = Some(ProviderAdmissionDto {
-                    package_digest: adm.package_digest,
+                    package_digest: adm.package_digest.into_string(),
                     policy_id: adm.policy_id,
                     admission_fingerprint: adm.admission_fingerprint,
                     revoked: adm.revoked,
@@ -207,7 +208,7 @@ pub(crate) async fn upload_connector_package(
     let summary = package_row_to_summary(&row, admission_dto.is_some(), false, "active");
     let resp = UploadPackageResponse {
         status: "uploaded".to_string(),
-        digest: row.package_digest.clone(),
+        digest: row.package_digest.to_string(),
         package: summary,
         admission: admission_dto,
     };
@@ -267,7 +268,7 @@ pub(crate) async fn admit_connector_package(
             let resp = AdmitPackageResponse {
                 status: "admitted".to_string(),
                 admission: ProviderAdmissionDto {
-                    package_digest: adm.package_digest,
+                    package_digest: adm.package_digest.into_string(),
                     policy_id: adm.policy_id,
                     admission_fingerprint: adm.admission_fingerprint,
                     revoked: adm.revoked,
@@ -311,11 +312,15 @@ pub(crate) async fn revoke_connector_package(
         .await
     {
         Ok(()) => {
-            state
-                .composition
-                .admission()
-                .ledger()
-                .revoke_digest(&digest);
+            // The store revoked a package stored under `digest`, so it is
+            // one.
+            if let Ok(revoked) = Digest::parse(&digest) {
+                state
+                    .composition
+                    .admission()
+                    .ledger()
+                    .revoke_digest(&revoked);
+            }
             crate::runtime::workflow_providers::sync(&state).await;
             crate::server::routes::admin::audit_log(
                 &state.audit_queue,

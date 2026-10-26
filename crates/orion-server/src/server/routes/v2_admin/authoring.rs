@@ -52,7 +52,7 @@ pub(crate) async fn authoring_scaffold(Json(req): Json<ScaffoldRequest>) -> impl
     };
     let pkg = scaffold_provider_package(&req.publisher, &req.provider_id, &req.version, kind);
     let package_digest = pack_provider_package(&pkg.files)
-        .map(|inv| inv.package_digest)
+        .map(|inv| inv.package_digest.into_string())
         .unwrap_or_default();
     let files_utf8: BTreeMap<String, String> = pkg
         .files
@@ -117,7 +117,7 @@ pub(crate) async fn authoring_pack(Json(req): Json<UploadPackageRequest>) -> imp
                 raw_files.insert("inventory.json".to_string(), inv_str);
             }
             let resp = PackResponse {
-                package_digest: packed.package_digest.clone(),
+                package_digest: packed.package_digest.to_string(),
                 inventory: inventory_json.clone(),
                 files: raw_files,
             };

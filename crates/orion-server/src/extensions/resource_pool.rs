@@ -18,13 +18,14 @@ use async_trait::async_trait;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use super::contract::{ConnectorError, EffectStatus, EffectiveConnectionIdentity};
+use super::identity::{ConnectionId, Digest, Revision};
 
 /// Open trait for any connection-pool cache that participates in per-connector
 /// and cluster-resync blanket eviction (`V2-11.1`). Implement it with
 /// `#[async_trait::async_trait]`.
 #[async_trait]
 pub trait ConnectionPoolCache: Send + Sync {
-    /// Stable driver/cache identifier, unique on a node (e.g. `"orion.postgresql"`).
+    /// Stable driver/cache identifier, unique on a node (e.g. `"org.orion.postgresql"`).
     fn cache_id(&self) -> &str;
 
     /// Evict all cached sessions/pools belonging to `connector_name`.
@@ -158,10 +159,10 @@ struct SessionPoolState<S> {
     /// Explicitly invalidated identities or minimum valid revision per `(provider_digest, connection_id)`.
     /// Any creator completing for an identity in `invalidated` or below `min_revision` is fenced (`CTX-08`).
     invalidated: BTreeSet<EffectiveConnectionIdentity>,
-    min_revision: BTreeMap<(String, String), u64>,
+    min_revision: BTreeMap<(Digest, ConnectionId), Revision>,
     /// Shared capacity semaphores keyed by stable `(provider_digest, connection_id)` so
     /// retained revisions and rotated secrets share one capacity ceiling (`CTX-08`).
-    capacity: BTreeMap<(String, String), Arc<Semaphore>>,
+    capacity: BTreeMap<(Digest, ConnectionId), Arc<Semaphore>>,
     /// Monotonic global eviction epoch incremented on `evict_all` so in-flight creators
     /// started before blanket eviction cannot populate the cache (`TD-28`).
     global_eviction_epoch: u64,
@@ -205,7 +206,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
     pub fn invalidate(
         &self,
         identity: &EffectiveConnectionIdentity,
-        next_min_revision: Option<u64>,
+        next_min_revision: Option<Revision>,
     ) {
         let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         guard.sessions.remove(identity);
@@ -274,7 +275,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
             let g_epoch = guard.global_eviction_epoch;
             let c_epoch = guard
                 .connector_eviction_epochs
-                .get(&identity.connection_id)
+                .get(identity.connection_id.as_str())
                 .copied()
                 .unwrap_or(0);
             (sem, existing, g_epoch, c_epoch)
@@ -315,7 +316,7 @@ impl<S: Clone + Send + Sync + 'static> VersionedSessionPool<S> {
         }
         let current_c_epoch = guard
             .connector_eviction_epochs
-            .get(&identity.connection_id)
+            .get(identity.connection_id.as_str())
             .copied()
             .unwrap_or(0);
         if guard.global_eviction_epoch != start_global_epoch
@@ -376,16 +377,19 @@ mod tests {
 
     fn sample_id(revision: u64, secret_hash: &str) -> EffectiveConnectionIdentity {
         EffectiveConnectionIdentity {
-            provider_digest: "sha256:1111".to_string(),
-            connection_id: "orders-db".to_string(),
-            revision,
+            provider_digest: crate::crypto::sha256_digest(b"orders-provider"),
+            connection_id: "orders-db".into(),
+            revision: Revision::new(revision).expect("a revision"),
             secret_hash: secret_hash.to_string(),
         }
     }
 
     #[tokio::test]
     async fn ctx_08_session_isolation_late_creator_fencing_and_shared_capacity() {
-        let pool = Arc::new(VersionedSessionPool::<String>::new("orion.postgresql", 2));
+        let pool = Arc::new(VersionedSessionPool::<String>::new(
+            "org.orion.postgresql",
+            2,
+        ));
 
         let rev1_sec1 = sample_id(1, "sha256:sec-a");
         let rev1_sec2 = sample_id(1, "sha256:sec-b");
@@ -437,7 +441,7 @@ mod tests {
 
         start_rx.await.expect("creator started");
         // Invalidate slow_id and advance min_revision to 2 while creator is in flight.
-        pool.invalidate(&slow_id, Some(2));
+        pool.invalidate(&slow_id, Revision::new(2));
         let _ = finish_tx.send(());
 
         let slow_res = slow_task.await.expect("joined");

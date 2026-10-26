@@ -39,6 +39,35 @@
 //!   [`CompositionBuilder::with_package_verifier`], and its edition via
 //!   [`CompositionBuilder::with_edition`]. The revocation ledger and security
 //!   lease are core: [`Admission`] checks them whatever the verifier says.
+//!
+//! # Vocabulary
+//!
+//! The words below have one meaning each across this module (and the
+//! [glossary](https://docs.goplasmatic.io/concepts/glossary.html)):
+//!
+//! - **Connector**: the authored form — a connector file in a definition set
+//!   (`http`, `db`, `cache`), which `compile` turns into a connection.
+//! - **Connection**: an immutable, numbered revision of a connector's
+//!   configuration ([`ConnectionRevisionRow`]), named by [`ConnectionId`] and
+//!   [`Revision`] and pinned in a running call as a [`ConnectionReference`].
+//! - **Provider**: what a connection runs on, pinned as a [`ProviderRef`]
+//!   (publisher, [`ProviderId`], version, [`Digest`]): a driver, or an uploaded
+//!   provider package ([`ProviderPackageRow`]).
+//! - **Driver**: a provider compiled into the binary (`org.orion.http`, …). It
+//!   has no package; a connection names it by its built-in digest
+//!   ([`foundation::builtin_provider_digest`]).
+//! - **Backend**: the [`ProviderBackend`] a node dispatches a provider's
+//!   operations to, registered under its kind and backend id: a `rust`
+//!   backend's driver id, or a `workflow`/`wasm` package's digest
+//!   ([`ProviderPackageRow::backend_id`]).
+//! - **`target_id`**: the `connector_call` input naming that backend id; with
+//!   none, the connection's provider decides it.
+//!
+//! A `rust` backend is keyed by driver id, not by digest: its code is the
+//! binary, so one backend serves every package version that names its id,
+//! and the digest a manifest pins identifies the package's declared schemas,
+//! not different code. A `workflow` or `wasm` backend's id *is* its digest,
+//! so the registry is already keyed by digest wherever the digest names code.
 
 pub mod admission;
 pub mod authoring;
@@ -49,6 +78,7 @@ pub mod context;
 pub mod contract;
 pub mod deployment_store;
 pub mod foundation;
+pub mod identity;
 pub mod owned_native_work;
 pub mod package_identity;
 pub mod provider_backend;
@@ -74,22 +104,24 @@ pub use context::{
     CancellationScope, ChargeVector, Invocation, Reservation, RunContext, WorkLease,
 };
 pub use contract::{
-    ConnectionReference, ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus,
-    EffectiveConnectionIdentity, ErrorOrigin, ImplementationKind, OriginKind, ProviderReference,
-    RetryAdvice, codes,
+    ConnectorError, ConnectorErrorClass, ConnectorOutput, EffectStatus, ErrorOrigin,
+    ImplementationKind, OriginKind, RetryAdvice, codes,
 };
 pub use deployment_store::{
     ArchiveEntryInput, ArtifactObjectRow, ArtifactState, CandidatePlan, CanonicalManifest,
     ConnectionRevisionRow, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
     DeploymentRevisionRow, EntityKind, EntityRef, ImmutableDeploymentStore, ManifestMember,
-    ProviderAdmissionRow, ProviderPackageRow, ProviderRef, RolloutInterval,
-    validate_rollout_partition,
+    ProviderAdmissionRow, ProviderPackageRow, RolloutInterval, validate_rollout_partition,
 };
 pub use foundation::{
     COMMUNITY_RUST_DRIVERS, DRIVER_HTTP, DRIVER_MEMORY_CACHE, DRIVER_MYSQL, DRIVER_POSTGRESQL,
     DRIVER_SQLITE, FoundationOptions, HttpProviderBackend, MemoryCacheProviderBackend,
     MysqlProviderBackend, PartitionedMemoryCache, PostgresProviderBackend, SqlLimits,
     SqliteProviderBackend, register_community_foundation,
+};
+pub use identity::{
+    ConnectionId, ConnectionReference, Digest, DigestError, EffectiveConnectionIdentity,
+    ProviderId, ProviderRef, Revision,
 };
 pub use owned_native_work::{
     NativeJobInfo, NativeJobState, NativeWorkError, NativeWorkScheduler, OwnedPermit,
@@ -495,11 +527,9 @@ mod tests {
 
         // Populate a session in the registered pool and verify eviction through ResourcePoolRegistry.
         let id = EffectiveConnectionIdentity {
-            provider_digest:
-                "sha256:3333333333333333333333333333333333333333333333333333333333333333"
-                    .to_string(),
-            connection_id: "local-sqlite".to_string(),
-            revision: 1,
+            provider_digest: Digest::parse(&format!("sha256:{}", "33".repeat(32))).unwrap(),
+            connection_id: "local-sqlite".into(),
+            revision: crate::extensions::Revision::FIRST,
             secret_hash: "sha256:0000".to_string(),
         };
         let _handle = pool
@@ -513,15 +543,14 @@ mod tests {
 
         // Verify CommunityPackageVerifier rejects enterprise-tier packages on Community root.
         let ent_req = PackageAdmissionRequest {
-            provider: ProviderReference {
-                provider_id: "orion.kafka".to_string(),
+            provider: ProviderRef {
+                publisher: "org.orion".to_string(),
+                provider_id: "org.orion.kafka".into(),
                 version: "2.0.0".to_string(),
-                package_digest:
-                    "sha256:4444444444444444444444444444444444444444444444444444444444444444"
-                        .to_string(),
+                digest: Digest::parse(&format!("sha256:{}", "44".repeat(32))).unwrap(),
             },
             implementation: ImplementationKind::Rust,
-            target_id: "orion.kafka".to_string(),
+            target_id: "org.orion.kafka".to_string(),
             tier: crate::extensions::EditionTier::Enterprise,
             signature: None,
         };
@@ -533,15 +562,14 @@ mod tests {
 
         // Verify valid Community package passes admission.
         let comm_req = PackageAdmissionRequest {
-            provider: ProviderReference {
-                provider_id: "orion.http".to_string(),
+            provider: ProviderRef {
+                publisher: "org.orion".to_string(),
+                provider_id: "org.orion.http".into(),
                 version: "2.0.0".to_string(),
-                package_digest:
-                    "sha256:5555555555555555555555555555555555555555555555555555555555555555"
-                        .to_string(),
+                digest: Digest::parse(&format!("sha256:{}", "55".repeat(32))).unwrap(),
             },
             implementation: ImplementationKind::Rust,
-            target_id: "orion.http".to_string(),
+            target_id: "org.orion.http".to_string(),
             tier: crate::extensions::EditionTier::Community,
             signature: None,
         };
@@ -549,13 +577,13 @@ mod tests {
             .admission()
             .verify_package(&comm_req)
             .expect("community package admitted");
-        assert_eq!(verdict.provider.provider_id, "orion.http");
+        assert_eq!(verdict.provider.provider_id, "org.orion.http");
 
         // A revoked digest is refused whatever the verifier says: revocation
         // is the node's ledger, not the edition's verifier.
         comp.admission()
             .ledger()
-            .revoke_digest(&comm_req.provider.package_digest);
+            .revoke_digest(&comm_req.provider.digest);
         let err = comp
             .admission()
             .verify_package(&comm_req)
@@ -594,10 +622,11 @@ mod tests {
         assert_eq!(comp.edition(), EditionTier::Enterprise);
         assert_eq!(comp.admission().policy_id(), "test.admit-all/1");
         let req = PackageAdmissionRequest {
-            provider: ProviderReference {
-                provider_id: "com.example.premium".to_string(),
+            provider: ProviderRef {
+                publisher: "com.example".to_string(),
+                provider_id: "com.example.premium".into(),
                 version: "1.0.0".to_string(),
-                package_digest: format!("sha256:{}", "ab".repeat(32)),
+                digest: Digest::parse(&format!("sha256:{}", "ab".repeat(32))).unwrap(),
             },
             implementation: ImplementationKind::Rust,
             target_id: "com.example.premium".to_string(),
@@ -607,7 +636,7 @@ mod tests {
         assert!(comp.admission().verify_package(&req).is_ok());
         comp.admission()
             .ledger()
-            .revoke_digest(&req.provider.package_digest);
+            .revoke_digest(&req.provider.digest);
         assert_eq!(
             comp.admission().verify_package(&req).unwrap_err().code,
             "PROVIDER_REVOKED"

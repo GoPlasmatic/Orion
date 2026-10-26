@@ -61,7 +61,7 @@ fn workflow_manifest(id: &str, revision: u64, digest: &str) -> CanonicalManifest
             entity: EntityRef {
                 kind: EntityKind::Workflow,
                 id: id.to_string(),
-                revision,
+                revision: crate::extensions::Revision::new(revision).expect("a revision"),
             },
             definition_digest: digest.to_string(),
             owning_package: None,
@@ -106,15 +106,57 @@ async fn state_of(store: &ImmutableDeploymentStore, pool: &DbPool, digest: &str)
         .state
 }
 
+/// A manifest read at the API names a malformed reference as the reference
+/// it is, though the types refuse it while reading; the wire form of a
+/// typed manifest is the one it was read from.
+#[test]
+fn a_manifest_is_read_once_and_names_a_malformed_reference() {
+    let digest = format!("sha256:{}", "ab".repeat(32));
+    let manifest = |provider_digest: &str, revision: u64| {
+        json!({
+            "schema_version": 2,
+            "providers": [{
+                "publisher": "acme",
+                "provider_id": "acme.crm",
+                "version": "1.0.0",
+                "digest": provider_digest,
+            }],
+            "provider_lock_digest": null,
+            "members": [{
+                "entity": {"kind": "workflow", "id": "orders", "revision": revision},
+                "definition_digest": digest,
+            }],
+        })
+    };
+
+    let read = CanonicalManifest::from_json(&manifest(&digest, 1)).expect("reads");
+    assert_eq!(read.providers[0].digest, digest);
+    assert_eq!(read.members[0].entity.revision.get(), 1);
+    let written = serde_json::to_value(&read).unwrap();
+    assert_eq!(
+        written["providers"][0],
+        manifest(&digest, 1)["providers"][0]
+    );
+    assert_eq!(written["members"][0]["entity"]["revision"], 1);
+
+    let short = CanonicalManifest::from_json(&manifest("sha256:abc", 1)).unwrap_err();
+    assert_eq!(short.code, "PROVIDER_REF_INVALID");
+    let upper = CanonicalManifest::from_json(&manifest(&digest.to_uppercase(), 1)).unwrap_err();
+    assert_eq!(upper.code, "PROVIDER_REF_INVALID");
+    let zero = CanonicalManifest::from_json(&manifest(&digest, 0)).unwrap_err();
+    assert_eq!(zero.code, "ENTITY_REF_INVALID");
+    let garbage = CanonicalManifest::from_json(&json!({"providers": "none"})).unwrap_err();
+    assert_eq!(garbage.code, "INVALID_MANIFEST_JSON");
+}
+
 #[test]
 fn typed_refs_disjoint_rollouts_and_canonical_manifest_verification() {
     // Reject integer/digest confusion on ProviderRef
     let bad_provider = ProviderRef {
         publisher: "org.orion".to_string(),
-        provider_id: "org.orion.http".to_string(),
+        provider_id: "org.orion.http".into(),
         version: "42".to_string(),
-        digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-            .to_string(),
+        digest: crate::crypto::Digest::from_sha256([0; 32]),
     };
     assert_eq!(
         bad_provider.validate().unwrap_err().code,
@@ -286,7 +328,7 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         .mark_and_collect_garbage_in_db(&pool, 1, 0)
         .await
         .unwrap();
-    assert!(!pass.draining.contains(&pkg.package_digest));
+    assert!(!pass.draining.contains(&pkg.package_digest.to_string()));
     assert!(
         !pass.draining.is_empty(),
         "the dropped workflow definitions drain"
@@ -302,7 +344,7 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         .mark_and_collect_garbage_in_db(&pool, 1, 0)
         .await
         .unwrap();
-    assert!(pass.draining.contains(&pkg.package_digest));
+    assert!(pass.draining.contains(&pkg.package_digest.to_string()));
 
     // Attempting to plan with the revoked, DRAINING package is rejected
     let mut with_revoked = empty_manifest();
@@ -318,7 +360,7 @@ async fn end_to_end_archive_admit_plan_apply_rollback_and_gc() {
         .mark_and_collect_garbage_in_db(&pool, 1, 0)
         .await
         .unwrap();
-    assert!(pass.deleted.contains(&pkg.package_digest));
+    assert!(pass.deleted.contains(&pkg.package_digest.to_string()));
 }
 
 /// A fresh store reads everything committed back from the database:
@@ -551,7 +593,7 @@ async fn connection_secret_rejection_canonical_digests_and_staged_gc_protection(
             entity: EntityRef {
                 kind: EntityKind::Connection,
                 id: "conn-canon".to_string(),
-                revision: 1,
+                revision: crate::extensions::Revision::FIRST,
             },
             definition_digest: definition(&store, &pool, b"wrong-digest").await,
             owning_package: None,
@@ -729,9 +771,9 @@ async fn a_builtin_provider_needs_no_declaration_and_an_uploaded_one_does() {
                 entity: EntityRef {
                     kind: EntityKind::Connection,
                     id: id.to_string(),
-                    revision: 1,
+                    revision: crate::extensions::Revision::FIRST,
                 },
-                definition_digest: row.configuration_digest.clone(),
+                definition_digest: row.configuration_digest.to_string(),
                 owning_package: None,
                 requires: Vec::new(),
                 rollouts: Vec::new(),
@@ -876,7 +918,7 @@ async fn collection_never_takes_what_is_referenced_retained_admitted_or_recent()
     for kept in [
         &digests[1],
         &digests[2],
-        &conn.configuration_digest,
+        &conn.configuration_digest.to_string(),
         &pending,
     ] {
         assert_eq!(

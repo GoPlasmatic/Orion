@@ -13,6 +13,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use super::identity::{
+    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId,
+    ProviderRef, Revision,
+};
+
 /// The three supported connector implementation kinds in Orion v2.
 ///
 /// Channels are intentionally excluded here: channels are native Rust ingress
@@ -52,49 +57,6 @@ impl ImplementationKind {
 impl fmt::Display for ImplementationKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-/// Immutable provider package identity pinned in a deployment lock.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ProviderReference {
-    /// Namespaced provider identifier (e.g. `"orion.http"`, `"orion.postgresql"`).
-    pub provider_id: String,
-    /// Exact semantic version string.
-    pub version: String,
-    /// Canonical package digest (`sha256:<64 lowercase hex>`).
-    pub package_digest: String,
-}
-
-/// Pinned connection reference within a compiled runtime generation.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ConnectionReference {
-    /// Stable logical connection identifier.
-    pub connection_id: String,
-    /// Positive immutable revision number.
-    pub revision: u64,
-    /// Pinned provider package artifact.
-    pub provider: ProviderReference,
-}
-
-/// Effective identity used to partition stateful sessions and connection pools (`V2-05.4`, `CTX-08`).
-///
-/// Two invocations share a session pool entry only when their provider artifact,
-/// connection ID, connection revision, and resolved credential hash all match.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EffectiveConnectionIdentity {
-    pub provider_digest: String,
-    pub connection_id: String,
-    pub revision: u64,
-    /// SHA-256 digest of resolved secret material (never the raw secret).
-    pub secret_hash: String,
-}
-
-impl EffectiveConnectionIdentity {
-    /// Stable capacity key shared across revisions of the same logical connection
-    /// so rotating credentials or updating config does not multiply max pool ceilings (`CTX-08`).
-    pub fn stable_capacity_key(&self) -> (&str, &str) {
-        (&self.provider_digest, &self.connection_id)
     }
 }
 

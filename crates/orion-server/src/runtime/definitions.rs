@@ -116,7 +116,7 @@ pub fn plugin_row(
             plugin_id: plugin_id.to_string(),
             version: version(revision),
             status: EntityStatus::Active.as_str().to_string(),
-            digest: crate::crypto::sha256_digest(&bytes),
+            digest: crate::crypto::sha256_digest(&bytes).into_string(),
             manifest_json: serde_json::to_string(&definition.manifest)?,
             tags_json: serde_json::to_string(&definition.tags)?,
             signature: definition.signature.clone(),

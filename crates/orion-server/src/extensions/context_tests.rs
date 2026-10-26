@@ -1,21 +1,20 @@
 use super::*;
-use crate::extensions::contract::ProviderReference;
 use std::time::Duration;
 
 fn sample_connection() -> (ConnectionReference, EffectiveConnectionIdentity) {
-    let provider = ProviderReference {
-        provider_id: "orion.http".to_string(),
+    let provider = crate::extensions::ProviderRef {
+        publisher: "org.orion".to_string(),
+        provider_id: "org.orion.http".into(),
         version: "1.0.0".to_string(),
-        package_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-            .to_string(),
+        digest: crate::crypto::sha256_digest(b"org.orion.http"),
     };
     let conn = ConnectionReference {
-        connection_id: "conn-primary".to_string(),
-        revision: 1,
+        connection_id: "conn-primary".into(),
+        revision: crate::extensions::Revision::FIRST,
         provider,
     };
     let id = EffectiveConnectionIdentity {
-        provider_digest: conn.provider.package_digest.clone(),
+        provider_digest: conn.provider.digest.clone(),
         connection_id: conn.connection_id.clone(),
         revision: conn.revision,
         secret_hash: "sha256:aaaa".to_string(),
@@ -27,7 +26,7 @@ fn sample_authority() -> AuthorityGrant {
     let (conn, _) = sample_connection();
     let mut ops = BTreeMap::new();
     ops.insert(
-        conn.connection_id.clone(),
+        conn.connection_id.to_string(),
         BTreeSet::from(["get".to_string(), "post".to_string()]),
     );
     let mut deps = BTreeMap::new();

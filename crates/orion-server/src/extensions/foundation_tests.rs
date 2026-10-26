@@ -1,8 +1,6 @@
 use super::*;
 use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-use crate::extensions::contract::{
-    ConnectionReference, ConnectorError, ConnectorOutput, ProviderReference,
-};
+use crate::extensions::contract::{ConnectionReference, ConnectorError, ConnectorOutput};
 use std::collections::BTreeSet;
 
 fn make_invocation(
@@ -11,19 +9,23 @@ fn make_invocation(
     revision: u64,
     op: &str,
 ) -> crate::extensions::context::Invocation {
-    let provider = ProviderReference {
-        provider_id: driver_id.to_string(),
+    let provider = crate::extensions::ProviderRef {
+        publisher: "test".to_string(),
+        provider_id: driver_id.into(),
         version: "2.0.0".to_string(),
-        package_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            .to_string(),
+        digest: crate::extensions::Digest::parse(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap(),
     };
+    let revision = crate::extensions::Revision::new(revision).expect("a revision");
     let conn = ConnectionReference {
-        connection_id: conn_id.to_string(),
+        connection_id: conn_id.into(),
         revision,
         provider,
     };
     let eff_id = EffectiveConnectionIdentity {
-        provider_digest: conn.provider.package_digest.clone(),
+        provider_digest: conn.provider.digest.clone(),
         connection_id: conn.connection_id.clone(),
         revision,
         secret_hash: "sha256:1234".to_string(),
@@ -125,7 +127,7 @@ fn a_builtin_driver_has_one_stable_digest() {
         assert_eq!(builtin_driver(&digest), Some(*driver));
         assert_eq!(builtin_provider_digest(driver), Some(digest));
     }
-    let distinct: BTreeSet<String> = COMMUNITY_RUST_DRIVERS
+    let distinct: BTreeSet<crate::extensions::Digest> = COMMUNITY_RUST_DRIVERS
         .iter()
         .filter_map(|d| builtin_provider_digest(d))
         .collect();
@@ -541,21 +543,21 @@ async fn sqlite_invoke_persists_in_memory_and_memory_cache_bounds_partitions_and
     // TD-29: PartitionedMemoryCache bounds total partitions, drops empty partitions, and honors ttl_ms.
     let cache = PartitionedMemoryCache::with_limits(4, 2, 128);
     let id1 = EffectiveConnectionIdentity {
-        provider_digest: "sha256:1".to_string(),
-        connection_id: "c1".to_string(),
-        revision: 1,
+        provider_digest: crate::crypto::sha256_digest(b"1"),
+        connection_id: "c1".into(),
+        revision: crate::extensions::Revision::FIRST,
         secret_hash: "s1".to_string(),
     };
     let id2 = EffectiveConnectionIdentity {
-        provider_digest: "sha256:1".to_string(),
-        connection_id: "c2".to_string(),
-        revision: 1,
+        provider_digest: crate::crypto::sha256_digest(b"1"),
+        connection_id: "c2".into(),
+        revision: crate::extensions::Revision::FIRST,
         secret_hash: "s1".to_string(),
     };
     let id3 = EffectiveConnectionIdentity {
-        provider_digest: "sha256:1".to_string(),
-        connection_id: "c3".to_string(),
-        revision: 1,
+        provider_digest: crate::crypto::sha256_digest(b"1"),
+        connection_id: "c3".into(),
+        revision: crate::extensions::Revision::FIRST,
         secret_hash: "s1".to_string(),
     };
 
@@ -714,7 +716,9 @@ async fn locators_are_placed_at_their_paths() {
         ],
     )
     .await;
-    let row = store.get_connection("c", 1).expect("stored");
+    let row = store
+        .get_connection("c", crate::extensions::Revision::FIRST)
+        .expect("stored");
     assert_eq!(
         row.config_with_locators(),
         json!({

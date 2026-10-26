@@ -654,7 +654,7 @@ impl RunContext {
         let Some(allowed_ops) = self
             .authority
             .allowed_operations
-            .get(&connection.connection_id)
+            .get(connection.connection_id.as_str())
         else {
             return Err(ConnectorError::forbidden(
                 codes::CONNECTION_FORBIDDEN,
@@ -850,7 +850,7 @@ impl Invocation {
         }
 
         let mut child_ops = BTreeMap::new();
-        child_ops.insert(conn_ref.connection_id.clone(), allowed_ops);
+        child_ops.insert(conn_ref.connection_id.to_string(), allowed_ops);
         let child_authority = AuthorityGrant {
             allowed_operations: child_ops,
             declared_dependencies: BTreeMap::new(),

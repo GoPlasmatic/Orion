@@ -2,10 +2,11 @@
 //!
 //! Connector implementations implement [`ProviderBackend`] and register into
 //! [`ProviderRegistry`]:
-//! - **Direct Rust (`ImplementationKind::Rust`)**: Native Rust drivers (`orion.http`,
-//!   `orion.postgresql`, `orion.sqlite`, `orion.memory-cache` in Community;
-//!   `orion.mysql`, `orion.mongodb`, `orion.redis`, `orion.elasticsearch`,
-//!   `orion.kafka`, `orion.smtp`, `orion.s3` in Enterprise).
+//! - **Direct Rust (`ImplementationKind::Rust`)**: Native Rust drivers,
+//!   registered by driver id: `org.orion.http`, `org.orion.postgresql`,
+//!   `org.orion.mysql`, `org.orion.sqlite` and `org.orion.memory-cache` in
+//!   Community ([`super::foundation::COMMUNITY_RUST_DRIVERS`]); an edition
+//!   composes more (`org.orion.mongodb`, `org.orion.redis`, …).
 //! - **Workflow (`ImplementationKind::Workflow`)**: an uploaded package whose
 //!   operations are dataflow workflows, one per operation, run hermetically
 //!   ([`crate::extensions::workflow_provider`]) and registered by digest once
@@ -97,8 +98,9 @@ pub trait ProviderBackend: Send + Sync {
     /// Implementation kind (`Rust`, `Workflow`, or `Wasm`).
     fn kind(&self) -> ImplementationKind;
 
-    /// Driver or adapter identifier (e.g. `"orion.http"`, `"orion.postgresql"`,
-    /// `"orion.workflow-host"`).
+    /// The id the backend registers under: a `rust` backend's driver id (its
+    /// [`ProviderId`](super::identity::ProviderId), e.g. `"org.orion.http"`),
+    /// or a `workflow`/`wasm` backend's package digest.
     fn driver_id(&self) -> &str;
 
     /// Validate resolved connection configuration against provider-specific invariants.
@@ -416,7 +418,7 @@ impl ProviderRegistry {
 mod tests {
     use super::*;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::{ConnectionReference, ProviderReference};
+    use crate::extensions::contract::{ConnectionReference, ProviderRef};
     use serde_json::json;
     use std::time::{Duration, Instant};
 
@@ -464,22 +466,21 @@ mod tests {
                 .expect("composes");
         let registry = comp.providers();
 
-        let provider = ProviderReference {
-            provider_id: "acme.custom-db".to_string(),
+        let provider = ProviderRef {
+            publisher: "acme".to_string(),
+            provider_id: "acme.custom-db".into(),
             version: "1.0.0".to_string(),
-            package_digest:
-                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                    .to_string(),
+            digest: crate::crypto::sha256_digest(b"acme.custom-db"),
         };
         let conn = ConnectionReference {
-            connection_id: "acme-primary".to_string(),
-            revision: 1,
+            connection_id: "acme-primary".into(),
+            revision: crate::extensions::Revision::FIRST,
             provider,
         };
         let eff_id = EffectiveConnectionIdentity {
-            provider_digest: conn.provider.package_digest.clone(),
+            provider_digest: conn.provider.digest.clone(),
             connection_id: conn.connection_id.clone(),
-            revision: 1,
+            revision: crate::extensions::Revision::FIRST,
             secret_hash: "sha256:bbbb".to_string(),
         };
 

@@ -17,8 +17,8 @@ use super::deployment_err_response;
 use crate::errors::{FieldError, OrionError};
 use crate::extensions::deployment_store::{ConnectionRevisionRow, PackageSchema};
 use crate::extensions::{
-    AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionReference, EffectiveConnectionIdentity,
-    ImplementationKind, ProviderReference,
+    AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionId, ConnectionReference, Digest,
+    EffectiveConnectionIdentity, ImplementationKind, ProviderRef, Revision,
 };
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::state::AppState;
@@ -26,9 +26,9 @@ use orion_api::error::field_codes;
 
 fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionResponse {
     ConnectionRevisionResponse {
-        connection_id: row.connection_id.clone(),
-        revision: row.revision,
-        provider_digest: row.provider_digest.clone(),
+        connection_id: row.connection_id.to_string(),
+        revision: row.revision.get(),
+        provider_digest: row.provider_digest.to_string(),
         provider_ref: json!({
             "package_digest": row.provider_digest,
         }),
@@ -36,8 +36,8 @@ fn connection_row_to_dto(row: &ConnectionRevisionRow) -> ConnectionRevisionRespo
         public_config: row.public_config.clone(),
         secret_locators: row.secret_locators.clone(),
         bindings: row.bindings.clone(),
-        config_fingerprint: row.configuration_digest.clone(),
-        configuration_digest: row.configuration_digest.clone(),
+        config_fingerprint: row.configuration_digest.to_string(),
+        configuration_digest: row.configuration_digest.to_string(),
     }
 }
 
@@ -264,8 +264,8 @@ pub(crate) async fn probe_connection(
         {
             let outcome = probe_builtin(&state, conn_row, driver).await;
             return probe_response(
-                conn_row.connection_id.clone(),
-                conn_row.revision,
+                conn_row.connection_id.to_string(),
+                conn_row.revision.get(),
                 driver.to_string(),
                 started,
                 outcome,
@@ -352,7 +352,7 @@ pub(crate) async fn probe_connection(
     {
         let resp = ConnectionProbeResponse {
             connection_id,
-            revision: conn_row.revision,
+            revision: conn_row.revision.get(),
             driver_id,
             healthy: false,
             status: "unhealthy".to_string(),
@@ -368,14 +368,14 @@ pub(crate) async fn probe_connection(
     let resolved_revision = stored_conn
         .as_ref()
         .map(|c| c.revision)
-        .or(req.revision)
-        .unwrap_or(1);
+        .or(req.revision.and_then(Revision::new))
+        .unwrap_or(Revision::FIRST);
+    // A probe of a driver with no stored connection runs under a null
+    // provider identity: there is no package to name.
     let resolved_digest = stored_conn
         .as_ref()
         .map(|c| c.provider_digest.clone())
-        .unwrap_or_else(|| {
-            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string()
-        });
+        .unwrap_or_else(|| Digest::from_sha256([0; 32]));
     let resolved_version = stored_pkg
         .as_ref()
         .map(|p| p.version.clone())
@@ -406,17 +406,21 @@ pub(crate) async fn probe_connection(
     );
     let run_ctx = admitted.context();
     let conn_ref = ConnectionReference {
-        connection_id: connection_id.clone(),
+        connection_id: ConnectionId::from(&connection_id),
         revision: resolved_revision,
-        provider: ProviderReference {
-            provider_id: driver_id.clone(),
+        provider: ProviderRef {
+            publisher: stored_pkg
+                .as_ref()
+                .map(|p| p.publisher.clone())
+                .unwrap_or_default(),
+            provider_id: driver_id.as_str().into(),
             version: resolved_version,
-            package_digest: resolved_digest.clone(),
+            digest: resolved_digest.clone(),
         },
     };
     let eff = EffectiveConnectionIdentity {
         provider_digest: resolved_digest,
-        connection_id: connection_id.clone(),
+        connection_id: ConnectionId::from(&connection_id),
         revision: resolved_revision,
         secret_hash: "sha256:probe".to_string(),
     };
@@ -443,7 +447,7 @@ pub(crate) async fn probe_connection(
         Ok(()) => {
             let resp = ConnectionProbeResponse {
                 connection_id,
-                revision: resolved_revision,
+                revision: resolved_revision.get(),
                 driver_id,
                 healthy: true,
                 status: "healthy".to_string(),
@@ -458,7 +462,7 @@ pub(crate) async fn probe_connection(
         Err(err) => {
             let resp = ConnectionProbeResponse {
                 connection_id,
-                revision: resolved_revision,
+                revision: resolved_revision.get(),
                 driver_id,
                 healthy: false,
                 status: "unhealthy".to_string(),
@@ -497,29 +501,13 @@ fn probe_dependencies(
         else {
             continue;
         };
-        let provider = match crate::extensions::foundation::builtin_driver(&row.provider_digest) {
-            Some(driver) => ProviderReference {
-                provider_id: driver.to_string(),
-                version: crate::version::ORION_VERSION.to_string(),
-                package_digest: row.provider_digest.clone(),
-            },
-            None => match store.get_package(&row.provider_digest) {
-                Some(pkg) => ProviderReference {
-                    provider_id: pkg.provider_id.clone(),
-                    version: pkg.version.clone(),
-                    package_digest: pkg.package_digest.clone(),
-                },
-                None => continue,
-            },
+        let Some(provider) = store.provider_ref(&row.provider_digest) else {
+            continue;
         };
         out.insert(
             dependency_key(&conn.connection_id, alias),
             (
-                ConnectionReference {
-                    connection_id: target.clone(),
-                    revision: row.revision,
-                    provider,
-                },
+                row.reference(provider),
                 dependencies
                     .get(alias)
                     .map(|d| d.operations.clone())

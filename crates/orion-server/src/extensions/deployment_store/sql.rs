@@ -14,6 +14,7 @@ use super::{
     ArtifactState, ConnectionRevisionRow, DeploymentError, DeploymentErrorKind, DeploymentReceipt,
     DeploymentRevisionRow, ProviderAdmissionRow, ProviderPackageRow,
 };
+use crate::extensions::identity::{Digest, Revision};
 use crate::storage::schema::{
     ArtifactObjects, ConnectionRevisions, DeploymentHead, DeploymentMembers, DeploymentOperations,
     DeploymentRevisions, ProviderAdmissions, ProviderPackages,
@@ -169,9 +170,9 @@ impl PackageRecord {
         let distribution_json = distribution
             .unwrap_or_else(|| serde_json::json!({"publisher": self.publisher, "tier": self.tier}));
         Ok(ProviderPackageRow {
-            package_digest: self.digest,
+            package_digest: stored_digest(self.digest, "package")?,
             publisher: self.publisher,
-            provider_id: self.provider_id,
+            provider_id: self.provider_id.into(),
             version: self.version,
             implementation,
             manifest_json,
@@ -189,15 +190,24 @@ pub(super) struct AdmissionRecord {
     pub revoked: bool,
 }
 
-impl From<AdmissionRecord> for ProviderAdmissionRow {
-    fn from(r: AdmissionRecord) -> Self {
-        Self {
-            package_digest: r.package_digest,
+impl TryFrom<AdmissionRecord> for ProviderAdmissionRow {
+    type Error = DeploymentError;
+
+    fn try_from(r: AdmissionRecord) -> Result<Self, DeploymentError> {
+        Ok(Self {
+            package_digest: stored_digest(r.package_digest, "admission")?,
             admission_fingerprint: r.admission_fingerprint,
             policy_id: r.policy_id,
             revoked: r.revoked,
-        }
+        })
     }
+}
+
+/// A digest column read back: written from a checked [`Digest`], so one
+/// that no longer parses is corruption.
+fn stored_digest(text: String, what: &str) -> Result<Digest, DeploymentError> {
+    Digest::try_from(text)
+        .map_err(|e| DeploymentError::corrupt(format!("corrupt {what} digest: {e}")))
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -215,7 +225,7 @@ impl ConnectionRecord {
     /// the row holds.
     pub fn into_row(self) -> Result<ConnectionRevisionRow, DeploymentError> {
         let id = &self.connection_id;
-        let revision = Ord::max(to_u64(self.revision), 1);
+        let revision = stored_revision(self.revision);
         let public_config = serde_json::from_str(&self.public_config_json).map_err(|e| {
             DeploymentError::corrupt(format!(
                 "corrupt public_config_json for connection '{id}' revision {revision}: {e}"
@@ -234,9 +244,12 @@ impl ConnectionRecord {
             &bindings,
         ));
         Ok(ConnectionRevisionRow {
-            connection_id: self.connection_id,
+            provider_digest: stored_digest(
+                self.provider_digest,
+                &format!("connection '{id}' revision {revision} provider"),
+            )?,
+            connection_id: self.connection_id.into(),
             revision,
-            provider_digest: self.provider_digest,
             public_config,
             secret_locators,
             bindings,
@@ -313,6 +326,12 @@ fn state_column(state: ArtifactState) -> &'static str {
         ArtifactState::Draining => "draining",
         ArtifactState::Deleted => "deleted",
     }
+}
+
+/// A connection revision column read back. Revisions are written from a
+/// [`Revision`], so a stored value below 1 is read as the first.
+fn stored_revision(v: i64) -> Revision {
+    Revision::new(to_u64(v)).unwrap_or(Revision::FIRST)
 }
 
 pub(super) fn to_u64(v: i64) -> u64 {
@@ -712,7 +731,7 @@ pub(super) async fn insert_revision(
                 to_i64(row.revision).into(),
                 m.entity.kind.as_str().into(),
                 m.entity.id.clone().into(),
-                to_i64(m.entity.revision).into(),
+                to_i64(m.entity.revision.get()).into(),
                 m.owning_package.clone().unwrap_or_default().into(),
                 m.definition_digest.clone().into(),
             ]);
@@ -957,9 +976,9 @@ pub(super) async fn insert_package(
             ProviderPackages::InventoryJson,
         ])
         .values_panic([
-            pkg.package_digest.clone().into(),
+            pkg.package_digest.as_str().into(),
             pkg.publisher.clone().into(),
-            pkg.provider_id.clone().into(),
+            pkg.provider_id.as_str().into(),
             pkg.version.clone().into(),
             pkg.implementation.as_str().into(),
             tier.into(),
@@ -1021,7 +1040,7 @@ pub(super) async fn upsert_admission(
                 ProviderAdmissions::Revoked,
             ])
             .values_panic([
-                adm.package_digest.clone().into(),
+                adm.package_digest.as_str().into(),
                 adm.policy_id.clone().into(),
                 adm.admission_fingerprint.clone().into(),
                 adm.revoked.into(),
@@ -1120,7 +1139,7 @@ pub(super) async fn connection_keys(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, r)| (id, Ord::max(to_u64(r), 1)))
+        .map(|(id, r)| (id, stored_revision(r).get()))
         .collect())
 }
 
@@ -1143,9 +1162,9 @@ pub(super) async fn insert_connection(
             ConnectionRevisions::BindingsJson,
         ])
         .values_panic([
-            row.connection_id.clone().into(),
-            to_i64(row.revision).into(),
-            row.provider_digest.clone().into(),
+            row.connection_id.as_str().into(),
+            to_i64(row.revision.get()).into(),
+            row.provider_digest.as_str().into(),
             public_config.into(),
             super::locators_column(&row.secret_locators).into(),
             super::bindings_column(&row.bindings).into(),

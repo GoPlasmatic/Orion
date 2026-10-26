@@ -158,14 +158,14 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                 entity: EntityRef {
                     kind: EntityKind::Channel,
                     id: "orders-ch".to_string(),
-                    revision: 1,
+                    revision: orion::extensions::Revision::FIRST,
                 },
                 definition_digest: ch_v1.clone(),
                 owning_package: None,
                 requires: vec![EntityRef {
                     kind: EntityKind::Workflow,
                     id: "orders-wf".to_string(),
-                    revision: 1,
+                    revision: orion::extensions::Revision::FIRST,
                 }],
                 rollouts: Vec::new(),
             },
@@ -173,7 +173,7 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                 entity: EntityRef {
                     kind: EntityKind::Workflow,
                     id: "orders-wf".to_string(),
-                    revision: 1,
+                    revision: orion::extensions::Revision::FIRST,
                 },
                 definition_digest: wf_v1.clone(),
                 owning_package: None,
@@ -184,9 +184,9 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
                 entity: EntityRef {
                     kind: EntityKind::Connection,
                     id: "crm-http".to_string(),
-                    revision: 1,
+                    revision: orion::extensions::Revision::FIRST,
                 },
-                definition_digest: conn.configuration_digest.clone(),
+                definition_digest: conn.configuration_digest.to_string(),
                 owning_package: None,
                 requires: Vec::new(),
                 rollouts: Vec::new(),
@@ -239,7 +239,10 @@ async fn two_replicas_converge_on_apply_rollback_and_revocation() {
         "Claim 4: replica B must automatically learn and serve orders-ch@1"
     );
     assert!(
-        state_b.deployments.get_connection("crm-http", 1).is_some(),
+        state_b
+            .deployments
+            .get_connection("crm-http", orion::extensions::Revision::FIRST)
+            .is_some(),
         "Claim 4: replica B must automatically learn connection crm-http@1"
     );
 
@@ -400,7 +403,7 @@ async fn a_node_does_not_boot_on_a_head_it_cannot_build() {
             entity: EntityRef {
                 kind: EntityKind::Workflow,
                 id: "ghost-wf".to_string(),
-                revision: 1,
+                revision: orion::extensions::Revision::FIRST,
             },
             definition_digest: ghost,
             owning_package: None,

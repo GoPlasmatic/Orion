@@ -30,6 +30,9 @@ pub use manifest::{
 };
 
 use super::contract::ImplementationKind;
+use super::identity::{
+    ConnectionId, ConnectionReference, Digest, EffectiveConnectionIdentity, ProviderId, Revision,
+};
 use super::package_identity::{canonical_bytes, sha256_digest};
 use super::schema_profile::{CompiledSchemaBundle, SchemaProfileFinding};
 use error::DeploymentErrorKind as Kind;
@@ -153,10 +156,10 @@ fn extract_inventory_file_digests(inventory_json: &Value) -> Vec<String> {
                 .or_else(|| entry.get("sha256"))
                 .and_then(Value::as_str)
             {
-                if d.starts_with("sha256:") {
+                if d.starts_with(Digest::PREFIX) {
                     out.push(d.to_string());
                 } else {
-                    out.push(format!("sha256:{d}"));
+                    out.push(format!("{}{d}", Digest::PREFIX));
                 }
             }
         }
@@ -181,11 +184,13 @@ pub struct ArtifactObjectRow {
     pub bytes: Option<Vec<u8>>,
 }
 
+/// A stored provider package. Its identity is a [`ProviderRef`]
+/// ([`Self::provider_ref`]); the row adds what the upload carried.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderPackageRow {
-    pub package_digest: String,
+    pub package_digest: Digest,
     pub publisher: String,
-    pub provider_id: String,
+    pub provider_id: ProviderId,
     pub version: String,
     pub implementation: ImplementationKind,
     pub manifest_json: Value,
@@ -205,11 +210,21 @@ impl ProviderPackageRow {
             ImplementationKind::Workflow | ImplementationKind::Wasm => &self.package_digest,
         }
     }
+
+    /// The package's identity, as a manifest pins it.
+    pub fn provider_ref(&self) -> ProviderRef {
+        ProviderRef {
+            publisher: self.publisher.clone(),
+            provider_id: self.provider_id.clone(),
+            version: self.version.clone(),
+            digest: self.package_digest.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAdmissionRow {
-    pub package_digest: String,
+    pub package_digest: Digest,
     pub admission_fingerprint: String,
     pub policy_id: String,
     pub revoked: bool,
@@ -217,9 +232,9 @@ pub struct ProviderAdmissionRow {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionRevisionRow {
-    pub connection_id: String,
-    pub revision: u64,
-    pub provider_digest: String,
+    pub connection_id: ConnectionId,
+    pub revision: Revision,
+    pub provider_digest: Digest,
     pub public_config: Value,
     /// Where each credential comes from: a config path (`connection_string`,
     /// `auth.token`, `auth.client_secret`) to a secret reference (`env://`,
@@ -232,10 +247,47 @@ pub struct ConnectionRevisionRow {
     /// connection, so a build deploys them together. Empty otherwise.
     #[serde(default)]
     pub bindings: std::collections::BTreeMap<String, String>,
-    pub configuration_digest: String,
+    pub configuration_digest: Digest,
 }
 
 impl ConnectionRevisionRow {
+    /// The `(connection_id, revision)` key a revision is stored and cached
+    /// under.
+    pub fn key(&self) -> (String, u64) {
+        (self.connection_id.to_string(), self.revision.get())
+    }
+
+    /// This revision, running on `provider` (the reference
+    /// [`ImmutableDeploymentStore::provider_ref`] resolves its
+    /// `provider_digest` to).
+    pub fn reference(&self, provider: ProviderRef) -> ConnectionReference {
+        ConnectionReference {
+            connection_id: self.connection_id.clone(),
+            revision: self.revision,
+            provider,
+        }
+    }
+
+    /// The identity a call over this revision runs under: its provider, the
+    /// connection and revision, and a hash of where its secrets come from —
+    /// never of a secret, and a revision reading another vault path is
+    /// another identity.
+    pub fn effective_identity(&self) -> EffectiveConnectionIdentity {
+        EffectiveConnectionIdentity {
+            provider_digest: self.provider_digest.clone(),
+            connection_id: self.connection_id.clone(),
+            revision: self.revision,
+            secret_hash: if self.secret_locators.is_empty() {
+                String::new()
+            } else {
+                sha256_digest(
+                    crate::canonical::canonical_json(&json!(self.secret_locators)).as_bytes(),
+                )
+                .into_string()
+            },
+        }
+    }
+
     /// The connection's configuration as a provider reads it: `public_config`
     /// with every secret reference placed at its path. The references are
     /// resolved where they are used, never stored resolved.
@@ -459,7 +511,7 @@ impl CandidatePlan {
         });
         let bytes = canonical_bytes(&doc)
             .map_err(|e| DeploymentError::new(Kind::RequestHashInvalid, e.code))?;
-        Ok(sha256_digest(&bytes))
+        Ok(sha256_digest(&bytes).into_string())
     }
 }
 
@@ -587,12 +639,20 @@ impl ImmutableDeploymentStore {
     pub fn get_connection(
         &self,
         connection_id: &str,
-        revision: u64,
+        revision: Revision,
     ) -> Option<Arc<ConnectionRevisionRow>> {
         self.read()
             .connections
-            .get(&(connection_id.to_string(), revision))
+            .get(&(connection_id.to_string(), revision.get()))
             .cloned()
+    }
+
+    /// The pinned identity of the provider `digest` names: a built-in
+    /// driver's synthetic one, or the stored package's. `None` when it is
+    /// neither.
+    pub fn provider_ref(&self, digest: &Digest) -> Option<ProviderRef> {
+        super::foundation::builtin_provider_ref(digest)
+            .or_else(|| self.get_package(digest).map(|pkg| pkg.provider_ref()))
     }
 
     /// Resolve the active connection revision for `connection_id`: when a
@@ -611,7 +671,7 @@ impl ImmutableDeploymentStore {
         {
             return c
                 .connections
-                .get(&(connection_id.to_string(), member.entity.revision))
+                .get(&(connection_id.to_string(), member.entity.revision.get()))
                 .cloned();
         }
         c.connections

@@ -1079,7 +1079,7 @@ mod tests {
     use crate::extensions::CompositionRoot;
     use crate::extensions::context::AttemptContext;
     use crate::extensions::context::{AdmittedRun, AuthorityGrant, BudgetLimits};
-    use crate::extensions::contract::{ConnectorOutput, ProviderReference};
+    use crate::extensions::contract::{ConnectorOutput, Digest, ProviderRef};
     use crate::extensions::provider_backend::{ProviderBackend, SourceConnectorFacet};
     use serde_json::json;
     use std::collections::BTreeSet;
@@ -1375,22 +1375,21 @@ mod tests {
         let runner =
             SourceChannelRunner::new(root.providers().clone(), SourceRunnerLimits::default());
 
-        let provider = ProviderReference {
-            provider_id: TEST_SOURCE.to_string(),
+        let provider = ProviderRef {
+            publisher: "test".to_string(),
+            provider_id: TEST_SOURCE.into(),
             version: "2.0.0".to_string(),
-            package_digest:
-                "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
-                    .to_string(),
+            digest: Digest::parse(&format!("sha256:{}", "ef".repeat(32))).unwrap(),
         };
         let conn = ConnectionReference {
-            connection_id: "pg-outbox".to_string(),
-            revision: 1,
+            connection_id: "pg-outbox".into(),
+            revision: crate::extensions::Revision::FIRST,
             provider,
         };
         let eff_id = EffectiveConnectionIdentity {
-            provider_digest: conn.provider.package_digest.clone(),
-            connection_id: "pg-outbox".to_string(),
-            revision: 1,
+            provider_digest: conn.provider.digest.clone(),
+            connection_id: "pg-outbox".into(),
+            revision: crate::extensions::Revision::FIRST,
             secret_hash: "sha256:5555".to_string(),
         };
 

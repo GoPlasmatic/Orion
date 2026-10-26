@@ -29,7 +29,9 @@ async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 }
 
 fn builtin(driver: &str) -> String {
-    orion::extensions::foundation::builtin_provider_digest(driver).expect("a built-in driver")
+    orion::extensions::foundation::builtin_provider_digest(driver)
+        .expect("a built-in driver")
+        .into_string()
 }
 
 async fn create(

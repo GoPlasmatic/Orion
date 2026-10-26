@@ -12,12 +12,13 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
-use super::contract::{ConnectorError, EffectStatus, ImplementationKind, ProviderReference, codes};
+use super::contract::{ConnectorError, EffectStatus, ImplementationKind, codes};
+use super::identity::{ConnectionId, Digest, ProviderId, ProviderRef};
 
 /// Package admission request checked at install/deployment time (`V2-11.1`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageAdmissionRequest {
-    pub provider: ProviderReference,
+    pub provider: ProviderRef,
     pub implementation: ImplementationKind,
     /// Driver identifier for `rust` providers, entry workflow for `workflow`, or component path for `wasm`.
     pub target_id: String,
@@ -56,7 +57,7 @@ impl EditionTier {
 /// Successful admission verdict returned by [`PackageVerifier::verify_package`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdmissionVerdict {
-    pub provider: ProviderReference,
+    pub provider: ProviderRef,
     pub implementation: ImplementationKind,
     pub policy_id: String,
 }
@@ -100,23 +101,14 @@ pub trait PackageVerifier: Send + Sync {
 
 /// Community Edition package verifier (`V2-11.1`).
 ///
-/// - Verifies canonical `sha256:<64 hex>` package digests and non-empty targets.
+/// - Verifies a non-empty provider id and target (the digest is a checked
+///   [`Digest`] by type).
 /// - Rejects packages explicitly marked `tier: "enterprise"`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CommunityPackageVerifier;
 
 impl CommunityPackageVerifier {
     pub const POLICY_ID: &'static str = "orion.community.admission/1";
-}
-
-fn is_valid_sha256_digest(digest: &str) -> bool {
-    let Some(hex) = digest.strip_prefix("sha256:") else {
-        return false;
-    };
-    hex.len() == 64
-        && hex
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 impl PackageVerifier for CommunityPackageVerifier {
@@ -132,15 +124,6 @@ impl PackageVerifier for CommunityPackageVerifier {
             return Err(AdmissionRejection {
                 code: "PACKAGE_INVALID_PROVIDER_ID".to_string(),
                 message: "Provider ID must not be empty".to_string(),
-            });
-        }
-        if !is_valid_sha256_digest(&request.provider.package_digest) {
-            return Err(AdmissionRejection {
-                code: "PACKAGE_INVALID_DIGEST".to_string(),
-                message: format!(
-                    "Package digest '{}' must be canonical sha256:<64 lowercase hex>",
-                    request.provider.package_digest
-                ),
             });
         }
         if request.target_id.trim().is_empty() {
@@ -219,7 +202,7 @@ impl RevocationLedger {
     }
 
     /// Monotonically revoke a package digest. Returns the new watermark.
-    pub fn revoke_digest(&self, digest: &str) -> u64 {
+    pub fn revoke_digest(&self, digest: &Digest) -> u64 {
         self.revoke_into(&self.revoked_digests, digest)
     }
 
@@ -229,12 +212,12 @@ impl RevocationLedger {
     }
 
     /// Monotonically revoke a provider ID. Returns the new watermark.
-    pub fn revoke_provider(&self, provider_id: &str) -> u64 {
+    pub fn revoke_provider(&self, provider_id: &ProviderId) -> u64 {
         self.revoke_into(&self.revoked_providers, provider_id)
     }
 
     /// Monotonically revoke a connection ID. Returns the new watermark.
-    pub fn revoke_connection(&self, connection_id: &str) -> u64 {
+    pub fn revoke_connection(&self, connection_id: &ConnectionId) -> u64 {
         self.revoke_into(&self.revoked_connections, connection_id)
     }
 
@@ -254,8 +237,8 @@ impl RevocationLedger {
     pub fn check_runtime_lease(
         &self,
         _generation_id: u64,
-        provider_id: &str,
-        connection_id: &str,
+        provider_id: &ProviderId,
+        connection_id: &ConnectionId,
         prior_effect: EffectStatus,
     ) -> Result<(), ConnectorError> {
         if !self.lease_valid.load(Ordering::SeqCst) {
@@ -334,15 +317,12 @@ impl Admission {
         request: &PackageAdmissionRequest,
     ) -> Result<AdmissionVerdict, AdmissionRejection> {
         let verdict = self.verifier.verify_package(request)?;
-        if self
-            .ledger
-            .is_digest_revoked(&request.provider.package_digest)
-        {
+        if self.ledger.is_digest_revoked(&request.provider.digest) {
             return Err(AdmissionRejection {
                 code: "PROVIDER_REVOKED".to_string(),
                 message: format!(
                     "Provider package '{}' ({}) has been revoked",
-                    request.provider.provider_id, request.provider.package_digest
+                    request.provider.provider_id, request.provider.digest
                 ),
             });
         }
@@ -353,8 +333,8 @@ impl Admission {
     pub fn check_runtime_lease(
         &self,
         generation_id: u64,
-        provider_id: &str,
-        connection_id: &str,
+        provider_id: &ProviderId,
+        connection_id: &ConnectionId,
         prior_effect: EffectStatus,
     ) -> Result<(), ConnectorError> {
         self.ledger
@@ -379,8 +359,9 @@ mod tests {
         })
         .join();
         assert!(policy.revoked_digests.is_poisoned());
-        policy.revoke_digest("sha256:dead");
-        assert!(policy.is_digest_revoked("sha256:dead"));
+        let dead = crate::crypto::sha256_digest(b"dead");
+        policy.revoke_digest(&dead);
+        assert!(policy.is_digest_revoked(&dead));
     }
 
     #[test]
@@ -399,18 +380,19 @@ mod tests {
     #[test]
     fn ctx_09_revocation_and_lease_expiry_block_live_old_generation() {
         let policy = RevocationLedger::new();
+        let http = ProviderId::from("org.orion.http");
 
         // Generation 41 is live and initially allowed.
         assert!(
             policy
-                .check_runtime_lease(41, "orion.http", "conn-1", EffectStatus::NotStarted)
+                .check_runtime_lease(41, &http, &"conn-1".into(), EffectStatus::NotStarted)
                 .is_ok()
         );
 
         // Revoking a connection blocks generation 41 immediately.
-        policy.revoke_connection("conn-1");
+        policy.revoke_connection(&"conn-1".into());
         let err = policy
-            .check_runtime_lease(41, "orion.http", "conn-1", EffectStatus::Unknown)
+            .check_runtime_lease(41, &http, &"conn-1".into(), EffectStatus::Unknown)
             .expect_err("revoked connection must fail");
         assert_eq!(err.code, codes::CONNECTION_FORBIDDEN);
         assert_eq!(err.effect_status, EffectStatus::Unknown);
@@ -418,7 +400,7 @@ mod tests {
         // Expiring the security lease blocks even unrevoked connections on generation 41.
         policy.set_lease_valid(false);
         let err = policy
-            .check_runtime_lease(41, "orion.http", "conn-2", EffectStatus::NotStarted)
+            .check_runtime_lease(41, &http, &"conn-2".into(), EffectStatus::NotStarted)
             .expect_err("expired lease must block new work");
         assert_eq!(err.code, codes::CONNECTION_FORBIDDEN);
     }

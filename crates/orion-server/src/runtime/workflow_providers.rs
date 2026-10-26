@@ -76,7 +76,7 @@ pub async fn sync(state: &AppState) {
                     .ledger()
                     .is_digest_revoked(&p.package_digest)
         })
-        .map(|p| p.package_digest.clone())
+        .map(|p| p.package_digest.to_string())
         .collect();
     let registered = providers.admitted_ids(ImplementationKind::Workflow);
 
@@ -128,10 +128,16 @@ pub fn upload_problems(
     if manifest["implementation"]["kind"] != "workflow" {
         return Vec::new();
     }
-    let provider = crate::extensions::ProviderReference {
-        provider_id: manifest["id"].as_str().unwrap_or_default().to_string(),
+    // Not stored yet, so the package has no digest of its own: the check is
+    // handed its manifest's, which only labels it.
+    let provider = crate::extensions::ProviderRef {
+        publisher: String::new(),
+        provider_id: manifest["id"].as_str().unwrap_or_default().into(),
         version: manifest["version"].as_str().unwrap_or_default().to_string(),
-        package_digest: String::new(),
+        digest: files
+            .get("connector.json")
+            .map(|bytes| crate::crypto::sha256_digest(bytes))
+            .unwrap_or_else(|| crate::crypto::sha256_digest(b"")),
     };
     let package = match WorkflowPackage::from_files(provider, &manifest, files) {
         Ok(package) => package,

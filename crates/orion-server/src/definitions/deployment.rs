@@ -279,9 +279,9 @@ fn pretty<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, String> {
 fn definition_file(definition: &Definition) -> Result<(String, String, Vec<u8>), String> {
     let bytes =
         crate::runtime::definitions::canonical_bytes(definition).map_err(|e| e.to_string())?;
-    let digest = crate::extensions::package_identity::sha256_digest(&bytes);
-    let hex = digest.trim_start_matches("sha256:");
-    Ok((digest.clone(), format!("definitions/{hex}.json"), bytes))
+    let digest = crate::crypto::sha256_digest(&bytes);
+    let file = format!("definitions/{}.json", digest.hex());
+    Ok((digest.into_string(), file, bytes))
 }
 
 /// The object `doc` is, or an error naming `what` and `origin`.
@@ -312,7 +312,7 @@ fn entity_id(
 
 fn is_member_id(id: &str) -> bool {
     !id.is_empty()
-        && !id.starts_with("sha256:")
+        && !id.starts_with(crate::crypto::Digest::PREFIX)
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
@@ -575,7 +575,8 @@ pub fn connection(doc: &Value, origin: &str) -> Result<(CompiledConnection, Vec<
         }
     }
     let provider_digest = foundation::builtin_provider_digest(driver)
-        .ok_or_else(|| format!("{what}: '{driver}' is not a built-in driver"))?;
+        .ok_or_else(|| format!("{what}: '{driver}' is not a built-in driver"))?
+        .into_string();
 
     let mut secret_locators = BTreeMap::new();
     let mut misplaced = Vec::new();

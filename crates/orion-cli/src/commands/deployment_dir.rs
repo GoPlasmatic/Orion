@@ -94,14 +94,18 @@ impl DeploymentDir {
                 let Some(digest) = member.definition.as_deref() else {
                     bail!("{} '{}' names no definition", member.kind, member.id);
                 };
-                let Some(hex) = digest.strip_prefix("sha256:") else {
+                let Ok(parsed) = orion_api::Digest::parse(digest) else {
                     bail!(
                         "{} '{}' names definition '{digest}', which is not a sha256: digest",
                         member.kind,
                         member.id
                     );
                 };
-                let path = root.join("definitions").join(format!("{hex}.json"));
+                // `hex()` is exactly 64 lowercase hex characters, so the
+                // digest cannot name a path outside `definitions/`.
+                let path = root
+                    .join("definitions")
+                    .join(format!("{}.json", parsed.hex()));
                 if !path.is_file() {
                     bail!(
                         "{} '{}' names definition {digest}, and '{}' is not there",
@@ -464,7 +468,7 @@ pub async fn prepare(
 pub fn default_idempotency_key(base_revision: u64, candidate_digest: &str) -> String {
     format!(
         "deploy-{base_revision}-{}",
-        candidate_digest.trim_start_matches("sha256:")
+        candidate_digest.trim_start_matches(orion_api::Digest::PREFIX)
     )
 }
 

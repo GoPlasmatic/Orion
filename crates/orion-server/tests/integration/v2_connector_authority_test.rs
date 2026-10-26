@@ -41,7 +41,7 @@ fn member(kind: EntityKind, id: &str, digest: String, requires: Vec<EntityRef>) 
         entity: EntityRef {
             kind,
             id: id.to_string(),
-            revision: 1,
+            revision: orion::extensions::Revision::FIRST,
         },
         definition_digest: digest,
         owning_package: None,
@@ -54,7 +54,7 @@ fn entity(kind: EntityKind, id: &str) -> EntityRef {
     EntityRef {
         kind,
         id: id.to_string(),
-        revision: 1,
+        revision: orion::extensions::Revision::FIRST,
     }
 }
 
@@ -148,7 +148,7 @@ async fn a_workflow_calls_only_the_connections_its_member_requires() {
             member(
                 EntityKind::Connection,
                 "local-cache",
-                conn.configuration_digest.clone(),
+                conn.configuration_digest.to_string(),
                 Vec::new(),
             ),
         ],

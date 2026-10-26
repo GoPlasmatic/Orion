@@ -538,7 +538,7 @@ mod tests {
                     entity: EntityRef {
                         kind: EntityKind::Channel,
                         id: "orders".to_string(),
-                        revision: rev,
+                        revision: crate::extensions::Revision::new(rev).expect("a revision"),
                     },
                     definition_digest: store
                         .store_definition_artifact_in_db(&pool, format!("ch-{rev}").into_bytes())
@@ -596,7 +596,7 @@ mod tests {
                     entity: EntityRef {
                         kind: EntityKind::Channel,
                         id: "orders".to_string(),
-                        revision: 2,
+                        revision: crate::extensions::Revision::new(2).unwrap(),
                     },
                     reason: "vault secret timeout".to_string(),
                 }],

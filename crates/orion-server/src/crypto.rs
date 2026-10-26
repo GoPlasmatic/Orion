@@ -22,6 +22,10 @@ use hmac::Mac;
 use hmac::digest::KeyInit;
 use sha2::{Digest as _, Sha256};
 
+/// The checked `sha256:<64 lowercase hex>` digest every function here
+/// produces; [`Digest::parse`] is the one validator of that shape.
+pub use orion_api::Digest;
+
 /// Standard-alphabet decoder that accepts padded and unpadded input.
 /// Encoding always uses the canonical [`base64::engine::general_purpose::STANDARD`]
 /// (padded); this leniency is decode-only.
@@ -146,8 +150,8 @@ pub fn random_bytes(n: usize) -> Vec<u8> {
 /// component, a model file — so a digest a generation, a trace, a package
 /// and a release pipeline name is the same string wherever it appears, and a
 /// signature over it ([`ed25519::verify`]) is over the same message.
-pub fn sha256_digest(bytes: &[u8]) -> String {
-    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+pub fn sha256_digest(bytes: &[u8]) -> Digest {
+    Digest::from_sha256(Sha256::digest(bytes).into())
 }
 
 /// An incremental [`sha256_digest`]: fed the bytes as they arrive, it yields
@@ -172,20 +176,9 @@ impl Sha256Stream {
     }
 
     /// The digest of everything fed so far, spelled as [`sha256_digest`] does.
-    pub fn finish(self) -> String {
-        format!("sha256:{}", hex::encode(self.0.finalize()))
+    pub fn finish(self) -> Digest {
+        Digest::from_sha256(self.0.finalize().into())
     }
-}
-
-/// Whether `s` has the shape [`sha256_digest`] produces: the `sha256:`
-/// prefix and exactly 64 lowercase hex characters.
-pub fn is_sha256_digest(s: &str) -> bool {
-    s.strip_prefix("sha256:").is_some_and(|hex| {
-        hex.len() == 64
-            && hex
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
 }
 
 /// Detached Ed25519 signatures over an artifact digest.
@@ -579,10 +572,8 @@ mod tests {
             digest,
             "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
-        assert!(is_sha256_digest(&digest));
-        assert!(!is_sha256_digest(&digest.to_uppercase()));
-        assert!(!is_sha256_digest("sha256:abc"));
-        assert!(!is_sha256_digest(&digest["sha256:".len()..]));
+        assert_eq!(Digest::parse(&digest), Ok(digest.clone()));
+        assert!(Digest::parse(&digest.to_uppercase()).is_err());
     }
 
     /// Width and freshness, the two properties a nonce is used for. A

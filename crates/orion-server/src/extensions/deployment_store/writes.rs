@@ -50,7 +50,7 @@ async fn closure_facts(
     let packages: Vec<String> = manifest
         .providers
         .iter()
-        .map(|p| p.digest.clone())
+        .map(|p| p.digest.to_string())
         .chain(
             manifest
                 .members
@@ -61,7 +61,7 @@ async fn closure_facts(
         .into_iter()
         .collect();
     for adm in sql::admissions(tx, &packages).await? {
-        let adm = ProviderAdmissionRow::from(adm);
+        let adm = ProviderAdmissionRow::try_from(adm)?;
         facts.admissions.insert(adm.package_digest.clone(), adm);
     }
     for record in sql::packages(tx, &packages).await? {
@@ -76,7 +76,7 @@ async fn closure_facts(
         .members
         .iter()
         .filter(|m| m.entity.kind == EntityKind::Connection)
-        .map(|m| (m.entity.id.clone(), m.entity.revision))
+        .map(|m| (m.entity.id.clone(), m.entity.revision.get()))
         .collect();
     let ids: Vec<String> = named
         .iter()
@@ -86,7 +86,7 @@ async fn closure_facts(
         .collect();
     for record in sql::connections_of(tx, &ids).await? {
         let row = record.into_row()?;
-        let key = (row.connection_id.clone(), row.revision);
+        let key = row.key();
         if named.contains(&key) {
             facts.connections.insert(key, row);
         }
@@ -226,7 +226,7 @@ impl ImmutableDeploymentStore {
         // The digest is over the inventory, which hashes every file, so a
         // package stored under it holds these files; what is compared is
         // what the row records about them.
-        if let Some(existing) = sql::packages(&mut tx, std::slice::from_ref(&row.package_digest))
+        if let Some(existing) = sql::packages(&mut tx, &[row.package_digest.to_string()])
             .await?
             .into_iter()
             .next()
@@ -340,7 +340,7 @@ impl ImmutableDeploymentStore {
         sql::write_head(&mut tx, observed, next).await?;
         commit(tx).await?;
 
-        let mut revoked = ProviderAdmissionRow::from(admission);
+        let mut revoked = ProviderAdmissionRow::try_from(admission)?;
         revoked.revoked = true;
         self.catalog
             .write()
@@ -359,7 +359,7 @@ impl ImmutableDeploymentStore {
         pool: &DbPool,
         bytes: Vec<u8>,
     ) -> Result<ArtifactObjectRow, DeploymentError> {
-        let digest = sha256_digest(&bytes);
+        let digest = sha256_digest(&bytes).into_string();
         let mut tx = begin_write(pool).await?;
         sql::put_artifact(&mut tx, &digest, &bytes).await?;
         commit(tx).await?;
@@ -797,7 +797,10 @@ impl ImmutableDeploymentStore {
         let configurations = sql::all_connections(&mut tx)
             .await?
             .into_iter()
-            .map(|r| r.into_row().map(|row| row.configuration_digest))
+            .map(|r| {
+                r.into_row()
+                    .map(|row| row.configuration_digest.into_string())
+            })
             .collect::<Result<HashSet<_>, _>>()?;
         let artifacts = sql::live_artifacts(&mut tx)
             .await?

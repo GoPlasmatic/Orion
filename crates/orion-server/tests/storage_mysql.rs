@@ -551,7 +551,7 @@ async fn mysql_provider_call(
 ) -> Result<orion::extensions::ConnectorOutput, orion::extensions::ConnectorError> {
     use orion::extensions::{
         AdmittedRun, AuthorityGrant, BudgetLimits, ConnectionReference, DRIVER_MYSQL,
-        EffectiveConnectionIdentity, ProviderBackend, ProviderReference,
+        EffectiveConnectionIdentity, ProviderBackend, ProviderRef,
         foundation::builtin_provider_digest,
     };
     use std::collections::{BTreeMap, BTreeSet};
@@ -559,18 +559,19 @@ async fn mysql_provider_call(
 
     let digest = builtin_provider_digest(DRIVER_MYSQL).expect("a built-in driver");
     let connection = ConnectionReference {
-        connection_id: "orders-mysql".to_string(),
-        revision: 1,
-        provider: ProviderReference {
-            provider_id: DRIVER_MYSQL.to_string(),
+        connection_id: "orders-mysql".into(),
+        revision: orion::extensions::Revision::FIRST,
+        provider: ProviderRef {
+            publisher: "test".to_string(),
+            provider_id: DRIVER_MYSQL.into(),
             version: "2.0.0".to_string(),
-            package_digest: digest.clone(),
+            digest: digest.clone(),
         },
     };
     let identity = EffectiveConnectionIdentity {
         provider_digest: digest,
-        connection_id: "orders-mysql".to_string(),
-        revision: 1,
+        connection_id: "orders-mysql".into(),
+        revision: orion::extensions::Revision::FIRST,
         secret_hash: "sha256:none".to_string(),
     };
     let run = AdmittedRun::admit(

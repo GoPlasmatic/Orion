@@ -12,6 +12,7 @@
 //!
 //! | Module | Holds |
 //! |---|---|
+//! | [`digest`] | [`Digest`], the checked `sha256:<64 lowercase hex>` content digest |
 //! | [`dto`] | one struct per response body the admin API serves |
 //! | [`enums`] | closed value sets (status, protocol, …) and their string constants |
 //! | [`envelope`] | the `{"data": …}` and paginated envelopes admin 2xx responses carry |
@@ -42,6 +43,7 @@
 //! The `utoipa` feature adds `ToSchema` derives so the server can publish
 //! these exact types in its OpenAPI document; clients leave it off.
 
+pub mod digest;
 pub mod dto;
 pub mod engine;
 pub mod enums;
@@ -49,6 +51,7 @@ pub mod envelope;
 pub mod error;
 pub mod v2;
 
+pub use digest::{Digest, DigestError};
 pub use dto::{
     AuditLogEntryResponse, CronOccurrenceResponse, CronOccurrenceSummaryResponse,
     CronScheduleStatusResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse,

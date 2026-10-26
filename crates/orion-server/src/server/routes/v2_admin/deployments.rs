@@ -84,14 +84,9 @@ pub(crate) async fn create_deployment_plan(
     State(state): State<AppState>,
     Json(req): Json<CreateDeploymentPlanRequest>,
 ) -> impl IntoResponse {
-    let manifest: CanonicalManifest = match serde_json::from_value(req.manifest) {
+    let manifest = match CanonicalManifest::from_json(&req.manifest) {
         Ok(m) => m,
-        Err(e) => {
-            return deployment_err_response(DeploymentError::new(
-                DeploymentErrorKind::InvalidManifestJson,
-                e.to_string(),
-            ));
-        }
+        Err(e) => return deployment_err_response(e),
     };
     let plan = state
         .deployments
@@ -194,14 +189,9 @@ pub(crate) async fn apply_deployment(
     Json(req): Json<ApplyDeploymentRequest>,
 ) -> impl IntoResponse {
     let actor = principal_id(&principal);
-    let manifest: CanonicalManifest = match serde_json::from_value(req.manifest) {
+    let manifest = match CanonicalManifest::from_json(&req.manifest) {
         Ok(m) => m,
-        Err(e) => {
-            return deployment_err_response(DeploymentError::new(
-                DeploymentErrorKind::InvalidManifestJson,
-                e.to_string(),
-            ));
-        }
+        Err(e) => return deployment_err_response(e),
     };
     let plan = match state
         .deployments
