@@ -38,6 +38,9 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     the_shared_store_claims_once_and_counts_every_increment(backend, pool).await;
     a_shared_rate_window_holds_and_spills_at_most_2x(backend, pool).await;
     a_deployment_audit_row_commits_with_the_head(backend, pool).await;
+    concurrent_applies_on_one_base_commit_exactly_once(backend, pool).await;
+    a_package_admission_connection_and_revocation_read_back(backend, pool).await;
+    a_collection_racing_an_apply_never_takes_what_it_deploys(backend, pool).await;
     the_artifact_collector_judges_its_grace_on_the_database_clock(backend, pool).await;
     source_leases_are_won_once_and_judged_on_the_database_clock(backend, pool).await;
     every_update_moves_updated_at(backend, pool).await;
@@ -214,6 +217,314 @@ async fn a_deployment_audit_row_commits_with_the_head(backend: &str, pool: &DbPo
     assert_eq!(rolled.committed_revision, second.committed_revision + 1);
     assert!(recorded.is_some(), "{backend}");
     assert_eq!(rows("v2_deployment_rollback").await, 1, "{backend}");
+}
+
+/// Applies on one base from several nodes at once: exactly one commits and
+/// every other loses the head CAS with `DEPLOYMENT_HEAD_CONFLICT` — never a
+/// storage error, never a second revision on the same base. Then the
+/// winner's request replayed from several nodes at once answers its receipt
+/// every time and commits nothing more.
+async fn concurrent_applies_on_one_base_commit_exactly_once(backend: &str, pool: &DbPool) {
+    use orion::extensions::{Admission, ImmutableDeploymentStore};
+
+    const NODES: usize = 6;
+    let policy = Admission::community();
+    let seed = ImmutableDeploymentStore::new("contract-cc-seed");
+    seed.load_from_db_pool(pool).await.expect("load");
+    let base = seed.current_head().0;
+
+    let mut nodes = Vec::new();
+    for i in 0..NODES {
+        let node = ImmutableDeploymentStore::new(format!("contract-cc-{i}"));
+        let def = node
+            .store_definition_artifact_in_db(pool, format!("contract-cc-wf-{i}").into_bytes())
+            .await
+            .expect("store definition");
+        let plan = node
+            .plan_candidate_in_db(
+                pool,
+                base,
+                one_workflow_manifest("contract-cc", &def.digest),
+            )
+            .await
+            .expect("plan");
+        nodes.push((node, plan));
+    }
+    let results = futures::future::join_all(nodes.iter().enumerate().map(|(i, (node, plan))| {
+        let key = format!("cc-{i}");
+        let policy = &policy;
+        async move {
+            node.apply_candidate_in_db(pool, "contract", &key, plan, "r", policy)
+                .await
+        }
+    }))
+    .await;
+    let winners: Vec<usize> = results
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.is_ok().then_some(i))
+        .collect();
+    assert_eq!(winners.len(), 1, "{backend}: {results:?}");
+    for r in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert_eq!(r.code, "DEPLOYMENT_HEAD_CONFLICT", "{backend}: {r:?}");
+    }
+    let winner = winners[0];
+    let committed = results[winner].clone().expect("the winner's receipt");
+    assert_eq!(committed.committed_revision, base + 1, "{backend}");
+    assert!(committed.created_at.is_some(), "{backend}");
+    let persisted = ImmutableDeploymentStore::persisted_head(pool)
+        .await
+        .expect("head")
+        .expect("a head");
+    assert_eq!(persisted.0, base + 1, "{backend}: one revision on the base");
+
+    // The winner's request, replayed from fresh nodes at once.
+    let (_, plan) = &nodes[winner];
+    let key = format!("cc-{winner}");
+    let replays = futures::future::join_all((0..NODES).map(|i| {
+        let node = ImmutableDeploymentStore::new(format!("contract-cc-replay-{i}"));
+        let (key, policy) = (&key, &policy);
+        async move {
+            node.apply_candidate_in_db(pool, "contract", key, plan, "r", policy)
+                .await
+        }
+    }))
+    .await;
+    for replay in replays {
+        let replay = replay.unwrap_or_else(|e| panic!("{backend}: a replay failed: {e}"));
+        assert_eq!(
+            replay.committed_revision, committed.committed_revision,
+            "{backend}"
+        );
+        assert_eq!(replay.operation_id, committed.operation_id, "{backend}");
+        assert_eq!(replay.created_at, committed.created_at, "{backend}");
+    }
+    assert_eq!(
+        ImmutableDeploymentStore::persisted_head(pool)
+            .await
+            .expect("head"),
+        Some(persisted),
+        "{backend}: a replay commits nothing"
+    );
+}
+
+/// The fixture package's archive entries (`tests/fixtures/v2/package-identity`).
+fn fixture_package() -> Vec<orion::extensions::ArchiveEntryInput> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/v2/package-identity/bundle.json");
+    let bundle: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir).expect("fixture")).expect("json");
+    let pkg = &bundle["providers"][1];
+    let mut entries: Vec<_> = pkg["payloads"]
+        .as_object()
+        .expect("payloads")
+        .iter()
+        .map(|(path, text)| {
+            let bytes = text.as_str().expect("text").as_bytes().to_vec();
+            orion::extensions::ArchiveEntryInput {
+                path: path.clone(),
+                compressed_size: bytes.len(),
+                bytes,
+                is_symlink: false,
+            }
+        })
+        .collect();
+    let inventory = orion::extensions::canonical_bytes(&pkg["inventory"]).expect("inventory");
+    entries.push(orion::extensions::ArchiveEntryInput {
+        path: "inventory.json".to_string(),
+        compressed_size: inventory.len(),
+        bytes: inventory,
+        is_symlink: false,
+    });
+    entries
+}
+
+/// Every statement a package's life writes, on this backend: the upload
+/// (idempotent, and refused for a different digest under the same
+/// identity), the admission, a connection revision with secret locators and
+/// bindings, an apply naming both, and the revocation — each read back by a
+/// fresh node as it was written.
+async fn a_package_admission_connection_and_revocation_read_back(backend: &str, pool: &DbPool) {
+    use orion::extensions::{
+        Admission, CanonicalManifest, EntityKind, EntityRef, ImmutableDeploymentStore,
+        ManifestMember, ProviderRef,
+    };
+
+    let policy = Admission::community();
+    let node = ImmutableDeploymentStore::new("contract-pkg");
+    node.load_from_db_pool(pool).await.expect("load");
+    let pkg = node
+        .ingest_verified_archive_in_db(pool, &fixture_package())
+        .await
+        .expect("ingest");
+    let again = node
+        .ingest_verified_archive_in_db(pool, &fixture_package())
+        .await
+        .expect("an identical upload is idempotent");
+    assert_eq!(again, pkg, "{backend}");
+    node.admit_package_in_db(pool, &pkg.package_digest, &policy, None)
+        .await
+        .expect("admit");
+    let conn = node
+        .store_connection_revision_with_bindings_in_db(
+            pool,
+            "contract-pkg-conn",
+            1,
+            &pkg.package_digest,
+            serde_json::json!({"url": "https://api.example.com", "retries": 2, "tls": true}),
+            [("auth.token".to_string(), "env://CONTRACT_TOKEN".to_string())].into(),
+            [("crm".to_string(), "contract-crm".to_string())].into(),
+        )
+        .await
+        .expect("connection");
+    let def = node
+        .store_definition_artifact_in_db(pool, b"contract-pkg-wf".to_vec())
+        .await
+        .expect("definition");
+    let member = |kind, id: &str, digest: &str| ManifestMember {
+        entity: EntityRef {
+            kind,
+            id: id.to_string(),
+            revision: 1,
+        },
+        definition_digest: digest.to_string(),
+        owning_package: None,
+        requires: Vec::new(),
+        rollouts: Vec::new(),
+    };
+    let manifest = CanonicalManifest {
+        schema_version: 2,
+        providers: vec![ProviderRef {
+            publisher: pkg.publisher.clone(),
+            provider_id: pkg.provider_id.clone(),
+            version: pkg.version.clone(),
+            digest: pkg.package_digest.clone(),
+        }],
+        provider_lock_digest: None,
+        members: vec![
+            member(EntityKind::Workflow, "contract-pkg-wf", &def.digest),
+            member(
+                EntityKind::Connection,
+                "contract-pkg-conn",
+                &conn.configuration_digest,
+            ),
+        ],
+    };
+    let plan = node
+        .plan_candidate_in_db(pool, node.current_head().0, manifest)
+        .await
+        .expect("plan");
+    let receipt = node
+        .apply_candidate_in_db(pool, "contract", "pkg-1", &plan, "r", &policy)
+        .await
+        .expect("apply");
+
+    let fresh = ImmutableDeploymentStore::new("contract-pkg-reader");
+    fresh.load_from_db_pool(pool).await.expect("load");
+    let stored = fresh.get_package(&pkg.package_digest).expect("package");
+    assert_eq!(*stored, pkg, "{backend}: the package reads back whole");
+    assert!(
+        matches!(fresh.package_schemas(&pkg.package_digest), Some(Ok(_))),
+        "{backend}"
+    );
+    assert_eq!(
+        *fresh
+            .get_connection("contract-pkg-conn", 1)
+            .expect("connection"),
+        conn,
+        "{backend}: the connection reads back whole"
+    );
+    let admission = fresh.get_admission(&pkg.package_digest).expect("admission");
+    assert!(!admission.revoked, "{backend}");
+    let revision = fresh
+        .get_revision(receipt.committed_revision)
+        .expect("revision");
+    assert!(
+        revision.created_at.is_some(),
+        "{backend}: the commit time reads back"
+    );
+
+    let before = fresh.current_head();
+    node.revoke_package_in_db(pool, &pkg.package_digest)
+        .await
+        .expect("revoke");
+    fresh.load_from_db_pool(pool).await.expect("load");
+    assert!(
+        fresh
+            .get_admission(&pkg.package_digest)
+            .expect("admission")
+            .revoked,
+        "{backend}"
+    );
+    assert_eq!(
+        fresh.current_head(),
+        (before.0, before.1 + 1),
+        "{backend}: the epoch moved"
+    );
+    let err = node
+        .revoke_package_in_db(
+            pool,
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .await
+        .expect_err("no admission");
+    assert_eq!(err.code, "ADMISSION_NOT_FOUND", "{backend}");
+}
+
+/// A collection pass and an apply racing over an unreferenced definition
+/// outside its grace window: they serialise on the head, so either the apply
+/// commits first and the pass leaves the definition its head now names, or
+/// the pass drains it first and the apply is refused. Never a committed head
+/// naming a draining definition.
+async fn a_collection_racing_an_apply_never_takes_what_it_deploys(backend: &str, pool: &DbPool) {
+    use orion::extensions::{Admission, ArtifactState, ImmutableDeploymentStore};
+
+    let policy = Admission::community();
+    for round in 0..4 {
+        let deployer = ImmutableDeploymentStore::new(format!("contract-race-a-{round}"));
+        let collector = ImmutableDeploymentStore::new(format!("contract-race-b-{round}"));
+        deployer.load_from_db_pool(pool).await.expect("load");
+        let def = deployer
+            .store_definition_artifact_in_db(pool, format!("contract-race-{round}").into_bytes())
+            .await
+            .expect("store");
+        backdate_artifact(pool, &def.digest).await;
+        let plan = deployer
+            .plan_candidate_in_db(
+                pool,
+                deployer.current_head().0,
+                one_workflow_manifest("contract-race", &def.digest),
+            )
+            .await
+            .expect("plan");
+        let key = format!("race-{round}");
+        let (applied, collected) = futures::future::join(
+            deployer.apply_candidate_in_db(pool, "contract", &key, &plan, "r", &policy),
+            collector.mark_and_collect_garbage_in_db(pool, 1, 3600),
+        )
+        .await;
+        let collected = collected.expect("collect");
+        let state = deployer
+            .fetch_artifact(pool, &def.digest)
+            .await
+            .expect("read")
+            .expect("stored")
+            .state;
+        match applied {
+            Ok(_) => {
+                assert!(
+                    !collected.draining.contains(&def.digest),
+                    "{backend}: {collected:?}"
+                );
+                assert_eq!(state, ArtifactState::Active, "{backend}");
+            }
+            Err(e) => {
+                assert_eq!(e.code, "ARTIFACT_DRAINING_OR_DELETED", "{backend}: {e:?}");
+                assert!(collected.draining.contains(&def.digest), "{backend}");
+                assert_eq!(state, ArtifactState::Draining, "{backend}");
+            }
+        }
+    }
 }
 
 /// The cluster's shared store on this backend: values expire on the
