@@ -1,0 +1,1105 @@
+mod sync;
+pub(crate) mod traces;
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::any;
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::channel::BodyMode;
+use crate::channel::guards;
+use crate::errors::OrionError;
+use crate::extract::{OrionBody, OrionQuery, PeerAddr};
+// Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
+use crate::routes::openapi::ErrorResponse;
+use crate::runtime::state::AppState;
+
+use sync::process_sync_for_channel;
+
+pub fn data_routes() -> Router<AppState> {
+    // A single catch-all, with no static segments to shadow it. The trace
+    // reads used to sit here as `/traces` and `/traces/{id}`; static routes
+    // win over `/{*path}` in axum, so a channel named `traces` was
+    // permanently unreachable (`POST /api/v2/data/traces` returned 405) and
+    // the rate limiter carried a special case to skip the name. They moved to
+    // `/api/v2/admin/traces` in 1.0 (R8), where the admin-guarded list
+    // endpoint always belonged.
+    Router::new().route("/{*path}", any(dynamic_handler))
+}
+
+// ============================================================
+// Unified Dynamic Route Handler
+// ============================================================
+
+/// Unified handler for all data routes. Handles:
+/// - Simple HTTP channels: `POST /{channel}` (single segment, direct name match)
+/// - Async submissions: `POST /{channel}/async` or `POST /{path...}/async`
+/// - REST channels: any method matched against route patterns from DB
+#[utoipa::path(
+    post,
+    path = "/api/v2/data/{channel}",
+    tag = "Data",
+    operation_id = "process_channel_request",
+    summary = "Invoke a channel synchronously",
+    description = "\
+Invoke a channel's workflow synchronously.
+
+This is a **templated** path, not a static one. Orion serves the whole data \
+plane from a single catch-all route (`/api/v2/data/{*path}`) and resolves the \
+target channel at request time, so no per-channel path exists in this document:
+
+* **Simple HTTP channels** — a single path segment matched against the channel \
+  `name`, e.g. `POST /api/v2/data/order-intake`.
+* **REST channels** — each active channel registers its own method and path \
+  pattern (`config.rest.routes`) at engine-reload time; those patterns may span \
+  several segments and declare their own path parameters, which arrive in the \
+  workflow as `metadata.params`, percent-decoded exactly once (`a%2Fb` becomes \
+  `a/b`). Static segments match byte-exact — the path is case-sensitive per \
+  RFC 3986. Any HTTP method is accepted — `GET`, `PUT`, \
+  `PATCH` and `DELETE` behave identically to the `POST` documented here, with \
+  the verb exposed as `metadata.http_method`. Query the admin channel API for \
+  the routes a given deployment actually serves.
+
+Append `/async` to submit to the queue instead — see \
+`POST /api/v2/data/{channel}/async`.
+
+Authentication is per channel and off by default: `admin_auth` covers the admin \
+plane only. A channel carrying an `auth` block in its config (`api_key` or \
+`hmac`) authenticates every caller on this path and on `/async` alike; a channel \
+without one is open to anyone who can reach the port. `validation_logic` and \
+`origin_allow_list` complement it but are not authentication — `Origin` is \
+client-supplied.",
+    params(
+        ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
+        ("profile" = Option<bool>, Query, description = "Set to `1`/`true` to append `_orion.profile` timings to the response. Requires `tracing.debug_profile_enabled = true`; the `X-Orion-Profile` header does the same."),
+    ),
+    request_body(
+        content = ProcessRequest,
+        description = "Workflow input, in either of two shapes. An object carrying `data` or `metadata` is the \
+**envelope**: `data` is the payload, and `metadata` is merged into the message metadata alongside the \
+server-supplied `channel`, `http_method`, `params`, `query` and `headers` keys. Any other JSON body **is** \
+the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`. An empty body is accepted \
+(typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`. \
+\n\nThat detection is per channel: a channel configured with `request.body_mode = \"payload\"` takes the \
+whole body as the payload whatever keys it carries, and accepts no caller-supplied `metadata`. Use it when \
+the request model owns the name `data` — under the default `auto` mode such a body is read as an envelope \
+and its sibling fields are discarded.",
+        content_type = "application/json",
+    ),
+    responses(
+        (status = 200, description = "Workflow completed. `errors` is empty on success; when tasks failed it carries sanitized `{code, message, task_id}` entries and the envelope gains a `request_id` for correlation with the persisted trace.", body = ProcessResponse),
+        (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a channel `validation_logic` rejection (`VALIDATION_ERROR`, with per-field `details`)", body = ErrorResponse),
+        (status = 401, description = "The channel declares `auth` and the request did not satisfy it — absent, wrong, or malformed credential. One message for every cause, so a caller cannot learn which half they had right.", body = ErrorResponse),
+        (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
+        (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
+        (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
+        (status = 413, description = "Request body exceeded `ingest.max_payload_size` (`PAYLOAD_TOO_LARGE`)", body = ErrorResponse),
+        (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
+        (status = 500, description = "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`), or an internal failure (`INTERNAL_ERROR`)", body = ErrorResponse),
+        (status = 503, description = "Channel backpressure limit reached, a connector circuit breaker is open (`CIRCUIT_OPEN`), or a rate-limit/dedup backend outage on a channel configured with `on_backend_error = \"deny\"`", body = ErrorResponse),
+        (status = 504, description = "Workflow exceeded the channel's `timeout_ms`", body = ErrorResponse),
+    )
+)]
+// DEBUG, not INFO: at the default level an INFO span here was a second
+// per-request event beside the access-log line, which already carries the
+// route, status and duration. Raise the level to see it.
+#[tracing::instrument(
+    level = "debug",
+    skip(state, uri, headers, peer, query_params, body),
+    fields(path = %uri.path())
+)]
+pub(crate) async fn dynamic_handler(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    PeerAddr(peer): PeerAddr,
+    OrionQuery(query_params): OrionQuery<std::collections::HashMap<String, String>>,
+    OrionBody(body): OrionBody,
+) -> Result<impl IntoResponse, OrionError> {
+    // N10: the raw, still-encoded path (the nested router has stripped the
+    // `/api/v2/data` prefix). `Path<String>` would hand us the wildcard
+    // percent-decoded once by axum — leniently, with invalid sequences
+    // passed through — which made `%2F` act as a segment separator before
+    // matching and would double-decode anything the matcher then decoded.
+    // Splitting and decoding both belong to `RouteTable::match_route`:
+    // split first on raw `/`, then decode each segment exactly once.
+    //
+    // Leading slashes are trimmed before the `/async` check so a bare
+    // `/async` path stays a channel *named* `async` rather than a submission
+    // with no channel: only a `/async` suffix on a non-empty path is a
+    // submission.
+    let path = uri.path().trim_start_matches('/');
+
+    // Strip trailing /async suffix
+    let (route_path, is_async) = if let Some(stripped) = path.strip_suffix("/async") {
+        (stripped, true)
+    } else {
+        (path, false)
+    };
+
+    let route_path = route_path.trim_matches('/').trim();
+    if route_path.is_empty() {
+        return Err(OrionError::validation("Channel name must not be empty"));
+    }
+
+    // One generation for this request, loaded once and held to the end: the
+    // route table below, the channel's guards, and the engine the workflow
+    // runs on all come from the same build.
+    //
+    // The route match and the serviceability lookup used to be two separate
+    // loads of the channel registry, so a reload landing between them could
+    // resolve a route from one generation and miss the name in the next — a
+    // 404 for a channel present in both. Holding the generation also keeps
+    // admission and execution together, which two published values could not.
+    let generation = state.runtime.load();
+
+    // Resolve channel: try REST route table first, then direct name lookup.
+    // N10: `?` answers 400 for invalid percent-sequences before any
+    // resolution; matched params arrive percent-decoded exactly once.
+    let (channel, route_params, route_role) = if let Some(rm) = generation
+        .channels
+        .match_route(method.as_str(), route_path)?
+    {
+        (rm.channel_name, rm.params, rm.role)
+    } else if !route_path.contains('/') {
+        // Single segment — a channel by its name (`/api/v2/data/{name}`, what
+        // `orion-cli send` calls),
+        // decoded once like a captured param so the encoded spelling of a
+        // name reaches the same channel. `match_route` above has already
+        // answered 400 for invalid sequences, so the decode fallback cannot
+        // fire. A name that decodes to whitespace (`%20`) is as empty as a
+        // literal blank — same 400 as the raw-path emptiness check above.
+        let name = crate::channel::routing::percent_decode_segment(route_path)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_else(|| route_path.to_string());
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(OrionError::validation("Channel name must not be empty"));
+        }
+        (
+            name,
+            std::collections::HashMap::new(),
+            crate::channel::routing::RouteRole::Primary,
+        )
+    } else {
+        return Err(OrionError::NotFound(format!(
+            "No channel matches {method} /{route_path}"
+        )));
+    };
+
+    // #307: `/async` is stripped before matching, so `…/callback/async` would
+    // otherwise resolve to the callback route with `Transport::HttpAsync` —
+    // where the sign-in guard is off. The workflow would run with no grant at
+    // `metadata.oauth` and answer `202`: a sign-in that appears to have been
+    // accepted and established nothing. Refuse it instead of admitting the
+    // half-request.
+    if is_async && route_role == crate::channel::routing::RouteRole::OAuthCallback {
+        return Err(OrionError::MethodNotAllowed(
+            "an OAuth2 callback cannot be submitted asynchronously: the redirect that \
+             follows it is the response"
+                .to_string(),
+        ));
+    }
+
+    // Content-Type enforcement: non-empty bodies must declare a JSON media type
+    if !body.is_empty() {
+        let content_type = headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let is_json =
+            content_type.starts_with("application/json") || content_type.contains("+json");
+        if !is_json {
+            return Err(OrionError::UnsupportedMediaType(
+                "Content-Type must be application/json for requests with a body".to_string(),
+            ));
+        }
+    }
+
+    // Parse now, classify after the channel is known (#278). Splitting the two
+    // is what lets `request.body_mode` decide whether an object carrying
+    // `data` is an envelope — and the split, rather than simply moving
+    // `from_body` below `require_serviceable`, is what keeps every status code
+    // where it is: malformed JSON to an unknown channel stays `400`, not
+    // `404`. The Content-Type `415` check above must likewise stay where it
+    // is, or it flips to `404` for a nonexistent channel.
+    let parsed_body = ProcessRequest::parse_body(&body)?;
+
+    // Profile mode: opt-in via header OR ?profile=1 query, gated by global config flag.
+    let profile_requested = state.config.tracing.debug_profile_enabled
+        && (header_or_query_truthy(&headers, &query_params, "x-orion-profile", "profile"));
+
+    // Per-channel ingress guards apply before the sync/async split (S1):
+    // appending `/async` must not bypass the origin allow-list,
+    // validation_logic, the rate limit, deduplication or backpressure. Which
+    // guards run is the transport's `GuardSet`, not a decision made here.
+    // F35: a channel that failed to load is quarantined, not silently
+    // config-less — serving it here would apply none of its guards.
+    let channel_runtime = generation.channels.require_serviceable(&channel)?;
+
+    // D6: a cron channel is reachable by name — every channel is — and must not
+    // be reachable *here*. Running it over HTTP would execute the workflow
+    // outside the occurrence ledger and outside its singleton: no row recording
+    // that it ran, and nothing stopping it overlapping the scheduled run it was
+    // configured to never overlap. The manual-trigger endpoint exists for this,
+    // and goes through the same claim path the schedule does.
+    if let Some(runtime) = channel_runtime.as_ref()
+        && runtime.cron.is_some()
+    {
+        return Err(OrionError::MethodNotAllowed(format!(
+            "channel '{channel}' is a cron channel: it runs on its schedule, not on \
+             request. To run it now, POST /api/v2/admin/channels/{}/trigger — that \
+             records an occurrence and respects the channel's concurrency policy.",
+            runtime.channel.channel_id
+        )));
+    }
+
+    let request_config = channel_runtime
+        .as_ref()
+        .and_then(|rt| rt.parsed_config.request.as_ref());
+    let body_mode = request_config.map(|r| r.body_mode).unwrap_or_default();
+    let ProcessRequest {
+        data,
+        metadata: req_metadata,
+    } = ProcessRequest::classify(parsed_body, body_mode);
+
+    let metadata = build_request_metadata(RequestMetadataParts {
+        req_metadata,
+        channel: &channel,
+        method: &method,
+        route_params: &route_params,
+        query_params: &query_params,
+        headers: &headers,
+        cookie_allowlist: request_config.and_then(|r| r.cookies_to_metadata.as_deref()),
+        vars: state.vars.as_deref(),
+    });
+    // A name that is not in the registry is not an active channel. Without
+    // this check the single-segment fallback above accepted ANY name and ran
+    // the engine against an empty workflow set — a 200 "ok" for channels
+    // that never existed or were just archived (the ingress-side twin of the
+    // channel_call missing-target bug).
+    // The `Option` binding stays because `guards::GuardRequest` takes it by
+    // reference and is shared with the cron and channel_call ingresses; the
+    // clone below is the `Arc` every path past the gate is entitled to.
+    let Some(channel_config) = channel_runtime.clone() else {
+        return Err(OrionError::NotFound(format!(
+            "Channel '{channel}' not found: no deployed channel has that name"
+        )));
+    };
+
+    let header_lookup = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    // S8: the same trusted-proxy-gated identity the platform limiter uses, so
+    // a channel's limit cannot be side-stepped with a spoofed
+    // `X-Forwarded-For` that the platform limiter would have ignored.
+    let client_ip = crate::rate_limit::request_client_ip_from_parts(
+        peer.as_ref(),
+        &headers,
+        state.trusted_proxies(),
+    );
+    let transport = if is_async {
+        guards::Transport::HttpAsync
+    } else {
+        guards::Transport::HttpSync
+    };
+    // Which sign-in leg this is, decided from the route table's answer rather
+    // than by re-comparing the path against the config — one answer to "which
+    // leg?", in the place that already knows.
+    let oauth_ingress = channel_runtime
+        .as_ref()
+        .filter(|rt| rt.oauth2_login.is_some())
+        .map(|_| match route_role {
+            crate::channel::routing::RouteRole::OAuthCallback => crate::channel::OAuthLeg::Callback,
+            crate::channel::routing::RouteRole::Primary => crate::channel::OAuthLeg::Authorize,
+        });
+    // The message the guards read and the engine runs, built once: both halves
+    // move in here and come back out, intact, once every guard has passed.
+    let mut guard_context = guards::GuardContext::new(data, metadata);
+    let guard_verdict = match guards::apply_guards(guards::GuardRequest {
+        transport,
+        channel: &channel,
+        runtime: &channel_runtime,
+        context: &mut guard_context,
+        exprs: &state.exprs,
+        origin: headers.get("origin").and_then(|v| v.to_str().ok()),
+        caller_identity: &client_ip,
+        // The HTTP transports are the two that present a credential (S12).
+        auth_backoff: Some(&state.channel_auth_failures),
+        header: &header_lookup,
+        // The bytes as received, not the parsed payload. A webhook signature is
+        // computed over the wire body, and `ProcessRequest::from_body` has
+        // already parsed and possibly unwrapped the `data` envelope — signing
+        // over that would never match.
+        raw_body: Some(&body),
+        dedup_key_fallback: None,
+        // One HTTP request is one delivery: nothing redelivers it, so the
+        // claim gets a token nothing can present again and a replay of the
+        // key is the `409` it should be.
+        dedup_owner: None,
+        // The synchronous path has no deadline of its own: a channel that
+        // declares no `timeout_ms` runs to completion. The `/async`
+        // submission leaves it to the worker, which re-resolves at dequeue
+        // time against the config as it stands then.
+        default_timeout_ms: None,
+        // Neither HTTP path has a ceiling to protect: the deadline is the
+        // caller's patience, not a shared resource.
+        max_timeout_ms: None,
+        oauth: oauth_ingress.as_ref().map(|leg| guards::OAuthIngress {
+            leg: *leg,
+            // The `{provider}` route segment (#355), when the channel is
+            // multi-provider. A single-provider block declares no such segment,
+            // so this is absent and the guard uses the block's one entry.
+            provider: route_params.get("provider").map(String::as_str),
+            query: &query_params,
+            jar: headers
+                .get_all(axum::http::header::COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect(),
+        }),
+    })
+    .await
+    {
+        // #269: the one `?` that fourteen guard rejections funnelled through.
+        // A channel may replace the BYTES of a refusal; the platform still
+        // decides the status.
+        Err(err) => {
+            return Ok(shape_guard_rejection(err, &channel, &channel_config));
+        }
+        Ok(verdict) => verdict,
+    };
+
+    let mut admission = match guard_verdict {
+        guards::GuardVerdict::CacheHit(body) => {
+            let shaped = channel_config
+                .parsed_config
+                .response
+                .as_ref()
+                .is_some_and(|cfg| cfg.is_shaped());
+            return Ok(sync::cached_response(body, shaped, &channel));
+        }
+        guards::GuardVerdict::Admitted(admission) => admission,
+        // A guard answered the request itself — today, the OAuth2 authorize
+        // leg's `302`. The workflow is not entered and the engine is never
+        // reached.
+        guards::GuardVerdict::Respond(response) => {
+            return Ok(guard_response(response, &channel));
+        }
+    };
+
+    // #267: verified claims join the message metadata at `auth.claims` — the
+    // one merge point both the sync path and the async queue flow through.
+    // The token itself never gets here; guards discarded it after verifying.
+    // #307: the verified grant joins the message at `metadata.oauth`, the same
+    // way and in the same place. Platform-reserved: `build_request_metadata`
+    // has already stripped any `oauth` key the caller supplied, so what a
+    // workflow reads here was minted by the guard or is absent.
+    // `build_request_metadata` always returns an object — it starts from
+    // `json!({})` for a non-object base and then stamps `channel`, which would
+    // itself panic otherwise — so `as_object_mut` here is total.
+    let (data, mut metadata) = guard_context.into_parts();
+    if let Some(oauth) = admission.oauth.as_mut()
+        && let Some(map) = metadata.as_object_mut()
+    {
+        if let Some(grant) = oauth.grant.take() {
+            map.insert(crate::engine::OAUTH_KEY.to_string(), grant);
+        }
+        // #355: the normalised identity, at the protocol-neutral path workflows
+        // key on. Stripped from caller input above, so this is Orion's.
+        if let Some(identity) = oauth.identity.take() {
+            map.insert(crate::engine::IDENTITY_KEY.to_string(), identity);
+        }
+    }
+    let metadata = match admission.auth_claims.take() {
+        Some(claims) => guards::merge_auth_claims(metadata, claims),
+        None => metadata,
+    };
+
+    if is_async {
+        return submit_async(
+            &state,
+            channel,
+            data,
+            metadata,
+            channel_config,
+            profile_requested,
+            admission,
+        )
+        .await;
+    }
+
+    process_sync_for_channel(
+        &state,
+        &channel,
+        data,
+        metadata,
+        sync::AdmittedOn {
+            generation,
+            channel_config,
+        },
+        profile_requested,
+        admission,
+    )
+    .await
+}
+
+/// Render a response a guard built itself.
+///
+/// The header rule is `sync.rs`'s: the first occurrence of a name `insert`s and
+/// every later one `append`s, so a redirect that sets a cookie keeps both, and
+/// a repeated `set-cookie` is not collapsed into the last one.
+pub(super) fn guard_response(response: guards::GuardResponse, channel: &str) -> Response {
+    let status = axum::http::StatusCode::from_u16(response.status)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let mut out = Response::new(axum::body::Body::from(response.body));
+    *out.status_mut() = status;
+    apply_headers(&mut out, &response.headers, channel);
+    out
+}
+
+/// Set workflow- or guard-declared headers on a built response.
+///
+/// The first occurrence of a name `insert`s and every later one `append`s.
+/// Both halves matter: `insert` is what lets a declared `content-type` replace
+/// the default without a pre-scan, and `append` is what lets a name repeat.
+/// Using `insert` throughout — as this did — silently collapsed two
+/// `set-cookie` values into the last one (#298), so a response could never both
+/// issue a session cookie and clear a spent one.
+///
+/// One copy, shared by `guard_response` here and `sync::shaped_response`:
+/// `GuardResponse` is documented as shaped like `ShapedResponse`, "`Vec` and
+/// all", and the two had already drifted on what a rejected header does.
+///
+/// **A refusal here is counted, not just logged** (#312). For a freshly built
+/// shaped response this check is unreachable — `push_header` has already
+/// refused anything invalid, while the envelope reporting the refusal was
+/// still being written, which is exactly why the check lives there. What
+/// reaches here is the paths with no envelope left to write into: a response
+/// replayed from the cache, and a guard-built one. Those cannot carry a
+/// `RESPONSE_HEADER_DROPPED` entry — the cached body was serialized on an
+/// earlier request and a guard rejection has no envelope at all — but they can
+/// and now do move `orion_response_drops_total`, so the drop is visible to an
+/// operator rather than being one line on stdout.
+pub(super) fn apply_headers(response: &mut Response, headers: &[(String, String)], channel: &str) {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (name, value) in headers {
+        let (Ok(header_name), Ok(header_value)) = (
+            axum::http::HeaderName::try_from(name.as_str()),
+            axum::http::HeaderValue::try_from(value.as_str()),
+        ) else {
+            tracing::warn!(
+                channel = channel,
+                header = %name,
+                "response header is not valid HTTP; dropping it"
+            );
+            crate::metrics::record_response_drop(channel, "RESPONSE_HEADER_DROPPED".to_string());
+            continue;
+        };
+        if seen.insert(name.as_str()) {
+            response.headers_mut().insert(header_name, header_value);
+        } else {
+            response.headers_mut().append(header_name, header_value);
+        }
+    }
+}
+
+/// Turn a guard rejection into a response, letting the channel replace the
+/// body when it declares one for that status (#269).
+///
+/// **The error builds its own response and this edits it.** Rendering afresh
+/// would silently drop `retry-after` on a `429` and `WWW-Authenticate` on a
+/// refused bearer token, and would skip `log_internal_detail()` — so wrapping
+/// inherits all of that, and stays correct against future error-owned headers.
+///
+/// Soft failure throughout: a template that no longer renders falls back to
+/// the platform envelope rather than turning an authoring slip into a 500.
+fn shape_guard_rejection(
+    err: OrionError,
+    channel: &str,
+    runtime: &std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
+) -> Response {
+    use crate::channel::error_body;
+
+    let Some(bodies) = runtime
+        .parsed_config
+        .response
+        .as_ref()
+        .and_then(|r| r.error_bodies.as_ref())
+    else {
+        return err.into_response();
+    };
+
+    let (status, code, message) = err.response_parts();
+    let Some(entry) = error_body::lookup(bodies, status.as_u16()) else {
+        return err.into_response();
+    };
+    let ctx = error_body::RenderContext {
+        status: status.as_u16(),
+        code,
+        message: &message,
+        channel,
+    };
+    let Some(rendered) = error_body::render(&entry.body, &ctx) else {
+        return err.into_response();
+    };
+    let content_type = entry.content_type.as_deref().unwrap_or("application/json");
+    let Ok(content_type) = axum::http::HeaderValue::from_str(content_type) else {
+        return err.into_response();
+    };
+
+    // Build the real response first — metrics and trace annotations have
+    // already fired inside the guard, and the headers above ride on this — then
+    // swap only the body and its content type.
+    let mut response = err.into_response();
+    response
+        .headers_mut()
+        .insert(axum::http::header::CONTENT_TYPE, content_type);
+    *response.body_mut() = axum::body::Body::from(rendered);
+    // The platform envelope's length no longer applies.
+    response
+        .headers_mut()
+        .remove(axum::http::header::CONTENT_LENGTH);
+    response
+}
+
+/// One request's worth of input to [`build_request_metadata`].
+///
+/// Named fields rather than eight positional parameters, the way
+/// [`guards::GuardRequest`] already carries this route's other wide argument
+/// list: two of these are `&HashMap<String, String>` and two are optional, so
+/// a transposition would type-check and silently swap a request's query
+/// parameters for its path parameters.
+struct RequestMetadataParts<'a> {
+    /// The caller's envelope `metadata`, moved in: it is the base the
+    /// server-owned keys are stamped onto, and nothing reads it afterwards.
+    req_metadata: Value,
+    channel: &'a str,
+    method: &'a axum::http::Method,
+    route_params: &'a std::collections::HashMap<String, String>,
+    query_params: &'a std::collections::HashMap<String, String>,
+    headers: &'a axum::http::HeaderMap,
+    cookie_allowlist: Option<&'a [String]>,
+    /// `[vars]` as one JSON object, or `None` on an instance declaring none.
+    vars: Option<&'a Value>,
+}
+
+/// Build the workflow metadata object for a request: the caller-supplied
+/// `metadata` merged with the server-supplied `channel`, `http_method`,
+/// `params`, `query`, `vars`, and (credential-masked) `headers` keys.
+fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
+    let RequestMetadataParts {
+        req_metadata,
+        channel,
+        method,
+        route_params,
+        query_params,
+        headers,
+        cookie_allowlist,
+        vars,
+    } = parts;
+    // Build metadata with all request context available for validation_logic
+    let mut metadata = if req_metadata.is_object() {
+        req_metadata
+    } else {
+        json!({})
+    };
+    // Strip all platform-reserved keys (`_orion_errors`, `cookies`, `oauth`,
+    // `identity`, `auth`, `trigger`) unconditionally before stamping server-owned
+    // values (#270, #280, #307, #354, #355). This function uses the caller's
+    // `req.metadata` as its base, so any reserved key left in place would let a
+    // caller pre-seed failure records, session cookies, OAuth grants, verified
+    // JWT claims, or cron trigger metadata.
+    crate::engine::strip_caller_reserved_metadata(&mut metadata);
+    // `metadata.vars` is platform-reserved for the same reason `cookies` is:
+    // this function's base is the caller's own `req.metadata`, so a value left
+    // in place is a value the caller chose. Stamped from `[vars]`, and removed
+    // when the instance declares none.
+    crate::engine::stamp_vars(&mut metadata, vars);
+    let cookies = cookie_allowlist
+        .map(|names| {
+            let jar = headers
+                .get_all(axum::http::header::COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok());
+            crate::channel::cookies::collect(jar, names)
+        })
+        .unwrap_or_default();
+    if !cookies.is_empty()
+        && let Some(map) = metadata.as_object_mut()
+    {
+        map.insert(
+            crate::engine::COOKIES_KEY.to_string(),
+            Value::Object(cookies),
+        );
+    }
+    // F4: stamp the resolved channel name (overriding any caller-supplied
+    // value) so circuit-breaker keys and connector metrics are labelled
+    // `channel:connector` instead of `unknown:connector`.
+    metadata["channel"] = Value::String(channel.to_string());
+    metadata["http_method"] = Value::String(method.as_str().to_string());
+    if !route_params.is_empty() {
+        metadata["params"] = json!(route_params);
+    }
+    if !query_params.is_empty() {
+        metadata["query"] = json!(query_params);
+    }
+    // Expose request headers so validation_logic can check content-type,
+    // content-length, header presence, etc. Credential-bearing headers are
+    // masked (S10): this map is persisted verbatim into `traces.result_json`
+    // on the async path and `trace_dlq.metadata_json` on the failure path,
+    // so a plaintext value here is a plaintext credential at rest — and,
+    // before S14, one readable over HTTP. The key survives so logic can
+    // still test presence; the value is never recoverable downstream.
+    //
+    // Every header, not only the ones a channel declares: the rate limiter
+    // can key on just the headers its `key_logic` names (`COMMON_KEY_HEADERS`),
+    // but this map is the message's, and a workflow condition or task reads
+    // `metadata.headers.<any name>` with nothing declaring which beforehand.
+    let mut header_map = serde_json::Map::with_capacity(headers.len());
+    for (name, value) in headers {
+        let name_str = name.as_str();
+        if crate::engine::utils::is_credential_header(name_str) {
+            header_map.insert(
+                name_str.to_string(),
+                Value::String(crate::connector::MASK.to_string()),
+            );
+        } else if let Ok(v) = value.to_str() {
+            header_map.insert(name_str.to_string(), Value::String(v.to_string()));
+        }
+    }
+    metadata["headers"] = Value::Object(header_map);
+    metadata
+}
+
+/// The async-submission branch of [`dynamic_handler`]: create the pending
+/// trace (or a synthetic id in `off` mode), enqueue the message, and answer
+/// 202.
+async fn submit_async(
+    state: &AppState,
+    channel: String,
+    data: Value,
+    metadata: Value,
+    channel_runtime: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
+    profile_requested: bool,
+    admission: guards::Admission,
+) -> Result<Response, OrionError> {
+    // The permit was acquired by the guard chain before the pending trace is
+    // created, so a shed request leaves no trace row. It rides inside the
+    // queued message and is held by the worker for the duration of
+    // processing, so a channel's `max_concurrent_per_node` bounds sync and
+    // async work together. `admission.timeout_ms` is deliberately not carried
+    // through the queue: the worker re-resolves it at dequeue time, against
+    // the config as it stands then.
+    //
+    // `admission.dedup_claim` is dropped here rather than settled. Nothing
+    // redelivers an HTTP submission — the caller holds a `trace_id` and polls
+    // it — so the claim standing for the rest of the window is exactly the
+    // `409` a second submission of the same key should get, whatever the
+    // queued work turns out to do.
+    let backpressure_permit = admission.backpressure_permit;
+
+    // The payload serialized once, here: it is the pending row's `input_json`,
+    // and its length is the payload half of the queue's memory estimate, which
+    // the admission check and the reservation both use. Each of the three used
+    // to serialize the payload for itself.
+    let input_json = serde_json::to_string(&data).ok();
+    let queued_bytes = crate::queue::message_size(&data, input_json.as_deref(), &metadata);
+
+    // PERF-03: fast in-memory admission check before allocating tokens or
+    // executing database round-trips (`create_pending` + compensating
+    // `update_status`) when the queue is already closed, full, or over memory.
+    state.trace_queue.check_admissible_sized(queued_bytes)?;
+
+    let trace_headers = {
+        let mut h = std::collections::HashMap::new();
+        orion_common::trace_context::inject_trace_context(&mut h);
+        h
+    };
+
+    // R11: the pending row is written unconditionally. `trace.mode = "off"`
+    // used to skip it and answer 202 with a null `trace_id` and a `Warning`
+    // header — a receipt for work whose result could never be fetched, and a
+    // nullable id in the schema forever. Async submission *is* the request for
+    // a later result, so persistence is not optional on this path; the sync
+    // path still honours `off` exactly (see `for_async_submission`).
+    let channel_id = Some(channel_runtime.channel.channel_id.as_str());
+    // R12: mint an opaque capability token for this submission. Only its hash
+    // is stored; the plaintext exists once, in this 202. Polling requires it
+    // (or an admin credential), so a caller can read its own async result but
+    // nobody else's.
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let token_hash = crate::admin_auth::hash_trace_token(&token);
+    let trace = state
+        .repos
+        .traces
+        .create_pending(
+            &channel,
+            channel_id,
+            "async",
+            input_json.as_deref(),
+            Some(&token_hash),
+        )
+        .await?;
+    let trace_id = trace.id;
+
+    let submitted = state
+        .trace_queue
+        .submit_sized(
+            crate::queue::QueueMessage {
+                trace_id: trace_id.clone(),
+                channel,
+                payload: data,
+                metadata,
+                trace_headers,
+                profile_requested,
+                backpressure_permit,
+            },
+            queued_bytes,
+        )
+        .await;
+    if let Err(e) = submitted {
+        // Shed. The pending row is already committed, the caller gets a 503
+        // and never sees this trace_id — left unsettled, the row would sit
+        // `pending` forever: one phantom backlog entry per shed request,
+        // gone only when retention deletes it. Settle it as failed
+        // (best-effort: this write hits the same DB that just served
+        // `create_pending`).
+        if let Err(update_err) = state
+            .repos
+            .traces
+            .update_status(
+                &trace_id,
+                crate::storage::models::TRACE_STATUS_FAILED,
+                Some("Submission shed: trace queue at capacity"),
+            )
+            .await
+        {
+            tracing::error!(
+                trace_id = %trace_id,
+                error = %update_err,
+                "Failed to settle pending trace after queue shed"
+            );
+        }
+        return Err(e);
+    }
+
+    let response: Response = (
+        StatusCode::ACCEPTED,
+        Json(json!({ "trace_id": trace_id, "trace_token": token })),
+    )
+        .into_response();
+    Ok(response)
+}
+
+/// Documentation-only anchor for the async submission path.
+///
+/// `POST /api/v2/data/{channel}/async` is served by [`dynamic_handler`], which
+/// strips the `/async` suffix from the catch-all path — one Rust function, two
+/// documented operations. `#[utoipa::path]` can only be applied once per
+/// function, so the async operation hangs off this stub instead of inventing a
+/// second handler. It is never called; the macro only reads its attribute.
+#[allow(dead_code)]
+#[utoipa::path(
+    post,
+    path = "/api/v2/data/{channel}/async",
+    tag = "Data",
+    operation_id = "submit_channel_request_async",
+    summary = "Submit to a channel asynchronously",
+    description = "\
+Queue a channel's workflow for background execution and return immediately.
+
+Accepts the same body and resolves the channel exactly as \
+`POST /api/v2/data/{channel}` (including REST route patterns — append `/async` \
+to any of them). All ingress guards still apply before the queue hand-off: \
+the origin allow-list, the rate limit, `validation_logic`, deduplication and \
+backpressure. The response cache is sync-only, so an async submission never \
+returns a cached body.
+
+Poll `GET /api/v2/admin/traces/{id}` with the returned `trace_id` for the \
+result, presenting the returned `trace_token` via the `x-trace-token` header \
+or `?token=` query parameter. The token scopes the poll to this \
+submission; an admin credential also works.
+
+`trace_id` is always present. Async submission is a request for a result to be \
+fetched later, so the trace row is written before the 202 is sent even when \
+`trace_storage.mode` is `off` — that setting still applies in full to the \
+synchronous endpoint, where the caller already has the answer.",
+    params(
+        ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
+    ),
+    request_body(
+        content = ProcessRequest,
+        description = "Same envelope as the synchronous endpoint.",
+        content_type = "application/json",
+    ),
+    responses(
+        (
+            status = 202,
+            description = "Accepted and queued. `trace_id` and `trace_token` are always present — the trace row is written before this response is sent, so the id can always be polled.",
+            body = AsyncSubmitResponse,
+        ),
+        (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a `validation_logic` rejection", body = ErrorResponse),
+        (status = 401, description = "The channel declares `auth` and the request did not satisfy it — absent, wrong, or malformed credential. One message for every cause, so a caller cannot learn which half they had right.", body = ErrorResponse),
+        (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
+        (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
+        (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
+        (status = 413, description = "Request body exceeded `ingest.max_payload_size` (`PAYLOAD_TOO_LARGE`)", body = ErrorResponse),
+        (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
+        (status = 503, description = "Channel backpressure limit reached, the trace queue is full/closed, or a rate-limit/dedup backend outage on a channel configured with `on_backend_error = \"deny\"`", body = ErrorResponse),
+    )
+)]
+pub(crate) fn submit_channel_request_async_docs() {}
+
+/// Values considered truthy in header/query string flags.
+const TRUTHY_VALUES: &[&str] = &["1", "true", "yes", "on"];
+
+fn is_truthy_str(s: &str) -> bool {
+    let trimmed = s.trim().to_ascii_lowercase();
+    TRUTHY_VALUES.contains(&trimmed.as_str())
+}
+
+/// True when `header_name` or `query_name` is set to a truthy value
+/// (`1`, `true`, `yes`, `on`). Case-insensitive.
+fn header_or_query_truthy(
+    headers: &axum::http::HeaderMap,
+    query: &std::collections::HashMap<String, String>,
+    header_name: &str,
+    query_name: &str,
+) -> bool {
+    if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok())
+        && is_truthy_str(v)
+    {
+        return true;
+    }
+    if let Some(v) = query.get(query_name)
+        && is_truthy_str(v)
+    {
+        return true;
+    }
+    false
+}
+
+// ============================================================
+// Request Types
+// ============================================================
+
+/// An envelope that names `metadata` but not `data` carries no payload — which
+/// is `{}`, the same thing an empty body means, not `null`.
+fn empty_object() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ProcessRequest {
+    /// The workflow payload.
+    #[serde(default = "empty_object")]
+    data: Value,
+    /// Merged into the message metadata alongside the server-supplied keys.
+    #[serde(default = "empty_object")]
+    metadata: Value,
+}
+
+impl ProcessRequest {
+    /// Read the request body, which may be the envelope or the payload itself.
+    ///
+    /// This endpoint had three behaviours for three body shapes, and only
+    /// one was documented. `{"data": …}` was the envelope; an **empty** body
+    /// became `{"data":{},"metadata":{}}`; and a **bare object** — `{"amount":
+    /// 5}`, the obvious thing to send, and what every other JSON API accepts —
+    /// failed with `missing field 'data'`. On the most-hit endpoint in the
+    /// product.
+    ///
+    /// The rule is now one sentence: **an object carrying `data` or `metadata`
+    /// is the envelope; anything else is the payload.** That keeps every
+    /// existing envelope working (they all carry `data`), keeps the empty body
+    /// meaning `{}`, and turns the previously-400 bare object into the payload
+    /// the caller plainly meant — a strictly widening change.
+    /// Parse the body, without deciding what it means.
+    ///
+    /// Split from [`Self::classify`] (#278) so the channel's `body_mode` can
+    /// make that decision — and split rather than moved, because the parse
+    /// failure is a `400` that must keep answering `400` even for a channel
+    /// that does not exist.
+    ///
+    /// `None` is an empty body, which is `{}`/`{}` in both modes: turning it
+    /// into `null` under payload mode would break every `GET`/`DELETE` REST
+    /// channel.
+    fn parse_body(body: &[u8]) -> Result<Option<Value>, OrionError> {
+        if body.is_empty() {
+            return Ok(None);
+        }
+        serde_json::from_slice(body)
+            .map(Some)
+            .map_err(|e| OrionError::validation(format!("Invalid JSON body: {e}")))
+    }
+
+    /// Split a parsed body into `data` and `metadata` per the channel's mode.
+    ///
+    /// The two modes differ for exactly one input shape — a top-level JSON
+    /// *object* containing `data` or `metadata`. Arrays, scalars and objects
+    /// without those keys already take the payload path in both, which makes
+    /// this much smaller than it first appears.
+    fn classify(parsed: Option<Value>, mode: BodyMode) -> Self {
+        let Some(parsed) = parsed else {
+            return Self {
+                data: json!({}),
+                metadata: json!({}),
+            };
+        };
+
+        // The envelope's two fields are `Value`, so they are taken straight
+        // out of the parsed map rather than re-deserialized — a second pass
+        // would rebuild every node of the payload on the hottest endpoint in
+        // the product, and could not fail.
+        match parsed {
+            Value::Object(mut obj)
+                if mode == BodyMode::Auto
+                    && (obj.contains_key("data") || obj.contains_key("metadata")) =>
+            {
+                Self {
+                    data: obj.remove("data").unwrap_or_else(empty_object),
+                    metadata: obj.remove("metadata").unwrap_or_else(empty_object),
+                }
+            }
+            other => Self {
+                data: other,
+                metadata: json!({}),
+            },
+        }
+    }
+}
+
+// ============================================================
+// Response Types (schema-only)
+// ============================================================
+//
+// The data plane builds its envelopes with `json!` so the hot path serializes
+// exactly once (see `sync::process_sync_for_channel`). These mirrors exist
+// purely so the OpenAPI document describes the real shape; they are registered
+// in `openapi::ApiDoc` and never constructed at runtime.
+
+/// Synchronous data-plane response envelope.
+///
+/// Deserializable under `cfg(test)` with `deny_unknown_fields`, so
+/// `sync::tests` can round-trip what `response_envelope` actually emits back
+/// through this struct. A field added to the envelope and not to the mirror —
+/// or vice versa — fails the test instead of shipping a spec that describes a
+/// shape nothing sends.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub(crate) struct ProcessResponse {
+    /// Engine message id, also the correlation key inside the persisted trace.
+    id: String,
+    /// Always `ok` — task-level failures are reported in `errors`, not by
+    /// flipping this field.
+    #[schema(example = "ok")]
+    status: String,
+    /// Workflow output. Shape is entirely channel-defined.
+    data: Value,
+    /// Sanitized per-task failures. Empty on a clean run.
+    errors: Vec<ProcessTaskError>,
+    /// Correlation id, present only when `errors` is non-empty: the full
+    /// messages are kept in the trace, not returned to the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    /// Debug namespace, present only when profiling was requested and
+    /// `tracing.debug_profile_enabled` is on. Currently carries `profile`.
+    #[serde(rename = "_orion", default, skip_serializing_if = "Option::is_none")]
+    orion: Option<Value>,
+}
+
+/// One task failure, with the message replaced by a generic string — upstream
+/// URLs, connector names, and driver errors stay in the trace.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+#[cfg_attr(test, serde(deny_unknown_fields))]
+pub(crate) struct ProcessTaskError {
+    code: String,
+    #[schema(example = "Task processing failed; full detail is available in the trace")]
+    message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+}
+
+/// Acknowledgement returned by `POST /api/v2/data/{channel}/async`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct AsyncSubmitResponse {
+    /// Id to poll via `GET /api/v2/admin/traces/{id}`. Always present: a 202
+    /// is a receipt for a result, so the row it names is written before this
+    /// response is sent.
+    trace_id: String,
+    /// Capability token scoping the poll to this submission: present
+    /// it via the `x-trace-token` header or `?token=` query parameter.
+    /// Shown once, here — only its hash is stored.
+    trace_token: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_of(response: &Response, name: &str) -> Vec<String> {
+        response
+            .headers()
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect()
+    }
+
+    /// #298: the first occurrence of a name `insert`s and every later one
+    /// `append`s. `insert` throughout collapsed two `set-cookie` values into
+    /// the last one, so a response could never both issue a session cookie and
+    /// clear a spent one — which is exactly what an OAuth2 callback does.
+    #[test]
+    fn a_repeated_header_is_appended_not_collapsed() {
+        let mut response = Response::new(axum::body::Body::empty());
+        apply_headers(
+            &mut response,
+            &[
+                ("set-cookie".to_string(), "a=1".to_string()),
+                ("set-cookie".to_string(), "b=2".to_string()),
+                ("content-type".to_string(), "text/plain".to_string()),
+            ],
+            "test-channel",
+        );
+        assert_eq!(headers_of(&response, "set-cookie"), ["a=1", "b=2"]);
+        assert_eq!(headers_of(&response, "content-type"), ["text/plain"]);
+    }
+
+    /// A header the wire cannot carry is dropped rather than panicking, and
+    /// the rest of the list still lands.
+    ///
+    /// #312: for a freshly built shaped response this is unreachable —
+    /// `push_header` refuses first, while the envelope that reports the
+    /// refusal is still being written. It is here for the paths with no
+    /// envelope left to write into (a cached replay, a guard-built response),
+    /// where the drop is counted on `orion_response_drops_total` instead of
+    /// being one line on stdout.
+    #[test]
+    fn an_unrepresentable_header_is_dropped_and_the_others_survive() {
+        let mut response = Response::new(axum::body::Body::empty());
+        apply_headers(
+            &mut response,
+            &[
+                ("x-good".to_string(), "fine".to_string()),
+                // A space is not legal in a header name.
+                ("bad name".to_string(), "v".to_string()),
+                // A newline in a value would be header injection.
+                ("x-inject".to_string(), "a\r\nX-Evil: 1".to_string()),
+                ("x-also-good".to_string(), "fine too".to_string()),
+            ],
+            "test-channel",
+        );
+        assert_eq!(headers_of(&response, "x-good"), ["fine"]);
+        assert_eq!(headers_of(&response, "x-also-good"), ["fine too"]);
+        assert!(headers_of(&response, "x-inject").is_empty());
+        assert!(response.headers().get("x-evil").is_none());
+    }
+}

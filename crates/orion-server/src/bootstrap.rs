@@ -946,6 +946,7 @@ pub async fn assemble(
         pool,
         metrics_handle,
     } = params;
+    crate::version::record_build(env!("GIT_HASH"), env!("BUILD_TIMESTAMP"));
     // One identity for this node, resolved once: the cluster runtime, the
     // node reconciler and the deployment store's receipts all
     // read it from here. `main` resolves it into the config already; a test

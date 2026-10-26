@@ -65,13 +65,13 @@ pub use orion_common::metrics;
 #[doc(hidden)]
 pub use orion_common::request_context;
 #[doc(hidden)]
+pub use orion_common::signatures;
+#[doc(hidden)]
 pub use orion_engine::jwt;
+pub use orion_http as server;
 pub use orion_plugin_host as plugin;
 pub use orion_runtime::queue;
 pub use orion_runtime::runtime;
-pub mod server;
-#[doc(hidden)]
-pub use orion_common::signatures;
 #[doc(hidden)]
 pub mod sql_lex;
 pub use orion_storage as storage;

@@ -3113,6 +3113,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-http"
+version = "1.12.0"
+dependencies = [
+ "axum",
+ "axum-server",
+ "base64 0.23.1",
+ "chrono",
+ "dataflow-rs",
+ "hex",
+ "ipnet",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "orion-api",
+ "orion-authoring",
+ "orion-common",
+ "orion-engine",
+ "orion-plugin-host",
+ "orion-runtime",
+ "orion-storage",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "socket2",
+ "sqlx",
+ "tokio",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-opentelemetry",
+ "url",
+ "utoipa",
+ "utoipa-swagger-ui",
+ "uuid",
+]
+
+[[package]]
 name = "orion-plugin-host"
 version = "1.12.0"
 dependencies = [
@@ -3233,6 +3272,7 @@ dependencies = [
  "orion-definitions",
  "orion-engine",
  "orion-extension-api",
+ "orion-http",
  "orion-plugin-host",
  "orion-runtime",
  "orion-storage",

@@ -70,6 +70,7 @@ workspace = true
 orion-authoring.workspace = true
 orion-common.workspace = true
 orion-engine.workspace = true
+orion-http.workspace = true
 orion-plugin-host.workspace = true
 orion-runtime.workspace = true
 orion-storage.workspace = true

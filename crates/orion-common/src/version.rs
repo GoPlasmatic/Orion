@@ -18,6 +18,35 @@ pub const ORION_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// its own `user-agent`.
 pub const USER_AGENT: &str = concat!("orion/", env!("CARGO_PKG_VERSION"));
 
+/// The binary's build identity: its commit and when it was built. Only the
+/// binary's build script knows them, so the binary records them once at
+/// startup ([`record_build`]) and every surface reporting them reads
+/// [`build`] — a library crate carrying its own build script would rebuild
+/// everything above it on every commit.
+#[derive(Debug, Clone, Copy)]
+pub struct Build {
+    pub git_hash: &'static str,
+    pub timestamp: &'static str,
+}
+
+static BUILD: std::sync::OnceLock<Build> = std::sync::OnceLock::new();
+
+/// Record this binary's build identity. The first call wins.
+pub fn record_build(git_hash: &'static str, timestamp: &'static str) {
+    let _ = BUILD.set(Build {
+        git_hash,
+        timestamp,
+    });
+}
+
+/// This binary's build identity — `unknown`/`0` until [`record_build`] runs.
+pub fn build() -> Build {
+    BUILD.get().copied().unwrap_or(Build {
+        git_hash: "unknown",
+        timestamp: "0",
+    })
+}
+
 /// A parsed `requires.orion` range.
 #[derive(Debug, Clone)]
 pub struct OrionRequirement {

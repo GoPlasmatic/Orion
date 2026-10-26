@@ -59,6 +59,7 @@ orion-runtime = { version = "1.12.0", path = "crates/orion-runtime" }
 orion-storage = { version = "1.12.0", path = "crates/orion-storage" }
 orion-definitions = { version = "1.12.0", path = "crates/orion-definitions" }
 orion-extension-api = { version = "1.12.0", path = "crates/orion-extension-api" }
+orion-http = { version = "1.12.0", path = "crates/orion-http" }
 
 # utoipa#1645 fixes RUSTSEC-2026-0367/8/9 by moving Swagger UI's build to
 # ZIP 9. Keep the exact upstream revision until the fix is published.

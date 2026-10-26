@@ -127,6 +127,7 @@ mod trace_storage_test;
 mod typed_enum_dtos_test;
 mod user_facing_ids_test;
 mod v2_admin_refusals_test;
+mod v2_cli_contract_test;
 mod v2_connections_test;
 mod v2_connector_authority_test;
 mod v2_definitions_test;

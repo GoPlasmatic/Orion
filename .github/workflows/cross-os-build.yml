@@ -34,6 +34,7 @@ on:
       - "crates/orion-plugin-host/**"
       - "crates/orion-runtime/**"
       - "crates/orion-authoring/**"
+      - "crates/orion-http/**"
       - "crates/orion-server/build.rs"
       - "crates/orion-server/Cargo.toml"
       # dist ships macOS and Windows binaries for orion-cli too, so the
@@ -57,6 +58,7 @@ on:
       - "crates/orion-plugin-host/**"
       - "crates/orion-runtime/**"
       - "crates/orion-authoring/**"
+      - "crates/orion-http/**"
       - "crates/orion-server/build.rs"
       - "crates/orion-server/Cargo.toml"
       # dist ships macOS and Windows binaries for orion-cli too, so the

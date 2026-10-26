@@ -55,7 +55,8 @@ the loader, connectors, the data dialect and JWT), `crates/orion-plugin-host`
 (the serving node: channels and guards, the runtime generation and reload,
 cron, the trace queues, cluster coordination, the v2 extensions),
 `crates/orion-authoring` (definition sets, compile, fmt, clippy and the
-validation every definition passes) and
+validation every definition passes), `crates/orion-http` (the HTTP layer:
+the Axum router, every route, the middleware stack and the OpenAPI document) and
 `crates/orion-plugin-sdk` (the guest crate a plugin author links against; it
 depends on nothing else here). The end-to-end suite that drives the server with the CLI lives at the
 repo root (`tests/e2e/`). Bare cargo commands target the server via
@@ -68,7 +69,6 @@ crates/orion-server/
   lib.rs               # Public module declarations
   bootstrap.rs         # Startup sequence: config -> pools -> repos -> engine -> server
   cli.rs               # CLI subcommands (migrate, lint, dry-run, test, preflight, ...)
-  server/              # Axum routes (routes/), middleware, AppState
  tests/
   integration/         # Consolidated integration test binary (main.rs + *_test.rs modules)
   integration/common/  # Test helpers (test_app, json_request, body_json)
@@ -84,6 +84,7 @@ crates/orion-engine/   # Workflow engine: functions, operators, loader, connecto
 crates/orion-plugin-host/ # WebAssembly plugins: Wasmtime sandbox, manifest, handler, limits, wit/
 crates/orion-runtime/  # Serving node: channel/, runtime/, cron/, queue/, cluster/, extensions/, auth
 crates/orion-authoring/ # Authoring: definitions/ (check, compile, fmt, clippy), validation/
+crates/orion-http/     # HTTP layer: routes/ (admin, v2_admin, data, openapi), middleware, rate limiting
  migrations/           # SQLite / Postgres / MySQL migrations (embedded at compile time)
 crates/orion-cli/
  src/commands/         # clap subcommands (one file per command group)
@@ -315,7 +316,7 @@ secrets they need and the full procedure are in `RELEASING.md`.
    `[workspace.dependencies]` requirement together, then tags. A bare
    `v`-prefixed tag (`v1.0.0`) releases every package at that version, and
    lockstep is what keeps the rider crates (`orion-api`, `orion-client`,
-   `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-runtime`, `orion-authoring`, `orion-plugin-sdk`) publishable — their version always moves with a
+   `orion-definitions`, `orion-extension-api`, `orion-common`, `orion-storage`, `orion-engine`, `orion-plugin-host`, `orion-runtime`, `orion-authoring`, `orion-http`, `orion-plugin-sdk`) publishable — their version always moves with a
    release, so the skip-if-present rider publish can never leave
    `orion-server` resolving older crates.io content. The Helm chart needs **no** manual bump —
    `docker-release.yml` stamps both the chart version and `appVersion` from
