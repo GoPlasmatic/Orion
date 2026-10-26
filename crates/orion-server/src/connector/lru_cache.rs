@@ -1,18 +1,25 @@
-//! Generic bounded LRU cache for connection pools / clients.
+//! Generic bounded LRU cache for connection pools / clients — the one LRU
+//! the connection layer uses: the connectors' SQL pools
+//! ([`super::pool_cache::SqlPoolCache`]) and the v2 foundation providers'
+//! live pools both sit on it.
 //!
 //! Provides a shared, async-safe cache keyed by connector name.  Entries are
 //! lazily created via caller-supplied futures and evicted LRU when the cache
 //! reaches capacity.
+//!
+//! The entries are a [`hashlink::LinkedHashMap`] in recency order, so a hit
+//! moves its entry to the back and eviction pops the front: O(1) both ways.
+//! It replaced a map of access stamps whose eviction scanned every entry for
+//! the smallest. Every critical section is synchronous — no `.await` while
+//! the map is locked — so a plain mutex serves.
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hashlink::LinkedHashMap;
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
-
-use super::POOL_ACCESS_COUNTER;
 
 trait CacheKeyLookup {
     fn name(&self) -> &str;
@@ -109,34 +116,13 @@ impl std::io::Write for Sha256Writer {
     }
 }
 
-/// A cached entry with LRU tracking.
-struct CacheEntry<V> {
-    value: V,
-    last_access: AtomicU64,
-}
-
-impl<V> CacheEntry<V> {
-    fn new(value: V) -> Self {
-        Self {
-            value,
-            last_access: AtomicU64::new(POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed)),
-        }
-    }
-
-    fn touch(&self) {
-        self.last_access.store(
-            POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
-    }
-}
-
 /// A bounded, async-safe LRU cache.
 ///
 /// `V` must be `Clone` so callers can obtain an owned handle (connection /
 /// pool) without holding the lock.
 pub struct LruCache<V: Clone> {
-    entries: RwLock<HashMap<CacheKey, CacheEntry<V>>>,
+    /// Least recently used at the front.
+    entries: std::sync::Mutex<LinkedHashMap<CacheKey, V>>,
     flights: std::sync::Mutex<HashMap<CacheKey, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     invalidated: AtomicU64,
     max_entries: usize,
@@ -154,7 +140,7 @@ impl<V: Clone> LruCache<V> {
     #[cfg(test)]
     pub fn new(max_entries: usize, cache_label: &'static str) -> Self {
         Self {
-            entries: RwLock::new(HashMap::new()),
+            entries: std::sync::Mutex::new(LinkedHashMap::new()),
             flights: std::sync::Mutex::new(HashMap::new()),
             invalidated: AtomicU64::new(0),
             max_entries,
@@ -170,13 +156,27 @@ impl<V: Clone> LruCache<V> {
         handler: impl Fn(V) + Send + Sync + 'static,
     ) -> Self {
         Self {
-            entries: RwLock::new(HashMap::new()),
+            entries: std::sync::Mutex::new(LinkedHashMap::new()),
             flights: std::sync::Mutex::new(HashMap::new()),
             invalidated: AtomicU64::new(0),
             max_entries,
             cache_label,
             on_evict: Some(std::sync::Arc::new(handler)),
         }
+    }
+
+    /// The entry map. A panic while it was held leaves nothing half-written
+    /// that matters — every section is one map operation — so a poisoned lock
+    /// is taken over rather than propagated.
+    fn entries(&self) -> std::sync::MutexGuard<'_, LinkedHashMap<CacheKey, V>> {
+        self.entries.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `key`'s value, marked most recently used.
+    fn hit(entries: &mut LinkedHashMap<CacheKey, V>, key: &CacheKeyRef<'_>) -> Option<V> {
+        entries
+            .to_back(key as &dyn CacheKeyLookup)
+            .map(|v| v.clone())
     }
 
     fn dispose(&self, value: V) {
@@ -238,13 +238,9 @@ impl<V: Clone> LruCache<V> {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, E>>,
     {
-        // Fast path: read lock with zero-allocation borrowed lookup
-        {
-            let entries = self.entries.read().await;
-            if let Some(entry) = entries.get(&key as &dyn CacheKeyLookup) {
-                entry.touch();
-                return Ok(entry.value.clone());
-            }
+        // Fast path: a zero-allocation borrowed lookup.
+        if let Some(value) = Self::hit(&mut self.entries(), &key) {
+            return Ok(value);
         }
 
         // TD-08: Per-effective-key single-flight creation with bounded bookkeeping.
@@ -281,32 +277,29 @@ impl<V: Clone> LruCache<V> {
         };
         let _flight_guard = _cleanup.flight.lock().await;
 
-        // Re-check under the read lock in case an earlier holder of this flight
-        // already created and inserted the entry.
+        // Re-check in case an earlier holder of this flight already created
+        // and inserted the entry.
         let generation = {
-            let entries = self.entries.read().await;
-            if let Some(entry) = entries.get(&key as &dyn CacheKeyLookup) {
-                entry.touch();
-                return Ok(entry.value.clone());
+            let mut entries = self.entries();
+            if let Some(value) = Self::hit(&mut entries, &key) {
+                return Ok(value);
             }
             self.invalidated.load(Ordering::Acquire)
         };
 
-        // Create outside the write lock
+        // Create outside the lock
         let value = create_fn().await?;
 
-        // Insert under write lock; if another task raced across an eviction
+        // Insert under the lock; if another task raced across an eviction
         // boundary, use theirs and dispose ours.
-        let mut entries = self.entries.write().await;
+        let mut entries = self.entries();
         // Eviction also invalidates creations that have not inserted yet.
         // The caller can finish using its value, but it must not refill the
         // cache after a credential rotation or explicit invalidation.
         if self.invalidated.load(Ordering::Acquire) != generation {
             return Ok(value);
         }
-        if let Some(existing) = entries.get(&key as &dyn CacheKeyLookup) {
-            existing.touch();
-            let winner = existing.value.clone();
+        if let Some(winner) = Self::hit(&mut entries, &key) {
             // The race-losing value never enters the cache — hand it to the
             // evict handler (F17) like any other removed value, or a fully
             // connected pool/client silently leaks its connections.
@@ -314,24 +307,19 @@ impl<V: Clone> LruCache<V> {
             return Ok(winner);
         }
 
-        // LRU eviction when at capacity
+        // LRU eviction when at capacity: the front is the least recently used.
         if entries.len() >= self.max_entries
-            && let Some(lru_key) = entries
-                .iter()
-                .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
-                .map(|(k, _)| k.clone())
+            && let Some((lru_key, lru_value)) = entries.pop_front()
         {
             tracing::info!(
                 evicted = %lru_key.name,
                 cache = self.cache_label,
                 "Pool cache at capacity, evicting least-recently-used entry"
             );
-            if let Some(entry) = entries.remove(&lru_key) {
-                self.dispose(entry.value);
-            }
+            self.dispose(lru_value);
         }
 
-        entries.insert(owned_key, CacheEntry::new(value.clone()));
+        entries.insert(owned_key, value.clone());
         Ok(value)
     }
 
@@ -339,7 +327,7 @@ impl<V: Clone> LruCache<V> {
     /// removed value is handed to the evict handler (F17).
     pub async fn evict(&self, key: &str) {
         let removed = {
-            let mut entries = self.entries.write().await;
+            let mut entries = self.entries();
             self.invalidated.fetch_add(1, Ordering::Release);
             if let Ok(mut flights) = self.flights.lock() {
                 flights.retain(|k, _| k.name != key);
@@ -349,8 +337,8 @@ impl<V: Clone> LruCache<V> {
                 .filter_map(|k| entries.remove(&k))
                 .collect::<Vec<_>>()
         };
-        for entry in removed {
-            self.dispose(entry.value);
+        for value in removed {
+            self.dispose(value);
         }
     }
 
@@ -360,12 +348,12 @@ impl<V: Clone> LruCache<V> {
     /// each resync leaked the old pools' connections.
     pub async fn evict_all(&self) {
         let drained: Vec<V> = {
-            let mut entries = self.entries.write().await;
+            let mut entries = self.entries();
             self.invalidated.fetch_add(1, Ordering::Release);
             if let Ok(mut flights) = self.flights.lock() {
                 flights.clear();
             }
-            entries.drain().map(|(_, e)| e.value).collect()
+            entries.drain().map(|(_, value)| value).collect()
         };
         for value in drained {
             self.dispose(value);

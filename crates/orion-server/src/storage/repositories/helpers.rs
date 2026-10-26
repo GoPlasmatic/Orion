@@ -245,49 +245,6 @@ pub fn parse_sort_order(sort_order: Option<&str>) -> sea_query::Order {
     }
 }
 
-/// Read every matching row in bounded pages **inside one transaction**.
-///
-/// The export endpoints used to page with independent pool queries, so rows
-/// mutated mid-export could be skipped or duplicated — a documented
-/// non-guarantee the promotion docs had to warn about. One transaction makes
-/// the pages a consistent snapshot: SQLite pins its read snapshot at the
-/// transaction's first read, and both MySQL and Postgres explicitly use
-/// REPEATABLE READ through `DbPool::begin_snapshot_tx`, independently of
-/// their server or session defaults.
-///
-/// Invariant: `page_size` must lie in `1..=1000`, same reasoning as
-/// `collect_pages` in the route layer — a clamped page would read short and
-/// silently truncate the snapshot.
-pub async fn snapshot_pages<T: DbRow>(
-    pool: &DbPool,
-    page_size: i64,
-    mut select_for: impl FnMut(i64, i64) -> sea_query::SelectStatement,
-) -> Result<Vec<T>, OrionError> {
-    assert!(
-        (1..=1000).contains(&page_size),
-        "page_size {page_size} is outside the repository clamp (1..=1000); \
-         a clamped page would silently truncate the snapshot"
-    );
-    let mut tx = pool
-        .begin_snapshot_tx()
-        .await
-        .map_err(OrionError::Storage)?;
-    let mut out = Vec::new();
-    let mut offset = 0i64;
-    loop {
-        let (sql, values) =
-            crate::storage::build_sqlx(tx.backend(), &mut select_for(page_size, offset));
-        let page: Vec<T> = tx.fetch_all_as(&sql, values).await?;
-        let page_len = page.len() as i64;
-        out.extend(page);
-        if page_len < page_size {
-            tx.commit().await.map_err(OrionError::Storage)?;
-            return Ok(out);
-        }
-        offset += page_size;
-    }
-}
-
 /// The `LIKE` pattern for "this JSON array of strings contains `tag`".
 ///
 /// One implementation for the three tagged entities (workflows, channels,

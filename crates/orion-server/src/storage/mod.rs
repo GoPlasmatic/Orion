@@ -141,7 +141,7 @@ impl DbPool {
     ///
     /// D-item: this was a process-global `OnceLock<DbBackend>` set by
     /// `init_pool_no_migrate` and read by `build_sqlx`, `write_returning_row`,
-    /// `insert_if_absent`, `archive_latest_active` and `snapshot_pages`. A
+    /// `insert_if_absent` and `archive_latest_active`. A
     /// global made one process able to hold exactly one Orion store, which is
     /// why `schema_parity` could not go through `run_migrations`, why every
     /// repository unit test had to call `set_backend_for_test`, and why the

@@ -809,7 +809,15 @@ impl ProviderBackend for HttpProviderBackend {
 
 /// Community foundation PostgreSQL connector provider (`org.orion.postgresql`, `V2-14.3`).
 pub struct PostgresProviderBackend {
+    /// Admission, not pooling. The cached value is only a label (it is what an
+    /// invocation reports as its `session` metadata); what this layer does is
+    /// hold each invocation to the connection's capacity ceiling, shared
+    /// across its revisions and rotated secrets (`CTX-08`), and refuse an
+    /// identity once `dispose` has invalidated it. The other
+    /// SQL providers share this shape.
     sessions: Arc<VersionedSessionPool<String>>,
+    /// The connections themselves, keyed by identity and a digest of the
+    /// resolved target, closed when evicted.
     live_pools: crate::connector::lru_cache::LruCache<sqlx::PgPool>,
     deployments: Option<super::deployment_store::ImmutableDeploymentStore>,
     limits: SqlLimits,

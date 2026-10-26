@@ -3021,6 +3021,7 @@ dependencies = [
  "dataflow-rs",
  "futures",
  "governor",
+ "hashlink",
  "hex",
  "hmac",
  "ipnet",

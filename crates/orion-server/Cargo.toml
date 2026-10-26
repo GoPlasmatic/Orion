@@ -165,6 +165,9 @@ bytes = "1"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
+# The connection-pool LRU (`connector/lru_cache.rs`): a recency-ordered map, so
+# a hit and an eviction are O(1). Already in the tree through sqlx.
+hashlink = "0.11"
 # Wait-free publication of the ChannelRegistry snapshot: every data-plane
 # request reads it, and the only writer stores a finished value (N17).
 arc-swap = "1"
