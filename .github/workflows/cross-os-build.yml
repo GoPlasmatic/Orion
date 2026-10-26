@@ -86,7 +86,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
         with:
           toolchain: "stable"
 
@@ -96,7 +96,7 @@ jobs:
       # Windows or musl entry at all, so both of these runners recompiled the
       # full dependency graph every time. macOS bills at 10x and Windows at
       # 2x, which made it the most expensive cache miss in the repo.
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -116,12 +116,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (toolchain from `with`)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master (toolchain from `with`)
         with:
           toolchain: "stable"
           targets: x86_64-unknown-linux-musl
 
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
