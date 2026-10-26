@@ -406,6 +406,7 @@ fn claim_update_query(
     }
     let mut update = Query::update()
         .table(CronOccurrences::Table)
+        .value(CronOccurrences::UpdatedAt, helpers::updated_now())
         .value(CronOccurrences::Status, status::CLAIMED)
         .value(CronOccurrences::ClaimedBy, claimant)
         .value(
@@ -447,6 +448,7 @@ fn lease_claimed_query<'a>(
 ) -> sea_query::UpdateStatement {
     Query::update()
         .table(CronOccurrences::Table)
+        .value(CronOccurrences::UpdatedAt, helpers::updated_now())
         .value(CronOccurrences::Status, status::CLAIMED)
         .value(CronOccurrences::ClaimedBy, claimant)
         .value(
@@ -531,6 +533,7 @@ impl CronRepository for SqlCronRepository {
                 self.pool.backend(),
                 Query::update()
                     .table(ScheduleState::Table)
+                    .value(ScheduleState::UpdatedAt, helpers::updated_now())
                     .value(ScheduleState::ChannelVersion, cursor.channel_version)
                     .value(ScheduleState::ConfigHash, cursor.config_hash)
                     .value(ScheduleState::NextFireAt, cursor.next_fire_at)
@@ -567,6 +570,7 @@ impl CronRepository for SqlCronRepository {
                 self.pool.backend(),
                 Query::update()
                     .table(ScheduleState::Table)
+                    .value(ScheduleState::UpdatedAt, helpers::updated_now())
                     .value(ScheduleState::PausedAt, self.now_expr())
                     .and_where(Expr::col(ScheduleState::ChannelId).eq(channel_id))
                     .and_where(Expr::col(ScheduleState::PausedAt).is_null()),
@@ -592,6 +596,7 @@ impl CronRepository for SqlCronRepository {
                 self.pool.backend(),
                 Query::update()
                     .table(ScheduleState::Table)
+                    .value(ScheduleState::UpdatedAt, helpers::updated_now())
                     .value(ScheduleState::NextFireAt, to)
                     .and_where(Expr::col(ScheduleState::ChannelId).eq(channel_id))
                     .and_where(Expr::col(ScheduleState::NextFireAt).eq(from)),
@@ -790,6 +795,7 @@ impl CronRepository for SqlCronRepository {
             // matches nothing and the attempt is abandoned.
             let mut update = Query::update()
                 .table(CronOccurrences::Table)
+                .value(CronOccurrences::UpdatedAt, helpers::updated_now())
                 .value(CronOccurrences::Status, status::RUNNING)
                 .value(CronOccurrences::StartedAt, Expr::cust(now))
                 .value(CronOccurrences::ExecutingVersion, executing_version)
@@ -835,6 +841,7 @@ impl CronRepository for SqlCronRepository {
                 backend,
                 Query::update()
                     .table(CronOccurrences::Table)
+                    .value(CronOccurrences::UpdatedAt, helpers::updated_now())
                     .value(
                         CronOccurrences::ClaimedUntil,
                         Expr::cust(lease_until.clone()),
@@ -855,6 +862,7 @@ impl CronRepository for SqlCronRepository {
             let mut update = if held.slot == 0 {
                 Query::update()
                     .table(CronSingletons::Table)
+                    .value(CronSingletons::UpdatedAt, helpers::updated_now())
                     .value(CronSingletons::LeaseUntil, Expr::cust(lease_until))
                     .and_where(Expr::col(CronSingletons::OccurrenceId).eq(occurrence_id))
                     .and_where(Expr::col(CronSingletons::Holder).eq(claimant))
@@ -863,6 +871,7 @@ impl CronRepository for SqlCronRepository {
             } else {
                 Query::update()
                     .table(CronSingletonSlots::Table)
+                    .value(CronSingletonSlots::UpdatedAt, helpers::updated_now())
                     .value(CronSingletonSlots::LeaseUntil, Expr::cust(lease_until))
                     .and_where(Expr::col(CronSingletonSlots::Slot).eq(i64::from(held.slot)))
                     .and_where(Expr::col(CronSingletonSlots::OccurrenceId).eq(occurrence_id))
@@ -882,6 +891,7 @@ impl CronRepository for SqlCronRepository {
             let now = helpers::sql_now(backend);
             let mut update = Query::update()
                 .table(CronOccurrences::Table)
+                .value(CronOccurrences::UpdatedAt, helpers::updated_now())
                 .value(CronOccurrences::Status, settlement.status)
                 .value(CronOccurrences::CompletedAt, Expr::cust(now))
                 .value(CronOccurrences::ClaimedUntil, Option::<NaiveDateTime>::None)
@@ -923,6 +933,7 @@ impl CronRepository for SqlCronRepository {
                 self.pool.backend(),
                 Query::update()
                     .table(CronOccurrences::Table)
+                    .value(CronOccurrences::UpdatedAt, helpers::updated_now())
                     .value(CronOccurrences::Status, status::PENDING)
                     .value(CronOccurrences::ClaimedBy, Option::<String>::None)
                     .value(CronOccurrences::ClaimedUntil, Option::<NaiveDateTime>::None)
@@ -1010,6 +1021,7 @@ impl CronRepository for SqlCronRepository {
                 self.pool.backend(),
                 Query::update()
                     .table(CronOccurrences::Table)
+                    .value(CronOccurrences::UpdatedAt, helpers::updated_now())
                     .value(CronOccurrences::TraceId, trace_id)
                     .and_where(Expr::col(CronOccurrences::Id).eq(occurrence_id)),
             );
@@ -1061,6 +1073,7 @@ impl CronRepository for SqlCronRepository {
                 self.pool.backend(),
                 Query::update()
                     .table(CronOccurrences::Table)
+                    .value(CronOccurrences::UpdatedAt, helpers::updated_now())
                     .value(CronOccurrences::Status, status::PENDING)
                     .value(CronOccurrences::ClaimedBy, Option::<String>::None)
                     .value(CronOccurrences::ClaimedUntil, Option::<NaiveDateTime>::None)
@@ -1110,6 +1123,7 @@ impl CronRepository for SqlCronRepository {
                 backend,
                 Query::update()
                     .table(CronOccurrences::Table)
+                    .value(CronOccurrences::UpdatedAt, helpers::updated_now())
                     .value(CronOccurrences::Status, status::FAILED)
                     .value(CronOccurrences::ClaimedBy, Option::<String>::None)
                     .value(CronOccurrences::ClaimedUntil, Option::<NaiveDateTime>::None)
@@ -1134,6 +1148,7 @@ impl CronRepository for SqlCronRepository {
             for mut update in [
                 Query::update()
                     .table(CronSingletons::Table)
+                    .value(CronSingletons::UpdatedAt, helpers::updated_now())
                     .value(CronSingletons::LeaseUntil, Expr::cust(grace_until.clone()))
                     .and_where(Expr::col(CronSingletons::OccurrenceId).eq(id))
                     .and_where(
@@ -1142,6 +1157,7 @@ impl CronRepository for SqlCronRepository {
                     .to_owned(),
                 Query::update()
                     .table(CronSingletonSlots::Table)
+                    .value(CronSingletonSlots::UpdatedAt, helpers::updated_now())
                     .value(
                         CronSingletonSlots::LeaseUntil,
                         Expr::cust(grace_until.clone()),

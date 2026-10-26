@@ -188,7 +188,9 @@ impl TraceCompletedRow {
     }
 }
 
-/// Owned payload for a batched `set_result` write.
+/// Owned payload for a queued [`TraceSink::complete`]: a successful run's
+/// result. The queue completes a trace only on success — a failure is a
+/// status write — so the row carries no status of its own.
 #[derive(Debug, Clone)]
 pub struct TraceResultRow {
     pub id: String,
@@ -197,6 +199,38 @@ pub struct TraceResultRow {
     /// Optional per-task execution trace JSON. Populated only when the
     /// channel has `config.tracing.task_details = true`.
     pub task_trace_json: Option<String>,
+}
+
+impl TraceResultRow {
+    /// This row as the completion it stands for: `completed`, no error.
+    pub fn as_completion(&self) -> TraceCompletion<'_> {
+        TraceCompletion {
+            result_json: &self.result_json,
+            duration_ms: self.duration_ms,
+            task_trace_json: self.task_trace_json.as_deref(),
+            status: models::TRACE_STATUS_COMPLETED,
+            error_message: None,
+        }
+    }
+}
+
+/// A trace's last write — its result and its terminal status — which
+/// [`TraceSink::complete`] makes in one UPDATE.
+///
+/// It used to be two: the result, then the status. Besides the extra
+/// statement, the queued `batch` mode wrote the status at once and the result
+/// with the next flush, so a poller could see `completed` with no result.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceCompletion<'a> {
+    pub result_json: &'a str,
+    pub duration_ms: f64,
+    /// Optional per-task execution trace JSON. Populated only when the
+    /// channel has `config.tracing.task_details = true`.
+    pub task_trace_json: Option<&'a str>,
+    /// The terminal status: `completed` or `failed`.
+    pub status: &'a str,
+    /// Written only when present, as [`TraceSink::update_status`] does.
+    pub error_message: Option<&'a str>,
 }
 
 /// The 11 columns every completed-trace INSERT writes. The singular and batch
@@ -318,21 +352,26 @@ fn trace_not_found(id: &str) -> OrionError {
     OrionError::NotFound(format!("Trace '{id}' not found"))
 }
 
-/// The UPDATE both result-write paths share, for the same reason.
-fn result_update(
+/// The UPDATE both completion paths share, for the same reason.
+fn complete_update(
     id: &str,
-    result_json: &str,
-    duration_ms: f64,
-    task_trace_json: Option<&str>,
+    completion: TraceCompletion<'_>,
+    now: chrono::NaiveDateTime,
 ) -> sea_query::UpdateStatement {
-    let task_trace_val = super::helpers::optional_string_value(task_trace_json);
-    Query::update()
+    let task_trace_val = super::helpers::optional_string_value(completion.task_trace_json);
+    let mut update = Query::update()
         .table(Traces::Table)
-        .value(Traces::ResultJson, result_json)
-        .value(Traces::DurationMs, duration_ms)
+        .value(Traces::UpdatedAt, super::helpers::updated_now())
+        .value(Traces::Status, completion.status)
+        .value(Traces::ResultJson, completion.result_json)
+        .value(Traces::DurationMs, completion.duration_ms)
         .value(Traces::TaskTraceJson, task_trace_val)
-        .and_where(Expr::col(Traces::Id).eq(id))
-        .to_owned()
+        .value(Traces::CompletedAt, now)
+        .to_owned();
+    if let Some(err) = completion.error_message {
+        update.value(Traces::ErrorMessage, err);
+    }
+    update.and_where(Expr::col(Traces::Id).eq(id)).to_owned()
 }
 
 // -- Repository trait --
@@ -367,13 +406,9 @@ pub trait TraceSink: Send + Sync {
         status: &str,
         error_message: Option<&str>,
     ) -> Result<(), OrionError>;
-    async fn set_result(
-        &self,
-        id: &str,
-        result_json: &str,
-        duration_ms: f64,
-        task_trace_json: Option<&str>,
-    ) -> Result<(), OrionError>;
+    /// Write a trace's result and terminal status in one statement, setting
+    /// `completed_at`. `NotFound` when no trace has `id`.
+    async fn complete(&self, id: &str, completion: TraceCompletion<'_>) -> Result<(), OrionError>;
     async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError>;
 
     /// Batched variant of [`Self::store_completed`]. Default impl loops the singular
@@ -391,17 +426,11 @@ pub trait TraceSink: Send + Sync {
         Ok(ids)
     }
 
-    /// Batched variant of [`Self::set_result`]. Default impl loops the singular
+    /// Batched variant of [`Self::complete`]. Default impl loops the singular
     /// method; backend implementations can override using one transaction.
-    async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
+    async fn complete_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
         for row in rows {
-            self.set_result(
-                &row.id,
-                &row.result_json,
-                row.duration_ms,
-                row.task_trace_json.as_deref(),
-            )
-            .await?;
+            self.complete(&row.id, row.as_completion()).await?;
         }
         Ok(())
     }
@@ -524,7 +553,10 @@ impl TraceSink for SqlTraceRepository {
             };
 
             let mut update = Query::update();
-            update.table(Traces::Table).value(Traces::Status, status);
+            update
+                .table(Traces::Table)
+                .value(Traces::UpdatedAt, super::helpers::updated_now())
+                .value(Traces::Status, status);
 
             if let Some(err) = error_message {
                 update.value(Traces::ErrorMessage, err);
@@ -547,20 +579,17 @@ impl TraceSink for SqlTraceRepository {
         .await
     }
 
-    async fn set_result(
-        &self,
-        id: &str,
-        result_json: &str,
-        duration_ms: f64,
-        task_trace_json: Option<&str>,
-    ) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("traces.set_result", async {
+    async fn complete(&self, id: &str, completion: TraceCompletion<'_>) -> Result<(), OrionError> {
+        crate::metrics::timed_db_op("traces.complete", async {
+            let now = chrono::Utc::now().naive_utc();
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
-                &mut result_update(id, result_json, duration_ms, task_trace_json),
+                &mut complete_update(id, completion, now),
             );
-            self.pool.execute_query(&sql, values).await?;
-            Ok(())
+            match self.pool.execute_query(&sql, values).await? {
+                0 => Err(trace_not_found(id)),
+                _ => Ok(()),
+            }
         })
         .await
     }
@@ -612,21 +641,17 @@ impl TraceSink for SqlTraceRepository {
         .await
     }
 
-    async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
+    async fn complete_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
         if rows.is_empty() {
             return Ok(());
         }
-        crate::metrics::timed_db_op("traces.set_result_batch", async {
+        crate::metrics::timed_db_op("traces.complete_batch", async {
+            let now = chrono::Utc::now().naive_utc();
             let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
             for row in rows {
                 let (sql, values) = build_sqlx(
                     self.pool.backend(),
-                    &mut result_update(
-                        &row.id,
-                        &row.result_json,
-                        row.duration_ms,
-                        row.task_trace_json.as_deref(),
-                    ),
+                    &mut complete_update(&row.id, row.as_completion(), now),
                 );
                 tx.execute_query(&sql, values).await?;
             }

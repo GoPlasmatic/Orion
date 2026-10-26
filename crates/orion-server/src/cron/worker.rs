@@ -578,20 +578,6 @@ async fn execute(
     let has_errors = !execution.outcome.is_ok();
     let result_json = serde_json::to_string(&execution.data()).unwrap_or_else(|_| "{}".to_string());
 
-    if let Some(ref id) = trace_id
-        && crate::queue::trace_record::TracePlan::decide(&effective_trace, has_errors).persists()
-    {
-        let _ = deps
-            .trace_repo
-            .set_result(
-                id,
-                &result_json,
-                duration.as_secs_f64() * 1000.0,
-                task_trace_json.as_deref(),
-            )
-            .await;
-    }
-
     let (occurrence_status, error_message) = match execution.outcome {
         crate::engine::RunOutcome::Ok => (status::COMPLETED, None),
         crate::engine::RunOutcome::WorkflowErrors(summary) => (status::FAILED, Some(summary)),
@@ -601,18 +587,33 @@ async fn execute(
         crate::engine::RunOutcome::EngineError(e) => (status::FAILED, Some(e.to_string())),
     };
     if let Some(ref id) = trace_id {
-        let _ = deps
-            .trace_repo
-            .update_status(
-                id,
-                if occurrence_status == status::COMPLETED {
-                    crate::storage::models::TRACE_STATUS_COMPLETED
-                } else {
-                    crate::storage::models::TRACE_STATUS_FAILED
-                },
-                error_message.as_deref(),
-            )
-            .await;
+        let trace_status = if occurrence_status == status::COMPLETED {
+            crate::storage::models::TRACE_STATUS_COMPLETED
+        } else {
+            crate::storage::models::TRACE_STATUS_FAILED
+        };
+        // The result and the terminal status in one write; a trace whose
+        // result the plan drops still gets its status.
+        if crate::queue::trace_record::TracePlan::decide(&effective_trace, has_errors).persists() {
+            let _ = deps
+                .trace_repo
+                .complete(
+                    id,
+                    crate::storage::repositories::traces::TraceCompletion {
+                        result_json: &result_json,
+                        duration_ms: duration.as_secs_f64() * 1000.0,
+                        task_trace_json: task_trace_json.as_deref(),
+                        status: trace_status,
+                        error_message: error_message.as_deref(),
+                    },
+                )
+                .await;
+        } else {
+            let _ = deps
+                .trace_repo
+                .update_status(id, trace_status, error_message.as_deref())
+                .await;
+        }
     }
 
     crate::metrics::record_cron_occurrence(occurrence_status);

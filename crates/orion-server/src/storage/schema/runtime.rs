@@ -117,6 +117,7 @@ pub enum CronSingletonSlots {
     Holder,
     FencingToken,
     LeaseUntil,
+    UpdatedAt,
 }
 
 // ============================================================

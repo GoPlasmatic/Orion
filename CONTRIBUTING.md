@@ -146,7 +146,13 @@ a new numbered file to **each** of
 Each set starts at `001_v2_baseline.sql`, the whole schema of an Orion 2 state
 database; Orion 1.x databases are refused at startup rather than upgraded. To
 bootstrap the set for a new backend, copy an existing backend's baseline and
-adapt the dialect by hand (types, triggers) — there is no generator.
+adapt the dialect by hand (types) — there is no generator.
+
+There are no triggers. A table's `updated_at` is written by the UPDATE itself
+(`helpers::updated_now()` in `storage/repositories/`), so a new UPDATE on a
+table with that column must set it; `schema_parity.rs` refuses a trigger on any
+backend, and the repository contract (`tests/support/repository_contract.rs`)
+checks that each UPDATE moves the column.
 
 **The three sequences are independent after the baseline.** Each backend has its
 own directory and its own numbering, and a change that applies to only two of

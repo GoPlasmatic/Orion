@@ -485,12 +485,10 @@ mod tests {
                 .push((id.to_string(), status.to_string()));
             Ok(())
         }
-        async fn set_result(
+        async fn complete(
             &self,
             _id: &str,
-            _result_json: &str,
-            _duration_ms: f64,
-            _task_trace_json: Option<&str>,
+            _completion: crate::storage::repositories::traces::TraceCompletion<'_>,
         ) -> Result<(), OrionError> {
             unimplemented!("the retry path does not write results")
         }

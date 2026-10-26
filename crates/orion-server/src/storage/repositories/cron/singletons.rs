@@ -82,6 +82,7 @@ pub(super) async fn take_slot(
         SlotRow::Legacy { key } => (
             Query::update()
                 .table(CronSingletons::Table)
+                .value(CronSingletons::UpdatedAt, helpers::updated_now())
                 .value(CronSingletons::OccurrenceId, occurrence_id)
                 .value(CronSingletons::Holder, holder)
                 .value(
@@ -131,6 +132,7 @@ pub(super) async fn take_slot(
         SlotRow::Extra { key, slot } => (
             Query::update()
                 .table(CronSingletonSlots::Table)
+                .value(CronSingletonSlots::UpdatedAt, helpers::updated_now())
                 .value(CronSingletonSlots::OccurrenceId, occurrence_id)
                 .value(CronSingletonSlots::Holder, holder)
                 .value(

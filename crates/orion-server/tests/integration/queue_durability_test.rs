@@ -47,16 +47,12 @@ impl TraceSink for FailFirstRunningWrite {
         }
         self.inner.update_status(id, status, error_message).await
     }
-    async fn set_result(
+    async fn complete(
         &self,
         id: &str,
-        result_json: &str,
-        duration_ms: f64,
-        task_trace_json: Option<&str>,
+        completion: orion::storage::repositories::traces::TraceCompletion<'_>,
     ) -> Result<(), OrionError> {
-        self.inner
-            .set_result(id, result_json, duration_ms, task_trace_json)
-            .await
+        self.inner.complete(id, completion).await
     }
     async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         self.inner.store_completed(row).await
@@ -67,8 +63,8 @@ impl TraceSink for FailFirstRunningWrite {
     ) -> Result<Vec<String>, OrionError> {
         self.inner.store_completed_batch(rows).await
     }
-    async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
-        self.inner.set_result_batch(rows).await
+    async fn complete_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
+        self.inner.complete_batch(rows).await
     }
 }
 
@@ -168,7 +164,7 @@ async fn failed_running_write_routes_message_to_dlq() {
     );
 }
 
-/// Delegating wrapper that fails every `set_result`, exercising the
+/// Delegating wrapper that fails every `complete`, exercising the
 /// 3-attempt inline retry and its marked-failed fallback.
 struct FailAllResultWrites {
     inner: Arc<SqlTraceRepository>,
@@ -196,12 +192,10 @@ impl TraceSink for FailAllResultWrites {
     ) -> Result<(), OrionError> {
         self.inner.update_status(id, status, error_message).await
     }
-    async fn set_result(
+    async fn complete(
         &self,
         _id: &str,
-        _result_json: &str,
-        _duration_ms: f64,
-        _task_trace_json: Option<&str>,
+        _completion: orion::storage::repositories::traces::TraceCompletion<'_>,
     ) -> Result<(), OrionError> {
         Err(OrionError::Storage(sqlx::Error::PoolTimedOut))
     }
@@ -214,8 +208,8 @@ impl TraceSink for FailAllResultWrites {
     ) -> Result<Vec<String>, OrionError> {
         self.inner.store_completed_batch(rows).await
     }
-    async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
-        self.inner.set_result_batch(rows).await
+    async fn complete_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
+        self.inner.complete_batch(rows).await
     }
 }
 
@@ -281,7 +275,7 @@ async fn run_one_message_to_terminal_status(
     panic!("trace never reached a terminal status");
 }
 
-/// The 3-attempt inline set_result retry must give up and mark the trace
+/// The 3-attempt inline completion retry must give up and mark the trace
 /// FAILED with the retries message — not leave it running or lie completed.
 #[tokio::test]
 async fn persistent_set_result_failure_marks_trace_failed_after_retries() {
@@ -401,12 +395,10 @@ impl TraceSink for ConcurrencyProbeRepo {
         self.current.fetch_sub(1, Ordering::SeqCst);
         Ok(())
     }
-    async fn set_result(
+    async fn complete(
         &self,
         _id: &str,
-        _result_json: &str,
-        _duration_ms: f64,
-        _task_trace_json: Option<&str>,
+        _completion: orion::storage::repositories::traces::TraceCompletion<'_>,
     ) -> Result<(), OrionError> {
         unimplemented!()
     }
@@ -493,12 +485,10 @@ impl TraceSink for FlakyUpdateStatusRepo {
         }
         Ok(())
     }
-    async fn set_result(
+    async fn complete(
         &self,
         _id: &str,
-        _result_json: &str,
-        _duration_ms: f64,
-        _task_trace_json: Option<&str>,
+        _completion: orion::storage::repositories::traces::TraceCompletion<'_>,
     ) -> Result<(), OrionError> {
         unimplemented!()
     }
@@ -572,12 +562,10 @@ impl TraceSink for BatchSizeProbeRepo {
     ) -> Result<(), OrionError> {
         unimplemented!()
     }
-    async fn set_result(
+    async fn complete(
         &self,
         _id: &str,
-        _result_json: &str,
-        _duration_ms: f64,
-        _task_trace_json: Option<&str>,
+        _completion: orion::storage::repositories::traces::TraceCompletion<'_>,
     ) -> Result<(), OrionError> {
         unimplemented!()
     }

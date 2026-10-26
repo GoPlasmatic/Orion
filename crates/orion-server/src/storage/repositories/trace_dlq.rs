@@ -250,6 +250,7 @@ fn claim_update_query(
     }
     let mut update = Query::update()
         .table(TraceDlq::Table)
+        .value(TraceDlq::UpdatedAt, super::helpers::updated_now())
         .value(TraceDlq::ClaimedBy, claimant)
         .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until.to_owned()))
         .and_where(Expr::col(TraceDlq::Id).in_subquery(due_ids))
@@ -285,6 +286,7 @@ fn lease_claimed_query<'a>(
 ) -> sea_query::UpdateStatement {
     Query::update()
         .table(TraceDlq::Table)
+        .value(TraceDlq::UpdatedAt, super::helpers::updated_now())
         .value(TraceDlq::ClaimedBy, claimant)
         .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until.to_owned()))
         .and_where(Expr::col(TraceDlq::Id).is_in(ids))
@@ -445,6 +447,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 clear_lease(
                     Query::update()
                         .table(TraceDlq::Table)
+                        .value(TraceDlq::UpdatedAt, super::helpers::updated_now())
                         .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
                         .value(TraceDlq::NextRetryAt, next_retry_at),
                 )
@@ -479,6 +482,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 clear_lease(
                     Query::update()
                         .table(TraceDlq::Table)
+                        .value(TraceDlq::UpdatedAt, super::helpers::updated_now())
                         .value(TraceDlq::RetryCount, Expr::col(TraceDlq::MaxRetries)),
                 )
                 .and_where(Expr::col(TraceDlq::Id).eq(id)),
@@ -524,6 +528,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
             let mut update = clear_lease(
                 Query::update()
                     .table(TraceDlq::Table)
+                    .value(TraceDlq::UpdatedAt, super::helpers::updated_now())
                     .value(TraceDlq::RetryCount, 0i64)
                     .value(TraceDlq::NextRetryAt, now),
             )

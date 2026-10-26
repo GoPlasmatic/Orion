@@ -278,7 +278,7 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
 #[tokio::test]
 async fn async_request_with_task_details_captures_and_returns_task_trace_json() {
     // Async traces are processed by the queue worker, which must use the
-    // with-trace engine entrypoint and persist task_trace_json via set_result.
+    // with-trace engine entrypoint and persist task_trace_json via complete.
     let app = test_app().await;
 
     let (channel_name, _) = create_and_activate_channel_with_config(

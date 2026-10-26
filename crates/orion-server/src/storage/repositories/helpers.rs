@@ -53,6 +53,18 @@ pub fn sql_now(backend: crate::storage::DbBackend) -> &'static str {
     }
 }
 
+/// What every UPDATE on a table with an `updated_at` column writes to it.
+///
+/// The statement sets it itself; there is no trigger behind it. Per-table
+/// `updated_at` triggers did this until `003_drop_updated_at_triggers`, and on
+/// SQLite each one was a second UPDATE per UPDATE. `CURRENT_TIMESTAMP` is the
+/// value they wrote, and it renders the same on all three backends (SQLite's
+/// is the text `datetime('now')` produces). Any new UPDATE on `traces`,
+/// `trace_dlq` or a cron table must set it, or the row keeps its old time.
+pub fn updated_now() -> sea_query::SimpleExpr {
+    sea_query::Expr::cust("CURRENT_TIMESTAMP")
+}
+
 /// `sql_now` plus a positive offset in seconds, per backend.
 pub fn sql_now_plus_secs(backend: crate::storage::DbBackend, secs: u64) -> String {
     match backend {
@@ -358,15 +370,14 @@ pub enum WriteStatement<'a> {
 impl WriteStatement<'_> {
     /// Whether `RETURNING *` on this backend yields the row as stored.
     ///
-    /// Postgres: yes for both kinds — its `updated_at` maintenance is a
-    /// BEFORE UPDATE trigger, which RETURNING observes. SQLite: INSERTs only;
-    /// its `updated_at` is written by an AFTER UPDATE trigger's *second*
-    /// UPDATE, which RETURNING does not observe, so an UPDATE's returned row
-    /// would carry the pre-update timestamp. MySQL: no RETURNING at all.
+    /// Postgres and SQLite: yes for both kinds — an UPDATE sets its own
+    /// `updated_at` ([`updated_now`]), so the returned row carries the new
+    /// time. (SQLite's UPDATEs could not use it while an AFTER UPDATE trigger
+    /// wrote `updated_at` in a second statement RETURNING never saw.) MySQL:
+    /// no RETURNING at all.
     fn supports_returning(&self, backend: crate::storage::DbBackend) -> bool {
         match backend {
-            crate::storage::DbBackend::Postgres => true,
-            crate::storage::DbBackend::Sqlite => matches!(self, Self::Insert(_)),
+            crate::storage::DbBackend::Postgres | crate::storage::DbBackend::Sqlite => true,
             crate::storage::DbBackend::Mysql => false,
         }
     }
@@ -746,12 +757,11 @@ mod tests {
 
     // -- D23: one write, one row back --
 
-    /// The backend dispatch `write_returning_row` rides on. Postgres reflects
-    /// its BEFORE UPDATE `updated_at` trigger in RETURNING; SQLite's is an
-    /// AFTER UPDATE trigger RETURNING cannot see, so only its INSERTs may
-    /// take the single-statement path; MySQL has no RETURNING at all.
+    /// The backend dispatch `write_returning_row` rides on. An UPDATE sets its
+    /// own `updated_at`, so RETURNING reflects the stored row on Postgres and
+    /// SQLite for both statement kinds; MySQL has no RETURNING at all.
     #[test]
-    fn returning_dispatch_matches_backend_trigger_semantics() {
+    fn returning_dispatch_matches_backend_semantics() {
         use crate::storage::DbBackend::{Mysql, Postgres, Sqlite};
         use crate::storage::schema::Traces;
 
@@ -768,7 +778,7 @@ mod tests {
         assert!(WriteStatement::Insert(&mut insert).supports_returning(Postgres));
         assert!(WriteStatement::Update(&mut update).supports_returning(Postgres));
         assert!(WriteStatement::Insert(&mut insert).supports_returning(Sqlite));
-        assert!(!WriteStatement::Update(&mut update).supports_returning(Sqlite));
+        assert!(WriteStatement::Update(&mut update).supports_returning(Sqlite));
         assert!(!WriteStatement::Insert(&mut insert).supports_returning(Mysql));
         assert!(!WriteStatement::Update(&mut update).supports_returning(Mysql));
     }

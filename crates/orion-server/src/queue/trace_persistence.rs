@@ -1,6 +1,6 @@
 //! Background queue for trace persistence writes.
 //!
-//! Routes `store_completed`, `set_result`, and `update_status` calls off the
+//! Routes `store_completed`, `complete`, and `update_status` calls off the
 //! request path so the HTTP response doesn't block on a single-writer SQLite
 //! INSERT. Two flavours of worker behind the same submission interface:
 //!
@@ -39,8 +39,9 @@ use crate::storage::repositories::traces::{TraceCompletedRow, TraceResultRow, Tr
 pub enum TracePersistenceTask {
     /// Equivalent to `trace_repo.store_completed(...)`.
     StoreCompleted(TraceCompletedRow),
-    /// Equivalent to `trace_repo.set_result(id, result_json, duration_ms, task_trace_json)`.
-    SetResult(TraceResultRow),
+    /// Equivalent to `trace_repo.complete(id, row.as_completion())`: the
+    /// result and the `completed` status, in one write.
+    Complete(TraceResultRow),
     /// Equivalent to `trace_repo.update_status(id, status, error_message)`.
     UpdateStatus {
         id: String,
@@ -340,7 +341,7 @@ async fn run_batch_worker(
                         batch_bytes += completed_weight(&row);
                         completed.push(row);
                     }
-                    TracePersistenceTask::SetResult(row) => {
+                    TracePersistenceTask::Complete(row) => {
                         batch_bytes += result_weight(&row);
                         results.push(row);
                     }
@@ -390,10 +391,10 @@ const WRITE_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(50), Duration::
 /// Run `op` with the bounded retry schedule. Returns `Err` only after every
 /// attempt failed. `pub(super)` so the queue worker's inline sync-mode result
 /// write shares this schedule instead of keeping a second one.
-pub(super) async fn with_write_retries<F, Fut>(mut op: F) -> Result<(), crate::errors::OrionError>
+pub(super) async fn with_write_retries<T, F, Fut>(mut op: F) -> Result<T, crate::errors::OrionError>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
+    Fut: std::future::Future<Output = Result<T, crate::errors::OrionError>>,
 {
     let mut last_err = None;
     for (attempt, delay) in std::iter::once(Duration::ZERO)
@@ -405,7 +406,7 @@ where
             tracing::debug!(attempt, "trace_persistence: retrying failed write");
         }
         match op().await {
-            Ok(()) => return Ok(()),
+            Ok(value) => return Ok(value),
             Err(e) => last_err = Some(e),
         }
     }
@@ -418,15 +419,8 @@ async fn dispatch_one(trace_repo: &Arc<dyn TraceSink>, task: TracePersistenceTas
             TracePersistenceTask::StoreCompleted(row) => {
                 trace_repo.store_completed(row.as_view()).await.map(|_| ())
             }
-            TracePersistenceTask::SetResult(row) => {
-                trace_repo
-                    .set_result(
-                        &row.id,
-                        &row.result_json,
-                        row.duration_ms,
-                        row.task_trace_json.as_deref(),
-                    )
-                    .await
+            TracePersistenceTask::Complete(row) => {
+                trace_repo.complete(&row.id, row.as_completion()).await
             }
             TracePersistenceTask::UpdateStatus {
                 id,
@@ -477,13 +471,13 @@ async fn flush_batches(
     }
     if !results.is_empty() {
         if let Err(e) =
-            with_write_retries(|| async { trace_repo.set_result_batch(results).await }).await
+            with_write_retries(|| async { trace_repo.complete_batch(results).await }).await
         {
             crate::metrics::record_trace_persistence_failure();
             tracing::warn!(
                 error = %e,
                 dropped = results.len(),
-                "trace_persistence: set_result_batch failed after retries, dropping"
+                "trace_persistence: complete_batch failed after retries, dropping"
             );
         }
         results.clear();

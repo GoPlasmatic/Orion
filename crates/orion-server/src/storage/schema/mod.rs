@@ -191,6 +191,7 @@ mod tests {
                 Iden::to_string(&CronSingletonSlots::Holder),
                 Iden::to_string(&CronSingletonSlots::FencingToken),
                 Iden::to_string(&CronSingletonSlots::LeaseUntil),
+                Iden::to_string(&CronSingletonSlots::UpdatedAt),
                 Iden::to_string(&CronOccurrences::SingletonSlot),
             ]
             .to_vec(),
@@ -202,6 +203,7 @@ mod tests {
                 "holder",
                 "fencing_token",
                 "lease_until",
+                "updated_at",
                 "singleton_slot",
             ]
         );

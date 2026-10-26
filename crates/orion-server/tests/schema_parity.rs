@@ -38,8 +38,10 @@
 //!   index — exists everywhere with deliberately different key columns for the
 //!   same reason; it is allow-listed by name in `DIVERGENT_INDEX_COLUMNS`.
 //! - **Defaults, collation, storage parameters.** Not compared.
-//! - **Trigger bodies.** Not compared: the only triggers left keep
-//!   `updated_at` current, and each dialect spells that its own way.
+//! - **Trigger bodies.** There are none to compare: every UPDATE sets its own
+//!   `updated_at`, and `003_drop_updated_at_triggers` removed the triggers
+//!   that used to. Each backend is asserted to have no triggers at all (and
+//!   Postgres no trigger function), so one cannot come back on one backend.
 //!
 //! Nullability *is* compared. A column that is `NOT NULL` on two backends and
 //! nullable on the third is the same silent-until-fatal drift as a width
@@ -135,6 +137,9 @@ struct Schema {
     /// stale by an `ALTER TABLE` is the failure this catches (Postgres and
     /// MySQL do not rebuild a view's column list).
     views: BTreeMap<String, BTreeSet<String>>,
+    /// Trigger names (and, on Postgres, user-defined functions). Expected
+    /// empty everywhere — see the module docs.
+    triggers: BTreeSet<String>,
 }
 
 /// Objects that legitimately exist on some backends only, with the reason.
@@ -350,6 +355,13 @@ async fn sqlite_schema() -> Schema {
     .expect("list sqlite indexes");
     schema.indexes = collect_index_columns(indexes);
 
+    let triggers: Vec<(String,)> =
+        sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+            .fetch_all(&pool)
+            .await
+            .expect("list sqlite triggers");
+    schema.triggers = triggers.into_iter().map(|(name,)| name).collect();
+
     schema
 }
 
@@ -430,6 +442,17 @@ async fn postgres_schema(pool: &sqlx::PgPool) -> Schema {
     .expect("introspect postgres indexes");
     schema.indexes = collect_index_columns(indexes);
 
+    let triggers: Vec<(String,)> = sqlx::query_as(
+        "SELECT trigger_name::text FROM information_schema.triggers \
+         WHERE trigger_schema = 'public' \
+         UNION SELECT routine_name::text || '()' FROM information_schema.routines \
+         WHERE routine_schema = 'public'",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("introspect postgres triggers");
+    schema.triggers = triggers.into_iter().map(|(name,)| name).collect();
+
     schema
 }
 
@@ -486,6 +509,15 @@ async fn mysql_schema(pool: &sqlx::MySqlPool) -> Schema {
     .await
     .expect("introspect mysql indexes");
     schema.indexes = collect_index_columns(indexes);
+
+    let triggers: Vec<(String,)> = sqlx::query_as(
+        "SELECT CAST(TRIGGER_NAME AS CHAR) FROM information_schema.TRIGGERS \
+         WHERE TRIGGER_SCHEMA = DATABASE()",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("introspect mysql triggers");
+    schema.triggers = triggers.into_iter().map(|(name,)| name).collect();
 
     schema
 }
@@ -879,6 +911,11 @@ async fn sqlite_schema_is_introspectable() {
         );
     }
     assert!(schema.views.is_empty(), "found {:?}", schema.views);
+    assert!(
+        schema.triggers.is_empty(),
+        "every UPDATE sets its own updated_at; found triggers {:?}",
+        schema.triggers
+    );
 
     // A schema compared with itself is the identity case for the comparator.
     let again = sqlite_schema().await;
@@ -966,6 +1003,18 @@ async fn schema_is_identical_across_backends() {
     assert_non_trivial("sqlite", &sqlite);
     assert_non_trivial("postgres", &postgres);
     assert_non_trivial("mysql", &mysql);
+    for (name, schema) in [
+        ("sqlite", &sqlite),
+        ("postgres", &postgres),
+        ("mysql", &mysql),
+    ] {
+        assert!(
+            schema.triggers.is_empty(),
+            "{name}: every UPDATE sets its own updated_at, so there are no \
+             triggers to keep; found {:?}",
+            schema.triggers
+        );
+    }
 
     let mut problems = differences("sqlite", &sqlite, "postgres", &postgres);
     problems.extend(differences("sqlite", &sqlite, "mysql", &mysql));

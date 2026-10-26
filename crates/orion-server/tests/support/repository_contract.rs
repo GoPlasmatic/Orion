@@ -40,6 +40,7 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     a_deployment_audit_row_commits_with_the_head(backend, pool).await;
     the_artifact_collector_judges_its_grace_on_the_database_clock(backend, pool).await;
     source_leases_are_won_once_and_judged_on_the_database_clock(backend, pool).await;
+    every_update_moves_updated_at(backend, pool).await;
 }
 
 /// A deployment store manifest of one workflow member over `digest`.
@@ -606,4 +607,327 @@ async fn source_leases_are_won_once_and_judged_on_the_database_clock(backend: &s
         Some((7, serde_json::json!({"lsn": 7}), 2)),
         "{backend}"
     );
+}
+
+/// Long before any write this test makes.
+const BACKDATED: &str = "2000-01-01 00:00:00";
+
+/// Set `updated_at` on the row of `table` whose `key_col` is `key` back to
+/// [`BACKDATED`], through a statement that sets nothing else.
+async fn backdate(pool: &DbPool, table: &str, key_col: &str, key: &str) {
+    use sea_query::{Alias, Expr, ExprTrait, Query};
+    let (sql, values) = orion::storage::build_sqlx(
+        pool.backend(),
+        Query::update()
+            .table(Alias::new(table))
+            .value(
+                Alias::new("updated_at"),
+                Expr::cust(format!("'{BACKDATED}'")),
+            )
+            .and_where(Expr::col(Alias::new(key_col)).eq(key)),
+    );
+    pool.execute_query(&sql, values)
+        .await
+        .unwrap_or_else(|e| panic!("backdate {table}: {e}"));
+}
+
+async fn updated_at(pool: &DbPool, table: &str, key_col: &str, key: &str) -> chrono::NaiveDateTime {
+    use sea_query::{Alias, Expr, ExprTrait, Query};
+    let (sql, values) = orion::storage::build_sqlx(
+        pool.backend(),
+        Query::select()
+            .column(Alias::new("updated_at"))
+            .from(Alias::new(table))
+            .and_where(Expr::col(Alias::new(key_col)).eq(key)),
+    );
+    let (at,): (chrono::NaiveDateTime,) = pool
+        .fetch_one_as(&sql, values)
+        .await
+        .unwrap_or_else(|e| panic!("read {table}.updated_at: {e}"));
+    at
+}
+
+/// Assert `write` moved the row's `updated_at` off [`BACKDATED`]: the
+/// statement sets it, since no trigger does any more
+/// (`003_drop_updated_at_triggers`).
+async fn assert_moves<F: std::future::Future<Output = ()>>(
+    backend: &str,
+    pool: &DbPool,
+    (table, key_col, key): (&str, &str, &str),
+    what: &str,
+    write: F,
+) {
+    backdate(pool, table, key_col, key).await;
+    let before = updated_at(pool, table, key_col, key).await;
+    write.await;
+    let after = updated_at(pool, table, key_col, key).await;
+    assert!(
+        after > before,
+        "{backend}: {what} must move {table}.updated_at (was {before}, now {after})"
+    );
+}
+
+/// Every UPDATE on the tables that carry an `updated_at` without a trigger
+/// behind it — traces, trace_dlq and the four cron tables — sets the column
+/// itself.
+async fn every_update_moves_updated_at(backend: &str, pool: &DbPool) {
+    use orion::storage::repositories::cron::{
+        AttemptStart, ClaimRequest, CronRepository, NewOccurrence, ScheduleCursor, Settlement,
+        SingletonRequest, SqlCronRepository, status, trigger,
+    };
+    use orion::storage::repositories::trace_dlq::{
+        DlqEnqueue, SqlTraceDlqRepository, TraceDlqRepository,
+    };
+    use orion::storage::repositories::traces::{SqlTraceRepository, TraceCompletion, TraceSink};
+
+    // traces: the status write and the one-statement completion.
+    let traces = SqlTraceRepository::new(pool.clone());
+    let trace = traces
+        .create_pending("ua-ch", None, "async", Some("{}"), None)
+        .await
+        .expect("create trace");
+    let row = ("traces", "id", trace.id.as_str());
+    assert_moves(backend, pool, row, "update_status", async {
+        traces
+            .update_status(&trace.id, "running", None)
+            .await
+            .expect("update_status");
+    })
+    .await;
+    assert_moves(backend, pool, row, "complete", async {
+        traces
+            .complete(
+                &trace.id,
+                TraceCompletion {
+                    result_json: r#"{"ok":true}"#,
+                    duration_ms: 1.0,
+                    task_trace_json: None,
+                    status: "completed",
+                    error_message: None,
+                },
+            )
+            .await
+            .expect("complete");
+    })
+    .await;
+    let done = orion::storage::repositories::traces::TraceReader::get_by_id(&traces, &trace.id)
+        .await
+        .expect("read trace");
+    assert_eq!(done.status, "completed", "{backend}");
+    assert_eq!(
+        done.result_json.as_deref(),
+        Some(r#"{"ok":true}"#),
+        "{backend}"
+    );
+    assert!(
+        done.completed_at.is_some(),
+        "{backend}: complete sets completed_at"
+    );
+
+    // trace_dlq: every UPDATE the retry loop and the admin API make.
+    let dlq = SqlTraceDlqRepository::new(pool.clone());
+    let entry = dlq
+        .enqueue(DlqEnqueue {
+            trace_id: "ua-trace",
+            channel: "ua-ch",
+            payload_json: "{}",
+            metadata_json: "{}",
+            error_message: "boom",
+            retry_count: 0,
+            max_retries: 5,
+        })
+        .await
+        .expect("enqueue");
+    let row = ("trace_dlq", "id", entry.id.as_str());
+    assert_moves(backend, pool, row, "requeue", async {
+        let returned = dlq.requeue(&entry.id).await.expect("requeue");
+        assert!(
+            returned.updated_at.and_utc().timestamp() > 946_684_800,
+            "{backend}: the row requeue returns carries the new updated_at, not the old one"
+        );
+    })
+    .await;
+    // Due an hour ago, so the claim below finds it whatever the clocks say.
+    assert_moves(backend, pool, row, "record_retry", async {
+        dlq.record_retry(
+            &entry.id,
+            chrono::Utc::now().naive_utc() - chrono::Duration::hours(1),
+        )
+        .await
+        .expect("record_retry");
+    })
+    .await;
+    assert_moves(backend, pool, row, "claim_pending", async {
+        let claimed = dlq.claim_pending("ua-node", 100, 60).await.expect("claim");
+        assert!(
+            claimed.iter().any(|e| e.id == entry.id),
+            "{backend}: the entry is due"
+        );
+    })
+    .await;
+    assert_moves(backend, pool, row, "mark_exhausted", async {
+        dlq.mark_exhausted(&entry.id).await.expect("mark_exhausted");
+    })
+    .await;
+
+    // cron_schedule_state: the cursor's three UPDATEs.
+    let cron = SqlCronRepository::new(pool.clone());
+    let now = cron.db_now().await.expect("db now");
+    let cursor = |next_fire_at| ScheduleCursor {
+        channel_id: "ua-cron",
+        channel_version: 1,
+        config_hash: "h",
+        next_fire_at,
+    };
+    cron.upsert_cursor(cursor(now))
+        .await
+        .expect("insert cursor");
+    let row = ("cron_schedule_state", "channel_id", "ua-cron");
+    let later = now + chrono::Duration::minutes(5);
+    assert_moves(backend, pool, row, "upsert_cursor (update)", async {
+        cron.upsert_cursor(cursor(later))
+            .await
+            .expect("update cursor");
+    })
+    .await;
+    assert_moves(backend, pool, row, "advance_cursor", async {
+        let advanced = cron
+            .advance_cursor("ua-cron", later, later + chrono::Duration::minutes(5))
+            .await
+            .expect("advance");
+        assert!(advanced, "{backend}: the cursor holds the planned value");
+    })
+    .await;
+    assert_moves(backend, pool, row, "pause_cursor", async {
+        cron.pause_cursor("ua-cron").await.expect("pause");
+    })
+    .await;
+
+    // cron_occurrences, cron_singletons and cron_singleton_slots: a claim,
+    // two attempts holding slots 0 and 1 of one key, their renewals, and a
+    // settle.
+    for (i, id) in ["ua-occ-0", "ua-occ-1"].iter().enumerate() {
+        cron.insert_occurrence(NewOccurrence {
+            id,
+            channel_id: "ua-cron",
+            channel_name: "ua",
+            channel_version: 1,
+            workflow_id: Some("wf"),
+            trigger: trigger::CRON,
+            scheduled_for: now - chrono::Duration::seconds(60 - i as i64),
+            status: status::PENDING,
+            error_message: None,
+        })
+        .await
+        .expect("insert occurrence");
+    }
+    let mut claimed = Vec::new();
+    assert_moves(
+        backend,
+        pool,
+        ("cron_occurrences", "id", "ua-occ-0"),
+        "claim_due",
+        async {
+            claimed = cron
+                .claim_due(ClaimRequest {
+                    claimant: "ua-node",
+                    limit: 100,
+                    lease_secs: 60,
+                })
+                .await
+                .expect("claim");
+        },
+    )
+    .await;
+    let mut held = Vec::new();
+    for id in ["ua-occ-0", "ua-occ-1"] {
+        let occurrence = claimed
+            .iter()
+            .find(|o| o.id == id)
+            .unwrap_or_else(|| panic!("{backend}: {id} was claimed"));
+        let mut started = None;
+        assert_moves(
+            backend,
+            pool,
+            ("cron_occurrences", "id", id),
+            "start_attempt",
+            async {
+                started = Some(
+                    cron.start_attempt(
+                        occurrence,
+                        "ua-node",
+                        1,
+                        Some(SingletonRequest {
+                            key: "ua-key",
+                            holder: "ua-node",
+                            lease_secs: 60,
+                            slots: 2,
+                        }),
+                        60,
+                    )
+                    .await
+                    .expect("start"),
+                );
+            },
+        )
+        .await;
+        match started {
+            Some(AttemptStart::Started { held: Some(slot) }) => held.push((id, slot)),
+            other => panic!("{backend}: {id} should start in a slot, got {other:?}"),
+        }
+    }
+    for (id, slot) in &held {
+        // Slot 0 is the `cron_singletons` row; the key's only other slot is
+        // its one `cron_singleton_slots` row.
+        let table = if slot.slot == 0 {
+            "cron_singletons"
+        } else {
+            "cron_singleton_slots"
+        };
+        let (key_col, key) = ("singleton_key", "ua-key");
+        backdate(pool, "cron_occurrences", "id", id).await;
+        assert_moves(backend, pool, (table, key_col, key), "renew", async {
+            assert!(
+                cron.renew(id, "ua-node", Some(*slot), 60)
+                    .await
+                    .expect("renew"),
+                "{backend}: {id} still owns its attempt"
+            );
+        })
+        .await;
+        assert!(
+            updated_at(pool, "cron_occurrences", "id", id)
+                .await
+                .and_utc()
+                .timestamp()
+                > 946_684_800,
+            "{backend}: renew must move cron_occurrences.updated_at too"
+        );
+    }
+    let slots: Vec<u32> = held.iter().map(|(_, s)| s.slot).collect();
+    assert!(
+        slots.contains(&0) && slots.contains(&1),
+        "{backend}: both singleton tables were exercised: {slots:?}"
+    );
+    assert_moves(
+        backend,
+        pool,
+        ("cron_occurrences", "id", "ua-occ-0"),
+        "settle",
+        async {
+            assert!(
+                cron.settle(Settlement {
+                    occurrence_id: "ua-occ-0",
+                    claimant: "ua-node",
+                    status: status::COMPLETED,
+                    error_message: None,
+                    trace_id: None,
+                })
+                .await
+                .expect("settle"),
+                "{backend}: the claimant settles its own occurrence"
+            );
+        },
+    )
+    .await;
 }

@@ -237,7 +237,7 @@ pub enum AsyncOnOverflow {
 #[serde(default, deny_unknown_fields)]
 pub struct TraceStorageConfig {
     /// Persistence policy. Applies to `store_completed` (sync result write)
-    /// and `set_result` / `update_status` (async result writes). The async
+    /// and `complete` / `update_status` (async result writes). The async
     /// endpoint's `create_pending` step is always synchronous so the
     /// `GET /traces/{id}` contract is preserved after a 202.
     pub mode: TraceStorageMode,

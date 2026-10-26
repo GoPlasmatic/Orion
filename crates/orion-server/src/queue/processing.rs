@@ -233,10 +233,11 @@ impl ProcessingContext {
     }
 }
 
-/// Mode-aware result write for the non-sync modes. `Async`/`Batch` enqueue;
-/// `Off` skips. `Sync` never reaches here — the caller writes it inline so it
-/// can keep the result and task trace by value.
-async fn route_set_result(
+/// Mode-aware completion (result and `completed` status, one write) for the
+/// non-sync modes. `Async`/`Batch` enqueue; `Off` skips. `Sync` never reaches
+/// here — the caller writes it inline so it can keep the result and task
+/// trace by value.
+async fn route_complete(
     mode: crate::config::TraceStorageMode,
     persistence_queue: &crate::queue::TracePersistenceQueue,
     trace_id: &str,
@@ -247,7 +248,7 @@ async fn route_set_result(
     match mode {
         TraceStorageMode::Async | TraceStorageMode::Batch => {
             persistence_queue
-                .submit(crate::queue::TracePersistenceTask::SetResult(
+                .submit(crate::queue::TracePersistenceTask::Complete(
                     crate::storage::repositories::traces::TraceResultRow {
                         id: trace_id.to_string(),
                         result_json,
@@ -684,26 +685,45 @@ async fn persist_success(
     let should_persist_result =
         super::trace_record::TracePlan::decide(effective_trace, false).persists();
 
+    // The result and the `completed` status are one write (`complete`), so
+    // the trace never shows `completed` without its result. A trace whose
+    // result is not persisted still gets its status.
     let result_saved = if !should_persist_result {
-        // Treat as saved for state-machine purposes — we won't write,
-        // but we also don't want to mark FAILED.
+        ctx.set_trace_status(trace_mode, trace_id, models::TRACE_STATUS_COMPLETED, None)
+            .await;
         true
     } else if matches!(trace_mode, TraceStorageMode::Sync) {
         // Sync mode: write inline, under the same bounded backoff every other
         // persistence write uses (Q6), so the retry policy lives in one place.
+        let completion = crate::storage::repositories::traces::TraceCompletion {
+            result_json: &result_json,
+            duration_ms,
+            task_trace_json: task_trace_json.as_deref(),
+            status: models::TRACE_STATUS_COMPLETED,
+            error_message: None,
+        };
         match crate::queue::trace_persistence::with_write_retries(|| async {
-            ctx.trace_repo
-                .set_result(
-                    trace_id,
-                    &result_json,
-                    duration_ms,
-                    task_trace_json.as_deref(),
-                )
-                .await
+            match ctx.trace_repo.complete(trace_id, completion).await {
+                // No row to complete is not a transient failure — retrying
+                // cannot make one appear — and the run itself succeeded, so
+                // it is reported and the run settles as a success, as when
+                // the status write was the one to miss.
+                Err(crate::errors::OrionError::NotFound(missing)) => Ok(Some(missing)),
+                other => other.map(|()| None),
+            }
         })
         .await
         {
-            Ok(_) => true,
+            Ok(None) => true,
+            Ok(Some(missing)) => {
+                tracing::error!(
+                    trace_id = %trace_id,
+                    error = %missing,
+                    "Failed to update trace status to {}",
+                    models::TRACE_STATUS_COMPLETED
+                );
+                true
+            }
             Err(e) => {
                 // The helper retries at debug level, so this is the only place
                 // the database error itself is reported — without it a failed
@@ -718,7 +738,7 @@ async fn persist_success(
         }
     } else {
         // Async / batch / off: the queue accepted (or off mode skipped).
-        route_set_result(
+        route_complete(
             trace_mode,
             &ctx.persistence_queue,
             trace_id,
@@ -731,8 +751,6 @@ async fn persist_success(
     };
 
     if result_saved {
-        ctx.set_trace_status(trace_mode, trace_id, models::TRACE_STATUS_COMPLETED, None)
-            .await;
         settle_dlq_on_success(&ctx.dlq_repo, dlq.dlq_entry_id).await;
     } else {
         let err_msg = "Result persistence failed after retries";
@@ -1071,12 +1089,10 @@ mod tests {
             Ok(())
         }
 
-        async fn set_result(
+        async fn complete(
             &self,
             _id: &str,
-            _result_json: &str,
-            _duration_ms: f64,
-            _task_trace_json: Option<&str>,
+            _completion: crate::storage::repositories::traces::TraceCompletion<'_>,
         ) -> Result<(), crate::errors::OrionError> {
             unimplemented!()
         }
