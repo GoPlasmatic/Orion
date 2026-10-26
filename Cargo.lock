@@ -2945,6 +2945,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion-authoring"
+version = "1.12.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "dataflow-rs",
+ "orion-api",
+ "orion-common",
+ "orion-definitions",
+ "orion-engine",
+ "orion-extension-api",
+ "orion-plugin-host",
+ "orion-runtime",
+ "orion-storage",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "orion-cli"
 version = "1.12.0"
 dependencies = [
@@ -3201,6 +3227,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "orion-api",
+ "orion-authoring",
  "orion-client",
  "orion-common",
  "orion-definitions",

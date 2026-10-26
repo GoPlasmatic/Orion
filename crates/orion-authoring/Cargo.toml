@@ -1,0 +1,46 @@
+[package]
+name = "orion-authoring"
+# No release cycle of its own: no tag names this crate. crates-publish.yml
+# publishes it as a rider before the crates that depend on it, on the
+# workspace's version.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The Orion runtime's authoring layer: definition sets, the compile passes, fmt and clippy, and the checks a definition passes before a node accepts it"
+license.workspace = true
+repository.workspace = true
+homepage = "https://docs.goplasmatic.io/"
+readme = "README.md"
+keywords = ["workflow", "runtime", "lint", "formatter"]
+categories = ["development-tools"]
+include = ["src/**", "README.md"]
+
+[lints]
+workspace = true
+
+# The same requirements orion-server states, so the lockfile carries one copy
+# of each.
+[dependencies]
+orion-api = { workspace = true, features = ["utoipa"] }
+orion-common.workspace = true
+orion-definitions.workspace = true
+orion-engine.workspace = true
+orion-extension-api.workspace = true
+orion-plugin-host.workspace = true
+orion-runtime.workspace = true
+orion-storage.workspace = true
+dataflow-rs = { version = "4.0.1", features = ["datetime", "budget"] }
+axum = { version = "0.8", default-features = false, features = ["json"] }
+base64 = "0.23"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+tracing = "0.1"
+url = "2"
+utoipa = { version = "6", features = ["axum_extras", "chrono"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+[dev-dependencies]
+orion-engine = { workspace = true, features = ["test-support"] }
+tokio = { version = "1", features = ["test-util", "rt-multi-thread", "macros"] }

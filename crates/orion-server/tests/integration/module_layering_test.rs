@@ -67,16 +67,6 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
             "crate::queue::",
         ],
     ),
-    // The authoring checks sit below the HTTP layer and the startup
-    // sequence, which both call them.
-    (
-        "orion-server/src/definitions",
-        &["crate::server::", "crate::bootstrap::"],
-    ),
-    (
-        "orion-server/src/validation",
-        &["crate::server::", "crate::bootstrap::"],
-    ),
 ];
 
 /// Edges that are real, deliberate, and left alone — each with the reason.

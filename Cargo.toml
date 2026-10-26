@@ -50,6 +50,7 @@ panic = "warn"
 
 [workspace.dependencies]
 orion-api = { version = "1.12.0", path = "crates/orion-api" }
+orion-authoring = { version = "1.12.0", path = "crates/orion-authoring" }
 orion-client = { version = "1.12.0", path = "crates/orion-client" }
 orion-common = { version = "1.12.0", path = "crates/orion-common" }
 orion-engine = { version = "1.12.0", path = "crates/orion-engine" }

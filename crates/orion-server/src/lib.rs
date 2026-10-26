@@ -38,17 +38,17 @@ pub use orion_runtime::auth;
 /// it, but not part of the documented 1.0 API surface.
 #[doc(hidden)]
 pub mod bootstrap;
+pub use orion_authoring::definitions;
 #[doc(hidden)]
 pub use orion_common::canonical;
 pub use orion_common::config;
 pub use orion_common::crypto;
+pub use orion_common::errors;
+pub use orion_engine as engine;
 pub use orion_engine::connector;
 pub use orion_runtime::channel;
 pub use orion_runtime::cluster;
 pub use orion_runtime::cron;
-pub mod definitions;
-pub use orion_common::errors;
-pub use orion_engine as engine;
 /// The v2 extension boundary, as an edition binary composes a node: the
 /// [`extensions::CompositionBuilder`] it hands [`run`], and the frozen
 /// [`extensions::Composition`] the node serves with. One path per item; the
@@ -77,10 +77,9 @@ pub mod sql_lex;
 pub use orion_storage as storage;
 #[doc(hidden)]
 pub mod test_support;
-pub(crate) use orion_common::text;
+pub use orion_authoring::validation;
 #[doc(hidden)]
 pub use orion_common::trace_context;
-pub mod validation;
 pub use orion_common::version;
 
 pub use bootstrap::run;

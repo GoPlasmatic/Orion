@@ -67,6 +67,7 @@ harness = true
 workspace = true
 
 [dependencies]
+orion-authoring.workspace = true
 orion-common.workspace = true
 orion-engine.workspace = true
 orion-plugin-host.workspace = true

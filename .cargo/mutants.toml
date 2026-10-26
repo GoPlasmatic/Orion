@@ -16,7 +16,8 @@
 # mutates only the code a PR touched; a full sweep is a local or scheduled
 # activity (`cargo mutants --shard i/N` to split it).
 examine_globs = [
-    "crates/orion-server/src/validation/**",         # SSRF allow/deny predicates
+    "crates/orion-common/src/ssrf.rs",               # SSRF allow/deny predicates
+    "crates/orion-authoring/src/validation/**",      # what a definition must satisfy
     "crates/orion-server/src/server/admin_auth.rs",  # API-key comparison, guarded-path set
     "crates/orion-engine/src/connector/masking.rs",  # secret redaction before secrets reach the wire
     "crates/orion-engine/src/connector/circuit_breaker.rs",
