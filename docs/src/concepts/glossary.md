@@ -1,6 +1,6 @@
 <!-- description: One-line definitions for every term the Orion documentation uses with a fixed meaning — channel, workflow, connector, deployment, quarantine, rollout and more. -->
 <!-- type: glossary -->
-<!-- last_verified: 2026-10-25 -->
+<!-- last_verified: 2026-10-26 -->
 
 # Glossary
 
@@ -42,6 +42,8 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Dialect (portable data dialect)**: the backend-neutral query and write language that `data_query` and `data_write` lower to PostgreSQL, MySQL or SQLite. See [Portable data dialect](../reference/data-dialect.md).
 
+**Driver**: a provider compiled into the binary, such as `org.orion.postgresql`; a connection names it by its built-in digest. See [Connectors](./connectors.md#two-forms-the-file-and-the-connection).
+
 **Engine**: the compiled runtime built from every deployed workflow and plugin; a reload rebuilds and swaps it whole, beside the channel estate. See [Design notes](./design-notes.md#how-hot-reload-swaps-the-runtime-generation).
 
 **Estate**: everything one instance serves: the channels, workflows, connections and plugins of its deployment head.
@@ -68,6 +70,12 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 
 **Plugin**: a definition carrying a WebAssembly component that adds task functions named `<plugin>.<label>`; its world imports nothing. See [Plugins](./plugins.md).
 
+**Provider**: what a connection runs on: a built-in driver or an uploaded provider package, pinned by publisher, id, version and digest. See [connector_call](../reference/functions/connector_call.md).
+
+**Provider backend**: the code a node dispatches a provider's operations to: a driver, or an admitted workflow package. See [connector_call](../reference/functions/connector_call.md).
+
+**Provider package**: an uploaded, content-addressed archive declaring a provider's operations and schemas, admitted before any connection may use it. See [connector_call](../reference/functions/connector_call.md#workflow-provider-packages).
+
 **Quarantine**: the state of a channel that failed to build into a generation; it is refused at every ingress until a later build succeeds. See [Troubleshooting](../operate/maintain/troubleshooting.md).
 
 **Revision**: one immutable, numbered version of a deployment, a manifest member or a connection; a change is always a new revision. See [Deployment endpoints](../reference/admin-api/deployments.md).
@@ -79,6 +87,8 @@ One definition for every term the book uses with a fixed meaning, ten to twenty 
 **Shaped response**: a response mode in which the workflow sets the HTTP status, headers and body through `data._orion.response`. See [Data API](../reference/data-api.md#shaped-responses).
 
 **Stub file**: canned connector responses, keyed by function and connector name, that let `dry-run` and `test` run a workflow offline. See [Test a workflow offline](../guides/author/testing.md#stub-the-calls-that-leave-the-process).
+
+**target_id**: the `connector_call` input naming the backend a call dispatches to: a driver id, or a package digest. See [connector_call](../reference/functions/connector_call.md#fields).
 
 **Task**: one step of a workflow: an `id`, a `name`, an optional `condition`, and one `function` with its `input`. See [Workflows](./workflows.md#tasks).
 
